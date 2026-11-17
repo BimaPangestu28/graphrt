@@ -28,6 +28,7 @@ pub mod error;
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
 pub mod nodes;
+pub mod providers;
 pub mod registry;
 pub mod sse;
 pub mod types;
@@ -49,8 +50,8 @@ pub use types::{
 
 /// Register the `llm`, `question-classifier`, `parameter-extractor` and `agent` node kinds.
 pub fn register(registry: &mut graphrt_core::Registry) {
-    registry.register("llm", nodes::llm::factory);
-    registry.register("question-classifier", nodes::classifier::factory);
-    registry.register("parameter-extractor", nodes::extractor::factory);
-    registry.register("agent", nodes::agent::factory);
+    registry.register_described(nodes::descriptors::llm(), nodes::llm::factory);
+    registry.register_described(nodes::descriptors::question_classifier(), nodes::classifier::factory);
+    registry.register_described(nodes::descriptors::parameter_extractor(), nodes::extractor::factory);
+    registry.register_described(nodes::descriptors::agent(), nodes::agent::factory);
 }

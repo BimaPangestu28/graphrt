@@ -31,6 +31,7 @@ use crate::node::{ConfigError, Node, Registry, parse_config};
 mod aggregator;
 mod answer;
 mod assigner;
+mod descriptors;
 mod end;
 mod human_input;
 mod if_else;
@@ -44,13 +45,18 @@ mod template_transform;
 
 /// Register every built-in core node kind.
 pub fn register_builtins(registry: &mut Registry) {
-    registry.register("start", |doc| Ok(Arc::new(start::StartNode::new(doc, parse_config(doc)?)?)));
-    registry.register("end", |doc| Ok(Arc::new(end::EndNode::new(parse_config(doc)?))));
-    registry.register("answer", |doc| Ok(Arc::new(answer::AnswerNode::new(parse_config(doc)?))));
-    registry.register("if-else", |doc| Ok(Arc::new(if_else::IfElseNode::new(doc, parse_config(doc)?)?)));
-    registry.register("variable-aggregator", |doc| Ok(Arc::new(aggregator::AggregatorNode::new(parse_config(doc)?))));
-    registry.register("assigner", build_assigner);
-    registry.register("variable-assigner", |doc| {
+    registry
+        .register_described(descriptors::start(), |doc| Ok(Arc::new(start::StartNode::new(doc, parse_config(doc)?)?)));
+    registry.register_described(descriptors::end(), |doc| Ok(Arc::new(end::EndNode::new(parse_config(doc)?))));
+    registry.register_described(descriptors::answer(), |doc| Ok(Arc::new(answer::AnswerNode::new(parse_config(doc)?))));
+    registry.register_described(descriptors::if_else(), |doc| {
+        Ok(Arc::new(if_else::IfElseNode::new(doc, parse_config(doc)?)?))
+    });
+    registry.register_described(descriptors::aggregator(), |doc| {
+        Ok(Arc::new(aggregator::AggregatorNode::new(parse_config(doc)?)))
+    });
+    registry.register_described(descriptors::assigner(), build_assigner);
+    registry.register_described(descriptors::variable_assigner(), |doc| {
         let is_assigner = doc.config.contains_key("items") || doc.config.contains_key("assigned_variable_selector");
         if is_assigner {
             build_assigner(doc)
@@ -58,17 +64,24 @@ pub fn register_builtins(registry: &mut Registry) {
             Ok(Arc::new(aggregator::AggregatorNode::new(parse_config(doc)?)))
         }
     });
-    registry
-        .register("list-operator", |doc| Ok(Arc::new(list_operator::ListOperatorNode::new(doc, parse_config(doc)?)?)));
-    registry.register("iteration", |doc| Ok(Arc::new(iteration::IterationNode::new(doc, parse_config(doc)?)?)));
-    registry.register("loop", |doc| Ok(Arc::new(loop_node::LoopNode::new(doc, parse_config(doc)?)?)));
-    registry.register("iteration-start", |_| Ok(Arc::new(markers::ScopeStartNode)));
-    registry.register("loop-start", |_| Ok(Arc::new(markers::ScopeStartNode)));
-    registry.register("loop-end", |_| Ok(Arc::new(markers::LoopEndNode)));
-    registry.register("human-input", |doc| Ok(Arc::new(human_input::HumanInputNode::new(doc, parse_config(doc)?)?)));
+    registry.register_described(descriptors::list_operator(), |doc| {
+        Ok(Arc::new(list_operator::ListOperatorNode::new(doc, parse_config(doc)?)?))
+    });
+    registry.register_described(descriptors::iteration(), |doc| {
+        Ok(Arc::new(iteration::IterationNode::new(doc, parse_config(doc)?)?))
+    });
+    registry.register_described(descriptors::loop_node(), |doc| {
+        Ok(Arc::new(loop_node::LoopNode::new(doc, parse_config(doc)?)?))
+    });
+    registry.register_described(descriptors::iteration_start(), |_| Ok(Arc::new(markers::ScopeStartNode)));
+    registry.register_described(descriptors::loop_start(), |_| Ok(Arc::new(markers::ScopeStartNode)));
+    registry.register_described(descriptors::loop_end(), |_| Ok(Arc::new(markers::LoopEndNode)));
+    registry.register_described(descriptors::human_input(), |doc| {
+        Ok(Arc::new(human_input::HumanInputNode::new(doc, parse_config(doc)?)?))
+    });
     crate::tool_node::register(registry);
     #[cfg(feature = "jinja")]
-    registry.register("template-transform", |doc| {
+    registry.register_described(descriptors::template_transform(), |doc| {
         Ok(Arc::new(template_transform::TemplateTransformNode::new(doc, parse_config(doc)?)?))
     });
 }

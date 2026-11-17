@@ -305,7 +305,9 @@ pub struct WindowConfig {
 /// Roles are `user`/`human`, `assistant`/`ai` and `system`. With
 /// `window.enabled`, only the last `window.size` turns (two messages per turn)
 /// are kept. The current query is appended as a user message, rendered from
-/// `query_prompt_template` (default `{{#sys.query#}}`).
+/// `query_prompt_template` (default `{{#sys.query#}}`). Without an explicit
+/// `query_prompt_template`, the query is not appended when a prompt template
+/// message already references `sys.query` (it would otherwise be sent twice).
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct MemoryConfig {
     #[serde(default)]
@@ -430,8 +432,16 @@ pub fn build_messages(
         messages.extend(mem.history(pool)?);
     }
     messages.extend(rendered.into_iter().skip(split));
-    if let Some(query) = memory.and_then(|m| m.query(pool)) {
-        messages.push(Message::user(query));
+    // The current query is appended after the history unless the prompt template already
+    // contains it (a message referencing `sys.query`); otherwise it would be sent twice.
+    // An explicit `query_prompt_template` is always appended.
+    let template_has_query = template.messages().iter().any(|m| m.text.selectors().any(is_sys_query));
+    if let Some(mem) = memory {
+        if mem.query_prompt_template.is_some() || !template_has_query {
+            if let Some(query) = mem.query(pool) {
+                messages.push(Message::user(query));
+            }
+        }
     }
     if !images.is_empty() {
         match messages.iter_mut().rev().find(|m| m.role == Role::User) {
@@ -440,6 +450,10 @@ pub fn build_messages(
         }
     }
     Ok(messages)
+}
+
+fn is_sys_query(selector: &Selector) -> bool {
+    selector.namespace() == "sys" && selector.name() == "query"
 }
 
 /// Look up the configured provider.
@@ -823,6 +837,32 @@ mod tests {
         let texts: Vec<String> = msgs.iter().map(Message::text).collect();
         assert_eq!(texts, vec!["sys", "old3", "old4", "tmpl", "now"]);
         assert!(matches!(msgs[4].content.last(), Some(ContentPart::Image { .. })));
+    }
+
+    #[test]
+    fn memory_does_not_duplicate_a_templated_query() {
+        let mut pool = VariablePool::new();
+        pool.insert("sys", "query", Value::from("now"));
+        pool.insert("sys", "history", Value::from_json(serde_json::json!([{"role": "user", "content": "old"}])));
+        let memory = MemoryConfig::default();
+        let with_query: PromptTemplate = serde_json::from_value(serde_json::json!([
+            {"role": "system", "text": "sys"}, {"role": "user", "text": "Q: {{#sys.query#}}"}
+        ]))
+        .unwrap();
+        let msgs = build_messages(&with_query, &pool, None, Some(&memory), Vec::new()).unwrap();
+        let texts: Vec<String> = msgs.iter().map(Message::text).collect();
+        assert_eq!(texts, vec!["sys", "old", "Q: now"], "the query is sent once, after the history");
+
+        let without_query: PromptTemplate =
+            serde_json::from_value(serde_json::json!([{"role": "system", "text": "sys"}])).unwrap();
+        let msgs = build_messages(&without_query, &pool, None, Some(&memory), Vec::new()).unwrap();
+        let texts: Vec<String> = msgs.iter().map(Message::text).collect();
+        assert_eq!(texts, vec!["sys", "old", "now"], "memory appends the query when the template lacks it");
+
+        let explicit: MemoryConfig =
+            serde_json::from_value(serde_json::json!({"query_prompt_template": "again: {{#sys.query#}}"})).unwrap();
+        let msgs = build_messages(&with_query, &pool, None, Some(&explicit), Vec::new()).unwrap();
+        assert_eq!(msgs.last().map(Message::text).as_deref(), Some("again: now"), "explicit query template wins");
     }
 
     #[test]

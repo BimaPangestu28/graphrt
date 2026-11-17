@@ -116,10 +116,16 @@ Values are referenced as `{{#node.output.path#}}`. The full format is in
 | `question-classifier` | Route by LLM classification | llm |
 | `parameter-extractor` | Extract typed parameters from text | llm |
 | `http-request` | HTTP with SSRF-safe egress, auth, JSON/form/multipart bodies | http |
-| `code` | JavaScript in QuickJS with memory/time limits; remote sandbox hook | code |
+| `code` | JavaScript in QuickJS with memory/time limits; Python via a sandbox service or a local subprocess (trusted code) | code |
+
+Every kind publishes a catalog descriptor with a config JSON Schema
+(`graphrt nodes`, `GET /v1/nodes`), so visual builders can render palettes and
+forms and validate documents (`POST /v1/validate`) before deploying them.
 
 Model providers: any OpenAI-compatible API (OpenAI, Azure OpenAI, Ollama, vLLM,
-Groq, OpenRouter, DeepSeek…) and Anthropic. Tools: native Rust closures and
+Groq, OpenRouter, DeepSeek…) and Anthropic, configured from the environment or a
+providers file (`--providers`); `--model ollama/qwen2.5:14b` points every model
+node at another model. Tools: native Rust closures and
 MCP servers (stdio and streamable HTTP).
 
 ## Embed it

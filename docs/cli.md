@@ -4,6 +4,7 @@
 graphrt run <workflow>       Run a workflow and stream its output
 graphrt validate <workflow>  Parse and validate without running
 graphrt inspect <workflow>   Show nodes, inputs, env variables and missing node kinds
+graphrt nodes [--json] [--kind K]  The node catalog of this build (with config JSON Schemas)
 graphrt serve <file|dir>     HTTP + SSE API
 graphrt version              Version and enabled features
 ```
@@ -31,6 +32,9 @@ Workflows can be YAML (`.yaml`, `.yml`) or JSON.
 | `--env-file FILE` | dotenv file. Supplies model keys and the workflow's declared `env.*` variables. |
 | `--mcp FILE` | MCP servers (`{"mcpServers": {...}}`) available to `tool` and `agent` nodes. |
 | `--allow-private-network` | Allow `http-request` to reach private / loopback addresses. |
+| `--providers FILE` | Model providers file (YAML/JSON), layered over the environment providers. Defaults to `$GRAPHRT_PROVIDERS`. See below. |
+| `--model PROVIDER/NAME` | Use this model for every `llm`, `question-classifier`, `parameter-extractor` and `agent` node, e.g. `--model ollama/qwen2.5:14b`. The name may contain `/`. |
+| `--allow-python-subprocess` | Run `python3` code nodes in a local subprocess (isolated interpreter, empty environment, temp working dir, CPU/memory/file-size `ulimit`s, timeout). **Not a security sandbox** — only for trusted workflows. |
 | `--timeout-ms MS` | Abort the run after this long. |
 | `--max-steps N` | Maximum node executions. |
 | `--resume SNAPSHOT` | Resume a paused run. |
@@ -53,11 +57,46 @@ Model providers are configured from the environment:
 | `OLLAMA_HOST` | `ollama` |
 | `GRAPHRT_OPENAI_COMPAT_<NAME>_BASE_URL`, optional `..._API_KEY` | `<name>` |
 
+### Providers file
+
+`--providers` declares any number of endpoints without code. Keys are read from
+the environment (`api_key_env`), never from the file; `${VAR}` in `base_url`,
+`headers` and `query` values is substituted from the environment.
+
+```yaml
+providers:
+  - name: openrouter
+    kind: openai                     # openai (any compatible API) | anthropic
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    headers: { HTTP-Referer: "${SITE_URL}" }
+    defaults: { temperature: 0.2, max_tokens: 1024 }   # used when a node sets none
+  - name: azure
+    kind: openai
+    base_url: https://my.openai.azure.com/openai/deployments/gpt4o
+    api_key_env: AZURE_OPENAI_KEY
+    auth_header: api-key
+    query: { api-version: "2024-06-01" }
+  # Run workflows written for `openai/gpt-4o-mini` on a local model:
+  - name: local
+    kind: openai
+    base_url: http://localhost:11434/v1
+    api_key_env: OLLAMA_KEY
+    api_key_optional: true
+    aliases: [openai]                # `provider: openai` now resolves here
+    models: { gpt-4o-mini: "qwen2.5:14b" }   # model-name aliases
+```
+
+Providers from the file win over environment providers with the same name,
+and an alias shadows an environment provider of that name. Unknown keys are
+errors.
+
 ## `graphrt serve`
 
 ```
 graphrt serve <workflow-file|directory> [--addr 127.0.0.1:8080] [--api-key-env GRAPHRT_API_KEY]
               [--max-body-bytes N] [--env-file] [--mcp] [--allow-private-network]
+              [--providers FILE] [--model PROVIDER/NAME] [--allow-python-subprocess]
               [--timeout-ms] [--max-steps]
 ```
 
@@ -71,7 +110,9 @@ If the variable named by `--api-key-env` is set, every `/v1` request needs
 | GET | `/v1/workflows` | – |
 | POST | `/v1/workflows/{name}/runs` | `{"inputs": {}, "sys": {}, "conversation": {}, "stream": false}` |
 | POST | `/v1/runs/{run_id}/abort` | – |
-| POST | `/v1/runs/{run_id}/resume` | `{"snapshot": {...}, "inputs": {"<node>": {...}}, "stream": false}` |
+| POST | `/v1/runs/{run_id}/resume` | `{"snapshot": {...}, "inputs": {"<node>": {...}}, "secrets": {"ns.name": "..."}, "stream": false}` |
+| GET | `/v1/nodes` | – (node catalog: `{"nodes": [descriptor...]}`) |
+| POST | `/v1/validate` | a workflow document (JSON), or `{"document": "<YAML or JSON text>"}` → `{"valid", "errors", "warnings"}` |
 
 Blocking responses:
 
@@ -88,3 +129,11 @@ with its `type` as the event name (`run_started`, `node_started`,
 `{"node_id": "answer", "text": "...", "is_final": false}`.
 
 Closing the connection cancels the run.
+
+## `graphrt nodes`
+
+Prints the node catalog: every node kind compiled into this binary with its
+category, source crate and title. `--kind K` shows one kind's outputs, branch
+handles and config fields; `--json` prints full descriptors including the
+config JSON Schema (draft 2020-12), as served by `GET /v1/nodes`. Visual
+builders use the catalog to render node palettes and config forms.

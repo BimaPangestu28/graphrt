@@ -7,7 +7,9 @@
 //!   loader; memory, stack and execution time are capped.
 //! - **Other languages** (e.g. `python3`) run in a host-provided
 //!   [`RemoteSandbox`] service. The optional `remote` feature provides
-//!   [`HttpSandbox`], a client for an HTTP sandbox service.
+//!   `HttpSandbox`, a client for an HTTP sandbox service. The optional `python`
+//!   feature provides `SubprocessPython`, which runs a local `python3` with
+//!   resource limits — **not a security sandbox**, for trusted code only.
 //!
 //! User code defines `main(args)`, which receives an object with the configured
 //! input variables and returns an object (or a promise of one):
@@ -35,9 +37,13 @@ use graphrt_core::{Selector, Value, ValueType};
 
 #[cfg(feature = "js")]
 mod js;
+#[cfg(feature = "python")]
+mod python;
 #[cfg(feature = "remote")]
 mod remote;
 
+#[cfg(feature = "python")]
+pub use python::SubprocessPython;
 #[cfg(feature = "remote")]
 pub use remote::HttpSandbox;
 
@@ -341,7 +347,46 @@ fn json_depth(value: &serde_json::Value) -> usize {
 
 /// Register the `code` node kind.
 pub fn register(registry: &mut Registry) {
-    registry.register(KIND, |doc| Ok(Arc::new(CodeNode::from_doc(doc)?) as Arc<dyn Node>));
+    registry.register_described(descriptor(), |doc| Ok(Arc::new(CodeNode::from_doc(doc)?) as Arc<dyn Node>));
+}
+
+/// Catalog descriptor of the `code` node.
+pub fn descriptor() -> graphrt_core::catalog::NodeDescriptor {
+    use graphrt_core::catalog::schema::{nested, object, value_type, variable_bindings};
+    use graphrt_core::catalog::{NodeCategory, NodeDescriptor};
+    use serde_json::json;
+
+    let limit = |what: &str| json!({ "type": "integer", "minimum": 0, "description": what });
+    NodeDescriptor::new(KIND, "Code", NodeCategory::Integration)
+        .describe(
+            "Runs `main(args)` over bound variables. JavaScript runs in an embedded QuickJS engine with \
+             no I/O and memory/time limits; other languages (python3) need a sandbox service. Declared \
+             outputs are type-checked; without declarations every returned key becomes an output.",
+        )
+        .icon("code")
+        .source("graphrt-code")
+        .schema(object(
+            json!({
+                "code_language": {
+                    "type": "string",
+                    "enum": ["javascript", "js", "nodejs", "node", "python3", "python", "py"],
+                    "default": "javascript"
+                },
+                "code": { "type": "string", "minLength": 1 },
+                "variables": variable_bindings(),
+                "outputs": { "type": "object", "additionalProperties": nested(json!({ "type": value_type() }), &["type"]) },
+                "limits": nested(json!({
+                    "time_ms": limit("Wall-clock budget (ms)"),
+                    "memory_bytes": limit("Heap limit"),
+                    "stack_bytes": limit("Stack limit"),
+                    "max_output_bytes": limit("Result size limit"),
+                    "max_depth": limit("Result nesting limit")
+                }), &[]),
+                "sandbox": { "type": "string", "enum": ["auto", "remote"], "default": "auto" }
+            }),
+            &["code"],
+        ))
+        .dynamic_outputs()
 }
 
 #[cfg(test)]

@@ -26,13 +26,30 @@ pub fn service_options(args: &ServiceArgs) -> Result<ServiceOptions, CliError> {
         }
         None => Vec::new(),
     };
-    Ok(ServiceOptions { env_file, allow_private_network: args.allow_private_network, mcp_config: args.mcp.clone() })
+    let providers = args.providers.clone().or_else(|| {
+        env_file
+            .iter()
+            .rev()
+            .find(|(k, _)| k == setup::PROVIDERS_ENV)
+            .map(|(_, v)| v.clone())
+            .or_else(|| std::env::var(setup::PROVIDERS_ENV).ok())
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from)
+    });
+    Ok(ServiceOptions {
+        env_file,
+        allow_private_network: args.allow_private_network,
+        mcp_config: args.mcp.clone(),
+        providers,
+        allow_python_subprocess: args.allow_python_subprocess,
+        model_override: args.model.clone(),
+    })
 }
 
 /// Execute `graphrt run`. Returns the process exit code.
 pub async fn run(args: RunArgs) -> Result<u8, CliError> {
     let options = service_options(&args.services)?;
-    let graph = setup::load_graph(&args.workflow)?;
+    let graph = setup::load_graph_with(&args.workflow, options.model_override.as_deref())?;
     for warning in graph.warnings() {
         eprintln!("warning: {warning}");
     }

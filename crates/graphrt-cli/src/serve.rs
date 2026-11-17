@@ -7,6 +7,8 @@
 //! | POST | `/v1/workflows/{name}/runs` | `{inputs, sys, conversation, stream}` | SSE stream or JSON result |
 //! | POST | `/v1/runs/{run_id}/abort` | – | `202` if the run was active |
 //! | POST | `/v1/runs/{run_id}/resume` | `{snapshot, inputs, stream}` | SSE stream or JSON result |
+//! | GET | `/v1/nodes` | – | node catalog (descriptors with config JSON Schemas) |
+//! | POST | `/v1/validate` | workflow document, or `{document: "<yaml/json text>"}` | `{valid, errors, warnings}` |
 //!
 //! SSE events use the engine event `type` as the event name and its JSON as
 //! data, plus `response` events carrying the ordered answer text
@@ -132,7 +134,7 @@ pub async fn build_state(
         if path.extension().and_then(|e| e.to_str()) == Some("json") && is_mcp_config(path) {
             continue;
         }
-        let graph = setup::load_graph(path)?;
+        let graph = setup::load_graph_with(path, options.model_override.as_deref())?;
         let env = setup::workflow_env(&graph, options);
         let engine = Engine::new(graph)
             .with_shared_services(services.clone())
@@ -154,6 +156,8 @@ pub fn router(state: Arc<AppState>, max_body_bytes: usize) -> Router {
         .route("/v1/workflows/{name}/runs", post(start_run))
         .route("/v1/runs/{run_id}/abort", post(abort_run))
         .route("/v1/runs/{run_id}/resume", post(resume_run))
+        .route("/v1/nodes", get(list_nodes))
+        .route("/v1/validate", post(validate_workflow))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -252,6 +256,34 @@ async fn list_workflows(State(state): State<Arc<AppState>>) -> Json<serde_json::
         })
         .collect();
     Json(serde_json::json!({ "workflows": items }))
+}
+
+async fn list_nodes() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "nodes": crate::catalog::catalog() }))
+}
+
+/// Validate a workflow document against the node kinds of this build.
+///
+/// The body is either the document itself (JSON) or `{"document": "<YAML or JSON text>"}`.
+async fn validate_workflow(Json(body): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    Json(validation_report(body))
+}
+
+/// `{valid, errors, warnings}` for a workflow document.
+pub fn validation_report(body: serde_json::Value) -> serde_json::Value {
+    let parsed = match body.get("document").and_then(serde_json::Value::as_str) {
+        Some(text) => graphrt_core::Workflow::parse(text),
+        None => graphrt_core::Workflow::from_value(body),
+    };
+    let report = |valid: bool, errors: Vec<String>, warnings: Vec<String>| serde_json::json!({ "valid": valid, "errors": errors, "warnings": warnings });
+    let workflow = match parsed {
+        Ok(w) => w,
+        Err(e) => return report(false, vec![e.to_string()], Vec::new()),
+    };
+    match Graph::build(workflow, &setup::registry()) {
+        Ok(graph) => report(true, Vec::new(), graph.warnings().to_vec()),
+        Err(e) => report(false, vec![e.to_string()], Vec::new()),
+    }
 }
 
 /// Body of `POST /v1/workflows/{name}/runs`.

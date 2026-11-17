@@ -18,13 +18,15 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "mcp", "serve"]
+default = ["llm", "http", "code", "python", "mcp", "serve"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
 http = ["dep:graphrt-http"]
 # code node (embedded JavaScript).
 code = ["dep:graphrt-code"]
+# Python code nodes via a local subprocess, enabled per run with `--allow-python-subprocess`.
+python = ["code", "graphrt-code/python"]
 # MCP tool servers (`--mcp`).
 mcp = ["dep:graphrt-mcp"]
 # `graphrt serve`: HTTP + SSE API.
@@ -42,11 +44,13 @@ futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 indexmap.workspace = true
-axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio"] }
+serde-saphyr.workspace = true
+axum ={ version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio"] }
 
 [dev-dependencies]
 tower = { version = "0.5", default-features = false, features = ["util"] }
 http-body-util = "0.1"
+jsonschema = { version = "0.61", default-features = false }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 
 [lints]
