@@ -1,0 +1,77 @@
+[package]
+name = "graphrt-ffi"
+description = "Embedding API for mobile and desktop apps (Kotlin, Swift, Python...) via UniFFI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "graphrt_ffi"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+# Binding generator: `cargo run -p graphrt-ffi --features bindgen-cli --bin uniffi-bindgen -- ...`
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen-cli"]
+
+[features]
+# Every feature here is safe on iOS / Android: nothing spawns processes.
+default = ["code-js", "mcp-http", "doc", "rag"]
+# JavaScript code node (QuickJS, compiled from C).
+code-js = ["dep:graphrt-code"]
+# Generate QuickJS bindings at build time. Required for Android and iOS targets,
+# for which rquickjs ships no prebuilt bindings. Needs libclang on the build host.
+mobile-js = ["code-js", "dep:rquickjs"]
+# MCP tool servers over streamable HTTP (stdio servers are not available on mobile).
+mcp-http = ["dep:graphrt-mcp"]
+# document-extractor node (pure Rust).
+doc = ["dep:graphrt-doc"]
+# knowledge-retrieval node (memory / Qdrant / HTTP retrievers).
+rag = ["dep:graphrt-rag"]
+# Enables the `uniffi-bindgen` binary used to generate Kotlin / Swift bindings.
+bindgen-cli = ["uniffi/cli"]
+
+[dependencies]
+graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }
+graphrt-llm = { workspace = true, features = ["openai", "anthropic"] }
+graphrt-http.workspace = true
+graphrt-wasm = { workspace = true, features = ["tokio"] }
+graphrt-code = { workspace = true, optional = true, features = ["js", "tokio"] }
+graphrt-mcp = { workspace = true, optional = true, features = ["http"] }
+# Only to switch on rquickjs' `bindgen` feature (see `mobile-js`); not used directly.
+rquickjs = { version = "0.14", optional = true, default-features = false, features = ["bindgen"] }
+graphrt-doc = { workspace = true, optional = true, features = ["pdf", "office", "spreadsheet", "epub", "email", "tokio"] }
+graphrt-rag = { workspace = true, optional = true, features = ["http", "qdrant", "fs", "yaml"] }
+uniffi = { version = "0.32", default-features = false }
+thiserror.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+indexmap.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync", "macros"] }
+
+# UniFFI's proc macros expand to `unsafe` FFI glue in this crate, which the
+# workspace-wide `unsafe_code = "forbid"` would reject. Hand-written code in this
+# crate contains no `unsafe`; every other lint matches the workspace.
+[lints.rust]
+unsafe_code = "allow"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "warn"
+indexing_slicing = "warn"
