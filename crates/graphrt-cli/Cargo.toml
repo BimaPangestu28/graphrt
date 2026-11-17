@@ -51,7 +51,7 @@ graphrt-rag = { workspace = true, optional = true, features = ["default"] }
 graphrt-plugin = { workspace = true, optional = true }
 graphrt-wasm = { workspace = true, optional = true }
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
-tokio = { workspace = true, features = ["rt", "time", "signal", "fs"] }
+tokio = { workspace = true, features = ["rt", "time", "signal", "fs", "io-util"] }
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
