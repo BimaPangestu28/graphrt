@@ -26,8 +26,8 @@ rustc 1.95.0, commit `72f1db6`, measured 2026-11-17. Raw data:
 
 | What | Result |
 | --- | --- |
-| Scheduling overhead per node (graphs up to a few hundred nodes) | ~1.5–3 µs |
-| 100-node chain, end to end | 0.23 ms |
+| Scheduling overhead per node (flat from 10 to 1,000+ nodes per scope) | ~1.5–2.5 µs |
+| 100-node chain, end to end | 0.15 ms |
 | 1,000-item parallel iteration | 3.6 ms |
 | Time to first streamed answer chunk (engine + response assembler) | ~12 µs over the raw model stream |
 | Runs/s with an instant mock model (multi-thread runtime) | ~190,000 |
@@ -47,25 +47,26 @@ template that reads the previous node's output.
 
 | Graph | Nodes | p50 ms | p95 ms | µs / node (p50) |
 |---|---:|---:|---:|---:|
-| chain, noop, 10 | 12 | 0.017 | 0.026 | 1.45 |
-| chain, template, 10 | 12 | 0.025 | 0.028 | 2.12 |
-| chain, noop, 100 | 102 | 0.227 | 0.238 | 2.22 |
-| chain, template, 100 | 102 | 0.308 | 0.324 | 3.02 |
-| chain, noop, 1,000 | 1,002 | 9.197 | 9.315 | 9.18 |
-| chain, template, 1,000 | 1,002 | 10.154 | 10.277 | 10.13 |
-| fan-out / fan-in, 100 branches | 103 | 0.291 | 0.304 | 2.82 |
-| fan-out / fan-in, 1,000 branches | 1,003 | 15.003 | 15.329 | 14.96 |
-| 100 if-else nodes, each skipping a 3-node path | 602 | 1.394 | 1.427 | 2.32 |
-| parallel iteration, 1,000 items (100 at a time) | 2,003 | 3.587 | 3.617 | 1.79 |
-| loop of 10 rounds × parallel iteration of 10 | 223 | 0.421 | 0.440 | 1.89 |
+| chain, noop, 10 | 12 | 0.018 | 0.028 | 1.53 |
+| chain, template, 10 | 12 | 0.026 | 0.026 | 2.14 |
+| chain, noop, 100 | 102 | 0.150 | 0.157 | 1.47 |
+| chain, template, 100 | 102 | 0.228 | 0.237 | 2.23 |
+| chain, noop, 1,000 | 1,002 | 1.433 | 1.482 | 1.43 |
+| chain, template, 1,000 | 1,002 | 2.327 | 2.367 | 2.32 |
+| fan-out / fan-in, 100 branches | 103 | 0.170 | 0.177 | 1.65 |
+| fan-out / fan-in, 1,000 branches | 1,003 | 2.056 | 2.102 | 2.05 |
+| 100 if-else nodes, each skipping a 3-node path | 602 | 0.695 | 0.715 | 1.15 |
+| parallel iteration, 1,000 items (100 at a time) | 2,003 | 3.781 | 3.807 | 1.89 |
+| loop of 10 rounds × parallel iteration of 10 | 223 | 0.443 | 0.459 | 1.99 |
 
 "Nodes" counts node executions, including container bodies.
 
-**Known limitation:** per-node cost is flat up to a few hundred nodes in one
-scope but grows past that: ~9 µs per node for a 1,000-node chain and ~15 µs for a
-1,000-branch fan-out/fan-in. Iteration bodies are not affected (each item runs
-in its own small frame). Real workflows are far below this size, but the
-super-linear term is tracked as a performance issue.
+Per-node cost stays flat as a scope grows: the 1,000-node chain and the
+1,000-branch fan-out/fan-in cost about the same per node as their 100-node
+versions. A regression check guards this: `bench/run.sh` runs
+`cargo test --release -p graphrt-core --test engine_scaling -- --ignored`,
+which fails if per-node cost (including response assembly) grows more than
+2.5× from 100 to 1,000 nodes.
 
 ## Concurrency
 

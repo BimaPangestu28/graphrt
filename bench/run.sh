@@ -54,6 +54,9 @@ info = {
 json.dump(info, open(sys.argv[1], "w"))
 PY
 
+echo "==> scaling regression check (per-node cost 100 vs 1,000 nodes)"
+cargo test --quiet --release -p graphrt-core --test engine_scaling -- --ignored
+
 for section in engine concurrency streaming startup pool; do
   echo "==> $section"
   "$BENCH" "$section" > "$WORK/$section.json"

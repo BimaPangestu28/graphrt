@@ -166,6 +166,12 @@ pub struct ResponseAssembler {
     pass_through: bool,
     include_end: bool,
     finished: bool,
+    /// Certainty of each node, maintained incrementally between events.
+    certain: Vec<bool>,
+    /// Whether `certain` reflects the current state (false after construction / resume).
+    certain_valid: bool,
+    /// Root nodes whose status changed since the last certainty refresh.
+    changed: Vec<NodeIx>,
 }
 
 impl ResponseAssembler {
@@ -192,6 +198,9 @@ impl ResponseAssembler {
             pass_through: false,
             include_end: false,
             finished: false,
+            certain: vec![false; graph.nodes().len()],
+            certain_valid: false,
+            changed: Vec::new(),
         };
         this.rebuild_responses();
         this
@@ -260,6 +269,7 @@ impl ResponseAssembler {
                 *slot = status == Status::Succeeded;
             }
         }
+        self.certain_valid = false;
         self.rebuild_responses();
         self
     }
@@ -382,6 +392,9 @@ impl ResponseAssembler {
             if let Some(s) = self.status.get_mut(ix) {
                 // Never downgrade a finished node back to "started" (retries reuse the id).
                 if !(s.finished() && status == Status::Started) {
+                    if *s != status {
+                        self.changed.push(ix);
+                    }
                     *s = status;
                 }
             }
@@ -392,21 +405,69 @@ impl ResponseAssembler {
         self.status.get(ix).copied().unwrap_or(Status::Unknown)
     }
 
-    /// Recompute the certain set and enqueue newly certain responses.
+    /// Whether `ix` is certain to run, given the certainty of its predecessors.
+    fn compute_certain(&self, ix: NodeIx, entry: NodeIx, certain: &[bool]) -> bool {
+        match self.status_of(ix) {
+            Status::Skipped => false,
+            Status::Unknown => ix == entry || self.has_certain_edge(ix, certain),
+            _ => true,
+        }
+    }
+
+    /// Bring the certain set up to date and enqueue newly certain responses.
+    ///
+    /// Certainty only grows as a run progresses, so after one full pass each
+    /// status change is propagated forward from the changed node: O(affected
+    /// nodes) per event instead of O(graph). A node losing certainty (not
+    /// expected in practice) falls back to a full recomputation.
     fn refresh_certainty(&mut self) {
         let Some(scope) = self.graph.root_scope() else {
             return;
         };
-        let mut certain = vec![false; self.graph.nodes().len()];
-        for &ix in &scope.nodes {
-            let status = self.status_of(ix);
-            let is_certain = match status {
-                Status::Skipped => false,
-                Status::Unknown => ix == scope.entry || self.has_certain_edge(ix, &certain),
-                _ => true,
-            };
-            if let Some(c) = certain.get_mut(ix) {
-                *c = is_certain;
+        let entry = scope.entry;
+        let mut certain = std::mem::take(&mut self.certain);
+        certain.resize(self.graph.nodes().len(), false);
+        let changed = std::mem::take(&mut self.changed);
+        let mut full = !self.certain_valid;
+        if !full {
+            let mut work: Vec<NodeIx> = changed;
+            while let Some(ix) = work.pop() {
+                let now = self.compute_certain(ix, entry, &certain);
+                let before = certain.get(ix).copied().unwrap_or(false);
+                if before && !now {
+                    full = true;
+                    break;
+                }
+                if now != before {
+                    if let Some(c) = certain.get_mut(ix) {
+                        *c = now;
+                    }
+                }
+                // Even when `ix` itself was already certain, its outgoing edges may
+                // have become certain (e.g. a branch picked its handle).
+                if now {
+                    for &ex in self.graph.outgoing(ix) {
+                        if let Some(edge) = self.graph.edge(ex) {
+                            if !certain.get(edge.target).copied().unwrap_or(false)
+                                && self.compute_certain(edge.target, entry, &certain)
+                            {
+                                if let Some(c) = certain.get_mut(edge.target) {
+                                    *c = true;
+                                }
+                                work.push(edge.target);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if full {
+            certain.iter_mut().for_each(|c| *c = false);
+            for &ix in &scope.nodes {
+                let is_certain = self.compute_certain(ix, entry, &certain);
+                if let Some(c) = certain.get_mut(ix) {
+                    *c = is_certain;
+                }
             }
         }
         for (i, r) in self.responses.iter_mut().enumerate() {
@@ -415,6 +476,8 @@ impl ResponseAssembler {
                 self.queue.push_back(i);
             }
         }
+        self.certain = certain;
+        self.certain_valid = true;
     }
 
     /// Whether an incoming edge of `ix` will be taken given its (certain) source.

@@ -6,17 +6,17 @@
 
 | Graph | Nodes | p50 ms | p95 ms | µs / node (p50) |
 |---|---:|---:|---:|---:|
-| chain_noop_10 | 12 | 0.017 | 0.026 | 1.45 |
-| chain_template_10 | 12 | 0.025 | 0.028 | 2.12 |
-| chain_noop_100 | 102 | 0.227 | 0.238 | 2.22 |
-| chain_template_100 | 102 | 0.308 | 0.324 | 3.02 |
-| chain_noop_1000 | 1002 | 9.197 | 9.315 | 9.18 |
-| chain_template_1000 | 1002 | 10.154 | 10.277 | 10.13 |
-| fan_out_in_100 | 103 | 0.291 | 0.304 | 2.82 |
-| fan_out_in_1000 | 1003 | 15.003 | 15.329 | 14.96 |
-| branches_100 | 602 | 1.394 | 1.427 | 2.32 |
-| parallel_iteration_1000 | 2003 | 3.587 | 3.617 | 1.79 |
-| loop10_x_iteration10 | 223 | 0.421 | 0.440 | 1.89 |
+| chain_noop_10 | 12 | 0.018 | 0.028 | 1.53 |
+| chain_template_10 | 12 | 0.026 | 0.026 | 2.14 |
+| chain_noop_100 | 102 | 0.150 | 0.157 | 1.47 |
+| chain_template_100 | 102 | 0.228 | 0.237 | 2.23 |
+| chain_noop_1000 | 1002 | 1.433 | 1.482 | 1.43 |
+| chain_template_1000 | 1002 | 2.327 | 2.367 | 2.32 |
+| fan_out_in_100 | 103 | 0.170 | 0.177 | 1.65 |
+| fan_out_in_1000 | 1003 | 2.056 | 2.102 | 2.05 |
+| branches_100 | 602 | 0.695 | 0.715 | 1.15 |
+| parallel_iteration_1000 | 2003 | 3.781 | 3.807 | 1.89 |
+| loop10_x_iteration10 | 223 | 0.443 | 0.459 | 1.99 |
 
 ## Concurrent runs (multi-thread runtime, mock model, 10 streamed chunks)
 

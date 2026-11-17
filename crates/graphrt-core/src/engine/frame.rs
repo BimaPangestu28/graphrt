@@ -169,6 +169,17 @@ pub(crate) struct Frame {
     broke: bool,
     reasons: Vec<PauseReason>,
     ready: VecDeque<NodeIx>,
+    /// Incoming-edge tallies of nodes not yet decided, so readiness checks cost
+    /// O(1) per resolved edge instead of rescanning every incoming edge (which
+    /// made wide fan-ins quadratic). Built lazily from `edges` on first use.
+    incoming: HashMap<NodeIx, Incoming>,
+}
+
+/// Resolution state of a node's incoming edges.
+#[derive(Clone, Copy, Debug)]
+struct Incoming {
+    unresolved: usize,
+    taken: bool,
 }
 
 impl Frame {
@@ -281,6 +292,7 @@ impl Frame {
             broke: false,
             reasons: Vec::new(),
             ready: VecDeque::new(),
+            incoming: HashMap::new(),
         })
     }
 
@@ -688,9 +700,7 @@ impl Frame {
         writes: &[(Selector, Value)],
     ) -> Result<(), NodeError> {
         let node_id = self.node_id(ix);
-        let mut pool = self.pool.clone(); // cheap copy-on-write clone
-        pool.set_outputs(&node_id, outputs);
-        for (selector, value) in writes {
+        for (selector, _) in writes {
             let namespace = selector.namespace();
             if namespace == SYS || namespace == ENV {
                 return Err(NodeError::fatal(
@@ -698,9 +708,32 @@ impl Frame {
                     format!("nodes may not write `{selector}`: `{namespace}` variables are owned by the host"),
                 ));
             }
-            pool.set_path(selector, value.clone()).map_err(|e| NodeError::fatal("invalid_write", e.to_string()))?;
         }
-        self.pool = pool;
+        // Apply in place (cloning the pool here would force a copy-on-write copy on
+        // every commit), remembering prior values so a failing write is undone.
+        let mut undo: Vec<(Selector, Option<Value>)> = Vec::with_capacity(outputs.len() + writes.len());
+        for key in outputs.keys() {
+            let root = Selector::of(&node_id, key);
+            let previous = self.pool.get(&root);
+            undo.push((root, previous));
+        }
+        self.pool.set_outputs(&node_id, outputs);
+        for (selector, value) in writes {
+            let root = selector.root();
+            let previous = self.pool.get(&root);
+            undo.push((root, previous));
+            if let Err(e) = self.pool.set_path(selector, value.clone()) {
+                for (root, previous) in undo.into_iter().rev() {
+                    match previous {
+                        Some(value) => self.pool.set(&root, value),
+                        None => {
+                            self.pool.remove(&root);
+                        }
+                    }
+                }
+                return Err(NodeError::fatal("invalid_write", e.to_string()));
+            }
+        }
         let external: Vec<(Selector, Value)> =
             writes.iter().filter(|(selector, _)| !self.scope_ids.contains(selector.namespace())).cloned().collect();
         merge_writes(&mut self.writes, external);
@@ -723,10 +756,39 @@ impl Frame {
         for &ex in graph.outgoing(ix) {
             let Some(edge) = graph.edge(ex) else { continue };
             let status = if take(&edge.handle) { EdgeStatus::Taken } else { EdgeStatus::Skipped };
-            self.edges.insert(ex, status);
+            self.resolve_edge(ex, edge.target, status);
             targets.push(edge.target);
         }
         self.resolve_targets(targets);
+    }
+
+    /// Record an edge's status, keeping the target's incoming tally current.
+    fn resolve_edge(&mut self, ex: EdgeIx, target: NodeIx, status: EdgeStatus) {
+        let previous = self.edges.insert(ex, status);
+        if previous.is_some_and(|p| p != EdgeStatus::Unknown) {
+            return; // already counted
+        }
+        if let Some(tally) = self.incoming.get_mut(&target) {
+            tally.unresolved = tally.unresolved.saturating_sub(1);
+            tally.taken |= status == EdgeStatus::Taken;
+        }
+    }
+
+    /// Incoming tally of `target`, computed from the edge states on first use.
+    fn incoming_tally(&mut self, target: NodeIx) -> Incoming {
+        if let Some(tally) = self.incoming.get(&target) {
+            return *tally;
+        }
+        let mut tally = Incoming { unresolved: 0, taken: false };
+        for &ex in self.run.graph.incoming(target) {
+            match self.edges.get(&ex).copied().unwrap_or(EdgeStatus::Unknown) {
+                EdgeStatus::Unknown => tally.unresolved += 1,
+                EdgeStatus::Taken => tally.taken = true,
+                EdgeStatus::Skipped => {}
+            }
+        }
+        self.incoming.insert(target, tally);
+        tally
     }
 
     /// Worklist propagation: a node becomes ready once every incoming edge is
@@ -737,19 +799,12 @@ impl Frame {
             if self.nodes.contains_key(&target) {
                 continue; // already decided
             }
-            let mut any_unknown = false;
-            let mut any_taken = false;
-            for &ex in graph.incoming(target) {
-                match self.edges.get(&ex).copied().unwrap_or(EdgeStatus::Unknown) {
-                    EdgeStatus::Unknown => any_unknown = true,
-                    EdgeStatus::Taken => any_taken = true,
-                    EdgeStatus::Skipped => {}
-                }
-            }
-            if any_unknown {
+            let tally = self.incoming_tally(target);
+            if tally.unresolved > 0 {
                 continue;
             }
-            if any_taken {
+            self.incoming.remove(&target);
+            if tally.taken {
                 self.mark_ready(target);
                 continue;
             }
@@ -761,8 +816,8 @@ impl Frame {
             );
             self.run.emit(Event::NodeSkipped { frame: self.id.clone(), node_id: self.node_id(target) });
             for &ex in graph.outgoing(target) {
-                self.edges.insert(ex, EdgeStatus::Skipped);
                 if let Some(edge) = graph.edge(ex) {
+                    self.resolve_edge(ex, edge.target, EdgeStatus::Skipped);
                     work.push(edge.target);
                 }
             }
