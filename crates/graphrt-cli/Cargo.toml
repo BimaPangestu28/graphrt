@@ -1,0 +1,17 @@
+[package]
+name = "graphrt-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "graphrt"
+path = "src/main.rs"
+
+[dependencies]
+graphrt-core.workspace = true
+
+[lints]
+workspace = true

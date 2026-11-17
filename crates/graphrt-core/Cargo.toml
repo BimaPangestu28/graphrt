@@ -1,0 +1,35 @@
+[package]
+name = "graphrt-core"
+description = "Executor-agnostic graph runtime for agentic AI workflows: graph model, variable pool, scheduler, events, snapshots and built-in control nodes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["yaml", "jinja", "tokio"]
+# Load workflow documents from YAML (pure Rust, wasm-friendly).
+yaml = ["dep:serde-saphyr"]
+# Jinja2-compatible template-transform node (sandboxed minijinja with fuel limits).
+jinja = ["dep:minijinja"]
+# Tokio-backed clock (timers for retries and timeouts). The engine itself never requires tokio.
+tokio = ["dep:tokio", "tokio/time"]
+
+[dependencies]
+futures.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+minijinja = { workspace = true, optional = true }
+serde-saphyr = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,423 @@
+//! Compiled, validated, immutable graph.
+//!
+//! A [`Graph`] is built once from a [`Workflow`] document and shared (via
+//! `Arc`) by every run and every container frame. Runtime state (node and
+//! edge status) lives in the engine's per-frame state, never in the graph, so
+//! a graph can execute any number of runs concurrently.
+//!
+//! Each node belongs to exactly one *scope*: the root scope, or the body of a
+//! container node (iteration / loop). Edges never cross scopes, and every
+//! scope must be acyclic and have exactly one entry node.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+use crate::dsl::{NodeDoc, NodePolicy, Workflow};
+use crate::node::{ConfigError, Node, NodeRole, Registry};
+
+/// Default edge handle for non-branch nodes.
+pub const SOURCE_HANDLE: &str = "source";
+/// Handle taken when a node with the `fail-branch` strategy fails.
+pub const FAIL_BRANCH: &str = "fail-branch";
+
+/// Index of a node in [`Graph::nodes`].
+pub type NodeIx = usize;
+/// Index of an edge in [`Graph::edges`].
+pub type EdgeIx = usize;
+
+/// A compiled node.
+pub struct GraphNode {
+    pub id: Arc<str>,
+    pub kind: String,
+    pub title: String,
+    /// Owning container, `None` for the root scope.
+    pub parent: Option<NodeIx>,
+    pub policy: NodePolicy,
+    pub role: NodeRole,
+    pub node: Arc<dyn Node>,
+    /// The source document (kept for introspection and tooling).
+    pub doc: NodeDoc,
+}
+
+impl fmt::Debug for GraphNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GraphNode").field("id", &self.id).field("kind", &self.kind).field("role", &self.role).finish()
+    }
+}
+
+/// A compiled edge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphEdge {
+    pub id: Arc<str>,
+    pub source: NodeIx,
+    pub target: NodeIx,
+    pub handle: Arc<str>,
+}
+
+/// One scope: the root graph or a container body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scope {
+    /// Container node owning this scope, `None` for the root.
+    pub owner: Option<NodeIx>,
+    /// Entry node.
+    pub entry: NodeIx,
+    /// Nodes in this scope, in topological order.
+    pub nodes: Vec<NodeIx>,
+}
+
+/// Graph construction / validation error.
+#[derive(Debug, thiserror::Error)]
+pub enum GraphError {
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error("duplicate node id `{0}`")]
+    DuplicateNode(String),
+    #[error("duplicate edge id `{0}`")]
+    DuplicateEdge(String),
+    #[error("edge `{edge}` references unknown node `{node}`")]
+    MissingNode { edge: String, node: String },
+    #[error("node `{node}` references unknown parent `{parent}`")]
+    MissingParent { node: String, parent: String },
+    #[error("node `{0}` has a parent that is not a container node")]
+    ParentNotContainer(String),
+    #[error("container nesting cycle at node `{0}`")]
+    ParentCycle(String),
+    #[error("edge `{edge}` crosses scopes (`{source_node}` -> `{target}`)")]
+    CrossScopeEdge { edge: String, source_node: String, target: String },
+    #[error("cycle detected in scope `{scope}` involving node `{node}`")]
+    Cycle { scope: String, node: String },
+    #[error("scope `{scope}` has no entry node")]
+    NoEntry { scope: String },
+    #[error("scope `{scope}` has multiple entry nodes: {nodes:?}")]
+    MultipleEntries { scope: String, nodes: Vec<String> },
+    #[error("graph has no nodes")]
+    Empty,
+}
+
+/// An executable graph.
+pub struct Graph {
+    nodes: Vec<GraphNode>,
+    edges: Vec<GraphEdge>,
+    index: HashMap<Arc<str>, NodeIx>,
+    outgoing: Vec<Vec<EdgeIx>>,
+    incoming: Vec<Vec<EdgeIx>>,
+    scopes: HashMap<Option<NodeIx>, Scope>,
+    warnings: Vec<String>,
+    fingerprint: String,
+    workflow: Workflow,
+}
+
+impl fmt::Debug for Graph {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Graph")
+            .field("nodes", &self.nodes.len())
+            .field("edges", &self.edges.len())
+            .field("fingerprint", &self.fingerprint)
+            .finish()
+    }
+}
+
+impl Graph {
+    /// Build and validate a graph from a workflow document.
+    pub fn build(workflow: Workflow, registry: &Registry) -> Result<Self, GraphError> {
+        let docs = &workflow.graph.nodes;
+        if docs.is_empty() {
+            return Err(GraphError::Empty);
+        }
+
+        // Nodes.
+        let mut index: HashMap<Arc<str>, NodeIx> = HashMap::with_capacity(docs.len());
+        for (ix, doc) in docs.iter().enumerate() {
+            if index.insert(Arc::from(doc.id.as_str()), ix).is_some() {
+                return Err(GraphError::DuplicateNode(doc.id.clone()));
+            }
+        }
+        let mut nodes = Vec::with_capacity(docs.len());
+        for doc in docs {
+            let parent = match &doc.parent {
+                Some(p) => Some(
+                    *index
+                        .get(p.as_str())
+                        .ok_or_else(|| GraphError::MissingParent { node: doc.id.clone(), parent: p.clone() })?,
+                ),
+                None => None,
+            };
+            let node = registry.build(doc)?;
+            nodes.push(GraphNode {
+                id: Arc::from(doc.id.as_str()),
+                kind: doc.kind.clone(),
+                title: doc.label().to_owned(),
+                parent,
+                policy: doc.policy.clone(),
+                role: node.role(),
+                node,
+                doc: doc.clone(),
+            });
+        }
+
+        // Parents must be containers and nesting must be acyclic.
+        for (ix, n) in nodes.iter().enumerate() {
+            if let Some(p) = n.parent {
+                if nodes.get(p).map(|pn| pn.role) != Some(NodeRole::Container) {
+                    return Err(GraphError::ParentNotContainer(n.id.to_string()));
+                }
+            }
+            let mut seen = HashSet::new();
+            let mut cur = Some(ix);
+            while let Some(c) = cur {
+                if !seen.insert(c) {
+                    return Err(GraphError::ParentCycle(n.id.to_string()));
+                }
+                cur = nodes.get(c).and_then(|x| x.parent);
+            }
+        }
+
+        // Edges.
+        let mut edges = Vec::with_capacity(workflow.graph.edges.len());
+        let mut edge_ids = HashSet::new();
+        let mut outgoing = vec![Vec::new(); nodes.len()];
+        let mut incoming = vec![Vec::new(); nodes.len()];
+        for (i, e) in workflow.graph.edges.iter().enumerate() {
+            let id: Arc<str> = Arc::from(e.id.clone().unwrap_or_else(|| format!("{}-{}-{i}", e.source, e.target)));
+            if !edge_ids.insert(id.clone()) {
+                return Err(GraphError::DuplicateEdge(id.to_string()));
+            }
+            let lookup = |n: &str| {
+                index.get(n).copied().ok_or_else(|| GraphError::MissingNode { edge: id.to_string(), node: n.to_owned() })
+            };
+            let source = lookup(&e.source)?;
+            let target = lookup(&e.target)?;
+            let (sp, tp) = (nodes.get(source).and_then(|n| n.parent), nodes.get(target).and_then(|n| n.parent));
+            if sp != tp {
+                return Err(GraphError::CrossScopeEdge {
+                    edge: id.to_string(),
+                    source_node: e.source.clone(),
+                    target: e.target.clone(),
+                });
+            }
+            let ex = edges.len();
+            edges.push(GraphEdge {
+                id,
+                source,
+                target,
+                handle: Arc::from(e.handle.as_deref().filter(|h| !h.is_empty()).unwrap_or(SOURCE_HANDLE)),
+            });
+            if let Some(o) = outgoing.get_mut(source) {
+                o.push(ex);
+            }
+            if let Some(inc) = incoming.get_mut(target) {
+                inc.push(ex);
+            }
+        }
+
+        // Scopes.
+        let mut members: HashMap<Option<NodeIx>, Vec<NodeIx>> = HashMap::new();
+        for (ix, n) in nodes.iter().enumerate() {
+            members.entry(n.parent).or_default().push(ix);
+        }
+        // Containers without children still get an (invalid) scope check below.
+        for (ix, n) in nodes.iter().enumerate() {
+            if n.role == NodeRole::Container {
+                members.entry(Some(ix)).or_default();
+            }
+        }
+
+        let mut warnings = Vec::new();
+        let mut scopes = HashMap::new();
+        for (owner, scope_nodes) in members {
+            let scope_name = owner.and_then(|o| nodes.get(o)).map(|n| n.id.to_string()).unwrap_or_else(|| "root".into());
+            let entry = find_entry(&nodes, &incoming, owner, &scope_nodes, &scope_name)?;
+            let order = topo_order(&scope_nodes, &outgoing, &incoming, &edges, &nodes, &scope_name)?;
+            // Reachability from the entry: unreachable nodes never run.
+            let reachable = reachable_from(entry, &outgoing, &edges);
+            for &ix in &scope_nodes {
+                if !reachable.contains(&ix) {
+                    if let Some(n) = nodes.get(ix) {
+                        warnings.push(format!("node `{}` is not reachable from the entry of scope `{scope_name}`", n.id));
+                    }
+                }
+            }
+            scopes.insert(owner, Scope { owner, entry, nodes: order });
+        }
+
+        let fingerprint = fingerprint(&workflow);
+        Ok(Self { nodes, edges, index, outgoing, incoming, scopes, warnings, fingerprint, workflow })
+    }
+
+    /// Parse (JSON or YAML) and build in one step.
+    pub fn from_text(text: &str, registry: &Registry) -> Result<Self, crate::Error> {
+        let wf = Workflow::parse(text)?;
+        Ok(Self::build(wf, registry)?)
+    }
+
+    pub fn nodes(&self) -> &[GraphNode] {
+        &self.nodes
+    }
+
+    pub fn edges(&self) -> &[GraphEdge] {
+        &self.edges
+    }
+
+    pub fn node(&self, ix: NodeIx) -> Option<&GraphNode> {
+        self.nodes.get(ix)
+    }
+
+    pub fn edge(&self, ix: EdgeIx) -> Option<&GraphEdge> {
+        self.edges.get(ix)
+    }
+
+    /// Look up a node index by id.
+    pub fn index_of(&self, id: &str) -> Option<NodeIx> {
+        self.index.get(id).copied()
+    }
+
+    pub fn node_by_id(&self, id: &str) -> Option<&GraphNode> {
+        self.index_of(id).and_then(|ix| self.nodes.get(ix))
+    }
+
+    pub fn outgoing(&self, ix: NodeIx) -> &[EdgeIx] {
+        self.outgoing.get(ix).map(Vec::as_slice).unwrap_or_default()
+    }
+
+    pub fn incoming(&self, ix: NodeIx) -> &[EdgeIx] {
+        self.incoming.get(ix).map(Vec::as_slice).unwrap_or_default()
+    }
+
+    /// The root scope.
+    pub fn root_scope(&self) -> Option<&Scope> {
+        self.scopes.get(&None)
+    }
+
+    /// The body scope of a container node.
+    pub fn scope_of(&self, container: NodeIx) -> Option<&Scope> {
+        self.scopes.get(&Some(container))
+    }
+
+    /// Whether `ix` is (transitively) inside container `ancestor`.
+    pub fn is_descendant(&self, ix: NodeIx, ancestor: NodeIx) -> bool {
+        let mut cur = self.nodes.get(ix).and_then(|n| n.parent);
+        while let Some(c) = cur {
+            if c == ancestor {
+                return true;
+            }
+            cur = self.nodes.get(c).and_then(|n| n.parent);
+        }
+        false
+    }
+
+    /// Non-fatal findings (e.g. unreachable nodes).
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// Stable fingerprint of the source document, used to validate snapshots.
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+
+    /// The source document.
+    pub fn workflow(&self) -> &Workflow {
+        &self.workflow
+    }
+}
+
+fn find_entry(
+    nodes: &[GraphNode],
+    incoming: &[Vec<EdgeIx>],
+    owner: Option<NodeIx>,
+    scope_nodes: &[NodeIx],
+    scope_name: &str,
+) -> Result<NodeIx, GraphError> {
+    let wanted = if owner.is_some() { NodeRole::ScopeStart } else { NodeRole::Root };
+    let explicit: Vec<NodeIx> =
+        scope_nodes.iter().copied().filter(|&ix| nodes.get(ix).map(|n| n.role) == Some(wanted)).collect();
+    let candidates = if explicit.is_empty() {
+        // Fall back to the unique node without incoming edges.
+        scope_nodes.iter().copied().filter(|&ix| incoming.get(ix).is_none_or(Vec::is_empty)).collect()
+    } else {
+        explicit
+    };
+    match candidates.as_slice() {
+        [] => Err(GraphError::NoEntry { scope: scope_name.to_owned() }),
+        [one] => Ok(*one),
+        many => Err(GraphError::MultipleEntries {
+            scope: scope_name.to_owned(),
+            nodes: many.iter().filter_map(|&ix| nodes.get(ix)).map(|n| n.id.to_string()).collect(),
+        }),
+    }
+}
+
+fn topo_order(
+    scope_nodes: &[NodeIx],
+    outgoing: &[Vec<EdgeIx>],
+    incoming: &[Vec<EdgeIx>],
+    edges: &[GraphEdge],
+    nodes: &[GraphNode],
+    scope_name: &str,
+) -> Result<Vec<NodeIx>, GraphError> {
+    let mut indeg: HashMap<NodeIx, usize> =
+        scope_nodes.iter().map(|&ix| (ix, incoming.get(ix).map_or(0, Vec::len))).collect();
+    let mut queue: VecDeque<NodeIx> = scope_nodes.iter().copied().filter(|ix| indeg.get(ix) == Some(&0)).collect();
+    let mut order = Vec::with_capacity(scope_nodes.len());
+    while let Some(ix) = queue.pop_front() {
+        order.push(ix);
+        for &ex in outgoing.get(ix).map(Vec::as_slice).unwrap_or_default() {
+            if let Some(e) = edges.get(ex) {
+                if let Some(d) = indeg.get_mut(&e.target) {
+                    *d = d.saturating_sub(1);
+                    if *d == 0 {
+                        queue.push_back(e.target);
+                    }
+                }
+            }
+        }
+    }
+    if order.len() != scope_nodes.len() {
+        let stuck = scope_nodes
+            .iter()
+            .find(|ix| indeg.get(ix).is_some_and(|d| *d > 0))
+            .and_then(|&ix| nodes.get(ix))
+            .map(|n| n.id.to_string())
+            .unwrap_or_default();
+        return Err(GraphError::Cycle { scope: scope_name.to_owned(), node: stuck });
+    }
+    Ok(order)
+}
+
+fn reachable_from(entry: NodeIx, outgoing: &[Vec<EdgeIx>], edges: &[GraphEdge]) -> HashSet<NodeIx> {
+    let mut seen = HashSet::from([entry]);
+    let mut stack = vec![entry];
+    while let Some(ix) = stack.pop() {
+        for &ex in outgoing.get(ix).map(Vec::as_slice).unwrap_or_default() {
+            if let Some(e) = edges.get(ex) {
+                if seen.insert(e.target) {
+                    stack.push(e.target);
+                }
+            }
+        }
+    }
+    seen
+}
+
+/// FNV-1a over the canonical JSON of the graph section (stable across processes,
+/// unlike `DefaultHasher`).
+fn fingerprint(workflow: &Workflow) -> String {
+    struct Fnv(u64);
+    impl Hasher for Fnv {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+        fn write(&mut self, bytes: &[u8]) {
+            for b in bytes {
+                self.0 ^= u64::from(*b);
+                self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+    let mut h = Fnv(0xcbf2_9ce4_8422_2325);
+    let text = serde_json::to_string(&workflow.graph).unwrap_or_default();
+    text.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
