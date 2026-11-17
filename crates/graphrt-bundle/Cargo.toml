@@ -1,0 +1,16 @@
+[package]
+name = "graphrt-bundle"
+description = "Portable graphrt bundles: one signed file holding a workflow, its plugins and configs, deployable anywhere."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+graphrt-core.workspace = true
+
+[lints]
+workspace = true

@@ -967,6 +967,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphrt-bundle"
+version = "0.1.0"
+dependencies = [
+ "graphrt-core",
+]
+
+[[package]]
 name = "graphrt-cli"
 version = "0.1.0"
 dependencies = [
@@ -1109,6 +1116,13 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "graphrt-otel"
+version = "0.1.0"
+dependencies = [
+ "graphrt-core",
 ]
 
 [[package]]
