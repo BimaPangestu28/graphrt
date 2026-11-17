@@ -1,11 +1,27 @@
 # graphrt
 
-**A tiny, portable runtime for agentic AI workflows. Build anywhere, run anywhere.**
+**Run your agent everywhere.**
 
-graphrt executes workflow graphs (LLM calls, tool-using agents, MCP tools,
-HTTP requests, sandboxed code, branches, loops and human approvals) from a
-plain YAML/JSON document. The same document runs as a single small binary, as a
-streaming HTTP service, or embedded in your own Rust program.
+No server to rent. The same agent workflow runs on your laptop, in a container,
+at the edge, or on your own phone.
+
+graphrt is a tiny runtime for agentic AI workflows: LLM calls, tool-using
+agents, MCP tools, knowledge retrieval, document extraction, HTTP requests,
+sandboxed code, branches, loops and human approvals, described in one plain
+YAML/JSON document. That document runs as a single small binary, as a streaming
+HTTP service, inside a mobile app (Android / iOS via Kotlin and Swift bindings),
+or embedded in your own Rust program.
+
+| Where | How |
+| --- | --- |
+| Laptop / server | `graphrt run flow.yaml` or `graphrt serve flows/` (single static binary) |
+| Container | ~20 MB distroless image — see [docs/deploy.md](docs/deploy.md) |
+| Phone | Embed `graphrt-ffi` in an Android or iOS app — see [docs/mobile.md](docs/mobile.md) |
+| Browser / edge | The core compiles to WebAssembly |
+| Your Rust app | `graphrt-core` as a library — see [docs/embedding.md](docs/embedding.md) |
+
+Models can be cloud APIs (OpenAI-compatible, Anthropic) or a model you run
+yourself (Ollama, vLLM, llama.cpp server).
 
 ```text
 start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
@@ -14,7 +30,7 @@ start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
 
 ## Why graphrt
 
-- **Small.** Core-only binary ≈ 2.4 MB, full build (LLM, HTTP, JS, MCP, server) ≈ 7 MB. No Python, no Node, no database.
+- **Small.** Core-only binary ≈ 3 MB, everything included ≈ 12 MB. No Python, no Node, no database.
 - **Fast.** One task per run polls node futures concurrently; nothing is spawned per node. Variable pools are reference-counted, so loops and parallel iterations don't deep-copy state.
 - **Portable.** The core is executor-agnostic (bring your own clock) and compiles to `wasm32-unknown-unknown`.
 - **Agent-native.** First-class `agent` node with a tool-calling loop, parallel tool calls, MCP servers, human approval of tool calls, retries with backoff, per-node timeouts and step/time budgets.
