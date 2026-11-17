@@ -80,13 +80,21 @@ pub(crate) fn llm() -> NodeDescriptor {
 
 pub(crate) fn question_classifier() -> NodeDescriptor {
     let class = nested(
-        json!({ "id": { "type": "string", "minLength": 1 }, "name": { "type": "string", "minLength": 1 }, "label": { "type": "string" } }),
+        json!({
+            "id": { "type": "string", "minLength": 1 },
+            "name": { "type": "string", "minLength": 1 },
+            "label": { "type": "string" },
+            "description": { "type": "string", "description": "When the class applies (used by the typesafe engine)" }
+        }),
         &["id", "name"],
     );
+    let probability = |d: &str| json!({ "type": "number", "minimum": 0, "maximum": 1, "description": d });
     base("question-classifier", "Question Classifier", "tags")
         .describe(
             "Asks a model to pick one of the configured classes and takes the edge whose handle is the \
-             class id. An unrecognized answer fails the node unless `fallback_class` is set.",
+             class id. An unrecognized answer fails the node unless `fallback_class` is set. With \
+             `model.provider: typesafe` the decision comes from TypeSafe's System One API (Jev), with \
+             calibrated probabilities, confidence thresholds and an optional companion yes/no check.",
         )
         .schema(object(
             json!({
@@ -97,15 +105,68 @@ pub(crate) fn question_classifier() -> NodeDescriptor {
                 "instruction": template("Extra classification instructions"),
                 "memory": memory(),
                 "vision": vision(),
-                "fallback_class": { "type": "string" }
+                "fallback_class": { "type": "string" },
+                "engine": { "type": "string", "enum": ["chat", "typesafe"], "default": "chat" },
+                "min_confidence": probability("typesafe engine: minimum decision confidence"),
+                "min_probability": probability("typesafe engine: minimum probability of the chosen class"),
+                "companion_noul": { "type": "boolean", "default": false, "description": "typesafe engine: also ask whether any class fits" },
+                "companion_threshold": probability("typesafe engine: minimum probability that some class fits")
             }),
             &["model", "classes"],
         ))
         .output(OutputDescriptor::new("class_id", ValueType::String))
         .output(OutputDescriptor::new("class_name", ValueType::String))
         .output(OutputDescriptor::new("class_label", ValueType::String))
+        .output(
+            OutputDescriptor::new("probabilities", ValueType::Object)
+                .describe("typesafe engine: probability of each class id"),
+        )
+        .output(OutputDescriptor::new("confidence", ValueType::Float).describe("typesafe engine: decision confidence"))
         .output(usage_output())
         .handles(Handles::Dynamic { config_path: Some("classes[].id".into()) })
+}
+
+#[cfg(feature = "typesafe")]
+pub(crate) fn system_one() -> NodeDescriptor {
+    let any_text = json!({ "description": "Text template, or structured JSON whose strings are templates" });
+    let question = json!({
+        "type": "object",
+        "properties": {
+            "type": { "type": "string", "enum": ["choice", "score", "noul", "box"] },
+            "instructions": any_text,
+            "criteria": {
+                "description": "choice: {option: description} or [option, ...]; score: ordered levels; noul: {true, false}",
+                "type": ["object", "array"]
+            }
+        },
+        "required": ["type"]
+    });
+    let probability = |d: &str| json!({ "type": "number", "minimum": 0, "maximum": 1, "description": d });
+    base("system-one", "System One (Jev)", "gauge")
+        .describe(
+            "Asks TypeSafe's System One API typed questions (choice, score, yes/no, box) about a state in one \
+             fast request and returns calibrated probabilities and confidence. With `route_by`, branches on a \
+             choice question's option (or `low_confidence` below the thresholds).",
+        )
+        .schema(object(
+            json!({
+                "model": { "description": "Model name or alias (default jev-latest)", "oneOf": [ { "type": "string" }, model() ] },
+                "state": any_text,
+                "state_selector": selector(),
+                "images": { "type": "object", "additionalProperties": selector(), "description": "Image file variables, referenced from state by name" },
+                "questions": { "type": "object", "additionalProperties": question, "minProperties": 1 },
+                "route_by": { "type": "string", "description": "Choice question to branch on" },
+                "min_confidence": probability("Below it, take the `low_confidence` handle"),
+                "min_probability": probability("Below it, take the `low_confidence` handle"),
+                "long_context": { "type": "boolean", "default": false }
+            }),
+            &["questions"],
+        ))
+        .output(OutputDescriptor::new("answers", ValueType::Object).describe("Typed answer per question name"))
+        .output(OutputDescriptor::new("model", ValueType::String).describe("Versioned model id that answered"))
+        .output(usage_output())
+        .dynamic_outputs()
+        .handles(Handles::Dynamic { config_path: Some("questions.{route_by}.criteria".into()) })
 }
 
 pub(crate) fn parameter_extractor() -> NodeDescriptor {
