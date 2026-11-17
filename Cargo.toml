@@ -67,8 +67,9 @@ lto = "fat"
 codegen-units = 1
 strip = true
 
-# Smallest possible binary: `cargo build --profile min-size`
+# Smallest practical binary: `cargo build --profile min-size`.
+# Unwinding is kept (no `panic = "abort"`) so a panicking node or parser fails
+# that node instead of killing a long-running server.
 [profile.min-size]
 inherits = "release"
 opt-level = "z"
-panic = "abort"
