@@ -1,0 +1,34 @@
+# Streaming chat against a local Ollama server (no API key, nothing leaves your machine).
+#   ollama pull qwen2.5:14b
+#   OLLAMA_HOST=http://localhost:11434 graphrt run examples/live/ollama-chat.yaml \
+#     --sys query="Explain a DAG in one sentence." \
+#     --sys 'history:=[{"role":"user","content":"Hi, I am Rania."},{"role":"assistant","content":"Hello Rania!"}]'
+version: "1"
+name: ollama-chat
+graph:
+  nodes:
+    - id: start
+      type: start
+
+    - id: llm
+      type: llm
+      model:
+        provider: ollama
+        name: qwen2.5:14b
+        completion_params: { temperature: 0.3 }
+      prompt_template:
+        - { role: system, text: "You are a concise, friendly assistant." }
+      # The current `sys.query` is appended after the history by the memory settings.
+      memory:
+        window: { enabled: true, size: 10 }
+        variable_selector: [sys, history]
+      retry: { max_retries: 1, interval_ms: 500 }
+      timeout_ms: 120000
+
+    - id: answer
+      type: answer
+      answer: "{{#llm.text#}}"
+
+  edges:
+    - { source: start, target: llm }
+    - { source: llm, target: answer }
