@@ -2,18 +2,31 @@
 //!
 //! Each iteration calls the model with the available tools, runs the tool
 //! calls it requests (concurrently when `parallel_tool_calls` is on) and feeds
-//! the results back, until the model answers without calling tools. The last
-//! allowed iteration is made without tools so the run always ends with an
-//! answer.
+//! the results back, until the model answers without calling tools. On the
+//! last allowed iteration the tools stay declared (providers require that when
+//! the history contains tool calls) but the model may not call them
+//! (`tool_choice: none`), so the run always ends with an answer.
+//!
+//! Streaming: only the final answer is streamed on field `text`, so the
+//! streamed text always equals the `text` output. Turns that may still call
+//! tools are buffered; text the model writes alongside tool calls is reported
+//! as an `agent_thought` progress event instead.
+//!
+//! Tool-call arguments that are not a JSON object are not executed; the model
+//! receives an error result explaining the problem so it can retry the call.
 //!
 //! Tools come from the [`ToolRegistry`] service and are referenced as
 //! `provider/name` (or `provider/*` for every tool of a provider). Tools listed
-//! in `require_approval` pause the run before they execute; the host resumes it
-//! with `{"approved": true}` (or per call: `{"approvals": {"<call id>": true}}`).
+//! in `require_approval` pause the run before they execute; other calls of the
+//! same turn run immediately. The host resumes with `{"approved": true|false}`
+//! for every pending call, or per call with `{"approvals": {"<call id>": true}}`,
+//! optionally with a `reason`. Calls without a decision (including when the
+//! resume input is missing or not understood) keep the run paused.
 //!
-//! Progress events: `agent_step`, `tool_call`, `tool_result`, `tool_denied`.
-//! Outputs: `text`, `tool_calls` (`[{name, provider, tool, arguments, result, is_error}]`),
-//! `iterations`, `usage`.
+//! Progress events: `agent_step`, `agent_thought`, `tool_call`, `tool_result`,
+//! `tool_denied`. Outputs: `text`, `tool_calls`
+//! (`[{name, provider, tool, arguments, result, is_error}]`), `iterations`,
+//! `stopped_reason` (`completed`, `max_iterations` or `length`), `usage`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -29,8 +42,8 @@ use graphrt_core::{Node, NodeContext, NodeError, NodeOutput, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
-use super::common::{MemoryConfig, ModelConfig, VisionConfig, invoke, model_for, usage_value};
-use crate::types::{Message, ToolCall, ToolChoice};
+use super::common::{MemoryConfig, ModelConfig, StreamMode, VisionConfig, invoke, model_for, usage_value};
+use crate::types::{FinishReason, Message, Role, ToolCall, ToolChoice};
 
 /// Upper bound for `max_iterations`.
 pub const MAX_ITERATIONS_LIMIT: u32 = 100;
@@ -127,6 +140,7 @@ struct ToolLogEntry {
     name: String,
     provider: String,
     tool: String,
+    /// Parsed arguments, or the raw text when the model sent malformed JSON.
     arguments: Json,
     result: String,
     is_error: bool,
@@ -141,6 +155,27 @@ struct AgentState {
     usage: Usage,
     /// Calls awaiting approval.
     pending: Vec<ToolCall>,
+}
+
+/// Why the loop ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopReason {
+    /// The model answered without calling tools.
+    Completed,
+    /// The iteration limit forced a final answer without tools.
+    MaxIterations,
+    /// The final answer was cut off by the output token limit.
+    Length,
+}
+
+impl StopReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            StopReason::Completed => "completed",
+            StopReason::MaxIterations => "max_iterations",
+            StopReason::Length => "length",
+        }
+    }
 }
 
 /// The `agent` node.
@@ -221,6 +256,10 @@ impl AgentNode {
         })
     }
 
+    fn call_needs_approval(&self, tools: &[BoundTool], call: &ToolCall) -> bool {
+        tools.iter().any(|t| t.exposed == call.name && self.needs_approval(t))
+    }
+
     fn initial_state(&self, ctx: &NodeContext) -> Result<AgentState, NodeError> {
         let cfg = &self.config;
         let pool = &ctx.pool;
@@ -232,12 +271,12 @@ impl AgentNode {
             }
         }
         if let Some(memory) = &cfg.memory {
-            messages.extend(memory.history(pool));
+            messages.extend(memory.history(pool)?);
         }
         let query = cfg.query.render(pool);
-        let images = cfg.vision.image_parts(pool);
+        let images = cfg.vision.image_parts(pool)?;
         if query.trim().is_empty() && images.is_empty() {
-            if messages.iter().all(|m| m.role == crate::types::Role::System) {
+            if messages.iter().all(|m| m.role == Role::System) {
                 return Err(NodeError::invalid_input("agent query is empty"));
             }
         } else {
@@ -246,6 +285,29 @@ impl AgentNode {
             messages.push(user);
         }
         Ok(AgentState { messages, ..AgentState::default() })
+    }
+
+    /// Apply the host's decisions to the pending calls. Returns the calls that
+    /// still have no decision.
+    async fn apply_decisions(
+        &self,
+        ctx: &NodeContext,
+        state: &mut AgentState,
+        tools: &[BoundTool],
+        input: Option<&Value>,
+    ) -> Vec<ToolCall> {
+        let decisions = Approvals::from_input(input);
+        let mut approved = Vec::new();
+        let mut undecided = Vec::new();
+        for call in std::mem::take(&mut state.pending) {
+            match decisions.decision(&call.id) {
+                Some(true) => approved.push(call),
+                Some(false) => self.deny(ctx, state, tools, &call, decisions.reason.as_deref()),
+                None => undecided.push(call),
+            }
+        }
+        self.run_calls(ctx, state, tools, approved).await;
+        undecided
     }
 
     async fn execute(&self, ctx: NodeContext) -> NodeResult {
@@ -257,38 +319,68 @@ impl AgentNode {
             Some(resume) => {
                 let mut state: AgentState = serde_json::from_value(resume.state.clone())
                     .map_err(|e| NodeError::fatal("invalid_resume_state", e.to_string()))?;
-                let pending = std::mem::take(&mut state.pending);
-                let decisions = Approvals::from_input(resume.input.as_ref());
-                let (approved, denied): (Vec<ToolCall>, Vec<ToolCall>) =
-                    pending.into_iter().partition(|c| decisions.is_approved(&c.id));
-                for call in denied {
-                    self.deny(&ctx, &mut state, &tools, &call, decisions.reason.as_deref());
+                let undecided = self.apply_decisions(&ctx, &mut state, &tools, resume.input.as_ref()).await;
+                if !undecided.is_empty() {
+                    state.pending = undecided;
+                    return self.pause(&state);
                 }
-                self.run_calls(&ctx, &mut state, &tools, approved).await;
                 state
             }
             None => self.initial_state(&ctx)?,
         };
 
-        let final_text = loop {
+        let (final_text, stop) = loop {
             state.iteration += 1;
-            let use_tools = !tools.is_empty() && state.iteration < cfg.max_iterations;
-            let mut request = cfg.model.request(state.messages.clone(), &ctx.pool);
-            if use_tools {
+            let final_turn = state.iteration >= cfg.max_iterations;
+            let offer_tools = !tools.is_empty();
+            let can_call_tools = offer_tools && !final_turn;
+            let mut request = cfg.model.request(state.messages.clone(), &ctx.pool)?;
+            if offer_tools {
+                // Tools stay declared on the final turn: the history may contain tool calls,
+                // which providers only accept alongside tool definitions.
                 request.tools = tools.iter().map(|t| t.spec.clone()).collect();
-                request.tool_choice = Some(ToolChoice::Auto);
+                request.tool_choice = Some(if can_call_tools { ToolChoice::Auto } else { ToolChoice::None });
             }
             ctx.progress(
                 "agent_step",
-                Value::from_json(json!({"iteration": state.iteration, "tools_enabled": use_tools})),
+                Value::from_json(json!({"iteration": state.iteration, "tools_enabled": can_call_tools})),
             );
 
-            let response = invoke(&ctx, model.as_ref(), request, true).await?;
+            // A turn that may call tools is buffered: its text is only the answer if no tools are called.
+            let mode = if can_call_tools { StreamMode::Off } else { StreamMode::Raw };
+            let response = invoke(&ctx, model.as_ref(), request, mode).await?;
             state.usage.add(&response.usage);
-            state.messages.push(response.to_message());
-            if !use_tools || response.tool_calls.is_empty() {
-                break response.text;
+
+            if !can_call_tools || response.tool_calls.is_empty() {
+                if can_call_tools && !response.text.is_empty() {
+                    ctx.chunk("text", response.text.clone());
+                }
+                let stop = if response.finish_reason == Some(FinishReason::Length) {
+                    StopReason::Length
+                } else if offer_tools && final_turn {
+                    StopReason::MaxIterations
+                } else {
+                    StopReason::Completed
+                };
+                state.messages.push(Message::assistant(response.text.clone()));
+                break (response.text, stop);
             }
+
+            if !response.text.trim().is_empty() {
+                ctx.progress(
+                    "agent_thought",
+                    Value::from_json(json!({"iteration": state.iteration, "text": response.text})),
+                );
+            }
+            // Malformed arguments are never replayed to the provider: the history keeps `{}`
+            // and the tool result explains the problem to the model.
+            let mut assistant = response.to_message();
+            for call in &mut assistant.tool_calls {
+                if call.arguments_json().is_err() {
+                    call.arguments = "{}".to_owned();
+                }
+            }
+            state.messages.push(assistant);
 
             let mut calls = response.tool_calls;
             if let Some(limit) = cfg.max_tool_calls_per_turn {
@@ -303,12 +395,23 @@ impl AgentNode {
                     }
                 }
             }
-            let gated = calls.iter().any(|c| tools.iter().any(|t| t.exposed == c.name && self.needs_approval(t)));
-            if gated {
-                state.pending = calls;
-                return Ok(self.pause(&state));
+            let mut runnable = Vec::with_capacity(calls.len());
+            for call in calls {
+                match call.arguments_json() {
+                    Ok(_) => runnable.push(call),
+                    Err(e) => {
+                        let message = format!("error: {e}. Call the tool again with a valid JSON object.");
+                        self.record(&mut state, &tools, &call, ToolOutput::error(message));
+                    }
+                }
             }
-            self.run_calls(&ctx, &mut state, &tools, calls).await;
+            let (gated, free): (Vec<ToolCall>, Vec<ToolCall>) =
+                runnable.into_iter().partition(|c| self.call_needs_approval(&tools, c));
+            self.run_calls(&ctx, &mut state, &tools, free).await;
+            if !gated.is_empty() {
+                state.pending = gated;
+                return self.pause(&state);
+            }
         };
 
         let log: Vec<Value> = state
@@ -325,23 +428,22 @@ impl AgentNode {
             .with("text", final_text)
             .with("tool_calls", Value::from(log))
             .with("iterations", i64::from(state.iteration))
+            .with("stopped_reason", stop.as_str())
             .with("usage", usage_value(&state.usage))
             .usage(state.usage)
             .into())
     }
 
-    fn pause(&self, state: &AgentState) -> NodeOutcome {
-        let calls: Vec<Json> = state
-            .pending
-            .iter()
-            .map(|c| json!({"id": c.id, "name": c.name, "arguments": c.arguments_json()}))
-            .collect();
-        let saved = serde_json::to_value(state).unwrap_or(Json::Null);
-        NodeOutcome::Paused(PauseRequest {
+    fn pause(&self, state: &AgentState) -> NodeResult {
+        let calls: Vec<Json> =
+            state.pending.iter().map(|c| json!({"id": c.id, "name": c.name, "arguments": log_arguments(c)})).collect();
+        let saved = serde_json::to_value(state)
+            .map_err(|e| NodeError::fatal("agent_state", format!("cannot save agent state: {e}")))?;
+        Ok(NodeOutcome::Paused(PauseRequest {
             kind: "tool_approval".to_owned(),
             data: Value::from_json(json!({"calls": calls})),
             state: saved,
-        })
+        }))
     }
 
     fn deny(
@@ -370,17 +472,20 @@ impl AgentNode {
             name: call.name.clone(),
             provider: bound.map(|b| b.provider.clone()).unwrap_or_default(),
             tool: bound.map(|b| b.name.clone()).unwrap_or_default(),
-            arguments: call.arguments_json(),
+            arguments: log_arguments(call),
             result: text,
             is_error: output.is_error,
         });
     }
 
     async fn run_calls(&self, ctx: &NodeContext, state: &mut AgentState, tools: &[BoundTool], calls: Vec<ToolCall>) {
+        if calls.is_empty() {
+            return;
+        }
         for call in &calls {
             ctx.progress(
                 "tool_call",
-                Value::from_json(json!({"id": call.id, "name": call.name, "arguments": call.arguments_json()})),
+                Value::from_json(json!({"id": call.id, "name": call.name, "arguments": log_arguments(call)})),
             );
         }
         let outputs: Vec<ToolOutput> = if self.config.parallel_tool_calls {
@@ -402,17 +507,22 @@ impl AgentNode {
     }
 }
 
+/// Arguments as shown in logs and approval requests: the parsed object, or the
+/// raw text when it is not valid JSON (so nothing is hidden from the reader).
+fn log_arguments(call: &ToolCall) -> Json {
+    match call.arguments_json() {
+        Ok(map) => Json::Object(map),
+        Err(_) => Json::String(call.arguments.clone()),
+    }
+}
+
 async fn call_tool(tools: &[BoundTool], call: &ToolCall) -> ToolOutput {
     let Some(tool) = tools.iter().find(|t| t.exposed == call.name) else {
         return ToolOutput::error(format!("error: unknown tool `{}`", call.name));
     };
-    let arguments: Json = if call.arguments.trim().is_empty() {
-        Json::Object(serde_json::Map::new())
-    } else {
-        match serde_json::from_str(&call.arguments) {
-            Ok(v) => v,
-            Err(e) => return ToolOutput::error(format!("error: arguments are not valid JSON: {e}")),
-        }
+    let arguments = match call.arguments_json() {
+        Ok(map) => Json::Object(map),
+        Err(e) => return ToolOutput::error(format!("error: {e}")),
     };
     match tool.runtime.call(&tool.name, arguments).await {
         Ok(output) => output,
@@ -429,6 +539,9 @@ struct Approvals {
 }
 
 impl Approvals {
+    /// Recognized forms: `true`/`false`, `{"approved": bool}`,
+    /// `{"approvals": {"<call id>": bool}}` (both may be combined, per-call wins),
+    /// plus an optional `reason`. Anything else decides nothing.
     fn from_input(input: Option<&Value>) -> Self {
         let mut out = Self::default();
         match input {
@@ -449,9 +562,9 @@ impl Approvals {
         out
     }
 
-    /// Calls are denied unless explicitly approved.
-    fn is_approved(&self, id: &str) -> bool {
-        self.per_call.get(id).copied().or(self.all).unwrap_or(false)
+    /// `Some(true)` approved, `Some(false)` denied, `None` no decision yet.
+    fn decision(&self, id: &str) -> Option<bool> {
+        self.per_call.get(id).copied().or(self.all)
     }
 }
 
@@ -499,10 +612,16 @@ impl Node for AgentNode {
     }
 
     fn inputs(&self) -> Vec<Selector> {
-        let mut out: Vec<Selector> = self.config.query.selectors().cloned().collect();
-        if let Some(i) = &self.config.instruction {
+        let cfg = &self.config;
+        let mut out: Vec<Selector> = cfg.query.selectors().cloned().collect();
+        if let Some(i) = &cfg.instruction {
             out.extend(i.selectors().cloned());
         }
+        if let Some(memory) = &cfg.memory {
+            out.extend(memory.selectors());
+        }
+        out.extend(cfg.vision.selectors());
+        out.extend(cfg.model.selectors());
         out
     }
 }
@@ -648,13 +767,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn last_iteration_has_no_tools() {
+    async fn last_iteration_keeps_tools_but_forbids_calls() {
         let s = setup(vec![MockModel::tool_calls(&[("c1", "add", r#"{"a":1,"b":1}"#)]), MockModel::text("2")]);
         let out = completed(agent(json!({"max_iterations": 2})).run(ctx(&s)).await);
         assert_eq!(out.outputs["text"], Value::from("2"));
+        assert_eq!(out.outputs["stopped_reason"], Value::from("max_iterations"));
         let requests = s.model.requests();
-        assert!(!requests[0].tools.is_empty());
-        assert!(requests[1].tools.is_empty());
+        assert_eq!(requests[0].tool_choice, Some(ToolChoice::Auto));
+        assert!(!requests[1].tools.is_empty(), "tool definitions stay for the history's tool calls");
+        assert_eq!(requests[1].tool_choice, Some(ToolChoice::None));
+    }
+
+    #[tokio::test]
+    async fn only_the_final_answer_is_streamed() {
+        let mut first = vec![crate::ChatDelta::Text("Let me check.".into())];
+        first.extend(MockModel::tool_calls(&[("c1", "add", r#"{"a":2,"b":3}"#)]));
+        let s = setup(vec![first, MockModel::text("It is 5.")]);
+        let out = completed(agent(json!({})).run(ctx(&s)).await);
+        assert_eq!(out.outputs["stopped_reason"], Value::from("completed"));
+        let events = s.events.lock().unwrap();
+        let streamed: String = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::NodeChunk { field, chunk, .. } if field == "text" => Some(chunk.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streamed, "It is 5.");
+        assert_eq!(out.outputs["text"], Value::from(streamed.as_str()));
+        let thought = events.iter().find_map(|e| match e {
+            Event::NodeProgress { name, data, .. } if name == "agent_thought" => data.get_path(&["text"]),
+            _ => None,
+        });
+        assert_eq!(thought, Some(Value::from("Let me check.")));
+    }
+
+    #[tokio::test]
+    async fn malformed_arguments_are_reported_back_to_the_model() {
+        let s = setup(vec![MockModel::tool_calls(&[("c1", "add", r#"{"a":2,"#)]), MockModel::text("sorry")]);
+        let out = completed(agent(json!({})).run(ctx(&s)).await);
+        assert!(s.tools.calls.lock().unwrap().is_empty(), "malformed calls never run");
+        let log = out.outputs["tool_calls"].as_array().unwrap().to_vec();
+        assert_eq!(log[0].get_path(&["arguments"]), Some(Value::from(r#"{"a":2,"#)));
+        assert_eq!(log[0].get_path(&["is_error"]), Some(Value::Bool(true)));
+        let second = &s.model.requests()[1];
+        assert_eq!(second.messages[2].tool_calls[0].arguments, "{}", "history never replays malformed JSON");
+        assert!(second.messages[3].text().contains("invalid JSON arguments"));
     }
 
     #[tokio::test]
@@ -702,6 +860,62 @@ mod tests {
         assert!(s.tools.calls.lock().unwrap().is_empty());
         let last_request = s.model.requests().pop().unwrap();
         assert!(last_request.messages.iter().any(|m| m.text().contains("not now")));
+    }
+
+    #[tokio::test]
+    async fn only_gated_calls_wait_for_approval() {
+        let s = setup(vec![
+            MockModel::tool_calls(&[("c1", "add", r#"{"a":1,"b":1}"#), ("c2", "fail", "{}")]),
+            MockModel::text("done"),
+        ]);
+        let node = agent(json!({"require_approval": ["math/fail"]}));
+        let NodeOutcome::Paused(p) = node.run(ctx(&s)).await.unwrap() else { panic!("expected pause") };
+        assert_eq!(s.tools.calls.lock().unwrap().as_slice(), ["add"], "ungated calls run immediately");
+        assert_eq!(p.data.get_path(&["calls", "0", "id"]), Some(Value::from("c2")));
+        assert!(p.data.get_path(&["calls", "1"]).is_none());
+
+        // No decision (or one that is not understood) keeps the run paused.
+        for input in [None, Some(Value::from("yes")), Some(Value::from_json(json!({"approved": "true"})))] {
+            let resumed = ctx(&s).with_resume(Some(Resume { state: p.state.clone(), input }));
+            assert!(matches!(node.run(resumed).await.unwrap(), NodeOutcome::Paused(_)));
+        }
+        assert_eq!(s.tools.calls.lock().unwrap().len(), 1);
+
+        let input = Value::from_json(json!({"approvals": {"c2": true}}));
+        let out = completed(node.run(ctx(&s).with_resume(Some(Resume { state: p.state, input: Some(input) }))).await);
+        assert_eq!(out.outputs["text"], Value::from("done"));
+        assert_eq!(s.tools.calls.lock().unwrap().as_slice(), ["add", "fail"]);
+    }
+
+    #[tokio::test]
+    async fn per_call_decisions_can_arrive_in_steps() {
+        let s = setup(vec![
+            MockModel::tool_calls(&[("c1", "add", r#"{"a":1,"b":1}"#), ("c2", "add", r#"{"a":2,"b":2}"#)]),
+            MockModel::text("ok"),
+        ]);
+        let node = agent(json!({"require_approval": ["*"], "parallel_tool_calls": false}));
+        let NodeOutcome::Paused(p) = node.run(ctx(&s)).await.unwrap() else { panic!("expected pause") };
+        let input = Value::from_json(json!({"approvals": {"c1": true}}));
+        let NodeOutcome::Paused(p2) =
+            node.run(ctx(&s).with_resume(Some(Resume { state: p.state, input: Some(input) }))).await.unwrap()
+        else {
+            panic!("c2 is still undecided")
+        };
+        assert_eq!(s.tools.calls.lock().unwrap().len(), 1);
+        assert_eq!(p2.data.get_path(&["calls", "0", "id"]), Some(Value::from("c2")));
+        let input = Value::from_json(json!({"approved": false}));
+        let out = completed(node.run(ctx(&s).with_resume(Some(Resume { state: p2.state, input: Some(input) }))).await);
+        assert_eq!(out.outputs["text"], Value::from("ok"));
+        assert_eq!(s.tools.calls.lock().unwrap().len(), 1, "c2 was denied");
+    }
+
+    #[test]
+    fn inputs_cover_templates_and_memory() {
+        let node = agent(json!({"query": "{{#start.q#}}", "instruction": "{{#env.persona#}}", "memory": {}}));
+        let inputs: Vec<String> = node.inputs().iter().map(ToString::to_string).collect();
+        for expected in ["start.q", "env.persona", "sys.history", "sys.query"] {
+            assert!(inputs.iter().any(|i| i == expected), "missing {expected} in {inputs:?}");
+        }
     }
 
     #[tokio::test]

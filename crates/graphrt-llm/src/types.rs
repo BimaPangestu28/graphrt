@@ -19,6 +19,7 @@ use crate::error::LlmError;
 /// Author of a message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum Role {
     System,
     User,
@@ -29,6 +30,7 @@ pub enum Role {
 /// One piece of message content.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ContentPart {
     Text {
         text: String,
@@ -49,13 +51,40 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
+/// Tool-call arguments that are not a JSON object.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("tool call `{name}` has invalid JSON arguments: {reason}")]
+pub struct InvalidToolArguments {
+    /// Tool name of the offending call.
+    pub name: String,
+    pub reason: String,
+}
+
 impl ToolCall {
-    /// Arguments parsed as JSON. Invalid or empty text yields an empty object.
-    pub fn arguments_json(&self) -> serde_json::Value {
+    /// Arguments parsed as a JSON object. Empty text means "no arguments" and
+    /// yields an empty object; anything that is not a JSON object is an error
+    /// (it usually means the model output was truncated or malformed).
+    pub fn arguments_json(&self) -> Result<serde_json::Map<String, serde_json::Value>, InvalidToolArguments> {
         if self.arguments.trim().is_empty() {
-            return serde_json::Value::Object(serde_json::Map::new());
+            return Ok(serde_json::Map::new());
         }
-        serde_json::from_str(&self.arguments).unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()))
+        let invalid = |reason: String| InvalidToolArguments { name: self.name.clone(), reason };
+        match serde_json::from_str::<serde_json::Value>(&self.arguments) {
+            Ok(serde_json::Value::Object(map)) => Ok(map),
+            Ok(other) => Err(invalid(format!("expected a JSON object, got {}", json_kind(&other)))),
+            Err(e) => Err(invalid(e.to_string())),
+        }
+    }
+}
+
+fn json_kind(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
     }
 }
 
@@ -122,6 +151,7 @@ impl Message {
 /// How the model may use tools.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ToolChoice {
     Auto,
     None,
@@ -134,6 +164,7 @@ pub enum ToolChoice {
 /// Requested output format.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ResponseFormat {
     Text,
     JsonObject,
@@ -173,11 +204,71 @@ impl ChatRequest {
     pub fn new(model: impl Into<String>, messages: Vec<Message>) -> Self {
         Self { model: model.into(), messages, ..Self::default() }
     }
+
+    /// Set the tools offered to the model.
+    pub fn with_tools(mut self, tools: Vec<ToolSpec>) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    /// Set how the model may use tools.
+    pub fn with_tool_choice(mut self, choice: ToolChoice) -> Self {
+        self.tool_choice = Some(choice);
+        self
+    }
+
+    pub fn with_temperature(mut self, temperature: f64) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    pub fn with_top_p(mut self, top_p: f64) -> Self {
+        self.top_p = Some(top_p);
+        self
+    }
+
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = Some(max_tokens);
+        self
+    }
+
+    pub fn with_stop(mut self, stop: Vec<String>) -> Self {
+        self.stop = stop;
+        self
+    }
+
+    pub fn with_response_format(mut self, format: ResponseFormat) -> Self {
+        self.response_format = Some(format);
+        self
+    }
+
+    /// Add a provider-specific body parameter.
+    pub fn with_extra(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
+        self.extra.insert(key.into(), value);
+        self
+    }
+}
+
+/// Body keys owned by the providers; [`ChatRequest::extra`] must not set them.
+pub const RESERVED_EXTRA_KEYS: &[&str] = &["model", "messages", "stream", "stream_options", "tools", "tool_choice"];
+
+/// Reject `extra` keys that would silently override provider-managed fields.
+/// Custom [`ChatModel`] implementations should call this before building a body.
+pub fn check_extra(req: &ChatRequest) -> Result<(), LlmError> {
+    for key in req.extra.keys() {
+        if RESERVED_EXTRA_KEYS.contains(&key.as_str()) {
+            return Err(LlmError::Config(format!(
+                "parameter `{key}` cannot be set through extra parameters; use the dedicated request field"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Why generation stopped.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum FinishReason {
     Stop,
     Length,
@@ -201,6 +292,7 @@ impl FinishReason {
 
 /// One streamed increment.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum ChatDelta {
     /// Visible answer text.
     Text(String),
@@ -267,7 +359,12 @@ struct PartialCall {
 /// streaming chunks to the run's event stream).
 ///
 /// Tool-call fragments are grouped by their `index`, so interleaved parallel
-/// calls are assembled correctly.
+/// calls are assembled correctly. A call that has an id or arguments but never
+/// received a name is a decode error rather than being dropped.
+///
+/// Detecting a truncated stream is the transport's job: the built-in providers
+/// fail with a retryable [`LlmError::Network`] when the connection closes
+/// before the provider's end-of-stream marker.
 pub async fn collect(mut stream: ChatStream, mut on_delta: impl FnMut(&ChatDelta)) -> Result<ChatResponse, LlmError> {
     let mut response = ChatResponse::default();
     let mut calls: BTreeMap<usize, PartialCall> = BTreeMap::new();
@@ -292,15 +389,22 @@ pub async fn collect(mut stream: ChatStream, mut on_delta: impl FnMut(&ChatDelta
             ChatDelta::ProviderState(s) => response.provider_state = Some(s),
         }
     }
-    response.tool_calls = calls
-        .into_iter()
-        .filter(|(_, c)| !c.name.is_empty())
-        .map(|(index, c)| ToolCall {
-            id: c.id.unwrap_or_else(|| format!("call_{index}")),
-            name: c.name,
-            arguments: c.arguments,
-        })
-        .collect();
+    let mut tool_calls = Vec::with_capacity(calls.len());
+    for (index, call) in calls {
+        if call.name.is_empty() {
+            if call.id.is_none() && call.arguments.trim().is_empty() {
+                // An empty fragment carries no information; nothing is lost.
+                continue;
+            }
+            return Err(LlmError::Decode(format!("tool call #{index} has arguments or an id but no name")));
+        }
+        tool_calls.push(ToolCall {
+            id: call.id.unwrap_or_else(|| format!("call_{index}")),
+            name: call.name,
+            arguments: call.arguments,
+        });
+    }
+    response.tool_calls = tool_calls;
     if response.usage.total_tokens == 0 {
         response.usage.total_tokens = response.usage.prompt_tokens.saturating_add(response.usage.completion_tokens);
     }
@@ -339,9 +443,38 @@ mod tests {
         assert_eq!(r.tool_calls.len(), 2);
         assert_eq!(r.tool_calls[0].arguments, "{\"q\":\"rust\"}");
         assert_eq!(r.tool_calls[1].id, "b");
-        assert_eq!(r.tool_calls[1].arguments_json()["url"], "x");
+        assert_eq!(r.tool_calls[1].arguments_json().unwrap()["url"], "x");
         assert_eq!(r.usage.total_tokens, 7);
         assert_eq!(r.finish_reason, Some(FinishReason::ToolCalls));
+    }
+
+    #[tokio::test]
+    async fn nameless_tool_call_is_an_error() {
+        let deltas = vec![ChatDelta::ToolCall { index: 0, id: Some("a".into()), name: None, arguments: "{}".into() }];
+        let err = collect(stream(deltas), |_| {}).await.unwrap_err();
+        assert!(matches!(err, LlmError::Decode(_)), "{err:?}");
+        // An empty fragment is harmless.
+        let deltas = vec![ChatDelta::ToolCall { index: 0, id: None, name: None, arguments: String::new() }];
+        assert!(collect(stream(deltas), |_| {}).await.unwrap().tool_calls.is_empty());
+    }
+
+    #[test]
+    fn arguments_json_rejects_malformed_input() {
+        let call = |args: &str| ToolCall { id: "1".into(), name: "t".into(), arguments: args.into() };
+        assert!(call("").arguments_json().unwrap().is_empty());
+        assert_eq!(call("{\"a\":1}").arguments_json().unwrap()["a"], 1);
+        assert!(call("{\"a\":").arguments_json().is_err());
+        let err = call("[1]").arguments_json().unwrap_err();
+        assert!(err.to_string().contains("an array"), "{err}");
+    }
+
+    #[test]
+    fn reserved_extra_keys_are_rejected() {
+        let req = ChatRequest::new("m", vec![]).with_extra("stream", serde_json::json!(false));
+        assert!(matches!(check_extra(&req), Err(LlmError::Config(_))));
+        let req = ChatRequest::new("m", vec![]).with_extra("seed", serde_json::json!(1)).with_temperature(0.1);
+        assert!(check_extra(&req).is_ok());
+        assert_eq!(req.temperature, Some(0.1));
     }
 
     #[tokio::test]

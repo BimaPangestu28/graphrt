@@ -5,6 +5,7 @@
 //! and an `api-version` query parameter), Ollama, vLLM, LM Studio, Groq,
 //! OpenRouter, DeepSeek, Together, Mistral and others.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
@@ -13,14 +14,16 @@ use graphrt_core::event::Usage;
 use serde_json::{Map, Value as Json, json};
 
 use crate::error::LlmError;
-use crate::http::{SseDecoder, build_client, send_sse};
+use crate::http::{Decoded, SseDecoder, build_client, send_sse, truncated};
 use crate::sse::SseEvent;
 use crate::types::{
-    ChatDelta, ChatModel, ChatRequest, ChatStream, ContentPart, FinishReason, Message, ResponseFormat, Role, ToolChoice,
+    ChatDelta, ChatModel, ChatRequest, ChatStream, ContentPart, FinishReason, Message, ResponseFormat, Role,
+    ToolChoice, check_extra,
 };
 
 /// How the API key is sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AuthStyle {
     /// `Authorization: Bearer <key>`.
     Bearer,
@@ -127,7 +130,7 @@ fn percent_encode(s: &str) -> String {
 impl ChatModel for OpenAiModel {
     fn chat(&self, request: ChatRequest) -> BoxFuture<'_, Result<ChatStream, LlmError>> {
         Box::pin(async move {
-            let body = build_body(&request, &self.config);
+            let body = build_body(&request, &self.config)?;
             let mut builder = self.client.post(self.endpoint()).json(&body);
             if let Some(key) = &self.config.api_key {
                 builder = match &self.config.auth {
@@ -138,7 +141,7 @@ impl ChatModel for OpenAiModel {
             for (k, v) in &self.config.headers {
                 builder = builder.header(k.as_str(), v.as_str());
             }
-            send_sse(builder, OpenAiDecoder).await
+            send_sse(builder, OpenAiDecoder::default()).await
         })
     }
 }
@@ -164,15 +167,18 @@ fn content_json(parts: &[ContentPart]) -> Json {
     Json::Array(items)
 }
 
-fn message_json(m: &Message) -> Json {
-    match m.role {
+fn message_json(m: &Message) -> Result<Json, LlmError> {
+    Ok(match m.role {
         Role::System => json!({"role": "system", "content": content_json(&m.content)}),
         Role::User => json!({"role": "user", "content": content_json(&m.content)}),
-        Role::Tool => json!({
-            "role": "tool",
-            "tool_call_id": m.tool_call_id.clone().unwrap_or_default(),
-            "content": m.text(),
-        }),
+        Role::Tool => {
+            let id = m
+                .tool_call_id
+                .as_deref()
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| LlmError::Config("tool message without tool_call_id".into()))?;
+            json!({"role": "tool", "tool_call_id": id, "content": m.text()})
+        }
         Role::Assistant => {
             let mut obj = Map::new();
             obj.insert("role".into(), json!("assistant"));
@@ -188,14 +194,22 @@ fn message_json(m: &Message) -> Json {
             }
             Json::Object(obj)
         }
-    }
+    })
 }
 
 /// Build the JSON request body.
-pub(crate) fn build_body(req: &ChatRequest, config: &OpenAiConfig) -> Json {
+pub(crate) fn build_body(req: &ChatRequest, config: &OpenAiConfig) -> Result<Json, LlmError> {
+    check_extra(req)?;
+    // Only the first choice is decoded; asking for more would silently discard them.
+    if let Some(n) = req.extra.get("n") {
+        if n.as_u64() != Some(1) {
+            return Err(LlmError::Config(format!("`n` must be 1 (got {n}); only one choice is supported")));
+        }
+    }
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model));
-    body.insert("messages".into(), Json::Array(req.messages.iter().map(message_json).collect()));
+    let messages = req.messages.iter().map(message_json).collect::<Result<Vec<_>, _>>()?;
+    body.insert("messages".into(), Json::Array(messages));
     body.insert("stream".into(), json!(true));
     if config.include_usage {
         body.insert("stream_options".into(), json!({"include_usage": true}));
@@ -245,12 +259,67 @@ pub(crate) fn build_body(req: &ChatRequest, config: &OpenAiConfig) -> Json {
     for (k, v) in &req.extra {
         body.insert(k.clone(), v.clone());
     }
-    Json::Object(body)
+    Ok(Json::Object(body))
 }
 
 /// Decodes `chat.completion.chunk` events.
+///
+/// Tool-call fragments are keyed by their `index`. Some compatible servers omit
+/// `index`; then a fragment with a new `id` starts a new call and a fragment
+/// without `id` continues the most recent one.
 #[derive(Debug, Default)]
-pub(crate) struct OpenAiDecoder;
+pub(crate) struct OpenAiDecoder {
+    /// Call index assigned to each call id seen so far.
+    ids: HashMap<String, usize>,
+    /// Index of the most recent call fragment.
+    last: Option<usize>,
+    /// Smallest index not used yet.
+    next: usize,
+    /// A `finish_reason` was received (some servers end without `[DONE]`).
+    saw_finish: bool,
+}
+
+impl OpenAiDecoder {
+    fn call_index(&mut self, explicit: Option<usize>, id: Option<&str>) -> usize {
+        let index = match (explicit, id) {
+            (Some(i), _) => i,
+            (None, Some(id)) => match self.ids.get(id) {
+                Some(&i) => i,
+                None => self.next,
+            },
+            (None, None) => self.last.unwrap_or(self.next),
+        };
+        if let Some(id) = id {
+            self.ids.entry(id.to_owned()).or_insert(index);
+        }
+        self.last = Some(index);
+        self.next = self.next.max(index.saturating_add(1));
+        index
+    }
+}
+
+/// Classify an error object embedded in the stream.
+fn stream_error(err: &Json) -> LlmError {
+    let message = err.get("message").and_then(Json::as_str).map(str::to_owned).unwrap_or_else(|| err.to_string());
+    let kind = err.get("type").and_then(Json::as_str).unwrap_or_default();
+    let code = match err.get("code") {
+        Some(Json::String(c)) => c.clone(),
+        Some(Json::Number(n)) => n.to_string(),
+        _ => String::new(),
+    };
+    let tag = format!("{kind} {code}").to_ascii_lowercase();
+    if tag.contains("rate_limit") || code == "429" {
+        LlmError::RateLimit { message, retry_after_ms: None }
+    } else if tag.contains("context_length") {
+        LlmError::ContextLength(message)
+    } else if tag.contains("auth") || tag.contains("permission") || code == "401" || code == "403" {
+        LlmError::Auth(message)
+    } else if tag.contains("invalid_request") || code == "400" {
+        LlmError::BadRequest(message)
+    } else {
+        LlmError::Server { status: 0, message }
+    }
+}
 
 fn as_u64(v: Option<&Json>) -> u64 {
     v.and_then(Json::as_u64).unwrap_or(0)
@@ -267,53 +336,58 @@ fn finish_reason(s: &str) -> FinishReason {
 }
 
 impl SseDecoder for OpenAiDecoder {
-    fn decode(&mut self, event: SseEvent) -> Result<Option<Vec<ChatDelta>>, LlmError> {
+    fn decode(&mut self, event: SseEvent) -> Result<Decoded, LlmError> {
         let data = event.data.trim();
         if data == "[DONE]" {
-            return Ok(None);
+            if !self.saw_finish {
+                return Err(truncated());
+            }
+            return Ok(Decoded::done(Vec::new()));
         }
         if data.is_empty() {
-            return Ok(Some(Vec::new()));
+            return Ok(Decoded::default());
         }
         let chunk: Json = serde_json::from_str(data).map_err(|e| LlmError::Decode(format!("{e}: {data}")))?;
-        if let Some(err) = chunk.get("error") {
-            let message = err.get("message").and_then(Json::as_str).unwrap_or("stream error").to_owned();
-            return Err(LlmError::Server { status: 0, message });
+        if let Some(err) = chunk.get("error").filter(|e| !e.is_null()) {
+            return Err(stream_error(err));
         }
         let mut deltas = Vec::new();
         if let Some(choice) = chunk.get("choices").and_then(Json::as_array).and_then(|c| c.first()) {
             if let Some(delta) = choice.get("delta") {
-                // Reasoning is exposed as `reasoning_content` (DeepSeek, vLLM) or `reasoning` (OpenRouter, Ollama).
-                for key in ["reasoning_content", "reasoning"] {
-                    if let Some(r) = delta.get(key).and_then(Json::as_str).filter(|s| !s.is_empty()) {
-                        deltas.push(ChatDelta::Reasoning(r.to_owned()));
-                    }
+                // Reasoning is exposed as `reasoning_content` (DeepSeek, vLLM) or `reasoning`
+                // (OpenRouter, Ollama). Some servers send both with the same text: use the first.
+                let reasoning = ["reasoning_content", "reasoning"]
+                    .iter()
+                    .find_map(|key| delta.get(*key).and_then(Json::as_str).filter(|s| !s.is_empty()));
+                if let Some(r) = reasoning {
+                    deltas.push(ChatDelta::Reasoning(r.to_owned()));
                 }
                 if let Some(text) = delta.get("content").and_then(Json::as_str).filter(|s| !s.is_empty()) {
                     deltas.push(ChatDelta::Text(text.to_owned()));
                 }
                 if let Some(calls) = delta.get("tool_calls").and_then(Json::as_array) {
-                    for (pos, call) in calls.iter().enumerate() {
-                        let index = call
-                            .get("index")
-                            .and_then(Json::as_u64)
-                            .and_then(|i| usize::try_from(i).ok())
-                            .unwrap_or(pos);
+                    for call in calls {
+                        let explicit = call.get("index").and_then(Json::as_u64).and_then(|i| usize::try_from(i).ok());
+                        let id = call.get("id").and_then(Json::as_str).filter(|s| !s.is_empty());
+                        let index = self.call_index(explicit, id);
                         let function = call.get("function");
+                        let arguments = match function.and_then(|f| f.get("arguments")) {
+                            None | Some(Json::Null) => String::new(),
+                            Some(Json::String(s)) => s.clone(),
+                            // Some servers send the arguments as a JSON object instead of a string.
+                            Some(other) => other.to_string(),
+                        };
                         deltas.push(ChatDelta::ToolCall {
                             index,
-                            id: call.get("id").and_then(Json::as_str).map(str::to_owned),
+                            id: id.map(str::to_owned),
                             name: function.and_then(|f| f.get("name")).and_then(Json::as_str).map(str::to_owned),
-                            arguments: function
-                                .and_then(|f| f.get("arguments"))
-                                .and_then(Json::as_str)
-                                .unwrap_or_default()
-                                .to_owned(),
+                            arguments,
                         });
                     }
                 }
             }
             if let Some(reason) = choice.get("finish_reason").and_then(Json::as_str) {
+                self.saw_finish = true;
                 deltas.push(ChatDelta::Finish(finish_reason(reason)));
             }
         }
@@ -324,7 +398,12 @@ impl SseDecoder for OpenAiDecoder {
                 total_tokens: as_u64(usage.get("total_tokens")),
             }));
         }
-        Ok(Some(deltas))
+        Ok(Decoded::deltas(deltas))
+    }
+
+    /// Servers that omit `[DONE]` are accepted once a `finish_reason` arrived.
+    fn end_of_stream(&mut self) -> Result<Vec<ChatDelta>, LlmError> {
+        if self.saw_finish { Ok(Vec::new()) } else { Err(truncated()) }
     }
 }
 
@@ -364,7 +443,7 @@ mod tests {
         req.response_format =
             Some(ResponseFormat::JsonSchema { name: "out".into(), schema: json!({"type": "object"}), strict: true });
         req.extra.insert("seed".into(), json!(7));
-        let body = build_body(&req, &OpenAiConfig::default());
+        let body = build_body(&req, &OpenAiConfig::default()).unwrap();
         assert_eq!(body["stream"], true);
         assert_eq!(body["stream_options"]["include_usage"], true);
         assert_eq!(body["messages"][0]["content"], "sys");
@@ -379,9 +458,90 @@ mod tests {
         assert_eq!(body["seed"], 7);
 
         let cfg = OpenAiConfig { use_max_completion_tokens: true, include_usage: false, ..OpenAiConfig::default() };
-        let body = build_body(&req, &cfg);
+        let body = build_body(&req, &cfg).unwrap();
         assert_eq!(body["max_completion_tokens"], 10);
         assert!(body.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn body_rejects_reserved_extra_n_and_missing_tool_id() {
+        let req = ChatRequest::new("m", vec![Message::user("x")]).with_extra("stream", json!(false));
+        assert!(matches!(build_body(&req, &OpenAiConfig::default()), Err(LlmError::Config(_))));
+        let req = ChatRequest::new("m", vec![Message::user("x")]).with_extra("n", json!(2));
+        assert!(matches!(build_body(&req, &OpenAiConfig::default()), Err(LlmError::Config(_))));
+        let mut tool = Message::tool("x", "r");
+        tool.tool_call_id = None;
+        let req = ChatRequest::new("m", vec![tool]);
+        assert!(matches!(build_body(&req, &OpenAiConfig::default()), Err(LlmError::Config(_))));
+    }
+
+    fn decode_all(fixture: &str) -> (Vec<ChatDelta>, Result<bool, LlmError>) {
+        let mut parser = SseParser::new();
+        let mut decoder = OpenAiDecoder::default();
+        let mut deltas = Vec::new();
+        for ev in parser.push(fixture.as_bytes()).unwrap() {
+            match decoder.decode(ev) {
+                Ok(d) => {
+                    deltas.extend(d.deltas);
+                    if d.done {
+                        return (deltas, Ok(true));
+                    }
+                }
+                Err(e) => return (deltas, Err(e)),
+            }
+        }
+        match decoder.end_of_stream() {
+            Ok(d) => {
+                deltas.extend(d);
+                (deltas, Ok(false))
+            }
+            Err(e) => (deltas, Err(e)),
+        }
+    }
+
+    #[test]
+    fn truncated_stream_is_a_retryable_error() {
+        let (_, end) = decode_all("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hel\"}}]}\n\n");
+        let err = end.unwrap_err();
+        assert!(matches!(err, LlmError::Network(_)));
+        assert!(err.is_retryable());
+        // `[DONE]` without any finish_reason is also incomplete.
+        let (_, end) =
+            decode_all("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"}}]}\n\ndata: [DONE]\n\n");
+        assert!(end.is_err());
+        // A finish_reason without `[DONE]` is accepted.
+        let (deltas, end) = decode_all(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":\"stop\"}]}\n\n",
+        );
+        assert!(!end.unwrap());
+        assert_eq!(deltas.last(), Some(&ChatDelta::Finish(FinishReason::Stop)));
+    }
+
+    #[tokio::test]
+    async fn tool_calls_without_index_and_object_arguments() {
+        let fixture = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"a\",\"function\":{\"name\":\"one\",\"arguments\":{\"x\":1}}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"b\",\"function\":{\"name\":\"two\",\"arguments\":\"{\\\"y\\\":\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"2}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let (deltas, end) = decode_all(fixture);
+        assert!(end.unwrap());
+        let r =
+            crate::types::collect(Box::pin(futures::stream::iter(deltas.into_iter().map(Ok))), |_| {}).await.unwrap();
+        assert_eq!(r.tool_calls.len(), 2, "{:?}", r.tool_calls);
+        assert_eq!(r.tool_calls[0].arguments_json().unwrap()["x"], 1);
+        assert_eq!(r.tool_calls[1].name, "two");
+        assert_eq!(r.tool_calls[1].arguments_json().unwrap()["y"], 2);
+    }
+
+    #[test]
+    fn duplicate_reasoning_fields_are_not_doubled() {
+        let (deltas, _) = decode_all(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"r\",\"reasoning\":\"r\"},\"finish_reason\":\"stop\"}]}\n\n",
+        );
+        assert_eq!(deltas.iter().filter(|d| matches!(d, ChatDelta::Reasoning(_))).count(), 1);
     }
 
     #[test]
@@ -396,17 +556,8 @@ mod tests {
             "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}\n\n",
             "data: [DONE]\n\n",
         );
-        let mut parser = SseParser::new();
-        let mut decoder = OpenAiDecoder;
-        let mut deltas = Vec::new();
-        let mut done = false;
-        for ev in parser.push(fixture.as_bytes()) {
-            match decoder.decode(ev).unwrap() {
-                Some(d) => deltas.extend(d),
-                None => done = true,
-            }
-        }
-        assert!(done);
+        let (deltas, done) = decode_all(fixture);
+        assert!(done.unwrap());
         assert_eq!(deltas[0], ChatDelta::Reasoning("think".into()));
         assert_eq!(deltas[1], ChatDelta::Text("Hel".into()));
         assert!(matches!(&deltas[3], ChatDelta::ToolCall { index: 0, name: Some(n), .. } if n == "get"));
@@ -417,9 +568,19 @@ mod tests {
 
     #[test]
     fn stream_error_object() {
-        let mut d = OpenAiDecoder;
+        let mut d = OpenAiDecoder::default();
         let ev = SseEvent { data: "{\"error\":{\"message\":\"boom\"}}".into(), ..SseEvent::default() };
         assert!(matches!(d.decode(ev), Err(LlmError::Server { .. })));
+        let ev = SseEvent {
+            data: "{\"error\":{\"message\":\"slow\",\"type\":\"rate_limit_exceeded\"}}".into(),
+            ..SseEvent::default()
+        };
+        assert!(matches!(d.decode(ev), Err(LlmError::RateLimit { .. })));
+        let ev = SseEvent {
+            data: "{\"error\":{\"message\":\"long\",\"code\":\"context_length_exceeded\"}}".into(),
+            ..SseEvent::default()
+        };
+        assert!(matches!(d.decode(ev), Err(LlmError::ContextLength(_))));
     }
 
     #[test]

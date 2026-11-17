@@ -2,7 +2,8 @@
 //!
 //! The selected class id is the branch handle. Outputs: `class_id`,
 //! `class_name`, `class_label`, `usage`. An answer that names no configured
-//! class fails the node, unless `fallback_class` names the class to use.
+//! class fails the node, unless `fallback_class` names the class to use; a
+//! fallback is marked with metadata `fallback: true` and `raw_answer`.
 
 use std::sync::Arc;
 
@@ -14,7 +15,9 @@ use graphrt_core::{Node, NodeContext, NodeError, NodeOutput, Selector};
 use serde::Deserialize;
 use serde_json::Value as Json;
 
-use super::common::{MemoryConfig, ModelConfig, VisionConfig, extract_json, invoke, model_for, usage_value};
+use super::common::{
+    MemoryConfig, ModelConfig, StreamMode, VisionConfig, extract_json, invoke, model_for, usage_value,
+};
 use crate::types::{ContentPart, Message};
 
 /// One class.
@@ -122,20 +125,26 @@ impl ClassifierNode {
 
         let mut messages = vec![Message::system(self.system_prompt(&instruction))];
         if let Some(memory) = &cfg.memory {
-            messages.extend(memory.history(pool));
+            messages.extend(memory.history(pool)?);
         }
         let mut user = Message::user(query);
         user.content
-            .extend(cfg.vision.image_parts(pool).into_iter().filter(|p| matches!(p, ContentPart::Image { .. })));
+            .extend(cfg.vision.image_parts(pool)?.into_iter().filter(|p| matches!(p, ContentPart::Image { .. })));
         messages.push(user);
 
         let model = model_for(&ctx, &cfg.model)?;
-        let response = invoke(&ctx, model.as_ref(), cfg.model.request(messages, pool), false).await?;
+        let request = cfg.model.request(messages, pool)?;
+        let response = invoke(&ctx, model.as_ref(), request, StreamMode::Off).await?;
 
-        let index = match self.match_class(&response.text) {
-            Some(i) => i,
+        let (index, fallback) = match self.match_class(&response.text) {
+            Some(i) => (i, false),
             None => match &cfg.fallback_class {
-                Some(fallback) => cfg.classes.iter().position(|c| &c.id == fallback).unwrap_or(0),
+                Some(fallback) => {
+                    let i = cfg.classes.iter().position(|c| &c.id == fallback).ok_or_else(|| {
+                        NodeError::fatal("classification", format!("fallback class `{fallback}` is not configured"))
+                    })?;
+                    (i, true)
+                }
                 None => {
                     return Err(NodeError::new(
                         "classification",
@@ -147,14 +156,17 @@ impl ClassifierNode {
         let class =
             cfg.classes.get(index).ok_or_else(|| NodeError::fatal("classification", "class index out of range"))?;
         let label = class.label.clone().filter(|l| !l.is_empty()).unwrap_or_else(|| format!("CLASS {}", index + 1));
-        Ok(NodeOutput::new()
+        let mut output = NodeOutput::new()
             .with("class_id", class.id.as_str())
             .with("class_name", class.name.as_str())
             .with("class_label", label)
             .with("usage", usage_value(&response.usage))
             .usage(response.usage)
-            .branch(class.id.clone())
-            .into())
+            .branch(class.id.clone());
+        if fallback {
+            output = output.meta("fallback", true).meta("raw_answer", response.text.trim());
+        }
+        Ok(output.into())
     }
 }
 
@@ -168,7 +180,17 @@ impl Node for ClassifierNode {
     }
 
     fn inputs(&self) -> Vec<Selector> {
-        vec![self.config.query_variable_selector.clone()]
+        let cfg = &self.config;
+        let mut out = vec![cfg.query_variable_selector.clone()];
+        if let Some(instruction) = &cfg.instruction {
+            out.extend(instruction.selectors().cloned());
+        }
+        if let Some(memory) = &cfg.memory {
+            out.extend(memory.selectors());
+        }
+        out.extend(cfg.vision.selectors());
+        out.extend(cfg.model.selectors());
+        out
     }
 }
 
@@ -232,6 +254,10 @@ mod tests {
         let n = node(serde_json::json!({"fallback_class": "2"}));
         let out = output(classify(&n, "gibberish").await);
         assert_eq!(out.branch.as_deref(), Some("2"));
+        assert_eq!(out.metadata.get("fallback"), Some(&Value::Bool(true)));
+        assert_eq!(out.metadata.get("raw_answer"), Some(&Value::from("gibberish")));
+        let out = output(classify(&n, "{\"category_id\": \"1\"}").await);
+        assert!(!out.metadata.contains_key("fallback"));
     }
 
     #[test]

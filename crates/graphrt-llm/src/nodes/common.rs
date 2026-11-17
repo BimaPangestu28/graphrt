@@ -10,7 +10,9 @@ use serde::Deserialize;
 use serde_json::Value as Json;
 
 use crate::registry::ModelRegistry;
-use crate::types::{ChatDelta, ChatModel, ChatRequest, ChatResponse, ContentPart, Message, Role, collect};
+use crate::types::{
+    ChatDelta, ChatModel, ChatRequest, ChatResponse, ContentPart, Message, RESERVED_EXTRA_KEYS, Role, collect,
+};
 
 /// Literal placeholder replaced by the configured context value.
 pub const CONTEXT_PLACEHOLDER: &str = "{{#context#}}";
@@ -27,57 +29,113 @@ pub struct ModelConfig {
 /// Parameters never forwarded to providers (UI-only settings).
 const IGNORED_PARAMS: &[&str] = &["mode"];
 
+/// A resolved completion parameter.
+enum Param {
+    /// Not set (explicit `null`, or an empty literal string).
+    Unset,
+    Value(Json),
+}
+
 impl ModelConfig {
     /// Build a request for this model, applying completion parameters. Parameter
     /// values that are templates (`"{{#start.temp#}}"`) are resolved per run;
     /// the configuration itself is never modified.
-    pub fn request(&self, messages: Vec<Message>, pool: &VariablePool) -> ChatRequest {
+    ///
+    /// A parameter whose value has the wrong type (e.g. `temperature: "hot"`),
+    /// or a template that resolves to nothing, is an input error naming the
+    /// parameter instead of being dropped silently.
+    pub fn request(&self, messages: Vec<Message>, pool: &VariablePool) -> Result<ChatRequest, NodeError> {
         let mut req = ChatRequest::new(self.name.clone(), messages);
         for (key, raw) in &self.completion_params {
             if IGNORED_PARAMS.contains(&key.as_str()) {
                 continue;
             }
-            let value = resolve_param(raw, pool);
+            let value = match resolve_param(key, raw, pool)? {
+                Param::Unset => continue,
+                Param::Value(v) => v,
+            };
+            let bad = |expected: &str| {
+                NodeError::invalid_input(format!("completion parameter `{key}` must be {expected}, got {value}"))
+            };
             match key.as_str() {
-                "temperature" => req.temperature = value.as_f64(),
-                "top_p" => req.top_p = value.as_f64(),
+                "temperature" => req.temperature = Some(value.as_f64().ok_or_else(|| bad("a number"))?),
+                "top_p" => req.top_p = Some(value.as_f64().ok_or_else(|| bad("a number"))?),
                 "max_tokens" | "max_completion_tokens" => {
-                    req.max_tokens = value.as_u64().and_then(|n| u32::try_from(n).ok());
+                    let n = value
+                        .as_u64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .ok_or_else(|| bad("a non-negative integer that fits in 32 bits"))?;
+                    req.max_tokens = Some(n);
                 }
                 "stop" => {
-                    req.stop = match value {
-                        Json::String(s) if !s.is_empty() => vec![s],
-                        Json::Array(items) => items.iter().filter_map(|i| i.as_str().map(str::to_owned)).collect(),
-                        _ => Vec::new(),
+                    req.stop = match &value {
+                        Json::String(s) => vec![s.clone()],
+                        Json::Array(items) => items
+                            .iter()
+                            .map(|i| i.as_str().map(str::to_owned))
+                            .collect::<Option<Vec<_>>>()
+                            .ok_or_else(|| bad("a string or a list of strings"))?,
+                        _ => return Err(bad("a string or a list of strings")),
                     };
+                }
+                reserved if RESERVED_EXTRA_KEYS.contains(&reserved) => {
+                    return Err(NodeError::invalid_input(format!(
+                        "completion parameter `{key}` is managed by the node and cannot be set"
+                    )));
                 }
                 _ => {
                     req.extra.insert(key.clone(), value);
                 }
             }
         }
-        req
+        Ok(req)
+    }
+
+    /// Selectors referenced by templated completion parameters.
+    pub fn selectors(&self) -> Vec<Selector> {
+        self.completion_params
+            .values()
+            .filter_map(Json::as_str)
+            .filter(|s| s.contains("{{#"))
+            .flat_map(|s| Template::parse(s).selectors().cloned().collect::<Vec<_>>())
+            .collect()
     }
 }
 
 /// Resolve a completion parameter: templates are rendered, numeric/boolean strings coerced.
-fn resolve_param(raw: &Json, pool: &VariablePool) -> Json {
-    let Json::String(s) = raw else { return raw.clone() };
-    let resolved = if s.contains("{{#") { Template::parse(s).resolve(pool) } else { Value::from(s.as_str()) };
+fn resolve_param(key: &str, raw: &Json, pool: &VariablePool) -> Result<Param, NodeError> {
+    let text = match raw {
+        Json::Null => return Ok(Param::Unset),
+        Json::String(s) => s,
+        other => return Ok(Param::Value(other.clone())),
+    };
+    let is_template = text.contains("{{#");
+    let resolved = if is_template { Template::parse(text).resolve(pool) } else { Value::from(text.as_str()) };
     match resolved {
-        Value::String(text) => {
-            let t = text.trim();
-            if let Ok(i) = t.parse::<i64>() {
+        Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                if is_template {
+                    return Err(NodeError::invalid_input(format!(
+                        "completion parameter `{key}` resolved to an empty value (`{text}`)"
+                    )));
+                }
+                return Ok(Param::Unset);
+            }
+            Ok(Param::Value(if let Ok(i) = t.parse::<i64>() {
                 Json::from(i)
             } else if let Ok(f) = t.parse::<f64>() {
                 Json::from(f)
             } else if t == "true" || t == "false" {
                 Json::Bool(t == "true")
             } else {
-                Json::String(text.to_string())
-            }
+                Json::String(s.to_string())
+            }))
         }
-        other => other.to_json(),
+        Value::Null => Err(NodeError::invalid_input(format!(
+            "completion parameter `{key}` references a missing variable (`{text}`)"
+        ))),
+        other => Ok(Param::Value(other.to_json())),
     }
 }
 
@@ -115,6 +173,11 @@ impl PromptTemplate {
             PromptTemplate::Completion(m) => vec![m],
         }
     }
+
+    /// Selectors referenced by the message templates.
+    pub fn selectors(&self) -> Vec<Selector> {
+        self.messages().iter().flat_map(|m| m.text.selectors().cloned()).collect()
+    }
 }
 
 /// `context: {enabled, variable_selector}`.
@@ -134,6 +197,13 @@ impl ContextConfig {
         }
         let value = pool.get(self.variable_selector.as_ref()?)?;
         Some(context_text(&value))
+    }
+
+    pub fn selectors(&self) -> Vec<Selector> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        self.variable_selector.iter().cloned().collect()
     }
 }
 
@@ -174,29 +244,49 @@ pub struct VisionConfig {
 }
 
 impl VisionConfig {
-    /// Image parts for the configured files (default selector `sys.files`).
-    pub fn image_parts(&self, pool: &VariablePool) -> Vec<ContentPart> {
-        if !self.enabled {
-            return Vec::new();
-        }
-        let configs = self.configs.clone().unwrap_or_default();
-        let selector = configs
-            .variable_selector
+    fn selector(&self) -> Selector {
+        self.configs
+            .as_ref()
+            .and_then(|c| c.variable_selector.clone())
             .or_else(|| self.variable_selector.clone())
-            .unwrap_or_else(|| Selector::of("sys", "files"));
-        let detail = configs.detail.or_else(|| self.detail.clone());
-        let files: Vec<Value> = match pool.get(&selector) {
+            .unwrap_or_else(|| Selector::of("sys", "files"))
+    }
+
+    /// Image parts for the configured files (default selector `sys.files`).
+    ///
+    /// Non-image files are ignored. An image without a URL (e.g. a host
+    /// storage reference that was not resolved) is an input error rather than
+    /// being dropped silently.
+    pub fn image_parts(&self, pool: &VariablePool) -> Result<Vec<ContentPart>, NodeError> {
+        if !self.enabled {
+            return Ok(Vec::new());
+        }
+        let detail = self.configs.as_ref().and_then(|c| c.detail.clone()).or_else(|| self.detail.clone());
+        let files: Vec<Value> = match pool.get(&self.selector()) {
             Some(Value::Array(items)) => items.iter().cloned().collect(),
             Some(v @ Value::File(_)) => vec![v],
             _ => Vec::new(),
         };
-        files
-            .iter()
-            .filter_map(|v| v.as_file())
-            .filter(|f| f.kind == FileKind::Image || f.mime_type.as_deref().is_some_and(|m| m.starts_with("image/")))
-            .filter_map(|f| f.url.clone())
-            .map(|url| ContentPart::Image { url, detail: detail.clone() })
-            .collect()
+        let mut parts = Vec::new();
+        for file in files.iter().filter_map(Value::as_file) {
+            let is_image =
+                file.kind == FileKind::Image || file.mime_type.as_deref().is_some_and(|m| m.starts_with("image/"));
+            if !is_image {
+                continue;
+            }
+            let url = file.url.clone().filter(|u| !u.is_empty()).ok_or_else(|| {
+                NodeError::invalid_input(format!(
+                    "image `{}` has no URL; resolve host files to URLs before sending them to a model",
+                    file.name
+                ))
+            })?;
+            parts.push(ContentPart::Image { url, detail: detail.clone() });
+        }
+        Ok(parts)
+    }
+
+    pub fn selectors(&self) -> Vec<Selector> {
+        if self.enabled { vec![self.selector()] } else { Vec::new() }
     }
 }
 
@@ -211,10 +301,11 @@ pub struct WindowConfig {
 /// Conversation memory.
 ///
 /// History is read from `variable_selector` (default `sys.history`): an array of
-/// `{role, content}` objects, oldest first. With `window.enabled`, only the last
-/// `window.size` turns (two messages per turn) are kept. The current query is
-/// appended as a user message, rendered from `query_prompt_template` (default
-/// `{{#sys.query#}}`).
+/// `{role, content}` objects (or a JSON string encoding one), oldest first.
+/// Roles are `user`/`human`, `assistant`/`ai` and `system`. With
+/// `window.enabled`, only the last `window.size` turns (two messages per turn)
+/// are kept. The current query is appended as a user message, rendered from
+/// `query_prompt_template` (default `{{#sys.query#}}`).
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct MemoryConfig {
     #[serde(default)]
@@ -226,30 +317,54 @@ pub struct MemoryConfig {
 }
 
 impl MemoryConfig {
-    pub fn history(&self, pool: &VariablePool) -> Vec<Message> {
-        let selector = self.variable_selector.clone().unwrap_or_else(|| Selector::of("sys", "history"));
-        let Some(Value::Array(items)) = pool.get(&selector) else { return Vec::new() };
-        let mut messages: Vec<Message> = items
-            .iter()
-            .filter_map(|item| {
-                let obj = item.as_object()?;
-                let role = match obj.get("role").and_then(Value::as_str)? {
-                    "user" | "human" => Role::User,
-                    "assistant" | "ai" => Role::Assistant,
-                    "system" => Role::System,
-                    _ => return None,
-                };
-                let content = obj.get("content").map(Value::to_text).unwrap_or_default();
-                Some(Message { role, ..Message::user(content) })
-            })
-            .collect();
+    fn history_selector(&self) -> Selector {
+        self.variable_selector.clone().unwrap_or_else(|| Selector::of("sys", "history"))
+    }
+
+    /// Conversation history. A missing history is empty; a history of the
+    /// wrong shape is an input error.
+    pub fn history(&self, pool: &VariablePool) -> Result<Vec<Message>, NodeError> {
+        let selector = self.history_selector();
+        let items: Vec<Value> = match pool.get(&selector) {
+            None | Some(Value::Null) => return Ok(Vec::new()),
+            Some(Value::Array(items)) => items.iter().cloned().collect(),
+            Some(Value::String(text)) if text.trim().is_empty() => return Ok(Vec::new()),
+            Some(Value::String(text)) => match serde_json::from_str::<Json>(&text) {
+                Ok(Json::Array(items)) => items.into_iter().map(Value::from_json).collect(),
+                _ => {
+                    return Err(NodeError::invalid_input(format!(
+                        "memory history `{selector}` is a string that is not a JSON array"
+                    )));
+                }
+            },
+            Some(other) => {
+                return Err(NodeError::invalid_input(format!(
+                    "memory history `{selector}` must be an array of {{role, content}} objects, got {}",
+                    other.type_name()
+                )));
+            }
+        };
+        let mut messages = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let bad = |why: &str| NodeError::invalid_input(format!("memory history item #{i}: {why}"));
+            let obj = item.as_object().ok_or_else(|| bad("expected a {role, content} object"))?;
+            let role = match obj.get("role").and_then(Value::as_str) {
+                Some("user" | "human") => Role::User,
+                Some("assistant" | "ai") => Role::Assistant,
+                Some("system") => Role::System,
+                Some(other) => return Err(bad(&format!("unsupported role `{other}`"))),
+                None => return Err(bad("missing `role`")),
+            };
+            let content = obj.get("content").map(Value::to_text).unwrap_or_default();
+            messages.push(Message { role, ..Message::user(content) });
+        }
         if let Some(window) = self.window.as_ref().filter(|w| w.enabled) {
             let keep = window.size.unwrap_or(10).saturating_mul(2);
             if messages.len() > keep {
                 messages.drain(..messages.len() - keep);
             }
         }
-        messages
+        Ok(messages)
     }
 
     pub fn query(&self, pool: &VariablePool) -> Option<String> {
@@ -258,6 +373,16 @@ impl MemoryConfig {
             None => pool.get(&Selector::of("sys", "query"))?.to_text(),
         };
         if text.is_empty() { None } else { Some(text) }
+    }
+
+    /// Selectors read by the memory (history and query).
+    pub fn selectors(&self) -> Vec<Selector> {
+        let mut out = vec![self.history_selector()];
+        match &self.query_prompt_template {
+            Some(t) => out.extend(t.selectors().cloned()),
+            None => out.push(Selector::of("sys", "query")),
+        }
+        out
     }
 }
 
@@ -293,7 +418,7 @@ pub fn build_messages(
     context: Option<&str>,
     memory: Option<&MemoryConfig>,
     images: Vec<ContentPart>,
-) -> Vec<Message> {
+) -> Result<Vec<Message>, NodeError> {
     let rendered: Vec<Message> = template
         .messages()
         .into_iter()
@@ -302,7 +427,7 @@ pub fn build_messages(
     let split = rendered.iter().take_while(|m| m.role == Role::System).count();
     let mut messages: Vec<Message> = rendered.iter().take(split).cloned().collect();
     if let Some(mem) = memory {
-        messages.extend(mem.history(pool));
+        messages.extend(mem.history(pool)?);
     }
     messages.extend(rendered.into_iter().skip(split));
     if let Some(query) = memory.and_then(|m| m.query(pool)) {
@@ -314,7 +439,7 @@ pub fn build_messages(
             None => messages.push(Message { content: images, ..Message::user("") }),
         }
     }
-    messages
+    Ok(messages)
 }
 
 /// Look up the configured provider.
@@ -323,26 +448,134 @@ pub fn model_for(ctx: &NodeContext, config: &ModelConfig) -> Result<Arc<dyn Chat
     Ok(registry.get(&config.provider)?)
 }
 
-/// Run a request, optionally streaming answer and reasoning text as node chunks.
+/// What a model call streams to the run's event stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamMode {
+    /// Nothing is streamed.
+    Off,
+    /// Answer text on field `text`, reasoning on field `reasoning`, as produced.
+    Raw,
+    /// Like [`StreamMode::Raw`], but `<think>...</think>` sections inside the
+    /// answer are routed to `reasoning`, so the streamed `text` matches the
+    /// node's separated `text` output.
+    SeparateThink,
+}
+
+/// Run a request, streaming chunks according to `mode`.
 pub async fn invoke(
     ctx: &NodeContext,
     model: &dyn ChatModel,
     request: ChatRequest,
-    stream_chunks: bool,
+    mode: StreamMode,
 ) -> Result<ChatResponse, NodeError> {
     let stream = model.chat(request).await?;
-    let response = collect(stream, |delta| {
-        if !stream_chunks {
-            return;
+    let mut splitter = ThinkSplitter::default();
+    let response = collect(stream, |delta| match (mode, delta) {
+        (StreamMode::Off, _) => {}
+        (StreamMode::Raw, ChatDelta::Text(t)) if !t.is_empty() => ctx.chunk("text", t.clone()),
+        (StreamMode::SeparateThink, ChatDelta::Text(t)) => {
+            for (field, piece) in splitter.push(t) {
+                ctx.chunk(field.as_str(), piece);
+            }
         }
-        match delta {
-            ChatDelta::Text(t) if !t.is_empty() => ctx.chunk("text", t.clone()),
-            ChatDelta::Reasoning(t) if !t.is_empty() => ctx.chunk("reasoning", t.clone()),
-            _ => {}
-        }
+        (_, ChatDelta::Reasoning(t)) if !t.is_empty() => ctx.chunk("reasoning", t.clone()),
+        _ => {}
     })
     .await?;
+    if mode == StreamMode::SeparateThink {
+        for (field, piece) in splitter.finish() {
+            ctx.chunk(field.as_str(), piece);
+        }
+    }
     Ok(response)
+}
+
+/// Output field a streamed piece belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamField {
+    Text,
+    Reasoning,
+}
+
+impl StreamField {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StreamField::Text => "text",
+            StreamField::Reasoning => "reasoning",
+        }
+    }
+}
+
+const THINK_OPEN: &str = "<think>";
+const THINK_CLOSE: &str = "</think>";
+
+/// Splits streamed answer text into answer and `<think>` reasoning pieces,
+/// handling tags split across chunks. Leading whitespace of the answer is
+/// dropped, matching [`split_think_tags`].
+#[derive(Debug, Default)]
+pub struct ThinkSplitter {
+    /// Text that may be the start of a tag and is held back until decided.
+    pending: String,
+    in_think: bool,
+    answer_started: bool,
+}
+
+impl ThinkSplitter {
+    /// Feed a chunk; returns the pieces that can be emitted now.
+    pub fn push(&mut self, chunk: &str) -> Vec<(StreamField, String)> {
+        self.pending.push_str(chunk);
+        let mut out = Vec::new();
+        loop {
+            let tag = if self.in_think { THINK_CLOSE } else { THINK_OPEN };
+            if let Some(pos) = self.pending.find(tag) {
+                let before: String = self.pending.drain(..pos).collect();
+                self.emit(&mut out, before);
+                self.pending.drain(..tag.len());
+                self.in_think = !self.in_think;
+                continue;
+            }
+            // Hold back the longest suffix that could still become `tag`.
+            let keep = longest_tag_prefix_suffix(&self.pending, tag);
+            let emit_len = self.pending.len() - keep;
+            let ready: String = self.pending.drain(..emit_len).collect();
+            self.emit(&mut out, ready);
+            break;
+        }
+        out
+    }
+
+    /// Flush held-back text at the end of the stream.
+    pub fn finish(&mut self) -> Vec<(StreamField, String)> {
+        let mut out = Vec::new();
+        let rest = std::mem::take(&mut self.pending);
+        self.emit(&mut out, rest);
+        out
+    }
+
+    fn emit(&mut self, out: &mut Vec<(StreamField, String)>, mut text: String) {
+        if self.in_think {
+            if !text.is_empty() {
+                out.push((StreamField::Reasoning, text));
+            }
+            return;
+        }
+        if !self.answer_started {
+            let trimmed = text.trim_start();
+            if trimmed.is_empty() {
+                return;
+            }
+            text = trimmed.to_owned();
+            self.answer_started = true;
+        }
+        if !text.is_empty() {
+            out.push((StreamField::Text, text));
+        }
+    }
+}
+
+/// Length of the longest suffix of `text` that is a proper prefix of `tag`.
+fn longest_tag_prefix_suffix(text: &str, tag: &str) -> usize {
+    (1..tag.len()).rev().find(|&n| tag.get(..n).is_some_and(|prefix| text.ends_with(prefix))).unwrap_or(0)
 }
 
 /// Usage as an output object.
@@ -359,13 +592,13 @@ pub fn split_think_tags(text: &str) -> (String, String) {
     let mut answer = String::new();
     let mut reasoning = String::new();
     let mut rest = text;
-    while let Some(start) = rest.find("<think>") {
+    while let Some(start) = rest.find(THINK_OPEN) {
         answer.push_str(&rest[..start]);
-        let after = &rest[start + "<think>".len()..];
-        match after.find("</think>") {
+        let after = &rest[start + THINK_OPEN.len()..];
+        match after.find(THINK_CLOSE) {
             Some(end) => {
                 reasoning.push_str(after[..end].trim());
-                rest = &after[end + "</think>".len()..];
+                rest = &after[end + THINK_CLOSE.len()..];
             }
             None => {
                 reasoning.push_str(after.trim());
@@ -377,24 +610,39 @@ pub fn split_think_tags(text: &str) -> (String, String) {
     (answer.trim_start().to_owned(), reasoning)
 }
 
+/// Maximum number of candidate positions [`extract_json`] tries. Each attempt
+/// scans at most the remaining text once, so total work is linear in the
+/// input size (times this constant).
+const MAX_JSON_CANDIDATES: usize = 32;
+
 /// Extract the first JSON object or array from model output, tolerating code
 /// fences, think tags and surrounding prose. Brace matching ignores braces
 /// inside string literals.
 pub fn extract_json(text: &str) -> Option<Json> {
+    extract_json_where(text, |v| v.is_object() || v.is_array())
+}
+
+/// Like [`extract_json`], returning the first candidate accepted by `accept`.
+pub fn extract_json_where(text: &str, accept: impl Fn(&Json) -> bool) -> Option<Json> {
     let (answer, _) = split_think_tags(text);
     let trimmed = answer.trim();
     if let Ok(v) = serde_json::from_str::<Json>(trimmed) {
-        if v.is_object() || v.is_array() {
+        if accept(&v) {
             return Some(v);
         }
     }
     let bytes = trimmed.as_bytes();
     let mut search_from = 0;
+    let mut attempts = 0;
     while let Some(offset) = trimmed.get(search_from..)?.find(['{', '[']) {
+        attempts += 1;
+        if attempts > MAX_JSON_CANDIDATES {
+            return None;
+        }
         let start = search_from + offset;
-        if let Some(end) = matching_close(bytes, start) {
-            if let Some(candidate) = trimmed.get(start..=end) {
-                if let Ok(v) = serde_json::from_str::<Json>(candidate) {
+        if let Some(candidate) = matching_close(bytes, start).and_then(|end| trimmed.get(start..=end)) {
+            if let Ok(v) = serde_json::from_str::<Json>(candidate) {
+                if accept(&v) {
                     return Some(v);
                 }
             }
@@ -405,7 +653,7 @@ pub fn extract_json(text: &str) -> Option<Json> {
 }
 
 fn matching_close(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut depth: i32 = 0;
+    let mut depth: usize = 0;
     let mut in_string = false;
     let mut escaped = false;
     for (i, &b) in bytes.iter().enumerate().skip(start) {
@@ -422,7 +670,7 @@ fn matching_close(bytes: &[u8], start: usize) -> Option<usize> {
             b'"' => in_string = true,
             b'{' | b'[' => depth += 1,
             b'}' | b']' => {
-                depth -= 1;
+                depth = depth.checked_sub(1)?;
                 if depth == 0 {
                     return Some(i);
                 }
@@ -443,6 +691,16 @@ mod tests {
         assert_eq!(extract_json("```json\n{\"a\":1}\n```").unwrap()["a"], 1);
         assert_eq!(extract_json("<think>{x}</think>Sure: {\"s\":\"}{\",\"b\":2} done").unwrap()["b"], 2);
         assert!(extract_json("no json here").is_none());
+        let v = extract_json_where("see [1], then {\"a\": 2}", Json::is_object).unwrap();
+        assert_eq!(v["a"], 2);
+    }
+
+    #[test]
+    fn json_extraction_is_bounded_on_hostile_input() {
+        let hostile = "{".repeat(200_000);
+        let started = std::time::Instant::now();
+        assert!(extract_json(&hostile).is_none());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
     }
 
     #[test]
@@ -450,6 +708,37 @@ mod tests {
         let (a, r) = split_think_tags("<think>plan</think>\nanswer");
         assert_eq!(a, "answer");
         assert_eq!(r, "plan");
+    }
+
+    fn split_stream(chunks: &[&str]) -> (String, String) {
+        let mut s = ThinkSplitter::default();
+        let mut pieces = Vec::new();
+        for c in chunks {
+            pieces.extend(s.push(c));
+        }
+        pieces.extend(s.finish());
+        let mut text = String::new();
+        let mut reasoning = String::new();
+        for (field, piece) in pieces {
+            match field {
+                StreamField::Text => text.push_str(&piece),
+                StreamField::Reasoning => reasoning.push_str(&piece),
+            }
+        }
+        (text, reasoning)
+    }
+
+    #[test]
+    fn think_splitter_handles_tags_split_across_chunks() {
+        let (text, reasoning) = split_stream(&["<thi", "nk>pl", "an</th", "ink>\n", "Hel", "lo <", "b>"]);
+        assert_eq!(text, "Hello <b>");
+        assert_eq!(reasoning, "plan");
+        let whole = "<think>plan</think>\nHello <b>";
+        assert_eq!(text, split_think_tags(whole).0);
+        let (text, reasoning) = split_stream(&["no tags at all"]);
+        assert_eq!((text.as_str(), reasoning.as_str()), ("no tags at all", ""));
+        let (text, _) = split_stream(&["a <", "/think> b"]);
+        assert_eq!(text, "a </think> b");
     }
 
     #[test]
@@ -464,22 +753,43 @@ mod tests {
         assert!(!render_with_context(&t, &pool, None).contains("s3cret"));
     }
 
+    fn model_config(params: Json) -> ModelConfig {
+        serde_json::from_value(serde_json::json!({"provider": "p", "name": "m", "completion_params": params})).unwrap()
+    }
+
     #[test]
     fn params_resolve_without_mutation() {
         let mut pool = VariablePool::new();
         pool.insert("start", "t", Value::from("0.3"));
-        let cfg: ModelConfig = serde_json::from_value(serde_json::json!({
-            "provider": "p", "name": "m",
-            "completion_params": {"temperature": "{{#start.t#}}", "max_tokens": 20, "stop": "x", "seed": "7", "mode": "chat"}
-        }))
-        .unwrap();
-        let req = cfg.request(vec![], &pool);
+        let cfg = model_config(serde_json::json!(
+            {"temperature": "{{#start.t#}}", "max_tokens": 20, "stop": "x", "seed": "7", "mode": "chat", "top_p": null}
+        ));
+        let req = cfg.request(vec![], &pool).unwrap();
         assert_eq!(req.temperature, Some(0.3));
         assert_eq!(req.max_tokens, Some(20));
+        assert_eq!(req.top_p, None);
         assert_eq!(req.stop, vec!["x".to_owned()]);
         assert_eq!(req.extra.get("seed"), Some(&Json::from(7)));
         assert!(!req.extra.contains_key("mode"));
         assert_eq!(cfg.completion_params["temperature"], "{{#start.t#}}");
+        assert_eq!(cfg.selectors(), vec![Selector::of("start", "t")]);
+    }
+
+    #[test]
+    fn invalid_params_are_errors() {
+        let pool = VariablePool::new();
+        for params in [
+            serde_json::json!({"temperature": "hot"}),
+            serde_json::json!({"max_tokens": -1}),
+            serde_json::json!({"max_tokens": 1e12}),
+            serde_json::json!({"stop": [1, 2]}),
+            serde_json::json!({"temperature": "{{#start.missing#}}"}),
+            serde_json::json!({"stream": false}),
+        ] {
+            let err = model_config(params.clone()).request(vec![], &pool).unwrap_err();
+            assert_eq!(err.kind, "invalid_input", "{params}");
+            assert!(!err.retryable);
+        }
     }
 
     #[test]
@@ -509,9 +819,31 @@ mod tests {
         let memory: MemoryConfig =
             serde_json::from_value(serde_json::json!({"window": {"enabled": true, "size": 1}})).unwrap();
         let vision = VisionConfig { enabled: true, ..VisionConfig::default() };
-        let msgs = build_messages(&template, &pool, None, Some(&memory), vision.image_parts(&pool));
+        let msgs = build_messages(&template, &pool, None, Some(&memory), vision.image_parts(&pool).unwrap()).unwrap();
         let texts: Vec<String> = msgs.iter().map(Message::text).collect();
         assert_eq!(texts, vec!["sys", "old3", "old4", "tmpl", "now"]);
         assert!(matches!(msgs[4].content.last(), Some(ContentPart::Image { .. })));
+    }
+
+    #[test]
+    fn history_shapes() {
+        let memory = MemoryConfig::default();
+        let mut pool = VariablePool::new();
+        pool.insert("sys", "history", Value::from(r#"[{"role": "human", "content": "hi"}]"#));
+        assert_eq!(memory.history(&pool).unwrap().len(), 1, "JSON-string history is parsed");
+        pool.insert("sys", "history", Value::from_json(serde_json::json!([{"role": "tool", "content": "x"}])));
+        assert!(memory.history(&pool).is_err());
+        pool.insert("sys", "history", Value::Int(3));
+        assert!(memory.history(&pool).is_err());
+        assert!(memory.history(&VariablePool::new()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn image_without_url_is_an_error() {
+        let mut pool = VariablePool::new();
+        let image = File { marker: true, name: "a.png".into(), kind: FileKind::Image, ..File::default() };
+        pool.insert("sys", "files", Value::array([Value::from(image)]));
+        let vision = VisionConfig { enabled: true, ..VisionConfig::default() };
+        assert!(vision.image_parts(&pool).is_err());
     }
 }

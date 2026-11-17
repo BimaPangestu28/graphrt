@@ -5,3 +5,4 @@ pub mod classifier;
 pub mod common;
 pub mod extractor;
 pub mod llm;
+pub mod schema;

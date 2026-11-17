@@ -3,7 +3,9 @@
 //! Each declared parameter becomes an output. Values are validated and coerced
 //! to their declared type. Validation problems do not fail the node: they set
 //! `__is_success` to 0 and explain the problem in `__reason`, so a graph can
-//! branch on them. Model invocation errors fail the node.
+//! branch on them. This includes malformed function-call arguments, which are
+//! never treated as an empty (successful) result. Model invocation errors fail
+//! the node.
 
 use std::sync::Arc;
 
@@ -17,7 +19,9 @@ use graphrt_core::{Node, NodeContext, NodeError, NodeOutput, Selector};
 use serde::Deserialize;
 use serde_json::{Map, Value as Json, json};
 
-use super::common::{MemoryConfig, ModelConfig, VisionConfig, extract_json, invoke, model_for, usage_value};
+use super::common::{
+    MemoryConfig, ModelConfig, StreamMode, VisionConfig, extract_json_where, invoke, model_for, usage_value,
+};
 use crate::types::{Message, ToolChoice};
 
 /// Name of the synthetic function used in function-call mode.
@@ -25,6 +29,7 @@ pub const EXTRACT_TOOL: &str = "extract_parameters";
 
 /// Declared parameter type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
 pub enum ParamType {
     #[serde(rename = "string")]
     String,
@@ -161,13 +166,13 @@ impl ExtractorNode {
         }
         let mut messages = vec![Message::system(system)];
         if let Some(memory) = &cfg.memory {
-            messages.extend(memory.history(pool));
+            messages.extend(memory.history(pool)?);
         }
         let mut user = Message::user(query);
-        user.content.extend(cfg.vision.image_parts(pool));
+        user.content.extend(cfg.vision.image_parts(pool)?);
         messages.push(user);
 
-        let mut request = cfg.model.request(messages, pool);
+        let mut request = cfg.model.request(messages, pool)?;
         if cfg.reasoning_mode == ReasoningMode::FunctionCall {
             request.tools = vec![ToolSpec {
                 name: EXTRACT_TOOL.to_owned(),
@@ -178,18 +183,19 @@ impl ExtractorNode {
         }
 
         let model = model_for(&ctx, &cfg.model)?;
-        let response = invoke(&ctx, model.as_ref(), request, false).await?;
-        let raw = response
-            .tool_calls
-            .iter()
-            .find(|c| c.name == EXTRACT_TOOL)
-            .map(|c| c.arguments_json())
-            .or_else(|| extract_json(&response.text));
+        let response = invoke(&ctx, model.as_ref(), request, StreamMode::Off).await?;
+        let raw: Result<Map<String, Json>, String> = match response.tool_calls.iter().find(|c| c.name == EXTRACT_TOOL) {
+            Some(call) => call.arguments_json().map_err(|e| format!("model returned invalid function arguments: {e}")),
+            None => match extract_json_where(&response.text, Json::is_object) {
+                Some(Json::Object(values)) => Ok(values),
+                _ => Err("model did not return a JSON object of parameters".to_owned()),
+            },
+        };
 
         let mut output = NodeOutput::new();
         let mut problems: Vec<String> = Vec::new();
         match raw {
-            Some(Json::Object(values)) => {
+            Ok(values) => {
                 for p in &cfg.parameters {
                     let value = match values.get(&p.name).filter(|v| !v.is_null()) {
                         None if p.required => {
@@ -208,8 +214,8 @@ impl ExtractorNode {
                     output.outputs.insert(p.name.clone(), value);
                 }
             }
-            _ => {
-                problems.push("model did not return a JSON object of parameters".to_owned());
+            Err(problem) => {
+                problems.push(problem);
                 for p in &cfg.parameters {
                     output.outputs.insert(p.name.clone(), Value::Null);
                 }
@@ -310,7 +316,17 @@ impl Node for ExtractorNode {
     }
 
     fn inputs(&self) -> Vec<Selector> {
-        vec![self.config.query.clone()]
+        let cfg = &self.config;
+        let mut out = vec![cfg.query.clone()];
+        if let Some(instruction) = &cfg.instruction {
+            out.extend(instruction.selectors().cloned());
+        }
+        if let Some(memory) = &cfg.memory {
+            out.extend(memory.selectors());
+        }
+        out.extend(cfg.vision.selectors());
+        out.extend(cfg.model.selectors());
+        out
     }
 }
 
@@ -387,6 +403,15 @@ mod tests {
         assert!(reason.contains("unit"));
         assert_eq!(out.outputs["city"], Value::from("Paris"));
         assert!(model.requests()[0].tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn malformed_function_arguments_are_not_a_success() {
+        let n = node("function_call");
+        let (out, _) = run(&n, MockModel::tool_calls(&[("c", EXTRACT_TOOL, r#"{"city":"Par"#)])).await;
+        assert_eq!(out.outputs["__is_success"], Value::Int(0));
+        assert!(out.outputs["__reason"].to_text().contains("invalid function arguments"));
+        assert_eq!(out.outputs["city"], Value::Null);
     }
 
     #[tokio::test]

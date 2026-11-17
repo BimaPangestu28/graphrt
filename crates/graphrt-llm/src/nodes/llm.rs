@@ -2,7 +2,13 @@
 //!
 //! Outputs: `text`, `reasoning` (when present), `usage`, `finish_reason` and,
 //! with structured output enabled, `structured_output`. Answer tokens stream
-//! as chunks on field `text`, reasoning on field `reasoning`.
+//! as chunks on field `text`, reasoning on field `reasoning`. With
+//! `reasoning_format: separated`, `<think>` sections are streamed on
+//! `reasoning` too, so the streamed text always equals the `text` output.
+//!
+//! Structured output is parsed from the answer and checked against the schema
+//! (top-level type, required properties, property types); a mismatch is a
+//! retryable `structured_output` error.
 
 use std::sync::Arc;
 
@@ -15,14 +21,16 @@ use serde::Deserialize;
 use serde_json::Value as Json;
 
 use super::common::{
-    ContextConfig, MemoryConfig, ModelConfig, PromptTemplate, VisionConfig, build_messages, extract_json, invoke,
-    model_for, split_think_tags, usage_value,
+    ContextConfig, MemoryConfig, ModelConfig, PromptTemplate, StreamMode, VisionConfig, build_messages,
+    extract_json_where, invoke, model_for, split_think_tags, usage_value,
 };
+use super::schema;
 use crate::types::ResponseFormat;
 
 /// How `<think>` tags inside the answer are treated.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ReasoningFormat {
     /// Keep tags in `text` as produced.
     #[default]
@@ -97,12 +105,12 @@ impl LlmNode {
         let cfg = &self.config;
         let pool = &ctx.pool;
         let context = cfg.context.resolve(pool);
-        let images = cfg.vision.image_parts(pool);
-        let messages = build_messages(&cfg.prompt_template, pool, context.as_deref(), cfg.memory.as_ref(), images);
+        let images = cfg.vision.image_parts(pool)?;
+        let messages = build_messages(&cfg.prompt_template, pool, context.as_deref(), cfg.memory.as_ref(), images)?;
         if messages.is_empty() {
             return Err(NodeError::invalid_input("prompt rendered to no messages"));
         }
-        let mut request = cfg.model.request(messages, pool);
+        let mut request = cfg.model.request(messages, pool)?;
         if let Some(schema) = &self.schema {
             request.response_format = Some(ResponseFormat::JsonSchema {
                 name: "structured_output".into(),
@@ -112,7 +120,11 @@ impl LlmNode {
         }
 
         let model = model_for(&ctx, &cfg.model)?;
-        let response = invoke(&ctx, model.as_ref(), request, true).await?;
+        let mode = match cfg.reasoning_format {
+            ReasoningFormat::Tagged => StreamMode::Raw,
+            ReasoningFormat::Separated => StreamMode::SeparateThink,
+        };
+        let response = invoke(&ctx, model.as_ref(), request, mode).await?;
 
         let (text, mut reasoning) = match cfg.reasoning_format {
             ReasoningFormat::Tagged => (response.text.clone(), String::new()),
@@ -136,9 +148,12 @@ impl LlmNode {
         if !reasoning.is_empty() {
             output = output.with("reasoning", reasoning);
         }
-        if self.schema.is_some() {
-            let parsed = extract_json(&text).ok_or_else(|| {
-                NodeError::new("structured_output", "model output is not valid JSON for the requested schema")
+        if let Some(schema) = &self.schema {
+            let parsed = extract_json_where(&text, |v| schema::matches_top_level_type(v, schema)).ok_or_else(|| {
+                NodeError::new("structured_output", "model output contains no JSON value of the requested type")
+            })?;
+            schema::validate(&parsed, schema).map_err(|problem| {
+                NodeError::new("structured_output", format!("model output does not match the schema: {problem}"))
             })?;
             output = output.with("structured_output", Value::from_json(parsed));
         }
@@ -152,11 +167,14 @@ impl Node for LlmNode {
     }
 
     fn inputs(&self) -> Vec<Selector> {
-        let mut out: Vec<Selector> =
-            self.config.prompt_template.messages().iter().flat_map(|m| m.text.selectors().cloned()).collect();
-        if let Some(s) = &self.config.context.variable_selector {
-            out.push(s.clone());
+        let cfg = &self.config;
+        let mut out = cfg.prompt_template.selectors();
+        out.extend(cfg.context.selectors());
+        out.extend(cfg.vision.selectors());
+        if let Some(memory) = &cfg.memory {
+            out.extend(memory.selectors());
         }
+        out.extend(cfg.model.selectors());
         out
     }
 }
@@ -251,6 +269,85 @@ mod tests {
         assert_eq!(out.outputs["structured_output"].get_path(&["n"]), Some(Value::Int(3)));
         assert_eq!(out.outputs["reasoning"], Value::from("plan"));
         assert!(matches!(model.requests()[0].response_format, Some(ResponseFormat::JsonSchema { .. })));
+    }
+
+    #[tokio::test]
+    async fn separated_reasoning_streams_without_think_tags() {
+        let model = Arc::new(MockModel::new(vec![vec![
+            ChatDelta::Text("<thi".into()),
+            ChatDelta::Text("nk>plan</th".into()),
+            ChatDelta::Text("ink>\nHel".into()),
+            ChatDelta::Text("lo".into()),
+            ChatDelta::Finish(crate::types::FinishReason::Stop),
+        ]]));
+        let node = LlmNode::from_doc(&doc(serde_json::json!({
+            "model": {"provider": "openai", "name": "gpt"},
+            "prompt_template": [{"role": "user", "text": "hi"}],
+            "reasoning_format": "separated"
+        })))
+        .unwrap();
+        let (ctx, events) = ctx_with(model, VariablePool::new());
+        let out = completed(node.run(ctx).await);
+        let mut streamed = String::new();
+        let mut reasoning = String::new();
+        for e in events.lock().unwrap().iter() {
+            if let Event::NodeChunk { field, chunk, .. } = e {
+                match field.as_str() {
+                    "text" => streamed.push_str(chunk),
+                    _ => reasoning.push_str(chunk),
+                }
+            }
+        }
+        assert_eq!(streamed, "Hello");
+        assert_eq!(out.outputs["text"], Value::from(streamed.as_str()));
+        assert_eq!(reasoning, "plan");
+    }
+
+    #[tokio::test]
+    async fn structured_output_is_validated() {
+        let model = Arc::new(MockModel::new(vec![MockModel::text("see [1] and {\"m\": 1}")]));
+        let node = LlmNode::from_doc(&doc(serde_json::json!({
+            "model": {"provider": "openai", "name": "gpt"},
+            "prompt_template": [{"role": "user", "text": "give n"}],
+            "structured_output": {"schema": {"type": "object", "required": ["n"], "properties": {"n": {"type": "integer"}}}}
+        })))
+        .unwrap();
+        let (ctx, _) = ctx_with(model, VariablePool::new());
+        let err = node.run(ctx).await.unwrap_err();
+        assert_eq!(err.kind, "structured_output");
+        assert!(err.message.contains("`n`"), "{}", err.message);
+        assert!(err.retryable);
+    }
+
+    #[tokio::test]
+    async fn invalid_completion_params_fail_the_node() {
+        let model = Arc::new(MockModel::new(vec![MockModel::text("x")]));
+        let node = LlmNode::from_doc(&doc(serde_json::json!({
+            "model": {"provider": "openai", "name": "gpt", "completion_params": {"temperature": "abc"}},
+            "prompt_template": [{"role": "user", "text": "hi"}]
+        })))
+        .unwrap();
+        let (ctx, _) = ctx_with(Arc::clone(&model), VariablePool::new());
+        let err = node.run(ctx).await.unwrap_err();
+        assert_eq!(err.kind, "invalid_input");
+        assert!(err.message.contains("temperature"));
+        assert!(model.requests().is_empty());
+    }
+
+    #[test]
+    fn inputs_cover_every_reference() {
+        let node = LlmNode::from_doc(&doc(serde_json::json!({
+            "model": {"provider": "openai", "name": "gpt", "completion_params": {"temperature": "{{#cfg.t#}}"}},
+            "prompt_template": [{"role": "user", "text": "{{#start.q#}}"}],
+            "context": {"enabled": true, "variable_selector": ["kb", "result"]},
+            "vision": {"enabled": true, "configs": {"variable_selector": ["start", "files"]}},
+            "memory": {"window": {"enabled": false}}
+        })))
+        .unwrap();
+        let inputs: Vec<String> = node.inputs().iter().map(ToString::to_string).collect();
+        for expected in ["start.q", "kb.result", "start.files", "sys.history", "sys.query", "cfg.t"] {
+            assert!(inputs.iter().any(|i| i == expected), "missing {expected} in {inputs:?}");
+        }
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@ use graphrt_core::NodeError;
 
 /// Error raised by a model provider.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum LlmError {
     /// Invalid or missing credentials / permissions.
     #[error("authentication failed: {0}")]
