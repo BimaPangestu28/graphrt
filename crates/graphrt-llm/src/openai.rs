@@ -7,12 +7,14 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
 use graphrt_core::event::Usage;
 use serde_json::{Map, Value as Json, json};
 
+use crate::credentials::{Credential, CredentialSource};
 use crate::error::LlmError;
 use crate::http::{Decoded, SseDecoder, build_client, send_sse, truncated};
 use crate::sse::SseEvent;
@@ -48,6 +50,12 @@ pub struct OpenAiConfig {
     /// Send `max_completion_tokens` instead of `max_tokens` (required by some newer models).
     pub use_max_completion_tokens: bool,
     pub connect_timeout: Duration,
+    /// Per-request credential source. When set it replaces `api_key`; its headers are
+    /// appended and its `base_url`, if any, overrides `base_url`. A 401/403 response
+    /// invalidates the credential and the request is retried once.
+    pub credentials: Option<Arc<dyn CredentialSource>>,
+    /// Provider name passed to the credential source (default `openai`).
+    pub credential_name: String,
 }
 
 impl fmt::Debug for OpenAiConfig {
@@ -58,6 +66,8 @@ impl fmt::Debug for OpenAiConfig {
             .field("auth", &self.auth)
             .field("headers", &self.headers.iter().map(|(k, _)| k).collect::<Vec<_>>())
             .field("include_usage", &self.include_usage)
+            .field("credentials", &self.credentials.as_ref().map(|_| "<source>"))
+            .field("credential_name", &self.credential_name)
             .finish_non_exhaustive()
     }
 }
@@ -73,6 +83,8 @@ impl Default for OpenAiConfig {
             include_usage: true,
             use_max_completion_tokens: false,
             connect_timeout: Duration::from_secs(10),
+            credentials: None,
+            credential_name: "openai".to_owned(),
         }
     }
 }
@@ -80,6 +92,18 @@ impl Default for OpenAiConfig {
 impl OpenAiConfig {
     pub fn new(base_url: impl Into<String>, api_key: Option<String>) -> Self {
         Self { base_url: base_url.into(), api_key, ..Self::default() }
+    }
+
+    /// Ask `source` for a credential before every request (see [`crate::credentials`]).
+    pub fn with_credentials(mut self, source: Arc<dyn CredentialSource>) -> Self {
+        self.credentials = Some(source);
+        self
+    }
+
+    /// Provider name passed to the credential source.
+    pub fn credential_name(mut self, name: impl Into<String>) -> Self {
+        self.credential_name = name.into();
+        self
     }
 }
 
@@ -102,8 +126,8 @@ impl OpenAiModel {
         Ok(Self { config, client })
     }
 
-    fn endpoint(&self) -> String {
-        let mut url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
+    fn endpoint(&self, base_url: &str) -> String {
+        let mut url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
         for (i, (k, v)) in self.config.query.iter().enumerate() {
             url.push(if i == 0 { '?' } else { '&' });
             url.push_str(&percent_encode(k));
@@ -127,21 +151,50 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
+impl OpenAiModel {
+    fn request(&self, body: &Json, credential: Option<&Credential>) -> reqwest::RequestBuilder {
+        let base = credential.and_then(|c| c.base_url.as_deref()).unwrap_or(&self.config.base_url);
+        let mut builder = self.client.post(self.endpoint(base)).json(body);
+        let key = credential.map(|c| c.secret.as_str()).or(self.config.api_key.as_deref());
+        if let Some(key) = key {
+            builder = match &self.config.auth {
+                AuthStyle::Bearer => builder.bearer_auth(key),
+                AuthStyle::Header(name) => builder.header(name.as_str(), key),
+            };
+        }
+        for (k, v) in &self.config.headers {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+        if let Some(credential) = credential {
+            for (k, v) in &credential.headers {
+                builder = builder.header(k.as_str(), v.as_str());
+            }
+        }
+        builder
+    }
+}
+
 impl ChatModel for OpenAiModel {
     fn chat(&self, request: ChatRequest) -> BoxFuture<'_, Result<ChatStream, LlmError>> {
         Box::pin(async move {
             let body = build_body(&request, &self.config)?;
-            let mut builder = self.client.post(self.endpoint()).json(&body);
-            if let Some(key) = &self.config.api_key {
-                builder = match &self.config.auth {
-                    AuthStyle::Bearer => builder.bearer_auth(key),
-                    AuthStyle::Header(name) => builder.header(name.as_str(), key.as_str()),
+            let name = self.config.credential_name.as_str();
+            let mut retried = false;
+            loop {
+                let credential = match &self.config.credentials {
+                    Some(source) => Some(source.credential(name).await?),
+                    None => None,
                 };
+                let result = send_sse(self.request(&body, credential.as_ref()), OpenAiDecoder::default()).await;
+                match (result, &self.config.credentials) {
+                    // The credential was rejected: drop it and retry once with a fresh one.
+                    (Err(LlmError::Auth(_)), Some(source)) if !retried => {
+                        source.invalidate(name);
+                        retried = true;
+                    }
+                    (result, _) => return result,
+                }
             }
-            for (k, v) in &self.config.headers {
-                builder = builder.header(k.as_str(), v.as_str());
-            }
-            send_sse(builder, OpenAiDecoder::default()).await
         })
     }
 }

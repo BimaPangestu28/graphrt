@@ -23,6 +23,7 @@
 //! # }
 //! ```
 
+pub mod credential_config;
 pub mod credentials;
 pub mod error;
 /// Scripted model for tests and offline examples (feature `mock`, on by default).

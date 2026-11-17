@@ -36,7 +36,7 @@ rustls = { version = "0.23", optional = true, default-features = false, features
 
 [dev-dependencies]
 graphrt-core = { workspace = true, features = ["tokio", "jinja"] }
-tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
 
 [lints]
 workspace = true
