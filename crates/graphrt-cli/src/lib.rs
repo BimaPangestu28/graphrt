@@ -2,6 +2,7 @@
 //! binary and its tests.
 
 pub mod args;
+pub mod bundle_cmd;
 pub mod catalog;
 pub mod error;
 pub mod extensions;
@@ -45,6 +46,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "rag") {
         features.push("rag");
     }
+    if cfg!(feature = "bundle") {
+        features.push("bundle");
+    }
     if cfg!(feature = "plugins") {
         features.push("plugins");
     }
@@ -65,6 +69,8 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         #[cfg(any(feature = "plugins", feature = "wasm"))]
         Command::Plugin(args) => plugin::plugin(args),
         Command::Nodes(args) => catalog::nodes(&args),
+        #[cfg(feature = "bundle")]
+        Command::Bundle(args) => bundle_cmd::bundle(args),
         Command::Version => {
             use std::io::Write;
             let mut out = std::io::stdout().lock();

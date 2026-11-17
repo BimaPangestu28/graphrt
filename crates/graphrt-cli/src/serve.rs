@@ -125,7 +125,10 @@ pub fn discover(path: &Path) -> Result<Vec<(String, PathBuf)>, CliError> {
     for entry in entries.flatten() {
         let p = entry.path();
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or_default();
-        if p.is_file() && matches!(ext, "yaml" | "yml" | "json") && !p.to_string_lossy().ends_with(".snapshot.json") {
+        if p.is_file()
+            && matches!(ext, "yaml" | "yml" | "json" | "grt")
+            && !p.to_string_lossy().ends_with(".snapshot.json")
+        {
             found.push((name_of(&p), p));
         }
     }
@@ -143,14 +146,20 @@ pub async fn build_state(
     limits: Limits,
     api_key: Option<String>,
 ) -> Result<AppState, CliError> {
-    let extensions = Extensions::load(&options.plugins)?;
+    let mut extensions = Extensions::load(&options.plugins)?;
     let services = Arc::new(setup::services(options, extensions.tools.clone()).await?);
     let mut workflows = IndexMap::new();
     for (name, path) in files {
         if path.extension().and_then(|e| e.to_str()) == Some("json") && is_mcp_config(path) {
             continue;
         }
-        let graph = setup::load_graph_with(path, options.model_override.as_deref(), &extensions.registry)?;
+        let graph = if crate::bundle_cmd::is_bundle(path) {
+            // Bundled WebAssembly plugins are registered; services come from the host flags.
+            let mut bundle_options = options.clone();
+            crate::bundle_cmd::bundle_graph(path, &mut bundle_options, &mut extensions.registry, &options.trust_keys)?
+        } else {
+            setup::load_graph_with(path, options.model_override.as_deref(), &extensions.registry)?
+        };
         let env = setup::workflow_env(&graph, options);
         let engine = Engine::new(graph)
             .with_shared_services(services.clone())

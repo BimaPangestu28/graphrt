@@ -371,6 +371,52 @@ impl Runtime {
             .with_limits(self.limits.clone());
         Ok(Arc::new(WorkflowHandle { runtime: self, graph, engine }))
     }
+
+    /// Open a portable bundle (`.grt` bytes), register its WebAssembly plugins and
+    /// compile its entry workflow. Every file is checked against the manifest's
+    /// SHA-256; when `trusted_keys` (hex Ed25519 public keys) is non-empty, the
+    /// bundle must be signed by one of them. Bundles needing process or HTTP
+    /// plugins are rejected: embedded hosts cannot spawn processes.
+    pub fn load_bundle(
+        self: Arc<Self>,
+        bundle: Vec<u8>,
+        trusted_keys: Vec<String>,
+    ) -> Result<Arc<WorkflowHandle>, GraphrtError> {
+        let mut options = graphrt_bundle::OpenOptions::default();
+        for key in trusted_keys {
+            options = options.trust_key(key);
+        }
+        let opened = graphrt_bundle::Bundle::open(&bundle, &options)
+            .map_err(|e| GraphrtError::InvalidWorkflow { message: e.to_string() })?;
+        let non_portable: Vec<&str> =
+            opened.manifest().requires.plugins.iter().filter(|p| !p.portable).map(|p| p.name.as_str()).collect();
+        if !non_portable.is_empty() {
+            return Err(GraphrtError::Plugin {
+                message: format!(
+                    "bundle needs process/http plugins ({}), which cannot run embedded",
+                    non_portable.join(", ")
+                ),
+            });
+        }
+        let workflow = opened.workflow(None).map_err(|e| GraphrtError::InvalidWorkflow { message: e.to_string() })?;
+        let graph = {
+            let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
+            opened
+                .register_wasm_plugins(&mut registry, &self.wasm_limits)
+                .map_err(|e| GraphrtError::Plugin { message: e.to_string() })?;
+            let report = opened.check(&registry);
+            if let Some(mismatch) = report.version_mismatch {
+                return Err(GraphrtError::InvalidWorkflow { message: mismatch });
+            }
+            Graph::build(workflow, &registry).map_err(|e| GraphrtError::InvalidWorkflow { message: e.to_string() })?
+        };
+        let graph = Arc::new(graph);
+        let engine = Engine::new(graph.clone())
+            .with_shared_services(self.services.clone())
+            .with_clock(Arc::new(graphrt_core::node::TokioClock))
+            .with_limits(self.limits.clone());
+        Ok(Arc::new(WorkflowHandle { runtime: self, graph, engine }))
+    }
 }
 
 async fn build_tools(raw: Option<&serde_json::Value>) -> Result<graphrt_core::tool::ToolRegistry, GraphrtError> {

@@ -47,14 +47,20 @@ pub fn service_options(args: &ServiceArgs) -> Result<ServiceOptions, CliError> {
         knowledge: args.knowledge.clone(),
         files_dir: args.files_dir.clone(),
         plugins: args.plugins.options(),
+        trust_keys: args.trust_key.clone(),
     })
 }
 
 /// Execute `graphrt run`. Returns the process exit code.
 pub async fn run(args: RunArgs) -> Result<u8, CliError> {
-    let options = service_options(&args.services)?;
-    let extensions = Extensions::load(&options.plugins)?;
-    let graph = setup::load_graph_with(&args.workflow, options.model_override.as_deref(), &extensions.registry)?;
+    let mut options = service_options(&args.services)?;
+    let mut extensions = Extensions::load(&options.plugins)?;
+    let graph = if crate::bundle_cmd::is_bundle(&args.workflow) {
+        let trust = &args.services.trust_key;
+        crate::bundle_cmd::bundle_graph(&args.workflow, &mut options, &mut extensions.registry, trust)?
+    } else {
+        setup::load_graph_with(&args.workflow, options.model_override.as_deref(), &extensions.registry)?
+    };
     for warning in graph.warnings() {
         eprintln!("warning: {warning}");
     }

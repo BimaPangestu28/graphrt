@@ -31,8 +31,95 @@ pub enum Command {
     /// Manage plugins: list, install, remove, inspect, scaffold.
     #[cfg(any(feature = "plugins", feature = "wasm"))]
     Plugin(PluginCmdArgs),
+    /// Build, inspect, verify and sign portable bundles (`.grt`).
+    #[cfg(feature = "bundle")]
+    Bundle(BundleArgs),
     /// Print version and enabled features.
     Version,
+}
+
+/// Options of `graphrt bundle`.
+#[cfg(feature = "bundle")]
+#[derive(Debug, Args)]
+pub struct BundleArgs {
+    #[command(subcommand)]
+    pub command: BundleCommand,
+}
+
+/// `graphrt bundle` subcommands.
+#[cfg(feature = "bundle")]
+#[derive(Debug, Subcommand)]
+pub enum BundleCommand {
+    /// Package a workflow with its WebAssembly plugins and configs into one `.grt` file.
+    Build(Box<BundleBuildArgs>),
+    /// Show a bundle's manifest, signature and compatibility with this build.
+    Inspect {
+        bundle: PathBuf,
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+        /// Require a signature from this hex public key. Repeatable; also `$GRAPHRT_TRUSTED_KEYS`.
+        #[arg(long = "trust-key", value_name = "HEX")]
+        trust_key: Vec<String>,
+    },
+    /// Check integrity (and the signature, when trusted keys are given).
+    Verify {
+        bundle: PathBuf,
+        /// Require a signature from this hex public key. Repeatable; also `$GRAPHRT_TRUSTED_KEYS`.
+        #[arg(long = "trust-key", value_name = "HEX")]
+        trust_key: Vec<String>,
+    },
+    /// Sign a bundle with an Ed25519 secret key file (from `graphrt bundle keygen`).
+    Sign {
+        bundle: PathBuf,
+        /// Secret key file.
+        #[arg(long, value_name = "FILE")]
+        key: PathBuf,
+        /// Output file [default: overwrite the bundle].
+        #[arg(short, long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
+    /// Generate an Ed25519 signing key pair: writes the secret key file, prints the public key.
+    Keygen {
+        /// Secret key file to create (never overwritten).
+        #[arg(long, value_name = "FILE")]
+        out: PathBuf,
+    },
+}
+
+/// Options of `graphrt bundle build`.
+#[cfg(feature = "bundle")]
+#[derive(Debug, Args)]
+pub struct BundleBuildArgs {
+    /// Workflow document to package (becomes the bundle entry).
+    pub workflow: PathBuf,
+    /// Output file [default: `<workflow>.grt` next to the workflow].
+    #[arg(short, long, value_name = "FILE")]
+    pub out: Option<PathBuf>,
+    /// Bundle name [default: the workflow `name`, else its file stem].
+    #[arg(long)]
+    pub name: Option<String>,
+    /// Bundle version.
+    #[arg(long = "bundle-version", value_name = "VERSION", default_value = "0.1.0")]
+    pub bundle_version: String,
+    /// Include this plugin directory. WebAssembly plugins needed by the workflow are
+    /// found automatically in the plugin search paths. Repeatable.
+    #[arg(long = "plugin", value_name = "DIR")]
+    pub plugin: Vec<PathBuf>,
+    /// Knowledge base config to ship (memory store files it references are included).
+    #[arg(long, value_name = "FILE")]
+    pub knowledge: Option<PathBuf>,
+    /// Model providers file to ship (must not contain inline keys).
+    #[arg(long, value_name = "FILE")]
+    pub providers: Option<PathBuf>,
+    /// Directory copied under `assets/`. Repeatable.
+    #[arg(long, value_name = "DIR")]
+    pub include: Vec<PathBuf>,
+    /// Sign the bundle with this secret key file.
+    #[arg(long, value_name = "FILE")]
+    pub sign_key: Option<PathBuf>,
+    #[command(flatten)]
+    pub plugins: PluginArgs,
 }
 
 /// Options of `graphrt kb`.
@@ -244,13 +331,17 @@ pub struct ServiceArgs {
     /// Maximum node executions per run.
     #[arg(long, value_name = "N")]
     pub max_steps: Option<u64>,
+    /// Require bundles (`.grt`) to be signed by this hex public key. Repeatable; also
+    /// `$GRAPHRT_TRUSTED_KEYS` (comma-separated).
+    #[arg(long = "trust-key", value_name = "HEX")]
+    pub trust_key: Vec<String>,
     #[command(flatten)]
     pub plugins: PluginArgs,
 }
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Workflow document (.yaml, .yml or .json).
+    /// Workflow document (.yaml, .yml or .json) or bundle (.grt).
     pub workflow: PathBuf,
     /// Start input as `key=value` (string) or `key:=json`. Repeatable.
     #[arg(short, long = "input", value_name = "KEY=VALUE")]
