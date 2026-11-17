@@ -1,0 +1,39 @@
+# A tool-using agent backed by MCP servers (see examples/mcp.json).
+# Needs a model key (OPENAI_API_KEY) and Node.js for the MCP servers.
+#   graphrt run examples/research-agent.yaml --mcp examples/mcp.json \
+#     --input topic="the history of the Rust borrow checker"
+version: "1"
+name: research-agent
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: topic, type: paragraph, required: true }
+
+    - id: agent
+      type: agent
+      model:
+        provider: openai
+        name: gpt-4o-mini
+      instruction: |
+        You are a careful research assistant. Use the fetch tool to read sources,
+        save notes with the filesystem tools, and cite every source URL.
+      query: "Research {{#start.topic#}} and write a short brief."
+      tools:
+        - fetch/*
+        - filesystem/write_file
+        - filesystem/read_file
+      max_iterations: 8
+      parallel_tool_calls: true
+      # Ask a human before anything is written to disk.
+      require_approval: [filesystem/write_file]
+      timeout_ms: 300000
+
+    - id: answer
+      type: answer
+      answer: "{{#agent.text#}}"
+
+  edges:
+    - { source: start, target: agent }
+    - { source: agent, target: answer }

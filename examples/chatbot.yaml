@@ -1,0 +1,33 @@
+# A streaming chatbot with conversation memory.
+# Needs a model: set OPENAI_API_KEY (or OLLAMA_HOST, ANTHROPIC_API_KEY and change `provider`).
+#   graphrt run examples/chatbot.yaml --sys query="What is a DAG?" \
+#     --sys 'history:=[{"role":"user","content":"Hi"},{"role":"assistant","content":"Hello!"}]'
+version: "1"
+name: chatbot
+graph:
+  nodes:
+    - id: start
+      type: start
+
+    - id: llm
+      type: llm
+      model:
+        provider: openai
+        name: gpt-4o-mini
+        completion_params: { temperature: 0.3 }
+      prompt_template:
+        - { role: system, text: "You are a concise, friendly assistant." }
+        - { role: user, text: "{{#sys.query#}}" }
+      memory:
+        window: { enabled: true, size: 10 }
+        variable_selector: [sys, history]
+      retry: { max_retries: 2, interval_ms: 1000, backoff: 2.0 }
+      timeout_ms: 60000
+
+    - id: answer
+      type: answer
+      answer: "{{#llm.text#}}"
+
+  edges:
+    - { source: start, target: llm }
+    - { source: llm, target: answer }

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "timeout_ms": 30000
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "./agent-workspace"],
+      "allowed_tools": ["read_file", "write_file", "list_directory"]
+    }
+  }
+}

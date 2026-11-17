@@ -1,17 +1,53 @@
 [package]
 name = "graphrt-cli"
+description = "The graphrt command-line runner and HTTP server for agentic workflow graphs."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "graphrt_cli"
+path = "src/lib.rs"
 
 [[bin]]
 name = "graphrt"
 path = "src/main.rs"
 
+[features]
+default = ["llm", "http", "code", "mcp", "serve"]
+# llm, question-classifier, parameter-extractor and agent nodes.
+llm = ["dep:graphrt-llm"]
+# http-request node with SSRF-safe egress.
+http = ["dep:graphrt-http"]
+# code node (embedded JavaScript).
+code = ["dep:graphrt-code"]
+# MCP tool servers (`--mcp`).
+mcp = ["dep:graphrt-mcp"]
+# `graphrt serve`: HTTP + SSE API.
+serve = ["dep:axum", "tokio/rt-multi-thread", "tokio/net"]
+
 [dependencies]
-graphrt-core.workspace = true
+graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }
+graphrt-llm = { workspace = true, optional = true, features = ["openai", "anthropic"] }
+graphrt-http = { workspace = true, optional = true }
+graphrt-code = { workspace = true, optional = true, features = ["js", "tokio"] }
+graphrt-mcp = { workspace = true, optional = true, features = ["stdio", "http"] }
+clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+tokio = { workspace = true, features = ["rt", "time", "signal"] }
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio"] }
+
+[dev-dependencies]
+tower = { version = "0.5", default-features = false, features = ["util"] }
+http-body-util = "0.1"
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
 
 [lints]
 workspace = true

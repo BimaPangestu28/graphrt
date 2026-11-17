@@ -1,0 +1,208 @@
+//! Building the node registry, host services and run inputs shared by every command.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use graphrt_core::engine::Limits;
+use graphrt_core::{Graph, Registry, Services, Value, Workflow};
+use indexmap::IndexMap;
+
+use crate::error::CliError;
+
+/// Options that affect which host services are configured.
+#[derive(Clone, Debug, Default)]
+pub struct ServiceOptions {
+    /// Extra variables (from `--env-file`), merged over the process environment.
+    pub env_file: Vec<(String, String)>,
+    /// Allow HTTP requests to private / loopback addresses.
+    pub allow_private_network: bool,
+    /// Path to an MCP servers file (`{"mcpServers": {...}}`).
+    pub mcp_config: Option<std::path::PathBuf>,
+}
+
+impl ServiceOptions {
+    /// Process environment overlaid with the env file.
+    pub fn all_vars(&self) -> Vec<(String, String)> {
+        let mut vars: Vec<(String, String)> = std::env::vars().collect();
+        for (k, v) in &self.env_file {
+            vars.retain(|(name, _)| name != k);
+            vars.push((k.clone(), v.clone()));
+        }
+        vars
+    }
+}
+
+/// Registry with every node kind compiled into this binary.
+pub fn registry() -> Registry {
+    #[allow(unused_mut)]
+    let mut registry = Registry::with_builtins();
+    #[cfg(feature = "llm")]
+    graphrt_llm::register(&mut registry);
+    #[cfg(feature = "http")]
+    graphrt_http::register(&mut registry);
+    #[cfg(feature = "code")]
+    graphrt_code::register(&mut registry);
+    registry
+}
+
+/// Node kinds available in this build, sorted.
+pub fn available_kinds() -> Vec<String> {
+    let mut kinds: Vec<String> = registry().kinds().map(str::to_owned).collect();
+    kinds.sort();
+    kinds
+}
+
+/// Read a workflow document from disk.
+pub fn read_workflow(path: &Path) -> Result<Workflow, CliError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| CliError::usage(format!("cannot read workflow `{}`: {e}", path.display())))?;
+    Workflow::parse(&text).map_err(|e| CliError::invalid(format!("{}: {e}", path.display())))
+}
+
+/// Parse and compile a workflow.
+pub fn load_graph(path: &Path) -> Result<Arc<Graph>, CliError> {
+    let workflow = read_workflow(path)?;
+    let graph =
+        Graph::build(workflow, &registry()).map_err(|e| CliError::invalid(format!("{}: {e}", path.display())))?;
+    Ok(Arc::new(graph))
+}
+
+/// Build the host services for this build's features.
+pub async fn services(options: &ServiceOptions) -> Result<Services, CliError> {
+    #[allow(unused_mut)]
+    let mut services = Services::new();
+    #[cfg(feature = "llm")]
+    {
+        let models = graphrt_llm::ModelRegistry::from_vars(&options.all_vars())
+            .map_err(|e| CliError::usage(format!("model configuration: {e}")))?;
+        services.insert(models);
+    }
+    #[cfg(feature = "http")]
+    {
+        let policy = graphrt_http::EgressPolicy { allow_private: options.allow_private_network, ..Default::default() };
+        let client = graphrt_http::HttpClient::new(policy).map_err(|e| CliError::usage(format!("http client: {e}")))?;
+        services.insert(client);
+    }
+    #[cfg(feature = "mcp")]
+    {
+        let tools = match &options.mcp_config {
+            Some(path) => {
+                let text = std::fs::read_to_string(path)
+                    .map_err(|e| CliError::usage(format!("cannot read MCP config `{}`: {e}", path.display())))?;
+                let servers: graphrt_mcp::McpServers = serde_json::from_str(&text)
+                    .map_err(|e| CliError::usage(format!("invalid MCP config `{}`: {e}", path.display())))?;
+                graphrt_mcp::connect_all(&servers.into_configs())
+                    .await
+                    .map_err(|e| CliError::usage(format!("MCP: {e}")))?
+            }
+            None => graphrt_core::tool::ToolRegistry::new(),
+        };
+        services.insert(tools);
+    }
+    #[cfg(not(feature = "mcp"))]
+    {
+        if let Some(path) = &options.mcp_config {
+            return Err(CliError::usage(format!("`--mcp {}` requires a build with the `mcp` feature", path.display())));
+        }
+        services.insert(graphrt_core::tool::ToolRegistry::new());
+    }
+    Ok(services)
+}
+
+/// Values for the workflow's declared env variables, taken from the env file and the
+/// process environment (env file wins). Undeclared variables are never exposed.
+pub fn workflow_env(graph: &Graph, options: &ServiceOptions) -> IndexMap<String, Value> {
+    let vars = options.all_vars();
+    let mut env = IndexMap::new();
+    for decl in &graph.workflow().env {
+        if let Some((_, value)) = vars.iter().rev().find(|(k, _)| *k == decl.name) {
+            env.insert(decl.name.clone(), Value::from(value.as_str()));
+        }
+    }
+    env
+}
+
+/// Limits from CLI flags.
+pub fn limits(timeout_ms: Option<u64>, max_steps: Option<u64>) -> Limits {
+    let mut limits = Limits::default();
+    if let Some(ms) = timeout_ms {
+        limits.max_duration_ms = Some(ms);
+    }
+    if let Some(steps) = max_steps {
+        limits.max_steps = steps;
+    }
+    limits
+}
+
+/// Parse a `.env` file: `KEY=VALUE` lines, `#` comments, optional `export ` prefix
+/// and optional single or double quotes around the value.
+pub fn parse_env_file(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((key, value)) = line.split_once('=') else { continue };
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let value = value.trim();
+        let unquoted = strip_quotes(value, '"').or_else(|| strip_quotes(value, '\'')).unwrap_or(value);
+        out.push((key.to_owned(), unquoted.to_owned()));
+    }
+    out
+}
+
+fn strip_quotes(value: &str, quote: char) -> Option<&str> {
+    value.strip_prefix(quote).and_then(|v| v.strip_suffix(quote))
+}
+
+/// Parse a `--input` style `key=value` pair.
+///
+/// - `key=value` passes `value` as a string (the start node converts it to the declared type),
+///   except that values starting with `[` or `{` are parsed as JSON;
+/// - `key:=json` always parses the right-hand side as JSON.
+pub fn parse_assignment(raw: &str) -> Result<(String, Value), CliError> {
+    if let Some((key, json)) = raw.split_once(":=") {
+        if !key.contains('=') {
+            let value: serde_json::Value =
+                serde_json::from_str(json).map_err(|e| CliError::usage(format!("invalid JSON for `{key}`: {e}")))?;
+            return Ok((key.to_owned(), Value::from_json(value)));
+        }
+    }
+    let (key, value) =
+        raw.split_once('=').ok_or_else(|| CliError::usage(format!("expected `key=value`, got `{raw}`")))?;
+    if key.is_empty() {
+        return Err(CliError::usage(format!("missing key in `{raw}`")));
+    }
+    let trimmed = value.trim_start();
+    if trimmed.starts_with('[') || trimmed.starts_with('{') {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(value) {
+            return Ok((key.to_owned(), Value::from_json(json)));
+        }
+    }
+    Ok((key.to_owned(), Value::from(value)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_file_parsing() {
+        let vars = parse_env_file("# c\nA=1\nexport B=\"two words\"\nC='x=y'\n\nbad line\n");
+        assert_eq!(vars, vec![("A".into(), "1".into()), ("B".into(), "two words".into()), ("C".into(), "x=y".into())]);
+    }
+
+    #[test]
+    fn assignment_parsing() {
+        assert_eq!(parse_assignment("name=Ada").unwrap(), ("name".into(), Value::from("Ada")));
+        assert_eq!(parse_assignment("n:=42").unwrap(), ("n".into(), Value::Int(42)));
+        assert!(matches!(parse_assignment("xs=[1,2]").unwrap().1, Value::Array(_)));
+        assert_eq!(parse_assignment("q=a=b").unwrap(), ("q".into(), Value::from("a=b")));
+        assert!(parse_assignment("novalue").is_err());
+    }
+}
