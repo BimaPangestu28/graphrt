@@ -1,0 +1,25 @@
+[package]
+name = "graphrt-bench"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Reproducible benchmark harness for graphrt (not part of the workspace)."
+
+# Standalone: keep this crate out of the main workspace.
+[workspace]
+
+[[bin]]
+name = "graphrt-bench"
+path = "src/main.rs"
+
+[dependencies]
+graphrt-core = { path = "../crates/graphrt-core", features = ["yaml", "jinja", "tokio"] }
+graphrt-llm = { path = "../crates/graphrt-llm", default-features = false, features = ["mock"] }
+futures = "0.3"
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
