@@ -1,0 +1,287 @@
+//! `llm` node: a single (streaming) model call.
+//!
+//! Outputs: `text`, `reasoning` (when present), `usage`, `finish_reason` and,
+//! with structured output enabled, `structured_output`. Answer tokens stream
+//! as chunks on field `text`, reasoning on field `reasoning`.
+
+use std::sync::Arc;
+
+use futures::future::BoxFuture;
+use graphrt_core::dsl::NodeDoc;
+use graphrt_core::node::{ConfigError, NodeResult, parse_config};
+use graphrt_core::value::Value;
+use graphrt_core::{Node, NodeContext, NodeError, NodeOutput, Selector};
+use serde::Deserialize;
+use serde_json::Value as Json;
+
+use super::common::{
+    ContextConfig, MemoryConfig, ModelConfig, PromptTemplate, VisionConfig, build_messages, extract_json, invoke,
+    model_for, split_think_tags, usage_value,
+};
+use crate::types::ResponseFormat;
+
+/// How `<think>` tags inside the answer are treated.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningFormat {
+    /// Keep tags in `text` as produced.
+    #[default]
+    Tagged,
+    /// Move tagged reasoning into `reasoning`.
+    Separated,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct StructuredOutput {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    schema: Option<Json>,
+}
+
+/// Configuration of the `llm` node.
+#[derive(Clone, Debug, Deserialize)]
+pub struct LlmConfig {
+    pub model: ModelConfig,
+    #[serde(default)]
+    pub prompt_template: PromptTemplate,
+    #[serde(default)]
+    pub context: ContextConfig,
+    #[serde(default)]
+    pub vision: VisionConfig,
+    #[serde(default)]
+    pub memory: Option<MemoryConfig>,
+    #[serde(default)]
+    structured_output: Option<StructuredOutput>,
+    #[serde(default, alias = "structured_output_switch_on")]
+    structured_output_enabled: Option<bool>,
+    #[serde(default)]
+    pub reasoning_format: ReasoningFormat,
+}
+
+impl LlmConfig {
+    /// JSON Schema for structured output, when enabled.
+    fn output_schema(&self) -> Option<Json> {
+        let so = self.structured_output.as_ref()?;
+        let enabled = self.structured_output_enabled.or(so.enabled).unwrap_or(true);
+        if !enabled {
+            return None;
+        }
+        let schema = so.schema.clone()?;
+        // Accept both `{schema: {...}}` and a bare schema.
+        match schema.get("schema") {
+            Some(inner) if inner.is_object() => Some(inner.clone()),
+            _ => Some(schema),
+        }
+    }
+}
+
+/// The `llm` node.
+#[derive(Debug)]
+pub struct LlmNode {
+    config: LlmConfig,
+    schema: Option<Json>,
+}
+
+impl LlmNode {
+    pub fn from_doc(doc: &NodeDoc) -> Result<Self, ConfigError> {
+        let config: LlmConfig = parse_config(doc)?;
+        if config.prompt_template.messages().is_empty() && config.memory.is_none() {
+            return Err(ConfigError::new(doc, "prompt_template must contain at least one message"));
+        }
+        let schema = config.output_schema();
+        Ok(Self { config, schema })
+    }
+
+    async fn execute(&self, ctx: NodeContext) -> NodeResult {
+        let cfg = &self.config;
+        let pool = &ctx.pool;
+        let context = cfg.context.resolve(pool);
+        let images = cfg.vision.image_parts(pool);
+        let messages = build_messages(&cfg.prompt_template, pool, context.as_deref(), cfg.memory.as_ref(), images);
+        if messages.is_empty() {
+            return Err(NodeError::invalid_input("prompt rendered to no messages"));
+        }
+        let mut request = cfg.model.request(messages, pool);
+        if let Some(schema) = &self.schema {
+            request.response_format = Some(ResponseFormat::JsonSchema {
+                name: "structured_output".into(),
+                schema: schema.clone(),
+                strict: false,
+            });
+        }
+
+        let model = model_for(&ctx, &cfg.model)?;
+        let response = invoke(&ctx, model.as_ref(), request, true).await?;
+
+        let (text, mut reasoning) = match cfg.reasoning_format {
+            ReasoningFormat::Tagged => (response.text.clone(), String::new()),
+            ReasoningFormat::Separated => split_think_tags(&response.text),
+        };
+        if !response.reasoning.is_empty() {
+            reasoning = if reasoning.is_empty() {
+                response.reasoning.clone()
+            } else {
+                format!("{}\n{reasoning}", response.reasoning)
+            };
+        }
+
+        let mut output = NodeOutput::new()
+            .with("text", text.as_str())
+            .with("usage", usage_value(&response.usage))
+            .with("finish_reason", response.finish_reason.as_ref().map(|r| r.as_str()).unwrap_or_default())
+            .usage(response.usage)
+            .meta("model", cfg.model.name.as_str())
+            .meta("provider", cfg.model.provider.as_str());
+        if !reasoning.is_empty() {
+            output = output.with("reasoning", reasoning);
+        }
+        if self.schema.is_some() {
+            let parsed = extract_json(&text).ok_or_else(|| {
+                NodeError::new("structured_output", "model output is not valid JSON for the requested schema")
+            })?;
+            output = output.with("structured_output", Value::from_json(parsed));
+        }
+        Ok(output.into())
+    }
+}
+
+impl Node for LlmNode {
+    fn run(&self, ctx: NodeContext) -> BoxFuture<'_, NodeResult> {
+        Box::pin(self.execute(ctx))
+    }
+
+    fn inputs(&self) -> Vec<Selector> {
+        let mut out: Vec<Selector> =
+            self.config.prompt_template.messages().iter().flat_map(|m| m.text.selectors().cloned()).collect();
+        if let Some(s) = &self.config.context.variable_selector {
+            out.push(s.clone());
+        }
+        out
+    }
+}
+
+/// Factory for the node registry.
+pub fn factory(doc: &NodeDoc) -> Result<Arc<dyn Node>, ConfigError> {
+    Ok(Arc::new(LlmNode::from_doc(doc)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mock::MockModel;
+    use crate::registry::ModelRegistry;
+    use crate::types::{ChatDelta, ContentPart, Role};
+    use graphrt_core::event::Event;
+    use graphrt_core::{NodeOutcome, Services, VariablePool};
+    use std::sync::Mutex;
+
+    fn doc(config: Json) -> NodeDoc {
+        NodeDoc::new("llm", "llm", config)
+    }
+
+    fn ctx_with(model: Arc<MockModel>, pool: VariablePool) -> (NodeContext, Arc<Mutex<Vec<Event>>>) {
+        let services = Services::new().with(ModelRegistry::new().with("openai", model));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = Arc::clone(&events);
+        let ctx = NodeContext::for_test("llm", pool)
+            .with_services(Arc::new(services))
+            .with_sink(Arc::new(move |e| sink_events.lock().unwrap().push(e)));
+        (ctx, events)
+    }
+
+    fn completed(r: NodeResult) -> NodeOutput {
+        match r.unwrap() {
+            NodeOutcome::Completed(o) => o,
+            NodeOutcome::Paused(p) => panic!("unexpected pause {p:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn streams_and_outputs() {
+        let model = Arc::new(MockModel::new(vec![vec![
+            ChatDelta::Reasoning("why".into()),
+            ChatDelta::Text("Hel".into()),
+            ChatDelta::Text("lo".into()),
+            ChatDelta::Finish(crate::types::FinishReason::Stop),
+        ]]));
+        let mut pool = VariablePool::new();
+        pool.insert("sys", "query", Value::from("hi there"));
+        let node = LlmNode::from_doc(&doc(serde_json::json!({
+            "model": {"provider": "langgenius/openai/openai", "name": "gpt", "completion_params": {"temperature": 0.2}},
+            "prompt_template": [{"role": "system", "text": "be nice"}, {"role": "user", "text": "{{#sys.query#}}"}]
+        })))
+        .unwrap();
+        let (ctx, events) = ctx_with(Arc::clone(&model), pool);
+        let out = completed(node.run(ctx).await);
+        assert_eq!(out.outputs["text"], Value::from("Hello"));
+        assert_eq!(out.outputs["reasoning"], Value::from("why"));
+        assert_eq!(out.outputs["finish_reason"], Value::from("stop"));
+        let chunks: Vec<(String, String)> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| match e {
+                Event::NodeChunk { field, chunk, .. } => Some((field.clone(), chunk.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].0, "reasoning");
+        let req = &model.requests()[0];
+        assert_eq!(req.model, "gpt");
+        assert_eq!(req.temperature, Some(0.2));
+        assert_eq!(req.messages[0].role, Role::System);
+        assert!(matches!(&req.messages[1].content[0], ContentPart::Text { text } if text == "hi there"));
+    }
+
+    #[tokio::test]
+    async fn structured_output_and_separated_reasoning() {
+        let model = Arc::new(MockModel::new(vec![MockModel::text("<think>plan</think>{\"n\": 3}")]));
+        let node = LlmNode::from_doc(&doc(serde_json::json!({
+            "model": {"provider": "openai", "name": "gpt"},
+            "prompt_template": [{"role": "user", "text": "give n"}],
+            "structured_output_switch_on": true,
+            "structured_output": {"schema": {"type": "object", "properties": {"n": {"type": "integer"}}}},
+            "reasoning_format": "separated"
+        })))
+        .unwrap();
+        let (ctx, _) = ctx_with(Arc::clone(&model), VariablePool::new());
+        let out = completed(node.run(ctx).await);
+        assert_eq!(out.outputs["structured_output"].get_path(&["n"]), Some(Value::Int(3)));
+        assert_eq!(out.outputs["reasoning"], Value::from("plan"));
+        assert!(matches!(model.requests()[0].response_format, Some(ResponseFormat::JsonSchema { .. })));
+    }
+
+    #[tokio::test]
+    async fn model_errors_map_to_node_errors() {
+        let model = Arc::new(MockModel::new(vec![]));
+        model.push_error(crate::error::LlmError::Server { status: 503, message: "down".into() });
+        let node = LlmNode::from_doc(&doc(serde_json::json!({
+            "model": {"provider": "openai", "name": "gpt"},
+            "prompt_template": {"text": "completion style"}
+        })))
+        .unwrap();
+        let (ctx, _) = ctx_with(model, VariablePool::new());
+        let err = node.run(ctx).await.unwrap_err();
+        assert!(err.retryable);
+        assert_eq!(err.kind, "model_server");
+    }
+
+    #[tokio::test]
+    async fn missing_registry_is_a_fatal_error() {
+        let node = LlmNode::from_doc(&doc(serde_json::json!({
+            "model": {"provider": "openai", "name": "gpt"},
+            "prompt_template": [{"role": "user", "text": "x"}]
+        })))
+        .unwrap();
+        let err = node.run(NodeContext::for_test("llm", VariablePool::new())).await.unwrap_err();
+        assert!(!err.retryable);
+    }
+
+    #[test]
+    fn rejects_empty_prompt() {
+        let err = LlmNode::from_doc(&doc(serde_json::json!({"model": {"provider": "p", "name": "m"}}))).unwrap_err();
+        assert!(err.message.contains("prompt_template"));
+    }
+}
