@@ -6,13 +6,17 @@
 same workflow document runs from a laptop to a container, the edge and a phone.
 Models come from API providers; the runtime itself needs no server.
 
+## Done in 0.1
+
+- OpenTelemetry traces and metrics for runs and nodes (`--otel`).
+- Portable `.grt` bundles: one signed file holding a workflow, its plugins and configs.
+- Run persistence for `graphrt serve` (resume by run id, async runs, restart-safe).
+- Reproducible benchmarks (`bench/`, see docs/benchmarks.md).
+
 ## Next
 
 - Verified mobile builds (Android emulator / device CI, iOS XCFramework on macOS CI).
-- OpenTelemetry export of runs and nodes.
-- Portable bundles: one file holding a workflow, its plugins and configs.
-- Run persistence for `graphrt serve` (resume by run id).
-- Reproducible public benchmarks (latency, memory, binary size).
+- Live provider test matrix in CI (OpenAI, Anthropic, Gemini, Bedrock, TypeSafe) behind secrets.
 
 ## Later
 

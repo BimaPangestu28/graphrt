@@ -67,12 +67,23 @@ laptop, a server, a container, the edge or a phone.
 - `graphrt` CLI: `run`, `validate`, `inspect`, `nodes`, `serve` (HTTP + SSE),
   `kb ingest|query`, `plugin list|install|remove|info|new`.
 - Distroless container image, release binaries, `install.sh`.
-- `graphrt-ffi`: UniFFI bindings for Kotlin (Android) and Swift (iOS).
+- `graphrt-ffi`: UniFFI bindings for Kotlin (Android) and Swift (iOS), with
+  host credential providers and `load_bundle`.
+- `graphrt-bundle`: portable `.grt` bundles (workflow, WebAssembly plugins,
+  configs) with per-file SHA-256 and optional Ed25519 signatures;
+  `graphrt bundle build|inspect|verify|sign|keygen`, `graphrt run app.grt`.
+
+**Operations**
+- `graphrt-otel`: OpenTelemetry traces and metrics over OTLP/HTTP (`--otel`,
+  standard `OTEL_*` variables, W3C `traceparent` continuation).
+- Durable runs for `graphrt serve` (`--store`): resume by run id, async runs,
+  event replay, restart-safe paused runs.
+- Reproducible benchmarks in `bench/` (docs/benchmarks.md).
 
 ### Security
-- Two rounds of security review across the engine, nodes, providers, plugins,
-  WebAssembly runtime, document extraction and retrieval, with regression tests
-  for every finding.
+- Three rounds of security review across the engine, nodes, providers,
+  credentials, plugins, WebAssembly runtime, document extraction and retrieval,
+  with regression tests for every finding.
 
 [Unreleased]: https://github.com/BimaPangestu28/agentic-rust-runtime/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/BimaPangestu28/agentic-rust-runtime/releases/tag/v0.1.0
