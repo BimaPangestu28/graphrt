@@ -23,6 +23,7 @@ pub mod pool;
 pub mod response;
 pub mod snapshot;
 pub mod template;
+pub mod tool;
 pub mod value;
 
 pub use dsl::Workflow;
