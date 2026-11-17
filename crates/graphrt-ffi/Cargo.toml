@@ -38,7 +38,7 @@ bindgen-cli = ["uniffi/cli"]
 
 [dependencies]
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }
-graphrt-llm = { workspace = true, features = ["openai", "anthropic"] }
+graphrt-llm = { workspace = true, features = ["openai", "anthropic", "gemini", "bedrock", "typesafe"] }
 graphrt-http.workspace = true
 graphrt-wasm = { workspace = true, features = ["tokio"] }
 graphrt-code = { workspace = true, optional = true, features = ["js", "tokio"] }

@@ -42,7 +42,7 @@ serve = ["dep:axum", "tokio/rt-multi-thread", "tokio/net"]
 
 [dependencies]
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }
-graphrt-llm = { workspace = true, optional = true, features = ["openai", "anthropic"] }
+graphrt-llm = { workspace = true, optional = true, features = ["openai", "anthropic", "gemini", "bedrock", "typesafe"] }
 graphrt-http = { workspace = true, optional = true }
 graphrt-code = { workspace = true, optional = true, features = ["js", "tokio"] }
 graphrt-mcp = { workspace = true, optional = true, features = ["stdio", "http"] }

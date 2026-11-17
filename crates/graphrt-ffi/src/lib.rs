@@ -273,6 +273,25 @@ impl Runtime {
             .map_err(|e| GraphrtError::config(e.to_string()))?;
         services.insert(models);
 
+        // TypeSafe System One (Jev): a `typesafe` credentials entry (token broker /
+        // host keychain) wins over a static `TYPESAFE_API_KEY` provider variable.
+        let typesafe = match config.credentials.get("typesafe") {
+            Some(entry) => {
+                let source = graphrt_llm::credential_config::build_source("typesafe", entry, &host_credentials)
+                    .map_err(|e| GraphrtError::config(e.to_string()))?;
+                let mut ts = graphrt_llm::typesafe::SystemOneConfig { credentials: Some(source), ..Default::default() };
+                if let Some(url) = &entry.base_url {
+                    ts.base_url.clone_from(url);
+                }
+                Some(graphrt_llm::typesafe::SystemOneClient::new(ts).map_err(|e| GraphrtError::config(e.to_string()))?)
+            }
+            None => graphrt_llm::typesafe::SystemOneClient::from_vars(&vars)
+                .map_err(|e| GraphrtError::config(e.to_string()))?,
+        };
+        if let Some(client) = typesafe {
+            services.insert(Arc::new(client));
+        }
+
         let policy = graphrt_http::EgressPolicy { allow_private: config.allow_private_network, ..Default::default() };
         let client = graphrt_http::HttpClient::new(policy).map_err(|e| GraphrtError::config(e.to_string()))?;
         services.insert(client);

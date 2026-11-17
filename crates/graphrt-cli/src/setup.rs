@@ -154,6 +154,12 @@ pub async fn services(
             models.merge(overlay);
         }
         services.insert(models);
+        // TypeSafe System One (Jev) decision model, when TYPESAFE_API_KEY is set.
+        if let Some(client) = graphrt_llm::typesafe::SystemOneClient::from_vars(&vars)
+            .map_err(|e| CliError::usage(format!("TypeSafe configuration: {e}")))?
+        {
+            services.insert(Arc::new(client));
+        }
     }
     #[cfg(not(feature = "llm"))]
     {

@@ -20,8 +20,13 @@ or embedded in your own Rust program.
 | Browser / edge | The core compiles to WebAssembly |
 | Your Rust app | `graphrt-core` as a library — see [docs/embedding.md](docs/embedding.md) |
 
-Models can be cloud APIs (OpenAI-compatible, Anthropic) or a model you run
-yourself (Ollama, vLLM, llama.cpp server).
+Models come from API providers: any OpenAI-compatible endpoint (OpenAI, Azure,
+Groq, DeepSeek, OpenRouter, Mistral, Ollama, vLLM...), Anthropic, Google Gemini,
+AWS Bedrock, and TypeSafe's Jev decision model for fast, calibrated
+classification. Apps on phones never need to ship a provider key: use the
+user's own key from the keychain, a thin proxy, or short-lived tokens from your
+backend — see [docs/credentials.md](docs/credentials.md) and
+[docs/providers.md](docs/providers.md).
 
 ```text
 start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
