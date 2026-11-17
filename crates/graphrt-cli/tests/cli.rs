@@ -191,7 +191,7 @@ fn inspect_reports_missing_node_kinds() {
     let path = example("chatbot.yaml");
     let out = run(&["inspect", path.to_str().expect("utf8")]);
     assert!(out.status.success());
-    assert!(stdout(&out).contains("not available in this build"), "{}", stdout(&out));
+    assert!(stdout(&out).contains("not available: missing plugin or build feature"), "{}", stdout(&out));
 }
 
 #[test]

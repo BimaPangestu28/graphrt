@@ -19,9 +19,12 @@ fn examples() -> PathBuf {
 
 async fn state(api_key: Option<&str>) -> Arc<AppState> {
     let files = discover(&examples()).expect("discover");
-    let state = build_state(&files, &ServiceOptions::default(), Limits::default(), api_key.map(str::to_owned))
-        .await
-        .expect("state");
+    // Ignore the developer's own installed plugins.
+    let options = ServiceOptions {
+        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true },
+        ..ServiceOptions::default()
+    };
+    let state = build_state(&files, &options, Limits::default(), api_key.map(str::to_owned)).await.expect("state");
     Arc::new(state)
 }
 
@@ -148,4 +151,36 @@ async fn pause_returns_snapshot_and_resume_checks_run_id() {
     // Aborting a run that is not active is a 404.
     let (status, _) = send(app, post(&format!("/v1/runs/{run_id}/abort"), serde_json::json!({}))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[cfg(all(feature = "plugins", feature = "wasm"))]
+#[tokio::test]
+async fn plugin_kinds_are_served_and_validated() {
+    let plugins = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/examples");
+    let options = ServiceOptions {
+        plugins: graphrt_cli::extensions::PluginOptions { dirs: vec![plugins.clone()], no_default: true },
+        ..ServiceOptions::default()
+    };
+    let files = discover(&plugins.join("demo.yaml")).expect("discover");
+    let state = Arc::new(build_state(&files, &options, Limits::default(), None).await.expect("state"));
+    let app = router(state, 1 << 20);
+
+    let (status, body) = send(app.clone(), Request::get("/v1/nodes").body(Body::empty()).expect("req")).await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let kinds: Vec<&str> = json["nodes"].as_array().expect("nodes").iter().filter_map(|n| n["kind"].as_str()).collect();
+    assert!(kinds.contains(&"sentiment.analyze") && kinds.contains(&"slugify"), "{kinds:?}");
+
+    let doc = std::fs::read_to_string(plugins.join("demo.yaml")).expect("demo");
+    let (_, body) = send(app.clone(), post("/v1/validate", serde_json::json!({ "document": doc }))).await;
+    let json: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(json["valid"], true, "{json}");
+
+    let unknown = serde_json::json!({
+        "document": "graph:\n  nodes:\n    - { id: s, type: start }\n    - { id: x, type: acme.missing }\n  edges:\n    - { source: s, target: x }\n"
+    });
+    let (_, body) = send(app, post("/v1/validate", unknown)).await;
+    let json: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(json["valid"], false);
+    assert!(json["errors"][0].as_str().unwrap_or_default().contains("graphrt plugin install"), "{json}");
 }

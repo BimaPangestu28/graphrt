@@ -41,6 +41,7 @@ use serde::Deserialize;
 
 use crate::args::ServeArgs;
 use crate::error::{CliError, EXIT_OK};
+use crate::extensions::Extensions;
 use crate::run::service_options;
 use crate::setup::{self, ServiceOptions};
 
@@ -59,12 +60,26 @@ pub struct AppState {
     runs: Mutex<HashMap<String, RunHandle>>,
     api_key: Option<String>,
     next_id: AtomicU64,
+    /// Node kinds (built-in and plugins) used for `/v1/nodes` and `/v1/validate`.
+    extensions: Extensions,
 }
 
 impl AppState {
     /// Create state from compiled engines.
     pub fn new(workflows: IndexMap<String, ServedWorkflow>, api_key: Option<String>) -> Self {
-        Self { workflows, runs: Mutex::new(HashMap::new()), api_key, next_id: AtomicU64::new(1) }
+        Self {
+            workflows,
+            runs: Mutex::new(HashMap::new()),
+            api_key,
+            next_id: AtomicU64::new(1),
+            extensions: Extensions::builtin(),
+        }
+    }
+
+    /// Use these node kinds (built-ins plus plugins) for the catalog and validation.
+    pub fn with_extensions(mut self, extensions: Extensions) -> Self {
+        self.extensions = extensions;
+        self
     }
 
     fn new_run_id(&self) -> String {
@@ -128,13 +143,14 @@ pub async fn build_state(
     limits: Limits,
     api_key: Option<String>,
 ) -> Result<AppState, CliError> {
-    let services = Arc::new(setup::services(options).await?);
+    let extensions = Extensions::load(&options.plugins)?;
+    let services = Arc::new(setup::services(options, extensions.tools.clone()).await?);
     let mut workflows = IndexMap::new();
     for (name, path) in files {
         if path.extension().and_then(|e| e.to_str()) == Some("json") && is_mcp_config(path) {
             continue;
         }
-        let graph = setup::load_graph_with(path, options.model_override.as_deref())?;
+        let graph = setup::load_graph_with(path, options.model_override.as_deref(), &extensions.registry)?;
         let env = setup::workflow_env(&graph, options);
         let engine = Engine::new(graph)
             .with_shared_services(services.clone())
@@ -142,7 +158,7 @@ pub async fn build_state(
             .with_limits(limits.clone());
         workflows.insert(name.clone(), ServedWorkflow { engine, env });
     }
-    Ok(AppState::new(workflows, api_key))
+    Ok(AppState::new(workflows, api_key).with_extensions(extensions))
 }
 
 fn is_mcp_config(path: &Path) -> bool {
@@ -258,19 +274,22 @@ async fn list_workflows(State(state): State<Arc<AppState>>) -> Json<serde_json::
     Json(serde_json::json!({ "workflows": items }))
 }
 
-async fn list_nodes() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "nodes": crate::catalog::catalog() }))
+async fn list_nodes(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "nodes": state.extensions.registry.descriptors() }))
 }
 
 /// Validate a workflow document against the node kinds of this build.
 ///
 /// The body is either the document itself (JSON) or `{"document": "<YAML or JSON text>"}`.
-async fn validate_workflow(Json(body): Json<serde_json::Value>) -> Json<serde_json::Value> {
-    Json(validation_report(body))
+async fn validate_workflow(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    Json(validation_report(body, &state.extensions.registry))
 }
 
 /// `{valid, errors, warnings}` for a workflow document.
-pub fn validation_report(body: serde_json::Value) -> serde_json::Value {
+pub fn validation_report(body: serde_json::Value, registry: &graphrt_core::Registry) -> serde_json::Value {
     let parsed = match body.get("document").and_then(serde_json::Value::as_str) {
         Some(text) => graphrt_core::Workflow::parse(text),
         None => graphrt_core::Workflow::from_value(body),
@@ -280,9 +299,9 @@ pub fn validation_report(body: serde_json::Value) -> serde_json::Value {
         Ok(w) => w,
         Err(e) => return report(false, vec![e.to_string()], Vec::new()),
     };
-    match Graph::build(workflow, &setup::registry()) {
+    match Graph::build(workflow, registry) {
         Ok(graph) => report(true, Vec::new(), graph.warnings().to_vec()),
-        Err(e) => report(false, vec![e.to_string()], Vec::new()),
+        Err(e) => report(false, vec![crate::extensions::explain_unknown_kind(e.to_string())], Vec::new()),
     }
 }
 

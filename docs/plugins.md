@@ -284,6 +284,42 @@ async fn main() -> std::io::Result<()> {
 }
 ```
 
+## Using plugins from the CLI
+
+```sh
+graphrt run workflow.yaml --plugins ./my-plugins     # try plugins in place
+graphrt plugin install ./acme                        # copy into ~/.graphrt/plugins
+graphrt plugin install https://github.com/acme/graphrt-acme --rev v1.2.0
+graphrt plugin list                                  # what is installed, and load errors
+graphrt plugin info acme                             # node descriptors
+graphrt plugin remove acme
+graphrt plugin new acme --lang python|typescript|rust   # scaffold a working plugin
+```
+
+Every command that builds graphs (`run`, `serve`, `validate`, `inspect`,
+`nodes`) loads plugins from `--plugins` flags, `$GRAPHRT_PLUGIN_PATH` and
+`~/.graphrt/plugins` (skip the last two with `--no-default-plugins`). Plugin
+nodes appear in `graphrt nodes` and `GET /v1/nodes` with `source:
+"plugin:<name>"`, and plugin tools join MCP tools for `tool` and `agent` nodes
+(provider name = plugin name). A plugin that fails to load is skipped with a
+warning.
+
+A `.wasm` module placed directly in a plugin search path is loaded as a plugin
+on its own (it describes itself; see [WebAssembly plugins](wasm-plugins.md)).
+
+## Publishing a plugin
+
+A plugin is just a directory, so any git repository works:
+
+1. Put `graphrt-plugin.json` at the repository root, with a unique `name` and
+   node kinds prefixed `<name>.`.
+2. Vendor the SDK file (`graphrt_plugin.py` / `graphrt-plugin.mjs`) or document
+   how to install it; `graphrt plugin new` vendors it for you.
+3. For compiled plugins, commit release binaries (or a build step users run)
+   and pin them with `checksums` in the manifest; `graphrt plugin install`
+   verifies them before copying, and the host verifies them before every start.
+4. Tag releases; users install with `graphrt plugin install <git-url> --rev <tag>`.
+
 ## Host API
 
 ```rust
@@ -297,4 +333,8 @@ let mut tools = ToolRegistry::new();
 host.register(&mut registry, &mut tools)?;
 ```
 
-Custom runtimes (such as `wasm`) are added with `PluginHost::with_loader`.
+Custom runtimes (such as `wasm`) are added with `PluginHost::with_loader`. The
+CLI's adapter for `runtime: wasm` (`graphrt_cli::wasm_loader::WasmLoader`) is a
+complete example: it loads the module with graphrt-wasm, applies
+`permissions.secrets`, enforces the `<name>.` kind prefix unless
+`allow_unprefixed_kinds` is set, and returns the node factories.

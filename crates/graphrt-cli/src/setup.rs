@@ -28,6 +28,8 @@ pub struct ServiceOptions {
     pub knowledge: Option<std::path::PathBuf>,
     /// Root directory for `local_file` references.
     pub files_dir: Option<std::path::PathBuf>,
+    /// Plugin search paths.
+    pub plugins: crate::extensions::PluginOptions,
 }
 
 /// Environment variable naming a default providers file.
@@ -76,8 +78,9 @@ impl ServiceOptions {
     }
 }
 
-/// Registry with every node kind compiled into this binary.
-pub fn registry() -> Registry {
+/// Registry with every built-in node kind compiled into this binary (no plugins;
+/// see [`crate::extensions::Extensions`]).
+pub fn builtin_registry() -> Registry {
     #[allow(unused_mut)]
     let mut registry = Registry::with_builtins();
     #[cfg(feature = "llm")]
@@ -93,13 +96,6 @@ pub fn registry() -> Registry {
     registry
 }
 
-/// Node kinds available in this build, sorted.
-pub fn available_kinds() -> Vec<String> {
-    let mut kinds: Vec<String> = registry().kinds().map(str::to_owned).collect();
-    kinds.sort();
-    kinds
-}
-
 /// Read a workflow document from disk.
 pub fn read_workflow(path: &Path) -> Result<Workflow, CliError> {
     let text = std::fs::read_to_string(path)
@@ -107,20 +103,20 @@ pub fn read_workflow(path: &Path) -> Result<Workflow, CliError> {
     Workflow::parse(&text).map_err(|e| CliError::invalid(format!("{}: {e}", path.display())))
 }
 
-/// Parse and compile a workflow.
-pub fn load_graph(path: &Path) -> Result<Arc<Graph>, CliError> {
-    load_graph_with(path, None)
+/// Parse and compile a workflow against `registry`.
+pub fn load_graph(path: &Path, registry: &Registry) -> Result<Arc<Graph>, CliError> {
+    load_graph_with(path, None, registry)
 }
 
 /// Parse and compile a workflow, optionally overriding every node's model (`provider/name`).
-pub fn load_graph_with(path: &Path, model_override: Option<&str>) -> Result<Arc<Graph>, CliError> {
+pub fn load_graph_with(path: &Path, model_override: Option<&str>, registry: &Registry) -> Result<Arc<Graph>, CliError> {
     let mut workflow = read_workflow(path)?;
     if let Some(raw) = model_override {
         let (provider, name) = parse_model_override(raw)?;
         apply_model_override(&mut workflow, &provider, &name);
     }
-    let graph =
-        Graph::build(workflow, &registry()).map_err(|e| CliError::invalid(format!("{}: {e}", path.display())))?;
+    let graph = Graph::build(workflow, registry)
+        .map_err(|e| CliError::invalid(crate::extensions::explain_unknown_kind(format!("{}: {e}", path.display()))))?;
     Ok(Arc::new(graph))
 }
 
@@ -133,8 +129,13 @@ pub fn parse_structured(text: &str, what: &str) -> Result<serde_json::Value, Cli
     serde_saphyr::from_str_with_options(text, options).map_err(|e| CliError::usage(format!("invalid {what}: {e}")))
 }
 
-/// Build the host services for this build's features.
-pub async fn services(options: &ServiceOptions) -> Result<Services, CliError> {
+/// Build the host services for this build's features. `plugin_tools` (from
+/// [`crate::extensions::Extensions`]) are merged with MCP tools into one
+/// [`graphrt_core::tool::ToolRegistry`].
+pub async fn services(
+    options: &ServiceOptions,
+    plugin_tools: graphrt_core::tool::ToolRegistry,
+) -> Result<Services, CliError> {
     #[allow(unused_mut)]
     let mut services = Services::new();
     #[cfg(feature = "llm")]
@@ -229,16 +230,33 @@ pub async fn services(options: &ServiceOptions) -> Result<Services, CliError> {
             }
             None => graphrt_core::tool::ToolRegistry::new(),
         };
-        services.insert(tools);
+        services.insert(merge_tools(plugin_tools, &tools)?);
     }
     #[cfg(not(feature = "mcp"))]
     {
         if let Some(path) = &options.mcp_config {
             return Err(CliError::usage(format!("`--mcp {}` requires a build with the `mcp` feature", path.display())));
         }
-        services.insert(graphrt_core::tool::ToolRegistry::new());
+        services.insert(plugin_tools);
     }
     Ok(services)
+}
+
+/// Add every provider of `extra` to `base`; a provider name used by both is an error.
+#[cfg(feature = "mcp")]
+fn merge_tools(
+    mut base: graphrt_core::tool::ToolRegistry,
+    extra: &graphrt_core::tool::ToolRegistry,
+) -> Result<graphrt_core::tool::ToolRegistry, CliError> {
+    for (name, runtime) in extra.providers() {
+        if base.get(name).is_some() {
+            return Err(CliError::usage(format!(
+                "tool provider `{name}` is defined by both a plugin and an MCP server; rename one of them"
+            )));
+        }
+        base.add(name, runtime.clone());
+    }
+    Ok(base)
 }
 
 /// Values for the workflow's declared env variables, taken from the env file and the

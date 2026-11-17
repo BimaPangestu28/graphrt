@@ -6,20 +6,23 @@ use graphrt_core::catalog::{Handles, NodeDescriptor};
 
 use crate::args::NodesArgs;
 use crate::error::{CliError, EXIT_OK};
+use crate::extensions::Extensions;
 use crate::setup;
 
-/// Descriptors of every node kind compiled into this binary, sorted by kind.
+/// Descriptors of every built-in node kind compiled into this binary, sorted by kind.
 pub fn catalog() -> Vec<NodeDescriptor> {
-    setup::registry().descriptors()
+    setup::builtin_registry().descriptors()
 }
 
 /// Execute `graphrt nodes`.
 pub fn nodes(args: &NodesArgs) -> Result<u8, CliError> {
+    let extensions = Extensions::load(&args.plugins.options())?;
+    let registry = &extensions.registry;
     let mut out = std::io::stdout().lock();
     let io = |e: std::io::Error| CliError::failed(e.to_string());
 
     if let Some(kind) = &args.kind {
-        let descriptor = setup::registry()
+        let descriptor = registry
             .descriptor(kind)
             .ok_or_else(|| CliError::usage(format!("unknown node kind `{kind}` (see `graphrt nodes`)")))?;
         if args.json {
@@ -31,7 +34,7 @@ pub fn nodes(args: &NodesArgs) -> Result<u8, CliError> {
         return Ok(EXIT_OK);
     }
 
-    let all = catalog();
+    let all = registry.descriptors();
     if args.json {
         let text = serde_json::to_string_pretty(&all).map_err(|e| CliError::failed(e.to_string()))?;
         writeln!(out, "{text}").map_err(io)?;

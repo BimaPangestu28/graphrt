@@ -1,0 +1,9 @@
+{
+  "name": "text-tools",
+  "version": "0.1.0",
+  "description": "Text utilities compiled to WebAssembly (sandboxed, portable). Source: sdk/wasm/examples/text-tools",
+  "license": "Apache-2.0",
+  "runtime": "wasm",
+  "module": "text_tools.wasm",
+  "allow_unprefixed_kinds": true
+}

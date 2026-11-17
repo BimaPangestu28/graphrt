@@ -128,6 +128,44 @@ providers file (`--providers`); `--model ollama/qwen2.5:14b` points every model
 node at another model. Tools: native Rust closures and
 MCP servers (stdio and streamable HTTP).
 
+## Plugins: write a node in 20 lines
+
+Add node kinds (and agent tools) in Python, TypeScript/JavaScript, Rust or
+WebAssembly, without recompiling graphrt. A plugin is a directory with a
+manifest; graphrt starts it on first use and talks JSON-RPC over stdio.
+
+```python
+# plugin.py — scaffold with: graphrt plugin new acme --lang python
+from graphrt_plugin import Plugin, PluginError
+
+plugin = Plugin("acme")
+
+@plugin.node("acme.shout")
+async def shout(ctx, req):
+    text = req.config.get("text")          # `{{#start.msg#}}` already resolved
+    if not isinstance(text, str):
+        raise PluginError("`text` must be a string", kind="invalid_input")
+    await ctx.chunk("text", text.upper())  # streams like LLM tokens
+    return {"outputs": {"text": text.upper()}}
+
+if __name__ == "__main__":
+    plugin.run()
+```
+
+```sh
+graphrt plugin new acme --lang python        # or typescript, rust
+graphrt run acme/example.yaml --plugins acme --input who=World
+graphrt plugin install ./acme                # or a git URL; lands in ~/.graphrt/plugins
+graphrt nodes                                # plugin kinds show up next to built-ins
+```
+
+Plugin nodes stream, branch, pause for approval, report errors with retry hints,
+and expose tools to `agent` nodes. WebAssembly plugins run sandboxed in-process
+(fuel and memory limits, no system access) — drop a `.wasm` file into a plugin
+directory. See [docs/plugins.md](docs/plugins.md),
+[docs/wasm-plugins.md](docs/wasm-plugins.md) and
+[`plugins/examples`](plugins/examples).
+
 ## Embed it
 
 ```rust
@@ -169,21 +207,22 @@ Custom nodes, services, model providers and native tools are covered in
 | Templates | `{{#…#}}` placeholders are parsed once; resolved values are never re-parsed (no prompt/template injection). Jinja runs without filesystem access, with a fuel budget and output cap. |
 | Code | QuickJS with memory, stack and time limits, no filesystem, network, timers or modules. |
 | MCP | stdio servers start with an empty environment plus an explicit allow-list; every call has a timeout; tools can be allow-listed. |
+| Plugins | Process plugins start lazily with an empty environment plus the variables their manifest lists, optional `checksums` verified before every start, per-request timeouts and message size caps; secrets are masked unless the manifest asks for them. WebAssembly plugins run in an interpreter with fuel and memory limits and no system imports. A plugin can never replace a built-in or another plugin's node kind. |
 | Server | Optional bearer auth (constant-time comparison), request body limit, env values cannot be set by requests. |
 | Limits | Step budget, run duration, per-node timeouts, container depth, iteration/loop caps. |
 
 ## Binary size
 
-Measured with `cargo build -p graphrt-cli --profile min-size` (opt-level `z`, LTO, `panic = "abort"`, stripped) on x86_64 Linux:
+Measured with `cargo build -p graphrt-cli --profile min-size` (opt-level `z`, LTO, stripped, unwinding kept so a panicking node fails only that node) on x86_64 Linux:
 
 | Features | Size |
 | --- | --- |
-| core only (`--no-default-features`) | 2.4 MB |
-| + `llm`, `http` | 4.4 MB |
-| + `code` | 5.3 MB |
-| + `mcp` | 6.5 MB |
-| default (+ `serve`) | 7.0 MB |
-| default, `--release` (opt-level 3, unwinding) | 13.1 MB |
+| core only (`--no-default-features`) | 2.9 MiB |
+| `llm`, `http`, `code`, `python`, `mcp`, `serve` | 8.2 MiB |
+| + `plugins`, `wasm` | 9.7 MiB |
+| default (+ `doc`, `rag`) | 12.2 MiB |
+
+Every feature is optional: build only what a deployment needs.
 
 ## Architecture
 

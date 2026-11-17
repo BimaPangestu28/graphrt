@@ -13,7 +13,7 @@ fn examples() -> PathBuf {
 
 #[test]
 fn every_registered_kind_has_a_real_descriptor() {
-    let registry = setup::registry();
+    let registry = setup::builtin_registry();
     let descriptors = catalog();
     assert_eq!(descriptors.len(), registry.kinds().count());
     for d in &descriptors {
@@ -28,7 +28,7 @@ fn every_registered_kind_has_a_real_descriptor() {
 
 #[test]
 fn example_node_configs_match_their_schemas() {
-    let registry = setup::registry();
+    let registry = setup::builtin_registry();
     let mut checked = 0;
     for entry in std::fs::read_dir(examples()).expect("examples dir") {
         let path = entry.expect("entry").path();
@@ -60,7 +60,7 @@ fn example_node_configs_match_their_schemas() {
 
 #[test]
 fn schemas_reject_obviously_wrong_configs() {
-    let registry = setup::registry();
+    let registry = setup::builtin_registry();
     let check = |kind: &str, config: serde_json::Value| -> bool {
         let d = registry.descriptor(kind).expect("kind");
         jsonschema::validator_for(&d.config_schema).expect("schema").is_valid(&config)

@@ -5,11 +5,21 @@
 | [`python-sentiment`](python-sentiment) | Python (stdlib SDK) | streaming chunks, branching handles, a tool |
 | [`node-uppercase`](node-uppercase) | JavaScript SDK | streaming, pause/resume approval, a tool |
 | [`rust-text-stats`](rust-text-stats) | Rust SDK | progress events, branching, a tool |
+| [`wasm-text-tools`](wasm-text-tools) | WebAssembly | sandboxed nodes in a portable `.wasm` module |
+
+[`demo.yaml`](demo.yaml) uses the Python, JavaScript and WebAssembly plugins in
+one workflow:
+
+```sh
+graphrt run plugins/examples/demo.yaml --plugins plugins/examples \
+    --input review="I love this, the support was great"
+# positive (1.0) | I LOVE THIS, THE SUPPORT WAS GREAT | i-love-this-the-support-was-great
+```
 
 Try one without installing it:
 
 ```sh
-GRAPHRT_PLUGIN_PATH=plugins/examples graphrt run my-workflow.yaml
+graphrt run my-workflow.yaml --plugins plugins/examples
 ```
 
 or install it into `~/.graphrt/plugins`:

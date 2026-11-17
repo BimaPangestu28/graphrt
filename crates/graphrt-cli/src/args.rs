@@ -28,6 +28,9 @@ pub enum Command {
     /// Ingest documents into, or query, a knowledge base (`--knowledge` config).
     #[cfg(feature = "rag")]
     Kb(Box<KbArgs>),
+    /// Manage plugins: list, install, remove, inspect, scaffold.
+    #[cfg(any(feature = "plugins", feature = "wasm"))]
+    Plugin(PluginCmdArgs),
     /// Print version and enabled features.
     Version,
 }
@@ -80,6 +83,27 @@ pub enum KbCommand {
 pub struct WorkflowArg {
     /// Workflow document (.yaml, .yml or .json).
     pub workflow: PathBuf,
+    #[command(flatten)]
+    pub plugins: PluginArgs,
+}
+
+/// Plugin search options shared by every command that builds graphs.
+#[derive(Debug, Args, Clone, Default)]
+pub struct PluginArgs {
+    /// Plugin directory: one plugin, a directory of plugins, or a `.wasm` module.
+    /// Searched before `$GRAPHRT_PLUGIN_PATH` and `~/.graphrt/plugins`. Repeatable.
+    #[arg(long = "plugins", value_name = "DIR")]
+    pub dirs: Vec<PathBuf>,
+    /// Ignore `$GRAPHRT_PLUGIN_PATH` and `~/.graphrt/plugins`.
+    #[arg(long)]
+    pub no_default_plugins: bool,
+}
+
+impl PluginArgs {
+    /// Options for [`crate::extensions::Extensions::load`].
+    pub fn options(&self) -> crate::extensions::PluginOptions {
+        crate::extensions::PluginOptions { dirs: self.dirs.clone(), no_default: self.no_default_plugins }
+    }
 }
 
 /// Options of `graphrt nodes`.
@@ -91,6 +115,76 @@ pub struct NodesArgs {
     /// Show only this node kind (full descriptor).
     #[arg(long, value_name = "KIND")]
     pub kind: Option<String>,
+    #[command(flatten)]
+    pub plugins: PluginArgs,
+}
+
+/// Options of `graphrt plugin`.
+#[derive(Debug, Args)]
+pub struct PluginCmdArgs {
+    #[command(subcommand)]
+    pub command: PluginCommand,
+}
+
+/// Plugin languages supported by `graphrt plugin new`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum PluginLang {
+    Python,
+    Typescript,
+    Rust,
+}
+
+/// `graphrt plugin` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum PluginCommand {
+    /// List plugins found in the plugin search paths.
+    List {
+        /// Print as JSON.
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        plugins: PluginArgs,
+    },
+    /// Install a plugin from a local directory or a git URL.
+    Install {
+        /// Plugin directory, or a git URL (`https://...`, `git@...`, `*.git`).
+        source: String,
+        /// Branch or tag to check out (git sources).
+        #[arg(long, value_name = "REV")]
+        rev: Option<String>,
+        /// Install into this directory instead of `~/.graphrt/plugins`.
+        #[arg(long, value_name = "DIR")]
+        dir: Option<PathBuf>,
+    },
+    /// Remove an installed plugin.
+    Remove {
+        /// Plugin name.
+        name: String,
+        /// Plugin install directory [default: ~/.graphrt/plugins].
+        #[arg(long, value_name = "DIR")]
+        dir: Option<PathBuf>,
+    },
+    /// Show a plugin's manifest details and node descriptors.
+    Info {
+        /// Plugin name.
+        name: String,
+        /// Print as JSON.
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        plugins: PluginArgs,
+    },
+    /// Scaffold a new plugin in `<dir>/<name>`.
+    New {
+        /// Plugin name (lowercase letters, digits, `-`, `_`).
+        name: String,
+        /// Implementation language.
+        #[arg(long, value_enum, default_value_t = PluginLang::Python)]
+        lang: PluginLang,
+        /// Parent directory [default: current directory].
+        #[arg(long, value_name = "DIR")]
+        dir: Option<PathBuf>,
+    },
 }
 
 /// How `run` prints results.
@@ -141,6 +235,8 @@ pub struct ServiceArgs {
     /// Maximum node executions per run.
     #[arg(long, value_name = "N")]
     pub max_steps: Option<u64>,
+    #[command(flatten)]
+    pub plugins: PluginArgs,
 }
 
 #[derive(Debug, Args)]

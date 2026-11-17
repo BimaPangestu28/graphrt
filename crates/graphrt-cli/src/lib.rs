@@ -4,14 +4,19 @@
 pub mod args;
 pub mod catalog;
 pub mod error;
+pub mod extensions;
 pub mod files;
 pub mod inspect;
 #[cfg(feature = "rag")]
 pub mod kb;
+#[cfg(any(feature = "plugins", feature = "wasm"))]
+pub mod plugin;
 pub mod run;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod setup;
+#[cfg(feature = "wasm")]
+pub mod wasm_loader;
 
 use args::{Cli, Command};
 use error::{CliError, EXIT_OK};
@@ -40,6 +45,12 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "rag") {
         features.push("rag");
     }
+    if cfg!(feature = "plugins") {
+        features.push("plugins");
+    }
+    if cfg!(feature = "wasm") {
+        features.push("wasm");
+    }
     if cfg!(feature = "serve") {
         features.push("serve");
     }
@@ -49,8 +60,10 @@ pub fn enabled_features() -> Vec<&'static str> {
 /// Execute a parsed command and return the process exit code.
 pub fn execute(cli: Cli) -> Result<u8, CliError> {
     match cli.command {
-        Command::Validate(arg) => inspect::validate(&arg.workflow),
-        Command::Inspect(arg) => inspect::inspect(&arg.workflow),
+        Command::Validate(arg) => inspect::validate(&arg.workflow, &arg.plugins.options()),
+        Command::Inspect(arg) => inspect::inspect(&arg.workflow, &arg.plugins.options()),
+        #[cfg(any(feature = "plugins", feature = "wasm"))]
+        Command::Plugin(args) => plugin::plugin(args),
         Command::Nodes(args) => catalog::nodes(&args),
         Command::Version => {
             use std::io::Write;

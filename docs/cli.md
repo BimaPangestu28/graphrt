@@ -4,8 +4,10 @@
 graphrt run <workflow>       Run a workflow and stream its output
 graphrt validate <workflow>  Parse and validate without running
 graphrt inspect <workflow>   Show nodes, inputs, env variables and missing node kinds
-graphrt nodes [--json] [--kind K]  The node catalog of this build (with config JSON Schemas)
+graphrt nodes [--json] [--kind K]  The node catalog: built-ins plus plugins (with config JSON Schemas)
 graphrt serve <file|dir>     HTTP + SSE API
+graphrt kb ingest|query      Fill and query a knowledge base
+graphrt plugin list|install|remove|info|new   Manage plugins
 graphrt version              Version and enabled features
 ```
 
@@ -40,6 +42,8 @@ Workflows can be YAML (`.yaml`, `.yml`) or JSON.
 | `--resume SNAPSHOT` | Resume a paused run. |
 | `--resume-input node=json` | Input for a paused node, e.g. `review={"action":"approve","values":{}}`. Repeatable. |
 | `--snapshot-out FILE` | Where to write the snapshot on pause (default `<workflow>.snapshot.json`). |
+| `--plugins DIR` | Plugin directory: one plugin, a directory of plugins, or a `.wasm` module. Searched before `$GRAPHRT_PLUGIN_PATH` and `~/.graphrt/plugins`. Repeatable. Also accepted by `serve`, `validate`, `inspect`, `nodes` and `plugin list/info`. |
+| `--no-default-plugins` | Ignore `$GRAPHRT_PLUGIN_PATH` and `~/.graphrt/plugins`. |
 
 Ctrl-C aborts the run and cancels in-flight nodes.
 
@@ -137,3 +141,31 @@ category, source crate and title. `--kind K` shows one kind's outputs, branch
 handles and config fields; `--json` prints full descriptors including the
 config JSON Schema (draft 2020-12), as served by `GET /v1/nodes`. Visual
 builders use the catalog to render node palettes and config forms.
+
+Plugin kinds are included (their `source` is `plugin:<name>`) for every plugin
+found in the plugin search paths; see [`graphrt plugin`](#graphrt-plugin).
+
+## `graphrt plugin`
+
+Plugins add node kinds and tools without recompiling graphrt. They are found in,
+in order: `--plugins <dir>` flags, `$GRAPHRT_PLUGIN_PATH` (`:`-separated) and
+`~/.graphrt/plugins`. A plugin that fails to load is skipped with a warning, so
+one broken plugin never blocks unrelated workflows.
+
+| Command | Description |
+| --- | --- |
+| `graphrt plugin list [--json]` | Every plugin found: name, version, runtime, node kinds, tools, and load errors. |
+| `graphrt plugin install <dir\|git-url> [--rev R] [--dir D]` | Copy a plugin into `~/.graphrt/plugins/<name>` (or `D`), verify its checksums and check that it loads. Git sources (`https://…`, `git@…`, `*.git`) are cloned with the `git` executable; `--rev` picks a branch or tag. |
+| `graphrt plugin remove <name> [--dir D]` | Delete an installed plugin. |
+| `graphrt plugin info <name> [--json]` | Manifest summary and node descriptors. |
+| `graphrt plugin new <name> --lang python\|typescript\|rust [--dir D]` | Scaffold a working plugin (manifest, code, vendored SDK, `example.yaml`). |
+
+```sh
+graphrt plugin new acme --lang python
+graphrt run acme/example.yaml --plugins acme --input who=World   # try it in place
+graphrt plugin install ./acme                                    # make it available everywhere
+graphrt nodes --kind acme.greet
+```
+
+Workflows that use a kind no loaded plugin provides fail validation with a hint
+pointing at `graphrt plugin install` and `--plugins`.

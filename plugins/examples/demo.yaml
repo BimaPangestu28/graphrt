@@ -1,0 +1,39 @@
+# Uses three example plugins (Python, JavaScript and WebAssembly) in one workflow.
+#   graphrt run plugins/examples/demo.yaml --plugins plugins/examples \
+#       --input review="I love this, the support was great"
+version: "1"
+name: plugin-demo
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: review, type: paragraph, required: true }
+
+    # Python plugin: branches on positive / negative / neutral.
+    - { id: mood, type: sentiment.analyze, text: "{{#start.review#}}" }
+
+    # JavaScript plugin: streams the transformed text.
+    - { id: shout, type: upper.transform, text: "{{#start.review#}}", mode: upper }
+
+    # WebAssembly plugin: sandboxed and portable.
+    - { id: slug, type: slugify, text: "{{#start.review#}}" }
+
+    - id: happy
+      type: answer
+      answer: "positive ({{#mood.score#}}) | {{#shout.text#}} | {{#slug.slug#}}"
+    - id: sad
+      type: answer
+      answer: "negative ({{#mood.score#}}) | {{#shout.text#}} | {{#slug.slug#}}"
+    - id: meh
+      type: answer
+      answer: "neutral | {{#shout.text#}} | {{#slug.slug#}}"
+
+  edges:
+    - { source: start, target: shout }
+    - { source: start, target: slug }
+    - { source: shout, target: mood }
+    - { source: slug, target: mood }
+    - { source: mood, target: happy, handle: positive }
+    - { source: mood, target: sad, handle: negative }
+    - { source: mood, target: meh, handle: neutral }
