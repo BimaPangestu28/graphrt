@@ -3,7 +3,8 @@ name = "graphrt-cli"
 description = "The graphrt command-line runner and HTTP server for agentic workflow graphs."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# `std::fs::File::lock` (run store) needs Rust 1.89; the libraries keep the workspace MSRV.
+rust-version = "1.89"
 license.workspace = true
 repository.workspace = true
 keywords.workspace = true
@@ -38,7 +39,7 @@ wasm = ["dep:graphrt-plugin", "graphrt-plugin/yaml", "dep:graphrt-wasm", "graphr
 # MCP tool servers (`--mcp`).
 mcp = ["dep:graphrt-mcp"]
 # `graphrt serve`: HTTP + SSE API.
-serve = ["dep:axum", "tokio/rt-multi-thread", "tokio/net"]
+serve = ["dep:axum", "tokio/rt-multi-thread", "tokio/net", "tokio/sync"]
 
 [dependencies]
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }
@@ -57,7 +58,7 @@ serde.workspace = true
 serde_json.workspace = true
 indexmap.workspace = true
 serde-saphyr.workspace = true
-axum ={ version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio"] }
+axum ={ version = "0.8", optional = true, default-features = false, features = ["http1", "json", "query", "tokio"] }
 
 [dev-dependencies]
 tower = { version = "0.5", default-features = false, features = ["util"] }

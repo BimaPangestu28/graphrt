@@ -322,12 +322,12 @@ fn strip_quotes(value: &str, quote: char) -> Option<&str> {
 ///   except that values starting with `[` or `{` are parsed as JSON;
 /// - `key:=json` always parses the right-hand side as JSON.
 pub fn parse_assignment(raw: &str) -> Result<(String, Value), CliError> {
-    if let Some((key, json)) = raw.split_once(":=") {
-        if !key.contains('=') {
-            let value: serde_json::Value =
-                serde_json::from_str(json).map_err(|e| CliError::usage(format!("invalid JSON for `{key}`: {e}")))?;
-            return Ok((key.to_owned(), Value::from_json(value)));
-        }
+    if let Some((key, json)) = raw.split_once(":=")
+        && !key.contains('=')
+    {
+        let value: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| CliError::usage(format!("invalid JSON for `{key}`: {e}")))?;
+        return Ok((key.to_owned(), Value::from_json(value)));
     }
     let (key, value) =
         raw.split_once('=').ok_or_else(|| CliError::usage(format!("expected `key=value`, got `{raw}`")))?;
@@ -335,10 +335,10 @@ pub fn parse_assignment(raw: &str) -> Result<(String, Value), CliError> {
         return Err(CliError::usage(format!("missing key in `{raw}`")));
     }
     let trimmed = value.trim_start();
-    if trimmed.starts_with('[') || trimmed.starts_with('{') {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(value) {
-            return Ok((key.to_owned(), Value::from_json(json)));
-        }
+    if (trimmed.starts_with('[') || trimmed.starts_with('{'))
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(value)
+    {
+        return Ok((key.to_owned(), Value::from_json(json)));
     }
     Ok((key.to_owned(), Value::from(value)))
 }

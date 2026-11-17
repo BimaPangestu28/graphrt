@@ -4,15 +4,22 @@
 //! | --- | --- | --- | --- |
 //! | GET | `/healthz` | – | `ok` (never requires auth) |
 //! | GET | `/v1/workflows` | – | workflow names, inputs and env requirements |
-//! | POST | `/v1/workflows/{name}/runs` | `{inputs, sys, conversation, stream}` | SSE stream or JSON result |
+//! | POST | `/v1/workflows/{name}/runs` | `{inputs, sys, conversation, stream, async}` | SSE stream, JSON result, or `202` + run id when `async` |
+//! | GET | `/v1/runs` | query `workflow`, `status`, `limit`, `cursor` | stored runs, newest first |
+//! | GET | `/v1/runs/{run_id}` | – | run record (status, outputs, pause reasons and expected resume inputs) |
+//! | GET | `/v1/runs/{run_id}/events` | query `from`, `stream=false` | SSE replay (+ live tail while running), or a JSON array |
 //! | POST | `/v1/runs/{run_id}/abort` | – | `202` if the run was active |
-//! | POST | `/v1/runs/{run_id}/resume` | `{snapshot, inputs, stream}` | SSE stream or JSON result |
+//! | POST | `/v1/runs/{run_id}/resume` | `{inputs, secrets, stream, async}` (`snapshot` optional) | SSE stream or JSON result |
+//! | DELETE | `/v1/runs/{run_id}` | – | `204`; `409` while the run executes |
 //! | GET | `/v1/nodes` | – | node catalog (descriptors with config JSON Schemas) |
 //! | POST | `/v1/validate` | workflow document, or `{document: "<yaml/json text>"}` | `{valid, errors, warnings}` |
 //!
 //! SSE events use the engine event `type` as the event name and its JSON as
 //! data, plus `response` events carrying the ordered answer text
 //! (`{node_id, text, is_final}`).
+//!
+//! Runs are recorded in a run store (`--store <dir>` for a durable directory,
+//! in-memory otherwise), so a paused run can be resumed by id. See `docs/serving.md`.
 //!
 //! Workflows are compiled once at startup. Environment variables declared by a
 //! workflow are read from the server's environment (or `--env-file`); requests
@@ -24,17 +31,18 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use axum::extract::{DefaultBodyLimit, Path as UrlPath, Request, State};
+use axum::extract::{DefaultBodyLimit, Path as UrlPath, Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use futures::{Stream, StreamExt};
-use graphrt_core::engine::{Limits, ResumeFrom, RunHandle, RunInput, RunStream};
+use graphrt_core::engine::{Limits, ResumeFrom, RunInput};
 use graphrt_core::node::TokioClock;
 use graphrt_core::response::ResponseAssembler;
+use graphrt_core::store::{RunFilter, RunRecord, RunStatus, RunStore, StoreError, event_to_json, now_ms};
 use graphrt_core::{Engine, Event, Graph, Selector, Snapshot, Value};
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -44,6 +52,8 @@ use crate::error::{CliError, EXIT_OK};
 use crate::extensions::Extensions;
 use crate::run::service_options;
 use crate::setup::{self, ServiceOptions};
+use crate::store::MemoryStore;
+use crate::store::live::{self, ActiveRun};
 
 /// One served workflow.
 #[derive(Debug)]
@@ -57,7 +67,8 @@ pub struct ServedWorkflow {
 #[derive(Debug)]
 pub struct AppState {
     workflows: IndexMap<String, ServedWorkflow>,
-    runs: Mutex<HashMap<String, RunHandle>>,
+    runs: Mutex<HashMap<String, Arc<ActiveRun>>>,
+    store: Arc<dyn RunStore>,
     api_key: Option<String>,
     next_id: AtomicU64,
     /// Node kinds (built-in and plugins) used for `/v1/nodes` and `/v1/validate`.
@@ -70,6 +81,7 @@ impl AppState {
         Self {
             workflows,
             runs: Mutex::new(HashMap::new()),
+            store: Arc::new(MemoryStore::new()),
             api_key,
             next_id: AtomicU64::new(1),
             extensions: Extensions::builtin(),
@@ -82,6 +94,25 @@ impl AppState {
         self
     }
 
+    /// Record runs in this store (default: in memory).
+    pub fn with_store(mut self, store: Arc<dyn RunStore>) -> Self {
+        self.store = store;
+        self
+    }
+
+    /// The run store.
+    pub fn store(&self) -> &Arc<dyn RunStore> {
+        &self.store
+    }
+
+    /// After a restart: mark runs that were executing as failed. Returns how many.
+    pub async fn recover(&self) -> Result<usize, CliError> {
+        self.store
+            .recover_interrupted(now_ms())
+            .await
+            .map_err(|e| CliError::failed(format!("run store recovery failed: {e}")))
+    }
+
     fn new_run_id(&self) -> String {
         let n = self.next_id.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
@@ -91,9 +122,9 @@ impl AppState {
         format!("run-{nanos:x}-{n:x}")
     }
 
-    fn track(&self, run_id: &str, handle: RunHandle) {
+    fn track(&self, run: Arc<ActiveRun>) {
         if let Ok(mut runs) = self.runs.lock() {
-            runs.insert(run_id.to_owned(), handle);
+            runs.insert(run.run_id.clone(), run);
         }
     }
 
@@ -103,7 +134,7 @@ impl AppState {
         }
     }
 
-    fn handle(&self, run_id: &str) -> Option<RunHandle> {
+    fn active(&self, run_id: &str) -> Option<Arc<ActiveRun>> {
         self.runs.lock().ok().and_then(|runs| runs.get(run_id).cloned())
     }
 
@@ -170,6 +201,9 @@ pub fn router(state: Arc<AppState>, max_body_bytes: usize) -> Router {
     let api = Router::new()
         .route("/v1/workflows", get(list_workflows))
         .route("/v1/workflows/{name}/runs", post(start_run))
+        .route("/v1/runs", get(list_runs))
+        .route("/v1/runs/{run_id}", get(get_run).merge(delete(delete_run)))
+        .route("/v1/runs/{run_id}/events", get(run_events))
         .route("/v1/runs/{run_id}/abort", post(abort_run))
         .route("/v1/runs/{run_id}/resume", post(resume_run))
         .route("/v1/nodes", get(list_nodes))
@@ -191,7 +225,15 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         .or_else(|| options.env_file.iter().find(|(k, _)| *k == args.api_key_env).map(|(_, v)| v.clone()))
         .filter(|k| !k.is_empty());
     let limits = setup::limits(args.services.timeout_ms, args.services.max_steps);
-    let state = Arc::new(build_state(&files, &options, limits, api_key.clone()).await?);
+    let store = crate::store::open(args.store.as_ref())?;
+    let state = Arc::new(build_state(&files, &options, limits, api_key.clone()).await?.with_store(store));
+    let interrupted = state.recover().await?;
+    if interrupted > 0 {
+        eprintln!("marked {interrupted} run(s) interrupted by the previous shutdown as failed");
+    }
+    if let Some(days) = args.store_ttl_days.filter(|d| *d > 0) {
+        spawn_retention(Arc::clone(state.store()), days);
+    }
     let app = router(state.clone(), args.max_body_bytes);
 
     let listener = tokio::net::TcpListener::bind(&args.addr)
@@ -316,13 +358,20 @@ pub struct RunRequest {
     pub conversation: serde_json::Map<String, serde_json::Value>,
     #[serde(default)]
     pub stream: bool,
+    /// Return `202` with the run id immediately; follow the run via `GET /v1/runs/{id}`
+    /// and `/events`.
+    #[serde(default, rename = "async")]
+    pub run_async: bool,
 }
 
 /// Body of `POST /v1/runs/{run_id}/resume`.
 #[derive(Debug, Deserialize)]
 pub struct ResumeRequest {
-    pub snapshot: Snapshot,
-    /// Input for paused nodes keyed by node id.
+    /// Snapshot from a paused response. Optional: when omitted, the server uses the
+    /// snapshot it stored when the run paused.
+    #[serde(default)]
+    pub snapshot: Option<Snapshot>,
+    /// Input for paused nodes keyed by node id (or `<frame>/<node_id>`).
     #[serde(default)]
     pub inputs: serde_json::Map<String, serde_json::Value>,
     /// Secrets (other than `env.*`) to re-supply, keyed by `namespace.name`.
@@ -331,10 +380,45 @@ pub struct ResumeRequest {
     pub secrets: IndexMap<String, String>,
     #[serde(default)]
     pub stream: bool,
+    #[serde(default, rename = "async")]
+    pub run_async: bool,
+}
+
+/// How the caller wants the result of a run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Delivery {
+    /// Wait and return the final JSON result.
+    Blocking,
+    /// Server-sent events.
+    Stream,
+    /// `202` immediately.
+    Detached,
+}
+
+impl Delivery {
+    fn of(stream: bool, run_async: bool) -> Self {
+        if run_async {
+            Delivery::Detached
+        } else if stream {
+            Delivery::Stream
+        } else {
+            Delivery::Blocking
+        }
+    }
 }
 
 fn to_values(map: serde_json::Map<String, serde_json::Value>) -> IndexMap<String, Value> {
     map.into_iter().map(|(k, v)| (k, Value::from_json(v))).collect()
+}
+
+fn store_error(e: &StoreError) -> Response {
+    let status = match e {
+        StoreError::NotFound(_) => StatusCode::NOT_FOUND,
+        StoreError::Conflict(_) => StatusCode::CONFLICT,
+        StoreError::InvalidId(_) => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    error_response(status, &e.to_string())
 }
 
 async fn start_run(
@@ -346,13 +430,17 @@ async fn start_run(
         return error_response(StatusCode::NOT_FOUND, &format!("unknown workflow `{name}`"));
     };
     let run_id = state.new_run_id();
+    let record = RunRecord::running(&run_id, &name, workflow.engine.graph().fingerprint(), now_ms());
+    if let Err(e) = state.store.create(record.clone()).await {
+        return store_error(&e);
+    }
     let mut input = RunInput::new();
-    input.run_id = Some(run_id.clone());
+    input.run_id = Some(run_id);
     input.inputs = to_values(body.inputs);
     input.sys = to_values(body.sys);
     input.conversation = to_values(body.conversation);
     input.env = workflow.env.clone();
-    execute(state.clone(), &workflow.engine, run_id, input, body.stream).await
+    execute(&state, &workflow.engine, record, input, Delivery::of(body.stream, body.run_async)).await
 }
 
 async fn resume_run(
@@ -360,75 +448,319 @@ async fn resume_run(
     UrlPath(run_id): UrlPath<String>,
     Json(body): Json<ResumeRequest>,
 ) -> Response {
-    if body.snapshot.run_id != run_id {
-        return error_response(StatusCode::BAD_REQUEST, "snapshot belongs to a different run");
-    }
-    let fingerprint = body.snapshot.graph_fingerprint.clone();
-    let Some(workflow) = state.workflows.values().find(|w| w.engine.graph().fingerprint() == fingerprint) else {
-        return error_response(StatusCode::NOT_FOUND, "no served workflow matches this snapshot");
-    };
-    if state.handle(&run_id).is_some() {
+    if state.active(&run_id).is_some() {
         return error_response(StatusCode::CONFLICT, "run is already executing");
     }
+    let (record, snapshot) = match body.snapshot {
+        // Resume from the server's own records.
+        None => {
+            let record = match state.store.claim_resume(&run_id, now_ms()).await {
+                Ok(r) => r,
+                Err(e) => return store_error(&e),
+            };
+            match state.store.load_snapshot(&run_id).await {
+                Ok(Some(snapshot)) => (record, snapshot),
+                Ok(None) | Err(_) => {
+                    // Undo the claim so the run stays visible as paused.
+                    let mut back = record;
+                    back.status = RunStatus::Paused;
+                    if let Err(e) = state.store.put(back).await {
+                        eprintln!("warning: run {run_id}: cannot restore paused status: {e}");
+                    }
+                    return error_response(
+                        StatusCode::CONFLICT,
+                        "no stored snapshot for this run; pass the `snapshot` from the paused response",
+                    );
+                }
+            }
+        }
+        // Client-held snapshot (also works for runs this server never recorded).
+        Some(snapshot) => {
+            if snapshot.run_id != run_id {
+                return error_response(StatusCode::BAD_REQUEST, "snapshot belongs to a different run");
+            }
+            let record = match state.store.claim_resume(&run_id, now_ms()).await {
+                Ok(r) => r,
+                Err(StoreError::NotFound(_)) => {
+                    let Some((name, _)) = state
+                        .workflows
+                        .iter()
+                        .find(|(_, w)| w.engine.graph().fingerprint() == snapshot.graph_fingerprint)
+                    else {
+                        return error_response(StatusCode::NOT_FOUND, "no served workflow matches this snapshot");
+                    };
+                    let record = RunRecord::running(&run_id, name, &snapshot.graph_fingerprint, now_ms());
+                    if let Err(e) = state.store.create(record.clone()).await {
+                        return store_error(&e);
+                    }
+                    record
+                }
+                Err(e) => return store_error(&e),
+            };
+            (record, snapshot)
+        }
+    };
+    let workflow = state
+        .workflows
+        .get(&record.workflow)
+        .or_else(|| state.workflows.values().find(|w| w.engine.graph().fingerprint() == snapshot.graph_fingerprint));
+    let Some(workflow) = workflow else {
+        return error_response(StatusCode::NOT_FOUND, &format!("workflow `{}` is not served", record.workflow));
+    };
     let mut input = RunInput::new();
-    input.run_id = Some(run_id.clone());
+    input.run_id = Some(run_id);
     input.env = workflow.env.clone();
-    let mut resume = ResumeFrom::new(body.snapshot, to_values(body.inputs));
+    let mut resume = ResumeFrom::new(snapshot, to_values(body.inputs));
     for (selector, secret) in body.secrets {
         resume = resume.secret(selector, secret);
     }
     input.resume = Some(resume);
-    execute(state.clone(), &workflow.engine, run_id, input, body.stream).await
+    execute(&state, &workflow.engine, record, input, Delivery::of(body.stream, body.run_async)).await
 }
 
 async fn abort_run(State(state): State<Arc<AppState>>, UrlPath(run_id): UrlPath<String>) -> Response {
-    match state.handle(&run_id) {
-        Some(handle) => {
-            handle.abort("aborted via API");
+    match state.active(&run_id) {
+        Some(run) => {
+            run.handle().abort("aborted via API");
             (StatusCode::ACCEPTED, Json(serde_json::json!({ "run_id": run_id, "status": "aborting" }))).into_response()
         }
         None => error_response(StatusCode::NOT_FOUND, "no active run with this id"),
     }
 }
 
-/// Removes a run from the active set when the response (or SSE stream) is dropped,
-/// including when the client disconnects mid-stream.
-struct RunGuard {
-    state: Arc<AppState>,
-    run_id: String,
+/// Query of `GET /v1/runs`.
+#[derive(Debug, Default, Deserialize)]
+pub struct ListQuery {
+    pub workflow: Option<String>,
+    pub status: Option<String>,
+    #[serde(default)]
+    pub limit: usize,
+    pub cursor: Option<String>,
 }
 
-impl Drop for RunGuard {
+async fn list_runs(State(state): State<Arc<AppState>>, Query(query): Query<ListQuery>) -> Response {
+    let status = match query.status.as_deref().map(|s| (s, RunStatus::parse(s))) {
+        Some((raw, None)) => return error_response(StatusCode::BAD_REQUEST, &format!("unknown status `{raw}`")),
+        Some((_, parsed)) => parsed,
+        None => None,
+    };
+    let filter = RunFilter { workflow: query.workflow, status, limit: query.limit, cursor: query.cursor };
+    match state.store.list(filter).await {
+        Ok(page) => {
+            let runs: Vec<serde_json::Value> = page.runs.iter().map(|r| record_json(&state, r)).collect();
+            Json(serde_json::json!({ "runs": runs, "next_cursor": page.next_cursor })).into_response()
+        }
+        Err(e) => store_error(&e),
+    }
+}
+
+async fn get_run(State(state): State<Arc<AppState>>, UrlPath(run_id): UrlPath<String>) -> Response {
+    match state.store.get(&run_id).await {
+        Ok(Some(record)) => Json(record_json(&state, &record)).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "unknown run"),
+        Err(e) => store_error(&e),
+    }
+}
+
+async fn delete_run(State(state): State<Arc<AppState>>, UrlPath(run_id): UrlPath<String>) -> Response {
+    if state.active(&run_id).is_some() {
+        return error_response(StatusCode::CONFLICT, "run is executing; abort it first");
+    }
+    match state.store.delete(&run_id).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => error_response(StatusCode::NOT_FOUND, "unknown run"),
+        Err(e) => store_error(&e),
+    }
+}
+
+/// A run record as returned by the API, with the input each paused node expects.
+fn record_json(state: &AppState, record: &RunRecord) -> serde_json::Value {
+    let mut json = serde_json::to_value(record).unwrap_or(serde_json::Value::Null);
+    if let Some(obj) = json.as_object_mut() {
+        obj.insert("active".into(), serde_json::Value::Bool(state.active(&record.run_id).is_some()));
+        if record.status == RunStatus::Paused {
+            let expected: Vec<serde_json::Value> = record
+                .pause_reasons
+                .iter()
+                .filter_map(|reason| {
+                    let node = reason.node_id.as_deref()?;
+                    // Resume inputs are keyed by node id, or `<frame>/<node_id>` inside containers.
+                    let key =
+                        if reason.frame.is_empty() { node.to_owned() } else { format!("{}/{node}", reason.frame) };
+                    Some(serde_json::json!({ "key": key, "node_id": node, "kind": reason.kind, "data": reason.data }))
+                })
+                .collect();
+            obj.insert("resume_inputs".into(), serde_json::Value::Array(expected));
+        }
+    }
+    json
+}
+
+/// Query of `GET /v1/runs/{id}/events`.
+#[derive(Debug, Default, Deserialize)]
+pub struct EventsQuery {
+    #[serde(default)]
+    pub from: u64,
+    /// `false` returns stored events as a JSON array instead of SSE.
+    pub stream: Option<bool>,
+}
+
+async fn run_events(
+    State(state): State<Arc<AppState>>,
+    UrlPath(run_id): UrlPath<String>,
+    Query(query): Query<EventsQuery>,
+) -> Response {
+    let active = state.active(&run_id);
+    // Take the live subscription first: events the driver stores after this point
+    // reach us through it, and the stored part is cut at `stored_before`.
+    let subscription = active.as_ref().map(|run| (run.stored_before, run.subscribe()));
+    let stored_until = subscription.as_ref().map(|(before, _)| *before);
+    let mut stored = match state.store.events(&run_id, query.from).await {
+        Ok(events) => events,
+        Err(e) => return store_error(&e),
+    };
+    if let Some(limit) = stored_until {
+        let keep = usize::try_from(limit.saturating_sub(query.from)).unwrap_or(usize::MAX);
+        stored.truncate(keep);
+    }
+    if query.stream == Some(false) {
+        let mut all = stored;
+        if let Some((_, sub)) = subscription {
+            all.extend(sub.backlog.iter().map(event_to_json));
+        }
+        return Json(serde_json::Value::Array(all)).into_response();
+    }
+    let replay = futures::stream::iter(stored.into_iter().map(|json| Ok(json_sse(&json))));
+    match subscription {
+        None => Sse::new(replay.boxed()).into_response(),
+        Some((_, sub)) => {
+            let backlog = futures::stream::iter(sub.backlog.into_iter().map(|e| Ok(sse_event(&e))));
+            let live = if sub.done { futures::stream::empty().boxed() } else { live_events(sub.live).boxed() };
+            Sse::new(replay.chain(backlog).chain(live)).keep_alive(KeepAlive::default()).into_response()
+        }
+    }
+}
+
+/// Events from a broadcast receiver until the terminal event.
+fn live_events(
+    rx: tokio::sync::broadcast::Receiver<Event>,
+) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + 'static {
+    futures::stream::unfold((rx, false), |(mut rx, finished)| async move {
+        if finished {
+            return None;
+        }
+        match rx.recv().await {
+            Ok(event) => {
+                let terminal = event.is_terminal();
+                Some((Ok(sse_event(&event)), (rx, terminal)))
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                let data = serde_json::json!({ "type": "lagged", "skipped": skipped });
+                Some((Ok(SseEvent::default().event("lagged").data(data.to_string())), (rx, false)))
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
+        }
+    })
+}
+
+/// Aborts the run when a synchronous caller (blocking or streaming) goes away before
+/// the run finished. Detached runs never get one.
+struct AbortOnDrop(Arc<ActiveRun>);
+
+impl Drop for AbortOnDrop {
     fn drop(&mut self) {
-        self.state.untrack(&self.run_id);
+        if !self.0.is_done() {
+            self.0.handle().abort("client disconnected");
+        }
     }
 }
 
-async fn execute(state: Arc<AppState>, engine: &Engine, run_id: String, input: RunInput, stream: bool) -> Response {
-    let mut assembler = ResponseAssembler::new(engine.graph());
-    if let Some(resume) = &input.resume {
-        // Nodes that finished before the pause will not re-run; seed their values.
-        assembler = assembler.resume_from(&resume.snapshot.root);
-    }
-    for (k, v) in &input.sys {
-        assembler = assembler.with_value(&Selector::of("sys", k), v.clone());
-    }
+async fn execute(
+    state: &Arc<AppState>,
+    engine: &Engine,
+    record: RunRecord,
+    input: RunInput,
+    delivery: Delivery,
+) -> Response {
+    // One assembler records the answer in the store; a second one, fed from the same
+    // events, produces `response` SSE events for a streaming caller.
+    let new_assembler = || {
+        let mut assembler = ResponseAssembler::new(engine.graph());
+        if let Some(resume) = &input.resume {
+            // Nodes that finished before the pause will not re-run; seed their values.
+            assembler = assembler.resume_from(&resume.snapshot.root);
+        }
+        for (k, v) in &input.sys {
+            assembler = assembler.with_value(&Selector::of("sys", k), v.clone());
+        }
+        assembler
+    };
+    let assembler = new_assembler();
+    let stream_assembler = new_assembler();
+    let run_id = record.run_id.clone();
     let run = engine.run(input);
-    state.track(&run_id, run.handle());
-    let guard = RunGuard { state, run_id: run_id.clone() };
-    if stream {
-        Sse::new(sse_stream(run, assembler, guard)).keep_alive(KeepAlive::default()).into_response()
-    } else {
-        collect(run, assembler, guard, run_id, engine.graph()).await
+    let weak = Arc::downgrade(state);
+    let on_finish: live::OnFinish = Box::new(move |id| {
+        if let Some(state) = weak.upgrade() {
+            state.untrack(id);
+        }
+    });
+    // Subscribe before the driver starts so a streaming caller sees every event.
+    let active = live::spawn(run, assembler, record, Arc::clone(&state.store), on_finish);
+    let subscription = active.subscribe();
+    state.track(Arc::clone(&active));
+    match delivery {
+        Delivery::Detached => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "run_id": run_id,
+                "status": "running",
+                "run": format!("/v1/runs/{run_id}"),
+                "events": format!("/v1/runs/{run_id}/events"),
+            })),
+        )
+            .into_response(),
+        Delivery::Stream => {
+            let guard = AbortOnDrop(active);
+            Sse::new(sse_stream(subscription, stream_assembler, guard)).keep_alive(KeepAlive::default()).into_response()
+        }
+        Delivery::Blocking => {
+            let guard = AbortOnDrop(Arc::clone(&active));
+            let outcome = active.wait().await;
+            drop(guard);
+            result_json(&run_id, outcome)
+        }
     }
 }
 
 fn sse_stream(
-    run: RunStream,
+    subscription: live::Subscription,
     mut assembler: ResponseAssembler,
-    guard: RunGuard,
+    guard: AbortOnDrop,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + 'static {
-    run.flat_map(move |event| {
+    let backlog = futures::stream::iter(subscription.backlog);
+    let live = futures::stream::unfold(subscription.live, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => return Some((event, rx)),
+                // A streaming caller that cannot keep up skips events, like any lagging listener.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+    let events = if subscription.done { backlog.boxed() } else { backlog.chain(live).boxed() };
+    // End right after the terminal event: the broadcast channel itself stays open
+    // while the run is tracked, so waiting for it to close would hang.
+    let events = futures::stream::unfold((events, false), |(mut events, finished)| async move {
+        if finished {
+            return None;
+        }
+        let event = events.next().await?;
+        let terminal = event.is_terminal();
+        Some((event, (events, terminal)))
+    });
+    events.flat_map(move |event| {
         let _keep_alive = &guard;
         let mut out = Vec::new();
         for chunk in assembler.push(&event) {
@@ -441,28 +773,18 @@ fn sse_stream(
 }
 
 fn sse_event(event: &Event) -> SseEvent {
-    let json = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
+    json_sse(&serde_json::to_value(event).unwrap_or(serde_json::Value::Null))
+}
+
+fn json_sse(json: &serde_json::Value) -> SseEvent {
     let name = json.get("type").and_then(|t| t.as_str()).unwrap_or("event").to_owned();
     SseEvent::default().event(name).data(json.to_string())
 }
 
-async fn collect(
-    mut run: RunStream,
-    mut assembler: ResponseAssembler,
-    guard: RunGuard,
-    run_id: String,
-    _graph: &Arc<Graph>,
-) -> Response {
-    let mut terminal = None;
-    while let Some(event) = run.next().await {
-        assembler.push(&event);
-        if event.is_terminal() {
-            terminal = Some(event);
-        }
-    }
-    drop(guard);
-    let answer = assembler.text_so_far().to_owned();
-    let body = match terminal {
+/// The JSON body returned to blocking callers.
+fn result_json(run_id: &str, outcome: live::Outcome) -> Response {
+    let answer = outcome.answer;
+    let body = match outcome.terminal {
         Some(Event::RunSucceeded { outputs, usage, handled_errors, elapsed_ms }) => serde_json::json!({
             "run_id": run_id, "status": "succeeded", "outputs": outputs, "answer": answer,
             "usage": usage, "handled_errors": handled_errors, "elapsed_ms": elapsed_ms,
@@ -480,6 +802,22 @@ async fn collect(
         _ => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run ended without a terminal event"),
     };
     Json(body).into_response()
+}
+
+/// Delete runs older than `days` (any status except running), hourly.
+fn spawn_retention(store: Arc<dyn RunStore>, days: u64) {
+    tokio::spawn(async move {
+        let ttl_ms = days.saturating_mul(24 * 60 * 60 * 1000);
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+        loop {
+            tick.tick().await;
+            match store.purge_before(now_ms().saturating_sub(ttl_ms)).await {
+                Ok(0) => {}
+                Ok(n) => eprintln!("run store: removed {n} run(s) older than {days} day(s)"),
+                Err(e) => eprintln!("warning: run store cleanup failed: {e}"),
+            }
+        }
+    });
 }
 
 #[cfg(test)]

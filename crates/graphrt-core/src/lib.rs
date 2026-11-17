@@ -24,6 +24,7 @@ pub mod nodes;
 pub mod pool;
 pub mod response;
 pub mod snapshot;
+pub mod store;
 pub mod template;
 pub mod tool;
 pub mod tool_node;

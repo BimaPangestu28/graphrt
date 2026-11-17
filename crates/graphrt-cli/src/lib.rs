@@ -15,6 +15,8 @@ pub mod run;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod setup;
+#[cfg(feature = "serve")]
+pub mod store;
 #[cfg(feature = "wasm")]
 pub mod wasm_loader;
 
