@@ -458,6 +458,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn attempt_deadline_caps_the_time_limit() {
+        // The configured limit is generous, but the engine-provided deadline is not.
+        let n = node(serde_json::json!({"code": "function main() { while (true) {} }", "limits": {"time_ms": 60000}}))
+            .unwrap();
+        let ctx = NodeContext::for_test("c", pool());
+        let deadline = ctx.clock.now_ms() + 200;
+        let started = std::time::Instant::now();
+        let err = n.run(ctx.with_deadline(Some(deadline))).await.unwrap_err();
+        assert_eq!(err.kind, "timeout");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+    }
+
+    #[tokio::test]
     async fn top_level_infinite_loop_is_interrupted() {
         let err = run(serde_json::json!({
             "code": "while (true) {} function main() { return {}; }",

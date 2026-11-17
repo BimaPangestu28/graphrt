@@ -3,8 +3,9 @@
 //! A [`Selector`] addresses a value as `namespace.name[.path...]`, where the
 //! namespace is a node id or one of the reserved namespaces ([`SYS`], [`ENV`],
 //! [`CONVERSATION`]). The [`VariablePool`] stores one map per namespace behind an
-//! `Arc`, so cloning a pool (for an iteration item or loop round) is cheap and
-//! writes are copy-on-write per namespace.
+//! `Arc`, and the namespace table itself is shared too: cloning a pool (for a
+//! node context, an iteration item or a loop round) is O(1), and writes copy
+//! only the touched namespace (plus the table, when it is shared).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -127,13 +128,13 @@ type Namespace = Arc<IndexMap<Arc<str>, Value>>;
 /// Variable storage for one execution frame.
 #[derive(Clone, Default)]
 pub struct VariablePool {
-    namespaces: HashMap<Arc<str>, Namespace>,
+    namespaces: Arc<HashMap<Arc<str>, Namespace>>,
 }
 
 impl fmt::Debug for VariablePool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut map = f.debug_map();
-        for (ns, vars) in &self.namespaces {
+        for (ns, vars) in self.namespaces.iter() {
             map.entry(ns, vars);
         }
         map.finish()
@@ -148,11 +149,7 @@ impl VariablePool {
     /// Resolve a selector, descending into nested values. Missing values return `None`.
     pub fn get(&self, selector: &Selector) -> Option<Value> {
         let root = self.namespaces.get(selector.namespace())?.get(selector.name())?;
-        if selector.path().is_empty() {
-            Some(root.clone())
-        } else {
-            root.get_path(selector.path())
-        }
+        if selector.path().is_empty() { Some(root.clone()) } else { root.get_path(selector.path()) }
     }
 
     /// Resolve a selector, returning [`Value::Null`] when absent.
@@ -168,7 +165,7 @@ impl VariablePool {
 
     /// Set a variable by namespace and name.
     pub fn insert(&mut self, namespace: &str, name: &str, value: Value) {
-        let ns = self.namespaces.entry(Arc::from(namespace)).or_default();
+        let ns = Arc::make_mut(&mut self.namespaces).entry(Arc::from(namespace)).or_default();
         Arc::make_mut(ns).insert(Arc::from(name), value);
     }
 
@@ -185,18 +182,23 @@ impl VariablePool {
 
     /// Remove one variable.
     pub fn remove(&mut self, selector: &Selector) -> Option<Value> {
-        let ns = self.namespaces.get_mut(selector.namespace())?;
+        if !self.namespaces.contains_key(selector.namespace()) {
+            return None;
+        }
+        let ns = Arc::make_mut(&mut self.namespaces).get_mut(selector.namespace())?;
         Arc::make_mut(ns).shift_remove(selector.name())
     }
 
     /// Drop a whole namespace (e.g. a node's outputs before a loop round re-runs it).
     pub fn remove_namespace(&mut self, namespace: &str) {
-        self.namespaces.remove(namespace);
+        if self.namespaces.contains_key(namespace) {
+            Arc::make_mut(&mut self.namespaces).remove(namespace);
+        }
     }
 
     /// Bulk-insert a node's outputs.
     pub fn set_outputs(&mut self, namespace: &str, outputs: &IndexMap<String, Value>) {
-        let ns = self.namespaces.entry(Arc::from(namespace)).or_default();
+        let ns = Arc::make_mut(&mut self.namespaces).entry(Arc::from(namespace)).or_default();
         let ns = Arc::make_mut(ns);
         for (k, v) in outputs {
             ns.insert(Arc::from(k.as_str()), v.clone());
@@ -214,9 +216,7 @@ impl VariablePool {
 
     /// Iterate `(namespace, name, value)`.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str, &Value)> {
-        self.namespaces
-            .iter()
-            .flat_map(|(ns, vars)| vars.iter().map(move |(k, v)| (ns.as_ref(), k.as_ref(), v)))
+        self.namespaces.iter().flat_map(|(ns, vars)| vars.iter().map(move |(k, v)| (ns.as_ref(), k.as_ref(), v)))
     }
 
     /// Serializable form for snapshots. The [`ENV`] namespace is excluded: the host

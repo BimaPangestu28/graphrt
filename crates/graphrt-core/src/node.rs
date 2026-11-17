@@ -210,7 +210,11 @@ pub struct SubgraphRequest {
 }
 
 /// Outcome of a container body run.
+///
+/// Produced once per body run and moved straight into the container node, so
+/// the size difference between variants does not matter.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum SubgraphResult {
     Completed {
         /// Final pool of the body run.

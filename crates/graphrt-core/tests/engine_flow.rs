@@ -714,6 +714,7 @@ async fn non_retryable_errors_skip_retries() {
     assert!(matches!(terminal(&events), Event::RunFailed { .. }));
 }
 
+#[cfg(feature = "tokio")] // needs a timer-capable clock
 #[tokio::test]
 async fn timeout_fails_slow_node() {
     let policy = NodePolicy { timeout_ms: Some(20), ..NodePolicy::default() };
@@ -760,6 +761,7 @@ async fn max_steps_stops_the_run() {
     }
 }
 
+#[cfg(feature = "tokio")] // needs a timer-capable clock
 #[tokio::test]
 async fn max_duration_stops_hung_run() {
     let g = build(
@@ -774,6 +776,7 @@ async fn max_duration_stops_hung_run() {
     }
 }
 
+#[cfg(feature = "tokio")] // needs a timer-capable clock
 #[tokio::test]
 async fn abort_cancels_in_flight_node() {
     let g = build(
@@ -795,6 +798,7 @@ async fn abort_cancels_in_flight_node() {
     assert!(!events.iter().any(|e| matches!(e, Event::NodeSucceeded { node_id, .. } if node_id == "slow")));
 }
 
+#[cfg(feature = "tokio")] // needs a timer-capable clock
 #[tokio::test]
 async fn external_variable_update_applies_to_root() {
     let g = build(
@@ -821,6 +825,7 @@ async fn external_variable_update_applies_to_root() {
 // Pause / resume
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "tokio")] // needs a timer-capable clock
 #[tokio::test]
 async fn external_pause_and_resume_round_trip() {
     let g = build_wf(Workflow {

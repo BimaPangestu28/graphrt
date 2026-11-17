@@ -245,7 +245,8 @@ impl Value {
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Value::Int(i) => Some(*i),
-            Value::Float(f) if f.fract() == 0.0 && f.is_finite() => {
+            Value::Float(f) if f.fract() == 0.0 && f.is_finite() =>
+            {
                 #[allow(clippy::cast_possible_truncation)]
                 Some(*f as i64)
             }
@@ -401,11 +402,7 @@ impl Value {
 }
 
 fn format_float(f: f64) -> String {
-    if f.is_finite() && f.fract() == 0.0 && f.abs() < 1e16 {
-        format!("{f:.1}")
-    } else {
-        f.to_string()
-    }
+    if f.is_finite() && f.fract() == 0.0 && f.abs() < 1e16 { format!("{f:.1}") } else { f.to_string() }
 }
 
 impl fmt::Debug for Value {

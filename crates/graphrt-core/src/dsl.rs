@@ -308,15 +308,8 @@ fn decls(raw: Option<serde_json::Value>) -> Result<Vec<VariableDecl>, DocumentEr
 }
 
 /// Keys handled by [`NodeDoc`] itself and therefore removed from `config`.
-const POLICY_KEYS: &[&str] = &[
-    "on_error",
-    "error_strategy",
-    "default_value",
-    "retry",
-    "retry_config",
-    "timeout_ms",
-    "timeout",
-];
+const POLICY_KEYS: &[&str] =
+    &["on_error", "error_strategy", "default_value", "retry", "retry_config", "timeout_ms", "timeout"];
 
 impl NodeDoc {
     /// Normalize a raw node object. Returns `Ok(None)` for annotation-only nodes (notes).
@@ -350,7 +343,19 @@ impl NodeDoc {
         }
         let title = obj.remove("title").and_then(as_string);
         let policy = extract_policy(&id, &mut obj)?;
-        for k in ["desc", "selected", "position", "positionAbsolute", "width", "height", "sourcePosition", "targetPosition", "zIndex", "isInIteration", "isInLoop"] {
+        for k in [
+            "desc",
+            "selected",
+            "position",
+            "positionAbsolute",
+            "width",
+            "height",
+            "sourcePosition",
+            "targetPosition",
+            "zIndex",
+            "isInIteration",
+            "isInLoop",
+        ] {
             obj.remove(k);
         }
         Ok(Some(Self { id, kind, title, parent, policy, config: obj }))
@@ -366,7 +371,8 @@ fn as_string(v: serde_json::Value) -> Option<String> {
 
 fn extract_policy(id: &str, obj: &mut serde_json::Map<String, serde_json::Value>) -> Result<NodePolicy, DocumentError> {
     let mut policy = NodePolicy::default();
-    let bad = |what: &str, e: serde_json::Error| DocumentError::Node { id: id.to_owned(), message: format!("{what}: {e}") };
+    let bad =
+        |what: &str, e: serde_json::Error| DocumentError::Node { id: id.to_owned(), message: format!("{what}: {e}") };
 
     if let Some(v) = obj.remove("on_error") {
         policy.on_error = serde_json::from_value(v).map_err(|e| bad("on_error", e))?;
@@ -402,8 +408,11 @@ fn extract_policy(id: &str, obj: &mut serde_json::Map<String, serde_json::Value>
     } else if let Some(serde_json::Value::Object(cfg)) = obj.remove("retry_config") {
         let enabled = cfg.get("retry_enabled").and_then(serde_json::Value::as_bool).unwrap_or(false);
         if enabled {
-            policy.retry.max_retries =
-                cfg.get("max_retries").and_then(serde_json::Value::as_u64).and_then(|n| u32::try_from(n).ok()).unwrap_or(0);
+            policy.retry.max_retries = cfg
+                .get("max_retries")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0);
             policy.retry.interval_ms = cfg.get("retry_interval").and_then(serde_json::Value::as_u64).unwrap_or(0);
         }
     }

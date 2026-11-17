@@ -1,6 +1,8 @@
 //! Every built-in node kind builds from a workflow document, and a graph using
 //! all of them (including container scopes) validates.
 
+#![cfg(all(feature = "yaml", feature = "jinja"))]
+
 use graphrt_core::node::NodeRole;
 use graphrt_core::{Graph, Registry, Workflow};
 

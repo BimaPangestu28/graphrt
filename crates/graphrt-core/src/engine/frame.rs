@@ -116,7 +116,7 @@ pub(crate) enum FrameOutcome {
         usage: Usage,
     },
     Paused {
-        snapshot: FrameSnapshot,
+        snapshot: Box<FrameSnapshot>,
         reasons: Vec<PauseReason>,
     },
     /// The run was aborted or hit a run-wide limit (see [`Control::stop_reason`]).
@@ -213,14 +213,22 @@ impl Frame {
                 NodeStatus::Failed => State::Failed,
                 NodeStatus::Skipped => State::Skipped,
             };
-            let resume_state = if ns.status == NodeStatus::Paused { ns.resume_state } else { None };
+            // A paused node always resumes, even when its saved state is `null`
+            // (which a JSON round trip turns into `None`).
+            let resume_state = if ns.status == NodeStatus::Paused {
+                Some(ns.resume_state.unwrap_or(serde_json::Value::Null))
+            } else {
+                None
+            };
             frame.nodes.insert(ix, NodeRt { state, exec_id: Arc::from(ns.exec_id), attempt: ns.attempt, resume_state });
         }
+        let edge_index: HashMap<&str, EdgeIx> =
+            graph.edges().iter().enumerate().map(|(ex, e)| (e.id.as_ref(), ex)).collect();
         for (edge_id, status) in snapshot.edges {
-            let ex =
-                graph.edges().iter().position(|e| e.id.as_ref() == edge_id).ok_or_else(|| {
-                    NodeError::fatal("snapshot", format!("snapshot references unknown edge `{edge_id}`"))
-                })?;
+            let ex = edge_index
+                .get(edge_id.as_str())
+                .copied()
+                .ok_or_else(|| NodeError::fatal("snapshot", format!("snapshot references unknown edge `{edge_id}`")))?;
             frame.edges.insert(ex, status);
         }
         // Queue pending nodes in topological order.
@@ -343,7 +351,7 @@ impl Frame {
         let has_paused = self.nodes.values().any(|n| n.state == State::Paused);
         if has_paused || !self.ready.is_empty() {
             let reasons = self.reasons.clone();
-            return FrameOutcome::Paused { snapshot: self.snapshot(), reasons };
+            return FrameOutcome::Paused { snapshot: Box::new(self.snapshot()), reasons };
         }
         FrameOutcome::Completed {
             pool: self.pool,
@@ -417,10 +425,8 @@ impl Frame {
         });
         rt.state = State::Running;
         let exec_id = rt.exec_id.clone();
-        let resume = rt
-            .resume_state
-            .take()
-            .map(|state| Resume { state, input: run.resume_input(&self.id, gn.id.as_ref()) });
+        let resume =
+            rt.resume_state.take().map(|state| Resume { state, input: run.resume_input(&self.id, gn.id.as_ref()) });
 
         run.emit(Event::NodeStarted {
             frame: self.id.clone(),
@@ -810,7 +816,7 @@ impl Subgraph for ScopeRunner {
                     SubgraphResult::Completed { pool, outputs, writes, usage, broke }
                 }
                 FrameOutcome::Failed { error, usage } => SubgraphResult::Failed { error, usage },
-                FrameOutcome::Paused { snapshot, reasons } => SubgraphResult::Paused { snapshot, reasons },
+                FrameOutcome::Paused { snapshot, reasons } => SubgraphResult::Paused { snapshot: *snapshot, reasons },
                 FrameOutcome::Stopped => {
                     let reason = match self.run.control.stop_reason() {
                         Some(Stop::Abort(r) | Stop::Fail(r)) => r,

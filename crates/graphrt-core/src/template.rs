@@ -126,9 +126,8 @@ fn parse_placeholder(body: &str) -> Option<Selector> {
     if body.is_empty() || body.len() > 512 {
         return None;
     }
-    let valid = body
-        .split('.')
-        .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'));
+    let valid =
+        body.split('.').all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'));
     if !valid {
         return None;
     }

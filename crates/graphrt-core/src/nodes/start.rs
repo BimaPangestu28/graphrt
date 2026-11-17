@@ -53,7 +53,9 @@ impl InputVariable {
             "checkbox" | "boolean" | "bool" => ValueType::Boolean,
             "file" => ValueType::File,
             "file-list" => ValueType::ArrayFile,
-            "json" | "json_object" | "object" => ValueType::Object,
+            // `json` accepts any JSON document (object, array, scalar); `object` only objects.
+            "json" => ValueType::Any,
+            "json_object" | "object" => ValueType::Object,
             other => serde_json::from_value::<ValueType>(serde_json::Value::String(other.to_owned()))
                 .map_err(|_| format!("variable `{}` has unknown type `{other}`", self.variable))?,
         };
@@ -97,6 +99,12 @@ impl StartNode {
                 out.outputs.insert(spec.variable.clone(), Value::Null);
                 continue;
             }
+            let raw = match (&raw, spec.kind.as_str()) {
+                (Value::String(s), "json") => serde_json::from_str::<serde_json::Value>(s)
+                    .map(Value::from_json)
+                    .map_err(|e| NodeError::invalid_input(format!("input `{}`: invalid JSON: {e}", spec.variable)))?,
+                _ => raw,
+            };
             let value = coerce_input(declared.ty, raw)
                 .map_err(|e| NodeError::invalid_input(format!("input `{}`: {e}", spec.variable)))?;
             if !spec.options.is_empty() && spec.kind == "select" {

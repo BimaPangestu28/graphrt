@@ -176,7 +176,7 @@ pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Contr
                     steps: shared.steps.load(Ordering::Acquire),
                     usage,
                     handled_errors: shared.handled_errors.load(Ordering::Acquire),
-                    root: snapshot,
+                    root: *snapshot,
                 }),
             }
         }

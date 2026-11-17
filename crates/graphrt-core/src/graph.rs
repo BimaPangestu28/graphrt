@@ -185,7 +185,10 @@ impl Graph {
                 return Err(GraphError::DuplicateEdge(id.to_string()));
             }
             let lookup = |n: &str| {
-                index.get(n).copied().ok_or_else(|| GraphError::MissingNode { edge: id.to_string(), node: n.to_owned() })
+                index
+                    .get(n)
+                    .copied()
+                    .ok_or_else(|| GraphError::MissingNode { edge: id.to_string(), node: n.to_owned() })
             };
             let source = lookup(&e.source)?;
             let target = lookup(&e.target)?;
@@ -227,7 +230,8 @@ impl Graph {
         let mut warnings = Vec::new();
         let mut scopes = HashMap::new();
         for (owner, scope_nodes) in members {
-            let scope_name = owner.and_then(|o| nodes.get(o)).map(|n| n.id.to_string()).unwrap_or_else(|| "root".into());
+            let scope_name =
+                owner.and_then(|o| nodes.get(o)).map(|n| n.id.to_string()).unwrap_or_else(|| "root".into());
             let entry = find_entry(&nodes, &incoming, owner, &scope_nodes, &scope_name)?;
             let order = topo_order(&scope_nodes, &outgoing, &incoming, &edges, &nodes, &scope_name)?;
             // Reachability from the entry: unreachable nodes never run.
@@ -235,7 +239,8 @@ impl Graph {
             for &ix in &scope_nodes {
                 if !reachable.contains(&ix) {
                     if let Some(n) = nodes.get(ix) {
-                        warnings.push(format!("node `{}` is not reachable from the entry of scope `{scope_name}`", n.id));
+                        warnings
+                            .push(format!("node `{}` is not reachable from the entry of scope `{scope_name}`", n.id));
                     }
                 }
             }
