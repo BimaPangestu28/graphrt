@@ -817,7 +817,9 @@ dependencies = [
  "graphrt-http",
  "graphrt-llm",
  "graphrt-mcp",
+ "graphrt-plugin",
  "graphrt-rag",
+ "graphrt-wasm",
  "http-body-util",
  "indexmap",
  "jsonschema",
@@ -936,7 +938,7 @@ dependencies = [
  "serde",
  "serde-saphyr",
  "serde_json",
- "sha2",
+ "sha2 0.11.0",
  "thiserror",
  "tokio",
 ]

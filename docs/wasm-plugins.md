@@ -24,6 +24,24 @@ A workflow then uses the plugin's kinds like any built-in node:
   separator: "-"
 ```
 
+## Using WebAssembly plugins
+
+Two ways to ship a module to the `graphrt` CLI:
+
+- **Bare module:** drop `my_plugin.wasm` directly into a plugin search path
+  (`--plugins <dir>`, `$GRAPHRT_PLUGIN_PATH` or `~/.graphrt/plugins`). The
+  module describes its own nodes.
+- **Manifest:** a directory with `graphrt-plugin.json` using `"runtime": "wasm"`
+  and `"module": "my_plugin.wasm"`. This adds versioned installs
+  (`graphrt plugin install`), `checksums`, and `permissions.secrets`. Node kinds
+  must start with `<name>.` unless the manifest sets `allow_unprefixed_kinds`.
+  See [`plugins/examples/wasm-text-tools`](../plugins/examples/wasm-text-tools).
+
+```sh
+graphrt nodes --plugins plugins/examples --kind slugify
+graphrt run plugins/examples/demo.yaml --plugins plugins/examples --input review="I love it"
+```
+
 ## Engine choice
 
 | Option | Verdict |

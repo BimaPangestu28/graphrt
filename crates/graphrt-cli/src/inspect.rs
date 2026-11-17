@@ -3,14 +3,16 @@
 use std::io::Write;
 use std::path::Path;
 
-use graphrt_core::{Graph, Workflow};
+use graphrt_core::{Graph, Registry, Workflow};
 
 use crate::error::{CliError, EXIT_OK};
+use crate::extensions::{Extensions, PluginOptions};
 use crate::setup;
 
 /// Parse and compile a workflow, printing warnings. Errors exit with code 2.
-pub fn validate(path: &Path) -> Result<u8, CliError> {
-    let graph = setup::load_graph(path)?;
+pub fn validate(path: &Path, plugins: &PluginOptions) -> Result<u8, CliError> {
+    let extensions = Extensions::load(plugins)?;
+    let graph = setup::load_graph(path, &extensions.registry)?;
     for warning in graph.warnings() {
         eprintln!("warning: {warning}");
     }
@@ -21,18 +23,19 @@ pub fn validate(path: &Path) -> Result<u8, CliError> {
 }
 
 /// Describe a workflow: nodes, scopes, inputs, env variables and missing node kinds.
-pub fn inspect(path: &Path) -> Result<u8, CliError> {
+pub fn inspect(path: &Path, plugins: &PluginOptions) -> Result<u8, CliError> {
     let workflow = setup::read_workflow(path)?;
-    let report = describe(&workflow);
+    let extensions = Extensions::load(plugins)?;
+    let report = describe(&workflow, &extensions.registry);
     let mut out = std::io::stdout().lock();
     out.write_all(report.as_bytes()).map_err(|e| CliError::failed(e.to_string()))?;
     Ok(EXIT_OK)
 }
 
 /// Human-readable description of a workflow document.
-pub fn describe(workflow: &Workflow) -> String {
+pub fn describe(workflow: &Workflow, registry: &Registry) -> String {
     let mut s = String::new();
-    let available = setup::available_kinds();
+    let available: Vec<String> = registry.kinds().map(str::to_owned).collect();
     let line = |s: &mut String, text: String| {
         s.push_str(&text);
         s.push('\n');
@@ -54,7 +57,7 @@ pub fn describe(workflow: &Workflow) -> String {
             if !missing.contains(&node.kind) {
                 missing.push(node.kind.clone());
             }
-            "  (not available in this build)"
+            "  (not available: missing plugin or build feature)"
         };
         line(&mut s, format!("  {:<20} {:<22} {}{scope}{flag}", node.id, node.kind, node.label()));
     }
@@ -96,7 +99,7 @@ pub fn describe(workflow: &Workflow) -> String {
     }
 
     if missing.is_empty() {
-        match Graph::build(workflow.clone(), &setup::registry()) {
+        match Graph::build(workflow.clone(), registry) {
             Ok(graph) => {
                 line(&mut s, "\nstatus: valid".to_owned());
                 for w in graph.warnings() {
@@ -106,7 +109,14 @@ pub fn describe(workflow: &Workflow) -> String {
             Err(e) => line(&mut s, format!("\nstatus: invalid: {e}")),
         }
     } else {
-        line(&mut s, format!("\nstatus: needs node kinds not in this build: {}", missing.join(", ")));
+        line(
+            &mut s,
+            format!(
+                "\nstatus: needs node kinds that are not available: {} \
+                 (install the plugin with `graphrt plugin install`, pass `--plugins <dir>`, or use a build with the feature)",
+                missing.join(", ")
+            ),
+        );
     }
     s
 }

@@ -14,6 +14,7 @@ use indexmap::IndexMap;
 
 use crate::args::{OutputMode, RunArgs, ServiceArgs};
 use crate::error::{CliError, EXIT_ABORTED, EXIT_FAILED, EXIT_OK, EXIT_PAUSED};
+use crate::extensions::Extensions;
 use crate::setup::{self, ServiceOptions};
 
 /// Build [`ServiceOptions`] from flags, reading the env file if given.
@@ -45,13 +46,15 @@ pub fn service_options(args: &ServiceArgs) -> Result<ServiceOptions, CliError> {
         model_override: args.model.clone(),
         knowledge: args.knowledge.clone(),
         files_dir: args.files_dir.clone(),
+        plugins: args.plugins.options(),
     })
 }
 
 /// Execute `graphrt run`. Returns the process exit code.
 pub async fn run(args: RunArgs) -> Result<u8, CliError> {
     let options = service_options(&args.services)?;
-    let graph = setup::load_graph_with(&args.workflow, options.model_override.as_deref())?;
+    let extensions = Extensions::load(&options.plugins)?;
+    let graph = setup::load_graph_with(&args.workflow, options.model_override.as_deref(), &extensions.registry)?;
     for warning in graph.warnings() {
         eprintln!("warning: {warning}");
     }
@@ -69,7 +72,7 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
         return Err(CliError::usage("`--resume-input` requires `--resume <snapshot>`"));
     }
 
-    let services = setup::services(&options).await?;
+    let services = setup::services(&options, extensions.tools.clone()).await?;
     let engine = Engine::new(graph.clone())
         .with_services(services)
         .with_clock(Arc::new(TokioClock))

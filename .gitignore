@@ -2,3 +2,4 @@
 *.snapshot.json
 /.claude/worktrees
 examples/rag/.store.json
+__pycache__/
