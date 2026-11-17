@@ -15,34 +15,34 @@ use super::{Engine, RunInput};
 use crate::dsl::VariableDecl;
 use crate::event::{Event, PauseReason, Usage};
 use crate::node::EventSink;
-use crate::pool::{CONVERSATION, ENV, SYS, VariablePool};
+use crate::pool::{CONVERSATION, ENV, SYS, Selector, VariablePool};
 use crate::snapshot::{SNAPSHOT_FORMAT, Snapshot};
 use crate::value::Value;
 
 /// Drive a whole run, emitting every event through `sink`.
 pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Control>, sink: EventSink) {
     let started_ms = engine.clock.now_ms();
-    let emit_failure = |error: String| {
-        (sink)(Event::RunFailed { error, usage: Usage::default(), elapsed_ms: 0 });
+    let emit_failure = |error: String, error_type: &str| {
+        (sink)(Event::RunFailed { error, error_type: error_type.to_owned(), usage: Usage::default(), elapsed_ms: 0 });
     };
 
     let workflow = engine.graph.workflow();
     let env = match resolve_decls(&workflow.env, &input.env, true) {
         Ok(env) => env,
-        Err(e) => return emit_failure(e),
+        Err(e) => return emit_failure(e, "invalid_input"),
     };
     let conversation = match resolve_decls(&workflow.conversation, &input.conversation, false) {
         Ok(c) => c,
-        Err(e) => return emit_failure(e),
+        Err(e) => return emit_failure(e, "invalid_input"),
     };
 
     // Resume validation.
-    let (prior_elapsed, prior_steps, prior_usage, prior_errors, run_id, resume_snapshot, resume_inputs) =
+    let (prior_elapsed, prior_steps, prior_usage, prior_errors, run_id, resume_snapshot, resume_inputs, secrets) =
         match input.resume {
             Some(resume) => {
                 let snap = resume.snapshot;
                 if snap.format != SNAPSHOT_FORMAT {
-                    return emit_failure(crate::Error::SnapshotFormat(snap.format).to_string());
+                    return emit_failure(crate::Error::SnapshotFormat(snap.format).to_string(), "snapshot_mismatch");
                 }
                 if snap.graph_fingerprint != engine.graph.fingerprint() {
                     return emit_failure(
@@ -51,6 +51,7 @@ pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Contr
                             actual: snap.graph_fingerprint.clone(),
                         }
                         .to_string(),
+                        "snapshot_mismatch",
                     );
                 }
                 (
@@ -61,6 +62,10 @@ pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Contr
                     snap.run_id.clone(),
                     Some(snap.root),
                     resume.inputs,
+                    match parse_secrets(&resume.secrets) {
+                        Ok(secrets) => secrets,
+                        Err(e) => return emit_failure(e, "invalid_input"),
+                    },
                 )
             }
             None => (
@@ -71,6 +76,7 @@ pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Contr
                 input.run_id.clone().unwrap_or_else(|| new_id(started_ms)),
                 None,
                 IndexMap::new(),
+                Vec::new(),
             ),
         };
     let resumed = resume_snapshot.is_some();
@@ -86,6 +92,7 @@ pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Contr
         handled_errors: AtomicU32::new(prior_errors),
         usage: Mutex::new(prior_usage),
         env: env.clone(),
+        secrets,
         resume_inputs,
     });
 
@@ -122,7 +129,12 @@ pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Contr
     let frame = match frame {
         Ok(f) => f,
         Err(e) => {
-            sink(Event::RunFailed { error: e.to_string(), usage: shared.total_usage(), elapsed_ms: 0 });
+            sink(Event::RunFailed {
+                error: e.to_string(),
+                error_type: e.kind.clone(),
+                usage: shared.total_usage(),
+                elapsed_ms: 0,
+            });
             return;
         }
     };
@@ -155,7 +167,9 @@ pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Contr
             handled_errors: shared.handled_errors.load(Ordering::Acquire),
             elapsed_ms,
         },
-        FrameOutcome::Failed { error, .. } => Event::RunFailed { error: error.to_string(), usage, elapsed_ms },
+        FrameOutcome::Failed { error, .. } => {
+            Event::RunFailed { error: error.to_string(), error_type: error.kind.clone(), usage, elapsed_ms }
+        }
         FrameOutcome::Paused { snapshot, .. } => {
             let mut reasons = control.reasons();
             if reasons.is_empty() && control.pause_requested() {
@@ -181,12 +195,25 @@ pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Contr
             }
         }
         FrameOutcome::Stopped => match control.stop_reason() {
-            Some(Stop::Fail(error)) => Event::RunFailed { error, usage, elapsed_ms },
+            Some(Stop::Fail(error)) => {
+                Event::RunFailed { error, error_type: "limit_exceeded".to_owned(), usage, elapsed_ms }
+            }
             Some(Stop::Abort(reason)) => Event::RunAborted { reason, elapsed_ms },
             None => Event::RunAborted { reason: "stopped".to_owned(), elapsed_ms },
         },
     };
     sink(terminal);
+}
+
+/// Parse `ResumeFrom::secrets` keys into selectors; values become secrets.
+fn parse_secrets(secrets: &IndexMap<String, Value>) -> Result<Vec<(Selector, Value)>, String> {
+    let mut out = Vec::with_capacity(secrets.len());
+    for (key, value) in secrets {
+        let selector = Selector::parse(key).map_err(|e| format!("resume secret `{key}`: {e}"))?;
+        let plaintext = value.expose_secret().ok_or_else(|| format!("resume secret `{key}` must be a string"))?;
+        out.push((selector, Value::Secret(Arc::from(plaintext))));
+    }
+    Ok(out)
 }
 
 /// Re-apply host-provided `sys` and `conversation` values onto a restored root frame.

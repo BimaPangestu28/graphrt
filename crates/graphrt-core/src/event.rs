@@ -143,6 +143,12 @@ pub enum Event {
     },
     RunFailed {
         error: String,
+        /// Machine-readable category: `invalid_input` (bad run input or resume
+        /// data), `snapshot_mismatch`, `limit_exceeded` (steps / duration / depth),
+        /// `internal`, or the failing node's own error type (e.g. `timeout`,
+        /// `http`, `model`).
+        #[serde(default)]
+        error_type: String,
         usage: Usage,
         elapsed_ms: u64,
     },

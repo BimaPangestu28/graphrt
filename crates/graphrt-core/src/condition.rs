@@ -587,7 +587,7 @@ mod tests {
             {"$file": true, "name": "a.png", "kind": "image", "extension": ".png"},
             {"$file": true, "name": "b.pdf", "kind": "document", "extension": ".pdf"}
         ]);
-        p.insert("n", "files", Value::from_json(files));
+        p.insert("n", "files", Value::from_json_trusted(files));
         let mk = |op: &str, ext: &str| -> Condition {
             serde_json::from_value(json!({
                 "variable_selector": ["n", "files"],

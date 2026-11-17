@@ -259,7 +259,12 @@ fn end_nodes_optional_and_flush_on_failure() {
     a.push(&started("start"));
     a.push(&ok("start", &[]));
     assert_eq!(texts(&a.push(&chunk("llm", "partial"))), "partial");
-    let out = a.push(&Event::RunFailed { error: "boom".into(), usage: Default::default(), elapsed_ms: 1 });
+    let out = a.push(&Event::RunFailed {
+        error: "boom".into(),
+        error_type: "internal".into(),
+        usage: Default::default(),
+        elapsed_ms: 1,
+    });
     assert_eq!(texts(&out), "\n");
     assert!(out.last().is_some_and(|c| c.is_final));
     assert!(a.push(&chunk("llm", "late")).is_empty());

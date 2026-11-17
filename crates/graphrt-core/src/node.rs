@@ -197,6 +197,21 @@ pub trait Node: Send + Sync + fmt::Debug {
     }
 }
 
+/// Append `new` writes to `acc`, keeping only the latest write per exact selector.
+///
+/// An earlier write to the same selector is removed and the new one is appended
+/// at the end, so replaying `acc` in order still yields the same final state
+/// while its length stays bounded by the number of distinct selectors (no
+/// quadratic growth across loop rounds or iteration items).
+pub fn merge_writes(acc: &mut Vec<(Selector, Value)>, new: impl IntoIterator<Item = (Selector, Value)>) {
+    for (selector, value) in new {
+        if let Some(pos) = acc.iter().position(|(s, _)| *s == selector) {
+            acc.remove(pos);
+        }
+        acc.push((selector, value));
+    }
+}
+
 /// Request to execute a container's body once.
 #[derive(Debug)]
 pub struct SubgraphRequest {

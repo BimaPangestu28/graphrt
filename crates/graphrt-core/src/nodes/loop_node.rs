@@ -20,9 +20,9 @@ use crate::dsl::NodeDoc;
 use crate::event::{PauseReason, Usage};
 use crate::node::{
     ConfigError, Node, NodeContext, NodeError, NodeOutcome, NodeOutput, NodeResult, NodeRole, SubgraphRequest,
-    SubgraphResult,
+    SubgraphResult, merge_writes,
 };
-use crate::nodes::iteration::pause_request;
+use crate::nodes::iteration::{apply_write, pause_request, restore_writes, snapshot_writes};
 use crate::pool::{Selector, VariablePool};
 use crate::snapshot::FrameSnapshot;
 use crate::value::{Value, ValueType};
@@ -169,15 +169,20 @@ impl LoopNode {
     async fn execute(&self, ctx: NodeContext) -> NodeResult {
         let loop_id = ctx.node_id.to_string();
         let mut state = match &ctx.resume {
-            Some(resume) => serde_json::from_value::<LoopState>(resume.state.clone())
-                .map_err(|e| NodeError::fatal("resume", format!("invalid loop resume state: {e}")))?,
+            Some(resume) => {
+                let mut state = serde_json::from_value::<LoopState>(resume.state.clone())
+                    .map_err(|e| NodeError::fatal("resume", format!("invalid loop resume state: {e}")))?;
+                state.vars = state.vars.into_iter().map(|(k, v)| (k, v.from_snapshot_value())).collect();
+                state.writes = restore_writes(state.writes);
+                state
+            }
             None => LoopState { vars: self.initial_vars(&loop_id, &ctx.pool)?, ..LoopState::default() },
         };
 
         // Base pool: the parent's variables plus writes the body made outside the loop.
         let mut base = ctx.pool.clone();
         for (sel, value) in &state.writes {
-            base.set_path(sel, value.clone());
+            apply_write(&mut base, sel, value.clone())?;
         }
 
         if ctx.resume.is_none() && self.should_break(&round_pool(&base, &loop_id, &state.vars, 0))? {
@@ -208,13 +213,15 @@ impl LoopNode {
                             state.vars.insert(v.label.clone(), value);
                         }
                     }
+                    let mut external = Vec::new();
                     for (sel, value) in writes {
                         if sel.namespace() == loop_id {
                             continue;
                         }
-                        base.set_path(&sel, value.clone());
-                        state.writes.push((sel, value));
+                        apply_write(&mut base, &sel, value.clone())?;
+                        external.push((sel, value));
                     }
+                    merge_writes(&mut state.writes, external);
                     state.round += 1;
                     if broke {
                         break;
@@ -244,7 +251,12 @@ impl LoopNode {
                     } else {
                         reasons
                     };
-                    return Ok(NodeOutcome::Paused(pause_request(&reasons, &state)?));
+                    let persisted = LoopState {
+                        vars: state.vars.iter().map(|(k, v)| (k.clone(), v.to_snapshot_value())).collect(),
+                        writes: snapshot_writes(&state.writes),
+                        ..state
+                    };
+                    return Ok(NodeOutcome::Paused(pause_request(&reasons, &persisted)?));
                 }
             }
         }
@@ -413,7 +425,8 @@ mod tests {
     async fn forwards_outside_writes() {
         let r = node(base_cfg(2, json!([]))).unwrap().run(ctx(counter(100, None))).await.unwrap();
         let NodeOutcome::Completed(o) = r else { panic!() };
-        assert_eq!(o.writes.len(), 2);
+        // Two rounds wrote `conversation.seen`; only the latest write is kept.
+        assert_eq!(o.writes.len(), 1);
         assert!(o.writes.iter().all(|(s, _)| s.namespace() == "conversation"));
     }
 

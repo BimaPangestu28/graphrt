@@ -24,9 +24,9 @@ use crate::dsl::NodeDoc;
 use crate::event::{PauseReason, Usage};
 use crate::node::{
     ConfigError, Node, NodeContext, NodeError, NodeOutcome, NodeOutput, NodeResult, NodeRole, PauseRequest,
-    SubgraphRequest, SubgraphResult,
+    SubgraphRequest, SubgraphResult, merge_writes,
 };
-use crate::pool::Selector;
+use crate::pool::{Selector, VariablePool};
 use crate::snapshot::FrameSnapshot;
 use crate::value::Value;
 
@@ -85,6 +85,58 @@ struct IterationState {
     paused: BTreeMap<usize, FrameSnapshot>,
     writes: Vec<(Selector, Value)>,
     usage: Usage,
+    /// Failed items (continue-on-error / remove-abnormal-output), by index.
+    #[serde(default)]
+    errors: BTreeMap<usize, String>,
+}
+
+impl IterationState {
+    /// Copy with secrets replaced by snapshot markers (see [`Value::to_snapshot_value`]).
+    fn to_persisted(&self) -> Self {
+        let results = self
+            .results
+            .iter()
+            .map(|(i, outcome)| {
+                let outcome = match outcome {
+                    ItemOutcome::Done { value } => ItemOutcome::Done { value: value.to_snapshot_value() },
+                    ItemOutcome::Removed => ItemOutcome::Removed,
+                };
+                (*i, outcome)
+            })
+            .collect();
+        Self { results, writes: snapshot_writes(&self.writes), ..self.clone() }
+    }
+
+    /// Inverse of [`IterationState::to_persisted`].
+    fn restored(self) -> Self {
+        let results = self
+            .results
+            .into_iter()
+            .map(|(i, outcome)| {
+                let outcome = match outcome {
+                    ItemOutcome::Done { value } => ItemOutcome::Done { value: value.from_snapshot_value() },
+                    ItemOutcome::Removed => ItemOutcome::Removed,
+                };
+                (i, outcome)
+            })
+            .collect();
+        Self { results, writes: restore_writes(self.writes), ..self }
+    }
+}
+
+/// Apply one body write to a container's base pool.
+pub(crate) fn apply_write(pool: &mut VariablePool, selector: &Selector, value: Value) -> Result<(), NodeError> {
+    pool.set_path(selector, value).map_err(|e| NodeError::fatal("invalid_write", e.to_string()))
+}
+
+/// Writes in persistable form (secrets replaced by markers).
+pub(crate) fn snapshot_writes(writes: &[(Selector, Value)]) -> Vec<(Selector, Value)> {
+    writes.iter().map(|(s, v)| (s.clone(), v.to_snapshot_value())).collect()
+}
+
+/// Inverse of [`snapshot_writes`].
+pub(crate) fn restore_writes(writes: Vec<(Selector, Value)>) -> Vec<(Selector, Value)> {
+    writes.into_iter().map(|(s, v)| (s, v.from_snapshot_value())).collect()
 }
 
 /// The `iteration` node.
@@ -121,7 +173,8 @@ impl IterationNode {
 
         let mut state = match &ctx.resume {
             Some(resume) => serde_json::from_value::<IterationState>(resume.state.clone())
-                .map_err(|e| NodeError::fatal("resume", format!("invalid iteration resume state: {e}")))?,
+                .map_err(|e| NodeError::fatal("resume", format!("invalid iteration resume state: {e}")))?
+                .restored(),
             None => IterationState { total: items.len(), ..IterationState::default() },
         };
         if state.total != items.len() {
@@ -144,11 +197,20 @@ impl IterationNode {
         let mut pause_reasons: Vec<PauseReason> = Vec::new();
         let concurrency = self.concurrency();
 
+        // Base pool: the parent's variables plus every write completed items made
+        // outside the body. Each item starts from the base as it is when the item
+        // starts, so sequential items see earlier items' writes; with parallel
+        // items, concurrent writes to the same variable are last-write-wins.
+        let mut base = ctx.pool.clone();
+        for (sel, value) in &state.writes {
+            apply_write(&mut base, sel, value.clone())?;
+        }
+
         loop {
             while pause_reasons.is_empty() && running.len() < concurrency {
                 let Some((index, resume)) = queue.pop_front() else { break };
                 let Some(item) = items.get(index).cloned() else { break };
-                let mut pool = ctx.pool.clone();
+                let mut pool = base.clone();
                 pool.insert(&node_id, "item", item);
                 pool.insert(&node_id, "index", Value::Int(i64::try_from(index).unwrap_or(i64::MAX)));
                 ctx.progress(
@@ -172,7 +234,10 @@ impl IterationNode {
                         None => Value::Null,
                     };
                     state.results.insert(index, ItemOutcome::Done { value });
-                    state.writes.extend(writes);
+                    for (sel, value) in &writes {
+                        apply_write(&mut base, sel, value.clone())?;
+                    }
+                    merge_writes(&mut state.writes, writes);
                     state.usage.add(&usage);
                 }
                 SubgraphResult::Failed { error, usage } => {
@@ -190,6 +255,7 @@ impl IterationNode {
                             state.results.insert(index, ItemOutcome::Removed);
                         }
                     }
+                    state.errors.insert(index, error.message.clone());
                 }
                 SubgraphResult::Paused { snapshot, reasons } => {
                     state.paused.insert(index, snapshot);
@@ -208,9 +274,15 @@ impl IterationNode {
         }
 
         if !pause_reasons.is_empty() {
-            return Ok(NodeOutcome::Paused(pause_request(&pause_reasons, &state)?));
+            return Ok(NodeOutcome::Paused(pause_request(&pause_reasons, &state.to_persisted())?));
         }
 
+        let errors = Value::array(state.errors.iter().map(|(index, message)| {
+            Value::object([
+                ("index", Value::Int(i64::try_from(*index).unwrap_or(i64::MAX))),
+                ("error", Value::from(message.as_str())),
+            ])
+        }));
         let ordered: Vec<Value> = state
             .results
             .into_values()
@@ -220,7 +292,7 @@ impl IterationNode {
             })
             .collect();
         let output = if self.config.flatten_output { flatten(ordered) } else { Value::array(ordered) };
-        let mut out = NodeOutput::new().with("output", output);
+        let mut out = NodeOutput::new().with("output", output).with("errors", errors);
         out.writes = state.writes;
         if !state.usage.is_zero() {
             out.usage = Some(state.usage);
@@ -343,7 +415,9 @@ mod tests {
         let NodeOutcome::Completed(o) = r else { panic!("{r:?}") };
         assert_eq!(o.outputs.get("output"), Some(&Value::from_json(json!([2, 4, 10]))));
         assert_eq!(o.usage.map(|u| u.total_tokens), Some(6));
-        assert_eq!(o.writes.len(), 3);
+        // Three items wrote `conversation.last`; only the latest write is kept.
+        assert_eq!(o.writes.len(), 1);
+        assert_eq!(o.outputs.get("errors"), Some(&Value::array([])));
     }
 
     #[tokio::test]
