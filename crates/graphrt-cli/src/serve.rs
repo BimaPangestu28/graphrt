@@ -246,7 +246,10 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let telemetry = crate::otel::Telemetry::from_args(&args.services, &options.all_vars())?;
     let store = crate::store::open(args.store.as_ref())?;
     let state = Arc::new(
-        build_state(&files, &options, limits, api_key.clone()).await?.with_store(store).with_telemetry(telemetry.clone()),
+        build_state(&files, &options, limits, api_key.clone())
+            .await?
+            .with_store(store)
+            .with_telemetry(telemetry.clone()),
     );
     let interrupted = state.recover().await?;
     if interrupted > 0 {

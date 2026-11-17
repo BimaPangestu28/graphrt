@@ -103,20 +103,20 @@ fn apply_bundle_configs(bundle: &graphrt_bundle::Bundle, options: &mut ServiceOp
     let fingerprint = graphrt_bundle::sha256_hex(bundle.manifest_bytes());
     let dir = std::env::temp_dir().join(format!("graphrt-bundle-{}", fingerprint.get(..16).unwrap_or(&fingerprint)));
     bundle.extract_to(&dir).map_err(|e| CliError::failed(format!("cannot extract bundle: {e}")))?;
-    if options.providers.is_none() {
-        if let Some((rel, _)) = bundle.providers_config() {
-            options.providers = Some(dir.join(rel));
-        }
+    if options.providers.is_none()
+        && let Some((rel, _)) = bundle.providers_config()
+    {
+        options.providers = Some(dir.join(rel));
     }
-    if options.knowledge.is_none() {
-        if let Some(config) = bundle.knowledge_config_at(&dir) {
-            let config = config.map_err(|e| CliError::invalid(e.to_string()))?;
-            let target = dir.join("knowledge/resolved.json");
-            let text = serde_json::to_vec_pretty(&config).map_err(|e| CliError::failed(e.to_string()))?;
-            std::fs::write(&target, text)
-                .map_err(|e| CliError::failed(format!("cannot write `{}`: {e}", target.display())))?;
-            options.knowledge = Some(target);
-        }
+    if options.knowledge.is_none()
+        && let Some(config) = bundle.knowledge_config_at(&dir)
+    {
+        let config = config.map_err(|e| CliError::invalid(e.to_string()))?;
+        let target = dir.join("knowledge/resolved.json");
+        let text = serde_json::to_vec_pretty(&config).map_err(|e| CliError::failed(e.to_string()))?;
+        std::fs::write(&target, text)
+            .map_err(|e| CliError::failed(format!("cannot write `{}`: {e}", target.display())))?;
+        options.knowledge = Some(target);
     }
     Ok(())
 }
