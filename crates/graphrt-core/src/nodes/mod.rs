@@ -62,6 +62,7 @@ pub fn register_builtins(registry: &mut Registry) {
     registry.register("loop-start", |_| Ok(Arc::new(markers::ScopeStartNode)));
     registry.register("loop-end", |_| Ok(Arc::new(markers::LoopEndNode)));
     registry.register("human-input", |doc| Ok(Arc::new(human_input::HumanInputNode::new(doc, parse_config(doc)?)?)));
+    crate::tool_node::register(registry);
     #[cfg(feature = "jinja")]
     registry.register("template-transform", |doc| {
         Ok(Arc::new(template_transform::TemplateTransformNode::new(doc, parse_config(doc)?)?))
