@@ -347,6 +347,10 @@ impl Drop for RunGuard {
 
 async fn execute(state: Arc<AppState>, engine: &Engine, run_id: String, input: RunInput, stream: bool) -> Response {
     let mut assembler = ResponseAssembler::new(engine.graph());
+    if let Some(resume) = &input.resume {
+        // Nodes that finished before the pause will not re-run; seed their values.
+        assembler = assembler.resume_from(&resume.snapshot.root);
+    }
     for (k, v) in &input.sys {
         assembler = assembler.with_value(&Selector::of("sys", k), v.clone());
     }

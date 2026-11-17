@@ -165,7 +165,6 @@ fn run_approval_pauses_and_writes_snapshot() {
 }
 
 #[test]
-#[ignore = "needs graphrt-core to keep a null resume_state for paused nodes when restoring a JSON snapshot"]
 fn run_approval_resume_completes() {
     let path = example("approval.yaml");
     let snap = temp_path("approval-resume.snapshot.json");

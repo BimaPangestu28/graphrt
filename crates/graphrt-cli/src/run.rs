@@ -57,6 +57,10 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
         .with_limits(setup::limits(args.services.timeout_ms, args.services.max_steps));
 
     let mut assembler = ResponseAssembler::new(&graph);
+    if let Some(resume) = &input.resume {
+        // Nodes that finished before the pause will not re-run; seed their values.
+        assembler = assembler.resume_from(&resume.snapshot.root);
+    }
     for (k, v) in &input.sys {
         assembler = assembler.with_value(&Selector::of("sys", k), v.clone());
     }
