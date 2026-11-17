@@ -13,6 +13,7 @@
 //! WorkflowHandle.run(inputs_json, sys_json, listener) -> RunHandle
 //! WorkflowHandle.resume(snapshot_json, inputs_json, secrets_json, listener) -> RunHandle
 //! RunHandle.abort(reason) / pause(reason) / wait_json(timeout_ms)
+//! Runtime.set_credential_provider(provider, callback)  // keys from Keychain / Keystore
 //! ```
 //!
 //! Runs execute on a Tokio runtime owned by [`Runtime`]; listener callbacks are
@@ -29,9 +30,19 @@
 //!   "allow_private_network": false,
 //!   "knowledge": { "...": "knowledge-retrieval datasets (see graphrt-rag)" },
 //!   "mcp_servers": { "mcpServers": { "docs": { "url": "https://..." } } },
-//!   "wasm": { "fuel": 1000000000, "memory_bytes": 67108864 }
+//!   "wasm": { "fuel": 1000000000, "memory_bytes": 67108864 },
+//!   "credentials": {
+//!     "openai": { "source": "external" },
+//!     "proxy": { "source": "external", "kind": "openai", "base_url": "https://llm-proxy.example.com/v1" },
+//!     "anthropic": { "source": "token_broker", "url": "https://api.example.com/llm-token", "app_auth": "external" }
+//!   }
 //! }
 //! ```
+//!
+//! `credentials` declares providers whose keys never appear in the config: an
+//! `external` provider asks the [`CredentialProvider`] registered with
+//! [`Runtime::set_credential_provider`]; a `token_broker` provider fetches
+//! short-lived tokens from your backend. See `docs/credentials.md`.
 //!
 //! `providers` uses the same variable names as the CLI's environment
 //! (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`, `OLLAMA_HOST`,
@@ -49,6 +60,10 @@ use graphrt_core::snapshot::Snapshot;
 use graphrt_core::{Engine, Event, Graph, Registry, RunInput, Selector, Services, Value, Workflow};
 use indexmap::IndexMap;
 use serde::Deserialize;
+
+mod credentials;
+
+pub use credentials::{CredentialProvider, CredentialRecord};
 
 uniffi::setup_scaffolding!();
 
@@ -71,6 +86,12 @@ pub enum GraphrtError {
     /// Internal failure (runtime could not start, lock poisoned...).
     #[error("runtime error: {message}")]
     Runtime { message: String },
+}
+
+impl From<uniffi::UnexpectedUniFFICallbackError> for GraphrtError {
+    fn from(e: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        Self::Runtime { message: format!("callback failed: {}", e.reason) }
+    }
 }
 
 impl GraphrtError {
@@ -119,6 +140,8 @@ struct RuntimeConfig {
     mcp_servers: Option<serde_json::Value>,
     #[serde(default)]
     wasm: WasmConfig,
+    #[serde(default)]
+    credentials: IndexMap<String, graphrt_llm::credential_config::ProviderCredentialConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -188,6 +211,7 @@ pub struct Runtime {
     env: IndexMap<String, String>,
     limits: Limits,
     wasm_limits: graphrt_wasm::WasmLimits,
+    credentials: graphrt_llm::credential_config::HostCredentials,
 }
 
 impl Drop for Runtime {
@@ -240,7 +264,13 @@ impl Runtime {
             |name: &str| -> Option<String> { config.providers.get(name).or_else(|| config.env.get(name)).cloned() };
 
         let mut services = Services::new();
-        let models = graphrt_llm::ModelRegistry::from_vars(&vars).map_err(|e| GraphrtError::config(e.to_string()))?;
+        let mut models =
+            graphrt_llm::ModelRegistry::from_vars(&vars).map_err(|e| GraphrtError::config(e.to_string()))?;
+        // Credentialed providers replace env-configured ones of the same name; their
+        // keys come from the host at request time, never from this config.
+        let host_credentials = graphrt_llm::credential_config::HostCredentials::new();
+        graphrt_llm::credential_config::apply(&mut models, &config.credentials, &host_credentials)
+            .map_err(|e| GraphrtError::config(e.to_string()))?;
         services.insert(models);
 
         let policy = graphrt_http::EgressPolicy { allow_private: config.allow_private_network, ..Default::default() };
@@ -274,7 +304,20 @@ impl Runtime {
             env: config.env,
             limits: config.limits.to_limits(),
             wasm_limits: config.wasm.to_limits(),
+            credentials: host_credentials,
         }))
+    }
+
+    /// Register the host's credential callback for `provider` (a name from the
+    /// config's `credentials` section), or `"*"` for every provider. Replaces any
+    /// previous callback. Takes effect for requests made after the call.
+    pub fn set_credential_provider(&self, provider: String, callback: Arc<dyn CredentialProvider>) {
+        self.credentials.set(provider, Arc::new(credentials::ForeignCredentials::new(callback)));
+    }
+
+    /// Remove the credential callback registered for `provider` (or `"*"`).
+    pub fn clear_credential_provider(&self, provider: String) {
+        self.credentials.remove(&provider);
     }
 
     /// Load a sandboxed WebAssembly plugin; its node kinds become available to
