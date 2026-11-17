@@ -1,0 +1,64 @@
+//! Library side of the `graphrt` binary: command implementations shared by the
+//! binary and its tests.
+
+pub mod args;
+pub mod error;
+pub mod inspect;
+pub mod run;
+#[cfg(feature = "serve")]
+pub mod serve;
+pub mod setup;
+
+use args::{Cli, Command};
+use error::{CliError, EXIT_OK};
+
+/// Features compiled into this build.
+pub fn enabled_features() -> Vec<&'static str> {
+    let mut features = vec!["core"];
+    if cfg!(feature = "llm") {
+        features.push("llm");
+    }
+    if cfg!(feature = "http") {
+        features.push("http");
+    }
+    if cfg!(feature = "code") {
+        features.push("code");
+    }
+    if cfg!(feature = "mcp") {
+        features.push("mcp");
+    }
+    if cfg!(feature = "serve") {
+        features.push("serve");
+    }
+    features
+}
+
+/// Execute a parsed command and return the process exit code.
+pub fn execute(cli: Cli) -> Result<u8, CliError> {
+    match cli.command {
+        Command::Validate(arg) => inspect::validate(&arg.workflow),
+        Command::Inspect(arg) => inspect::inspect(&arg.workflow),
+        Command::Version => {
+            use std::io::Write;
+            let mut out = std::io::stdout().lock();
+            writeln!(out, "graphrt {} ({})", env!("CARGO_PKG_VERSION"), enabled_features().join(", "))
+                .map_err(|e| CliError::failed(e.to_string()))?;
+            Ok(EXIT_OK)
+        }
+        Command::Run(args) => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| CliError::failed(format!("cannot start runtime: {e}")))?;
+            runtime.block_on(run::run(*args))
+        }
+        #[cfg(feature = "serve")]
+        Command::Serve(args) => {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| CliError::failed(format!("cannot start runtime: {e}")))?;
+            runtime.block_on(serve::serve(*args))
+        }
+    }
+}

@@ -1,0 +1,112 @@
+//! `graphrt validate` and `graphrt inspect`.
+
+use std::io::Write;
+use std::path::Path;
+
+use graphrt_core::{Graph, Workflow};
+
+use crate::error::{CliError, EXIT_OK};
+use crate::setup;
+
+/// Parse and compile a workflow, printing warnings. Errors exit with code 2.
+pub fn validate(path: &Path) -> Result<u8, CliError> {
+    let graph = setup::load_graph(path)?;
+    for warning in graph.warnings() {
+        eprintln!("warning: {warning}");
+    }
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{}: ok ({} nodes, {} edges)", path.display(), graph.nodes().len(), graph.edges().len())
+        .map_err(|e| CliError::failed(e.to_string()))?;
+    Ok(EXIT_OK)
+}
+
+/// Describe a workflow: nodes, scopes, inputs, env variables and missing node kinds.
+pub fn inspect(path: &Path) -> Result<u8, CliError> {
+    let workflow = setup::read_workflow(path)?;
+    let report = describe(&workflow);
+    let mut out = std::io::stdout().lock();
+    out.write_all(report.as_bytes()).map_err(|e| CliError::failed(e.to_string()))?;
+    Ok(EXIT_OK)
+}
+
+/// Human-readable description of a workflow document.
+pub fn describe(workflow: &Workflow) -> String {
+    let mut s = String::new();
+    let available = setup::available_kinds();
+    let line = |s: &mut String, text: String| {
+        s.push_str(&text);
+        s.push('\n');
+    };
+
+    line(&mut s, format!("name:    {}", workflow.name.as_deref().unwrap_or("(unnamed)")));
+    line(&mut s, format!("version: {}", workflow.version));
+    if let Some(d) = &workflow.description {
+        line(&mut s, format!("about:   {d}"));
+    }
+
+    line(&mut s, format!("\nnodes ({}):", workflow.graph.nodes.len()));
+    let mut missing = Vec::new();
+    for node in &workflow.graph.nodes {
+        let scope = node.parent.as_deref().map(|p| format!("  [in {p}]")).unwrap_or_default();
+        let flag = if available.contains(&node.kind) {
+            ""
+        } else {
+            if !missing.contains(&node.kind) {
+                missing.push(node.kind.clone());
+            }
+            "  (not available in this build)"
+        };
+        line(&mut s, format!("  {:<20} {:<22} {}{scope}{flag}", node.id, node.kind, node.label()));
+    }
+    line(&mut s, format!("\nedges: {}", workflow.graph.edges.len()));
+
+    let starts: Vec<_> = workflow.graph.nodes.iter().filter(|n| n.kind == "start").collect();
+    line(&mut s, "\ninputs:".to_owned());
+    let mut any_input = false;
+    for start in starts {
+        if let Some(serde_json::Value::Array(vars)) = start.config.get("variables") {
+            for var in vars {
+                let name = var.get("variable").and_then(|v| v.as_str()).unwrap_or("?");
+                let kind = var.get("type").and_then(|v| v.as_str()).unwrap_or("text-input");
+                let required = var.get("required").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                let req = if required { "required" } else { "optional" };
+                line(&mut s, format!("  {name:<20} {kind:<12} {req}"));
+                any_input = true;
+            }
+        }
+    }
+    if !any_input {
+        line(&mut s, "  (none)".to_owned());
+    }
+
+    line(&mut s, "\nenv:".to_owned());
+    if workflow.env.is_empty() {
+        line(&mut s, "  (none)".to_owned());
+    }
+    for decl in &workflow.env {
+        let source = if decl.value.is_some() { "has default" } else { "must be provided" };
+        line(&mut s, format!("  {:<20} {:<12} {source}", decl.name, format!("{:?}", decl.ty).to_lowercase()));
+    }
+
+    if !workflow.conversation.is_empty() {
+        line(&mut s, "\nconversation variables:".to_owned());
+        for decl in &workflow.conversation {
+            line(&mut s, format!("  {:<20} {}", decl.name, format!("{:?}", decl.ty).to_lowercase()));
+        }
+    }
+
+    if missing.is_empty() {
+        match Graph::build(workflow.clone(), &setup::registry()) {
+            Ok(graph) => {
+                line(&mut s, "\nstatus: valid".to_owned());
+                for w in graph.warnings() {
+                    line(&mut s, format!("  warning: {w}"));
+                }
+            }
+            Err(e) => line(&mut s, format!("\nstatus: invalid: {e}")),
+        }
+    } else {
+        line(&mut s, format!("\nstatus: needs node kinds not in this build: {}", missing.join(", ")));
+    }
+    s
+}

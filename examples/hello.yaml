@@ -1,0 +1,28 @@
+# Fully offline: start -> template -> end.
+#   graphrt run examples/hello.yaml --input name=Ada
+version: "1"
+name: hello
+description: Greets someone using a Jinja template.
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: name, type: text-input, required: true, max_length: 64 }
+        - { variable: excited, type: checkbox, default: false }
+
+    - id: greet
+      type: template-transform
+      template: "Hello, {{ name }}{% if excited %}!!!{% else %}.{% endif %}"
+      variables:
+        - { variable: name, value_selector: [start, name] }
+        - { variable: excited, value_selector: [start, excited] }
+
+    - id: end
+      type: end
+      outputs:
+        - { variable: greeting, value_selector: [greet, output] }
+
+  edges:
+    - { source: start, target: greet }
+    - { source: greet, target: end }

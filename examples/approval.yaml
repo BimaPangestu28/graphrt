@@ -1,0 +1,37 @@
+# Fully offline: human-in-the-loop approval.
+#   graphrt run examples/approval.yaml --input amount:=1200 --input reason="New laptop"
+#   # -> exits with code 3 and writes examples/approval.snapshot.json
+#   graphrt run examples/approval.yaml --resume examples/approval.snapshot.json \
+#       --resume-input 'review={"action":"approve","values":{"note":"ok"}}'
+version: "1"
+name: expense-approval
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: amount, type: number, required: true }
+        - { variable: reason, type: text-input, required: true }
+
+    - id: review
+      type: human-input
+      prompt: "Approve an expense of {{#start.amount#}} for: {{#start.reason#}}?"
+      form:
+        fields:
+          - { name: note, label: Comment, type: text }
+      actions:
+        - { id: approve, title: Approve }
+        - { id: reject, title: Reject }
+
+    - id: approved
+      type: answer
+      answer: "Approved {{#start.amount#}} ({{#review.note#}})"
+
+    - id: rejected
+      type: answer
+      answer: "Rejected: {{#review.note#}}"
+
+  edges:
+    - { source: start, target: review }
+    - { source: review, target: approved, handle: approve }
+    - { source: review, target: rejected, handle: reject }

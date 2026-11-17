@@ -1,0 +1,65 @@
+# Fully offline: process every item of a list in parallel with a JavaScript code node,
+# then summarize with a template.
+#   graphrt run examples/iteration.yaml --input 'orders=[{"sku":"A","qty":2,"price":3.5},{"sku":"B","qty":1,"price":10}]'
+version: "1"
+name: order-totals
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: orders, type: "array[object]", required: true }
+
+    - id: as_list
+      type: code
+      code_language: javascript
+      code: |
+        function main({ orders }) {
+          return { items: Array.isArray(orders) ? orders : [orders] };
+        }
+      variables: [{ variable: orders, value_selector: [start, orders] }]
+      outputs: { items: { type: "array[object]" } }
+
+    - id: each
+      type: iteration
+      iterator_selector: [as_list, items]
+      output_selector: [line_total, line]
+      is_parallel: true
+      parallel_nums: 4
+
+    - id: each_start
+      type: iteration-start
+      parent: each
+
+    - id: line_total
+      type: code
+      parent: each
+      code: |
+        function main({ item, index }) {
+          const total = item.qty * item.price;
+          return { line: { n: index + 1, sku: item.sku, total } };
+        }
+      variables:
+        - { variable: item, value_selector: [each, item] }
+        - { variable: index, value_selector: [each, index] }
+      outputs: { line: { type: object } }
+
+    - id: summary
+      type: template-transform
+      template: |
+        {% for l in lines %}{{ l.n }}. {{ l.sku }}: {{ l.total }}
+        {% endfor %}Grand total: {{ lines | map(attribute="total") | sum }}
+      variables: [{ variable: lines, value_selector: [each, output] }]
+
+    - id: end
+      type: end
+      outputs:
+        - { variable: lines, value_selector: [each, output] }
+        - { variable: summary, value_selector: [summary, output] }
+
+  edges:
+    - { source: start, target: as_list }
+    - { source: as_list, target: each }
+    - { source: each_start, target: line_total }
+    - { source: each, target: summary }
+    - { source: summary, target: end }

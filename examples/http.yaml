@@ -1,0 +1,26 @@
+# Calls a public JSON API (needs network access).
+#   graphrt run examples/http.yaml --input user:=1
+version: "1"
+name: fetch-user
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: user, type: number, required: true }
+
+    - id: fetch
+      type: http-request
+      method: get
+      url: "https://jsonplaceholder.typicode.com/users/{{#start.user#}}"
+      headers: "Accept: application/json"
+      timeout: { connect: 5, read: 10 }
+      retry: { max_retries: 2, interval_ms: 500, backoff: 2.0 }
+
+    - id: show
+      type: answer
+      answer: "{{#fetch.json.name#}} <{{#fetch.json.email#}}> works at {{#fetch.json.company.name#}}"
+
+  edges:
+    - { source: start, target: fetch }
+    - { source: fetch, target: show }

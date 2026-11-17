@@ -1,0 +1,58 @@
+# Fully offline: route a support ticket by priority, then merge the branches.
+#   graphrt run examples/branching.yaml --input priority:=9 --input subject="Server down"
+version: "1"
+name: ticket-router
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: subject, type: text-input, required: true }
+        - { variable: priority, type: number, required: true }
+
+    - id: route
+      type: if-else
+      cases:
+        - case_id: urgent
+          logical_operator: and
+          conditions:
+            - { variable_selector: [start, priority], comparison_operator: "≥", value: "8" }
+        - case_id: normal
+          conditions:
+            - { variable_selector: [start, priority], comparison_operator: "≥", value: "4" }
+
+    - id: page_oncall
+      type: template-transform
+      template: "URGENT: paging on-call for '{{ subject }}'"
+      variables: [{ variable: subject, value_selector: [start, subject] }]
+
+    - id: queue
+      type: template-transform
+      template: "Queued '{{ subject }}' for the support team"
+      variables: [{ variable: subject, value_selector: [start, subject] }]
+
+    - id: backlog
+      type: template-transform
+      template: "Added '{{ subject }}' to the backlog"
+      variables: [{ variable: subject, value_selector: [start, subject] }]
+
+    - id: merge
+      type: variable-aggregator
+      variables:
+        - [page_oncall, output]
+        - [queue, output]
+        - [backlog, output]
+
+    - id: reply
+      type: answer
+      answer: "{{#merge.output#}} (priority {{#start.priority#}})"
+
+  edges:
+    - { source: start, target: route }
+    - { source: route, target: page_oncall, handle: urgent }
+    - { source: route, target: queue, handle: normal }
+    - { source: route, target: backlog, handle: "false" }
+    - { source: page_oncall, target: merge }
+    - { source: queue, target: merge }
+    - { source: backlog, target: merge }
+    - { source: merge, target: reply }

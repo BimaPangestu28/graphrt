@@ -1,0 +1,212 @@
+# graphrt
+
+**A tiny, portable runtime for agentic AI workflows. Build anywhere, run anywhere.**
+
+graphrt executes workflow graphs (LLM calls, tool-using agents, MCP tools,
+HTTP requests, sandboxed code, branches, loops and human approvals) from a
+plain YAML/JSON document. The same document runs as a single small binary, as a
+streaming HTTP service, or embedded in your own Rust program.
+
+```text
+start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
+              └─────▶ http-request ──▶ code ──▶ end
+```
+
+## Why graphrt
+
+- **Small.** Core-only binary ≈ 2.4 MB, full build (LLM, HTTP, JS, MCP, server) ≈ 7 MB. No Python, no Node, no database.
+- **Fast.** One task per run polls node futures concurrently; nothing is spawned per node. Variable pools are reference-counted, so loops and parallel iterations don't deep-copy state.
+- **Portable.** The core is executor-agnostic (bring your own clock) and compiles to `wasm32-unknown-unknown`.
+- **Agent-native.** First-class `agent` node with a tool-calling loop, parallel tool calls, MCP servers, human approval of tool calls, retries with backoff, per-node timeouts and step/time budgets.
+- **Durable.** Pause anywhere (human input, tool approval, API call), get a JSON snapshot, resume later — even inside loops and iterations.
+- **Safe by default.** Secrets never leave the process in logs, events or snapshots. HTTP egress blocks private networks (SSRF). Templates run with fuel limits. Code runs in an interpreter with memory/time limits and no I/O.
+
+## Quick start
+
+```sh
+cargo install --path crates/graphrt-cli        # installs `graphrt`
+
+graphrt run examples/hello.yaml --input name=Ada
+# {"greeting": "Hello, Ada."}
+
+graphrt run examples/branching.yaml --input priority:=9 --input subject="DB down"
+# URGENT: paging on-call for 'DB down' (priority 9)
+
+OPENAI_API_KEY=sk-... graphrt run examples/chatbot.yaml --sys query="What is a DAG?"
+# (tokens stream to your terminal)
+```
+
+Human in the loop:
+
+```sh
+graphrt run examples/approval.yaml --input amount:=1200 --input reason="New laptop"
+# exit code 3: paused, snapshot written to examples/approval.snapshot.json
+graphrt run examples/approval.yaml --resume examples/approval.snapshot.json \
+  --resume-input 'review={"action":"approve","values":{"note":"ok"}}'
+```
+
+Serve workflows over HTTP with Server-Sent Events:
+
+```sh
+GRAPHRT_API_KEY=change-me graphrt serve examples/ --addr 0.0.0.0:8080
+curl -N -H 'Authorization: Bearer change-me' \
+  -d '{"inputs":{"name":"Ada"},"stream":true}' \
+  http://localhost:8080/v1/workflows/hello/runs
+```
+
+See [docs/cli.md](docs/cli.md) for every command and flag.
+
+## A workflow
+
+```yaml
+version: "1"
+name: support-triage
+env:
+  - { name: CRM_TOKEN, type: secret }
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables: [{ variable: ticket, type: paragraph, required: true }]
+
+    - id: classify
+      type: question-classifier
+      model: { provider: openai, name: gpt-4o-mini }
+      query_variable_selector: [start, ticket]
+      classes: [{ id: billing, name: Billing }, { id: bug, name: Bug report }]
+
+    - id: lookup
+      type: http-request
+      method: get
+      url: "https://crm.example.com/api/tickets?q={{#start.ticket#}}"
+      authorization: { type: api-key, config: { type: bearer, api_key: "{{#env.CRM_TOKEN#}}" } }
+      retry: { max_retries: 3, interval_ms: 500, backoff: 2.0 }
+      timeout_ms: 10000
+      on_error: { strategy: fail-branch }
+
+    - id: reply
+      type: answer
+      answer: "Category: {{#classify.class_name#}}"
+  edges:
+    - { source: start, target: classify }
+    - { source: classify, target: lookup, handle: billing }
+    - { source: classify, target: reply, handle: bug }
+    - { source: lookup, target: reply }
+```
+
+Values are referenced as `{{#node.output.path#}}`. The full format is in
+[docs/workflow-format.md](docs/workflow-format.md).
+
+## Nodes
+
+| Kind | What it does | Crate |
+| --- | --- | --- |
+| `start` / `end` / `answer` | Typed inputs; final outputs; streamed answer text | core |
+| `if-else` | Multi-case conditions (20+ operators, file attributes) | core |
+| `template-transform` | Jinja2 templates (sandboxed, fuel-limited) | core |
+| `variable-aggregator` | First non-null of several branches | core |
+| `assigner` | Write conversation / loop variables (set, append, `+=`…) | core |
+| `list-operator` | Filter, sort, slice and pick list items | core |
+| `iteration` | Map a sub-graph over a list, optionally in parallel | core |
+| `loop` | Repeat a sub-graph with loop variables and break conditions | core |
+| `human-input` | Pause for a form / decision, resume with the answer | core |
+| `tool` | Call a native or MCP tool | core |
+| `llm` | Chat completion with streaming, memory, vision, structured output | llm |
+| `agent` | Tool-calling loop with approvals and parallel tool calls | llm |
+| `question-classifier` | Route by LLM classification | llm |
+| `parameter-extractor` | Extract typed parameters from text | llm |
+| `http-request` | HTTP with SSRF-safe egress, auth, JSON/form/multipart bodies | http |
+| `code` | JavaScript in QuickJS with memory/time limits; remote sandbox hook | code |
+
+Model providers: any OpenAI-compatible API (OpenAI, Azure OpenAI, Ollama, vLLM,
+Groq, OpenRouter, DeepSeek…) and Anthropic. Tools: native Rust closures and
+MCP servers (stdio and streamable HTTP).
+
+## Embed it
+
+```rust
+use std::sync::Arc;
+use futures::StreamExt;
+use graphrt_core::{Engine, Event, Graph, Registry, RunInput};
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut registry = Registry::with_builtins();
+    graphrt_llm::register(&mut registry);
+
+    let graph = Arc::new(Graph::from_text(include_str!("workflow.yaml"), &registry)?);
+    let services = graphrt_core::Services::new().with(graphrt_llm::ModelRegistry::from_env()?);
+    let engine = Engine::new(graph).with_services(services);
+
+    let mut run = engine.run(RunInput::new().input("name", "Ada"));
+    while let Some(event) = run.next().await {
+        match event {
+            Event::NodeChunk { chunk, .. } => print!("{chunk}"),
+            Event::RunSucceeded { outputs, .. } => println!("\n{outputs:?}"),
+            Event::RunPaused { snapshot, .. } => { /* persist snapshot.to_json()? and resume later */ }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+```
+
+Custom nodes, services, model providers and native tools are covered in
+[docs/embedding.md](docs/embedding.md).
+
+## Security model
+
+| Concern | Default |
+| --- | --- |
+| Secrets | `secret` values are masked in events, logs, `Debug` and templates; `env.*` is never written to snapshots. Plaintext is only exposed to nodes that must transmit it (HTTP auth, code inputs). |
+| Network egress | `http-request` resolves DNS itself, rejects loopback/private/link-local/CGNAT/metadata addresses (including IPv4-mapped IPv6), pins the checked address and re-checks every redirect. `--allow-private-network` opts out. |
+| Templates | `{{#…#}}` placeholders are parsed once; resolved values are never re-parsed (no prompt/template injection). Jinja runs without filesystem access, with a fuel budget and output cap. |
+| Code | QuickJS with memory, stack and time limits, no filesystem, network, timers or modules. |
+| MCP | stdio servers start with an empty environment plus an explicit allow-list; every call has a timeout; tools can be allow-listed. |
+| Server | Optional bearer auth (constant-time comparison), request body limit, env values cannot be set by requests. |
+| Limits | Step budget, run duration, per-node timeouts, container depth, iteration/loop caps. |
+
+## Binary size
+
+Measured with `cargo build -p graphrt-cli --profile min-size` (opt-level `z`, LTO, `panic = "abort"`, stripped) on x86_64 Linux:
+
+| Features | Size |
+| --- | --- |
+| core only (`--no-default-features`) | 2.4 MB |
+| + `llm`, `http` | 4.4 MB |
+| + `code` | 5.3 MB |
+| + `mcp` | 6.5 MB |
+| default (+ `serve`) | 7.0 MB |
+| default, `--release` (opt-level 3, unwinding) | 13.1 MB |
+
+## Architecture
+
+```
+graphrt-core   graph model, variable pool, templates, conditions, engine, events,
+               snapshots, built-in control nodes, tool contract (wasm-friendly)
+graphrt-llm    chat model abstraction, OpenAI-compatible + Anthropic, llm/agent nodes
+graphrt-http   http-request node and egress policy
+graphrt-code   code node (QuickJS) and remote sandbox hook
+graphrt-mcp    MCP tool provider
+graphrt-cli    `graphrt` binary: run, validate, inspect, serve
+```
+
+Read [docs/architecture.md](docs/architecture.md) for the scheduling rules,
+failure policies, containers and pause/resume design.
+
+## Roadmap
+
+- Python code via a remote sandbox reference implementation
+- Knowledge retrieval / embeddings nodes
+- OpenTelemetry tracing layer
+- Persistent run store and webhook triggers for `serve`
+- JSON Schema validation for structured outputs
+- WASM component nodes
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and pull requests are welcome.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
