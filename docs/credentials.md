@@ -25,6 +25,30 @@ provider asks a `CredentialSource` for a credential right before each request,
 caches it until shortly before expiry, and on HTTP 401/403 drops it and retries
 once with a fresh one.
 
+Safety rules that apply to every pattern:
+
+- **Endpoints that receive credentials must be `https://`** — the broker URL, any
+  `base_url` in a credentials entry, and any `base_url` a broker or host returns.
+  Plain `http://` is accepted only for `localhost`, `127.0.0.1`, `::1` and the
+  Android emulator host `10.0.2.2`.
+- **Redirects are never followed** by provider clients: a 3xx is an error, so a
+  key header cannot follow a redirect to another host.
+- **Operator headers stay home.** Static `headers` (and OpenAI `query`
+  parameters) from the config are not sent when a credential moves the request
+  to a different origin.
+- **Signing out takes effect immediately.** Registering or clearing a host
+  credential provider (`set_credential_provider` / `clear_credential_provider`)
+  drops every cached credential; `clear_credential_cache` does the same without
+  changing providers.
+- **Hung sources fail fast.** A credential fetch that takes longer than 15 s
+  (`fetch_timeout_ms`) fails; requests waiting behind a failed fetch get the
+  same error instead of retrying it one after another.
+- **The provider kind is explicit.** `kind` is inferred only for entries named
+  `openai`, `anthropic`, `gemini`, `bedrock` or `typesafe`; any other name must
+  set `kind`, so a credential is never sent to a vendor the entry was not
+  written for. A `typesafe` entry configures the System One decision client,
+  never a chat model.
+
 | | 1. Bring your own key | 2. Thin proxy | 3. Token broker |
 | --- | --- | --- | --- |
 | Who pays | the user | you | you |
@@ -111,7 +135,9 @@ a 401. Concurrent requests share one refresh.
 
 With `"app_auth": "external"` the broker request carries
 `Authorization: Bearer <session>`, where the session token comes from the app's
-`CredentialProvider` under the provider name `token_broker`.
+`CredentialProvider` registered under exactly the name `token_broker`. The `*`
+fallback is never used for the app session, so a user's own provider key
+registered under `*` can never be sent to your broker.
 
 ### Broker contract
 
@@ -122,14 +148,29 @@ Response (2xx, JSON, ≤ 64 KiB):
 ```json
 {
   "token": "eyJhbGciOi…",            // or "access_token"
-  "expires_in": 900,                 // seconds; or "expires_at" (Unix s) / "expires_at_ms"
+  "expires_in": 900,                 // seconds (alias "expiresIn")
   "headers": { "x-tenant": "acme" }, // optional, added to model requests
-  "base_url": "https://llm-proxy.example.com/v1" // optional endpoint override
+  "base_url": "https://llm-proxy.example.com/v1" // optional endpoint override (https only)
 }
 ```
 
+Instead of `expires_in` the broker may send `expires_at` / `expiresAt` (Unix
+time; values above 10^11 are read as milliseconds) or `expires_at_ms` /
+`expiresAtMs`. A token without a usable expiry is cached for 5 minutes, never
+indefinitely.
+
 A 401/403 from the broker surfaces as an authentication error (the user must
 sign in again).
+
+For Anthropic the `base_url` must be the bare origin (the client appends
+`/v1/messages`) and the token is sent as `x-api-key`. The bundled proxies
+(`examples/proxy/`) accept the app token from `Authorization: Bearer` or
+`x-api-key` and return the right `base_url` per `provider` in the `/token`
+request.
+
+Providers files (CLI, server) have no host app, so they accept only `env` and
+`token_broker` sources with `app_auth: none`; `external` sources are rejected at
+startup.
 
 Some providers can mint scoped, short-lived credentials themselves (for
 example cloud IAM session tokens); a broker can return those directly instead

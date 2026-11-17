@@ -11,7 +11,8 @@ use serde_json::Value as Json;
 
 use crate::registry::ModelRegistry;
 use crate::types::{
-    ChatDelta, ChatModel, ChatRequest, ChatResponse, ContentPart, Message, RESERVED_EXTRA_KEYS, Role, collect,
+    ChatDelta, ChatModel, ChatRequest, ChatResponse, ContentPart, FinishReason, Message, RESERVED_EXTRA_KEYS, Role,
+    collect,
 };
 
 /// Literal placeholder replaced by the configured context value.
@@ -502,6 +503,37 @@ pub async fn invoke(
         }
     }
     Ok(response)
+}
+
+/// Finish reasons that mean the model produced a broken turn (worth a retry).
+const MALFORMED_FINISH: &[&str] = &["malformed_function_call", "unexpected_tool_call", "too_many_tool_calls"];
+
+/// What a node should do with a response's finish reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FinishCheck {
+    /// A normal end (stop, length, tool calls, or none reported).
+    Normal,
+    /// An unrecognized provider reason: keep the answer but report it.
+    Unknown(String),
+}
+
+/// Turn finish reasons that mean "no usable answer" into node errors: a content
+/// filter block is fatal (`content_filter`), a malformed turn is retryable
+/// (`model_decode`). Unknown reasons are returned for the caller to report.
+pub fn check_finish(response: &ChatResponse) -> Result<FinishCheck, NodeError> {
+    match &response.finish_reason {
+        None | Some(FinishReason::Stop | FinishReason::Length | FinishReason::ToolCalls) => Ok(FinishCheck::Normal),
+        Some(FinishReason::ContentFilter) => Err(NodeError::fatal(
+            "content_filter",
+            "the provider's safety filter blocked the response; no answer was produced",
+        )),
+        Some(FinishReason::Other(reason)) if MALFORMED_FINISH.contains(&reason.as_str()) => {
+            Err(NodeError::new("model_decode", format!("the model produced a malformed turn ({reason})")))
+        }
+        Some(FinishReason::Other(reason)) => Ok(FinishCheck::Unknown(reason.clone())),
+        #[allow(unreachable_patterns)]
+        Some(other) => Ok(FinishCheck::Unknown(other.as_str().to_owned())),
+    }
 }
 
 /// Output field a streamed piece belongs to.

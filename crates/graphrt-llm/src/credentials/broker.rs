@@ -11,12 +11,21 @@
 //! ```json
 //! {
 //!   "token": "short-lived-secret",          // or "access_token"
-//!   "expires_in": 900,                       // seconds; or "expires_at" (Unix seconds)
-//!                                            //   or "expires_at_ms" (Unix milliseconds)
+//!   "expires_in": 900,                       // seconds (alias "expiresIn")
 //!   "headers": { "x-tenant": "acme" },       // optional, sent with model requests
 //!   "base_url": "https://proxy.example.com/v1" // optional endpoint override
 //! }
 //! ```
+//!
+//! Expiry may instead be given as `expires_at` / `expiresAt` (Unix time; values
+//! above 10^11 are read as milliseconds, smaller ones as seconds) or
+//! `expires_at_ms` / `expiresAtMs` (Unix milliseconds). A response without a usable
+//! expiry is cached for [`TokenBrokerConfig::default_ttl`] (5 minutes), never
+//! indefinitely.
+//!
+//! The broker URL and any returned `base_url` must be `https://` (plain http only
+//! for localhost / 127.0.0.1 / 10.0.2.2 during development): an on-path attacker
+//! must not be able to redirect prompts and keys.
 //!
 //! A 401/403 from the broker maps to [`LlmError::Auth`] (the user must sign in
 //! again); other failures map like provider errors. Use
@@ -67,7 +76,12 @@ pub struct TokenBrokerConfig {
     pub claims: serde_json::Map<String, serde_json::Value>,
     pub auth: BrokerAuth,
     pub timeout: Duration,
+    /// Lifetime assumed for tokens returned without an expiry.
+    pub default_ttl: Duration,
 }
+
+/// Lifetime assumed for broker tokens that carry no expiry (5 minutes).
+pub const DEFAULT_BROKER_TTL: Duration = Duration::from_secs(300);
 
 impl TokenBrokerConfig {
     pub fn new(url: impl Into<String>) -> Self {
@@ -77,7 +91,14 @@ impl TokenBrokerConfig {
             claims: serde_json::Map::new(),
             auth: BrokerAuth::None,
             timeout: Duration::from_secs(15),
+            default_ttl: DEFAULT_BROKER_TTL,
         }
+    }
+
+    /// Lifetime assumed for tokens returned without an expiry.
+    pub fn default_ttl(mut self, ttl: Duration) -> Self {
+        self.default_ttl = ttl;
+        self
     }
 
     pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
@@ -124,11 +145,11 @@ impl fmt::Debug for TokenBroker {
 struct BrokerResponse {
     #[serde(alias = "access_token")]
     token: String,
-    #[serde(default)]
+    #[serde(default, alias = "expiresIn")]
     expires_in: Option<f64>,
-    #[serde(default)]
+    #[serde(default, alias = "expiresAt")]
     expires_at: Option<f64>,
-    #[serde(default)]
+    #[serde(default, alias = "expiresAtMs")]
     expires_at_ms: Option<u64>,
     #[serde(default)]
     headers: indexmap::IndexMap<String, String>,
@@ -138,9 +159,7 @@ struct BrokerResponse {
 
 impl TokenBroker {
     pub fn new(config: TokenBrokerConfig) -> Result<Self, LlmError> {
-        if !(config.url.starts_with("https://") || config.url.starts_with("http://")) {
-            return Err(LlmError::Config("token broker url must be http(s)".into()));
-        }
+        crate::credentials::require_secure_endpoint(&config.url, "token broker url")?;
         let client = crate::http::build_client(Duration::from_secs(10))?;
         Ok(Self { config, client })
     }
@@ -180,29 +199,37 @@ impl TokenBroker {
             return Err(LlmError::Decode("token broker returned an empty token".into()));
         }
         let mut credential = Credential::new(parsed.token);
-        let expires = parsed
-            .expires_at_ms
-            .or_else(|| parsed.expires_at.filter(|s| s.is_finite() && *s > 0.0).map(secs_to_ms))
-            .or_else(|| {
-                parsed
-                    .expires_in
-                    .filter(|s| s.is_finite() && *s >= 0.0)
-                    .map(|s| unix_now_ms().saturating_add(secs_to_ms(s)))
-            });
-        if let Some(exp) = expires {
-            credential = credential.expires_at(exp);
-        }
+        let now = unix_now_ms();
+        let expires = expiry_ms(parsed.expires_at_ms, parsed.expires_at, parsed.expires_in, now).unwrap_or_else(|| {
+            now.saturating_add(u64::try_from(self.config.default_ttl.as_millis()).unwrap_or(u64::MAX))
+        });
+        credential = credential.expires_at(expires);
         for (k, v) in parsed.headers {
             credential = credential.header(k, v);
         }
         if let Some(url) = parsed.base_url.filter(|u| !u.is_empty()) {
-            if !(url.starts_with("https://") || url.starts_with("http://")) {
-                return Err(LlmError::Decode("token broker returned a non-http base_url".into()));
+            if !crate::credentials::is_secure_endpoint(&url) {
+                return Err(LlmError::Decode("token broker returned a base_url that is not https".into()));
             }
             credential = credential.base_url(url);
         }
         Ok(credential)
     }
+}
+
+/// Unix milliseconds above this are treated as milliseconds in `expires_at`
+/// (10^11 seconds is the year 5138; 10^11 milliseconds is 1973).
+const MS_THRESHOLD: f64 = 1e11;
+
+/// The absolute expiry from the response fields, or `None` when none is usable.
+fn expiry_ms(at_ms: Option<u64>, at: Option<f64>, in_secs: Option<f64>, now: u64) -> Option<u64> {
+    if let Some(ms) = at_ms.filter(|ms| *ms > 0) {
+        return Some(ms);
+    }
+    if let Some(at) = at.filter(|v| v.is_finite() && *v > 0.0) {
+        return Some(if at > MS_THRESHOLD { secs_to_ms(at / 1000.0) } else { secs_to_ms(at) });
+    }
+    in_secs.filter(|s| s.is_finite() && *s >= 0.0).map(|s| now.saturating_add(secs_to_ms(s)))
 }
 
 fn secs_to_ms(secs: f64) -> u64 {
@@ -227,5 +254,41 @@ async fn read_capped(response: reqwest::Response) -> Result<String, LlmError> {
 impl CredentialSource for TokenBroker {
     fn credential<'a>(&'a self, provider: &'a str) -> BoxFuture<'a, Result<Credential, LlmError>> {
         Box::pin(self.fetch(provider))
+    }
+
+    /// Tokens minted for one app session must not outlive it: when the app
+    /// credential source changes (sign-out, new user), cached tokens are dropped.
+    fn generation(&self) -> u64 {
+        match &self.config.auth {
+            BrokerAuth::Bearer(source) => source.generation(),
+            BrokerAuth::None => 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expiry_parsing() {
+        let now = 1_700_000_000_000;
+        assert_eq!(expiry_ms(Some(5), None, None, now), Some(5));
+        // Seconds vs milliseconds in `expires_at`.
+        assert_eq!(expiry_ms(None, Some(1_700_000_900.0), None, now), Some(1_700_000_900_000));
+        assert_eq!(expiry_ms(None, Some(1_700_000_900_000.0), None, now), Some(1_700_000_900_000));
+        assert_eq!(expiry_ms(None, None, Some(60.0), now), Some(now + 60_000));
+        // Unusable values yield no expiry (the caller applies the default TTL).
+        assert_eq!(expiry_ms(None, Some(f64::NAN), Some(-1.0), now), None);
+        assert_eq!(expiry_ms(Some(0), Some(0.0), None, now), None);
+    }
+
+    #[test]
+    fn camel_case_fields_and_insecure_urls() {
+        let parsed: BrokerResponse = serde_json::from_str(r#"{"token":"t","expiresIn":30}"#).unwrap();
+        assert_eq!(parsed.expires_in, Some(30.0));
+        assert!(TokenBroker::new(TokenBrokerConfig::new("http://broker.example.com/token")).is_err());
+        assert!(TokenBroker::new(TokenBrokerConfig::new("http://127.0.0.1:9/token")).is_ok());
+        assert!(TokenBroker::new(TokenBrokerConfig::new("https://broker.example.com/token")).is_ok());
     }
 }

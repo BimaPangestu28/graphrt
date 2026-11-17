@@ -1,8 +1,10 @@
-//! Caching wrapper with single-flight refresh.
+//! Caching wrapper with single-flight refresh, fetch timeouts and shared failures.
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 use futures::lock::Mutex as AsyncMutex;
@@ -13,24 +15,53 @@ use crate::error::LlmError;
 /// Credentials are refreshed this long before they expire (60 s).
 pub const DEFAULT_REFRESH_SKEW_MS: u64 = 60_000;
 
+/// A fetch from the wrapped source that takes longer than this fails (15 s).
+pub const DEFAULT_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Default)]
+struct SlotState {
+    /// Cached credential and the source generation it was fetched under.
+    credential: Option<(Credential, u64)>,
+    /// Last failed fetch and its fetch sequence number.
+    failure: Option<(LlmError, u64)>,
+}
+
 /// One provider's cache slot. Holding the async lock while fetching makes
 /// concurrent requests wait for that single fetch instead of starting their own.
-type Slot = Arc<AsyncMutex<Option<Credential>>>;
+#[derive(Default)]
+struct Slot {
+    state: AsyncMutex<SlotState>,
+    /// Number of fetches completed in this slot (success or failure).
+    completed: AtomicU64,
+}
 
 /// Caches credentials per provider until shortly before they expire.
 ///
-/// - Credentials without `expires_at_ms` are cached until [`CredentialSource::invalidate`].
-/// - Concurrent requests for the same provider share one fetch.
+/// - Credentials without `expires_at_ms` are cached until [`CredentialSource::invalidate`]
+///   or until the wrapped source's [`CredentialSource::generation`] changes (e.g. the
+///   host registered a different key source or signed the user out).
+/// - Concurrent requests for the same provider share one fetch. If that fetch
+///   fails, every request that was waiting behind it gets the same error instead of
+///   retrying the failing fetch one after another.
+/// - A fetch that does not finish within the fetch timeout (default 15 s) fails
+///   with [`LlmError::Auth`]. The timeout needs a Tokio runtime; elsewhere fetches
+///   are not time-limited.
 /// - `invalidate` drops the cached value and forwards to the inner source.
 pub struct CachedCredentials<S> {
     inner: S,
     skew_ms: u64,
-    slots: Mutex<HashMap<String, Slot>>,
+    fetch_timeout: Duration,
+    slots: Mutex<HashMap<String, Arc<Slot>>>,
 }
 
 impl<S: CredentialSource> CachedCredentials<S> {
     pub fn new(inner: S) -> Self {
-        Self { inner, skew_ms: DEFAULT_REFRESH_SKEW_MS, slots: Mutex::new(HashMap::new()) }
+        Self {
+            inner,
+            skew_ms: DEFAULT_REFRESH_SKEW_MS,
+            fetch_timeout: DEFAULT_FETCH_TIMEOUT,
+            slots: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Refresh this many milliseconds before expiry.
@@ -39,14 +70,43 @@ impl<S: CredentialSource> CachedCredentials<S> {
         self
     }
 
+    /// Fail a fetch from the wrapped source after this long.
+    pub fn fetch_timeout(mut self, timeout: Duration) -> Self {
+        self.fetch_timeout = timeout;
+        self
+    }
+
     /// The wrapped source.
     pub fn inner(&self) -> &S {
         &self.inner
     }
 
-    fn slot(&self, provider: &str) -> Slot {
+    /// Drop every cached credential (all providers).
+    pub fn clear(&self) {
+        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        slots.clear();
+    }
+
+    fn slot(&self, provider: &str) -> Arc<Slot> {
         let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
         slots.entry(provider.to_owned()).or_default().clone()
+    }
+
+    async fn fetch(&self, provider: &str) -> Result<Credential, LlmError> {
+        let fetch = self.inner.credential(provider);
+        #[cfg(feature = "http")]
+        {
+            if tokio::runtime::Handle::try_current().is_ok() {
+                return match tokio::time::timeout(self.fetch_timeout, fetch).await {
+                    Ok(result) => result,
+                    Err(_) => Err(LlmError::Auth(format!(
+                        "credential source for `{provider}` did not answer within {} ms",
+                        self.fetch_timeout.as_millis()
+                    ))),
+                };
+            }
+        }
+        fetch.await
     }
 }
 
@@ -55,7 +115,11 @@ where
     S: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CachedCredentials").field("inner", &self.inner).field("skew_ms", &self.skew_ms).finish()
+        f.debug_struct("CachedCredentials")
+            .field("inner", &self.inner)
+            .field("skew_ms", &self.skew_ms)
+            .field("fetch_timeout", &self.fetch_timeout)
+            .finish()
     }
 }
 
@@ -63,15 +127,36 @@ impl<S: CredentialSource> CredentialSource for CachedCredentials<S> {
     fn credential<'a>(&'a self, provider: &'a str) -> BoxFuture<'a, Result<Credential, LlmError>> {
         Box::pin(async move {
             let slot = self.slot(provider);
-            let mut cached = slot.lock().await;
-            if let Some(credential) = cached.as_ref() {
-                if !credential.is_expired_at(unix_now_ms(), self.skew_ms) {
+            // Fetches completed before we started waiting; a failure recorded after
+            // this point belongs to a fetch we were queued behind.
+            let ticket = slot.completed.load(Ordering::SeqCst);
+            let mut state = slot.state.lock().await;
+            if let Some((error, seq)) = &state.failure {
+                if *seq > ticket {
+                    return Err(error.clone());
+                }
+            }
+            let generation = self.inner.generation();
+            if let Some((credential, cached_generation)) = &state.credential {
+                let fresh = *cached_generation == generation && !credential.is_expired_at(unix_now_ms(), self.skew_ms);
+                if fresh {
                     return Ok(credential.clone());
                 }
             }
-            let fresh = self.inner.credential(provider).await?;
-            *cached = Some(fresh.clone());
-            Ok(fresh)
+            let result = self.fetch(provider).await;
+            let seq = slot.completed.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+            match result {
+                Ok(credential) => {
+                    state.credential = Some((credential.clone(), generation));
+                    state.failure = None;
+                    Ok(credential)
+                }
+                Err(error) => {
+                    state.credential = None;
+                    state.failure = Some((error.clone(), seq));
+                    Err(error)
+                }
+            }
         })
     }
 
@@ -80,9 +165,13 @@ impl<S: CredentialSource> CredentialSource for CachedCredentials<S> {
         // whatever it holds; new requests fetch again.
         {
             let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-            slots.insert(provider.to_owned(), Slot::default());
+            slots.insert(provider.to_owned(), Arc::new(Slot::default()));
         }
         self.inner.invalidate(provider);
+    }
+
+    fn generation(&self) -> u64 {
+        self.inner.generation()
     }
 }
 
@@ -93,6 +182,10 @@ impl<S: CredentialSource + ?Sized> CredentialSource for Arc<S> {
 
     fn invalidate(&self, provider: &str) {
         (**self).invalidate(provider);
+    }
+
+    fn generation(&self) -> u64 {
+        (**self).generation()
     }
 }
 
@@ -106,6 +199,7 @@ mod tests {
     struct Counting {
         calls: AtomicUsize,
         ttl_ms: Option<u64>,
+        generation: AtomicU64,
     }
 
     impl CredentialSource for Counting {
@@ -116,6 +210,10 @@ mod tests {
                 c = c.expires_at(unix_now_ms() + ttl);
             }
             Box::pin(async move { Ok(c) })
+        }
+
+        fn generation(&self) -> u64 {
+            self.generation.load(Ordering::SeqCst)
         }
     }
 
@@ -132,6 +230,17 @@ mod tests {
         // Providers are cached independently.
         let other = cache.credential("q").await.unwrap();
         assert_eq!(other.secret, "token-3");
+    }
+
+    #[tokio::test]
+    async fn source_generation_change_drops_cached_values() {
+        let cache = CachedCredentials::new(Counting::default());
+        assert_eq!(cache.credential("p").await.unwrap().secret, "token-1");
+        // e.g. the host signed user A out and registered user B's key source.
+        cache.inner().generation.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(cache.credential("p").await.unwrap().secret, "token-2");
+        cache.clear();
+        assert_eq!(cache.credential("p").await.unwrap().secret, "token-3");
     }
 
     #[tokio::test]
@@ -170,5 +279,34 @@ mod tests {
         let results = futures::future::join_all(futs).await;
         assert!(results.iter().all(Result::is_ok));
         assert_eq!(cache.inner().0.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn waiters_share_one_failure_and_hung_sources_time_out() {
+        #[derive(Debug, Default)]
+        struct Hangs(AtomicUsize);
+        impl CredentialSource for Hangs {
+            fn credential<'a>(&'a self, _p: &'a str) -> BoxFuture<'a, Result<Credential, LlmError>> {
+                Box::pin(async move {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                    futures::future::pending::<()>().await;
+                    Ok(Credential::new("never"))
+                })
+            }
+        }
+        let cache = Arc::new(CachedCredentials::new(Hangs::default()).fetch_timeout(Duration::from_millis(50)));
+        let started = std::time::Instant::now();
+        let futs = (0..6).map(|_| {
+            let c = cache.clone();
+            async move { c.credential("p").await }
+        });
+        let results = futures::future::join_all(futs).await;
+        assert!(results.iter().all(|r| matches!(r, Err(LlmError::Auth(_)))));
+        // One fetch timed out and every waiter got its error: not 6 serial timeouts.
+        assert_eq!(cache.inner().0.load(Ordering::SeqCst), 1);
+        assert!(started.elapsed() < Duration::from_millis(250), "{:?}", started.elapsed());
+        // A later request tries again.
+        assert!(cache.credential("p").await.is_err());
+        assert_eq!(cache.inner().0.load(Ordering::SeqCst), 2);
     }
 }

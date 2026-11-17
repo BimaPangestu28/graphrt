@@ -225,6 +225,33 @@ async fn credential_source_is_refreshed_once_on_401() {
 }
 
 #[tokio::test]
+async fn credential_base_url_sends_the_proxy_token_to_the_proxy() {
+    let ok = sse(&[json!({"candidates": [{"content": {"parts": [{"text": "via proxy"}]}, "finishReason": "STOP"}]})]);
+    let (url, mut requests) = serve(vec![(200, "text/event-stream", ok)]).await;
+    // Configured for Google; the credential moves the request to the proxy.
+    let source = Arc::new(graphrt_llm::credentials::StaticCredential::from_credential(
+        Credential::new("proxy-token").base_url(&url),
+    ));
+    let mut cfg = GeminiConfig::default().with_credentials(source);
+    cfg.headers = vec![("x-operator-secret".into(), "do-not-leak".into())];
+    let model = GeminiModel::new(cfg).unwrap();
+    let stream = model.chat(ChatRequest::new("m", vec![Message::user("x")])).await.unwrap();
+    assert_eq!(collect(stream, |_| {}).await.unwrap().text, "via proxy");
+    let raw = requests.recv().await.unwrap();
+    assert!(raw.contains("proxy-token"), "{raw}");
+    assert!(!raw.contains("do-not-leak"), "{raw}");
+}
+
+#[tokio::test]
+async fn redirects_are_not_followed() {
+    let (url, _requests) = serve(vec![(307, "application/json", b"{}".to_vec())]).await;
+    let Err(err) = model(&url).chat(ChatRequest::new("m", vec![Message::user("x")])).await else {
+        panic!("expected an error");
+    };
+    assert!(matches!(err, LlmError::BadRequest(ref m) if m.contains("redirect")), "{err:?}");
+}
+
+#[tokio::test]
 async fn rate_limit_reports_retry_delay() {
     let body = br#"{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED",
         "details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"2s"}]}}"#

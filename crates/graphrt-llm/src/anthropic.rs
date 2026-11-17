@@ -109,23 +109,26 @@ impl AnthropicModel {
 }
 
 impl AnthropicModel {
-    fn request(&self, body: &Json, credential: Option<&Credential>) -> reqwest::RequestBuilder {
-        let base = credential.and_then(|c| c.base_url.as_deref()).unwrap_or(&self.config.base_url);
-        let url = format!("{}/v1/messages", base.trim_end_matches('/'));
+    fn request(&self, body: &Json, credential: Option<&Credential>) -> Result<reqwest::RequestBuilder, LlmError> {
+        let endpoint =
+            crate::http::resolve_endpoint(&self.config.base_url, credential.and_then(|c| c.base_url.as_deref()))?;
+        let url = format!("{}/v1/messages", endpoint.base_url.trim_end_matches('/'));
         let mut builder = self.client.post(url).json(body).header("anthropic-version", ANTHROPIC_VERSION);
         let key = credential.map(|c| c.secret.as_str()).or(self.config.api_key.as_deref());
         if let Some(key) = key {
             builder = builder.header("x-api-key", key);
         }
-        for (k, v) in &self.config.headers {
-            builder = builder.header(k.as_str(), v.as_str());
+        if endpoint.send_static {
+            for (k, v) in &self.config.headers {
+                builder = builder.header(k.as_str(), v.as_str());
+            }
         }
         if let Some(credential) = credential {
             for (k, v) in &credential.headers {
                 builder = builder.header(k.as_str(), v.as_str());
             }
         }
-        builder
+        Ok(builder)
     }
 }
 
@@ -140,7 +143,7 @@ impl ChatModel for AnthropicModel {
                     Some(source) => Some(source.credential(name).await?),
                     None => None,
                 };
-                let result = send_sse(self.request(&body, credential.as_ref()), AnthropicDecoder::default()).await;
+                let result = send_sse(self.request(&body, credential.as_ref())?, AnthropicDecoder::default()).await;
                 match (result, &self.config.credentials) {
                     // The credential was rejected: drop it and retry once with a fresh one.
                     (Err(LlmError::Auth(_)), Some(source)) if !retried => {

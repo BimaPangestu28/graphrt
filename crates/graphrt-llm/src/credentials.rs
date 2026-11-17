@@ -106,6 +106,36 @@ impl fmt::Debug for Credential {
     }
 }
 
+/// Whether `url` may receive credentials: `https://`, or `http://` to a loopback /
+/// Android-emulator-host address (local development and tests only).
+pub fn is_secure_endpoint(url: &str) -> bool {
+    if url.starts_with("https://") {
+        return true;
+    }
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+    };
+    matches!(host, "localhost" | "::1" | "10.0.2.2")
+        || host.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Validate an endpoint that will receive credentials.
+pub fn require_secure_endpoint(url: &str, what: &str) -> Result<(), LlmError> {
+    if is_secure_endpoint(url) {
+        Ok(())
+    } else {
+        Err(LlmError::Config(format!(
+            "{what} must use https:// (plain http is only allowed for localhost / 127.0.0.1 / 10.0.2.2)"
+        )))
+    }
+}
+
 /// Supplies credentials on demand.
 pub trait CredentialSource: Send + Sync + fmt::Debug {
     /// Credential for `provider` (the registry name, e.g. `openai`).
@@ -116,6 +146,14 @@ pub trait CredentialSource: Send + Sync + fmt::Debug {
     fn invalidate(&self, provider: &str) {
         let _ = provider;
     }
+
+    /// A counter that changes whenever credentials this source would return for
+    /// any provider may have changed outside of [`CredentialSource::invalidate`]
+    /// (e.g. the host app signed a user out or registered a new key source).
+    /// [`CachedCredentials`] drops cached values when it changes. Default: never changes.
+    fn generation(&self) -> u64 {
+        0
+    }
 }
 
 /// A fixed secret.
@@ -125,6 +163,11 @@ pub struct StaticCredential(Credential);
 impl StaticCredential {
     pub fn new(secret: impl Into<String>) -> Self {
         Self(Credential::new(secret))
+    }
+
+    /// A fixed, fully specified credential (headers, base URL, expiry).
+    pub fn from_credential(credential: Credential) -> Self {
+        Self(credential)
     }
 }
 

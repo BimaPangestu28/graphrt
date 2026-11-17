@@ -25,8 +25,48 @@ pub(crate) fn build_client(connect_timeout: Duration) -> Result<reqwest::Client,
     let _already_installed = rustls::crypto::ring::default_provider().install_default();
     reqwest::Client::builder()
         .connect_timeout(connect_timeout)
+        // Never follow redirects: reqwest strips only `Authorization`/`Cookie` on
+        // cross-host hops, so key headers (`x-api-key`, `x-goog-api-key`, `api-key`)
+        // and the prompt body would follow a redirect to another host.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| LlmError::Config(format!("cannot build HTTP client: {e}")))
+}
+
+use crate::credentials::is_secure_endpoint;
+
+/// `scheme://host[:port]` of a URL, lowercased, for same-origin checks.
+fn origin(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    format!("{}://{}", scheme.to_ascii_lowercase(), authority.to_ascii_lowercase())
+}
+
+/// The endpoint for one request, honoring a credential-supplied base URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Endpoint {
+    pub base_url: String,
+    /// Static config headers / query parameters may be attached: false when the
+    /// credential moved the request to a different origin than the configured one,
+    /// so operator secrets in config headers never follow a credential override.
+    pub send_static: bool,
+}
+
+/// Resolve the base URL for a request: a credential's `base_url` wins (it must be
+/// a secure endpoint); otherwise the configured one.
+pub(crate) fn resolve_endpoint(configured: &str, credential_base: Option<&str>) -> Result<Endpoint, LlmError> {
+    match credential_base.filter(|u| !u.is_empty()) {
+        None => Ok(Endpoint { base_url: configured.to_owned(), send_static: true }),
+        Some(url) => {
+            if !is_secure_endpoint(url) {
+                return Err(LlmError::Auth(
+                    "credential supplied a non-https base_url; refusing to send credentials there".into(),
+                ));
+            }
+            let send_static = origin(url) == origin(configured);
+            Ok(Endpoint { base_url: url.to_owned(), send_static })
+        }
+    }
 }
 
 /// Result of decoding one SSE event.
@@ -123,6 +163,13 @@ pub(crate) async fn send_request(
 ) -> Result<reqwest::Response, LlmError> {
     let response = request.send().await.map_err(network_error)?;
     let status = response.status();
+    if status.is_redirection() {
+        return Err(LlmError::BadRequest(format!(
+            "provider endpoint answered with a redirect (HTTP {}); redirects are not followed so credentials \
+             cannot leak to another host — point `base_url` at the final endpoint",
+            status.as_u16()
+        )));
+    }
     if !status.is_success() {
         let retry = retry_after_ms(response.headers());
         let body = read_error_body(response).await;
@@ -228,6 +275,30 @@ mod tests {
         assert_eq!(retry_after_ms(&h), Some(2000));
         h.insert("retry-after-ms", reqwest::header::HeaderValue::from_static("150"));
         assert_eq!(retry_after_ms(&h), Some(150));
+    }
+
+    #[test]
+    fn secure_endpoints() {
+        assert!(is_secure_endpoint("https://api.example.com/v1"));
+        assert!(is_secure_endpoint("http://localhost:8080/v1"));
+        assert!(is_secure_endpoint("http://127.0.0.1:9/x"));
+        assert!(is_secure_endpoint("http://[::1]:9/x"));
+        assert!(is_secure_endpoint("http://10.0.2.2:8787"));
+        assert!(!is_secure_endpoint("http://api.example.com"));
+        assert!(!is_secure_endpoint("http://localhost.evil.com"));
+        assert!(!is_secure_endpoint("ftp://x"));
+    }
+
+    #[test]
+    fn endpoint_override_drops_static_headers_cross_origin() {
+        let e = resolve_endpoint("https://api.openai.com/v1", None).unwrap();
+        assert!(e.send_static);
+        let e = resolve_endpoint("https://api.openai.com/v1", Some("https://proxy.example.com/v1")).unwrap();
+        assert_eq!(e.base_url, "https://proxy.example.com/v1");
+        assert!(!e.send_static);
+        let e = resolve_endpoint("https://proxy.example.com/v1", Some("https://PROXY.example.com/v2")).unwrap();
+        assert!(e.send_static);
+        assert!(resolve_endpoint("https://api.openai.com/v1", Some("http://attacker.example")).is_err());
     }
 
     #[test]

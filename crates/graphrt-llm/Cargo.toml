@@ -24,7 +24,7 @@ bedrock = ["http", "dep:sha2"]
 # TypeSafe System One decision API (Jev): typed classification / scoring / yes-no questions.
 typesafe = ["http"]
 # Shared HTTP transport (reqwest + rustls with the ring crypto provider).
-http = ["dep:reqwest", "dep:rustls"]
+http = ["dep:reqwest", "dep:rustls", "dep:tokio"]
 
 [dependencies]
 graphrt-core.workspace = true
@@ -36,6 +36,8 @@ indexmap.workspace = true
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "json", "stream"] }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 sha2 = { version = "0.10", optional = true, default-features = false }
+# Only for credential fetch timeouts (reqwest already runs on Tokio).
+tokio = { workspace = true, optional = true, features = ["time", "rt"] }
 
 [dev-dependencies]
 graphrt-core = { workspace = true, features = ["tokio", "jinja", "yaml"] }

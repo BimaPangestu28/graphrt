@@ -53,14 +53,20 @@ const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 #[serde(untagged)]
 enum ModelSpec {
     Name(String),
-    Object {
-        #[serde(default)]
-        name: String,
-    },
+    Object(ModelObject),
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelObject {
+    #[serde(default)]
+    provider: Option<String>,
+    name: String,
 }
 
 /// One configured question.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuestionConfig {
     #[serde(rename = "type")]
     pub kind: String,
@@ -72,7 +78,13 @@ pub struct QuestionConfig {
 
 /// Configuration of the `system-one` node.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SystemOneNodeConfig {
+    /// Allow placeholders that refer to missing variables (they become `null`).
+    /// Off by default: asking questions about missing input yields confident
+    /// answers about nothing.
+    #[serde(default)]
+    pub allow_missing: bool,
     #[serde(default)]
     model: Option<ModelSpec>,
     /// The content questions refer to (string, object or array; strings are templates).
@@ -152,8 +164,18 @@ impl SystemOneNode {
             }
         }
         let model = match &config.model {
-            Some(ModelSpec::Name(n) | ModelSpec::Object { name: n }) if !n.trim().is_empty() => n.trim().to_owned(),
-            _ => DEFAULT_MODEL.to_owned(),
+            None => DEFAULT_MODEL.to_owned(),
+            Some(ModelSpec::Name(n)) if n.trim().is_empty() => return err("`model` must not be empty".into()),
+            Some(ModelSpec::Name(n)) => n.trim().to_owned(),
+            Some(ModelSpec::Object(o)) => {
+                if let Some(p) = o.provider.as_deref().filter(|p| *p != "typesafe") {
+                    return err(format!("`model.provider` must be `typesafe` for system-one nodes, got `{p}`"));
+                }
+                if o.name.trim().is_empty() {
+                    return err("`model.name` must not be empty".into());
+                }
+                o.name.trim().to_owned()
+            }
         };
         Ok(Self { config, model, handles })
     }
@@ -171,7 +193,8 @@ impl SystemOneNode {
                 .get(sel)
                 .map(|v| v.to_json())
                 .ok_or_else(|| NodeError::invalid_input(format!("state variable `{sel}` is missing")))?,
-            (None, Some(state)) => render_json(state, pool),
+            (None, Some(state)) => render_json(state, pool, cfg.allow_missing)
+                .map_err(|m| NodeError::invalid_input(format!("state: {m}")))?,
             (None, None) => Json::Object(serde_json::Map::new()),
         };
 
@@ -202,7 +225,7 @@ impl SystemOneNode {
         }
         request.state = state;
         for (name, q) in &cfg.questions {
-            let question = build_question(q, Some(pool))
+            let question = build_question(q, Some((pool, cfg.allow_missing)))
                 .map_err(|m| NodeError::invalid_input(format!("question `{name}`: {m}")))?;
             request.questions.insert(name.clone(), question);
         }
@@ -239,7 +262,9 @@ impl SystemOneNode {
             if !self.handles.iter().any(|h| h == choice) {
                 return Err(NodeError::new("model_decode", format!("System One chose unknown option `{choice}`")));
             }
-            let probability = probabilities.get(choice).copied().unwrap_or(0.0);
+            let probability = probabilities.get(choice).copied().ok_or_else(|| {
+                NodeError::new("model_decode", format!("no probability for the chosen option `{choice}`"))
+            })?;
             let low = self.config.min_confidence.is_some_and(|m| *confidence < m)
                 || self.config.min_probability.is_some_and(|m| probability < m);
             if low {
@@ -254,16 +279,24 @@ impl SystemOneNode {
 
 /// Convert a question config to a typed question. With a pool, templates are rendered;
 /// without one, only the shape is validated.
-fn build_question(q: &QuestionConfig, pool: Option<&VariablePool>) -> Result<Question, String> {
-    let render = |v: &Json| match pool {
-        Some(p) => render_json(v, p),
-        None => v.clone(),
+fn build_question(q: &QuestionConfig, pool: Option<(&VariablePool, bool)>) -> Result<Question, String> {
+    let render = |v: &Json| -> Result<Json, String> {
+        match pool {
+            Some((p, allow_missing)) => render_json(v, p, allow_missing),
+            None => Ok(v.clone()),
+        }
     };
-    let instructions = q.instructions.as_ref().map(render);
+    let instructions = q.instructions.as_ref().map(render).transpose()?;
     match q.kind.as_str() {
         "choice" => {
             let criteria = match &q.criteria {
-                Some(Json::Object(map)) => map.iter().map(|(k, v)| (k.clone(), render(v))).collect::<IndexMap<_, _>>(),
+                Some(Json::Object(map)) => {
+                    let mut out = IndexMap::new();
+                    for (k, v) in map {
+                        out.insert(k.clone(), render(v)?);
+                    }
+                    out
+                }
                 // A list of option names: each option is interpreted by its name alone.
                 Some(Json::Array(items)) => {
                     let mut map = IndexMap::new();
@@ -284,7 +317,8 @@ fn build_question(q: &QuestionConfig, pool: Option<&VariablePool>) -> Result<Que
         }
         "score" => match &q.criteria {
             Some(Json::Array(levels)) if !levels.is_empty() && levels.len() <= crate::typesafe::MAX_SCORE_LEVELS => {
-                Ok(Question::Score { instructions, criteria: levels.iter().map(render).collect() })
+                let criteria = levels.iter().map(render).collect::<Result<Vec<_>, _>>()?;
+                Ok(Question::Score { instructions, criteria })
             }
             _ => Err(format!(
                 "score questions need `criteria`: 1 to {} ordered levels",
@@ -295,7 +329,13 @@ fn build_question(q: &QuestionConfig, pool: Option<&VariablePool>) -> Result<Que
             let criteria = match &q.criteria {
                 None | Some(Json::Null) => None,
                 Some(Json::Object(map)) => {
-                    Some(NoulCriteria { yes: map.get("true").map(render), no: map.get("false").map(render) })
+                    if let Some(key) = map.keys().find(|k| *k != "true" && *k != "false") {
+                        return Err(format!("noul `criteria` keys must be `true` / `false`, got `{key}`"));
+                    }
+                    Some(NoulCriteria {
+                        yes: map.get("true").map(render).transpose()?,
+                        no: map.get("false").map(render).transpose()?,
+                    })
                 }
                 Some(_) => return Err("noul `criteria` must be an object with `true` / `false`".into()),
             };
@@ -313,20 +353,37 @@ fn build_question(q: &QuestionConfig, pool: Option<&VariablePool>) -> Result<Que
 
 /// Render every string in a JSON value as a template. A string that is exactly one
 /// placeholder becomes the typed value; secrets stay masked.
-fn render_json(value: &Json, pool: &VariablePool) -> Json {
-    match value {
+///
+/// A placeholder whose variable is missing is an error unless `allow_missing`.
+fn render_json(value: &Json, pool: &VariablePool, allow_missing: bool) -> Result<Json, String> {
+    Ok(match value {
         Json::String(s) => {
             let template = Template::parse(s);
+            if !allow_missing {
+                if let Some(missing) = template.selectors().find(|sel| pool.get(sel).is_none()) {
+                    return Err(format!(
+                        "variable `{missing}` is missing (set `allow_missing: true` to send it as null)"
+                    ));
+                }
+            }
             match template.parts() {
                 [Part::Var(sel)] => pool.get(sel).map(|v| v.to_json()).unwrap_or(Json::Null),
                 _ if template.is_static() => value.clone(),
                 _ => Json::String(template.render(pool)),
             }
         }
-        Json::Array(items) => Json::Array(items.iter().map(|v| render_json(v, pool)).collect()),
-        Json::Object(map) => Json::Object(map.iter().map(|(k, v)| (k.clone(), render_json(v, pool))).collect()),
+        Json::Array(items) => {
+            Json::Array(items.iter().map(|v| render_json(v, pool, allow_missing)).collect::<Result<_, _>>()?)
+        }
+        Json::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in map {
+                out.insert(k.clone(), render_json(v, pool, allow_missing)?);
+            }
+            Json::Object(out)
+        }
         other => other.clone(),
-    }
+    })
 }
 
 fn json_selectors(value: &Json, out: &mut Vec<Selector>) {
@@ -485,7 +542,27 @@ mod tests {
         let rendered = render_json(
             &serde_json::json!({"whole": "{{#n.obj#}}", "text": "hi {{#n.name#}}", "plain": "x", "num": 3}),
             &pool,
-        );
+            false,
+        )
+        .unwrap();
         assert_eq!(rendered, serde_json::json!({"whole": {"a": 1}, "text": "hi Ada", "plain": "x", "num": 3}));
+        // Missing variables are errors unless explicitly allowed.
+        let missing = serde_json::json!({"text": "{{#n.nope#}}"});
+        assert!(render_json(&missing, &pool, false).is_err());
+        assert_eq!(render_json(&missing, &pool, true).unwrap(), serde_json::json!({"text": null}));
+    }
+
+    #[test]
+    fn typos_and_bad_criteria_are_rejected() {
+        for bad in [
+            serde_json::json!({"questions": {"q": {"type": "noul"}}, "min_confidance": 0.5}),
+            serde_json::json!({"questions": {"q": {"type": "noul", "instruction": "x"}}}),
+            serde_json::json!({"questions": {"q": {"type": "noul", "criteria": {"yes": "a", "no": "b"}}}}),
+            serde_json::json!({"model": {"provider": "openai", "name": "jev"}, "questions": {"q": {"type": "noul"}}}),
+            serde_json::json!({"model": {"name": " "}, "questions": {"q": {"type": "noul"}}}),
+            serde_json::json!({"model": "", "questions": {"q": {"type": "noul"}}}),
+        ] {
+            assert!(SystemOneNode::from_doc(&doc(bad.clone())).is_err(), "{bad}");
+        }
     }
 }

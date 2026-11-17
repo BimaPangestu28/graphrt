@@ -215,8 +215,50 @@ impl ModelRegistry {
     }
 
     /// Like [`ModelRegistry::from_config`] with explicit variables.
+    ///
+    /// A `typesafe` entry in the `credentials` section is not a chat model; use
+    /// [`ProvidersConfig::load`] to get its System One client as well.
     #[cfg(feature = "http")]
     pub fn from_config_with_vars(config: &ProvidersConfig, vars: &[(String, String)]) -> Result<Self, LlmError> {
+        config.load(vars).map(|loaded| loaded.models)
+    }
+}
+
+/// Everything a providers file configures.
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub struct LoadedProviders {
+    pub models: ModelRegistry,
+    /// The TypeSafe System One client from a `typesafe` credentials entry.
+    #[cfg(feature = "typesafe")]
+    pub system_one: Option<crate::typesafe::SystemOneClient>,
+}
+
+impl ProvidersConfig {
+    /// Build the chat models (and the System One client of a `typesafe`
+    /// credentials entry), reading secrets and `${VAR}` references from `vars`.
+    ///
+    /// Providers files have no host app, so `credentials` entries cannot use
+    /// `source: external` or `app_auth: external`, and a credentials entry may not
+    /// share its name with a `providers` entry (it would silently replace its
+    /// aliases, model map and defaults).
+    #[cfg(feature = "http")]
+    pub fn load(&self, vars: &[(String, String)]) -> Result<LoadedProviders, LlmError> {
+        let config = self;
+        for (name, entry) in &config.credentials {
+            if entry.needs_host() {
+                return Err(LlmError::Config(format!(
+                    "credentials for `{name}`: `source: external` / `app_auth: external` need a host app that \
+                     registers credentials at run time (e.g. graphrt-ffi); in a providers file use `env` or \
+                     `token_broker`"
+                )));
+            }
+            if config.providers.iter().any(|p| &p.name == name || p.aliases.iter().any(|a| a == name)) {
+                return Err(LlmError::Config(format!(
+                    "credentials entry `{name}` has the same name as a `providers` entry; rename one of them"
+                )));
+            }
+        }
         // An alias must not shadow a provider of the same file, and must name exactly
         // one provider: either mistake would silently route requests elsewhere.
         let names: std::collections::HashSet<&str> = config.providers.iter().map(|p| p.name.as_str()).collect();
@@ -237,7 +279,7 @@ impl ModelRegistry {
                 }
             }
         }
-        let mut registry = Self::new();
+        let mut registry = ModelRegistry::new();
         for provider in &config.providers {
             let model = build_provider(provider, vars)?;
             registry.try_add(provider.name.clone(), Arc::clone(&model))?;
@@ -245,13 +287,18 @@ impl ModelRegistry {
                 registry.alias(alias.clone(), provider.name.clone());
             }
         }
-        if !config.credentials.is_empty() {
-            let host = crate::credential_config::HostCredentials::new();
-            crate::credential_config::apply(&mut registry, &config.credentials, &host)?;
-        }
-        Ok(registry)
+        let host = crate::credential_config::HostCredentials::new();
+        #[allow(unused_variables)]
+        let applied = crate::credential_config::apply(&mut registry, &config.credentials, &host)?;
+        Ok(LoadedProviders {
+            models: registry,
+            #[cfg(feature = "typesafe")]
+            system_one: applied.system_one,
+        })
     }
+}
 
+impl ModelRegistry {
     /// Add every provider and alias of `other`. `other` wins every conflict: a
     /// same-named provider is replaced, and an alias of `other` shadows a provider
     /// of `self` with that name (so a providers file can redirect `openai` to a
@@ -449,6 +496,9 @@ fn bedrock_provider(
     let access = required(&p.access_key_id_env, "access_key_id_env")?;
     let secret = required(&p.secret_access_key_env, "secret_access_key_env")?;
     let session_token = required(&p.session_token_env, "session_token_env")?;
+    if api_key.is_some() && session_token.is_some() {
+        return Err(LlmError::Config(ctx("`session_token_env` only applies to AWS access keys, not `api_key_env`")));
+    }
     let auth = match (api_key, access, secret) {
         (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
             return Err(LlmError::Config(ctx("use either `api_key_env` or AWS access keys, not both")));
@@ -483,6 +533,9 @@ fn bedrock_provider(
 
 #[cfg(feature = "http")]
 fn missing(ctx: &dyn Fn(&str) -> String, var: &str) -> LlmError {
+    if var.ends_with("(unterminated `${`)") {
+        return LlmError::Config(ctx(&format!("invalid `${{...}}` reference: {var}")));
+    }
     LlmError::Config(ctx(&format!("environment variable `{var}` referenced as ${{{var}}} is not set")))
 }
 
@@ -511,8 +564,8 @@ pub fn interpolate(text: &str, vars: &[(String, String)]) -> Result<String, Stri
                     rest = &body[end + 1..];
                 }
                 None => {
-                    out.push('$');
-                    rest = after;
+                    // An unterminated `${` would otherwise end up literally in a URL or header.
+                    return Err(format!("{} (unterminated `${{`)", body.chars().take(40).collect::<String>()));
                 }
             }
         } else {
@@ -575,6 +628,41 @@ mod credentials_section_tests {
         let typo = ProvidersConfig::from_value(serde_json::json!({"credentials": {"p": {"source": "env", "vr": "X"}}}));
         assert!(typo.is_err());
     }
+
+    #[test]
+    fn host_sources_and_name_clashes_are_rejected_in_files() {
+        let load = |v: serde_json::Value| ProvidersConfig::from_value(v).unwrap().load(&[]);
+        let external = load(serde_json::json!({"credentials": {"openai": {"source": "external"}}}));
+        assert!(external.unwrap_err().to_string().contains("host app"));
+        let clash = load(serde_json::json!({
+            "providers": [{"name": "router", "kind": "openai", "api_key_env": "K", "api_key_optional": true}],
+            "credentials": {"router": {"source": "env", "var": "X", "kind": "openai"}}
+        }));
+        assert!(clash.unwrap_err().to_string().contains("same name"));
+    }
+
+    #[cfg(feature = "typesafe")]
+    #[test]
+    fn typesafe_credentials_build_the_system_one_client() {
+        let config = ProvidersConfig::from_value(
+            serde_json::json!({"credentials": {"typesafe": {"source": "env", "var": "TYPESAFE_API_KEY"}}}),
+        )
+        .unwrap();
+        let loaded = config.load(&[]).unwrap();
+        assert!(loaded.system_one.is_some());
+        assert!(loaded.models.get("typesafe").is_err());
+    }
+
+    #[test]
+    fn unterminated_interpolation_is_an_error() {
+        assert!(interpolate("https://x/${HOST", &[]).is_err());
+        let config = ProvidersConfig::from_value(serde_json::json!({
+            "providers": [{"name": "a", "kind": "openai", "base_url": "https://${HOST/v1", "api_key_optional": true}]
+        }))
+        .unwrap();
+        let err = ModelRegistry::from_config_with_vars(&config, &[]).unwrap_err().to_string();
+        assert!(err.contains("unterminated"), "{err}");
+    }
 }
 
 #[cfg(test)]
@@ -593,7 +681,8 @@ mod tests {
     fn interpolation() {
         let v = vars();
         assert_eq!(interpolate("${SITE}/x", &v).unwrap(), "https://example.com/x");
-        assert_eq!(interpolate("a$$b $x ${", &v).unwrap(), "a$b $x ${");
+        assert_eq!(interpolate("a$$b $x", &v).unwrap(), "a$b $x");
+        assert!(interpolate("a ${", &v).is_err(), "an unterminated `${{` is an error, not literal text");
         assert_eq!(interpolate("${NOPE}", &v).unwrap_err(), "NOPE");
     }
 

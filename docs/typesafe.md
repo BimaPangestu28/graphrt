@@ -131,6 +131,11 @@ Ask several typed questions in one request:
 | `route_by` | A choice question to branch on. Handles are its option names, plus `low_confidence` when a threshold is set. |
 | `min_confidence`, `min_probability` | Thresholds for the routed choice. |
 | `long_context` | Send the long-context header (262k-token limits; slower and less accurate). |
+| `allow_missing` | Send placeholders whose variable is missing as `null` instead of failing (default `false`: questions about missing input would get confident answers about nothing). |
+
+Unknown config keys (e.g. a misspelled `min_confidance`) are errors, `noul` criteria
+keys must be `true` / `false`, and an object `model` must name `provider: typesafe`
+(if a provider is given) and a non-empty `name`.
 
 Outputs: one object per question (the typed answer, e.g. `{{#judge.spam.noul#}}`,
 `{{#judge.toxicity.score#}}`, `{{#judge.action.choice#}}`), `answers` (all answers),
@@ -157,4 +162,13 @@ Retries follow the node's `retry` policy.
 - Box questions and images are marked experimental by TypeSafe.
 - An alias such as `jev-latest` moves with new releases; the `model` output tells you
   which version answered. Pin a versioned id when you rely on tuned thresholds.
-- The classifier's `vision` and `memory` settings apply to the chat-model engine only.
+- The classifier's `vision`, `memory` and `model.completion_params` settings apply to the
+  chat-model engine only; setting them with the typesafe engine is a configuration
+  error, as is `engine: chat` combined with `model.provider: typesafe`.
+- Answers are checked against their questions: a chosen option that is not one of
+  the criteria, a missing probability for the chosen option, or an answer of the
+  wrong type is a `model_decode` error.
+- `TYPESAFE_BASE_URL` without `TYPESAFE_API_KEY` is a configuration error. Apps can
+  instead declare a `typesafe` entry in the `credentials` section (token broker or
+  host keychain); it builds the System One client from the same cached source and is
+  never registered as a chat model.

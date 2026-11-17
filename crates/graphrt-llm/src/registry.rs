@@ -21,6 +21,8 @@ use crate::types::ChatModel;
 pub struct ModelRegistry {
     providers: IndexMap<String, Arc<dyn ChatModel>>,
     aliases: IndexMap<String, String>,
+    /// Why a well-known provider was not registered (shown in "unknown provider" errors).
+    hints: IndexMap<String, String>,
 }
 
 impl fmt::Debug for ModelRegistry {
@@ -99,7 +101,8 @@ impl ModelRegistry {
             return Ok(Arc::clone(m));
         }
         let known: Vec<&str> = self.names().collect();
-        Err(LlmError::Config(format!("unknown model provider `{name}` (configured: {known:?})")))
+        let hint = self.hints.get(name).map(|h| format!("; {h}")).unwrap_or_default();
+        Err(LlmError::Config(format!("unknown model provider `{name}` (configured: {known:?}){hint}")))
     }
 
     /// Build a registry from environment variables:
@@ -197,7 +200,18 @@ impl ModelRegistry {
                                 session_token: get("AWS_SESSION_TOKEN"),
                             }))
                         }
-                        _ => None,
+                        (None, access, secret) => {
+                            let missing = match (access.is_some(), secret.is_some()) {
+                                (true, false) => "AWS_SECRET_ACCESS_KEY is not set",
+                                (false, true) => "AWS_ACCESS_KEY_ID is not set",
+                                _ => "neither AWS_BEARER_TOKEN_BEDROCK nor AWS access keys are set",
+                            };
+                            registry.hints.insert(
+                                "bedrock".into(),
+                                format!("bedrock was not registered: AWS region is set but {missing}"),
+                            );
+                            None
+                        }
                     };
                 if let Some(auth) = auth {
                     let mut cfg = BedrockConfig::new(region, auth);
@@ -306,5 +320,11 @@ mod tests {
         let none =
             ModelRegistry::from_vars(&vars(&[("AWS_ACCESS_KEY_ID", "A"), ("AWS_SECRET_ACCESS_KEY", "S")])).unwrap();
         assert!(none.get("bedrock").is_err());
+
+        // A region with half the keys explains itself when the provider is used.
+        let partial =
+            ModelRegistry::from_vars(&vars(&[("AWS_REGION", "us-east-1"), ("AWS_ACCESS_KEY_ID", "A")])).unwrap();
+        let err = partial.get("bedrock").unwrap_err().to_string();
+        assert!(err.contains("AWS_SECRET_ACCESS_KEY is not set"), "{err}");
     }
 }

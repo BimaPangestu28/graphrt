@@ -57,8 +57,13 @@ blocks are kept and replayed automatically during tool use.
   `thoughtSignature` are kept and replayed on the next turn, as Gemini
   requires for function calling with thinking models.
 - Structured output: JSON Schemas are converted to Gemini's schema dialect
-  (upper-case types, `nullable`, local `$ref`s inlined, unsupported keywords
-  such as `additionalProperties` and unknown string formats dropped).
+  (upper-case types, `nullable`, local `$ref`s inlined). Constraints Gemini
+  cannot express (`additionalProperties`, non-string enums, unknown string
+  formats...) are dropped and reported in the node's `warnings` metadata.
+  Unresolvable `$ref`s and recursive schemas are configuration errors rather
+  than an accept-anything schema.
+- Finish reasons: a safety stop fails the node with `content_filter`
+  (not retried); malformed function calls fail with a retryable `model_decode`.
 - Images: `data:` URLs are sent inline; `https` URLs as `fileData`.
 - Safety: a blocked prompt is an error naming the block reason; a response
   stopped by safety filters finishes with `content_filter`.
@@ -173,3 +178,16 @@ the request is retried once.
 
 For Gemini the credential is the API key (or the bearer token with
 `auth: bearer`); for Bedrock it is sent as a bearer token (Bedrock API key).
+
+Every provider (OpenAI-compatible, Anthropic, Gemini, Bedrock with a credential
+source, TypeSafe) honours a `base_url` returned with the credential, so the
+thin-proxy pattern works for all of them. That URL must be `https://` (plain
+http only for localhost); static config headers are not sent when it points to
+a different origin. Provider clients never follow redirects.
+
+A providers file may also hold a `credentials` section (see
+[credentials.md](credentials.md)). There, `kind` must be set unless the entry is
+named `openai`, `anthropic`, `gemini`, `bedrock` or `typesafe`; only `env` and
+`token_broker` sources are allowed (no host app); and an entry may not share its
+name with a `providers` entry. A `typesafe` entry configures the System One
+client used by `question-classifier` (typesafe engine) and `system-one` nodes.

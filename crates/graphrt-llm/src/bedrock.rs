@@ -155,16 +155,33 @@ impl BedrockModel {
         Ok(Self { config, client })
     }
 
-    /// Build a signed (or bearer-authenticated) request for `body`.
-    async fn request(&self, url: &reqwest::Url, body: &[u8]) -> Result<reqwest::RequestBuilder, LlmError> {
-        let mut builder = self.client.post(url.clone()).header("content-type", "application/json").body(body.to_vec());
+    /// Build a signed (or bearer-authenticated) request for `body` to `path`.
+    async fn request(&self, path: &str, body: &[u8]) -> Result<reqwest::RequestBuilder, LlmError> {
+        let parse = |base: &str| {
+            reqwest::Url::parse(&format!("{}{path}", base.trim_end_matches('/')))
+                .map_err(|e| LlmError::Config(format!("invalid Bedrock endpoint: {e}")))
+        };
+        let configured = self.config.base_url();
         if let Some(source) = &self.config.credentials {
+            // Bearer credentials may carry a proxy base URL (thin-proxy pattern).
             let credential = source.credential(&self.config.provider_name).await?;
+            let endpoint = crate::http::resolve_endpoint(&configured, credential.base_url.as_deref())?;
+            let url = parse(&endpoint.base_url)?;
+            let mut builder = self.client.post(url).header("content-type", "application/json").body(body.to_vec());
             builder = builder.bearer_auth(&credential.secret);
             for (k, v) in &credential.headers {
                 builder = builder.header(k.as_str(), v.as_str());
             }
-        } else {
+            if endpoint.send_static {
+                for (k, v) in &self.config.headers {
+                    builder = builder.header(k.as_str(), v.as_str());
+                }
+            }
+            return Ok(builder);
+        }
+        let url = parse(&configured)?;
+        let mut builder = self.client.post(url.clone()).header("content-type", "application/json").body(body.to_vec());
+        {
             match &self.config.auth {
                 Some(BedrockAuth::ApiKey(key)) => builder = builder.bearer_auth(key),
                 Some(BedrockAuth::SigV4(creds)) => {
@@ -173,10 +190,14 @@ impl BedrockModel {
                         (Some(h), None) => h.to_owned(),
                         (None, _) => return Err(LlmError::Config("Bedrock endpoint has no host".into())),
                     };
+                    // A signature dated 1970 would only produce a confusing "signature
+                    // expired" from AWS; fail clearly instead.
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs())
-                        .unwrap_or(0);
+                        .map_err(|_| {
+                        LlmError::Config("system clock is before 1970; cannot sign AWS requests".into())
+                    })?;
                     let date = sigv4::amz_date(now);
                     let payload_hash = sigv4::sha256_hex(body);
                     let mut headers: Vec<(&str, &str)> = vec![
@@ -230,11 +251,9 @@ impl ChatModel for BedrockModel {
             let body =
                 serde_json::to_vec(&body).map_err(|e| LlmError::Config(format!("cannot encode request: {e}")))?;
             let path = format!("/model/{}/converse-stream", sigv4::uri_encode(&request.model, false));
-            let url = reqwest::Url::parse(&format!("{}{path}", self.config.base_url()))
-                .map_err(|e| LlmError::Config(format!("invalid Bedrock endpoint: {e}")))?;
             let mut retried = false;
             loop {
-                let builder = self.request(&url, &body).await?;
+                let builder = self.request(&path, &body).await?;
                 match send_request(builder, classify).await {
                     Ok(response) => return Ok(event_stream(response)),
                     Err(LlmError::Auth(_)) if !retried && self.config.credentials.is_some() => {
@@ -407,8 +426,13 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
     let mut additional = Map::new();
     for (k, v) in &req.extra {
         if k == "additionalModelRequestFields" {
-            if let Json::Object(fields) = v {
-                additional.extend(fields.clone());
+            match v {
+                Json::Object(fields) => additional.extend(fields.clone()),
+                other => {
+                    return Err(LlmError::Config(format!(
+                        "`additionalModelRequestFields` must be a JSON object, got {other}"
+                    )));
+                }
             }
         } else if TOP_LEVEL_EXTRA.contains(&k.as_str()) {
             body.insert(k.clone(), v.clone());
@@ -496,7 +520,12 @@ impl BedrockDecoder {
             serde_json::from_slice(&message.payload)
                 .map_err(|e| LlmError::Decode(format!("invalid `{event}` payload: {e}")))?
         };
-        let index = v.get("contentBlockIndex").and_then(Json::as_u64).unwrap_or(0);
+        let block_index = v.get("contentBlockIndex").and_then(Json::as_u64);
+        let needs_index = matches!(event, "contentBlockStart" | "contentBlockDelta" | "contentBlockStop");
+        if needs_index && block_index.is_none() {
+            return Err(LlmError::Decode(format!("`{event}` event without `contentBlockIndex`")));
+        }
+        let index = block_index.unwrap_or(0);
         let mut out = Vec::new();
         match event {
             "contentBlockStart" => {
@@ -520,7 +549,13 @@ impl BedrockDecoder {
                     let Some(Block::ToolUse { call_index }) = self.blocks.get(&index) else {
                         return Err(unknown_block("toolUse", index));
                     };
-                    let input = tool.get("input").and_then(Json::as_str).unwrap_or_default().to_owned();
+                    let input = match tool.get("input") {
+                        Some(Json::String(s)) => s.clone(),
+                        None | Some(Json::Null) => String::new(),
+                        Some(other) => {
+                            return Err(LlmError::Decode(format!("toolUse `input` delta is not a string: {other}")));
+                        }
+                    };
                     out.push(ChatDelta::ToolCall { index: *call_index, id: None, name: None, arguments: input });
                 } else if let Some(reasoning) = delta.get("reasoningContent") {
                     let entry = self.blocks.entry(index).or_insert_with(|| Block::Reasoning {
@@ -547,6 +582,9 @@ impl BedrockDecoder {
                 if let Some(Block::Reasoning { text, signature, redacted }) = self.blocks.remove(&index) {
                     match redacted {
                         Some(data) => self.reasoning.push(json!({"reasoningContent": {"redactedContent": data}})),
+                        // Unsigned reasoning cannot be replayed (Bedrock rejects the next
+                        // turn), so it is streamed but not kept for replay.
+                        None if signature.is_empty() => {}
                         None => self.reasoning.push(
                             json!({"reasoningContent": {"reasoningText": {"text": text, "signature": signature}}}),
                         ),
@@ -554,8 +592,12 @@ impl BedrockDecoder {
                 }
             }
             "messageStop" => {
-                if let Some(reason) = v.get("stopReason").and_then(Json::as_str) {
-                    out.push(ChatDelta::Finish(stop_reason(reason)));
+                match v.get("stopReason").and_then(Json::as_str) {
+                    Some(reason) => out.push(ChatDelta::Finish(stop_reason(reason))),
+                    None => {
+                        out.push(ChatDelta::Warning("Bedrock messageStop without stopReason".into()));
+                        out.push(ChatDelta::Finish(FinishReason::Other("unknown".into())));
+                    }
                 }
                 self.stopped = true;
             }
@@ -858,13 +900,66 @@ mod tests {
             session_token: Some("token".into()),
         };
         let model = BedrockModel::new(BedrockConfig::new("us-east-1", BedrockAuth::SigV4(creds))).unwrap();
-        let url =
-            reqwest::Url::parse("https://bedrock-runtime.us-east-1.amazonaws.com/model/a%3A0/converse-stream").unwrap();
-        let req = model.request(&url, b"{}").await.unwrap().build().unwrap();
+        let req = model.request("/model/a%3A0/converse-stream", b"{}").await.unwrap().build().unwrap();
         let auth = req.headers().get("authorization").unwrap().to_str().unwrap();
         assert!(auth.starts_with("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/"), "{auth}");
         assert!(auth.contains("/us-east-1/bedrock/aws4_request"));
         assert!(auth.contains("SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token"));
         assert_eq!(req.headers().get("x-amz-security-token").unwrap(), "token");
+    }
+
+    #[tokio::test]
+    async fn credential_base_url_is_honored_and_static_headers_stay_home() {
+        use crate::credentials::{Credential, StaticCredential};
+        let source = StaticCredential::from_credential(
+            Credential::new("proxy-token").base_url("https://proxy.example.com/bedrock"),
+        );
+        let mut config =
+            BedrockConfig::new("us-east-1", BedrockAuth::ApiKey("unused".into())).with_credentials(Arc::new(source));
+        config.headers = vec![("x-gateway-secret".into(), "s".into())];
+        let model = BedrockModel::new(config).unwrap();
+        let req = model.request("/model/m/converse-stream", b"{}").await.unwrap().build().unwrap();
+        assert_eq!(req.url().as_str(), "https://proxy.example.com/bedrock/model/m/converse-stream");
+        assert_eq!(req.headers().get("authorization").unwrap(), "Bearer proxy-token");
+        assert!(req.headers().get("x-gateway-secret").is_none());
+    }
+
+    #[test]
+    fn non_object_additional_fields_are_rejected() {
+        let mut req = ChatRequest::new("m", vec![Message::user("x")]);
+        req.extra.insert("additionalModelRequestFields".into(), json!("{\"top_k\": 5}"));
+        assert!(matches!(build_body(&req), Err(LlmError::Config(_))));
+    }
+
+    #[test]
+    fn unsigned_reasoning_is_not_replayed_and_missing_stop_reason_is_flagged() {
+        let mut bytes = Vec::new();
+        bytes.extend(event("messageStart", json!({"role": "assistant"})));
+        bytes.extend(event(
+            "contentBlockDelta",
+            json!({"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "think"}}}),
+        ));
+        bytes.extend(event("contentBlockStop", json!({"contentBlockIndex": 0})));
+        bytes.extend(event("messageStop", json!({})));
+        bytes.extend(event("metadata", json!({"usage": {"inputTokens": 1, "outputTokens": 1}})));
+        let (deltas, _) = decode_all(&bytes).unwrap();
+        assert!(!deltas.iter().any(|d| matches!(d, ChatDelta::ProviderState(_))));
+        assert!(deltas.iter().any(|d| matches!(d, ChatDelta::Warning(_))));
+        assert!(deltas.iter().any(|d| matches!(d, ChatDelta::Finish(FinishReason::Other(r)) if r == "unknown")));
+    }
+
+    #[test]
+    fn malformed_tool_input_and_missing_block_index_are_errors() {
+        let mut bytes = event(
+            "contentBlockStart",
+            json!({"contentBlockIndex": 0, "start": {"toolUse": {"toolUseId": "t", "name": "f"}}}),
+        );
+        bytes.extend(event(
+            "contentBlockDelta",
+            json!({"contentBlockIndex": 0, "delta": {"toolUse": {"input": {"a": 1}}}}),
+        ));
+        assert!(matches!(decode_all(&bytes), Err(LlmError::Decode(_))));
+        let bytes = event("contentBlockDelta", json!({"delta": {"text": "x"}}));
+        assert!(matches!(decode_all(&bytes), Err(LlmError::Decode(_))));
     }
 }

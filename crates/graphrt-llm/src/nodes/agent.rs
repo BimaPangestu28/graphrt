@@ -42,7 +42,9 @@ use graphrt_core::{Node, NodeContext, NodeError, NodeOutput, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
-use super::common::{MemoryConfig, ModelConfig, StreamMode, VisionConfig, invoke, model_for, usage_value};
+use super::common::{
+    FinishCheck, MemoryConfig, ModelConfig, StreamMode, VisionConfig, check_finish, invoke, model_for, usage_value,
+};
 use crate::types::{FinishReason, Message, Role, ToolCall, ToolChoice};
 
 /// Upper bound for `max_iterations`.
@@ -158,7 +160,7 @@ struct AgentState {
 }
 
 /// Why the loop ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum StopReason {
     /// The model answered without calling tools.
     Completed,
@@ -166,14 +168,17 @@ enum StopReason {
     MaxIterations,
     /// The final answer was cut off by the output token limit.
     Length,
+    /// The provider ended the turn with a reason graphrt does not recognize.
+    Unrecognized(String),
 }
 
 impl StopReason {
-    fn as_str(self) -> &'static str {
+    fn as_str(&self) -> String {
         match self {
-            StopReason::Completed => "completed",
-            StopReason::MaxIterations => "max_iterations",
-            StopReason::Length => "length",
+            StopReason::Completed => "completed".into(),
+            StopReason::MaxIterations => "max_iterations".into(),
+            StopReason::Length => "length".into(),
+            StopReason::Unrecognized(reason) => format!("finish:{reason}"),
         }
     }
 }
@@ -350,6 +355,8 @@ impl AgentNode {
             let mode = if can_call_tools { StreamMode::Off } else { StreamMode::Raw };
             let response = invoke(&ctx, model.as_ref(), request, mode).await?;
             state.usage.add(&response.usage);
+            // A content-filtered or malformed turn is an error, never an empty "completed" answer.
+            let finish = check_finish(&response)?;
 
             if !can_call_tools || response.tool_calls.is_empty() {
                 if can_call_tools && !response.text.is_empty() {
@@ -357,6 +364,8 @@ impl AgentNode {
                 }
                 let stop = if response.finish_reason == Some(FinishReason::Length) {
                     StopReason::Length
+                } else if let FinishCheck::Unknown(reason) = finish {
+                    StopReason::Unrecognized(reason)
                 } else if offer_tools && final_turn {
                     StopReason::MaxIterations
                 } else {
