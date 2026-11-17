@@ -274,6 +274,10 @@ pub struct ResumeRequest {
     /// Input for paused nodes keyed by node id.
     #[serde(default)]
     pub inputs: serde_json::Map<String, serde_json::Value>,
+    /// Secrets (other than `env.*`) to re-supply, keyed by `namespace.name`.
+    /// Snapshots never contain secret values.
+    #[serde(default)]
+    pub secrets: IndexMap<String, String>,
     #[serde(default)]
     pub stream: bool,
 }
@@ -318,7 +322,11 @@ async fn resume_run(
     let mut input = RunInput::new();
     input.run_id = Some(run_id.clone());
     input.env = workflow.env.clone();
-    input.resume = Some(ResumeFrom { snapshot: body.snapshot, inputs: to_values(body.inputs) });
+    let mut resume = ResumeFrom::new(body.snapshot, to_values(body.inputs));
+    for (selector, secret) in body.secrets {
+        resume = resume.secret(selector, secret);
+    }
+    input.resume = Some(resume);
     execute(state.clone(), &workflow.engine, run_id, input, body.stream).await
 }
 
@@ -408,8 +416,9 @@ async fn collect(
             "run_id": run_id, "status": "succeeded", "outputs": outputs, "answer": answer,
             "usage": usage, "handled_errors": handled_errors, "elapsed_ms": elapsed_ms,
         }),
-        Some(Event::RunFailed { error, usage, elapsed_ms }) => serde_json::json!({
-            "run_id": run_id, "status": "failed", "error": error, "usage": usage, "elapsed_ms": elapsed_ms,
+        Some(Event::RunFailed { error, error_type, usage, elapsed_ms }) => serde_json::json!({
+            "run_id": run_id, "status": "failed", "error": error, "error_type": error_type,
+            "usage": usage, "elapsed_ms": elapsed_ms,
         }),
         Some(Event::RunAborted { reason, elapsed_ms }) => serde_json::json!({
             "run_id": run_id, "status": "aborted", "reason": reason, "elapsed_ms": elapsed_ms,

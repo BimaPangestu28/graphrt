@@ -132,7 +132,7 @@ fn load_resume(path: &Path, raw_inputs: &[String]) -> Result<ResumeFrom, CliErro
         };
         inputs.insert(node.to_owned(), value);
     }
-    Ok(ResumeFrom { snapshot, inputs })
+    Ok(ResumeFrom::new(snapshot, inputs))
 }
 
 /// `<dir>/<stem>.snapshot.json` next to the workflow.
@@ -210,11 +210,11 @@ impl Printer {
                 }
                 Ok(Some(EXIT_OK))
             }
-            Event::RunFailed { error, usage, elapsed_ms } => {
+            Event::RunFailed { error, error_type, usage, elapsed_ms } => {
                 match self.mode {
                     OutputMode::Json => {
                         let result = serde_json::json!({
-                            "run_id": self.run_id, "status": "failed", "error": error,
+                            "run_id": self.run_id, "status": "failed", "error": error, "error_type": error_type,
                             "usage": usage, "elapsed_ms": elapsed_ms,
                         });
                         self.line(&pretty(&result)?)?;
