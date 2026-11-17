@@ -42,7 +42,11 @@ mod pipeline;
 mod qdrant;
 mod types;
 
+#[cfg(feature = "doc")]
+mod doc_extractor;
 pub use chunker::{ChunkerConfig, TextChunk, chunk_text};
+#[cfg(feature = "doc")]
+pub use doc_extractor::DocExtractor;
 pub use error::RagError;
 pub use filter::{Logical, MetadataCondition, MetadataFilter, UnknownOperator};
 pub use hash::HashEmbedder;

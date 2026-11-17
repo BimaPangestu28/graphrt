@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["http", "qdrant", "fs", "yaml"]
+default = ["http", "qdrant", "fs", "yaml", "doc"]
 # OpenAI-compatible embeddings, generic HTTP retriever and HTTP reranker (reqwest + rustls/ring).
 http = ["dep:reqwest", "dep:rustls"]
 # Qdrant vector store over its REST API.
@@ -19,9 +19,12 @@ qdrant = ["http"]
 fs = []
 # Load `KnowledgeConfig` from YAML.
 yaml = ["dep:serde-saphyr"]
+# Ingest PDF / Office / spreadsheet / HTML / EPUB / email files via graphrt-doc.
+doc = ["dep:graphrt-doc"]
 
 [dependencies]
 graphrt-core.workspace = true
+graphrt-doc = { workspace = true, optional = true, features = ["default"] }
 futures.workspace = true
 thiserror.workspace = true
 serde.workspace = true
