@@ -18,7 +18,12 @@ use crate::content::{tool_output, tool_spec};
 
 /// Error establishing an MCP connection.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum McpError {
+    #[error("invalid MCP configuration: {0}")]
+    Config(String),
+    #[error("tool provider `{0}` is already registered")]
+    DuplicateProvider(String),
     #[error("MCP server `{server}`: failed to start process: {source}")]
     Spawn {
         server: String,

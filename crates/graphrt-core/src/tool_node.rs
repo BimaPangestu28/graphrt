@@ -19,8 +19,13 @@
 //! (a lone `{{#a.b#}}` placeholder keeps its typed value), other values are
 //! constants.
 //!
-//! Outputs: `text` (string), `json` (structured result, or `null`) and
-//! `files` (array, currently always empty).
+//! Outputs: `text` (string), `json` (structured result, or `null`; when the text
+//! looks like JSON but does not parse, metadata `json_error` says why), `files`
+//! (array, currently always empty), `is_error` (bool) and `error` (the tool's error
+//! text, or `null`). A tool-reported error fails the node unless
+//! `ignore_tool_errors` is set, in which case `is_error` / `error` let a downstream
+//! branch react. `variable` arguments that do not resolve are sent as `null` and
+//! listed in metadata `missing_arguments`.
 
 use std::fmt;
 use std::future::Future;
@@ -148,32 +153,57 @@ impl ToolNode {
             .ok_or_else(|| NodeError::fatal("tool", format!("unknown tool provider `{}`", self.provider)))?
             .clone();
         let (arguments, masked_args) = self.resolve_args(&ctx.pool);
+        let missing = self.missing_variables(&ctx.pool);
         let output = runtime.call(&self.tool, arguments).await.map_err(|e| NodeError::new("tool", e.to_string()))?;
         if output.is_error && !self.ignore_tool_errors {
             return Err(NodeError::fatal("tool_error", output.text));
         }
-        let json = if output.data.is_null() { parse_json_text(&output.text) } else { output.data };
-        Ok(NodeOutput::new()
+        let (json, json_error) =
+            if output.data.is_null() { parse_json_text(&output.text) } else { (output.data, None) };
+        // With `ignore_tool_errors`, the failure stays visible to the graph through the
+        // `is_error` / `error` outputs so a downstream branch can react to it.
+        let error = if output.is_error { Value::from(output.text.as_str()) } else { Value::Null };
+        let mut result = NodeOutput::new()
             .with("text", output.text)
             .with("json", json)
             .with("files", Value::array([]))
+            .with("is_error", output.is_error)
+            .with("error", error)
             .meta("provider", self.provider.as_str())
             .meta("tool", self.tool.as_str())
-            .meta("arguments", masked_args)
-            .meta("is_error", output.is_error)
-            .into())
+            .meta("arguments", masked_args);
+        if let Some(e) = json_error {
+            result = result.meta("json_error", e);
+        }
+        if !missing.is_empty() {
+            result = result.meta("missing_arguments", Value::array(missing.into_iter().map(Value::from)));
+        }
+        Ok(result.into())
+    }
+
+    /// Selectors of `variable` arguments that do not resolve (sent to the tool as `null`).
+    fn missing_variables(&self, pool: &VariablePool) -> Vec<String> {
+        self.args
+            .iter()
+            .filter_map(|(_, source)| match source {
+                ArgSource::Variable { value } if pool.get(value).is_none() => Some(value.to_string()),
+                _ => None,
+            })
+            .collect()
     }
 }
 
-/// Structured view of a text result when it is a JSON object or array.
-fn parse_json_text(text: &str) -> Value {
+/// Structured view of a text result when it looks like a JSON object or array.
+/// Returns the parse error when it looks like JSON but is not valid.
+fn parse_json_text(text: &str) -> (Value, Option<String>) {
     let trimmed = text.trim_start();
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
-            return Value::from_json(json);
-        }
+        return match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(json) => (Value::from_json(json), None),
+            Err(e) => (Value::Null, Some(e.to_string())),
+        };
     }
-    Value::Null
+    (Value::Null, None)
 }
 
 impl Node for ToolNode {
@@ -400,7 +430,25 @@ mod tests {
         let node = ToolNode::from_doc(&doc(cfg)).unwrap();
         let out = completed(node.run(ctx_with(rec)).await);
         assert_eq!(out.outputs["text"], Value::from("boom"));
-        assert_eq!(out.metadata["is_error"], Value::Bool(true));
+        assert_eq!(out.outputs["is_error"], Value::Bool(true));
+        assert_eq!(out.outputs["error"], Value::from("boom"));
+    }
+
+    #[tokio::test]
+    async fn successful_call_has_no_error_output() {
+        let rec = Arc::new(Recorder { reply: Some(ToolOutput::text("{\"a\": 1")), ..Recorder::default() });
+        let node = ToolNode::from_doc(&doc(serde_json::json!({
+            "provider": "mock", "tool_name": "x",
+            "tool_parameters": {"city": {"type": "variable", "value": ["start", "nope"]}}
+        })))
+        .unwrap();
+        let out = completed(node.run(ctx_with(rec)).await);
+        assert_eq!(out.outputs["is_error"], Value::Bool(false));
+        assert_eq!(out.outputs["error"], Value::Null);
+        // Looks like JSON but is truncated: `json` is null and the reason is recorded.
+        assert_eq!(out.outputs["json"], Value::Null);
+        assert!(out.metadata.contains_key("json_error"));
+        assert_eq!(out.metadata["missing_arguments"], Value::array([Value::from("start.nope")]));
     }
 
     #[tokio::test]

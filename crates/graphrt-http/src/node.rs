@@ -197,6 +197,19 @@ struct HttpConfig {
     max_response_bytes: Option<usize>,
     #[serde(default)]
     retry_non_idempotent: bool,
+    #[serde(default)]
+    parse_json: ParseJson,
+}
+
+/// How a JSON response body that fails to parse is handled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ParseJson {
+    /// Keep `body`, output `json: null` and record `json_error` in metadata.
+    #[default]
+    Lenient,
+    /// Fail the node with `invalid_response`.
+    Strict,
 }
 
 fn default_method() -> String {
@@ -211,7 +224,21 @@ fn yes() -> bool {
 ///
 /// Outputs: `status_code`, `body` (text; empty for binary responses), `headers`
 /// (object, lower-case names), `files` (binary responses as inline files) and, for
-/// JSON responses, `json` (the parsed body).
+/// JSON content types, `json` (the parsed body, or `null` when the body is not valid
+/// JSON — the parse error is reported in metadata `json_error`; set
+/// `parse_json: strict` to fail instead).
+///
+/// Text bodies honour the `charset` content-type parameter for UTF-8, ISO-8859-1 and
+/// windows-1252; other undecodable text is decoded lossily and flagged with
+/// metadata `body_lossy: true`.
+///
+/// Redirects are followed by the node itself (up to the policy's `max_redirects`,
+/// each hop re-validated). When a hop changes origin (scheme, host or port), every
+/// credential header is dropped: `authorization`, `cookie`, `proxy-authorization`,
+/// the configured custom auth header and any header whose value came from a secret.
+///
+/// Node-level `timeout` and `max_response_bytes` can only lower the limits of the
+/// host's [`EgressPolicy`], never raise them.
 #[derive(Debug)]
 pub struct HttpRequestNode {
     method: Method,
@@ -225,7 +252,21 @@ pub struct HttpRequestNode {
     fail_on_error_status: bool,
     max_response_bytes: Option<usize>,
     retry_non_idempotent: bool,
+    parse_json: ParseJson,
     default_client: OnceLock<Result<HttpClient, String>>,
+}
+
+/// Headers that always carry credentials.
+const CREDENTIAL_HEADERS: &[&str] = &["authorization", "cookie", "proxy-authorization"];
+
+/// A rendered request, ready to send (possibly several times across redirects).
+struct PreparedRequest {
+    method: Method,
+    url: reqwest::Url,
+    headers: HeaderMap,
+    /// Lower-case names of headers to drop when a redirect changes origin.
+    sensitive: Vec<String>,
+    body: Option<Vec<u8>>,
 }
 
 impl HttpRequestNode {
@@ -266,6 +307,7 @@ impl HttpRequestNode {
             fail_on_error_status: cfg.fail_on_error_status,
             max_response_bytes: cfg.max_response_bytes,
             retry_non_idempotent: cfg.retry_non_idempotent,
+            parse_json: cfg.parse_json,
             default_client: OnceLock::new(),
         })
     }
@@ -287,6 +329,7 @@ impl HttpRequestNode {
     async fn execute(&self, ctx: &NodeContext) -> Result<NodeOutput, NodeError> {
         let pool = &ctx.pool;
         let client = self.client(ctx)?;
+        let policy = client.policy();
 
         // URL and query parameters.
         let raw_url = self.url.render_exposed(pool);
@@ -295,8 +338,7 @@ impl HttpRequestNode {
         if !self.params.is_empty() {
             let mut query = url.query_pairs_mut();
             for (k, v) in &self.params {
-                let key = k.render_exposed(pool);
-                if !key.is_empty() {
+                if let Some(key) = render_key(k, pool, "query parameter")? {
                     query.append_pair(&key, &v.render_exposed(pool));
                 }
             }
@@ -305,14 +347,19 @@ impl HttpRequestNode {
 
         // Headers: user headers first, then authorization (which wins).
         let mut headers = HeaderMap::new();
+        let mut sensitive: Vec<String> = CREDENTIAL_HEADERS.iter().map(|h| (*h).to_owned()).collect();
         let mut shown_headers = IndexMap::new();
         for (k, v) in &self.headers {
-            let name = k.render_exposed(pool);
-            if name.trim().is_empty() {
-                continue;
+            let Some(name) = render_key(k, pool, "header")? else { continue };
+            let name = name.trim().to_ascii_lowercase();
+            let exposed = v.render_exposed(pool);
+            let shown = v.render(pool);
+            if exposed != shown {
+                // The value contains a secret: never forward it to another origin.
+                sensitive.push(name.clone());
             }
-            insert_header(&mut headers, name.trim(), &v.render_exposed(pool))?;
-            shown_headers.insert(name.trim().to_ascii_lowercase(), Value::from(v.render(pool)));
+            insert_header(&mut headers, &name, &exposed)?;
+            shown_headers.insert(name, Value::from(shown));
         }
         if let Some(auth) = &self.auth {
             let key = auth.api_key.render_exposed(pool);
@@ -322,45 +369,115 @@ impl HttpRequestNode {
                     let encoded = if key.contains(':') { BASE64.encode(key.as_bytes()) } else { key };
                     ("authorization".to_owned(), format!("Basic {encoded}"))
                 }
-                AuthScheme::Custom => (auth.header.clone().unwrap_or_default(), key),
+                AuthScheme::Custom => (auth.header.clone().unwrap_or_default().trim().to_ascii_lowercase(), key),
             };
-            insert_header(&mut headers, name.trim(), &value)?;
-            shown_headers.insert(name.trim().to_ascii_lowercase(), Value::from(SECRET_MASK));
+            insert_header(&mut headers, &name, &value)?;
+            sensitive.push(name.clone());
+            shown_headers.insert(name, Value::from(SECRET_MASK));
         }
 
         // Body.
         let body = self.build_body(ctx)?;
-        if let Some((content_type, _)) = &body {
-            if !headers.contains_key(reqwest::header::CONTENT_TYPE) {
-                insert_header(&mut headers, "content-type", content_type)?;
-            }
-        }
-
-        let mut request = client.client(self.ssl_verify).request(self.method.clone(), url.clone()).headers(headers);
-        let timeout = self.timeout.unwrap_or(client.policy().total_timeout);
-        request = request.timeout(timeout);
         let body_len = body.as_ref().map_or(0, |(_, b)| b.len());
-        if let Some((_, bytes)) = body {
-            request = request.body(bytes);
-        }
+        let body = match body {
+            Some((content_type, bytes)) => {
+                if !headers.contains_key(reqwest::header::CONTENT_TYPE) {
+                    insert_header(&mut headers, "content-type", &content_type)?;
+                }
+                Some(bytes)
+            }
+            None => None,
+        };
 
         let mut shown_url = self.url.render(pool);
-        if let Some(query) = url.query() {
-            if !self.params.is_empty() {
-                shown_url = format!("{shown_url}?{}", masked_query(&self.params, pool, query));
-            }
+        if url.query().is_some() && !self.params.is_empty() {
+            shown_url = format!("{shown_url}?{}", masked_query(&self.params, pool));
         }
+
+        // Limits from node config can only lower the operator's caps.
+        let total_timeout = self.timeout.map_or(policy.total_timeout, |t| t.min(policy.total_timeout));
+        let total_timeout = match ctx.remaining() {
+            Some(remaining) => total_timeout.min(remaining),
+            None => total_timeout,
+        };
+        let cap = self.max_response_bytes.map_or(policy.max_response_bytes, |c| c.min(policy.max_response_bytes));
+
+        let prepared = PreparedRequest { method: self.method.clone(), url, headers, sensitive, body };
+        let (response, final_url, redirects) = self.send_following_redirects(client, prepared, total_timeout).await?;
+
         let request_meta = Value::object([
             ("method", Value::from(self.method.as_str())),
             ("url", Value::from(shown_url)),
             ("headers", Value::Object(Arc::new(shown_headers.into_iter().collect()))),
             ("body_bytes", Value::Int(i64::try_from(body_len).unwrap_or(i64::MAX))),
+            ("redirects", Value::Int(i64::try_from(redirects).unwrap_or(i64::MAX))),
         ]);
-
-        let response = request.send().await.map_err(|e| self.transport_error(&e))?;
-        let cap = self.max_response_bytes.unwrap_or(client.policy().max_response_bytes);
-        let output = self.read_response(response, cap, &url).await?;
+        let output = self.read_response(response, cap, &final_url).await?;
         Ok(output.meta("request", request_meta))
+    }
+
+    /// Send the request, following redirects manually so credentials never cross origins.
+    /// Returns the final response, its URL and the number of redirects followed.
+    async fn send_following_redirects(
+        &self,
+        client: &HttpClient,
+        mut request: PreparedRequest,
+        total_timeout: Duration,
+    ) -> Result<(reqwest::Response, reqwest::Url, usize), NodeError> {
+        let started = std::time::Instant::now();
+        let max_redirects = client.policy().max_redirects;
+        let http = client.manual_redirect_client(self.ssl_verify);
+        let mut redirects = 0usize;
+        loop {
+            let remaining = total_timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                let mut err = NodeError::new("timeout", "HTTP request timed out while following redirects");
+                err.retryable = self.may_retry();
+                return Err(err);
+            }
+            let mut builder = http
+                .request(request.method.clone(), request.url.clone())
+                .headers(request.headers.clone())
+                .timeout(remaining);
+            if let Some(bytes) = &request.body {
+                builder = builder.body(bytes.clone());
+            }
+            let response = builder.send().await.map_err(|e| self.transport_error(e))?;
+
+            let status = response.status();
+            let location = response.headers().get(reqwest::header::LOCATION).and_then(|v| v.to_str().ok());
+            let Some(location) = location.filter(|_| status.is_redirection() && max_redirects > 0) else {
+                return Ok((response, request.url, redirects));
+            };
+            if redirects >= max_redirects {
+                return Err(NodeError::fatal(
+                    "too_many_redirects",
+                    format!("stopped after {max_redirects} redirects (policy limit)"),
+                ));
+            }
+            let next = request.url.join(location).map_err(|_| {
+                NodeError::fatal("invalid_response", format!("HTTP {status} with an invalid Location header"))
+            })?;
+            client.check_url(&next).map_err(egress_error)?;
+
+            if next.origin() != request.url.origin() {
+                for name in &request.sensitive {
+                    request.headers.remove(name.as_str());
+                }
+            }
+            let code = status.as_u16();
+            let becomes_get = code == 303 || (matches!(code, 301 | 302) && request.method == Method::POST);
+            if becomes_get {
+                if request.method != Method::HEAD {
+                    request.method = Method::GET;
+                }
+                request.body = None;
+                request.headers.remove(reqwest::header::CONTENT_TYPE);
+                request.headers.remove(reqwest::header::CONTENT_LENGTH);
+            }
+            request.url = next;
+            redirects += 1;
+        }
     }
 
     fn build_body(&self, ctx: &NodeContext) -> Result<Option<(String, Vec<u8>)>, NodeError> {
@@ -383,8 +500,7 @@ impl HttpRequestNode {
             BodyKind::XWwwFormUrlencoded => {
                 let mut form = url::form_urlencoded::Serializer::new(String::new());
                 for item in self.body.data.items() {
-                    let key = item.key.render_exposed(pool);
-                    if !key.is_empty() {
+                    if let Some(key) = render_key(&item.key, pool, "form field")? {
                         form.append_pair(&key, &item.value.render_exposed(pool));
                     }
                 }
@@ -393,10 +509,7 @@ impl HttpRequestNode {
             BodyKind::FormData => {
                 let mut fields = Vec::new();
                 for item in self.body.data.items() {
-                    let name = item.key.render_exposed(pool);
-                    if name.is_empty() {
-                        continue;
-                    }
+                    let Some(name) = render_key(&item.key, pool, "form field")? else { continue };
                     if item.kind.as_deref() == Some("file") {
                         for file in files_at(pool, item.file.as_ref())? {
                             fields.push(MultipartField::File {
@@ -433,8 +546,11 @@ impl HttpRequestNode {
         url: &reqwest::Url,
     ) -> Result<NodeOutput, NodeError> {
         let status = response.status();
+        // Error responses only need a snippet; reading stops at the cap instead of failing,
+        // so a large 5xx page is still reported as a (retryable) status error.
+        let error_status = self.fail_on_error_status && !status.is_success();
         if let Some(len) = response.content_length() {
-            if usize::try_from(len).map_or(true, |l| l > cap) {
+            if !error_status && usize::try_from(len).map_or(true, |l| l > cap) {
                 return Err(too_large(cap));
             }
         }
@@ -458,28 +574,55 @@ impl HttpRequestNode {
             match response.chunk().await {
                 Ok(Some(chunk)) => {
                     if bytes.len().saturating_add(chunk.len()) > cap {
+                        if error_status {
+                            break;
+                        }
                         return Err(too_large(cap));
                     }
                     bytes.extend_from_slice(&chunk);
                 }
                 Ok(None) => break,
-                Err(e) => return Err(self.transport_error(&e)),
+                Err(e) => return Err(self.transport_error(e)),
             }
+        }
+
+        if error_status {
+            let snippet: String = String::from_utf8_lossy(&bytes).chars().take(500).collect();
+            let message = format!("HTTP {status} from {}: {snippet}", url.host_str().unwrap_or_default());
+            let retryable_status = status.is_server_error() || matches!(status.as_u16(), 408 | 429);
+            let mut err = NodeError::new("http_status", message);
+            err.retryable = retryable_status && self.may_retry();
+            if matches!(status.as_u16(), 429 | 503) {
+                err.retry_after_ms = retry_after_ms;
+            }
+            return Err(err);
         }
 
         let status_code = Value::Int(i64::from(status.as_u16()));
         let headers = Value::Object(Arc::new(header_map.into_iter().collect()));
         let mut output = NodeOutput::new().with("status_code", status_code).with("headers", headers);
 
-        let text = if is_binary(&content_type, &disposition) { None } else { std::str::from_utf8(&bytes).ok() };
-        match text {
-            Some(text) => {
-                if content_type.contains("json") {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
-                        output = output.with("json", Value::from_json(json));
+        let decoded = if is_binary(&content_type, &disposition) { None } else { decode_text(&bytes, &content_type) };
+        match decoded {
+            Some(DecodedText { text, lossy }) => {
+                if is_json_type(&content_type) {
+                    match serde_json::from_str::<serde_json::Value>(&text) {
+                        Ok(json) => output = output.with("json", Value::from_json(json)),
+                        Err(e) if self.parse_json == ParseJson::Strict => {
+                            return Err(NodeError::fatal(
+                                "invalid_response",
+                                format!("response declared as JSON is not valid JSON: {e}"),
+                            ));
+                        }
+                        Err(e) => {
+                            output = output.with("json", Value::Null).meta("json_error", e.to_string());
+                        }
                     }
                 }
-                output = output.with("body", text.to_owned()).with("files", Value::array([]));
+                if lossy {
+                    output = output.meta("body_lossy", true);
+                }
+                output = output.with("body", text).with("files", Value::array([]));
             }
             None => {
                 if bytes.len() > INLINE_FILE_LIMIT {
@@ -513,35 +656,25 @@ impl HttpRequestNode {
                 output = output.with("body", "").with("files", Value::array([Value::from(file)]));
             }
         }
-
-        if self.fail_on_error_status && !status.is_success() {
-            let snippet: String = String::from_utf8_lossy(&bytes).chars().take(500).collect();
-            let message = format!("HTTP {status} from {}: {snippet}", url.host_str().unwrap_or_default());
-            let retryable_status = status.is_server_error() || status.as_u16() == 429 || status.as_u16() == 408;
-            let mut err = NodeError::new("http_status", message);
-            err.retryable = retryable_status && self.may_retry();
-            if matches!(status.as_u16(), 429 | 503) {
-                err.retry_after_ms = retry_after_ms;
-            }
-            return Err(err);
-        }
         Ok(output)
     }
 
-    fn transport_error(&self, error: &reqwest::Error) -> NodeError {
-        if let Some(egress) = find_egress_error(error) {
+    /// Map a transport error. The URL is removed from the message: it may contain secrets.
+    fn transport_error(&self, error: reqwest::Error) -> NodeError {
+        let error = error.without_url();
+        if let Some(egress) = find_egress_error(&error) {
             return egress_error(egress.clone());
         }
         if error.is_redirect() {
-            return NodeError::fatal("egress_blocked", error_chain(error));
+            return NodeError::fatal("egress_blocked", error_chain(&error));
         }
         let mut err = if error.is_timeout() {
-            NodeError::new("timeout", error_chain(error))
+            NodeError::new("timeout", error_chain(&error))
         } else if error.is_connect() {
             // Nothing was sent: retrying is safe for every method.
-            return NodeError::new("connection", error_chain(error));
+            return NodeError::new("connection", error_chain(&error));
         } else {
-            NodeError::new("http", error_chain(error))
+            NodeError::new("http", error_chain(&error))
         };
         err.retryable = self.may_retry();
         err
@@ -558,6 +691,19 @@ impl Node for HttpRequestNode {
         for (k, v) in self.headers.iter().chain(self.params.iter()) {
             out.extend(k.selectors().cloned());
             out.extend(v.selectors().cloned());
+        }
+        if let Some(auth) = &self.auth {
+            out.extend(auth.api_key.selectors().cloned());
+        }
+        match &self.body.data {
+            BodyData::Text(text) => out.extend(Template::parse(text).selectors().cloned()),
+            BodyData::Items(items) => {
+                for item in items {
+                    out.extend(item.key.selectors().cloned());
+                    out.extend(item.value.selectors().cloned());
+                    out.extend(item.file.iter().cloned());
+                }
+            }
         }
         out
     }
@@ -590,20 +736,34 @@ fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<(),
 }
 
 /// Files referenced by a selector (a single file or an array of files).
+///
+/// A `null` value means "no file" (optional input). A selector that does not resolve
+/// at all, or array items that are not files, are errors rather than silently
+/// sending no file part.
 fn files_at(pool: &VariablePool, selector: Option<&Selector>) -> Result<Vec<File>, NodeError> {
     let selector = selector.ok_or_else(|| NodeError::fatal("invalid_input", "file field has no `file` selector"))?;
     match pool.get(selector) {
         Some(Value::File(f)) => Ok(vec![(*f).clone()]),
-        Some(Value::Array(items)) => Ok(items.iter().filter_map(|v| v.as_file().cloned()).collect()),
-        Some(Value::Null) | None => Ok(Vec::new()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| match v {
+                Value::File(f) => Ok((**f).clone()),
+                other => Err(NodeError::fatal(
+                    "invalid_input",
+                    format!("`{selector}` contains a {}, expected only files", other.type_name()),
+                )),
+            })
+            .collect(),
+        Some(Value::Null) => Ok(Vec::new()),
+        None => Err(NodeError::fatal("invalid_input", format!("file variable `{selector}` not found"))),
         Some(other) => {
             Err(NodeError::fatal("invalid_input", format!("`{selector}` is a {}, not a file", other.type_name())))
         }
     }
 }
 
-/// Query string for display, with secret-derived values masked.
-fn masked_query(params: &[(Template, Template)], pool: &VariablePool, _actual: &str) -> String {
+/// Query string for display: secret-derived keys and values are masked.
+fn masked_query(params: &[(Template, Template)], pool: &VariablePool) -> String {
     let mut q = url::form_urlencoded::Serializer::new(String::new());
     for (k, v) in params {
         let key = k.render(pool);
@@ -612,6 +772,94 @@ fn masked_query(params: &[(Template, Template)], pool: &VariablePool, _actual: &
         }
     }
     q.finish()
+}
+
+/// Render the key of a header / parameter / form field.
+///
+/// Returns `Ok(None)` for rows whose key template is blank (empty rows left in a
+/// form), and an error when a non-blank key template renders empty — that usually
+/// means a misspelled or missing variable, which must not silently drop the field.
+fn render_key(template: &Template, pool: &VariablePool, what: &str) -> Result<Option<String>, NodeError> {
+    if template.source().trim().is_empty() {
+        return Ok(None);
+    }
+    let key = template.render_exposed(pool);
+    if key.trim().is_empty() {
+        return Err(NodeError::fatal(
+            "invalid_input",
+            format!("{what} name `{}` rendered empty (missing variable?)", template.source()),
+        ));
+    }
+    Ok(Some(key))
+}
+
+/// Decoded text body.
+struct DecodedText {
+    text: String,
+    /// Some bytes could not be decoded and were replaced.
+    lossy: bool,
+}
+
+/// Decode a response body as text.
+///
+/// Honours the `charset` parameter for UTF-8, ISO-8859-1 / latin-1 and windows-1252.
+/// Bodies with a textual content type are always decoded (lossily when needed); bodies
+/// with an unknown or missing type are text only when they are valid UTF-8, otherwise
+/// `None` (treated as binary).
+fn decode_text(bytes: &[u8], content_type: &str) -> Option<DecodedText> {
+    let charset = charset_of(content_type);
+    match charset.as_deref() {
+        Some("iso-8859-1" | "iso8859-1" | "latin1" | "latin-1" | "l1" | "us-ascii" | "ascii") => {
+            return Some(DecodedText { text: bytes.iter().map(|&b| char::from(b)).collect(), lossy: false });
+        }
+        Some("windows-1252" | "cp1252" | "x-cp1252") => {
+            return Some(DecodedText { text: bytes.iter().map(|&b| windows_1252_char(b)).collect(), lossy: false });
+        }
+        _ => {}
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Some(DecodedText { text: text.to_owned(), lossy: false }),
+        Err(_) if is_textual(content_type) || charset.is_some() => {
+            Some(DecodedText { text: String::from_utf8_lossy(bytes).into_owned(), lossy: true })
+        }
+        Err(_) => None,
+    }
+}
+
+/// The lower-cased `charset` parameter of a content type.
+fn charset_of(content_type: &str) -> Option<String> {
+    content_type.split(';').skip(1).find_map(|param| {
+        let (name, value) = param.split_once('=')?;
+        name.trim().eq_ignore_ascii_case("charset").then(|| value.trim().trim_matches('"').to_ascii_lowercase())
+    })
+}
+
+/// windows-1252 differs from latin-1 only in 0x80..=0x9F.
+fn windows_1252_char(b: u8) -> char {
+    const HIGH: [char; 32] = [
+        '\u{20AC}', '\u{FFFD}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}', '\u{02C6}',
+        '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{FFFD}', '\u{017D}', '\u{FFFD}', '\u{FFFD}', '\u{2018}',
+        '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}', '\u{02DC}', '\u{2122}', '\u{0161}',
+        '\u{203A}', '\u{0153}', '\u{FFFD}', '\u{017E}', '\u{0178}',
+    ];
+    match b {
+        0x80..=0x9F => HIGH.get(usize::from(b - 0x80)).copied().unwrap_or('\u{FFFD}'),
+        _ => char::from(b),
+    }
+}
+
+/// Content types that are text by definition.
+fn is_textual(content_type: &str) -> bool {
+    let ct = content_type.split(';').next().unwrap_or_default().trim();
+    ct.starts_with("text/")
+        || ct.contains("json")
+        || ct.contains("xml")
+        || ct.contains("javascript")
+        || ct == "application/x-www-form-urlencoded"
+}
+
+fn is_json_type(content_type: &str) -> bool {
+    content_type.split(';').next().unwrap_or_default().trim().contains("json")
 }
 
 fn is_binary(content_type: &str, disposition: &str) -> bool {
