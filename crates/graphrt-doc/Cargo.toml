@@ -14,13 +14,16 @@ default = ["pdf", "office", "spreadsheet", "epub", "email", "tokio"]
 # Run extraction on Tokio's blocking pool when a Tokio runtime is present.
 tokio = ["dep:tokio", "tokio/rt"]
 # PDF text extraction (pure Rust).
-pdf = ["dep:pdf-extract"]
+pdf = ["dep:pdf-extract", "dep:flate2"]
 # DOCX and PPTX (zip + XML).
 office = ["zip-formats"]
 # EPUB (zip + XHTML).
 epub = ["zip-formats"]
-# XLSX / XLS / ODS (pure Rust).
-spreadsheet = ["dep:calamine"]
+# XLSX / ODS (pure Rust). Archives and sheet dimensions are checked before parsing.
+spreadsheet = ["dep:calamine", "zip-formats"]
+# Legacy binary XLS (BIFF). Off by default: the parser loads every sheet into a
+# dense grid up front, so a crafted file can request a very large allocation.
+xls = ["spreadsheet"]
 # RFC 5322 e-mail (.eml).
 email = ["dep:mail-parser"]
 zip-formats = ["dep:zip", "dep:quick-xml"]
@@ -33,6 +36,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 encoding_rs = "0.8"
 pdf-extract = { version = "0.12", optional = true }
+# Already used by the PDF parser; used here to pre-check stream sizes.
+flate2 = { version = "1", optional = true }
 calamine = { version = "0.38", default-features = false, optional = true }
 zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
 quick-xml = { version = "0.42", optional = true }
@@ -43,6 +48,7 @@ tokio = { workspace = true, optional = true }
 futures = { workspace = true, features = ["executor"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }
+flate2 = "1"
 
 [lints]
 workspace = true

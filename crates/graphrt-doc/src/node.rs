@@ -32,6 +32,10 @@ pub struct DocLimits {
     pub max_sheets: usize,
     /// Maximum rows per sheet or CSV file.
     pub max_rows: usize,
+    /// Maximum columns of any table.
+    pub max_cols: usize,
+    /// Maximum non-empty cells per spreadsheet sheet.
+    pub max_cells: usize,
     /// Maximum zip entries.
     pub max_zip_entries: usize,
     /// Maximum total decompressed bytes from a zip container.
@@ -47,6 +51,8 @@ impl Default for DocLimits {
             max_pages: opts.max_pages,
             max_sheets: opts.max_sheets,
             max_rows: opts.max_rows,
+            max_cols: opts.max_cols,
+            max_cells: opts.max_cells,
             max_zip_entries: opts.max_zip_entries,
             max_decompressed_bytes: opts.max_decompressed_bytes,
         }
@@ -61,6 +67,8 @@ impl DocLimits {
             max_pages: self.max_pages,
             max_sheets: self.max_sheets,
             max_rows: self.max_rows,
+            max_cols: self.max_cols,
+            max_cells: self.max_cells,
             max_zip_entries: self.max_zip_entries,
             max_decompressed_bytes: self.max_decompressed_bytes,
         }
