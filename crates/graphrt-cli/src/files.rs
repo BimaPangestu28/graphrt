@@ -40,16 +40,31 @@ impl FileResolver for LocalDirResolver {
             };
             let name = file.name.clone();
             let path = self.path_for(&name, reference)?;
-            let meta = tokio::fs::metadata(&path).await.map_err(|e| match e.kind() {
+            let io = |e: std::io::Error| match e.kind() {
                 std::io::ErrorKind::NotFound => FileError::NotFound { name: name.clone() },
                 _ => FileError::Io { name: name.clone(), message: e.to_string() },
-            })?;
+            };
+            // Resolve symlinks and require the real path to stay inside the real root.
+            let root = tokio::fs::canonicalize(&self.root).await.map_err(io)?;
+            let real = tokio::fs::canonicalize(&path).await.map_err(io)?;
+            if !real.starts_with(&root) {
+                return Err(FileError::Denied { name, reason: "path escapes the files directory".into() });
+            }
+            let meta = tokio::fs::metadata(&real).await.map_err(io)?;
+            if !meta.is_file() {
+                return Err(FileError::Denied { name, reason: "not a regular file".into() });
+            }
             if meta.len() > max_bytes {
                 return Err(FileError::TooLarge { name, limit: max_bytes });
             }
-            let bytes = tokio::fs::read(&path)
-                .await
-                .map_err(|e| FileError::Io { name: name.clone(), message: e.to_string() })?;
+            // Read with a hard cap: the file may grow between the size check and the read.
+            let handle = tokio::fs::File::open(&real).await.map_err(io)?;
+            let mut bytes = Vec::new();
+            let mut limited = tokio::io::AsyncReadExt::take(handle, max_bytes.saturating_add(1));
+            tokio::io::AsyncReadExt::read_to_end(&mut limited, &mut bytes).await.map_err(io)?;
+            if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max_bytes {
+                return Err(FileError::TooLarge { name, limit: max_bytes });
+            }
             Ok(FileBytes { bytes, mime_type: file.mime_type.clone() })
         })
     }
@@ -77,6 +92,18 @@ mod tests {
         let abs = File { reference: Some("/etc/passwd".into()), ..ok.clone() };
         assert!(matches!(resolver.read(&abs, 100).await, Err(FileError::Denied { .. })));
         assert!(matches!(resolver.read(&ok, 2).await, Err(FileError::TooLarge { .. })));
+        #[cfg(unix)]
+        {
+            let outside = std::env::temp_dir().join(format!("graphrt-outside-{}", std::process::id()));
+            std::fs::write(&outside, b"secret").unwrap();
+            std::os::unix::fs::symlink(&outside, dir.join("link.txt")).unwrap();
+            let link = File { reference: Some("link.txt".into()), ..ok.clone() };
+            assert!(matches!(resolver.read(&link, 100).await, Err(FileError::Denied { .. })));
+            let _ = std::fs::remove_file(&outside);
+        }
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let sub = File { reference: Some("sub".into()), ..ok.clone() };
+        assert!(matches!(resolver.read(&sub, 100).await, Err(FileError::Denied { .. })));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
