@@ -1,1 +1,500 @@
-//! Ordered response streaming. (Implementation in progress.)
+//! Ordered response streaming.
+//!
+//! The engine emits raw events as soon as they happen: tokens from parallel
+//! LLM nodes interleave, and nodes finish in any order. A chat-style consumer
+//! wants something different: the text of each response node (`answer`, and
+//! optionally `end`) rendered in template order, with model tokens streamed
+//! through as early as it is safe to do so.
+//!
+//! [`ResponseAssembler`] is a consumer-side transducer that does exactly that:
+//!
+//! ```ignore
+//! let mut assembler = ResponseAssembler::new(engine.graph());
+//! while let Some(event) = run.next().await {
+//!     for chunk in assembler.push(&event) {
+//!         print!("{}", chunk.text);
+//!     }
+//! }
+//! ```
+//!
+//! ## Rules
+//!
+//! - Only response nodes of the **root scope** are assembled. Events from child
+//!   frames (iteration / loop bodies) are ignored, unless
+//!   [`ResponseAssembler::pass_through_unreferenced`] is enabled, in which case
+//!   their chunks are forwarded verbatim.
+//! - At most one response is *active* at a time. Responses are activated in the
+//!   order they become **certain** to execute (ties broken by topological
+//!   order). Certainty is a linear-time fixpoint over the graph — never a path
+//!   enumeration:
+//!   - a node that started or finished is certain, and so is the root entry;
+//!   - a node is certain when one incoming edge comes from a certain source and
+//!     that edge will be taken if the source succeeds: every edge of a
+//!     non-branching node (except `fail-branch` edges), or the edge matching the
+//!     handle a finished branch node selected. Node failures are not anticipated.
+//! - While a response is active, its template is drained left to right:
+//!   literal text is emitted immediately; a variable produced by a graph node
+//!   emits that node's buffered stream chunks for the variable's field as they
+//!   arrive; once the node finishes, a variable that never streamed is emitted
+//!   whole (`Value::to_text`). Variables of skipped or failed nodes render as
+//!   nothing. Variables outside graph nodes (`sys.*`, `conversation.*`, ...)
+//!   are resolved from values given via [`ResponseAssembler::with_value`] /
+//!   [`ResponseAssembler::with_pool`], or render as nothing.
+//! - `end` nodes do not stream by default (their outputs are structured data,
+//!   delivered in `RunSucceeded`). Enable [`ResponseAssembler::include_end`] to
+//!   render them as their output values joined by newlines.
+//! - A terminal run event (`RunSucceeded`, `RunFailed`, `RunAborted`) flushes
+//!   everything that can still be rendered, as does [`ResponseAssembler::finish`].
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+
+use serde::Deserialize;
+
+use crate::dsl::ErrorStrategy;
+use crate::event::Event;
+use crate::graph::{FAIL_BRANCH, Graph, NodeIx};
+use crate::node::NodeRole;
+use crate::pool::{Selector, VariablePool};
+use crate::template::{Part, Template};
+use crate::value::Value;
+
+/// A piece of ordered response text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResponseChunk {
+    /// Response node the text belongs to (or, for passed-through chunks, the
+    /// node that produced them).
+    pub node_id: String,
+    pub text: String,
+    /// `true` exactly once per response node, on an empty chunk marking that
+    /// its template is fully rendered.
+    pub is_final: bool,
+}
+
+impl ResponseChunk {
+    fn text(node_id: &str, text: String) -> Self {
+        Self { node_id: node_id.to_owned(), text, is_final: false }
+    }
+
+    fn done(node_id: &str) -> Self {
+        Self { node_id: node_id.to_owned(), text: String::new(), is_final: true }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Status {
+    Unknown,
+    Started,
+    Succeeded,
+    /// Failed but kept going through its error strategy.
+    Handled,
+    /// Failed without an error strategy: outputs never appear.
+    Failed,
+    Skipped,
+}
+
+impl Status {
+    fn finished(self) -> bool {
+        matches!(self, Status::Succeeded | Status::Handled | Status::Failed | Status::Skipped)
+    }
+}
+
+#[derive(Debug)]
+struct Response {
+    node: NodeIx,
+    id: Arc<str>,
+    parts: Vec<Part>,
+    queued: bool,
+    done: bool,
+}
+
+#[derive(Debug, Default)]
+struct StreamBuf {
+    text: String,
+}
+
+#[derive(Debug)]
+struct Active {
+    response: usize,
+    part: usize,
+    /// Byte offset already emitted from the current variable's stream buffer.
+    offset: usize,
+}
+
+#[derive(Deserialize)]
+struct EndOutput {
+    value_selector: Selector,
+}
+
+/// Turns raw run events into ordered response text. See the module docs.
+#[derive(Debug)]
+pub struct ResponseAssembler {
+    graph: Arc<Graph>,
+    responses: Vec<Response>,
+    status: Vec<Status>,
+    branch: Vec<Option<String>>,
+    /// Stream buffers keyed by `(node id, field)`, only for referenced selectors.
+    streams: HashMap<(Arc<str>, Arc<str>), StreamBuf>,
+    referenced: HashSet<(Arc<str>, Arc<str>)>,
+    pool: VariablePool,
+    queue: VecDeque<usize>,
+    active: Option<Active>,
+    emitted: String,
+    pass_through: bool,
+    include_end: bool,
+    finished: bool,
+}
+
+impl ResponseAssembler {
+    /// Build an assembler for runs of `graph`.
+    pub fn new(graph: &Arc<Graph>) -> Self {
+        let mut this = Self {
+            graph: Arc::clone(graph),
+            responses: Vec::new(),
+            status: vec![Status::Unknown; graph.nodes().len()],
+            branch: vec![None; graph.nodes().len()],
+            streams: HashMap::new(),
+            referenced: HashSet::new(),
+            pool: VariablePool::new(),
+            queue: VecDeque::new(),
+            active: None,
+            emitted: String::new(),
+            pass_through: false,
+            include_end: false,
+            finished: false,
+        };
+        this.rebuild_responses();
+        this
+    }
+
+    /// Forward chunks that no template references (and child-frame chunks) verbatim.
+    pub fn pass_through_unreferenced(mut self, enabled: bool) -> Self {
+        self.pass_through = enabled;
+        self
+    }
+
+    /// Also render `end` nodes (their outputs joined by newlines).
+    pub fn include_end(mut self, enabled: bool) -> Self {
+        self.include_end = enabled;
+        self.rebuild_responses();
+        self
+    }
+
+    /// Provide a value for a non-node variable such as `sys.query`.
+    pub fn with_value(mut self, selector: &Selector, value: Value) -> Self {
+        self.pool.set(selector, value);
+        self
+    }
+
+    /// Provide non-node variables in bulk (e.g. the run's `sys` / `conversation` values).
+    pub fn with_pool(mut self, pool: VariablePool) -> Self {
+        for (ns, name, value) in pool.iter() {
+            self.pool.insert(ns, name, value.clone());
+        }
+        self
+    }
+
+    /// All response text emitted so far, concatenated.
+    pub fn text_so_far(&self) -> &str {
+        &self.emitted
+    }
+
+    /// Feed one event; returns the response chunks it unlocks.
+    pub fn push(&mut self, event: &Event) -> Vec<ResponseChunk> {
+        let mut out = Vec::new();
+        if self.finished {
+            return out;
+        }
+        match event {
+            Event::NodeStarted { frame, node_id, .. } if frame.is_empty() => {
+                self.set_status(node_id, Status::Started);
+            }
+            Event::NodeChunk { frame, node_id, field, chunk, .. } => {
+                let key: (Arc<str>, Arc<str>) = (Arc::from(node_id.as_str()), Arc::from(field.as_str()));
+                if frame.is_empty() && self.referenced.contains(&key) {
+                    self.streams.entry(key).or_default().text.push_str(chunk);
+                } else if self.pass_through && !chunk.is_empty() {
+                    out.push(ResponseChunk::text(node_id, chunk.clone()));
+                }
+            }
+            Event::NodeSucceeded { frame, node_id, outputs, branch, .. } if frame.is_empty() => {
+                self.pool.set_outputs(node_id, outputs);
+                if let Some(ix) = self.root_node(node_id) {
+                    if let Some(b) = self.branch.get_mut(ix) {
+                        b.clone_from(branch);
+                    }
+                }
+                self.set_status(node_id, Status::Succeeded);
+            }
+            Event::NodeFailed { frame, node_id, handled, outputs, .. } if frame.is_empty() => {
+                if *handled {
+                    self.pool.set_outputs(node_id, outputs);
+                }
+                self.set_status(node_id, if *handled { Status::Handled } else { Status::Failed });
+            }
+            Event::NodeSkipped { frame, node_id } if frame.is_empty() => {
+                self.set_status(node_id, Status::Skipped);
+            }
+            Event::RunSucceeded { .. } | Event::RunFailed { .. } | Event::RunAborted { .. } => {
+                out.extend(self.finish());
+                return out;
+            }
+            _ => return out,
+        }
+        self.refresh_certainty();
+        self.drain(false, &mut out);
+        out
+    }
+
+    /// Flush: treat every pending variable as resolved and render what is
+    /// available. Idempotent.
+    pub fn finish(&mut self) -> Vec<ResponseChunk> {
+        let mut out = Vec::new();
+        if self.finished {
+            return out;
+        }
+        self.refresh_certainty();
+        self.drain(true, &mut out);
+        self.finished = true;
+        out
+    }
+
+    fn rebuild_responses(&mut self) {
+        let Some(scope) = self.graph.root_scope() else {
+            return;
+        };
+        let mut responses = Vec::new();
+        for &ix in &scope.nodes {
+            let Some(node) = self.graph.node(ix) else { continue };
+            if node.role != NodeRole::Response {
+                continue;
+            }
+            let parts = match node.kind.as_str() {
+                "answer" => node
+                    .doc
+                    .config
+                    .get("answer")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|s| Template::parse(s).parts().to_vec())
+                    .unwrap_or_default(),
+                "end" if self.include_end => end_parts(&node.doc.config),
+                _ => continue,
+            };
+            responses.push(Response { node: ix, id: node.id.clone(), parts, queued: false, done: false });
+        }
+        self.referenced = responses
+            .iter()
+            .flat_map(|r| r.parts.iter())
+            .filter_map(|p| match p {
+                Part::Var(sel) if sel.path().is_empty() => Some((Arc::from(sel.namespace()), Arc::from(sel.name()))),
+                _ => None,
+            })
+            .collect();
+        self.responses = responses;
+    }
+
+    fn root_node(&self, id: &str) -> Option<NodeIx> {
+        self.graph.index_of(id).filter(|&ix| self.graph.node(ix).is_some_and(|n| n.parent.is_none()))
+    }
+
+    fn set_status(&mut self, node_id: &str, status: Status) {
+        if let Some(ix) = self.root_node(node_id) {
+            if let Some(s) = self.status.get_mut(ix) {
+                // Never downgrade a finished node back to "started" (retries reuse the id).
+                if !(s.finished() && status == Status::Started) {
+                    *s = status;
+                }
+            }
+        }
+    }
+
+    fn status_of(&self, ix: NodeIx) -> Status {
+        self.status.get(ix).copied().unwrap_or(Status::Unknown)
+    }
+
+    /// Recompute the certain set and enqueue newly certain responses.
+    fn refresh_certainty(&mut self) {
+        let Some(scope) = self.graph.root_scope() else {
+            return;
+        };
+        let mut certain = vec![false; self.graph.nodes().len()];
+        for &ix in &scope.nodes {
+            let status = self.status_of(ix);
+            let is_certain = match status {
+                Status::Skipped => false,
+                Status::Unknown => ix == scope.entry || self.has_certain_edge(ix, &certain),
+                _ => true,
+            };
+            if let Some(c) = certain.get_mut(ix) {
+                *c = is_certain;
+            }
+        }
+        for (i, r) in self.responses.iter_mut().enumerate() {
+            if !r.queued && certain.get(r.node).copied().unwrap_or(false) {
+                r.queued = true;
+                self.queue.push_back(i);
+            }
+        }
+    }
+
+    /// Whether an incoming edge of `ix` will be taken given its (certain) source.
+    fn has_certain_edge(&self, ix: NodeIx, certain: &[bool]) -> bool {
+        self.graph.incoming(ix).iter().filter_map(|&ex| self.graph.edge(ex)).any(|edge| {
+            if !certain.get(edge.source).copied().unwrap_or(false) {
+                return false;
+            }
+            let Some(src) = self.graph.node(edge.source) else { return false };
+            let status = self.status_of(edge.source);
+            let fail_branch = matches!(src.policy.on_error, ErrorStrategy::FailBranch);
+            match status {
+                Status::Failed | Status::Skipped => false,
+                Status::Handled => !fail_branch || edge.handle.as_ref() == FAIL_BRANCH,
+                Status::Succeeded if src.role == NodeRole::Branch => {
+                    self.branch.get(edge.source).and_then(Option::as_deref) == Some(edge.handle.as_ref())
+                }
+                _ if src.role == NodeRole::Branch => false,
+                _ => edge.handle.as_ref() != FAIL_BRANCH,
+            }
+        })
+    }
+
+    /// Render as much as possible. With `flush`, pending variables are treated as resolved.
+    fn drain(&mut self, flush: bool, out: &mut Vec<ResponseChunk>) {
+        loop {
+            if self.active.is_none() {
+                match self.queue.pop_front() {
+                    Some(response) => self.active = Some(Active { response, part: 0, offset: 0 }),
+                    None => return,
+                }
+            }
+            let Some(active) = self.active.as_mut() else { return };
+            let Some(response) = self.responses.get(active.response) else {
+                self.active = None;
+                continue;
+            };
+            // A response node that ended up skipped renders nothing.
+            if self.status.get(response.node).copied() == Some(Status::Skipped) {
+                self.finish_active(None, out);
+                continue;
+            }
+            let id = Arc::clone(&response.id);
+            match response.parts.get(active.part).cloned() {
+                None => self.finish_active(Some(&id), out),
+                Some(Part::Text(text)) => {
+                    emit(&mut self.emitted, out, &id, text);
+                    active.part += 1;
+                    active.offset = 0;
+                }
+                Some(Part::Var(sel)) => {
+                    let step =
+                        resolve_var(&self.graph, &self.status, &self.streams, &self.pool, &sel, active.offset, flush);
+                    if !step.text.is_empty() {
+                        emit(&mut self.emitted, out, &id, step.text);
+                    }
+                    active.offset = step.offset;
+                    if step.complete {
+                        active.part += 1;
+                        active.offset = 0;
+                    } else {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    fn finish_active(&mut self, id: Option<&Arc<str>>, out: &mut Vec<ResponseChunk>) {
+        if let Some(active) = self.active.take() {
+            if let Some(r) = self.responses.get_mut(active.response) {
+                r.done = true;
+            }
+            if let Some(id) = id {
+                out.push(ResponseChunk::done(id));
+            }
+        }
+    }
+}
+
+struct Step {
+    text: String,
+    offset: usize,
+    complete: bool,
+}
+
+fn resolve_var(
+    graph: &Graph,
+    status: &[Status],
+    streams: &HashMap<(Arc<str>, Arc<str>), StreamBuf>,
+    pool: &VariablePool,
+    sel: &Selector,
+    offset: usize,
+    flush: bool,
+) -> Step {
+    let node_ix = graph.index_of(sel.namespace()).filter(|&ix| graph.node(ix).is_some_and(|n| n.parent.is_none()));
+    let Some(ix) = node_ix else {
+        // Not produced by a root graph node: host-provided value (or nothing).
+        return Step { text: pool.get(sel).map(|v| v.to_text()).unwrap_or_default(), offset: 0, complete: true };
+    };
+    let node_status = status.get(ix).copied().unwrap_or(Status::Unknown);
+
+    // Streamed tokens available for a whole-field reference.
+    let key = (Arc::from(sel.namespace()), Arc::from(sel.name()));
+    let buffered = if sel.path().is_empty() { streams.get(&key) } else { None };
+    let mut text = String::new();
+    let mut new_offset = offset;
+    let streamed = buffered.is_some_and(|b| !b.text.is_empty());
+    if let Some(buf) = buffered {
+        if let Some(rest) = buf.text.get(offset..) {
+            text.push_str(rest);
+            new_offset = buf.text.len();
+        }
+    }
+
+    let complete = match node_status {
+        Status::Skipped | Status::Failed => true,
+        Status::Succeeded | Status::Handled => {
+            if !streamed {
+                if let Some(v) = pool.get(sel) {
+                    text.push_str(&v.to_text());
+                }
+            }
+            true
+        }
+        Status::Unknown | Status::Started => {
+            if flush && !streamed {
+                if let Some(v) = pool.get(sel) {
+                    text.push_str(&v.to_text());
+                }
+            }
+            flush
+        }
+    };
+    Step { text, offset: new_offset, complete }
+}
+
+fn emit(emitted: &mut String, out: &mut Vec<ResponseChunk>, id: &str, text: String) {
+    if text.is_empty() {
+        return;
+    }
+    emitted.push_str(&text);
+    out.push(ResponseChunk::text(id, text));
+}
+
+fn end_parts(config: &serde_json::Map<String, serde_json::Value>) -> Vec<Part> {
+    let outputs: Vec<EndOutput> = config
+        .get("outputs")
+        .cloned()
+        .and_then(|v| serde_json::from_value::<Vec<serde_json::Value>>(v).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect();
+    let mut parts = Vec::with_capacity(outputs.len() * 2);
+    for (i, o) in outputs.into_iter().enumerate() {
+        if i > 0 {
+            parts.push(Part::Text("\n".to_owned()));
+        }
+        parts.push(Part::Var(o.value_selector));
+    }
+    parts
+}
