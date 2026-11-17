@@ -124,11 +124,68 @@ impl<'de> Deserialize<'de> for Selector {
 }
 
 type Namespace = Arc<IndexMap<Arc<str>, Value>>;
+type Shard = Arc<HashMap<Arc<str>, Namespace>>;
+
+/// Number of shards in the namespace table. Every node owns a namespace, so a
+/// large graph has many; sharding keeps a copy-on-write update proportional to
+/// one shard instead of the whole table while snapshots are shared with
+/// running nodes.
+const SHARDS: usize = 32;
+
+/// Namespace table split into [`SHARDS`] independently shared maps. Cloning is
+/// O(1); an update copies at most the shard array (`SHARDS` pointers) and one shard.
+#[derive(Clone, Default)]
+struct Table {
+    shards: Arc<[Shard; SHARDS]>,
+}
+
+/// Shard index of a namespace (FNV-1a: stable and fast for short ids).
+fn shard_of(namespace: &str) -> usize {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in namespace.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    // The remainder is below SHARDS, so the conversion cannot fail.
+    usize::try_from(hash % SHARDS as u64).unwrap_or(0)
+}
+
+impl Table {
+    #[allow(clippy::indexing_slicing)] // shard_of() < SHARDS by construction
+    fn shard(&self, namespace: &str) -> &HashMap<Arc<str>, Namespace> {
+        &self.shards[shard_of(namespace)]
+    }
+
+    /// Mutable shard holding `namespace`, copying shared structure as needed.
+    #[allow(clippy::indexing_slicing)] // shard_of() < SHARDS by construction
+    fn shard_mut(&mut self, namespace: &str) -> &mut HashMap<Arc<str>, Namespace> {
+        let shards = Arc::make_mut(&mut self.shards);
+        Arc::make_mut(&mut shards[shard_of(namespace)])
+    }
+
+    fn get(&self, namespace: &str) -> Option<&Namespace> {
+        self.shard(namespace).get(namespace)
+    }
+
+    fn entry(&mut self, namespace: &str) -> &mut Namespace {
+        self.shard_mut(namespace).entry(Arc::from(namespace)).or_default()
+    }
+
+    fn remove(&mut self, namespace: &str) {
+        if self.get(namespace).is_some() {
+            self.shard_mut(namespace).remove(namespace);
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Arc<str>, &Namespace)> {
+        self.shards.iter().flat_map(|shard| shard.iter())
+    }
+}
 
 /// Variable storage for one execution frame.
 #[derive(Clone, Default)]
 pub struct VariablePool {
-    namespaces: Arc<HashMap<Arc<str>, Namespace>>,
+    namespaces: Table,
 }
 
 impl fmt::Debug for VariablePool {
@@ -165,8 +222,7 @@ impl VariablePool {
 
     /// Set a variable by namespace and name.
     pub fn insert(&mut self, namespace: &str, name: &str, value: Value) {
-        let ns = Arc::make_mut(&mut self.namespaces).entry(Arc::from(namespace)).or_default();
-        Arc::make_mut(ns).insert(Arc::from(name), value);
+        Arc::make_mut(self.namespaces.entry(namespace)).insert(Arc::from(name), value);
     }
 
     /// Write into a nested path, creating intermediate objects as needed.
@@ -186,24 +242,20 @@ impl VariablePool {
 
     /// Remove one variable.
     pub fn remove(&mut self, selector: &Selector) -> Option<Value> {
-        if !self.namespaces.contains_key(selector.namespace()) {
+        if !self.namespaces.get(selector.namespace())?.contains_key(selector.name()) {
             return None;
         }
-        let ns = Arc::make_mut(&mut self.namespaces).get_mut(selector.namespace())?;
-        Arc::make_mut(ns).shift_remove(selector.name())
+        Arc::make_mut(self.namespaces.entry(selector.namespace())).shift_remove(selector.name())
     }
 
     /// Drop a whole namespace (e.g. a node's outputs before a loop round re-runs it).
     pub fn remove_namespace(&mut self, namespace: &str) {
-        if self.namespaces.contains_key(namespace) {
-            Arc::make_mut(&mut self.namespaces).remove(namespace);
-        }
+        self.namespaces.remove(namespace);
     }
 
     /// Bulk-insert a node's outputs.
     pub fn set_outputs(&mut self, namespace: &str, outputs: &IndexMap<String, Value>) {
-        let ns = Arc::make_mut(&mut self.namespaces).entry(Arc::from(namespace)).or_default();
-        let ns = Arc::make_mut(ns);
+        let ns = Arc::make_mut(self.namespaces.entry(namespace));
         for (k, v) in outputs {
             ns.insert(Arc::from(k.as_str()), v.clone());
         }
@@ -229,15 +281,13 @@ impl VariablePool {
     /// redacted secrets (see [`Value::redacted_secret`]).
     pub fn to_snapshot(&self) -> PoolSnapshot {
         let mut out: IndexMap<String, IndexMap<String, Value>> = IndexMap::new();
-        let mut names: Vec<&Arc<str>> = self.namespaces.keys().collect();
-        names.sort();
-        for ns in names {
+        let mut entries: Vec<(&Arc<str>, &Namespace)> = self.namespaces.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (ns, vars) in entries {
             if ns.as_ref() == ENV {
                 continue;
             }
-            if let Some(vars) = self.namespaces.get(ns) {
-                out.insert(ns.to_string(), vars.iter().map(|(k, v)| (k.to_string(), v.to_snapshot_value())).collect());
-            }
+            out.insert(ns.to_string(), vars.iter().map(|(k, v)| (k.to_string(), v.to_snapshot_value())).collect());
         }
         PoolSnapshot(out)
     }
