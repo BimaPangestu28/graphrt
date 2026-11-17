@@ -25,7 +25,9 @@ pub struct StartConfig {
 #[derive(Clone, Debug, Deserialize)]
 pub struct InputVariable {
     pub variable: String,
+    /// Display label (informational; accepted for document compatibility).
     #[serde(default)]
+    #[allow(dead_code)]
     pub label: Option<String>,
     /// Input kind: `text-input`, `paragraph`, `select`, `number`, `checkbox`,
     /// `file`, `file-list`, `json`, or any value type name (`string`, `integer`...).

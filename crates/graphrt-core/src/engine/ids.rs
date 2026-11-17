@@ -11,7 +11,12 @@ fn seed() -> u64 {
     *SEED.get_or_init(|| {
         // `RandomState` is randomly keyed per process by the standard library.
         let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-        h.write_u64(std::process::id().into());
+        // `std::process::id` is unsupported (panics) on wasm32-unknown-unknown.
+        #[cfg(not(target_arch = "wasm32"))]
+        let pid = u64::from(std::process::id());
+        #[cfg(target_arch = "wasm32")]
+        let pid = 0_u64;
+        h.write_u64(pid);
         h.finish()
     })
 }

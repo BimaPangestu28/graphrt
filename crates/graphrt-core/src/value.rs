@@ -26,6 +26,25 @@ pub const FILE_MARKER_KEY: &str = "$file";
 /// Text shown instead of a secret's contents.
 pub const SECRET_MASK: &str = "******";
 
+/// Marker key used for secrets inside snapshots: `{"$secret": "redacted"}`.
+pub const SECRET_MARKER_KEY: &str = "$secret";
+
+/// Internal contents of a redacted secret (a secret whose plaintext was not
+/// persisted). Contains NUL bytes so it can never collide with a real value.
+const REDACTED_SECRET: &str = "\u{0}graphrt:redacted-secret\u{0}";
+
+/// Error returned when a secret's plaintext is required but unavailable.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum SecretError {
+    /// The secret was restored from a snapshot without its plaintext.
+    #[error("secret is not available after resume; re-supply it in the resume input")]
+    Redacted,
+    /// The value is not a string or secret.
+    #[error("expected a secret or string, got {0}")]
+    NotText(&'static str),
+}
+
 /// A dynamic runtime value.
 #[derive(Clone, Default, PartialEq)]
 pub enum Value {
@@ -228,10 +247,67 @@ impl Value {
 
     /// Raw string contents, including secrets. Use only where the plaintext is required
     /// (e.g. an outgoing HTTP header), never for logging.
+    ///
+    /// Returns `None` for a redacted secret (see [`Value::redacted_secret`]).
     pub fn expose_secret(&self) -> Option<&str> {
         match self {
+            Value::Secret(s) if s.as_ref() == REDACTED_SECRET => None,
             Value::String(s) | Value::Secret(s) => Some(s),
             _ => None,
+        }
+    }
+
+    /// Like [`Value::expose_secret`], but explains why the plaintext is unavailable.
+    /// Nodes that must transmit a secret should use this so a redacted secret fails
+    /// loudly instead of sending an empty or masked value.
+    pub fn require_secret(&self) -> Result<&str, SecretError> {
+        match self {
+            Value::Secret(s) if s.as_ref() == REDACTED_SECRET => Err(SecretError::Redacted),
+            Value::String(s) | Value::Secret(s) => Ok(s),
+            other => Err(SecretError::NotText(other.type_name())),
+        }
+    }
+
+    /// A secret whose plaintext is not available (restored from a snapshot).
+    /// It renders masked, exposes nothing and fails [`Value::require_secret`].
+    pub fn redacted_secret() -> Value {
+        Value::Secret(Arc::from(REDACTED_SECRET))
+    }
+
+    /// Whether this is a [`Value::redacted_secret`].
+    pub fn is_redacted_secret(&self) -> bool {
+        matches!(self, Value::Secret(s) if s.as_ref() == REDACTED_SECRET)
+    }
+
+    /// Persistable form of this value: every secret (at any depth) becomes the
+    /// marker object `{"$secret": "redacted"}`, so neither plaintext nor a mask
+    /// string that could be mistaken for data is written to a snapshot.
+    pub fn to_snapshot_value(&self) -> Value {
+        match self {
+            Value::Secret(_) => Value::object([(SECRET_MARKER_KEY, Value::from("redacted"))]),
+            Value::Array(items) => Value::Array(Arc::new(items.iter().map(Value::to_snapshot_value).collect())),
+            Value::Object(map) => {
+                Value::Object(Arc::new(map.iter().map(|(k, v)| (k.clone(), v.to_snapshot_value())).collect()))
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// Inverse of [`Value::to_snapshot_value`]: secret markers become redacted secrets.
+    pub fn from_snapshot_value(self) -> Value {
+        match self {
+            Value::Object(map) => {
+                if map.len() == 1 && map.contains_key(SECRET_MARKER_KEY) {
+                    return Value::redacted_secret();
+                }
+                let map = Arc::unwrap_or_clone(map);
+                Value::Object(Arc::new(map.into_iter().map(|(k, v)| (k, v.from_snapshot_value())).collect()))
+            }
+            Value::Array(items) => {
+                let items = Arc::unwrap_or_clone(items);
+                Value::Array(Arc::new(items.into_iter().map(Value::from_snapshot_value).collect()))
+            }
+            other => other,
         }
     }
 
@@ -352,15 +428,32 @@ impl Value {
 
     /// Like [`Value::to_text`], but reveals secrets. Only for nodes that must transmit
     /// the plaintext (HTTP auth headers, code sandbox inputs).
+    /// A redacted secret renders as empty text.
     pub fn to_text_exposed(&self) -> String {
         match self {
+            Value::Secret(s) if s.as_ref() == REDACTED_SECRET => String::new(),
             Value::Secret(s) => s.to_string(),
             other => other.to_text(),
         }
     }
 
-    /// Convert from a JSON value. Objects carrying the [`FILE_MARKER_KEY`] become files.
+    /// Convert from an **untrusted** JSON value (HTTP bodies, tool results, model
+    /// output). Never creates [`Value::File`]: objects with a [`FILE_MARKER_KEY`]
+    /// stay plain objects, so remote data cannot forge file references.
     pub fn from_json(json: serde_json::Value) -> Value {
+        json_to_value(json, false)
+    }
+
+    /// Convert from **trusted** JSON (snapshots, host-supplied inputs). Objects
+    /// carrying the [`FILE_MARKER_KEY`] that decode as a [`File`] become files.
+    /// The [`Deserialize`] impl of [`Value`] follows the same trusted rule.
+    pub fn from_json_trusted(json: serde_json::Value) -> Value {
+        json_to_value(json, true)
+    }
+}
+
+fn json_to_value(json: serde_json::Value, trusted: bool) -> Value {
+    {
         match json {
             serde_json::Value::Null => Value::Null,
             serde_json::Value::Bool(b) => Value::Bool(b),
@@ -370,27 +463,31 @@ impl Value {
             },
             serde_json::Value::String(s) => Value::String(Arc::from(s)),
             serde_json::Value::Array(items) => {
-                Value::Array(Arc::new(items.into_iter().map(Value::from_json).collect()))
+                Value::Array(Arc::new(items.into_iter().map(|v| json_to_value(v, trusted)).collect()))
             }
             serde_json::Value::Object(map) => {
-                if map.contains_key(FILE_MARKER_KEY) {
+                if trusted && map.contains_key(FILE_MARKER_KEY) {
                     if let Ok(file) = serde_json::from_value::<File>(serde_json::Value::Object(map.clone())) {
                         return Value::File(Arc::new(file));
                     }
                 }
-                Value::Object(Arc::new(map.into_iter().map(|(k, v)| (k, Value::from_json(v))).collect()))
+                Value::Object(Arc::new(map.into_iter().map(|(k, v)| (k, json_to_value(v, trusted))).collect()))
             }
         }
     }
+}
 
+impl Value {
     /// Convert to a JSON value. Secrets are masked.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
     }
 
     /// Convert to JSON revealing secrets. Only for trusted sinks such as a code sandbox.
+    /// A redacted secret becomes `null`.
     pub fn to_json_exposed(&self) -> serde_json::Value {
         match self {
+            Value::Secret(s) if s.as_ref() == REDACTED_SECRET => serde_json::Value::Null,
             Value::Secret(s) => serde_json::Value::String(s.to_string()),
             Value::Array(items) => serde_json::Value::Array(items.iter().map(Value::to_json_exposed).collect()),
             Value::Object(map) => {
@@ -689,8 +786,28 @@ mod tests {
         let f = File { marker: true, name: "a.png".into(), kind: FileKind::Image, ..File::default() };
         let v = Value::from(f.clone());
         let json = serde_json::to_value(&v).ok();
-        let back = json.map(Value::from_json);
+        let back = json.clone().map(Value::from_json_trusted);
         assert_eq!(back, Some(Value::File(Arc::new(f))));
+        // Untrusted JSON never forges files.
+        let untrusted = json.map(Value::from_json);
+        assert!(matches!(untrusted, Some(Value::Object(_))));
+    }
+
+    #[test]
+    fn secrets_survive_snapshot_form_as_redacted() {
+        let v = Value::object([("k", Value::Secret(Arc::from("sk-1"))), ("n", Value::Int(1))]);
+        let snap = v.to_snapshot_value();
+        let text = serde_json::to_string(&snap).unwrap();
+        assert!(!text.contains("sk-1"));
+        assert!(text.contains("\"$secret\""));
+        let back: Value = serde_json::from_str::<Value>(&text).unwrap().from_snapshot_value();
+        let k = back.get_path(&["k"]).unwrap();
+        assert!(k.is_redacted_secret());
+        assert_eq!(k.expose_secret(), None);
+        assert_eq!(k.require_secret(), Err(SecretError::Redacted));
+        assert_eq!(k.to_text(), SECRET_MASK);
+        assert_eq!(k.to_text_exposed(), "");
+        assert_eq!(back.get_path(&["n"]), Some(Value::Int(1)));
     }
 
     #[test]

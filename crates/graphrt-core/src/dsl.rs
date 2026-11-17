@@ -37,10 +37,12 @@ use crate::value::{Value, ValueType};
 
 /// Error raised while decoding a workflow document.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DocumentError {
     #[error("invalid JSON workflow document: {0}")]
     Json(#[from] serde_json::Error),
-    #[cfg(feature = "yaml")]
+    /// Only produced when the `yaml` feature is enabled (the variant always exists
+    /// so enabling the feature never breaks downstream matches).
     #[error("invalid YAML workflow document: {0}")]
     Yaml(String),
     #[error("invalid node `{id}`: {message}")]
@@ -85,11 +87,14 @@ pub struct GraphDoc {
 }
 
 /// One node. Node-specific settings live in `config`.
-#[derive(Clone, Debug, Serialize)]
+///
+/// Serializes to the flat layout the loader accepts (`id`, `type`, `title`,
+/// `parent`, `on_error`, `retry`, `timeout_ms`, then the config keys), so a
+/// document survives a serialize / parse round trip unchanged.
+#[derive(Clone, Debug)]
 pub struct NodeDoc {
     pub id: String,
     /// Node kind, e.g. `llm`, `if-else`, `http-request`.
-    #[serde(rename = "type")]
     pub kind: String,
     pub title: Option<String>,
     /// Owning container (iteration / loop) for nodes inside a container body.
@@ -148,6 +153,7 @@ pub struct NodePolicy {
 /// What happens when a node fails after exhausting retries.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "strategy", rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum ErrorStrategy {
     /// Fail the frame (and the run, unless a container handles it).
     #[default]
@@ -379,6 +385,7 @@ fn extract_policy(id: &str, obj: &mut serde_json::Map<String, serde_json::Value>
     } else if let Some(serde_json::Value::String(strategy)) = obj.remove("error_strategy") {
         policy.on_error = match strategy.as_str() {
             "fail-branch" => ErrorStrategy::FailBranch,
+            "" | "none" | "fail" => ErrorStrategy::Fail,
             "default-value" => {
                 // Accept `[{key, type, value}]` lists or plain maps.
                 let values = match obj.remove("default_value") {
@@ -398,7 +405,14 @@ fn extract_policy(id: &str, obj: &mut serde_json::Map<String, serde_json::Value>
                 };
                 ErrorStrategy::DefaultValue { values }
             }
-            _ => ErrorStrategy::Fail,
+            other => {
+                return Err(DocumentError::Node {
+                    id: id.to_owned(),
+                    message: format!(
+                        "unknown error_strategy `{other}` (expected `fail`, `fail-branch` or `default-value`)"
+                    ),
+                });
+            }
         };
     }
     obj.remove("default_value");
@@ -416,8 +430,17 @@ fn extract_policy(id: &str, obj: &mut serde_json::Map<String, serde_json::Value>
             policy.retry.interval_ms = cfg.get("retry_interval").and_then(serde_json::Value::as_u64).unwrap_or(0);
         }
     }
-    if let Some(v) = obj.remove("timeout_ms") {
-        policy.timeout_ms = v.as_u64();
+    match obj.remove("timeout_ms") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(v) => match v.as_u64() {
+            Some(ms) => policy.timeout_ms = Some(ms),
+            None => {
+                return Err(DocumentError::Node {
+                    id: id.to_owned(),
+                    message: format!("timeout_ms must be a non-negative integer number of milliseconds, got {v}"),
+                });
+            }
+        },
     }
     for k in POLICY_KEYS {
         obj.remove(*k);
@@ -505,5 +528,110 @@ mod tests {
         let cfg = &doc.graph.nodes[0].config;
         assert_eq!(cfg.get("label"), Some(&serde_json::json!("n")));
         assert_eq!(cfg.get("flag"), Some(&serde_json::json!(true)));
+    }
+}
+
+impl Serialize for NodeDoc {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{Error as _, SerializeMap};
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("id", &self.id)?;
+        map.serialize_entry("type", &self.kind)?;
+        if let Some(title) = &self.title {
+            map.serialize_entry("title", title)?;
+        }
+        if let Some(parent) = &self.parent {
+            map.serialize_entry("parent", parent)?;
+        }
+        if self.policy.on_error != ErrorStrategy::Fail {
+            map.serialize_entry("on_error", &self.policy.on_error)?;
+        }
+        if self.policy.retry != RetryPolicy::default() {
+            map.serialize_entry("retry", &self.policy.retry)?;
+        }
+        if let Some(ms) = self.policy.timeout_ms {
+            map.serialize_entry("timeout_ms", &ms)?;
+        }
+        for (key, value) in &self.config {
+            if matches!(key.as_str(), "id" | "type" | "title" | "parent") || POLICY_KEYS.contains(&key.as_str()) {
+                return Err(S::Error::custom(format!("node `{}`: config key `{key}` is reserved", self.id)));
+            }
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
+impl Workflow {
+    /// Serialize to JSON in the same layout [`Workflow::from_json`] accepts.
+    pub fn to_json(&self) -> Result<String, DocumentError> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Canonical JSON of the graph section (object keys sorted recursively).
+    /// Used for fingerprints, so key order in the source document does not matter.
+    pub fn canonical_graph_json(&self) -> Result<String, DocumentError> {
+        let value = serde_json::to_value(&self.graph)?;
+        Ok(serde_json::to_string(&canonicalize(value))?)
+    }
+}
+
+/// Recursively sort object keys.
+fn canonicalize(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<(String, serde_json::Value)> = map.into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            serde_json::Value::Object(entries.into_iter().map(|(k, v)| (k, canonicalize(v))).collect())
+        }
+        serde_json::Value::Array(items) => serde_json::Value::Array(items.into_iter().map(canonicalize).collect()),
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod roundtrip_tests {
+    use super::*;
+
+    const DOC: &str = r#"{"name":"demo","env":[{"name":"K","type":"secret"}],"graph":{"nodes":[
+        {"id":"s","type":"start","variables":[]},
+        {"id":"h","type":"custom","data":{"type":"http-request","title":"Call","url":"https://x",
+          "error_strategy":"default-value","default_value":{"body":"none"},
+          "retry_config":{"retry_enabled":true,"max_retries":2,"retry_interval":10},"timeout_ms":500}},
+        {"id":"b","type":"code","parentId":"it"}],
+        "edges":[{"source":"s","target":"h","sourceHandle":"source"}]}}"#;
+
+    #[test]
+    fn workflow_round_trips() {
+        let a = Workflow::from_json(DOC).unwrap();
+        let text = a.to_json().unwrap();
+        let b = Workflow::from_json(&text).unwrap();
+        assert_eq!(text, b.to_json().unwrap());
+        let h = &b.graph.nodes[1];
+        assert_eq!(h.kind, "http-request");
+        assert_eq!(h.title.as_deref(), Some("Call"));
+        assert_eq!(h.policy, a.graph.nodes[1].policy);
+        assert_eq!(h.policy.timeout_ms, Some(500));
+        assert_eq!(h.config.get("url"), Some(&serde_json::json!("https://x")));
+        assert!(!h.config.contains_key("config"));
+        assert_eq!(b.graph.nodes[2].parent.as_deref(), Some("it"));
+        assert_eq!(a.canonical_graph_json().unwrap(), b.canonical_graph_json().unwrap());
+    }
+
+    #[test]
+    fn canonical_json_ignores_key_order() {
+        let a = Workflow::from_json(r#"{"graph":{"nodes":[{"id":"s","type":"start","x":1,"y":2}],"edges":[]}}"#);
+        let b = Workflow::from_json(r#"{"graph":{"nodes":[{"y":2,"x":1,"type":"start","id":"s"}],"edges":[]}}"#);
+        assert_eq!(a.unwrap().canonical_graph_json().unwrap(), b.unwrap().canonical_graph_json().unwrap());
+    }
+
+    #[test]
+    fn typos_are_errors() {
+        let bad_strategy = r#"{"graph":{"nodes":[{"id":"s","type":"start","error_strategy":"fail-brnch"}]}}"#;
+        assert!(matches!(Workflow::from_json(bad_strategy), Err(DocumentError::Node { .. })));
+        let bad_timeout = r#"{"graph":{"nodes":[{"id":"s","type":"start","timeout_ms":"5s"}]}}"#;
+        assert!(matches!(Workflow::from_json(bad_timeout), Err(DocumentError::Node { .. })));
+        let none = r#"{"graph":{"nodes":[{"id":"s","type":"start","error_strategy":"none"}]}}"#;
+        assert!(Workflow::from_json(none).is_ok());
     }
 }

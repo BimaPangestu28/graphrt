@@ -53,6 +53,7 @@ pub struct PauseReason {
 /// A run event.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Event {
     RunStarted {
         run_id: String,
@@ -143,6 +144,12 @@ pub enum Event {
     },
     RunFailed {
         error: String,
+        /// Machine-readable category: `invalid_input` (bad run input or resume
+        /// data), `snapshot_mismatch`, `limit_exceeded` (steps / duration / depth),
+        /// `internal`, or the failing node's own error type (e.g. `timeout`,
+        /// `http`, `model`).
+        #[serde(default)]
+        error_type: String,
         usage: Usage,
         elapsed_ms: u64,
     },

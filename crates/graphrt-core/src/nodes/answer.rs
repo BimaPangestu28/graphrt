@@ -28,11 +28,6 @@ impl AnswerNode {
     pub fn new(config: AnswerConfig) -> Self {
         Self { config }
     }
-
-    /// The parsed answer template (used for ordered response streaming).
-    pub fn template(&self) -> &Template {
-        &self.config.answer
-    }
 }
 
 impl Node for AnswerNode {

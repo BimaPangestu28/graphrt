@@ -96,7 +96,7 @@ impl Node for IfElseNode {
     }
 
     fn inputs(&self) -> Vec<Selector> {
-        self.cases.iter().flat_map(|c| c.conditions.iter().map(|x| x.variable_selector.clone())).collect()
+        self.cases.iter().flat_map(|c| c.conditions.iter().flat_map(Condition::selectors)).collect()
     }
 }
 

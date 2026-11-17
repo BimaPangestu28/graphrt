@@ -52,6 +52,7 @@ pub struct FrameSnapshot {
 /// Lifecycle state of a node inside a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum NodeStatus {
     /// Ready to run (or was running when the frame paused and must be re-run).
     Pending,
@@ -77,6 +78,7 @@ pub struct NodeSnapshot {
 /// Traversal state of an edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum EdgeStatus {
     Unknown,
     Taken,

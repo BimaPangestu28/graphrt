@@ -36,8 +36,16 @@ pub use pool::{Selector, VariablePool};
 pub use snapshot::Snapshot;
 pub use value::{Value, ValueType};
 
+/// Re-exported so hosts use the same `IndexMap` version as the public API.
+pub use indexmap;
+/// Ordered map used throughout the public API.
+pub use indexmap::IndexMap;
+/// Re-exported so hosts use the same `serde_json` version as the public API.
+pub use serde_json;
+
 /// Top-level error type.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error(transparent)]
     Document(#[from] dsl::DocumentError),

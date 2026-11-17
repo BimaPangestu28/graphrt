@@ -180,7 +180,7 @@ impl RunInput {
 
     /// Resume from a snapshot.
     pub fn resume(mut self, snapshot: Snapshot, inputs: IndexMap<String, Value>) -> Self {
-        self.resume = Some(ResumeFrom { snapshot, inputs });
+        self.resume = Some(ResumeFrom::new(snapshot, inputs));
         self
     }
 }
@@ -193,6 +193,26 @@ pub struct ResumeFrom {
     /// `"<frame>/<node_id>"` for one specific frame or by plain node id for any
     /// frame. Root-frame nodes use the plain node id.
     pub inputs: IndexMap<String, Value>,
+    /// Plaintext for secrets outside `env.*` (e.g. secret-typed start inputs or
+    /// conversation variables), keyed by dotted selector (`"start.api_key"`).
+    /// Snapshots never store secret plaintext: such values are restored as
+    /// redacted secrets ([`Value::redacted_secret`]) and nodes that need them fail
+    /// until they are re-supplied here. Only selectors that currently hold a
+    /// redacted secret are overwritten.
+    pub secrets: IndexMap<String, Value>,
+}
+
+impl ResumeFrom {
+    /// Resume `snapshot` with host input for paused nodes.
+    pub fn new(snapshot: Snapshot, inputs: IndexMap<String, Value>) -> Self {
+        Self { snapshot, inputs, secrets: IndexMap::new() }
+    }
+
+    /// Re-supply a secret that is not an environment variable.
+    pub fn secret(mut self, selector: impl Into<String>, value: impl Into<String>) -> Self {
+        self.secrets.insert(selector.into(), Value::Secret(Arc::from(value.into())));
+        self
+    }
 }
 
 /// Executes runs of one graph.
@@ -262,6 +282,7 @@ impl Engine {
         }
         last.unwrap_or(Event::RunFailed {
             error: "run produced no events".to_owned(),
+            error_type: "internal".to_owned(),
             usage: Default::default(),
             elapsed_ms: 0,
         })
@@ -327,7 +348,7 @@ impl Stream for RunStream {
 }
 
 /// Controls a running run. Cheap to clone, `Send + Sync`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RunHandle {
     control: Arc<Control>,
 }

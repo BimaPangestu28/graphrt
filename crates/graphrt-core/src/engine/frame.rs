@@ -26,9 +26,9 @@ use crate::event::{Event, FrameId, PauseReason, Usage};
 use crate::graph::{EdgeIx, FAIL_BRANCH, Graph, NodeIx};
 use crate::node::{
     Clock, EventSink, Node, NodeContext, NodeError, NodeOutcome, NodeOutput, NodeResult, NodeRole, PauseRequest,
-    Resume, Services, Subgraph, SubgraphRequest, SubgraphResult,
+    Resume, Services, Subgraph, SubgraphRequest, SubgraphResult, merge_writes,
 };
-use crate::pool::{ENV, Selector, VariablePool};
+use crate::pool::{ENV, SYS, Selector, VariablePool};
 use crate::snapshot::{EdgeStatus, FrameSnapshot, NodeSnapshot, NodeStatus};
 use crate::value::Value;
 
@@ -51,6 +51,8 @@ pub(crate) struct RunShared {
     pub(crate) usage: Mutex<Usage>,
     /// Environment variables re-applied to every restored frame (snapshots exclude them).
     pub(crate) env: Vec<(String, Value)>,
+    /// Re-supplied plaintext for redacted secrets outside `env` (see `ResumeFrom::secrets`).
+    pub(crate) secrets: Vec<(Selector, Value)>,
     /// Host input for paused nodes, keyed by `"<frame>/<node_id>"` or plain node id.
     pub(crate) resume_inputs: IndexMap<String, Value>,
 }
@@ -196,9 +198,17 @@ impl Frame {
         for (name, value) in &run.env {
             pool.insert(ENV, name, value.clone());
         }
+        for (selector, value) in &run.secrets {
+            if pool.get(selector).is_some_and(|v| v.is_redacted_secret()) {
+                // The selector exists, so the write cannot fail on a missing index.
+                if pool.set_path(selector, value.clone()).is_err() {
+                    continue;
+                }
+            }
+        }
         let mut frame = Self::empty(run, id, owner, depth, pool)?;
-        frame.outputs = snapshot.outputs;
-        frame.writes = snapshot.writes;
+        frame.outputs = snapshot.outputs.into_iter().map(|(k, v)| (k, v.from_snapshot_value())).collect();
+        frame.writes = snapshot.writes.into_iter().map(|(s, v)| (s, v.from_snapshot_value())).collect();
         frame.broke = snapshot.broke;
         frame.usage = snapshot.usage;
         let graph = frame.run.graph.clone();
@@ -341,7 +351,11 @@ impl Frame {
 
     fn apply_external_updates(&mut self) {
         for (selector, value) in self.run.control.take_updates() {
-            self.pool.set_path(&selector, value.clone());
+            // An update addressing a missing array index cannot be applied; it is
+            // dropped without a `VariableUpdated` event.
+            if self.pool.set_path(&selector, value.clone()).is_err() {
+                continue;
+            }
             self.run.emit(Event::VariableUpdated { frame: self.id.clone(), node_id: String::new(), selector, value });
         }
     }
@@ -402,8 +416,8 @@ impl Frame {
             pool: self.pool.to_snapshot(),
             nodes,
             edges,
-            outputs: self.outputs.clone(),
-            writes: self.writes.clone(),
+            outputs: self.outputs.iter().map(|(k, v)| (k.clone(), v.to_snapshot_value())).collect(),
+            writes: self.writes.iter().map(|(s, v)| (s.clone(), v.to_snapshot_value())).collect(),
             broke: self.broke,
             usage: self.usage,
         }
@@ -459,7 +473,7 @@ impl Frame {
             let mut attempt: u32 = 1;
             loop {
                 if !run.take_step() {
-                    let error = NodeError::fatal("limit", "step limit exceeded");
+                    let error = NodeError::fatal("limit_exceeded", "step limit exceeded");
                     return TaskDone { ix, attempt, result: Err(error), elapsed_ms: 0 };
                 }
                 let deadline_ms = match timeout_ms {
@@ -533,8 +547,7 @@ impl Frame {
                     let error = NodeError::fatal("invalid_branch", "branch node completed without selecting a branch");
                     return self.on_error(ix, error, elapsed_ms);
                 }
-                self.on_success(ix, output, elapsed_ms);
-                None
+                self.on_success(ix, output, elapsed_ms)
             }
             Ok(NodeOutcome::Paused(request)) => {
                 self.on_paused(ix, request);
@@ -554,11 +567,13 @@ impl Frame {
         }
     }
 
-    fn on_success(&mut self, ix: NodeIx, output: NodeOutput, elapsed_ms: u64) {
+    fn on_success(&mut self, ix: NodeIx, output: NodeOutput, elapsed_ms: u64) -> Option<FrameOutcome> {
         let graph = self.run.graph.clone();
-        let Some(gn) = graph.node(ix) else { return };
+        let gn = graph.node(ix)?;
         let node_id = gn.id.to_string();
-        self.commit(ix, &output.outputs, &output.writes);
+        if let Err(error) = self.commit(ix, &output.outputs, &output.writes) {
+            return self.on_error(ix, error, elapsed_ms);
+        }
         if let Some(usage) = &output.usage {
             self.usage.add(usage);
             if gn.role != NodeRole::Container {
@@ -586,6 +601,7 @@ impl Frame {
             (NodeRole::Branch, Some(handle)) => self.traverse(ix, |h| h == handle),
             _ => self.traverse(ix, |h| h != FAIL_BRANCH),
         }
+        None
     }
 
     fn on_paused(&mut self, ix: NodeIx, request: PauseRequest) {
@@ -637,13 +653,17 @@ impl Frame {
             ErrorStrategy::Fail => Some(FrameOutcome::Failed { error, usage: self.usage }),
             ErrorStrategy::FailBranch => {
                 self.run.handled_errors.fetch_add(1, Ordering::AcqRel);
-                self.commit(ix, &outputs, &[]);
+                if let Err(error) = self.commit(ix, &outputs, &[]) {
+                    return Some(FrameOutcome::Failed { error, usage: self.usage });
+                }
                 self.traverse(ix, |h| h == FAIL_BRANCH);
                 None
             }
             ErrorStrategy::DefaultValue { values } => {
                 self.run.handled_errors.fetch_add(1, Ordering::AcqRel);
-                self.commit(ix, &outputs, &[]);
+                if let Err(error) = self.commit(ix, &outputs, &[]) {
+                    return Some(FrameOutcome::Failed { error, usage: self.usage });
+                }
                 if gn.role == NodeRole::Branch {
                     // Branch nodes follow the handle named by the `branch` default, if any;
                     // otherwise every outgoing path is skipped.
@@ -658,14 +678,33 @@ impl Frame {
     }
 
     /// Store outputs under the node namespace and apply its variable writes.
-    fn commit(&mut self, ix: NodeIx, outputs: &IndexMap<String, Value>, writes: &[(Selector, Value)]) {
+    ///
+    /// All-or-nothing: writes to `sys.*` / `env.*` (host-owned) and writes to
+    /// out-of-range array indexes are rejected before anything is committed.
+    fn commit(
+        &mut self,
+        ix: NodeIx,
+        outputs: &IndexMap<String, Value>,
+        writes: &[(Selector, Value)],
+    ) -> Result<(), NodeError> {
         let node_id = self.node_id(ix);
-        self.pool.set_outputs(&node_id, outputs);
+        let mut pool = self.pool.clone(); // cheap copy-on-write clone
+        pool.set_outputs(&node_id, outputs);
         for (selector, value) in writes {
-            self.pool.set_path(selector, value.clone());
-            if !self.scope_ids.contains(selector.namespace()) {
-                self.writes.push((selector.clone(), value.clone()));
+            let namespace = selector.namespace();
+            if namespace == SYS || namespace == ENV {
+                return Err(NodeError::fatal(
+                    "forbidden_write",
+                    format!("nodes may not write `{selector}`: `{namespace}` variables are owned by the host"),
+                ));
             }
+            pool.set_path(selector, value.clone()).map_err(|e| NodeError::fatal("invalid_write", e.to_string()))?;
+        }
+        self.pool = pool;
+        let external: Vec<(Selector, Value)> =
+            writes.iter().filter(|(selector, _)| !self.scope_ids.contains(selector.namespace())).cloned().collect();
+        merge_writes(&mut self.writes, external);
+        for (selector, value) in writes {
             self.run.emit(Event::VariableUpdated {
                 frame: self.id.clone(),
                 node_id: node_id.clone(),
@@ -673,6 +712,7 @@ impl Frame {
                 value: value.clone(),
             });
         }
+        Ok(())
     }
 
     /// Resolve every outgoing edge of `ix` (taken when `take(handle)`), then
@@ -790,7 +830,7 @@ impl Subgraph for ScopeRunner {
             if depth > self.run.limits.max_depth {
                 return SubgraphResult::Failed {
                     error: NodeError::fatal(
-                        "limit",
+                        "limit_exceeded",
                         format!("container nesting depth limit of {} exceeded", self.run.limits.max_depth),
                     ),
                     usage: Usage::default(),

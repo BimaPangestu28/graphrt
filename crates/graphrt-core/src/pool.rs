@@ -169,15 +169,19 @@ impl VariablePool {
         Arc::make_mut(ns).insert(Arc::from(name), value);
     }
 
-    /// Write into a nested object path, creating intermediate objects as needed.
-    pub fn set_path(&mut self, selector: &Selector, value: Value) {
+    /// Write into a nested path, creating intermediate objects as needed.
+    /// Array elements are addressed by index; writing past the end of an array
+    /// is an error (nothing is written).
+    pub fn set_path(&mut self, selector: &Selector, value: Value) -> Result<(), PathError> {
         if selector.path().is_empty() {
             self.set(selector, value);
-            return;
+            return Ok(());
         }
         let current = self.get(&selector.root()).unwrap_or(Value::Null);
-        let updated = write_path(current, selector.path(), value);
+        let updated = write_path(current, selector.path(), value)
+            .map_err(|index| PathError { selector: selector.to_string(), index })?;
         self.set(selector, updated);
+        Ok(())
     }
 
     /// Remove one variable.
@@ -220,7 +224,9 @@ impl VariablePool {
     }
 
     /// Serializable form for snapshots. The [`ENV`] namespace is excluded: the host
-    /// must supply environment variables and secrets again on resume.
+    /// must supply environment variables again on resume. Secrets in other
+    /// namespaces are stored as `{"$secret": "redacted"}` markers and restored as
+    /// redacted secrets (see [`Value::redacted_secret`]).
     pub fn to_snapshot(&self) -> PoolSnapshot {
         let mut out: IndexMap<String, IndexMap<String, Value>> = IndexMap::new();
         let mut names: Vec<&Arc<str>> = self.namespaces.keys().collect();
@@ -230,7 +236,7 @@ impl VariablePool {
                 continue;
             }
             if let Some(vars) = self.namespaces.get(ns) {
-                out.insert(ns.to_string(), vars.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
+                out.insert(ns.to_string(), vars.iter().map(|(k, v)| (k.to_string(), v.to_snapshot_value())).collect());
             }
         }
         PoolSnapshot(out)
@@ -241,7 +247,7 @@ impl VariablePool {
         let mut pool = Self::new();
         for (ns, vars) in snapshot.0 {
             for (k, v) in vars {
-                pool.insert(&ns, &k, v);
+                pool.insert(&ns, &k, v.from_snapshot_value());
             }
         }
         pool
@@ -266,28 +272,37 @@ impl VariablePool {
 #[serde(transparent)]
 pub struct PoolSnapshot(pub IndexMap<String, IndexMap<String, Value>>);
 
-fn write_path(current: Value, path: &[Arc<str>], value: Value) -> Value {
+/// Error writing a nested path.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("cannot write `{selector}`: array index {index} is out of range")]
+pub struct PathError {
+    pub selector: String,
+    pub index: usize,
+}
+
+/// Returns the out-of-range index on failure.
+fn write_path(current: Value, path: &[Arc<str>], value: Value) -> Result<Value, usize> {
     let Some((head, rest)) = path.split_first() else {
-        return value;
+        return Ok(value);
     };
     match current {
         Value::Array(items) if head.parse::<usize>().is_ok() => {
             let idx = head.parse::<usize>().unwrap_or(0);
             let mut items = Arc::unwrap_or_clone(items);
-            if let Some(slot) = items.get_mut(idx) {
-                let old = std::mem::take(slot);
-                *slot = write_path(old, rest, value);
-            }
-            Value::Array(Arc::new(items))
+            let slot = items.get_mut(idx).ok_or(idx)?;
+            let old = std::mem::take(slot);
+            *slot = write_path(old, rest, value)?;
+            Ok(Value::Array(Arc::new(items)))
         }
         other => {
             let mut map = match other {
                 Value::Object(m) => Arc::unwrap_or_clone(m),
                 _ => IndexMap::new(),
             };
-            let old = map.shift_remove(head.as_ref()).unwrap_or(Value::Null);
-            map.insert(head.to_string(), write_path(old, rest, value));
-            Value::Object(Arc::new(map))
+            // Take the old value in place so the key keeps its position.
+            let old = map.get_mut(head.as_ref()).map(std::mem::take).unwrap_or(Value::Null);
+            map.insert(head.to_string(), write_path(old, rest, value)?);
+            Ok(Value::Object(Arc::new(map)))
         }
     }
 }
@@ -326,7 +341,11 @@ mod tests {
     #[test]
     fn nested_get_and_set() {
         let mut p = VariablePool::new();
-        p.set_path(&sel("n.obj.a.b"), Value::from("deep"));
+        p.set_path(&sel("n.obj.a.b"), Value::from("deep")).unwrap();
+        p.insert("n", "list", Value::from_json(serde_json::json!([1, 2])));
+        p.set_path(&sel("n.list.1"), Value::Int(9)).unwrap();
+        assert_eq!(p.get(&sel("n.list")), Some(Value::from_json(serde_json::json!([1, 9]))));
+        assert!(p.set_path(&sel("n.list.5"), Value::Int(9)).is_err());
         assert_eq!(p.get(&sel("n.obj.a.b")), Some(Value::from("deep")));
         assert_eq!(p.get(&sel("n.obj.missing")), None);
     }

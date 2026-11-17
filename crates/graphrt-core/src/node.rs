@@ -24,6 +24,7 @@ use crate::value::Value;
 
 /// How the scheduler treats a node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NodeRole {
     /// Entry point of the root graph.
     Root,
@@ -191,9 +192,28 @@ pub trait Node: Send + Sync + fmt::Debug {
     /// Execute the node. Dropping the returned future cancels the node.
     fn run(&self, ctx: NodeContext) -> BoxFuture<'_, NodeResult>;
 
-    /// Selectors this node reads, used for validation and observability. Optional.
+    /// Selectors this node reads. [`crate::graph::Graph::build`] rejects selectors
+    /// whose namespace is neither a node id nor `sys` / `env` / `conversation`
+    /// (catching typos at load time) and warns about references into other
+    /// container bodies. Return every selector the node may read, including
+    /// placeholders inside templates.
     fn inputs(&self) -> Vec<Selector> {
         Vec::new()
+    }
+}
+
+/// Append `new` writes to `acc`, keeping only the latest write per exact selector.
+///
+/// An earlier write to the same selector is removed and the new one is appended
+/// at the end, so replaying `acc` in order still yields the same final state
+/// while its length stays bounded by the number of distinct selectors (no
+/// quadratic growth across loop rounds or iteration items).
+pub fn merge_writes(acc: &mut Vec<(Selector, Value)>, new: impl IntoIterator<Item = (Selector, Value)>) {
+    for (selector, value) in new {
+        if let Some(pos) = acc.iter().position(|(s, _)| *s == selector) {
+            acc.remove(pos);
+        }
+        acc.push((selector, value));
     }
 }
 
@@ -302,8 +322,21 @@ impl Clock for TokioClock {
     fn now_ms(&self) -> u64 {
         NoTimerClock.now_ms()
     }
+    /// Outside a Tokio runtime this completes immediately instead of panicking
+    /// (and [`Clock::supports_timers`] reports `false`, so timeouts are not
+    /// enforced). Inside a runtime, the runtime must have its time driver enabled
+    /// (`enable_time()` / `enable_all()`).
     fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
-        Box::pin(tokio::time::sleep(duration))
+        if tokio::runtime::Handle::try_current().is_ok() {
+            Box::pin(tokio::time::sleep(duration))
+        } else {
+            Box::pin(futures::future::ready(()))
+        }
+    }
+
+    /// `true` only when called from inside a Tokio runtime.
+    fn supports_timers(&self) -> bool {
+        tokio::runtime::Handle::try_current().is_ok()
     }
 }
 

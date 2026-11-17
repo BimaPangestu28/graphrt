@@ -16,7 +16,7 @@ yaml = ["dep:serde-saphyr"]
 # Jinja2-compatible template-transform node (sandboxed minijinja with fuel limits).
 jinja = ["dep:minijinja"]
 # Tokio-backed clock (timers for retries and timeouts). The engine itself never requires tokio.
-tokio = ["dep:tokio", "tokio/time"]
+tokio = ["dep:tokio", "tokio/time", "tokio/rt"]
 
 [dependencies]
 futures.workspace = true
@@ -30,6 +30,7 @@ tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
+futures = { workspace = true, features = ["executor"] }
 
 [lints]
 workspace = true
