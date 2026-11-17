@@ -24,6 +24,7 @@ pub mod response;
 pub mod snapshot;
 pub mod template;
 pub mod tool;
+pub mod tool_node;
 pub mod value;
 
 pub use dsl::Workflow;

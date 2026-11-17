@@ -1,13 +1,37 @@
 [package]
 name = "graphrt-mcp"
+description = "Model Context Protocol (MCP) tool provider for graphrt: exposes MCP server tools to tool and agent nodes."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["stdio", "http"]
+# Launch MCP servers as child processes and talk over stdio.
+stdio = ["rmcp/transport-child-process", "tokio/process"]
+# Connect to remote MCP servers over Streamable HTTP.
+http = ["rmcp/transport-streamable-http-client-reqwest", "rmcp/reqwest-tls-no-provider", "dep:http", "dep:rustls"]
 
 [dependencies]
 graphrt-core.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+rmcp = { version = "3.10", default-features = false, features = ["client"] }
+indexmap.workspace = true
+http = { version = "1", optional = true }
+# TLS crypto provider for HTTPS MCP servers (ring keeps the binary smaller than aws-lc).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "io-util"] }
+rmcp = { version = "3.10", default-features = false, features = ["client", "server", "transport-io"] }
 
 [lints]
 workspace = true
