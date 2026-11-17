@@ -1,10 +1,11 @@
 //! Ingestion: document -> chunks -> embeddings -> store.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::chunker::{ChunkerConfig, chunk_text};
 use crate::error::RagError;
-use crate::types::{Embedder, Extractor, Metadata, StoredChunk, VectorStore, content_hash};
+use crate::types::{Embedder, Extractor, Metadata, StoredChunk, VectorStore, check_vector, content_hash};
 
 /// A document to ingest.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -42,13 +43,25 @@ impl Document {
 /// Outcome of an ingestion.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IngestReport {
-    /// Chunks embedded and stored.
+    /// New or changed chunks that were embedded and stored.
     pub stored: usize,
-    /// Chunks skipped because identical content already exists in the dataset.
+    /// Chunks already present with the same content (their vectors are reused,
+    /// metadata is refreshed), plus exact duplicates within the document.
     pub skipped: usize,
+    /// Chunks of an earlier version of the document that were removed.
+    pub removed: usize,
 }
 
 /// Chunks, embeds (in batches) and stores documents.
+///
+/// Chunk ids are content-addressed per document (`dataset:document:hash`), so
+/// re-ingesting a changed document embeds only new text, keeps unchanged chunks
+/// (refreshing their position and metadata), and — with
+/// [`Ingestor::replace_existing`] — removes chunks the new version no longer
+/// contains. The swap is ordered so a failure never loses the previous version:
+/// everything is embedded first, then upserted, and only then are stale chunks
+/// deleted. Identical text in two different documents is stored once per
+/// document, so deleting one document never removes content from another.
 #[derive(Clone, Debug)]
 pub struct Ingestor {
     store: Arc<dyn VectorStore>,
@@ -74,7 +87,8 @@ impl Ingestor {
         self
     }
 
-    /// Delete the document's previous chunks before ingesting (default `true`).
+    /// Remove chunks of the previous version that the new version no longer
+    /// contains (default `true`). With `false`, ingestion only adds chunks.
     pub fn replace_existing(mut self, replace: bool) -> Self {
         self.replace_existing = replace;
         self
@@ -85,17 +99,22 @@ impl Ingestor {
         if doc.dataset_id.is_empty() || doc.document_id.is_empty() {
             return Err(RagError::Input("document needs a dataset_id and a document_id".into()));
         }
-        if self.replace_existing {
-            self.store.delete_document(&doc.dataset_id, &doc.document_id).await?;
-        }
+        let existing: HashMap<String, StoredChunk> = self
+            .store
+            .document_chunks(&doc.dataset_id, &doc.document_id)
+            .await?
+            .into_iter()
+            .map(|c| (c.id.clone(), c))
+            .collect();
 
-        let mut pending: Vec<StoredChunk> = Vec::new();
         let mut report = IngestReport::default();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut fresh: Vec<StoredChunk> = Vec::new();
+        let mut refreshed: Vec<StoredChunk> = Vec::new();
         for chunk in chunk_text(&doc.text, &self.chunker) {
             let hash = content_hash(&doc.dataset_id, &chunk.text);
-            let duplicate = pending.iter().any(|c| c.content_hash == hash)
-                || self.store.contains_hash(&doc.dataset_id, &hash).await?;
-            if duplicate {
+            let id = format!("{}:{}:{hash}", doc.dataset_id, doc.document_id);
+            if !seen.insert(id.clone()) {
                 report.skipped += 1;
                 continue;
             }
@@ -104,8 +123,8 @@ impl Ingestor {
             if let Some(h) = &chunk.heading {
                 metadata.insert("heading".into(), serde_json::Value::String(h.clone()));
             }
-            pending.push(StoredChunk {
-                id: format!("{}:{}:{}", doc.dataset_id, doc.document_id, chunk.index),
+            let mut stored = StoredChunk {
+                id,
                 dataset_id: doc.dataset_id.clone(),
                 document_id: doc.document_id.clone(),
                 title: doc.title.clone(),
@@ -113,10 +132,21 @@ impl Ingestor {
                 metadata,
                 content_hash: hash,
                 vector: Vec::new(),
-            });
+            };
+            match existing.get(&stored.id).filter(|old| !old.vector.is_empty() && old.text == stored.text) {
+                Some(old) => {
+                    report.skipped += 1;
+                    if old.title != stored.title || old.metadata != stored.metadata {
+                        stored.vector.clone_from(&old.vector);
+                        refreshed.push(stored);
+                    }
+                }
+                None => fresh.push(stored),
+            }
         }
 
-        for batch in pending.chunks_mut(self.batch_size) {
+        // 1. Embed everything new. A failure here changes nothing in the store.
+        for batch in fresh.chunks_mut(self.batch_size) {
             let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
             let vectors = self.embedder.embed_documents(&texts).await?;
             if vectors.len() != batch.len() {
@@ -127,12 +157,24 @@ impl Ingestor {
                 )));
             }
             for (chunk, vector) in batch.iter_mut().zip(vectors) {
+                check_vector(&vector, &format!("embedding of chunk `{}`", chunk.id))?;
                 chunk.vector = vector;
             }
         }
-        report.stored = pending.len();
-        if !pending.is_empty() {
-            self.store.upsert(pending).await?;
+        report.stored = fresh.len();
+
+        // 2. Store new and refreshed chunks next to the old version.
+        fresh.append(&mut refreshed);
+        if !fresh.is_empty() {
+            self.store.upsert(fresh).await?;
+        }
+
+        // 3. Only now drop what the new version no longer contains.
+        if self.replace_existing {
+            let stale: Vec<String> = existing.keys().filter(|id| !seen.contains(*id)).cloned().collect();
+            if !stale.is_empty() {
+                report.removed = self.store.delete_chunks(&doc.dataset_id, &stale).await?;
+            }
         }
         Ok(report)
     }

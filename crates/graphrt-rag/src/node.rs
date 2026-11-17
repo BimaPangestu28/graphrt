@@ -139,7 +139,19 @@ impl KnowledgeRetrievalNode {
         }
         let filter = match config.metadata_filtering_mode.as_deref() {
             Some("disabled") => None,
-            _ => config.metadata_filtering_conditions.filter(|f| !f.is_empty()),
+            None | Some("manual") => config.metadata_filtering_conditions.filter(|f| !f.is_empty()),
+            Some("automatic") => {
+                return Err(ConfigError::new(
+                    doc,
+                    "`metadata_filtering_mode: automatic` is not supported; use `manual`",
+                ));
+            }
+            Some(other) => {
+                return Err(ConfigError::new(
+                    doc,
+                    format!("unknown `metadata_filtering_mode` `{other}` (expected disabled or manual)"),
+                ));
+            }
         };
         if let Some(f) = &filter {
             f.validate().map_err(|e| ConfigError::new(doc, e.to_string()))?;
@@ -171,7 +183,11 @@ impl KnowledgeRetrievalNode {
     }
 
     async fn execute(&self, ctx: NodeContext) -> NodeResult {
-        let query = ctx.get(&self.query).map(|v| v.to_text()).unwrap_or_default();
+        // A missing variable is a wiring mistake; an empty value is a legitimate empty query.
+        let query = ctx
+            .get(&self.query)
+            .ok_or_else(|| NodeError::invalid_input(format!("query variable `{}` is not set", self.query)))?
+            .to_text();
         if query.trim().is_empty() {
             return Ok(NodeOutput::new().with("result", Value::array([])).meta("skipped", "empty query").into());
         }

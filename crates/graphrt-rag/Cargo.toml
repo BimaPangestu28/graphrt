@@ -14,7 +14,7 @@ default = ["http", "qdrant", "fs", "yaml", "doc"]
 # OpenAI-compatible embeddings, generic HTTP retriever and HTTP reranker (reqwest + rustls/ring).
 http = ["dep:reqwest", "dep:rustls"]
 # Qdrant vector store over its REST API.
-qdrant = ["http"]
+qdrant = ["http", "dep:sha2"]
 # File persistence for `MemoryStore`.
 fs = []
 # Load `KnowledgeConfig` from YAML.
@@ -32,6 +32,7 @@ serde_json.workspace = true
 indexmap.workspace = true
 serde-saphyr = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "json"] }
+sha2 = { version = "0.11", optional = true, default-features = false }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 
 [dev-dependencies]

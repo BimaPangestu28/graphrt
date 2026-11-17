@@ -155,18 +155,24 @@ fn split_recursive(text: &str, max: usize, separators: &[&str]) -> Vec<String> {
     let parts: Vec<&str> = text.split_inclusive(sep).collect();
     let mut out = Vec::new();
     let mut buffer = String::new();
+    // Running character count of `buffer`, so each part is measured once.
+    let mut buffer_chars = 0usize;
     for part in parts {
-        if char_len(part) > max {
+        let part_chars = char_len(part);
+        if part_chars > max {
             if !buffer.is_empty() {
                 out.push(std::mem::take(&mut buffer));
+                buffer_chars = 0;
             }
             out.extend(split_recursive(part, max, rest));
             continue;
         }
-        if char_len(&buffer) + char_len(part) > max && !buffer.is_empty() {
+        if buffer_chars + part_chars > max && !buffer.is_empty() {
             out.push(std::mem::take(&mut buffer));
+            buffer_chars = 0;
         }
         buffer.push_str(part);
+        buffer_chars += part_chars;
     }
     if !buffer.is_empty() {
         out.push(buffer);

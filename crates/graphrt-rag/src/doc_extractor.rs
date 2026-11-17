@@ -27,8 +27,16 @@ impl DocExtractor {
 
 impl Extractor for DocExtractor {
     fn extract(&self, bytes: &[u8], mime_type: Option<&str>, file_name: &str) -> Result<String, RagError> {
-        graphrt_doc::extract(bytes, mime_type, Some(file_name), &self.options)
-            .map_err(|e| RagError::Input(format!("cannot extract `{file_name}`: {e}")))
+        let extraction = graphrt_doc::extract_detailed(bytes, mime_type, Some(file_name), &self.options)
+            .map_err(|e| RagError::Input(format!("cannot extract `{file_name}`: {e}")))?;
+        // Indexing only part of a document would silently hide its tail from search.
+        if extraction.truncated {
+            return Err(RagError::Input(format!(
+                "`{file_name}` has more than {} characters of text; raise the extraction limit to index it fully",
+                self.options.max_output_chars
+            )));
+        }
+        Ok(extraction.text)
     }
 }
 
@@ -43,6 +51,13 @@ mod tests {
         assert!(text.contains("Title"));
         assert!(text.contains("Body text"));
         assert!(!text.contains("p{}"));
+    }
+
+    #[test]
+    fn truncated_extraction_is_an_error() {
+        let options = graphrt_doc::Options { max_output_chars: 5, ..graphrt_doc::Options::default() };
+        let err = DocExtractor::with_options(options).extract(b"a long plain text", Some("text/plain"), "a.txt");
+        assert!(matches!(err, Err(RagError::Input(m)) if m.contains("raise the extraction limit")));
     }
 
     #[test]

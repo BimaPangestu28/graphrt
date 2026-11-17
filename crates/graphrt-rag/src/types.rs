@@ -116,6 +116,18 @@ pub trait VectorStore: Send + Sync + fmt::Debug {
     /// Remove every chunk of a dataset.
     fn delete_dataset<'a>(&'a self, dataset_id: &'a str) -> BoxFuture<'a, Result<usize, RagError>>;
 
+    /// Every chunk of one document, vectors included. The ingestor uses this to
+    /// re-ingest a document without re-embedding unchanged chunks and to find the
+    /// chunks a new version no longer contains.
+    fn document_chunks<'a>(
+        &'a self,
+        dataset_id: &'a str,
+        document_id: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<StoredChunk>, RagError>>;
+
+    /// Remove chunks by id. Returns the number removed when known.
+    fn delete_chunks<'a>(&'a self, dataset_id: &'a str, ids: &'a [String]) -> BoxFuture<'a, Result<usize, RagError>>;
+
     /// Nearest neighbours by cosine similarity, best first.
     fn search<'a>(&'a self, query: VectorQuery<'a>) -> BoxFuture<'a, Result<Vec<Hit>, RagError>>;
 
@@ -131,7 +143,8 @@ pub trait VectorStore: Send + Sync + fmt::Debug {
     }
 
     /// Whether a chunk with this content hash already exists in the dataset.
-    /// Stores that cannot answer cheaply return `false` (no de-duplication).
+    /// Stores that cannot answer cheaply return `false`. The built-in [`crate::Ingestor`]
+    /// does not use this (it de-duplicates per document via [`VectorStore::document_chunks`]).
     fn contains_hash<'a>(
         &'a self,
         dataset_id: &'a str,
@@ -246,6 +259,17 @@ impl Extractor for PlainTextExtractor {
         }
         String::from_utf8(bytes.to_vec()).map_err(|_| RagError::Input(format!("`{file_name}` is not valid UTF-8")))
     }
+}
+
+/// Check that a vector can be stored or searched: non-empty and finite.
+pub fn check_vector(vector: &[f32], what: &str) -> Result<(), RagError> {
+    if vector.is_empty() {
+        return Err(RagError::Input(format!("{what} has an empty embedding vector")));
+    }
+    if vector.iter().any(|x| !x.is_finite()) {
+        return Err(RagError::Input(format!("{what} has a non-finite (NaN or infinite) embedding value")));
+    }
+    Ok(())
 }
 
 /// Stable 64-bit FNV-1a hash rendered as hex.
