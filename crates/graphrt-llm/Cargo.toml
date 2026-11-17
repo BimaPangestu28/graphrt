@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["openai", "anthropic", "mock"]
+default = ["openai", "anthropic", "typesafe", "mock"]
 # `mock::MockModel`, a scripted model for tests and offline examples (no dependencies).
 mock = []
 # OpenAI-compatible chat completions (OpenAI, Azure OpenAI, Ollama, vLLM, Groq, OpenRouter, DeepSeek, ...).
@@ -21,6 +21,8 @@ anthropic = ["http"]
 gemini = ["http"]
 # AWS Bedrock Converse API (SigV4 signed).
 bedrock = ["http"]
+# TypeSafe System One decision API (Jev): typed classification / scoring / yes-no questions.
+typesafe = ["http"]
 # Shared HTTP transport (reqwest + rustls with the ring crypto provider).
 http = ["dep:reqwest", "dep:rustls"]
 
@@ -35,8 +37,8 @@ reqwest = { workspace = true, optional = true, features = ["rustls-no-provider",
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 
 [dev-dependencies]
-graphrt-core = { workspace = true, features = ["tokio", "jinja"] }
-tokio = { workspace = true, features = ["rt", "macros", "time"] }
+graphrt-core = { workspace = true, features = ["tokio", "jinja", "yaml"] }
+tokio = { workspace = true, features = ["rt", "macros", "time", "net", "io-util", "sync"] }
 
 [lints]
 workspace = true

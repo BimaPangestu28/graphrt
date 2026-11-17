@@ -1,0 +1,63 @@
+# Comment moderation with one System One request: three typed questions answered
+# in parallel, then routing on the `action` choice (or human review when unsure).
+#
+#   TYPESAFE_API_KEY=... graphrt run examples/typesafe/moderation.yaml \
+#       --input comment="Buy cheap followers at example.com!!!"
+version: "1"
+name: comment-moderation
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: comment, type: paragraph, required: true }
+
+    - id: judge
+      type: system-one
+      model: jev-latest
+      state:
+        comment: "{{#start.comment#}}"
+        community: A forum for amateur photographers.
+      questions:
+        spam:
+          type: noul
+          instructions: Is `comment` spam or unsolicited advertising?
+          criteria:
+            "true": Promotes a product, service or link unrelated to the discussion.
+            "false": A genuine contribution, even if off-topic or rude.
+        toxicity:
+          type: score
+          instructions: How hostile is `comment` towards other members?
+          criteria: [Friendly or neutral, Mildly rude, Insulting, Threatening or hateful]
+        action:
+          type: choice
+          instructions: What should a moderator of `community` do with `comment`?
+          criteria:
+            publish: The comment is fine to show.
+            hide: The comment is spam or breaks the rules and should be hidden.
+            warn: The comment can stay, but the author should get a polite warning.
+      route_by: action
+      min_confidence: 0.6          # unsure decisions take the `low_confidence` edge
+
+    - id: published
+      type: answer
+      answer: "Published."
+    - id: hidden
+      type: answer
+      answer: "Hidden (spam probability {{#judge.spam.noul#}})."
+    - id: warned
+      type: answer
+      answer: "Published with a warning (toxicity {{#judge.toxicity.score#}} of 3)."
+    - id: review
+      type: human-input
+      prompt: "Please review this comment: {{#start.comment#}}"
+      actions:
+        - { id: publish, title: Publish }
+        - { id: hide, title: Hide }
+
+  edges:
+    - { source: start, target: judge }
+    - { source: judge, target: published, handle: publish }
+    - { source: judge, target: hidden, handle: hide }
+    - { source: judge, target: warned, handle: warn }
+    - { source: judge, target: review, handle: low_confidence }

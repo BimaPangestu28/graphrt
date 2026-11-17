@@ -33,6 +33,8 @@ pub mod providers;
 pub mod registry;
 pub mod sse;
 pub mod types;
+#[cfg(feature = "typesafe")]
+pub mod typesafe;
 
 #[cfg(feature = "http")]
 mod http;
@@ -59,4 +61,6 @@ pub fn register(registry: &mut graphrt_core::Registry) {
     registry.register_described(nodes::descriptors::question_classifier(), nodes::classifier::factory);
     registry.register_described(nodes::descriptors::parameter_extractor(), nodes::extractor::factory);
     registry.register_described(nodes::descriptors::agent(), nodes::agent::factory);
+    #[cfg(feature = "typesafe")]
+    registry.register_described(nodes::descriptors::system_one(), nodes::system_one::factory);
 }

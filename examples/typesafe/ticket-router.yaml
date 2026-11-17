@@ -1,0 +1,65 @@
+# Ticket routing with a confidence cascade:
+#   1. Jev (TypeSafe System One) classifies the ticket in ~100 ms for a fraction of a cent.
+#   2. When Jev is not confident enough, the ticket goes to a chat-model classifier instead.
+#
+#   TYPESAFE_API_KEY=... OPENAI_API_KEY=... \
+#   graphrt run examples/typesafe/ticket-router.yaml --input ticket="I was charged twice this month"
+version: "1"
+name: ticket-router
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: ticket, type: paragraph, required: true }
+
+    - id: fast
+      type: question-classifier
+      model: { provider: typesafe, name: jev-latest }
+      query_variable_selector: [start, ticket]
+      instruction: Support tickets for a subscription software product.
+      classes:
+        - { id: billing, name: Billing, description: "Payments, refunds, invoices, plan changes" }
+        - { id: bug, name: Bug report, description: "Something in the product is broken or erroring" }
+        - { id: account, name: Account, description: "Login, password, profile, deleting the account" }
+        - { id: unsure, name: Unsure, description: "None of the other categories clearly applies" }
+      min_confidence: 0.7          # below this, Jev's answer is not trusted...
+      companion_noul: true         # ...and also when no category fits at all
+      companion_threshold: 0.6
+      fallback_class: unsure       # low-confidence tickets take the `unsure` edge
+
+    - id: careful
+      type: question-classifier
+      model: { provider: openai, name: gpt-4o-mini }
+      query_variable_selector: [start, ticket]
+      instruction: Support tickets for a subscription software product.
+      classes:
+        - { id: billing, name: Billing }
+        - { id: bug, name: Bug report }
+        - { id: account, name: Account }
+        - { id: other, name: Other }
+      fallback_class: other
+
+    - id: billing
+      type: answer
+      answer: "Routed to billing."
+    - id: bug
+      type: answer
+      answer: "Routed to engineering."
+    - id: account
+      type: answer
+      answer: "Routed to account support."
+    - id: other
+      type: answer
+      answer: "Routed to the general inbox."
+
+  edges:
+    - { source: start, target: fast }
+    - { source: fast, target: billing, handle: billing }
+    - { source: fast, target: bug, handle: bug }
+    - { source: fast, target: account, handle: account }
+    - { source: fast, target: careful, handle: unsure }
+    - { source: careful, target: billing, handle: billing }
+    - { source: careful, target: bug, handle: bug }
+    - { source: careful, target: account, handle: account }
+    - { source: careful, target: other, handle: other }
