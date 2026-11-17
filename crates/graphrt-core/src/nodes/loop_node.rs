@@ -229,11 +229,8 @@ impl LoopNode {
                 }
                 SubgraphResult::Failed { error, usage } => {
                     state.usage.add(&usage);
-                    return Err(NodeError {
-                        kind: error.kind,
-                        message: format!("loop round {round} failed: {}", error.message),
-                        retryable: error.retryable,
-                    });
+                    let message = format!("loop round {round} failed: {}", error.message);
+                    return Err(error.with_message(message));
                 }
                 SubgraphResult::Paused { snapshot, reasons } => {
                     state.paused = Some(snapshot);

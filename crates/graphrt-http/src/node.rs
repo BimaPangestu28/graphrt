@@ -451,6 +451,7 @@ impl HttpRequestNode {
         let content_type =
             header_map.get("content-type").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase();
         let disposition = header_map.get("content-disposition").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let retry_after_ms = header_map.get("retry-after").and_then(Value::as_str).and_then(parse_retry_after_ms);
 
         let mut bytes: Vec<u8> = Vec::new();
         loop {
@@ -519,6 +520,9 @@ impl HttpRequestNode {
             let retryable_status = status.is_server_error() || status.as_u16() == 429 || status.as_u16() == 408;
             let mut err = NodeError::new("http_status", message);
             err.retryable = retryable_status && self.may_retry();
+            if matches!(status.as_u16(), 429 | 503) {
+                err.retry_after_ms = retry_after_ms;
+            }
             return Err(err);
         }
         Ok(output)
@@ -662,6 +666,13 @@ fn filename_from_disposition(disposition: &str) -> Option<String> {
     })
 }
 
+/// Parse a `Retry-After` header given in delay-seconds (the HTTP-date form is
+/// ignored: the node's own retry policy then applies). Capped at one hour.
+fn parse_retry_after_ms(value: &str) -> Option<u64> {
+    let seconds: u64 = value.trim().parse().ok()?;
+    Some(seconds.min(3600).saturating_mul(1000))
+}
+
 fn too_large(cap: usize) -> NodeError {
     NodeError::fatal("response_too_large", format!("response body exceeds the limit of {cap} bytes"))
 }
@@ -696,6 +707,13 @@ fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retry_after_parsing() {
+        assert_eq!(super::parse_retry_after_ms(" 2 "), Some(2000));
+        assert_eq!(super::parse_retry_after_ms("999999"), Some(3_600_000));
+        assert_eq!(super::parse_retry_after_ms("Wed, 21 Oct 2015 07:28:00 GMT"), None);
+    }
+
     use super::*;
 
     fn doc(config: serde_json::Value) -> NodeDoc {

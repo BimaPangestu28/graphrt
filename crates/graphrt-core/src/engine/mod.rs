@@ -31,11 +31,14 @@
 //! # Failures
 //!
 //! - **Retries** apply to every node kind when `retry.max_retries > 0` and the
-//!   error is [`NodeError::retryable`]. The delay is awaited inside the node's
-//!   own future, so other nodes keep running. The execution id is stable across
+//!   error is [`NodeError::retryable`]. The delay is the larger of the policy
+//!   delay and [`NodeError::retry_after_ms`] (capped at five minutes), awaited
+//!   inside the node's own future, so other nodes keep running. The execution id is stable across
 //!   attempts, and a retry that eventually succeeds is not a handled error.
 //! - **Timeouts** (`timeout_ms`, else [`Limits::default_node_timeout_ms`]) apply
-//!   per attempt when the clock supports timers.
+//!   per attempt when the clock supports timers. The attempt deadline is also
+//!   exposed as [`NodeContext::deadline_ms`](crate::node::NodeContext) so nodes
+//!   that block synchronously can bound themselves.
 //! - After retries, the error strategy applies:
 //!   - `fail`: the frame fails. In the root frame the run ends with `RunFailed`
 //!     and in-flight nodes are dropped. In a container body, the container node
@@ -76,7 +79,11 @@
 //! - On resume ([`RunInput::resume`]) the snapshot's graph fingerprint and
 //!   format are verified, env / sys / conversation values from the new
 //!   [`RunInput`] are applied, pending nodes re-run and paused nodes are resumed
-//!   with their saved state plus [`ResumeFrom::inputs`] for their node id.
+//!   with their saved state plus their entry in [`ResumeFrom::inputs`].
+//!   Inputs are looked up by the frame-qualified key `"<frame>/<node_id>"`
+//!   first (e.g. `"review[2]/approve"` for a node paused inside the third
+//!   item of iteration `review`; the frame is [`PauseReason::frame`]), then by
+//!   the plain node id, which applies to every frame.
 //! - [`RunHandle::abort`] drops every in-flight node future immediately.
 
 mod control;
@@ -182,7 +189,9 @@ impl RunInput {
 #[derive(Clone, Debug)]
 pub struct ResumeFrom {
     pub snapshot: Snapshot,
-    /// Host input for paused nodes, keyed by node id (e.g. a submitted human-input form).
+    /// Host input for paused nodes (e.g. a submitted human-input form), keyed by
+    /// `"<frame>/<node_id>"` for one specific frame or by plain node id for any
+    /// frame. Root-frame nodes use the plain node id.
     pub inputs: IndexMap<String, Value>,
 }
 

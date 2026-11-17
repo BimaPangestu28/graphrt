@@ -48,16 +48,32 @@ pub struct NodeError {
     pub message: String,
     /// Whether a retry may succeed. Non-retryable errors skip the retry policy.
     pub retryable: bool,
+    /// Minimum delay before a retry, as requested by the remote side (e.g. an
+    /// HTTP `Retry-After` header or a provider rate limit). The engine waits for
+    /// the larger of this and the node's retry policy delay.
+    pub retry_after_ms: Option<u64>,
 }
 
 impl NodeError {
     pub fn new(kind: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { kind: kind.into(), message: message.into(), retryable: true }
+        Self { kind: kind.into(), message: message.into(), retryable: true, retry_after_ms: None }
     }
 
     /// Error that retrying cannot fix (bad configuration, invalid input).
     pub fn fatal(kind: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { kind: kind.into(), message: message.into(), retryable: false }
+        Self { kind: kind.into(), message: message.into(), retryable: false, retry_after_ms: None }
+    }
+
+    /// Attach a server-requested retry delay.
+    pub fn with_retry_after(mut self, retry_after_ms: Option<u64>) -> Self {
+        self.retry_after_ms = retry_after_ms;
+        self
+    }
+
+    /// Replace the message, keeping kind, retryability and retry delay.
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = message.into();
+        self
     }
 
     pub fn invalid_input(message: impl Into<String>) -> Self {
@@ -242,10 +258,7 @@ pub struct NoTimerClock;
 
 impl Clock for NoTimerClock {
     fn now_ms(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-            .unwrap_or(0)
+        system_now_ms()
     }
     fn sleep(&self, _duration: Duration) -> BoxFuture<'static, ()> {
         Box::pin(futures::future::ready(()))
@@ -253,6 +266,26 @@ impl Clock for NoTimerClock {
     fn supports_timers(&self) -> bool {
         false
     }
+}
+
+/// Wall-clock milliseconds since the Unix epoch.
+///
+/// `wasm32-unknown-unknown` has no system clock (`SystemTime::now` panics there),
+/// so that target returns a monotonically increasing counter instead. Hosts on
+/// that target should supply their own [`Clock`] for meaningful timestamps.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn system_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn system_now_ms() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Tokio-backed clock.
@@ -337,6 +370,9 @@ pub struct NodeContext {
     pub resume: Option<Resume>,
     /// Present for container nodes.
     pub subgraph: Option<Arc<dyn Subgraph>>,
+    /// Absolute deadline of the current attempt in [`Clock::now_ms`] time, when
+    /// the node has an effective timeout. See [`NodeContext::remaining`].
+    pub deadline_ms: Option<u64>,
     sink: EventSink,
 }
 
@@ -374,6 +410,7 @@ impl NodeContext {
             clock,
             resume: None,
             subgraph: None,
+            deadline_ms: None,
             sink,
         }
     }
@@ -410,6 +447,18 @@ impl NodeContext {
     pub fn with_subgraph(mut self, subgraph: Option<Arc<dyn Subgraph>>) -> Self {
         self.subgraph = subgraph;
         self
+    }
+
+    pub fn with_deadline(mut self, deadline_ms: Option<u64>) -> Self {
+        self.deadline_ms = deadline_ms;
+        self
+    }
+
+    /// Time left before the current attempt times out, if it has a deadline.
+    /// Nodes that block synchronously (e.g. an embedded interpreter) should
+    /// cap their own work by this.
+    pub fn remaining(&self) -> Option<Duration> {
+        self.deadline_ms.map(|deadline| Duration::from_millis(deadline.saturating_sub(self.clock.now_ms())))
     }
 
     /// Look up a host service.

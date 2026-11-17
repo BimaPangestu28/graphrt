@@ -102,7 +102,12 @@ impl From<LlmError> for NodeError {
         if let LlmError::RateLimit { retry_after_ms: Some(ms), .. } = &e {
             message.push_str(&format!(" (retry after {ms} ms)"));
         }
-        if e.is_retryable() { NodeError::new(kind, message) } else { NodeError::fatal(kind, message) }
+        let retry_after_ms = match &e {
+            LlmError::RateLimit { retry_after_ms, .. } => *retry_after_ms,
+            _ => None,
+        };
+        let error = if e.is_retryable() { NodeError::new(kind, message) } else { NodeError::fatal(kind, message) };
+        error.with_retry_after(retry_after_ms)
     }
 }
 

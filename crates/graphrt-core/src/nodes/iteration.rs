@@ -180,11 +180,8 @@ impl IterationNode {
                     match self.config.error_handle_mode {
                         ErrorMode::Terminated => {
                             // Dropping `running` cancels every in-flight item.
-                            return Err(NodeError {
-                                kind: error.kind,
-                                message: format!("iteration item {index} failed: {}", error.message),
-                                retryable: error.retryable,
-                            });
+                            let message = format!("iteration item {index} failed: {}", error.message);
+                            return Err(error.with_message(message));
                         }
                         ErrorMode::ContinueOnError => {
                             state.results.insert(index, ItemOutcome::Done { value: Value::Null });

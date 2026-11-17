@@ -170,8 +170,15 @@ impl CodeNode {
         })
     }
 
+    /// Configured limits, with the time limit capped by the attempt deadline so a
+    /// node timeout also interrupts the interpreter (which blocks synchronously).
     fn effective_limits(&self, ctx: &NodeContext) -> CodeLimits {
-        self.limits.or_else(|| ctx.service::<CodeLimits>().copied()).unwrap_or_default()
+        let mut limits = self.limits.or_else(|| ctx.service::<CodeLimits>().copied()).unwrap_or_default();
+        if let Some(remaining) = ctx.remaining() {
+            let remaining_ms = u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX).max(1);
+            limits.time_ms = limits.time_ms.min(remaining_ms);
+        }
+        limits
     }
 
     fn build_inputs(&self, ctx: &NodeContext) -> serde_json::Value {

@@ -35,6 +35,9 @@ use crate::value::Value;
 /// Node kind whose completion marks a loop body run as "broke".
 const LOOP_END_KIND: &str = "loop-end";
 
+/// Upper bound for a single retry delay, whatever the policy or server asks for.
+const MAX_RETRY_DELAY_MS: u64 = 5 * 60 * 1000;
+
 /// State shared by every frame of one run.
 pub(crate) struct RunShared {
     pub(crate) graph: Arc<Graph>,
@@ -48,7 +51,7 @@ pub(crate) struct RunShared {
     pub(crate) usage: Mutex<Usage>,
     /// Environment variables re-applied to every restored frame (snapshots exclude them).
     pub(crate) env: Vec<(String, Value)>,
-    /// Host input for paused nodes, keyed by node id.
+    /// Host input for paused nodes, keyed by `"<frame>/<node_id>"` or plain node id.
     pub(crate) resume_inputs: IndexMap<String, Value>,
 }
 
@@ -84,6 +87,17 @@ impl RunShared {
 
     fn now_ms(&self) -> u64 {
         self.clock.now_ms()
+    }
+
+    /// Host input for a node resumed in `frame`: the frame-qualified key
+    /// (`"iter[2]/approve"`) wins over the plain node id (`"approve"`).
+    fn resume_input(&self, frame: &str, node_id: &str) -> Option<Value> {
+        if !frame.is_empty() {
+            if let Some(value) = self.resume_inputs.get(&format!("{frame}/{node_id}")) {
+                return Some(value.clone());
+            }
+        }
+        self.resume_inputs.get(node_id).cloned()
     }
 }
 
@@ -403,8 +417,10 @@ impl Frame {
         });
         rt.state = State::Running;
         let exec_id = rt.exec_id.clone();
-        let resume =
-            rt.resume_state.take().map(|state| Resume { state, input: run.resume_inputs.get(gn.id.as_ref()).cloned() });
+        let resume = rt
+            .resume_state
+            .take()
+            .map(|state| Resume { state, input: run.resume_input(&self.id, gn.id.as_ref()) });
 
         run.emit(Event::NodeStarted {
             frame: self.id.clone(),
@@ -440,6 +456,10 @@ impl Frame {
                     let error = NodeError::fatal("limit", "step limit exceeded");
                     return TaskDone { ix, attempt, result: Err(error), elapsed_ms: 0 };
                 }
+                let deadline_ms = match timeout_ms {
+                    Some(ms) if run.clock.supports_timers() => Some(run.now_ms().saturating_add(ms)),
+                    _ => None,
+                };
                 let ctx = NodeContext::new(
                     node_id.clone(),
                     exec_id.clone(),
@@ -451,13 +471,18 @@ impl Frame {
                     run.sink.clone(),
                 )
                 .with_resume(resume.clone())
-                .with_subgraph(subgraph.clone());
+                .with_subgraph(subgraph.clone())
+                .with_deadline(deadline_ms);
                 let result = run_attempt(node.as_ref(), ctx, timeout_ms, run.clock.as_ref()).await;
                 match result {
                     Err(error)
                         if error.retryable && attempt <= policy.retry.max_retries && !run.control.is_stopped() =>
                     {
-                        let delay_ms = policy.retry.delay_ms(attempt);
+                        let delay_ms = policy
+                            .retry
+                            .delay_ms(attempt)
+                            .max(error.retry_after_ms.unwrap_or(0))
+                            .min(MAX_RETRY_DELAY_MS);
                         attempt = attempt.saturating_add(1);
                         run.emit(Event::NodeRetry {
                             frame: frame.clone(),
