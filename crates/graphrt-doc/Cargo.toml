@@ -1,13 +1,48 @@
 [package]
 name = "graphrt-doc"
+description = "Document extraction node (PDF, Office, spreadsheets, HTML, e-mail, subtitles) for the graphrt workflow runtime."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["pdf", "office", "spreadsheet", "epub", "email", "tokio"]
+# Run extraction on Tokio's blocking pool when a Tokio runtime is present.
+tokio = ["dep:tokio", "tokio/rt"]
+# PDF text extraction (pure Rust).
+pdf = ["dep:pdf-extract"]
+# DOCX and PPTX (zip + XML).
+office = ["zip-formats"]
+# EPUB (zip + XHTML).
+epub = ["zip-formats"]
+# XLSX / XLS / ODS (pure Rust).
+spreadsheet = ["dep:calamine"]
+# RFC 5322 e-mail (.eml).
+email = ["dep:mail-parser"]
+zip-formats = ["dep:zip", "dep:quick-xml"]
 
 [dependencies]
 graphrt-core.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+encoding_rs = "0.8"
+pdf-extract = { version = "0.12", optional = true }
+calamine = { version = "0.38", default-features = false, optional = true }
+zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
+quick-xml = { version = "0.42", optional = true }
+mail-parser = { version = "0.11", default-features = false, optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+futures = { workspace = true, features = ["executor"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true
