@@ -1,0 +1,6 @@
+target/
+.git/
+.claude/
+**/node_modules/
+**/*.snapshot.json
+bindings/

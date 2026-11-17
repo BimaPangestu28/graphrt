@@ -11,6 +11,7 @@ members = [
     "crates/graphrt-plugin",
     "crates/graphrt-plugin-sdk",
     "crates/graphrt-wasm",
+    "crates/graphrt-ffi",
     "crates/graphrt-cli",
 ]
 
