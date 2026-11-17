@@ -1,0 +1,34 @@
+# Tool-using agent on a local Ollama model, with tools from an MCP server.
+#   ollama pull qwen2.5:14b
+#   OLLAMA_HOST=http://localhost:11434 graphrt run examples/live/ollama-agent.yaml \
+#     --mcp examples/live/mcp-everything.json \
+#     --input task="Add 1234 and 4321 with the get-sum tool, then echo the result back."
+version: "1"
+name: ollama-agent
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: task, type: paragraph, required: true }
+
+    - id: agent
+      type: agent
+      model:
+        provider: ollama
+        name: qwen2.5:14b
+        completion_params: { temperature: 0 }
+      instruction: "You are a precise assistant. Use the available tools whenever they apply, then answer briefly."
+      query: "{{#start.task#}}"
+      tools: ["everything/get-sum", "everything/echo"]
+      max_iterations: 6
+      parallel_tool_calls: true
+      timeout_ms: 180000
+
+    - id: answer
+      type: answer
+      answer: "{{#agent.text#}}"
+
+  edges:
+    - { source: start, target: agent }
+    - { source: agent, target: answer }
