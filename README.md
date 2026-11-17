@@ -1,5 +1,10 @@
 # graphrt
 
+[![CI](https://github.com/BimaPangestu28/agentic-rust-runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/BimaPangestu28/agentic-rust-runtime/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/graphrt-core.svg)](https://crates.io/crates/graphrt-core)
+[![docs.rs](https://img.shields.io/docsrs/graphrt-core)](https://docs.rs/graphrt-core)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 **Run your agent everywhere.**
 
 No server to rent. The same agent workflow runs on your laptop, in a container,
@@ -41,6 +46,23 @@ start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
 - **Agent-native.** First-class `agent` node with a tool-calling loop, parallel tool calls, MCP servers, human approval of tool calls, retries with backoff, per-node timeouts and step/time budgets.
 - **Durable.** Pause anywhere (human input, tool approval, API call), get a JSON snapshot, resume later — even inside loops and iterations.
 - **Safe by default.** Secrets never leave the process in logs, events or snapshots. HTTP egress blocks private networks (SSRF). Templates run with fuel limits. Code runs in an interpreter with memory/time limits and no I/O.
+
+## Install
+
+```sh
+# Linux / macOS: prebuilt static binary (verifies SHA256SUMS)
+curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/agentic-rust-runtime/main/install.sh | sh
+
+# with Rust
+cargo install graphrt-cli            # installs the `graphrt` binary
+
+# container
+docker run --rm -p 8080:8080 -v "$PWD/flows:/workflows" ghcr.io/bimapangestu28/graphrt
+```
+
+Windows and other archives are on the [releases page](https://github.com/BimaPangestu28/agentic-rust-runtime/releases).
+Libraries are on crates.io: `graphrt-core` (runtime) plus integration crates such as
+`graphrt-llm`, `graphrt-http`, `graphrt-rag`.
 
 ## Quick start
 
@@ -262,16 +284,13 @@ failure policies, containers and pause/resume design.
 
 ## Roadmap
 
-- Python code via a remote sandbox reference implementation
-- Knowledge retrieval / embeddings nodes
-- OpenTelemetry tracing layer
-- Persistent run store and webhook triggers for `serve`
-- JSON Schema validation for structured outputs
-- WASM component nodes
+See [ROADMAP.md](ROADMAP.md) and the [CHANGELOG](CHANGELOG.md).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and pull requests are welcome.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+Issues and pull requests are welcome. Report vulnerabilities privately as described
+in [SECURITY.md](SECURITY.md).
 
 ## License
 

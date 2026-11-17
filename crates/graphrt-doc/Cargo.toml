@@ -1,13 +1,16 @@
 [package]
 name = "graphrt-doc"
 description = "Document extraction node (PDF, Office, spreadsheets, HTML, e-mail, subtitles) for the graphrt workflow runtime."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-doc"
+homepage = "https://github.com/BimaPangestu28/agentic-rust-runtime"
+keywords = ["pdf", "docx", "xlsx", "extraction", "rag"]
+categories = ["text-processing", "parsing"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
 
 [features]
 default = ["pdf", "office", "spreadsheet", "epub", "email", "tokio"]

@@ -1,13 +1,16 @@
 [package]
 name = "graphrt-otel"
 description = "OpenTelemetry (OTLP) export of graphrt run events: traces per run and node, token usage, latency."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-otel"
+homepage = "https://github.com/BimaPangestu28/agentic-rust-runtime"
+keywords = ["opentelemetry", "otlp", "tracing", "observability", "workflow"]
+categories = ["development-tools::debugging"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
 
 [dependencies]
 graphrt-core.workspace = true

@@ -1,13 +1,16 @@
 [package]
 name = "graphrt-core"
 description = "Executor-agnostic graph runtime for agentic AI workflows: graph model, variable pool, scheduler, events, snapshots and built-in control nodes."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-core"
+homepage = "https://github.com/BimaPangestu28/agentic-rust-runtime"
+keywords = ["workflow", "agent", "llm", "runtime", "graph"]
+categories = ["asynchronous", "development-tools", "wasm"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
 
 [features]
 default = ["yaml", "jinja", "tokio"]

@@ -1,13 +1,16 @@
 [package]
 name = "graphrt-llm"
-description = "Model providers (OpenAI-compatible, Anthropic) and LLM, classifier, extractor and agent nodes for graphrt."
+description = "Model providers (OpenAI-compatible, Anthropic, Gemini, AWS Bedrock, TypeSafe Jev) and LLM, classifier, extractor and agent nodes for the graphrt workflow runtime."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-llm"
+homepage = "https://github.com/BimaPangestu28/agentic-rust-runtime"
+keywords = ["llm", "openai", "anthropic", "agent", "gemini"]
+categories = ["api-bindings", "asynchronous"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
 
 [features]
 default = ["openai", "anthropic", "typesafe", "mock"]

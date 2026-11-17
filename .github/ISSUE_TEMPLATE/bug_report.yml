@@ -1,0 +1,55 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please do not report security vulnerabilities here — see SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: A minimal workflow document (YAML/JSON) and the command or code you ran. Remove secrets.
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output / events
+      description: Error message, `--output events` lines or a stack trace.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `graphrt version`, or the crate versions you use.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where are you running graphrt?
+      options:
+        - CLI (graphrt run)
+        - Server (graphrt serve)
+        - Container image
+        - Embedded Rust library
+        - Mobile (Android / iOS)
+        - WebAssembly
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: e.g. Linux x86_64, macOS arm64, Android 15

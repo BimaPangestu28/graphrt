@@ -1,13 +1,16 @@
 [package]
 name = "graphrt-plugin"
 description = "Plugin host for graphrt: load node kinds and tools from external processes, HTTP services or WebAssembly modules."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-plugin"
+homepage = "https://github.com/BimaPangestu28/agentic-rust-runtime"
+keywords = ["plugin", "json-rpc", "workflow", "agent", "extension"]
+categories = ["development-tools", "asynchronous"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
 
 [features]
 default = ["process", "http", "yaml", "git"]

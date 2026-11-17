@@ -1,13 +1,16 @@
 [package]
 name = "graphrt-ffi"
 description = "Embedding API for mobile and desktop apps (Kotlin, Swift, Python...) via UniFFI."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-ffi"
+homepage = "https://github.com/BimaPangestu28/agentic-rust-runtime"
+keywords = ["ffi", "uniffi", "mobile", "android", "ios"]
+categories = ["api-bindings", "development-tools::ffi"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
 
 [lib]
 name = "graphrt_ffi"

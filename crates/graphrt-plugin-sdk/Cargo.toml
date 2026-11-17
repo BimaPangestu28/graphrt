@@ -1,13 +1,16 @@
 [package]
 name = "graphrt-plugin-sdk"
 description = "SDK for writing graphrt plugins in Rust: expose node kinds and tools over the graphrt plugin protocol."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-plugin-sdk"
+homepage = "https://github.com/BimaPangestu28/agentic-rust-runtime"
+keywords = ["plugin", "sdk", "json-rpc", "workflow", "agent"]
+categories = ["development-tools", "api-bindings"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
 
 [dependencies]
 serde.workspace = true

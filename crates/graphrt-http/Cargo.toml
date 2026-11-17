@@ -1,13 +1,16 @@
 [package]
 name = "graphrt-http"
 description = "HTTP request node with SSRF protection for the graphrt workflow runtime."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-http"
+homepage = "https://github.com/BimaPangestu28/agentic-rust-runtime"
+keywords = ["http", "ssrf", "workflow", "agent", "llm"]
+categories = ["network-programming", "web-programming::http-client"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
 
 [dependencies]
 graphrt-core.workspace = true

@@ -175,7 +175,7 @@ const PY_PLUGIN: &str = include_str!("../templates/python/plugin.py");
 const JS_SDK: &str = include_str!("../templates/typescript/graphrt-plugin.mjs");
 const JS_PLUGIN: &str = include_str!("../templates/typescript/plugin.mjs");
 const RS_MAIN: &str = include_str!("../templates/rust/main.rs");
-const RS_CARGO: &str = include_str!("../templates/rust/Cargo.toml");
+const RS_CARGO: &str = include_str!("../templates/rust/Cargo.toml.tmpl");
 
 fn scaffold(name: &str, lang: PluginLang, dir: Option<PathBuf>) -> Result<u8, CliError> {
     if !graphrt_plugin::is_valid_name(name) {

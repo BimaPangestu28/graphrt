@@ -39,3 +39,24 @@ Use [Conventional Commits](https://www.conventionalcommits.org/):
 
 Please report vulnerabilities privately through GitHub security advisories
 rather than public issues.
+
+## Dependency and license policy
+
+```sh
+cargo deny check          # advisories, licenses (deny.toml), duplicate versions, sources
+```
+
+New dependencies must use a license in the `deny.toml` allow-list. Keep
+`graphrt-core` dependencies minimal.
+
+## Releasing (maintainers)
+
+1. Update `CHANGELOG.md` (move `Unreleased` into a new version section) and bump
+   `version` in the root `Cargo.toml` `[workspace.package]` and `[workspace.dependencies]`.
+2. `scripts/publish.sh` — dry run: verifies `graphrt-core` against crates.io and
+   packages every other crate.
+3. `scripts/test-install.sh` — checks `install.sh` against a fake local release.
+4. Tag `vX.Y.Z` and push the tag. The release workflow builds binaries for Linux
+   (static musl), macOS and Windows, publishes the GitHub Release with
+   `SHA256SUMS`, pushes `ghcr.io/<owner>/graphrt`, and publishes crates when the
+   repository variable `PUBLISH_CRATES=true` and secret `CARGO_REGISTRY_TOKEN` are set.

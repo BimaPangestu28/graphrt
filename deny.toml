@@ -1,0 +1,86 @@
+# cargo-deny configuration: `cargo deny check`
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+# Every RustSec advisory (vulnerability, unsound, unmaintained) fails the check
+# unless it is explicitly ignored below with a reason.
+yanked = "deny"
+ignore = [
+    # Unmaintained (no vulnerability), transitive, no maintained replacement yet.
+    # Re-check on every dependency update.
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml via uniffi_bindgen (graphrt-ffi build tooling only)" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono via rmcp/schemars (graphrt-mcp); no maintained drop-in yet" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser via lopdf/pdf-extract (graphrt-doc `pdf` feature)" },
+]
+
+[licenses]
+# Permissive licenses compatible with distributing graphrt under Apache-2.0.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "OpenSSL",
+]
+confidence-threshold = 0.9
+# The allow-list is a policy, not an inventory: entries no dependency uses yet are fine.
+unused-allowed-license = "allow"
+
+# MPL-2.0 is file-level copyleft: using unmodified UniFFI crates is compatible with
+# distributing graphrt under Apache-2.0. Allowed only for the UniFFI family used by
+# graphrt-ffi; any other MPL-2.0 dependency must be reviewed first.
+[[licenses.exceptions]]
+crate = "uniffi"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "uniffi_bindgen"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "uniffi_core"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "uniffi_internal_macros"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "uniffi_macros"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "uniffi_meta"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "uniffi_pipeline"
+allow = ["MPL-2.0"]
+[[licenses.exceptions]]
+crate = "uniffi_udl"
+allow = ["MPL-2.0"]
+
+[[licenses.clarify]]
+# ring's license file combines ISC, MIT and OpenSSL terms without an SPDX header.
+crate = "ring"
+expression = "ISC AND MIT AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+# Several major versions of the same crate bloat the binary; warn so they get noticed.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

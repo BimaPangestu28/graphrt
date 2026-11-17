@@ -1,13 +1,16 @@
 [package]
 name = "graphrt-rag"
 description = "Retrieval building blocks for graphrt: embedders, vector stores, hybrid search, reranking, chunking and the knowledge-retrieval node."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-rag"
+homepage = "https://github.com/BimaPangestu28/agentic-rust-runtime"
+keywords = ["rag", "embeddings", "vector-search", "bm25", "retrieval"]
+categories = ["text-processing", "database"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
 
 [features]
 default = ["http", "qdrant", "fs", "yaml", "doc"]
