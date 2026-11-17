@@ -1,13 +1,21 @@
 [package]
 name = "graphrt-plugin-sdk"
+description = "SDK for writing graphrt plugins in Rust: expose node kinds and tools over the graphrt plugin protocol."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
-graphrt-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "io-util", "io-std", "macros"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "io-util"] }
 
 [lints]
 workspace = true

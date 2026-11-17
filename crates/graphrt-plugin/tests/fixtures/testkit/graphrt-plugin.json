@@ -1,0 +1,23 @@
+{
+  "name": "testkit",
+  "version": "0.0.1",
+  "runtime": "process",
+  "command": "python3",
+  "args": ["-u", "plugin.py"],
+  "env": { "FIXED_VAR": "fixed" },
+  "permissions": { "env": ["CARGO_PKG_NAME"] },
+  "limits": { "timeout_ms": 5000, "max_concurrency": 4 },
+  "nodes": [
+    { "kind": "testkit.echo", "title": "Echo", "outputs": [{ "name": "config", "type": "object" }] },
+    { "kind": "testkit.sleep", "title": "Sleep" },
+    { "kind": "testkit.crash_once", "title": "Crash once", "config_schema": { "required": ["marker"] } },
+    { "kind": "testkit.env", "title": "Env" },
+    { "kind": "testkit.fail", "title": "Fail" },
+    { "kind": "testkit.boom", "title": "Boom" },
+    { "kind": "testkit.approve", "title": "Approve", "handles": { "kind": "fixed", "handles": ["yes", "no"] } },
+    { "kind": "testkit.write", "title": "Write" }
+  ],
+  "tools": [
+    { "name": "add", "description": "Add two numbers", "parameters": { "type": "object" } }
+  ]
+}
