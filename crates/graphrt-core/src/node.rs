@@ -548,6 +548,7 @@ pub type NodeFactory = Arc<dyn Fn(&NodeDoc) -> Result<Arc<dyn Node>, ConfigError
 #[derive(Clone, Default)]
 pub struct Registry {
     factories: HashMap<String, NodeFactory>,
+    descriptors: HashMap<String, crate::catalog::NodeDescriptor>,
 }
 
 impl fmt::Debug for Registry {
@@ -578,6 +579,41 @@ impl Registry {
     {
         self.factories.insert(kind.to_owned(), Arc::new(factory));
         self
+    }
+
+    /// Register (or replace) a factory together with its catalog descriptor.
+    /// The descriptor's `kind` is the registered node type.
+    pub fn register_described<F>(&mut self, descriptor: crate::catalog::NodeDescriptor, factory: F) -> &mut Self
+    where
+        F: Fn(&NodeDoc) -> Result<Arc<dyn Node>, ConfigError> + Send + Sync + 'static,
+    {
+        let kind = descriptor.kind.clone();
+        self.factories.insert(kind.clone(), Arc::new(factory));
+        self.descriptors.insert(kind, descriptor);
+        self
+    }
+
+    /// Attach or replace the descriptor of an already-registered kind.
+    pub fn describe(&mut self, descriptor: crate::catalog::NodeDescriptor) -> &mut Self {
+        if self.factories.contains_key(&descriptor.kind) {
+            self.descriptors.insert(descriptor.kind.clone(), descriptor);
+        }
+        self
+    }
+
+    /// Descriptor of a kind. Kinds registered without one get a bare descriptor.
+    pub fn descriptor(&self, kind: &str) -> Option<crate::catalog::NodeDescriptor> {
+        if !self.factories.contains_key(kind) {
+            return None;
+        }
+        Some(self.descriptors.get(kind).cloned().unwrap_or_else(|| crate::catalog::NodeDescriptor::bare(kind)))
+    }
+
+    /// Catalog of every registered kind, sorted by kind.
+    pub fn descriptors(&self) -> Vec<crate::catalog::NodeDescriptor> {
+        let mut kinds: Vec<&String> = self.factories.keys().collect();
+        kinds.sort();
+        kinds.into_iter().filter_map(|k| self.descriptor(k)).collect()
     }
 
     /// Register an alias resolving to an already-registered kind.

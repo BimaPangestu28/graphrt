@@ -12,10 +12,12 @@
 //! provider; those live in separate crates and plug in through
 //! [`node::Services`] and [`node::Registry`].
 
+pub mod catalog;
 pub mod condition;
 pub mod dsl;
 pub mod engine;
 pub mod event;
+pub mod file;
 pub mod graph;
 pub mod node;
 pub mod nodes;

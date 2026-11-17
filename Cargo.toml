@@ -6,6 +6,10 @@ members = [
     "crates/graphrt-http",
     "crates/graphrt-code",
     "crates/graphrt-mcp",
+    "crates/graphrt-doc",
+    "crates/graphrt-rag",
+    "crates/graphrt-plugin",
+    "crates/graphrt-plugin-sdk",
     "crates/graphrt-cli",
 ]
 
@@ -24,6 +28,10 @@ graphrt-llm = { path = "crates/graphrt-llm", version = "0.1.0", default-features
 graphrt-http = { path = "crates/graphrt-http", version = "0.1.0", default-features = false }
 graphrt-code = { path = "crates/graphrt-code", version = "0.1.0", default-features = false }
 graphrt-mcp = { path = "crates/graphrt-mcp", version = "0.1.0", default-features = false }
+graphrt-doc = { path = "crates/graphrt-doc", version = "0.1.0", default-features = false }
+graphrt-rag = { path = "crates/graphrt-rag", version = "0.1.0", default-features = false }
+graphrt-plugin = { path = "crates/graphrt-plugin", version = "0.1.0", default-features = false }
+graphrt-plugin-sdk = { path = "crates/graphrt-plugin-sdk", version = "0.1.0", default-features = false }
 
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 thiserror = "2"
