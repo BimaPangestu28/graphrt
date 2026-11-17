@@ -60,6 +60,20 @@ pub struct CodeLimits {
     pub max_depth: usize,
 }
 
+impl CodeLimits {
+    /// Field-wise minimum of `self` and `max`: workflow-provided limits may only lower
+    /// the operator's limits, never raise them.
+    pub fn clamp_to(self, max: &CodeLimits) -> CodeLimits {
+        CodeLimits {
+            time_ms: self.time_ms.min(max.time_ms),
+            memory_bytes: self.memory_bytes.min(max.memory_bytes),
+            stack_bytes: self.stack_bytes.min(max.stack_bytes),
+            max_output_bytes: self.max_output_bytes.min(max.max_output_bytes),
+            max_depth: self.max_depth.min(max.max_depth),
+        }
+    }
+}
+
 impl Default for CodeLimits {
     fn default() -> Self {
         Self {
@@ -170,10 +184,16 @@ impl CodeNode {
         })
     }
 
-    /// Configured limits, with the time limit capped by the attempt deadline so a
-    /// node timeout also interrupts the interpreter (which blocks synchronously).
+    /// Effective limits: the host's [`CodeLimits`] service (or the defaults) is the
+    /// ceiling; limits in the node config can only lower it. The time limit is further
+    /// capped by the attempt deadline so a node timeout also interrupts the interpreter
+    /// (which blocks synchronously).
     fn effective_limits(&self, ctx: &NodeContext) -> CodeLimits {
-        let mut limits = self.limits.or_else(|| ctx.service::<CodeLimits>().copied()).unwrap_or_default();
+        let host = ctx.service::<CodeLimits>().copied().unwrap_or_default();
+        let mut limits = match self.limits {
+            Some(requested) => requested.clamp_to(&host),
+            None => host,
+        };
         if let Some(remaining) = ctx.remaining() {
             let remaining_ms = u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX).max(1);
             limits.time_ms = limits.time_ms.min(remaining_ms);
@@ -181,17 +201,25 @@ impl CodeNode {
         limits
     }
 
-    fn build_inputs(&self, ctx: &NodeContext) -> serde_json::Value {
+    /// Build the `main(args)` object. Selectors that do not resolve are passed as
+    /// `null` and returned in the second element (reported as `missing_inputs` metadata).
+    fn build_inputs(&self, ctx: &NodeContext) -> (serde_json::Value, Vec<String>) {
         let mut args = serde_json::Map::new();
+        let mut missing = Vec::new();
         for var in &self.variables {
-            let value = ctx.get(&var.value_selector).unwrap_or(Value::Null);
+            let value = match ctx.get(&var.value_selector) {
+                Some(v) => v,
+                None => {
+                    missing.push(var.value_selector.to_string());
+                    Value::Null
+                }
+            };
             args.insert(var.variable.clone(), value.to_json_exposed());
         }
-        serde_json::Value::Object(args)
+        (serde_json::Value::Object(args), missing)
     }
 
-    async fn execute(&self, ctx: &NodeContext) -> Result<serde_json::Value, NodeError> {
-        let inputs = self.build_inputs(ctx);
+    async fn execute(&self, ctx: &NodeContext, inputs: serde_json::Value) -> Result<serde_json::Value, NodeError> {
         let limits = self.effective_limits(ctx);
         let use_remote = self.sandbox == SandboxChoice::Remote || !embedded_supports(&self.language);
         if use_remote {
@@ -251,8 +279,12 @@ impl Node for CodeNode {
     fn run(&self, ctx: NodeContext) -> BoxFuture<'_, NodeResult> {
         Box::pin(async move {
             let limits = self.effective_limits(&ctx);
-            let result = self.execute(&ctx).await?;
-            let output = self.convert_outputs(result, &limits)?;
+            let (inputs, missing) = self.build_inputs(&ctx);
+            let result = self.execute(&ctx, inputs).await?;
+            let mut output = self.convert_outputs(result, &limits)?;
+            if !missing.is_empty() {
+                output = output.meta("missing_inputs", Value::array(missing.into_iter().map(Value::from)));
+            }
             Ok(output.meta("language", self.language.as_str()).into())
         })
     }
@@ -490,6 +522,76 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.kind == "out_of_memory" || err.kind == "code_error", "{err}");
+        assert!(!err.retryable);
+    }
+
+    #[tokio::test]
+    async fn timeouts_are_not_retryable() {
+        let err = run(serde_json::json!({
+            "code": "function main() { while (true) {} }",
+            "limits": {"time_ms": 100},
+        }))
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind, "timeout");
+        assert!(!err.retryable);
+    }
+
+    #[tokio::test]
+    async fn config_limits_cannot_exceed_host_limits() {
+        let n = node(serde_json::json!({
+            "code": "function main() { while (true) {} }",
+            "limits": {"time_ms": 3_600_000u64, "memory_bytes": 1_000_000_000_000u64},
+        }))
+        .unwrap();
+        let host = CodeLimits { time_ms: 150, ..CodeLimits::default() };
+        let services = Arc::new(Services::new().with(host));
+        let ctx = NodeContext::for_test("c", pool()).with_services(services.clone());
+        assert_eq!(n.effective_limits(&ctx).time_ms, 150);
+        assert_eq!(n.effective_limits(&ctx).memory_bytes, CodeLimits::default().memory_bytes);
+        let started = std::time::Instant::now();
+        let err = n.run(ctx).await.unwrap_err();
+        assert_eq!(err.kind, "timeout");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        // Without a host service, the defaults are the ceiling.
+        let ctx = NodeContext::for_test("c", pool());
+        assert_eq!(n.effective_limits(&ctx).time_ms, CodeLimits::default().time_ms);
+    }
+
+    #[tokio::test]
+    async fn non_finite_numbers_are_rejected() {
+        let err = run(serde_json::json!({ "code": "function main() { return { x: 1 / 0 }; }" })).await.unwrap_err();
+        assert_eq!(err.kind, "code_error");
+        assert!(err.message.contains("non-finite"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn user_errors_mentioning_memory_are_code_errors() {
+        let err =
+            run(serde_json::json!({ "code": "function main() { throw new Error('out of memory reading file'); }" }))
+                .await
+                .unwrap_err();
+        assert_eq!(err.kind, "code_error", "{err}");
+    }
+
+    #[tokio::test]
+    async fn thrown_non_error_values_are_described() {
+        let err = run(serde_json::json!({ "code": "function main() { throw 42; }" })).await.unwrap_err();
+        assert_eq!(err.kind, "code_error");
+        assert!(err.message.contains("42"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn missing_inputs_are_reported() {
+        let out = run(serde_json::json!({
+            "code": "function main({ x }) { return { isNull: x === null }; }",
+            "variables": [{"variable": "x", "value_selector": ["start", "nope"]}],
+        }))
+        .await
+        .unwrap();
+        assert_eq!(out.outputs.get("isNull"), Some(&Value::Bool(true)));
+        assert_eq!(out.metadata.get("missing_inputs"), Some(&Value::array([Value::from("start.nope")])));
     }
 
     #[tokio::test]

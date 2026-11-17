@@ -263,7 +263,7 @@ async fn redirect_to_literal_private_ip_is_refused() {
     // And with redirects disabled, the 302 is returned as an error status.
     let policy = EgressPolicy { max_redirects: 0, ..EgressPolicy::trusted() };
     let err = run_with(serde_json::json!({ "url": base }), policy).await.unwrap_err();
-    assert_eq!(err.kind, "egress_blocked", "{err}");
+    assert_eq!(err.kind, "http_status", "{err}");
 }
 
 #[tokio::test]
@@ -283,4 +283,219 @@ async fn timeout_is_reported() {
     .await
     .unwrap_err();
     assert_eq!(err.kind, "timeout", "{err}");
+}
+
+fn redirect(status: &'static str, location: String) -> Reply {
+    Reply { status, headers: vec![("location", location)], body: Vec::new() }
+}
+
+#[tokio::test]
+async fn cross_origin_redirect_strips_credentials() {
+    let (target, mut target_rx) = serve(vec![Reply::text("200 OK", "text/plain", "ok")]).await;
+    let (origin, mut origin_rx) = serve(vec![redirect("302 Found", format!("{target}/landing"))]).await;
+    let out = run_with(
+        serde_json::json!({
+            "url": format!("{origin}/start"),
+            "headers": [
+                {"key": "X-Plain", "value": "visible"},
+                {"key": "X-Token", "value": "t={{#env.TOKEN#}}"},
+                {"key": "Cookie", "value": "session=abc"}
+            ],
+            "authorization": {"type": "api-key", "config": {"type": "custom", "header": "X-Api-Key", "api_key": "{{#env.TOKEN#}}"}},
+        }),
+        EgressPolicy::trusted(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.outputs.get("body"), Some(&Value::from("ok")));
+
+    let first = origin_rx.recv().await.unwrap().to_ascii_lowercase();
+    assert!(first.contains("x-api-key: tok-secret-123"), "{first}");
+    assert!(first.contains("x-token: t=tok-secret-123"), "{first}");
+
+    let second = target_rx.recv().await.unwrap().to_ascii_lowercase();
+    assert!(second.starts_with("get /landing"), "{second}");
+    assert!(second.contains("x-plain: visible"), "{second}");
+    assert!(!second.contains("tok-secret-123"), "credentials leaked across origins: {second}");
+    assert!(!second.contains("x-api-key"), "{second}");
+    assert!(!second.contains("cookie"), "{second}");
+}
+
+#[tokio::test]
+async fn same_origin_redirect_keeps_credentials_and_303_becomes_get() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let replies = [
+            format!(
+                "HTTP/1.1 303 See Other\r\nlocation: http://{addr}/after\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+            ),
+            "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 4\r\nconnection: close\r\n\r\ndone"
+                .to_owned(),
+        ];
+        for reply in replies {
+            let Ok((mut socket, _)) = listener.accept().await else { return };
+            let raw = read_request(&mut socket).await;
+            let _ = tx.send(raw);
+            let _ = socket.write_all(reply.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        }
+    });
+    let out = run_with(
+        serde_json::json!({
+            "method": "post",
+            "url": format!("http://{addr}/submit"),
+            "body": {"type": "raw-text", "data": "payload"},
+            "authorization": {"type": "api-key", "config": {"type": "custom", "header": "X-Api-Key", "api_key": "{{#env.TOKEN#}}"}},
+        }),
+        EgressPolicy::trusted(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.outputs.get("body"), Some(&Value::from("done")));
+    let first = rx.recv().await.unwrap().to_ascii_lowercase();
+    assert!(first.starts_with("post /submit"), "{first}");
+    let second = rx.recv().await.unwrap().to_ascii_lowercase();
+    assert!(second.starts_with("get /after"), "{second}");
+    assert!(second.contains("x-api-key: tok-secret-123"), "{second}");
+    assert!(!second.contains("payload"), "{second}");
+}
+
+#[tokio::test]
+async fn redirect_limits() {
+    // With redirects disabled the 3xx is the response.
+    let (origin, _o) = serve(vec![redirect("302 Found", "http://127.0.0.1:9/x".to_owned())]).await;
+    let policy = EgressPolicy { max_redirects: 0, ..EgressPolicy::trusted() };
+    let out = run_with(serde_json::json!({ "url": origin, "fail_on_error_status": false }), policy).await.unwrap();
+    assert_eq!(out.outputs.get("status_code"), Some(&Value::Int(302)));
+
+    let (c, _c) =
+        serve(vec![redirect("302 Found", "/again".to_owned()), redirect("302 Found", "/again".to_owned())]).await;
+    let policy = EgressPolicy { max_redirects: 1, ..EgressPolicy::trusted() };
+    let err = run_with(serde_json::json!({ "url": c }), policy).await.unwrap_err();
+    assert_eq!(err.kind, "too_many_redirects", "{err}");
+    assert!(!err.retryable);
+}
+
+#[tokio::test]
+async fn node_limits_cannot_exceed_policy_caps() {
+    let big = "x".repeat(10_000);
+    let (base, _rx) = serve(vec![Reply::text("200 OK", "text/plain", &big)]).await;
+    let policy = EgressPolicy { max_response_bytes: 1000, ..EgressPolicy::trusted() };
+    let err = run_with(serde_json::json!({ "url": base, "max_response_bytes": 1_000_000_000_000u64 }), policy)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, "response_too_large");
+
+    // A node timeout of a day is clamped to the policy's total timeout.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        if let Ok((socket, _)) = listener.accept().await {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            drop(socket);
+        }
+    });
+    let policy = EgressPolicy { total_timeout: Duration::from_millis(300), ..EgressPolicy::trusted() };
+    let started = std::time::Instant::now();
+    let err = run_with(serde_json::json!({ "url": format!("http://{addr}"), "timeout": {"read": 86400} }), policy)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, "timeout", "{err}");
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn transport_errors_do_not_leak_url_secrets() {
+    // Bind then drop to get a closed port.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let url = format!("http://{addr}/v1?key={}", "{{#env.TOKEN#}}");
+    let err = run_with(serde_json::json!({ "url": url }), EgressPolicy::trusted()).await.unwrap_err();
+    assert_eq!(err.kind, "connection", "{err}");
+    assert!(!err.message.contains("tok-secret-123"), "{}", err.message);
+}
+
+#[tokio::test]
+async fn latin1_text_is_decoded() {
+    let reply = Reply {
+        status: "200 OK",
+        headers: vec![("content-type", "text/html; charset=ISO-8859-1".to_owned())],
+        body: b"caf\xe9".to_vec(),
+    };
+    let (base, _rx) = serve(vec![reply]).await;
+    let out = run_with(serde_json::json!({ "url": base }), EgressPolicy::trusted()).await.unwrap();
+    assert_eq!(out.outputs.get("body"), Some(&Value::from("café")));
+    assert_eq!(out.outputs.get("files").and_then(Value::as_array).map(<[Value]>::len), Some(0));
+}
+
+#[tokio::test]
+async fn undecodable_text_is_lossy_not_binary() {
+    let reply = Reply {
+        status: "200 OK",
+        headers: vec![("content-type", "text/plain".to_owned())],
+        body: b"ok \xff\xfe end".to_vec(),
+    };
+    let (base, _rx) = serve(vec![reply]).await;
+    let out = run_with(serde_json::json!({ "url": base }), EgressPolicy::trusted()).await.unwrap();
+    let body = out.outputs.get("body").and_then(Value::as_str).unwrap().to_owned();
+    assert!(body.starts_with("ok ") && body.ends_with(" end"), "{body}");
+    assert_eq!(out.metadata.get("body_lossy"), Some(&Value::Bool(true)));
+}
+
+#[tokio::test]
+async fn invalid_json_body_is_reported() {
+    let (base, _rx) = serve(vec![Reply::text("200 OK", "application/json", "{not json")]).await;
+    let out = run_with(serde_json::json!({ "url": base }), EgressPolicy::trusted()).await.unwrap();
+    assert_eq!(out.outputs.get("json"), Some(&Value::Null));
+    assert_eq!(out.outputs.get("body"), Some(&Value::from("{not json")));
+    assert!(out.metadata.contains_key("json_error"));
+
+    let (base, _rx) = serve(vec![Reply::text("200 OK", "application/json", "{not json")]).await;
+    let err = run_with(serde_json::json!({ "url": base, "parse_json": "strict" }), EgressPolicy::trusted())
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, "invalid_response");
+}
+
+#[tokio::test]
+async fn large_error_page_is_a_status_error() {
+    let big = "e".repeat(10_000);
+    let (base, _rx) = serve(vec![Reply::text("503 Service Unavailable", "text/html", &big)]).await;
+    let policy = EgressPolicy { max_response_bytes: 1000, ..EgressPolicy::trusted() };
+    let err = run_with(serde_json::json!({ "url": base }), policy).await.unwrap_err();
+    assert_eq!(err.kind, "http_status", "{err}");
+    assert!(err.retryable);
+}
+
+#[tokio::test]
+async fn header_key_rendering_empty_is_an_error() {
+    let (base, _rx) = serve(vec![]).await;
+    let err = run_with(
+        serde_json::json!({ "url": base, "headers": [{"key": "{{#start.missing#}}", "value": "v"}] }),
+        EgressPolicy::trusted(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.kind, "invalid_input", "{err}");
+}
+
+#[test]
+fn inputs_cover_body_and_auth() {
+    let node = HttpRequestNode::from_doc(&NodeDoc::new(
+        "h",
+        KIND,
+        serde_json::json!({
+            "url": "https://x/{{#a.path#}}",
+            "authorization": {"type": "api-key", "config": {"type": "bearer", "api_key": "{{#env.K#}}"}},
+            "body": {"type": "json", "data": "{\"q\": \"{{#b.q#}}\"}"},
+        }),
+    ))
+    .unwrap();
+    let names: Vec<String> = node.inputs().iter().map(ToString::to_string).collect();
+    assert!(names.contains(&"a.path".to_owned()));
+    assert!(names.contains(&"env.K".to_owned()));
+    assert!(names.contains(&"b.q".to_owned()));
 }

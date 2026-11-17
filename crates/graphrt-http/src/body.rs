@@ -80,7 +80,33 @@ pub fn inline_file_bytes(file: &File) -> Result<Vec<u8>, NodeError> {
             .decode(payload.trim())
             .map_err(|e| NodeError::fatal("invalid_input", format!("file `{}`: invalid base64: {e}", file.name)))
     } else {
-        Ok(payload.as_bytes().to_vec())
+        percent_decode(payload.as_bytes())
+            .ok_or_else(|| NodeError::fatal("invalid_input", format!("file `{}`: invalid percent-encoding", file.name)))
+    }
+}
+
+/// Decode `%XX` escapes (RFC 3986). Returns `None` on a malformed escape.
+fn percent_decode(input: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut iter = input.iter().copied();
+    while let Some(b) = iter.next() {
+        if b == b'%' {
+            let hi = hex_value(iter.next()?)?;
+            let lo = hex_value(iter.next()?)?;
+            out.push(hi * 16 + lo);
+        } else {
+            out.push(b);
+        }
+    }
+    Some(out)
+}
+
+fn hex_value(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -192,6 +218,14 @@ mod tests {
         assert_eq!(inline_file_bytes(&f).unwrap(), b"hello");
         let remote = File { url: Some("https://x/y".into()), name: "y".into(), ..File::default() };
         assert!(inline_file_bytes(&remote).is_err());
+    }
+
+    #[test]
+    fn plain_data_url_is_percent_decoded() {
+        let f = File { url: Some("data:text/plain,a%20b%2Cc".into()), name: "a.txt".into(), ..File::default() };
+        assert_eq!(inline_file_bytes(&f).unwrap(), b"a b,c");
+        let bad = File { url: Some("data:text/plain,%zz".into()), name: "b.txt".into(), ..File::default() };
+        assert!(inline_file_bytes(&bad).is_err());
     }
 
     #[test]

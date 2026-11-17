@@ -11,6 +11,7 @@ use crate::policy::{EgressError, EgressPolicy};
 
 /// Error building an [`HttpClient`].
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ClientError {
     #[error("invalid proxy `{0}`: {1}")]
     Proxy(String, String),
@@ -33,6 +34,10 @@ pub struct HttpClient {
     policy: Arc<EgressPolicy>,
     verified: reqwest::Client,
     unverified: reqwest::Client,
+    /// Clients that never follow redirects; the `http-request` node follows them
+    /// itself so it can strip credentials on cross-origin hops.
+    manual_verified: reqwest::Client,
+    manual_unverified: reqwest::Client,
 }
 
 impl HttpClient {
@@ -40,9 +45,11 @@ impl HttpClient {
     pub fn new(policy: EgressPolicy) -> Result<Self, ClientError> {
         install_crypto_provider();
         let policy = Arc::new(policy);
-        let verified = build(&policy, true)?;
-        let unverified = build(&policy, false)?;
-        Ok(Self { policy, verified, unverified })
+        let verified = build(&policy, true, true)?;
+        let unverified = build(&policy, false, true)?;
+        let manual_verified = build(&policy, true, false)?;
+        let manual_unverified = build(&policy, false, false)?;
+        Ok(Self { policy, verified, unverified, manual_verified, manual_unverified })
     }
 
     /// Client with [`EgressPolicy::trusted`], for operator-configured endpoints.
@@ -55,8 +62,17 @@ impl HttpClient {
     }
 
     /// Underlying client. `verify_tls = false` disables certificate verification.
+    ///
+    /// Redirects are followed automatically (each hop re-validated). reqwest strips only
+    /// `authorization`, `cookie` and `proxy-authorization` on cross-host hops, so callers
+    /// sending other credential headers should use [`HttpClient::manual_redirect_client`].
     pub fn client(&self, verify_tls: bool) -> &reqwest::Client {
         if verify_tls { &self.verified } else { &self.unverified }
+    }
+
+    /// Client that never follows redirects: 3xx responses are returned to the caller.
+    pub fn manual_redirect_client(&self, verify_tls: bool) -> &reqwest::Client {
+        if verify_tls { &self.manual_verified } else { &self.manual_unverified }
     }
 
     /// Validate a URL against the policy (scheme, host lists, literal addresses).
@@ -74,8 +90,10 @@ fn install_crypto_provider() {
     });
 }
 
-fn build(policy: &Arc<EgressPolicy>, verify_tls: bool) -> Result<reqwest::Client, ClientError> {
-    let redirect_policy = {
+fn build(policy: &Arc<EgressPolicy>, verify_tls: bool, follow_redirects: bool) -> Result<reqwest::Client, ClientError> {
+    let redirect_policy = if !follow_redirects {
+        redirect::Policy::none()
+    } else {
         let policy = Arc::clone(policy);
         redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= policy.max_redirects {

@@ -4,6 +4,8 @@
 //! runs. The context exposes only the ECMAScript standard library: no module
 //! loader, file system, network or timers.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rquickjs::{Context, Runtime};
@@ -55,7 +57,13 @@ var __graphrt_done = false;
     .then(
       function (value) {
         try {
-          __graphrt_out = JSON.stringify(value === undefined ? null : value);
+          // NaN / Infinity would silently become null: reject them instead.
+          __graphrt_out = JSON.stringify(value === undefined ? null : value, function (key, v) {
+            if (typeof v === "number" && !isFinite(v)) {
+              throw new Error("non-finite number (" + v + ") in result" + (key ? " at `" + key + "`" : ""));
+            }
+            return v;
+          });
           if (__graphrt_out === undefined) {
             __graphrt_err = "main() returned a value that cannot be encoded as JSON";
           }
@@ -80,16 +88,26 @@ pub(crate) fn run(code: &str, input: &str, limits: &CodeLimits) -> Result<serde_
 
     let budget = Duration::from_millis(limits.time_ms);
     let deadline = Instant::now() + budget;
-    runtime.set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)));
+    // The interrupt handler records that it fired, so errors are classified by what the
+    // engine actually did rather than by the clock at classification time.
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&interrupted);
+    runtime.set_interrupt_handler(Some(Box::new(move || {
+        let stop = Instant::now() >= deadline;
+        if stop {
+            flag.store(true, Ordering::Relaxed);
+        }
+        stop
+    })));
 
     let context =
         Context::full(&runtime).map_err(|e| NodeError::new("sandbox", format!("cannot create JS context: {e}")))?;
 
-    let timed_out = || Instant::now() >= deadline;
     let classify = |message: String| -> NodeError {
-        if timed_out() {
-            NodeError::new("timeout", format!("code exceeded its time limit of {} ms", budget.as_millis()))
-        } else if message.to_ascii_lowercase().contains("out of memory") {
+        if interrupted.load(Ordering::Relaxed) {
+            // Running the same code again hits the same limit: not retryable.
+            NodeError::fatal("timeout", format!("code exceeded its time limit of {} ms", budget.as_millis()))
+        } else if is_engine_oom(&message) {
             NodeError::fatal(
                 "out_of_memory",
                 format!("code exceeded its memory limit of {} bytes", limits.memory_bytes),
@@ -150,6 +168,13 @@ pub(crate) fn run(code: &str, input: &str, limits: &CodeLimits) -> Result<serde_
     serde_json::from_str(&text).map_err(|e| NodeError::fatal("invalid_output", format!("invalid result JSON: {e}")))
 }
 
+/// Whether a message is QuickJS's own out-of-memory error (not user text that merely
+/// mentions memory).
+fn is_engine_oom(message: &str) -> bool {
+    let m = message.trim();
+    m == "out of memory" || m == "InternalError: out of memory"
+}
+
 /// Extract a readable message from the pending exception.
 fn exception_text(ctx: &rquickjs::Ctx<'_>) -> String {
     let value = ctx.catch();
@@ -163,6 +188,10 @@ fn exception_text(ctx: &rquickjs::Ctx<'_>) -> String {
         if let Ok(s) = s.to_string() {
             return s;
         }
+    }
+    // Any other thrown value (number, object without `message`...): use its string form.
+    if let Ok(rquickjs::convert::Coerced(text)) = value.get::<rquickjs::convert::Coerced<String>>() {
+        return text;
     }
     "uncaught JavaScript exception".to_owned()
 }

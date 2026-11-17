@@ -78,28 +78,66 @@ impl RemoteSandbox for HttpSandbox {
             if let Some(key) = &self.api_key {
                 request = request.bearer_auth(key);
             }
-            let response =
-                request.send().await.map_err(|e| NodeError::new("sandbox", format!("sandbox request failed: {e}")))?;
-            let status = response.status();
-            let bytes = response
-                .bytes()
+            let mut response = request
+                .send()
                 .await
-                .map_err(|e| NodeError::new("sandbox", format!("cannot read sandbox response: {e}")))?;
-            if bytes.len() > limits.max_output_bytes.saturating_add(64 * 1024) {
-                return Err(NodeError::fatal("invalid_output", "sandbox response exceeds the output size limit"));
+                .map_err(|e| NodeError::new("sandbox", format!("sandbox request failed: {}", e.without_url())))?;
+            let status = response.status();
+            let cap = limits.max_output_bytes.saturating_add(64 * 1024);
+            let mut bytes: Vec<u8> = Vec::new();
+            let mut truncated = false;
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|e| NodeError::new("sandbox", format!("cannot read sandbox response: {}", e.without_url())))?
+            {
+                if bytes.len().saturating_add(chunk.len()) > cap {
+                    truncated = true;
+                    break;
+                }
+                bytes.extend_from_slice(&chunk);
             }
-            let parsed: SandboxResponse = serde_json::from_slice(&bytes).map_err(|e| {
-                NodeError::new("sandbox", format!("sandbox returned HTTP {status} with an invalid body: {e}"))
-            })?;
-            if let Some(error) = parsed.error {
-                return Err(NodeError::fatal("code_error", error));
-            }
-            if !status.is_success() {
-                return Err(NodeError::new("sandbox", format!("sandbox returned HTTP {status}")));
-            }
-            parsed.outputs.ok_or_else(|| NodeError::fatal("invalid_output", "sandbox response has no `outputs`"))
+            classify_response(status, &bytes, truncated)
         })
     }
+}
+
+/// Turn a sandbox reply into outputs or an error.
+///
+/// Transport-level status decides retryability first: 401/403 are configuration
+/// problems (fatal), 408/429/5xx are transient (retryable). An `error` field is a
+/// code error only on a successful or other 4xx protocol reply.
+fn classify_response(
+    status: reqwest::StatusCode,
+    bytes: &[u8],
+    truncated: bool,
+) -> Result<serde_json::Value, NodeError> {
+    let code = status.as_u16();
+    let error_text = || {
+        serde_json::from_slice::<SandboxResponse>(bytes)
+            .ok()
+            .and_then(|r| r.error)
+            .unwrap_or_else(|| String::from_utf8_lossy(bytes).chars().take(300).collect())
+    };
+    if matches!(code, 401 | 403) {
+        return Err(NodeError::fatal("sandbox_auth", format!("sandbox rejected the credentials (HTTP {status})")));
+    }
+    if status.is_server_error() || matches!(code, 408 | 429) {
+        return Err(NodeError::new("sandbox", format!("sandbox returned HTTP {status}: {}", error_text())));
+    }
+    if truncated {
+        return Err(NodeError::fatal("invalid_output", "sandbox response exceeds the output size limit"));
+    }
+    let parsed: SandboxResponse = serde_json::from_slice(bytes).map_err(|e| {
+        NodeError::fatal("sandbox", format!("sandbox returned HTTP {status} with an invalid body: {e}"))
+    })?;
+    if let Some(error) = parsed.error {
+        return Err(NodeError::fatal("code_error", error));
+    }
+    if !status.is_success() {
+        return Err(NodeError::fatal("sandbox", format!("sandbox returned HTTP {status}")));
+    }
+    parsed.outputs.ok_or_else(|| NodeError::fatal("invalid_output", "sandbox response has no `outputs`"))
 }
 
 #[cfg(test)]
@@ -111,5 +149,27 @@ mod tests {
         let s = HttpSandbox::new("http://127.0.0.1:8194/run", Some("secret-key".into())).unwrap();
         assert!(!format!("{s:?}").contains("secret-key"));
         assert!(HttpSandbox::new("not a url", None).is_err());
+    }
+
+    #[test]
+    fn response_classification() {
+        use reqwest::StatusCode;
+        let ok = classify_response(StatusCode::OK, br#"{"outputs":{"a":1}}"#, false).unwrap();
+        assert_eq!(ok, serde_json::json!({"a": 1}));
+
+        let err = classify_response(StatusCode::OK, br#"{"error":"NameError: x"}"#, false).unwrap_err();
+        assert_eq!(err.kind, "code_error");
+        assert!(!err.retryable);
+
+        let err = classify_response(StatusCode::INTERNAL_SERVER_ERROR, br#"{"error":"boom"}"#, false).unwrap_err();
+        assert_eq!(err.kind, "sandbox");
+        assert!(err.retryable);
+
+        let err = classify_response(StatusCode::UNAUTHORIZED, b"", false).unwrap_err();
+        assert_eq!(err.kind, "sandbox_auth");
+        assert!(!err.retryable);
+
+        let err = classify_response(StatusCode::OK, b"{", true).unwrap_err();
+        assert_eq!(err.kind, "invalid_output");
     }
 }

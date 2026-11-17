@@ -50,6 +50,7 @@ impl Default for EgressPolicy {
 
 /// Reason a destination was refused.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum EgressError {
     #[error("invalid URL `{0}`")]
     InvalidUrl(String),
