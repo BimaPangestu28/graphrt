@@ -244,6 +244,13 @@ pub struct ServiceArgs {
     /// Maximum node executions per run.
     #[arg(long, value_name = "N")]
     pub max_steps: Option<u64>,
+    /// Export OpenTelemetry traces and metrics over OTLP/HTTP (`$OTEL_EXPORTER_OTLP_ENDPOINT`,
+    /// default http://localhost:4318). Enabled automatically when that variable is set.
+    #[arg(long)]
+    pub otel: bool,
+    /// Print OpenTelemetry spans as JSON lines on stderr (debugging).
+    #[arg(long)]
+    pub otel_stdout: bool,
     #[command(flatten)]
     pub plugins: PluginArgs,
 }

@@ -12,8 +12,23 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["http"]
+# OTLP/HTTP JSON exporter (reqwest + rustls with the ring provider, batching on tokio).
+http = ["dep:reqwest", "dep:rustls", "dep:tokio"]
+
 [dependencies]
 graphrt-core.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { workspace = true, optional = true, features = ["rt", "time", "sync", "macros"] }
+
+[dev-dependencies]
+graphrt-core = { workspace = true, features = ["tokio", "yaml", "jinja"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
 
 [lints]
 workspace = true

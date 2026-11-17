@@ -62,6 +62,8 @@ pub struct AppState {
     next_id: AtomicU64,
     /// Node kinds (built-in and plugins) used for `/v1/nodes` and `/v1/validate`.
     extensions: Extensions,
+    /// OpenTelemetry export, when enabled.
+    telemetry: Option<Arc<crate::otel::Telemetry>>,
 }
 
 impl AppState {
@@ -73,7 +75,14 @@ impl AppState {
             api_key,
             next_id: AtomicU64::new(1),
             extensions: Extensions::builtin(),
+            telemetry: None,
         }
+    }
+
+    /// Trace every run with this telemetry.
+    pub fn with_telemetry(mut self, telemetry: Option<Arc<crate::otel::Telemetry>>) -> Self {
+        self.telemetry = telemetry;
+        self
     }
 
     /// Use these node kinds (built-ins plus plugins) for the catalog and validation.
@@ -191,7 +200,9 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         .or_else(|| options.env_file.iter().find(|(k, _)| *k == args.api_key_env).map(|(_, v)| v.clone()))
         .filter(|k| !k.is_empty());
     let limits = setup::limits(args.services.timeout_ms, args.services.max_steps);
-    let state = Arc::new(build_state(&files, &options, limits, api_key.clone()).await?);
+    let telemetry = crate::otel::Telemetry::from_args(&args.services, &options.all_vars())?;
+    let state =
+        Arc::new(build_state(&files, &options, limits, api_key.clone()).await?.with_telemetry(telemetry.clone()));
     let app = router(state.clone(), args.max_body_bytes);
 
     let listener = tokio::net::TcpListener::bind(&args.addr)
@@ -211,6 +222,9 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         })
         .await
         .map_err(|e| CliError::failed(format!("server error: {e}")))?;
+    if let Some(telemetry) = &telemetry {
+        telemetry.shutdown().await;
+    }
     Ok(EXIT_OK)
 }
 
@@ -340,6 +354,7 @@ fn to_values(map: serde_json::Map<String, serde_json::Value>) -> IndexMap<String
 async fn start_run(
     State(state): State<Arc<AppState>>,
     UrlPath(name): UrlPath<String>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<RunRequest>,
 ) -> Response {
     let Some(workflow) = state.workflows.get(&name) else {
@@ -352,12 +367,18 @@ async fn start_run(
     input.sys = to_values(body.sys);
     input.conversation = to_values(body.conversation);
     input.env = workflow.env.clone();
-    execute(state.clone(), &workflow.engine, run_id, input, body.stream).await
+    execute(state.clone(), &workflow.engine, run_id, input, body.stream, traceparent(&headers)).await
+}
+
+/// W3C `traceparent` of the incoming request, continued by the run's trace.
+fn traceparent(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers.get("traceparent").and_then(|v| v.to_str().ok()).map(str::to_owned)
 }
 
 async fn resume_run(
     State(state): State<Arc<AppState>>,
     UrlPath(run_id): UrlPath<String>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<ResumeRequest>,
 ) -> Response {
     if body.snapshot.run_id != run_id {
@@ -378,7 +399,7 @@ async fn resume_run(
         resume = resume.secret(selector, secret);
     }
     input.resume = Some(resume);
-    execute(state.clone(), &workflow.engine, run_id, input, body.stream).await
+    execute(state.clone(), &workflow.engine, run_id, input, body.stream, traceparent(&headers)).await
 }
 
 async fn abort_run(State(state): State<Arc<AppState>>, UrlPath(run_id): UrlPath<String>) -> Response {
@@ -404,7 +425,15 @@ impl Drop for RunGuard {
     }
 }
 
-async fn execute(state: Arc<AppState>, engine: &Engine, run_id: String, input: RunInput, stream: bool) -> Response {
+async fn execute(
+    state: Arc<AppState>,
+    engine: &Engine,
+    run_id: String,
+    input: RunInput,
+    stream: bool,
+    traceparent: Option<String>,
+) -> Response {
+    let tracer = crate::otel::tracer_for(state.telemetry.as_ref(), engine.graph(), traceparent.as_deref());
     let mut assembler = ResponseAssembler::new(engine.graph());
     if let Some(resume) = &input.resume {
         // Nodes that finished before the pause will not re-run; seed their values.
@@ -417,9 +446,9 @@ async fn execute(state: Arc<AppState>, engine: &Engine, run_id: String, input: R
     state.track(&run_id, run.handle());
     let guard = RunGuard { state, run_id: run_id.clone() };
     if stream {
-        Sse::new(sse_stream(run, assembler, guard)).keep_alive(KeepAlive::default()).into_response()
+        Sse::new(sse_stream(run, assembler, guard, tracer)).keep_alive(KeepAlive::default()).into_response()
     } else {
-        collect(run, assembler, guard, run_id, engine.graph()).await
+        collect(run, assembler, guard, run_id, engine.graph(), tracer).await
     }
 }
 
@@ -427,9 +456,11 @@ fn sse_stream(
     run: RunStream,
     mut assembler: ResponseAssembler,
     guard: RunGuard,
+    mut tracer: crate::otel::RunTracer,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + 'static {
     run.flat_map(move |event| {
         let _keep_alive = &guard;
+        tracer.on_event(&event);
         let mut out = Vec::new();
         for chunk in assembler.push(&event) {
             let data = serde_json::json!({ "node_id": chunk.node_id, "text": chunk.text, "is_final": chunk.is_final });
@@ -452,9 +483,11 @@ async fn collect(
     guard: RunGuard,
     run_id: String,
     _graph: &Arc<Graph>,
+    mut tracer: crate::otel::RunTracer,
 ) -> Response {
     let mut terminal = None;
     while let Some(event) = run.next().await {
+        tracer.on_event(&event);
         assembler.push(&event);
         if event.is_terminal() {
             terminal = Some(event);
