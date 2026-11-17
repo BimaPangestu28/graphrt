@@ -53,6 +53,7 @@ pub struct PauseReason {
 /// A run event.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Event {
     RunStarted {
         run_id: String,

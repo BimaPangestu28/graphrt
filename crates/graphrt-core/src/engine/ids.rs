@@ -13,7 +13,10 @@ fn seed() -> u64 {
         let mut h = std::collections::hash_map::RandomState::new().build_hasher();
         // `std::process::id` is unsupported (panics) on wasm32-unknown-unknown.
         #[cfg(not(target_arch = "wasm32"))]
-        h.write_u64(std::process::id().into());
+        let pid = u64::from(std::process::id());
+        #[cfg(target_arch = "wasm32")]
+        let pid = 0_u64;
+        h.write_u64(pid);
         h.finish()
     })
 }

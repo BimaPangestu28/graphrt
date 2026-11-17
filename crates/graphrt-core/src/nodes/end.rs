@@ -34,11 +34,6 @@ impl EndNode {
     pub fn new(config: EndConfig) -> Self {
         Self { config }
     }
-
-    /// Declared outputs (used for ordered response streaming).
-    pub fn outputs(&self) -> &[OutputVariable] {
-        &self.config.outputs
-    }
 }
 
 impl Node for EndNode {

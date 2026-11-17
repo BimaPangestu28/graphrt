@@ -69,6 +69,7 @@ pub struct Scope {
 
 /// Graph construction / validation error.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GraphError {
     #[error(transparent)]
     Config(#[from] ConfigError),
@@ -94,6 +95,8 @@ pub enum GraphError {
     MultipleEntries { scope: String, nodes: Vec<String> },
     #[error("graph has no nodes")]
     Empty,
+    #[error("workflow cannot be serialized: {0}")]
+    Unserializable(String),
     #[error("invalid node id `{id}`: {reason}")]
     InvalidNodeId { id: String, reason: String },
     #[error("node `{node}` references `{selector}`, but no node or variable namespace `{namespace}` exists")]
@@ -275,7 +278,7 @@ impl Graph {
 
         validate_references(&nodes, &index, &mut warnings)?;
 
-        let fingerprint = fingerprint(&workflow);
+        let fingerprint = fingerprint(&workflow)?;
         Ok(Self { nodes, edges, index, outgoing, incoming, scopes, warnings, fingerprint, workflow })
     }
 
@@ -500,7 +503,7 @@ fn reachable_from(entry: NodeIx, outgoing: &[Vec<EdgeIx>], edges: &[GraphEdge]) 
 
 /// FNV-1a over the canonical JSON of the graph section (stable across processes,
 /// unlike `DefaultHasher`).
-fn fingerprint(workflow: &Workflow) -> String {
+fn fingerprint(workflow: &Workflow) -> Result<String, GraphError> {
     struct Fnv(u64);
     impl Hasher for Fnv {
         fn finish(&self) -> u64 {
@@ -514,7 +517,7 @@ fn fingerprint(workflow: &Workflow) -> String {
         }
     }
     let mut h = Fnv(0xcbf2_9ce4_8422_2325);
-    let text = serde_json::to_string(&workflow.graph).unwrap_or_default();
+    let text = workflow.canonical_graph_json().map_err(|e| GraphError::Unserializable(e.to_string()))?;
     text.hash(&mut h);
-    format!("{:016x}", h.finish())
+    Ok(format!("{:016x}", h.finish()))
 }

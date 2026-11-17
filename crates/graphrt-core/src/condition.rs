@@ -334,7 +334,11 @@ pub(crate) fn key_group_matches(
 }
 
 /// Evaluate one key condition against an item.
-pub(crate) fn key_condition_matches(item: &Value, c: &KeyCondition, pool: &VariablePool) -> Result<bool, ConditionError> {
+pub(crate) fn key_condition_matches(
+    item: &Value,
+    c: &KeyCondition,
+    pool: &VariablePool,
+) -> Result<bool, ConditionError> {
     let actual = item_attribute(item, &c.key);
     let expected = if c.comparison_operator.is_unary() { Value::Null } else { resolve_expected(&c.value, pool) };
     compare(c.comparison_operator, &actual, &expected)

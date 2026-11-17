@@ -302,9 +302,7 @@ impl AssignerNode {
                 Input::Selector(sel) => Some(scratch.get_or_null(sel)),
             };
             let Some(new) = apply(item, &current, input)? else { continue };
-            scratch
-                .set_path(&item.target, new.clone())
-                .map_err(|e| NodeError::invalid_input(e.to_string()))?;
+            scratch.set_path(&item.target, new.clone()).map_err(|e| NodeError::invalid_input(e.to_string()))?;
             let root = item.target.root();
             if !touched.contains(&root) {
                 touched.push(root);

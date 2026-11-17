@@ -348,7 +348,7 @@ impl Stream for RunStream {
 }
 
 /// Controls a running run. Cheap to clone, `Send + Sync`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RunHandle {
     control: Arc<Control>,
 }

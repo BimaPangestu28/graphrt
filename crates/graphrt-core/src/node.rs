@@ -24,6 +24,7 @@ use crate::value::Value;
 
 /// How the scheduler treats a node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NodeRole {
     /// Entry point of the root graph.
     Root,
@@ -191,7 +192,11 @@ pub trait Node: Send + Sync + fmt::Debug {
     /// Execute the node. Dropping the returned future cancels the node.
     fn run(&self, ctx: NodeContext) -> BoxFuture<'_, NodeResult>;
 
-    /// Selectors this node reads, used for validation and observability. Optional.
+    /// Selectors this node reads. [`crate::graph::Graph::build`] rejects selectors
+    /// whose namespace is neither a node id nor `sys` / `env` / `conversation`
+    /// (catching typos at load time) and warns about references into other
+    /// container bodies. Return every selector the node may read, including
+    /// placeholders inside templates.
     fn inputs(&self) -> Vec<Selector> {
         Vec::new()
     }

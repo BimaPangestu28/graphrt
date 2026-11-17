@@ -701,11 +701,8 @@ impl Frame {
             pool.set_path(selector, value.clone()).map_err(|e| NodeError::fatal("invalid_write", e.to_string()))?;
         }
         self.pool = pool;
-        let external: Vec<(Selector, Value)> = writes
-            .iter()
-            .filter(|(selector, _)| !self.scope_ids.contains(selector.namespace()))
-            .cloned()
-            .collect();
+        let external: Vec<(Selector, Value)> =
+            writes.iter().filter(|(selector, _)| !self.scope_ids.contains(selector.namespace())).cloned().collect();
         merge_writes(&mut self.writes, external);
         for (selector, value) in writes {
             self.run.emit(Event::VariableUpdated {

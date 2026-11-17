@@ -1,19 +1,23 @@
 //! Built-in nodes.
 //!
-//! | kind | role | module |
-//! |---|---|---|
-//! | `start` | root | [`start`] |
-//! | `end` | response | [`end`] |
-//! | `answer` | response | [`answer`] |
-//! | `if-else` | branch | [`if_else`] |
-//! | `template-transform` | executable | [`template_transform`] (feature `jinja`) |
-//! | `variable-aggregator` | executable | [`aggregator`] |
-//! | `assigner` | executable | [`assigner`] |
-//! | `list-operator` | executable | [`list_operator`] |
-//! | `iteration` | container | [`iteration`] |
-//! | `loop` | container | [`loop_node`] |
-//! | `iteration-start`, `loop-start`, `loop-end` | scope markers | [`markers`] |
-//! | `human-input` | branch | [`human_input`] |
+//! | kind | role |
+//! |---|---|
+//! | `start` | root |
+//! | `end` | response |
+//! | `answer` | response |
+//! | `if-else` | branch |
+//! | `template-transform` | executable (feature `jinja`) |
+//! | `variable-aggregator` | executable |
+//! | `assigner` | executable |
+//! | `list-operator` | executable |
+//! | `iteration` | container |
+//! | `loop` | container |
+//! | `iteration-start`, `loop-start`, `loop-end` | scope markers |
+//! | `human-input` | branch |
+//!
+//! Node implementations are internal; they are built from workflow documents
+//! through [`register_builtins`] / [`crate::node::Registry::with_builtins`].
+//! Configuration fields are documented in the workflow format reference.
 //!
 //! `variable-assigner` is accepted for both assigner configs (`items`,
 //! `assigned_variable_selector`) and aggregator configs (`variables`),
@@ -24,19 +28,19 @@ use std::sync::Arc;
 use crate::dsl::NodeDoc;
 use crate::node::{ConfigError, Node, Registry, parse_config};
 
-pub mod aggregator;
-pub mod answer;
-pub mod assigner;
-pub mod end;
-pub mod human_input;
-pub mod if_else;
-pub mod iteration;
-pub mod list_operator;
-pub mod loop_node;
-pub mod markers;
-pub mod start;
+mod aggregator;
+mod answer;
+mod assigner;
+mod end;
+mod human_input;
+mod if_else;
+mod iteration;
+mod list_operator;
+mod loop_node;
+mod markers;
+mod start;
 #[cfg(feature = "jinja")]
-pub mod template_transform;
+mod template_transform;
 
 /// Register every built-in core node kind.
 pub fn register_builtins(registry: &mut Registry) {

@@ -30,6 +30,7 @@ tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
+futures = { workspace = true, features = ["executor"] }
 
 [lints]
 workspace = true
