@@ -108,7 +108,7 @@ impl ModelRegistry {
     /// |---|---|
     /// | `OPENAI_API_KEY`, optional `OPENAI_BASE_URL` | `openai` |
     /// | `ANTHROPIC_API_KEY`, optional `ANTHROPIC_BASE_URL` | `anthropic` |
-    /// | `OLLAMA_HOST` (e.g. `http://localhost:11434`) | `ollama` |
+    /// | `OLLAMA_HOST` (default `http://localhost:11434`; always registered) | `ollama` |
     /// | `GRAPHRT_OPENAI_COMPAT_<NAME>_BASE_URL`, optional `..._API_KEY` | `<name>` (lowercase) |
     #[cfg(feature = "http")]
     pub fn from_env() -> Result<Self, LlmError> {
@@ -133,7 +133,10 @@ impl ModelRegistry {
                 cfg.use_max_completion_tokens = cfg.base_url.contains("api.openai.com");
                 registry.try_add("openai", Arc::new(OpenAiModel::new(cfg)?))?;
             }
-            if let Some(host) = get("OLLAMA_HOST") {
+            {
+                // `ollama` is always available: it defaults to the standard local port, and
+                // only connects when a node actually uses it.
+                let host = get("OLLAMA_HOST").unwrap_or_else(|| "http://localhost:11434".to_owned());
                 let host = if host.starts_with("http") { host } else { format!("http://{host}") };
                 let cfg = OpenAiConfig::new(format!("{}/v1", host.trim_end_matches('/')), None);
                 registry.try_add("ollama", Arc::new(OpenAiModel::new(cfg)?))?;

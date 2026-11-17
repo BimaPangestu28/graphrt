@@ -4,7 +4,10 @@
 pub mod args;
 pub mod catalog;
 pub mod error;
+pub mod files;
 pub mod inspect;
+#[cfg(feature = "rag")]
+pub mod kb;
 pub mod run;
 #[cfg(feature = "serve")]
 pub mod serve;
@@ -31,6 +34,12 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "mcp") {
         features.push("mcp");
     }
+    if cfg!(feature = "doc") {
+        features.push("doc");
+    }
+    if cfg!(feature = "rag") {
+        features.push("rag");
+    }
     if cfg!(feature = "serve") {
         features.push("serve");
     }
@@ -56,6 +65,14 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
                 .build()
                 .map_err(|e| CliError::failed(format!("cannot start runtime: {e}")))?;
             runtime.block_on(run::run(*args))
+        }
+        #[cfg(feature = "rag")]
+        Command::Kb(args) => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| CliError::failed(format!("cannot start runtime: {e}")))?;
+            runtime.block_on(kb::kb(*args))
         }
         #[cfg(feature = "serve")]
         Command::Serve(args) => {

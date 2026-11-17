@@ -43,6 +43,8 @@ pub fn service_options(args: &ServiceArgs) -> Result<ServiceOptions, CliError> {
         providers,
         allow_python_subprocess: args.allow_python_subprocess,
         model_override: args.model.clone(),
+        knowledge: args.knowledge.clone(),
+        files_dir: args.files_dir.clone(),
     })
 }
 

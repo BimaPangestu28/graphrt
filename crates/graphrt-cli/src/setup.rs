@@ -24,6 +24,10 @@ pub struct ServiceOptions {
     pub allow_python_subprocess: bool,
     /// `provider/name` applied to every model-backed node.
     pub model_override: Option<String>,
+    /// Knowledge base config file for knowledge-retrieval nodes.
+    pub knowledge: Option<std::path::PathBuf>,
+    /// Root directory for `local_file` references.
+    pub files_dir: Option<std::path::PathBuf>,
 }
 
 /// Environment variable naming a default providers file.
@@ -82,6 +86,10 @@ pub fn registry() -> Registry {
     graphrt_http::register(&mut registry);
     #[cfg(feature = "code")]
     graphrt_code::register(&mut registry);
+    #[cfg(feature = "doc")]
+    graphrt_doc::register(&mut registry);
+    #[cfg(feature = "rag")]
+    graphrt_rag::register(&mut registry);
     registry
 }
 
@@ -166,11 +174,46 @@ pub async fn services(options: &ServiceOptions) -> Result<Services, CliError> {
             return Err(CliError::usage("`--allow-python-subprocess` requires a build with the `python` feature"));
         }
     }
+    // File access: inline data URLs, then `--files-dir`, then policy-checked HTTP URLs.
+    #[allow(unused_mut)]
+    let mut files = graphrt_core::file::ChainResolver::with_data_urls();
+    if let Some(dir) = &options.files_dir {
+        if !dir.is_dir() {
+            return Err(CliError::usage(format!("`--files-dir {}` is not a directory", dir.display())));
+        }
+        files = files.then(Arc::new(crate::files::LocalDirResolver::new(dir)));
+    }
     #[cfg(feature = "http")]
     {
         let policy = graphrt_http::EgressPolicy { allow_private: options.allow_private_network, ..Default::default() };
         let client = graphrt_http::HttpClient::new(policy).map_err(|e| CliError::usage(format!("http client: {e}")))?;
+        files = files.then(Arc::new(graphrt_http::HttpFileResolver::new(client.clone())));
         services.insert(client);
+    }
+    let files: Arc<dyn graphrt_core::file::FileResolver> = Arc::new(files);
+    services.insert(files);
+    if let Some(path) = &options.knowledge {
+        #[cfg(feature = "rag")]
+        {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| CliError::usage(format!("cannot read knowledge config `{}`: {e}", path.display())))?;
+            let value = parse_structured(&text, &format!("knowledge config `{}`", path.display()))?;
+            let config = graphrt_rag::KnowledgeConfig::from_json(&value.to_string())
+                .map_err(|e| CliError::usage(format!("knowledge config `{}`: {e}", path.display())))?;
+            let vars = options.all_vars();
+            let lookup = |name: &str| vars.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
+            let kb = config
+                .build_with_env(&lookup)
+                .map_err(|e| CliError::usage(format!("knowledge config `{}`: {e}", path.display())))?;
+            services.insert(kb);
+        }
+        #[cfg(not(feature = "rag"))]
+        {
+            return Err(CliError::usage(format!(
+                "`--knowledge {}` requires a build with the `rag` feature",
+                path.display()
+            )));
+        }
     }
     #[cfg(feature = "mcp")]
     {

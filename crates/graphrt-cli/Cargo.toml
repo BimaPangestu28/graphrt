@@ -18,7 +18,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "serve"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "serve"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -27,6 +27,10 @@ http = ["dep:graphrt-http"]
 code = ["dep:graphrt-code"]
 # Python code nodes via a local subprocess, enabled per run with `--allow-python-subprocess`.
 python = ["code", "graphrt-code/python"]
+# document-extractor node (PDF, Office, spreadsheets, HTML, EPUB, email...).
+doc = ["dep:graphrt-doc"]
+# knowledge-retrieval node (`--knowledge`): embeddings, vector stores, hybrid search, rerank.
+rag = ["dep:graphrt-rag"]
 # MCP tool servers (`--mcp`).
 mcp = ["dep:graphrt-mcp"]
 # `graphrt serve`: HTTP + SSE API.
@@ -38,8 +42,10 @@ graphrt-llm = { workspace = true, optional = true, features = ["openai", "anthro
 graphrt-http = { workspace = true, optional = true }
 graphrt-code = { workspace = true, optional = true, features = ["js", "tokio"] }
 graphrt-mcp = { workspace = true, optional = true, features = ["stdio", "http"] }
+graphrt-doc = { workspace = true, optional = true, features = ["default", "tokio"] }
+graphrt-rag = { workspace = true, optional = true, features = ["default"] }
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
-tokio = { workspace = true, features = ["rt", "time", "signal"] }
+tokio = { workspace = true, features = ["rt", "time", "signal", "fs"] }
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -25,8 +25,54 @@ pub enum Command {
     /// Serve one workflow (file) or many (directory) over HTTP with SSE streaming.
     #[cfg(feature = "serve")]
     Serve(Box<ServeArgs>),
+    /// Ingest documents into, or query, a knowledge base (`--knowledge` config).
+    #[cfg(feature = "rag")]
+    Kb(Box<KbArgs>),
     /// Print version and enabled features.
     Version,
+}
+
+/// Options of `graphrt kb`.
+#[cfg(feature = "rag")]
+#[derive(Debug, Args)]
+pub struct KbArgs {
+    /// Knowledge base config (YAML or JSON).
+    #[arg(long, value_name = "FILE")]
+    pub knowledge: PathBuf,
+    /// Load environment variables (embedding API keys) from a dotenv file.
+    #[arg(long, value_name = "FILE")]
+    pub env_file: Option<PathBuf>,
+    #[command(subcommand)]
+    pub command: KbCommand,
+}
+
+/// `graphrt kb` subcommands.
+#[cfg(feature = "rag")]
+#[derive(Debug, clap::Subcommand)]
+pub enum KbCommand {
+    /// Extract, chunk, embed and store files (PDF, DOCX, XLSX, HTML, Markdown, ...).
+    Ingest {
+        /// Target dataset id.
+        #[arg(long)]
+        dataset: String,
+        /// Replace chunks of documents that were ingested before.
+        #[arg(long)]
+        replace: bool,
+        /// Files to ingest.
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
+    /// Retrieve the best-matching chunks for a query.
+    Query {
+        /// Dataset id(s). Repeatable.
+        #[arg(long = "dataset", required = true)]
+        dataset: Vec<String>,
+        /// Number of chunks to return.
+        #[arg(long, default_value_t = 4)]
+        top_k: usize,
+        /// The query text.
+        query: String,
+    },
 }
 
 /// A workflow path.
@@ -83,6 +129,12 @@ pub struct ServiceArgs {
     /// node (llm, question-classifier, parameter-extractor, agent).
     #[arg(long, value_name = "PROVIDER/NAME")]
     pub model: Option<String>,
+    /// Knowledge base config (YAML or JSON) for knowledge-retrieval nodes.
+    #[arg(long, value_name = "FILE")]
+    pub knowledge: Option<PathBuf>,
+    /// Directory serving `local_file` references (e.g. uploaded documents).
+    #[arg(long, value_name = "DIR")]
+    pub files_dir: Option<PathBuf>,
     /// Abort a run after this many milliseconds.
     #[arg(long, value_name = "MS")]
     pub timeout_ms: Option<u64>,

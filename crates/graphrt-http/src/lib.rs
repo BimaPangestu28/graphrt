@@ -25,7 +25,9 @@ mod client;
 mod node;
 mod policy;
 
+mod files;
 pub use client::{ClientError, HttpClient};
+pub use files::HttpFileResolver;
 pub use node::{HttpRequestNode, INLINE_FILE_LIMIT, KIND};
 pub use policy::{EgressError, EgressPolicy, is_public};
 
