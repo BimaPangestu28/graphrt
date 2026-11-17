@@ -3,17 +3,28 @@
 //! Search is brute force: exact cosine similarity over every chunk of the
 //! requested datasets. That is fast enough for tens of thousands of chunks
 //! (one dot product per chunk, auto-vectorized) and keeps the store free of
-//! dependencies. With the `fs` feature the store can persist to a single JSON
-//! file, rewritten atomically after every change.
+//! dependencies.
+//!
+//! Every dataset records the dimension of its vectors; upserting or searching
+//! with a different dimension is an error (re-ingest after changing the
+//! embedder), never a silent empty result.
+//!
+//! With the `fs` feature the store can persist to a single JSON file. Each
+//! change is written while the store's write lock is held, to a unique temporary
+//! file that is flushed to disk and then atomically renamed over the target, so
+//! concurrent writers in one process cannot interleave and a crash leaves either
+//! the old or the new file. Several *processes* writing the same file are not
+//! coordinated; use one writer per file. For bulk loads, turn off
+//! [`MemoryStore::set_autosave`] and call [`MemoryStore::flush`] at the end.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use futures::future::BoxFuture;
 
 use crate::error::RagError;
 use crate::filter::MetadataFilter;
-use crate::types::{Hit, KeywordQuery, StoredChunk, VectorQuery, VectorStore};
+use crate::types::{Hit, KeywordQuery, StoredChunk, VectorQuery, VectorStore, check_vector};
 
 /// BM25 parameters.
 const BM25_K1: f32 = 1.2;
@@ -33,9 +44,15 @@ struct Dataset {
     entries: Vec<Entry>,
     /// Chunk id -> index in `entries`.
     by_id: HashMap<String, usize>,
+    /// Document id -> chunk ids.
+    by_document: HashMap<String, HashSet<String>>,
+    /// Content hash -> number of chunks with it.
+    hashes: HashMap<String, u32>,
     /// Term -> number of chunks containing it.
     doc_freq: HashMap<String, u32>,
     total_length: u64,
+    /// Dimension shared by every vector of the dataset.
+    dimension: Option<usize>,
 }
 
 impl Dataset {
@@ -49,6 +66,9 @@ impl Dataset {
             *self.doc_freq.entry(term.clone()).or_insert(0) += 1;
         }
         self.total_length += u64::from(length);
+        self.dimension = Some(chunk.vector.len());
+        *self.hashes.entry(chunk.content_hash.clone()).or_insert(0) += 1;
+        self.by_document.entry(chunk.document_id.clone()).or_default().insert(chunk.id.clone());
         let norm = norm(&chunk.vector);
         self.by_id.insert(chunk.id.clone(), self.entries.len());
         self.entries.push(Entry { chunk, norm, terms, length });
@@ -61,6 +81,18 @@ impl Dataset {
         }
         let removed = self.entries.swap_remove(ix);
         self.by_id.remove(&removed.chunk.id);
+        if let Some(ids) = self.by_document.get_mut(&removed.chunk.document_id) {
+            ids.remove(&removed.chunk.id);
+            if ids.is_empty() {
+                self.by_document.remove(&removed.chunk.document_id);
+            }
+        }
+        if let Some(count) = self.hashes.get_mut(&removed.chunk.content_hash) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.hashes.remove(&removed.chunk.content_hash);
+            }
+        }
         for term in removed.terms.keys() {
             if let Some(df) = self.doc_freq.get_mut(term) {
                 *df = df.saturating_sub(1);
@@ -73,30 +105,46 @@ impl Dataset {
         if let Some(moved) = self.entries.get(ix) {
             self.by_id.insert(moved.chunk.id.clone(), ix);
         }
+        if self.entries.is_empty() {
+            self.dimension = None;
+        }
     }
 
-    fn remove_where(&mut self, predicate: impl Fn(&StoredChunk) -> bool) -> usize {
-        let mut removed = 0;
-        let mut ix = 0;
-        while ix < self.entries.len() {
-            let hit = self.entries.get(ix).is_some_and(|e| predicate(&e.chunk));
-            if hit {
+    fn remove_id(&mut self, id: &str) -> bool {
+        match self.by_id.get(id).copied() {
+            Some(ix) => {
                 self.remove_at(ix);
-                removed += 1;
-            } else {
-                ix += 1;
+                true
             }
+            None => false,
         }
-        removed
+    }
+
+    fn remove_document(&mut self, document_id: &str) -> usize {
+        let ids: Vec<String> =
+            self.by_document.get(document_id).map(|s| s.iter().cloned().collect()).unwrap_or_default();
+        ids.iter().filter(|id| self.remove_id(id)).count()
+    }
+
+    fn check_dimension(&self, dataset_id: &str, len: usize, what: &str) -> Result<(), RagError> {
+        match self.dimension {
+            Some(d) if d != len => Err(RagError::Input(format!(
+                "dataset `{dataset_id}` holds {d}-dimensional vectors but {what} is {len}-dimensional; \
+                 use the original embedder or re-ingest the dataset"
+            ))),
+            _ => Ok(()),
+        }
     }
 }
+
+type Data = HashMap<String, Dataset>;
 
 /// In-memory [`VectorStore`] with cosine similarity and BM25 keyword search.
 #[derive(Debug, Default, Clone)]
 pub struct MemoryStore {
-    inner: Arc<RwLock<HashMap<String, Dataset>>>,
+    inner: Arc<RwLock<Data>>,
     #[cfg(feature = "fs")]
-    path: Option<std::path::PathBuf>,
+    file: Option<Arc<persistence::FileState>>,
 }
 
 impl MemoryStore {
@@ -104,7 +152,7 @@ impl MemoryStore {
         Self::default()
     }
 
-    /// Number of chunks across all datasets.
+    /// Number of chunks across all datasets (0 if the store is unusable after a panic).
     pub fn len(&self) -> usize {
         self.read(|d| d.values().map(|ds| ds.entries.len()).sum()).unwrap_or(0)
     }
@@ -114,43 +162,73 @@ impl MemoryStore {
     }
 
     /// All stored chunks (for export / inspection).
-    pub fn chunks(&self) -> Vec<StoredChunk> {
-        self.read(|d| d.values().flat_map(|ds| ds.entries.iter().map(|e| e.chunk.clone())).collect())
-            .unwrap_or_default()
+    pub fn chunks(&self) -> Result<Vec<StoredChunk>, RagError> {
+        self.read(all_chunks)
     }
 
-    fn read<T>(&self, f: impl FnOnce(&HashMap<String, Dataset>) -> T) -> Result<T, RagError> {
-        let guard = self.inner.read().map_err(|_| RagError::Store("memory store lock poisoned".into()))?;
+    fn read<T>(&self, f: impl FnOnce(&Data) -> T) -> Result<T, RagError> {
+        let guard = self.inner.read().map_err(|_| poisoned())?;
         Ok(f(&guard))
     }
 
-    fn write<T>(&self, f: impl FnOnce(&mut HashMap<String, Dataset>) -> T) -> Result<T, RagError> {
-        let result = {
-            let mut guard = self.inner.write().map_err(|_| RagError::Store("memory store lock poisoned".into()))?;
-            f(&mut guard)
-        };
-        self.persist()?;
+    /// Apply a change, then persist it (with the `fs` feature) while the write lock
+    /// is still held, so writes and file updates happen in the same order.
+    fn write<T>(&self, f: impl FnOnce(&mut Data) -> Result<T, RagError>) -> Result<T, RagError> {
+        let mut guard = self.inner.write().map_err(|_| poisoned())?;
+        let result = f(&mut guard)?;
+        self.persist_locked(&guard)?;
         Ok(result)
     }
 
     fn insert_all(&self, chunks: Vec<StoredChunk>) -> Result<(), RagError> {
         self.write(|data| {
+            // Validate the whole batch before changing anything.
+            let mut batch_dims: HashMap<&str, usize> = HashMap::new();
+            for chunk in &chunks {
+                check_vector(&chunk.vector, &format!("chunk `{}`", chunk.id))?;
+                let len = chunk.vector.len();
+                if let Some(ds) = data.get(&chunk.dataset_id) {
+                    ds.check_dimension(&chunk.dataset_id, len, &format!("chunk `{}`", chunk.id))?;
+                }
+                match batch_dims.get(chunk.dataset_id.as_str()) {
+                    Some(&d) if d != len => {
+                        return Err(RagError::Input(format!(
+                            "chunks for dataset `{}` mix {d}- and {len}-dimensional vectors",
+                            chunk.dataset_id
+                        )));
+                    }
+                    _ => {
+                        batch_dims.insert(&chunk.dataset_id, len);
+                    }
+                }
+            }
             for chunk in chunks {
                 data.entry(chunk.dataset_id.clone()).or_default().insert(chunk);
             }
+            Ok(())
         })
     }
 
     #[cfg(not(feature = "fs"))]
-    fn persist(&self) -> Result<(), RagError> {
+    fn persist_locked(&self, _data: &Data) -> Result<(), RagError> {
         Ok(())
     }
+}
+
+fn poisoned() -> RagError {
+    RagError::Store("memory store lock poisoned by an earlier panic".into())
+}
+
+fn all_chunks(data: &Data) -> Vec<StoredChunk> {
+    data.values().flat_map(|ds| ds.entries.iter().map(|e| e.chunk.clone())).collect()
 }
 
 #[cfg(feature = "fs")]
 mod persistence {
     use super::*;
+    use std::io::Write;
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     #[derive(serde::Serialize, serde::Deserialize)]
     struct FileFormat {
@@ -158,12 +236,23 @@ mod persistence {
         chunks: Vec<StoredChunk>,
     }
 
+    /// Where and how the store persists itself.
+    #[derive(Debug)]
+    pub(super) struct FileState {
+        path: PathBuf,
+        autosave: AtomicBool,
+        /// Changes not yet written (autosave off, or a failed write).
+        dirty: AtomicBool,
+    }
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
     impl MemoryStore {
         /// Open a store backed by `path`: existing content is loaded, and every
-        /// change is written back atomically (temp file + rename).
+        /// change is written back (see the module docs for the guarantees).
         pub fn open(path: impl Into<PathBuf>) -> Result<Self, RagError> {
             let path = path.into();
-            let store = Self { inner: Arc::default(), path: None };
+            let store = Self { inner: Arc::default(), file: None };
             if path.exists() {
                 let text =
                     std::fs::read_to_string(&path).map_err(|e| RagError::Io(format!("{}: {e}", path.display())))?;
@@ -174,25 +263,83 @@ mod persistence {
                 }
                 store.insert_all(file.chunks)?;
             }
-            Ok(Self { path: Some(path), ..store })
+            let file = FileState { path, autosave: AtomicBool::new(true), dirty: AtomicBool::new(false) };
+            Ok(Self { file: Some(Arc::new(file)), ..store })
         }
 
-        /// Write the whole store to `path` atomically.
-        pub fn save_to(&self, path: &Path) -> Result<(), RagError> {
-            let chunks = self.chunks();
-            let text = serde_json::to_string(&FileFormat { version: 1, chunks })
-                .map_err(|e| RagError::Store(format!("cannot encode store: {e}")))?;
-            let tmp = path.with_extension("tmp");
-            std::fs::write(&tmp, text).map_err(|e| RagError::Io(format!("{}: {e}", tmp.display())))?;
-            std::fs::rename(&tmp, path).map_err(|e| RagError::Io(format!("{}: {e}", path.display())))
-        }
-
-        pub(super) fn persist(&self) -> Result<(), RagError> {
-            match &self.path {
-                Some(path) => self.save_to(path),
-                None => Ok(()),
+        /// Write after every change (default `true`). With autosave off, changes stay
+        /// in memory until [`MemoryStore::flush`].
+        pub fn set_autosave(&self, autosave: bool) {
+            if let Some(file) = &self.file {
+                file.autosave.store(autosave, Ordering::SeqCst);
             }
         }
+
+        /// Write pending changes to the backing file (no-op for in-memory stores).
+        pub fn flush(&self) -> Result<(), RagError> {
+            let guard = self.inner.read().map_err(|_| poisoned())?;
+            match &self.file {
+                Some(file) if file.dirty.load(Ordering::SeqCst) => write_file(file, &guard),
+                _ => Ok(()),
+            }
+        }
+
+        /// Write the whole store to `path` (temp file + fsync + rename).
+        pub fn save_to(&self, path: &Path) -> Result<(), RagError> {
+            let guard = self.inner.read().map_err(|_| poisoned())?;
+            write_atomically(path, &all_chunks(&guard))
+        }
+
+        pub(super) fn persist_locked(&self, data: &Data) -> Result<(), RagError> {
+            let Some(file) = &self.file else { return Ok(()) };
+            file.dirty.store(true, Ordering::SeqCst);
+            if file.autosave.load(Ordering::SeqCst) { write_file(file, data) } else { Ok(()) }
+        }
+    }
+
+    fn write_file(file: &FileState, data: &Data) -> Result<(), RagError> {
+        write_atomically(&file.path, &all_chunks(data))?;
+        file.dirty.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn write_atomically(path: &Path, chunks: &[StoredChunk]) -> Result<(), RagError> {
+        #[derive(serde::Serialize)]
+        struct FileRef<'a> {
+            version: u32,
+            chunks: &'a [StoredChunk],
+        }
+        let text = serde_json::to_vec(&FileRef { version: 1, chunks })
+            .map_err(|e| RagError::Store(format!("cannot encode store: {e}")))?;
+        let n = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "store".into());
+        let tmp = path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()));
+        let io = |p: &Path, e: std::io::Error| RagError::Io(format!("{}: {e}", p.display()));
+        let result = (|| {
+            let mut f = std::fs::File::create(&tmp).map_err(|e| io(&tmp, e))?;
+            f.write_all(&text).map_err(|e| io(&tmp, e))?;
+            f.sync_all().map_err(|e| io(&tmp, e))?;
+            std::fs::rename(&tmp, path).map_err(|e| io(path, e))?;
+            sync_parent_dir(path);
+            Ok(())
+        })();
+        if result.is_err() {
+            let _cleanup = std::fs::remove_file(&tmp);
+        }
+        result
+    }
+
+    /// Make the rename durable. Directories cannot be opened for syncing on every
+    /// platform; failure only weakens crash durability, so it is ignored.
+    fn sync_parent_dir(path: &Path) {
+        #[cfg(unix)]
+        if let Some(dir) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            if let Ok(handle) = std::fs::File::open(dir) {
+                let _best_effort = handle.sync_all();
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = path;
     }
 }
 
@@ -206,33 +353,56 @@ impl VectorStore for MemoryStore {
         dataset_id: &'a str,
         document_id: &'a str,
     ) -> BoxFuture<'a, Result<usize, RagError>> {
-        let result = self.write(|data| match data.get_mut(dataset_id) {
-            Some(ds) => ds.remove_where(|c| c.document_id == document_id),
-            None => 0,
-        });
+        let result = self.write(|data| Ok(data.get_mut(dataset_id).map_or(0, |ds| ds.remove_document(document_id))));
         Box::pin(futures::future::ready(result))
     }
 
     fn delete_dataset<'a>(&'a self, dataset_id: &'a str) -> BoxFuture<'a, Result<usize, RagError>> {
-        let result = self.write(|data| data.remove(dataset_id).map_or(0, |ds| ds.entries.len()));
+        let result = self.write(|data| Ok(data.remove(dataset_id).map_or(0, |ds| ds.entries.len())));
+        Box::pin(futures::future::ready(result))
+    }
+
+    fn document_chunks<'a>(
+        &'a self,
+        dataset_id: &'a str,
+        document_id: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<StoredChunk>, RagError>> {
+        let result = self.read(|data| {
+            let Some(ds) = data.get(dataset_id) else { return Vec::new() };
+            let Some(ids) = ds.by_document.get(document_id) else { return Vec::new() };
+            ids.iter()
+                .filter_map(|id| ds.by_id.get(id).and_then(|&ix| ds.entries.get(ix)))
+                .map(|e| e.chunk.clone())
+                .collect()
+        });
+        Box::pin(futures::future::ready(result))
+    }
+
+    fn delete_chunks<'a>(&'a self, dataset_id: &'a str, ids: &'a [String]) -> BoxFuture<'a, Result<usize, RagError>> {
+        let result = self.write(|data| {
+            Ok(data.get_mut(dataset_id).map_or(0, |ds| ids.iter().filter(|id| ds.remove_id(id)).count()))
+        });
         Box::pin(futures::future::ready(result))
     }
 
     fn search<'a>(&'a self, query: VectorQuery<'a>) -> BoxFuture<'a, Result<Vec<Hit>, RagError>> {
-        let result = self.read(|data| {
-            let q_norm = norm(query.vector);
-            let mut scored: Vec<(f32, &Entry)> = Vec::new();
-            for ds in query.datasets.iter().filter_map(|id| data.get(id)) {
-                for entry in &ds.entries {
-                    if entry.chunk.vector.len() != query.vector.len() || !passes(query.filter, &entry.chunk) {
-                        continue;
+        let result = check_vector(query.vector, "the query").and_then(|()| {
+            self.read(|data| {
+                let q_norm = norm(query.vector);
+                let mut scored: Vec<(f32, &Entry)> = Vec::new();
+                for (id, ds) in query.datasets.iter().filter_map(|id| data.get(id).map(|ds| (id, ds))) {
+                    ds.check_dimension(id, query.vector.len(), "the query")?;
+                    for entry in &ds.entries {
+                        if !passes(query.filter, &entry.chunk) {
+                            continue;
+                        }
+                        let denom = q_norm * entry.norm;
+                        let score = if denom > 0.0 { dot(query.vector, &entry.chunk.vector) / denom } else { 0.0 };
+                        scored.push((score, entry));
                     }
-                    let denom = q_norm * entry.norm;
-                    let score = if denom > 0.0 { dot(query.vector, &entry.chunk.vector) / denom } else { 0.0 };
-                    scored.push((score, entry));
                 }
-            }
-            top_hits(scored, query.top_k)
+                Ok(top_hits(scored, query.top_k))
+            })?
         });
         Box::pin(futures::future::ready(result))
     }
@@ -283,9 +453,7 @@ impl VectorStore for MemoryStore {
         dataset_id: &'a str,
         content_hash: &'a str,
     ) -> BoxFuture<'a, Result<bool, RagError>> {
-        let result = self.read(|data| {
-            data.get(dataset_id).is_some_and(|ds| ds.entries.iter().any(|e| e.chunk.content_hash == content_hash))
-        });
+        let result = self.read(|data| data.get(dataset_id).is_some_and(|ds| ds.hashes.contains_key(content_hash)));
         Box::pin(futures::future::ready(result))
     }
 }
@@ -295,6 +463,7 @@ fn passes(filter: Option<&MetadataFilter>, chunk: &StoredChunk) -> bool {
 }
 
 fn top_hits(mut scored: Vec<(f32, &Entry)>, top_k: usize) -> Vec<Hit> {
+    scored.retain(|(score, _)| score.is_finite());
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     scored.into_iter().take(top_k).map(|(score, e)| Hit::from_chunk(&e.chunk, score)).collect()
 }

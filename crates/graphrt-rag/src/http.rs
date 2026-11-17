@@ -78,6 +78,9 @@ pub(crate) fn build_client(settings: &HttpSettings) -> Result<reqwest::Client, R
     // An error only means a provider is already installed, which is fine.
     let _already_installed = rustls::crypto::ring::default_provider().install_default();
     reqwest::Client::builder()
+        // Credentials may travel in custom headers (`api-key`, `headers`), which
+        // reqwest does not strip on cross-host redirects; never follow redirects.
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_millis(settings.timeout_ms.max(1)))
         .build()
@@ -386,7 +389,7 @@ pub struct HttpReranker {
 
 #[derive(Deserialize)]
 struct RerankResponse {
-    #[serde(default, alias = "data")]
+    #[serde(alias = "data")]
     results: Vec<RerankItem>,
 }
 
@@ -415,15 +418,20 @@ impl Reranker for HttpReranker {
             });
             let url = join_url(&self.config.base_url, "rerank");
             let response: RerankResponse = post_json(&self.client, &url, &self.config.http, &body).await?;
-            // Documents the provider did not score get the lowest possible score.
-            let mut scores = vec![f32::MIN; documents.len()];
+            let mut scores: Vec<Option<f32>> = vec![None; documents.len()];
             for item in response.results {
                 let slot = scores
                     .get_mut(item.index)
                     .ok_or_else(|| RagError::Decode(format!("reranker returned out-of-range index {}", item.index)))?;
-                *slot = item.relevance_score;
+                *slot = Some(item.relevance_score);
             }
-            Ok(scores)
+            // `top_n` asks for every document; a partial answer means the response
+            // is not what this client understands.
+            let scored = scores.iter().filter(|s| s.is_some()).count();
+            if scored != documents.len() {
+                return Err(RagError::Decode(format!("reranker scored {scored} of {} documents", documents.len())));
+            }
+            Ok(scores.into_iter().map(|s| s.unwrap_or(f32::MIN)).collect())
         })
     }
 }

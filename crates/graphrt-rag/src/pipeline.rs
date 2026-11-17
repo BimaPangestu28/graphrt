@@ -12,6 +12,10 @@ use crate::types::{Embedder, Hit, KeywordQuery, Reranker, RetrievalRequest, Retr
 /// How many candidates each search returns before merging (multiple of `top_k`).
 const CANDIDATE_FACTOR: usize = 4;
 const MIN_CANDIDATES: usize = 20;
+/// With a metadata filter, stores may apply only part of it before ranking; fetch
+/// more candidates so the post-filter still has enough to choose from.
+const FILTERED_CANDIDATE_FACTOR: usize = 20;
+const MAX_CANDIDATES: usize = 1_000;
 
 /// A [`Retriever`] over a [`VectorStore`] + [`Embedder`] (+ optional [`Reranker`]).
 #[derive(Clone, Debug)]
@@ -47,9 +51,21 @@ impl Retriever for StoreRetriever {
             if query.is_empty() || request.top_k == 0 {
                 return Ok(Vec::new());
             }
-            let candidates = request.top_k.saturating_mul(CANDIDATE_FACTOR).max(MIN_CANDIDATES);
+            let factor = if request.filter.is_some() { FILTERED_CANDIDATE_FACTOR } else { CANDIDATE_FACTOR };
+            let candidates =
+                request.top_k.saturating_mul(factor).max(MIN_CANDIDATES).min(MAX_CANDIDATES.max(request.top_k));
             let weights = request.weights;
-            let use_keyword = weights.keyword > 0.0 && self.store.supports_keyword();
+            if weights.keyword > 0.0 && !self.store.supports_keyword() {
+                return Err(RagError::Config(
+                    "keyword (hybrid) weight requested, but this dataset's store has no keyword index".into(),
+                ));
+            }
+            if request.rerank && self.reranker.is_none() {
+                return Err(RagError::Config(
+                    "reranking requested, but this dataset has no reranker configured".into(),
+                ));
+            }
+            let use_keyword = weights.keyword > 0.0;
             let use_vector = weights.vector > 0.0 || !use_keyword;
 
             let vector_hits = if use_vector {
@@ -88,10 +104,8 @@ impl Retriever for StoreRetriever {
             if let Some(filter) = &request.filter {
                 hits.retain(|h| filter.matches(&h.metadata));
             }
-            if request.rerank {
-                if let Some(reranker) = &self.reranker {
-                    hits = rerank(reranker.as_ref(), query, hits).await?;
-                }
+            if let (true, Some(reranker)) = (request.rerank, &self.reranker) {
+                hits = rerank(reranker.as_ref(), query, hits).await?;
             }
             Ok(finalize(hits, request.score_threshold, request.top_k))
         })
@@ -143,6 +157,9 @@ pub async fn rerank(reranker: &dyn Reranker, query: &str, mut hits: Vec<Hit>) ->
         )));
     }
     for (hit, score) in hits.iter_mut().zip(scores) {
+        if !score.is_finite() {
+            return Err(RagError::Decode("reranker returned a non-finite score".into()));
+        }
         hit.score = score;
     }
     hits.sort_by(|a, b| b.score.total_cmp(&a.score));
@@ -151,6 +168,8 @@ pub async fn rerank(reranker: &dyn Reranker, query: &str, mut hits: Vec<Hit>) ->
 
 /// Apply the score threshold, then keep the best `top_k`.
 pub fn finalize(mut hits: Vec<Hit>, threshold: Option<f32>, top_k: usize) -> Vec<Hit> {
+    // A NaN would sort first with `total_cmp`; such scores carry no ranking information.
+    hits.retain(|h| h.score.is_finite());
     if let Some(t) = threshold {
         hits.retain(|h| h.score >= t);
     }

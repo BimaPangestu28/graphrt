@@ -53,8 +53,13 @@ pub struct Options {
     pub max_pages: usize,
     /// Maximum spreadsheet sheets.
     pub max_sheets: usize,
-    /// Maximum rows per spreadsheet sheet.
+    /// Maximum rows per spreadsheet sheet (and per CSV/TSV file).
     pub max_rows: usize,
+    /// Maximum columns of any table (spreadsheet sheet, CSV/TSV, DOCX table).
+    pub max_cols: usize,
+    /// Maximum non-empty cells across a spreadsheet sheet. Spreadsheets whose
+    /// used range would exceed this are rejected before they are loaded.
+    pub max_cells: usize,
     /// Maximum entries in a zip container.
     pub max_zip_entries: usize,
     /// Maximum total decompressed bytes read from a zip container.
@@ -69,6 +74,8 @@ impl Default for Options {
             max_pages: 2_000,
             max_sheets: 100,
             max_rows: 200_000,
+            max_cols: 2_048,
+            max_cells: 2_000_000,
             max_zip_entries: 10_000,
             max_decompressed_bytes: 256 * 1024 * 1024,
         }
@@ -141,7 +148,9 @@ pub struct Extraction {
 
 /// Extract the text of a document.
 ///
-/// `mime` and `filename` are hints; either may be `None`.
+/// `mime` and `filename` are hints; either may be `None`. Text longer than
+/// [`Options::max_output_chars`] is cut; use [`extract_detailed`] to learn
+/// whether that happened.
 pub fn extract(bytes: &[u8], mime: Option<&str>, filename: Option<&str>, opts: &Options) -> Result<String, DocError> {
     extract_detailed(bytes, mime, filename, opts).map(|e| e.text)
 }
@@ -166,13 +175,29 @@ pub fn resolve_format(
     filename: Option<&str>,
     opts: &Options,
 ) -> Result<Format, DocError> {
-    if let Some(f) = mime.and_then(detect::from_mime) {
-        return Ok(f);
-    }
-    if let Some(f) = filename.and_then(detect::extension).and_then(detect::from_extension) {
+    let claimed = mime
+        .and_then(detect::from_mime)
+        .or_else(|| filename.and_then(detect::extension).and_then(detect::from_extension));
+    if let Some(f) = claimed {
+        if !f.is_textual() {
+            return Ok(f);
+        }
+        // A text label on binary content (a PDF uploaded as text/plain, a zip named
+        // .txt) would otherwise "succeed" with garbage text.
+        if detect::sniff(bytes).is_some_and(|s| !s.is_textual()) || detect::is_zip(bytes) {
+            return sniffed_binary(bytes, opts);
+        }
+        if !bytes.is_empty() && !detect::looks_textual(bytes) {
+            return Err(DocError::Unsupported { detected: format!("binary data labelled as {f}") });
+        }
         return Ok(f);
     }
     if let Some(f) = detect::sniff(bytes) {
+        if f == Format::Xls && !detect::ole_is_workbook(bytes) {
+            return Err(DocError::Unsupported {
+                detected: "legacy OLE document (.doc / .ppt / .msg) — only spreadsheets are supported".into(),
+            });
+        }
         return Ok(f);
     }
     if detect::is_zip(bytes) {
@@ -195,6 +220,11 @@ pub fn resolve_format(
     Err(DocError::Unsupported { detected })
 }
 
+/// Resolve content that sniffing identified as binary, ignoring a text label.
+fn sniffed_binary(bytes: &[u8], opts: &Options) -> Result<Format, DocError> {
+    resolve_format(bytes, None, None, opts)
+}
+
 /// Extract text from bytes known to be in `format`.
 pub fn extract_as(format: Format, bytes: &[u8], opts: &Options) -> Result<String, DocError> {
     #[allow(unused_variables)]
@@ -209,7 +239,7 @@ pub fn extract_as(format: Format, bytes: &[u8], opts: &Options) -> Result<String
             if rows.len() > opts.max_rows {
                 return Err(DocError::LimitExceeded(format!("{} rows (limit {})", rows.len(), opts.max_rows)));
             }
-            Ok(text::render_table(&rows, opts.format))
+            text::render_table(&rows, opts)
         }
         Format::Html => Ok(text::html_to_text(&text::decode(bytes), opts.format)),
         Format::Vtt | Format::Srt => Ok(text::subtitles(&text::decode(bytes))),
@@ -239,7 +269,7 @@ pub fn extract_as(format: Format, bytes: &[u8], opts: &Options) -> Result<String
         }
         Format::Xlsx | Format::Xls | Format::Ods => {
             #[cfg(feature = "spreadsheet")]
-            return binary::spreadsheet(bytes, opts);
+            return binary::spreadsheet(bytes, format, opts);
             #[cfg(not(feature = "spreadsheet"))]
             return Err(disabled("spreadsheet"));
         }

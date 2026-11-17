@@ -164,6 +164,63 @@ async fn reranker_reorders_and_threshold_applies() {
 }
 
 #[tokio::test]
+async fn rerank_without_a_reranker_is_an_error() {
+    let kb = KnowledgeBase::new().with_store_dataset(
+        "d",
+        Arc::new(MemoryStore::new()),
+        Arc::new(HashEmbedder::new(32)),
+        None,
+    );
+    kb.ingestor("d").unwrap().ingest(&Document::new("d", "a", "apple tart")).await.unwrap();
+    let req = RetrievalRequest::new("apple", vec!["d".into()]).rerank(true);
+    let err = kb.retrieve(&req).await.unwrap_err();
+    assert!(err.to_string().contains("no reranker"), "{err}");
+}
+
+#[test]
+fn knowledge_config_typos_are_errors() {
+    use graphrt_rag::KnowledgeConfig;
+    // `file` instead of `path` would silently make the store in-memory only.
+    let cfg = KnowledgeConfig::from_json(
+        r#"{"embedders":{"e":{"type":"hash"}},"stores":{"s":{"type":"memory","file":"kb.json"}},"datasets":[{"id":"d","store":"s"}]}"#,
+    )
+    .unwrap();
+    assert!(cfg.build_with_env(&|_| None).unwrap_err().to_string().contains("unknown key `file`"));
+    // Unknown dataset keys (e.g. a misspelled `reranker`) are rejected at parse time.
+    assert!(KnowledgeConfig::from_json(r#"{"datasets":[{"id":"d","store":"s","rerankr":"r"}]}"#).is_err());
+    let cfg = KnowledgeConfig::from_json(r#"{"embedders":{"e":{"type":"hash","dimensions":"big"}}}"#).unwrap();
+    assert!(cfg.build_with_env(&|_| None).is_err());
+}
+
+#[tokio::test]
+async fn node_rejects_unknown_filter_mode_and_missing_query() {
+    let doc = json!({"graph": {
+        "nodes": [
+            {"id": "start", "type": "start", "variables": []},
+            {"id": "kr", "type": "knowledge-retrieval", "query_variable_selector": ["start", "q"],
+             "dataset_ids": ["docs"], "metadata_filtering_mode": "manul"}
+        ],
+        "edges": [{"source": "start", "target": "kr"}]
+    }});
+    let mut registry = Registry::with_builtins();
+    graphrt_rag::register(&mut registry);
+    let err = Graph::build(Workflow::from_value(doc).unwrap(), &registry).unwrap_err();
+    assert!(err.to_string().contains("metadata_filtering_mode"), "{err}");
+
+    // The query variable is never set: an error, not an empty result.
+    let doc = json!({"graph": {
+        "nodes": [
+            {"id": "start", "type": "start", "variables": []},
+            {"id": "kr", "type": "knowledge-retrieval", "query_variable_selector": ["start", "missing"], "dataset_ids": ["docs"]}
+        ],
+        "edges": [{"source": "start", "target": "kr"}]
+    }});
+    let graph = Arc::new(Graph::build(Workflow::from_value(doc).unwrap(), &registry).unwrap());
+    let event = run(graph, knowledge_base().await, "").await;
+    assert!(matches!(event, Event::RunFailed { ref error, .. } if error.contains("not set")), "{event:?}");
+}
+
+#[tokio::test]
 async fn ingest_dedupes_identical_chunks() {
     let kb = KnowledgeBase::new().with_store_dataset(
         "d",
@@ -173,8 +230,11 @@ async fn ingest_dedupes_identical_chunks() {
     );
     let ing = kb.ingestor("d").unwrap();
     let first = ing.ingest(&Document::new("d", "a", "same text")).await.unwrap();
-    let second = ing.ingest(&Document::new("d", "b", "same text")).await.unwrap();
-    assert_eq!((first.stored, second.stored, second.skipped), (1, 0, 1));
+    // Unchanged re-ingest reuses the stored chunk.
+    let again = ing.ingest(&Document::new("d", "a", "same text")).await.unwrap();
+    // The same text in another document is that document's own chunk.
+    let other = ing.ingest(&Document::new("d", "b", "same text")).await.unwrap();
+    assert_eq!((first.stored, again.stored, again.skipped, other.stored), (1, 0, 1, 1));
     let _ = MetadataFilter::default();
 }
 
@@ -336,6 +396,24 @@ mod http {
         let docs = vec!["a".to_owned(), "b".to_owned()];
         assert_eq!(reranker.rerank("q", &docs).await.unwrap(), vec![0.2, 0.9]);
         assert_eq!(reranker.rerank("q", &docs).await.unwrap(), vec![0.7, 0.1]);
+    }
+
+    #[tokio::test]
+    async fn http_reranker_rejects_unexpected_or_partial_responses() {
+        let (url, _rx) = serve(vec![
+            ("200 OK", json!({"error": "quota"}).to_string()),
+            ("200 OK", json!({"results": [{"index": 0, "relevance_score": 0.5}]}).to_string()),
+        ])
+        .await;
+        let reranker = HttpReranker::new(HttpRerankerConfig {
+            base_url: url,
+            model: "rerank".into(),
+            http: HttpSettings::default(),
+        })
+        .unwrap();
+        let docs = vec!["a".to_owned(), "b".to_owned()];
+        assert!(reranker.rerank("q", &docs).await.is_err(), "missing `results`");
+        assert!(reranker.rerank("q", &docs).await.is_err(), "only one of two documents scored");
     }
 
     /// Live check against a local Ollama: `GRAPHRT_LIVE_OLLAMA=1 cargo test -p graphrt-rag live_ollama`.

@@ -64,5 +64,5 @@ pub use pipeline::{StoreRetriever, finalize, merge_weighted, rerank};
 pub use qdrant::{QdrantConfig, QdrantStore};
 pub use types::{
     Embedder, Extractor, Hit, HybridWeights, KeywordQuery, Metadata, PlainTextExtractor, Reranker, RetrievalRequest,
-    Retriever, StoredChunk, VectorQuery, VectorStore, content_hash,
+    Retriever, StoredChunk, VectorQuery, VectorStore, check_vector, content_hash,
 };

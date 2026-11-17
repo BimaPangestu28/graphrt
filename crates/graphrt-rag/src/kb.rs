@@ -149,9 +149,7 @@ impl KnowledgeBase {
     /// different datasets comparable). Otherwise each dataset's own reranker, if
     /// any, is applied before merging.
     pub async fn retrieve(&self, request: &RetrievalRequest) -> Result<Vec<Hit>, RagError> {
-        if request.datasets.is_empty() {
-            return Err(RagError::Input("no dataset ids given".into()));
-        }
+        validate_request(request)?;
         let global_rerank = request.rerank && self.reranker.is_some() && request.datasets.len() > 1;
         let per_dataset = self.query_each(request, request.rerank && !global_rerank).await?;
         let mut merged: Vec<Hit> = per_dataset.into_iter().flat_map(|(_, hits)| hits).collect();
@@ -166,9 +164,7 @@ impl KnowledgeBase {
     /// Retrieve from the single best-matching dataset: every dataset is queried,
     /// and only the hits of the dataset whose top hit scores highest are kept.
     pub async fn retrieve_single(&self, request: &RetrievalRequest) -> Result<Vec<Hit>, RagError> {
-        if request.datasets.is_empty() {
-            return Err(RagError::Input("no dataset ids given".into()));
-        }
+        validate_request(request)?;
         let per_dataset = self.query_each(request, request.rerank).await?;
         let best = per_dataset
             .into_iter()
@@ -176,6 +172,17 @@ impl KnowledgeBase {
             .max_by(|a, b| top_score(&a.1).total_cmp(&top_score(&b.1)));
         Ok(best.map(|(_, hits)| finalize(hits, request.score_threshold, request.top_k)).unwrap_or_default())
     }
+}
+
+/// Reject requests that would otherwise silently match nothing.
+fn validate_request(request: &RetrievalRequest) -> Result<(), RagError> {
+    if request.datasets.is_empty() {
+        return Err(RagError::Input("no dataset ids given".into()));
+    }
+    if let Some(filter) = &request.filter {
+        filter.validate().map_err(|e| RagError::Input(e.to_string()))?;
+    }
+    Ok(())
 }
 
 fn top_score(hits: &[Hit]) -> f32 {
@@ -206,6 +213,7 @@ fn top_score(hits: &[Hit]) -> f32 {
 /// Secrets are never written inline: every provider takes `api_key_env`, the
 /// name of an environment variable resolved when the configuration is built.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KnowledgeConfig {
     #[serde(default)]
     pub embedders: IndexMap<String, serde_json::Value>,
@@ -222,6 +230,7 @@ pub struct KnowledgeConfig {
 
 /// One dataset entry.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DatasetConfig {
     pub id: String,
     #[serde(default)]
@@ -323,6 +332,24 @@ impl KnowledgeConfig {
     }
 }
 
+/// Keys accepted by every HTTP-backed provider entry.
+#[cfg_attr(not(feature = "http"), allow(dead_code))]
+const HTTP_KEYS: &[&str] = &["type", "api_key", "api_key_env", "api_key_header", "headers", "timeout_ms"];
+
+/// Reject keys a provider entry does not understand (typos would otherwise be
+/// ignored silently, e.g. `file:` instead of `path:` turning a persistent store
+/// into an in-memory one).
+fn check_keys(name: &str, raw: &serde_json::Value, allowed: &[&str], with_http: bool) -> Result<(), RagError> {
+    let obj = raw.as_object().ok_or_else(|| RagError::Config(format!("`{name}` must be an object")))?;
+    for key in obj.keys() {
+        let known = allowed.contains(&key.as_str()) || (with_http && HTTP_KEYS.contains(&key.as_str()));
+        if !known && key != "type" {
+            return Err(RagError::Config(format!("`{name}`: unknown key `{key}`")));
+        }
+    }
+    Ok(())
+}
+
 fn provider_type(name: &str, raw: &serde_json::Value) -> Result<String, RagError> {
     raw.get("type")
         .and_then(|t| t.as_str())
@@ -359,6 +386,12 @@ fn build_embedder(name: &str, raw: &serde_json::Value, env: EnvLookup<'_>) -> Re
     match kind.as_str() {
         #[cfg(feature = "http")]
         "openai" | "openai-compatible" | "ollama" => {
+            check_keys(
+                name,
+                raw,
+                &["base_url", "model", "dimensions", "batch_size", "query_prefix", "document_prefix"],
+                true,
+            )?;
             let mut value = with_secret(name, raw, env)?;
             if kind == "ollama" {
                 if let Some(obj) = value.as_object_mut() {
@@ -369,9 +402,17 @@ fn build_embedder(name: &str, raw: &serde_json::Value, env: EnvLookup<'_>) -> Re
             Ok(Arc::new(crate::http::OpenAiEmbedder::new(cfg)?))
         }
         "hash" => {
-            let dims = raw.get("dimensions").and_then(serde_json::Value::as_u64).unwrap_or(256);
+            check_keys(name, raw, &["dimensions"], false)?;
+            let dims = match raw.get("dimensions") {
+                None => 256,
+                Some(v) => v
+                    .as_u64()
+                    .and_then(|d| usize::try_from(d).ok())
+                    .filter(|d| *d > 0)
+                    .ok_or_else(|| RagError::Config(format!("`{name}`: `dimensions` must be a positive integer")))?,
+            };
             let _ = env;
-            Ok(Arc::new(crate::hash::HashEmbedder::new(usize::try_from(dims).unwrap_or(256))))
+            Ok(Arc::new(crate::hash::HashEmbedder::new(dims)))
         }
         other => Err(RagError::Config(format!("embedder `{name}`: unsupported type `{other}` in this build"))),
     }
@@ -382,6 +423,7 @@ fn build_reranker(name: &str, raw: &serde_json::Value, env: EnvLookup<'_>) -> Re
     match kind.as_str() {
         #[cfg(feature = "http")]
         "http" | "cohere" | "jina" | "voyage" => {
+            check_keys(name, raw, &["base_url", "model"], true)?;
             let cfg: crate::http::HttpRerankerConfig = parse(name, with_secret(name, raw, env)?)?;
             Ok(Arc::new(crate::http::HttpReranker::new(cfg)?))
         }
@@ -395,15 +437,24 @@ fn build_reranker(name: &str, raw: &serde_json::Value, env: EnvLookup<'_>) -> Re
 fn build_store(name: &str, raw: &serde_json::Value, env: EnvLookup<'_>) -> Result<Arc<dyn VectorStore>, RagError> {
     let kind = provider_type(name, raw)?;
     match kind.as_str() {
-        "memory" => match raw.get("path").and_then(|p| p.as_str()) {
-            #[cfg(feature = "fs")]
-            Some(path) => Ok(Arc::new(crate::memory::MemoryStore::open(path)?)),
-            #[cfg(not(feature = "fs"))]
-            Some(_) => Err(RagError::Config(format!("store `{name}`: `path` requires the `fs` feature"))),
-            None => Ok(Arc::new(crate::memory::MemoryStore::new())),
-        },
+        "memory" => {
+            check_keys(name, raw, &["path"], false)?;
+            let path = match raw.get("path") {
+                None => None,
+                Some(serde_json::Value::String(p)) => Some(p.as_str()),
+                Some(_) => return Err(RagError::Config(format!("store `{name}`: `path` must be a string"))),
+            };
+            match path {
+                #[cfg(feature = "fs")]
+                Some(path) => Ok(Arc::new(crate::memory::MemoryStore::open(path)?)),
+                #[cfg(not(feature = "fs"))]
+                Some(_) => Err(RagError::Config(format!("store `{name}`: `path` requires the `fs` feature"))),
+                None => Ok(Arc::new(crate::memory::MemoryStore::new())),
+            }
+        }
         #[cfg(feature = "qdrant")]
         "qdrant" => {
+            check_keys(name, raw, &["url", "collection", "create_collection"], true)?;
             let mut value = with_secret(name, raw, env)?;
             if let Some(obj) = value.as_object_mut() {
                 obj.entry("api_key_header").or_insert_with(|| "api-key".into());
@@ -423,6 +474,7 @@ fn build_retriever(name: &str, raw: &serde_json::Value, env: EnvLookup<'_>) -> R
     match kind.as_str() {
         #[cfg(feature = "http")]
         "http" => {
+            check_keys(name, raw, &["url"], true)?;
             let cfg: crate::http::HttpRetrieverConfig = parse(name, with_secret(name, raw, env)?)?;
             Ok(Arc::new(crate::http::HttpRetriever::new(cfg)?))
         }

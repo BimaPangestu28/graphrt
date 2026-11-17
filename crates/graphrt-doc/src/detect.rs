@@ -52,6 +52,26 @@ impl Format {
     }
 }
 
+impl Format {
+    /// Whether the format is plain text on disk (decoded as text, never fails).
+    pub fn is_textual(self) -> bool {
+        matches!(
+            self,
+            Format::PlainText
+                | Format::Markdown
+                | Format::Json
+                | Format::Yaml
+                | Format::Xml
+                | Format::Csv
+                | Format::Tsv
+                | Format::Html
+                | Format::Vtt
+                | Format::Srt
+                | Format::Eml
+        )
+    }
+}
+
 impl fmt::Display for Format {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
@@ -137,6 +157,15 @@ pub fn sniff(bytes: &[u8]) -> Option<Format> {
         return Some(Format::Json);
     }
     None
+}
+
+/// Whether an OLE compound file holds an Excel workbook stream (`Workbook` or
+/// `Book`). Word, PowerPoint and Outlook files are OLE too but are not supported.
+pub fn ole_is_workbook(bytes: &[u8]) -> bool {
+    let utf16 = |name: &str| -> Vec<u8> { name.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+    let (workbook, book) = (utf16("Workbook"), utf16("Book"));
+    bytes.windows(workbook.len()).any(|w| w == workbook.as_slice())
+        || bytes.windows(book.len()).any(|w| w == book.as_slice())
 }
 
 /// Whether the bytes start like a zip archive.

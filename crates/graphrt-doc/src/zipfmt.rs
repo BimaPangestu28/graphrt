@@ -57,6 +57,143 @@ impl<'a> SafeZip<'a> {
     }
 }
 
+impl SafeZip<'_> {
+    /// Decompress every entry (discarding the bytes) to prove the whole archive fits
+    /// the decompressed-size budget. Used before handing an archive to a parser that
+    /// has no limits of its own.
+    #[cfg(feature = "spreadsheet")]
+    pub(crate) fn check_total_size(&mut self) -> Result<(), DocError> {
+        for index in 0..self.archive.len() {
+            let limit = self.budget;
+            let entry = self.archive.by_index(index).map_err(|e| DocError::malformed("zip", e))?;
+            let read = std::io::copy(&mut entry.take(limit.saturating_add(1)), &mut std::io::sink())
+                .map_err(|e| DocError::malformed("zip", e))?;
+            if read > limit {
+                return Err(DocError::LimitExceeded("decompressed archive content exceeds the size limit".into()));
+            }
+            self.budget = self.budget.saturating_sub(read);
+        }
+        Ok(())
+    }
+}
+
+/// Check that every sheet of an ODS `content.xml` fits the row, column and cell
+/// limits, accounting for `number-rows-repeated` / `number-columns-repeated`.
+/// This bounds the dense range a spreadsheet parser would allocate.
+#[cfg(feature = "spreadsheet")]
+pub(crate) fn check_ods_dimensions(xml: &str, opts: &Options) -> Result<(), DocError> {
+    let mut reader = Reader::from_str(xml);
+    let mut sheet: Option<Bounds> = None;
+    let mut row_index: u64 = 0;
+    // (rows repeated, used column span) of the row being read.
+    let mut row: Option<(u64, Option<(u64, u64)>)> = None;
+    let mut col: u64 = 0;
+    loop {
+        let event = reader.read_event().map_err(xml_error)?;
+        let is_start = matches!(event, Event::Start(_));
+        match &event {
+            Event::Start(e) | Event::Empty(e) => match e.local_name().as_ref() {
+                "table" => {
+                    sheet = Some(Bounds::default());
+                    row_index = 0;
+                }
+                "table-row" => {
+                    let repeated = repeat_count(e, "number-rows-repeated")?;
+                    col = 0;
+                    if is_start {
+                        row = Some((repeated, None));
+                    } else {
+                        row_index = row_index.saturating_add(repeated);
+                    }
+                }
+                "table-cell" | "covered-table-cell" => {
+                    let repeated = repeat_count(e, "number-columns-repeated")?;
+                    let has_value = is_start || attribute(e, "value-type")?.is_some();
+                    if has_value {
+                        if let Some((_, used)) = row.as_mut() {
+                            let last = col.saturating_add(repeated).saturating_sub(1);
+                            *used = Some(match *used {
+                                Some((lo, hi)) => (lo.min(col), hi.max(last)),
+                                None => (col, last),
+                            });
+                        }
+                    }
+                    col = col.saturating_add(repeated);
+                }
+                _ => {}
+            },
+            Event::End(e) => match e.local_name().as_ref() {
+                "table-row" => {
+                    if let Some((repeated, used)) = row.take() {
+                        if let (Some((lo, hi)), Some(bounds)) = (used, sheet.as_mut()) {
+                            bounds.include(row_index, row_index.saturating_add(repeated).saturating_sub(1), lo, hi);
+                        }
+                        row_index = row_index.saturating_add(repeated);
+                    }
+                }
+                "table" => {
+                    if let Some(bounds) = sheet.take() {
+                        bounds.check(opts)?;
+                    }
+                }
+                _ => {}
+            },
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Bounding box of the used cells of one sheet.
+#[cfg(feature = "spreadsheet")]
+#[derive(Debug, Default)]
+struct Bounds {
+    used: Option<(u64, u64, u64, u64)>,
+}
+
+#[cfg(feature = "spreadsheet")]
+impl Bounds {
+    fn include(&mut self, row_lo: u64, row_hi: u64, col_lo: u64, col_hi: u64) {
+        self.used = Some(match self.used {
+            Some((r0, r1, c0, c1)) => (r0.min(row_lo), r1.max(row_hi), c0.min(col_lo), c1.max(col_hi)),
+            None => (row_lo, row_hi, col_lo, col_hi),
+        });
+    }
+
+    fn check(&self, opts: &Options) -> Result<(), DocError> {
+        let Some((r0, r1, c0, c1)) = self.used else { return Ok(()) };
+        let rows = r1.saturating_sub(r0).saturating_add(1);
+        let cols = c1.saturating_sub(c0).saturating_add(1);
+        check_sheet_dimensions(rows, cols, opts)
+    }
+}
+
+/// Reject a sheet whose used range exceeds the row, column or cell limits.
+#[cfg(feature = "spreadsheet")]
+pub(crate) fn check_sheet_dimensions(rows: u64, cols: u64, opts: &Options) -> Result<(), DocError> {
+    let as_u64 = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+    if rows > as_u64(opts.max_rows) {
+        return Err(DocError::LimitExceeded(format!("sheet has {rows} rows (limit {})", opts.max_rows)));
+    }
+    if cols > as_u64(opts.max_cols) {
+        return Err(DocError::LimitExceeded(format!("sheet has {cols} columns (limit {})", opts.max_cols)));
+    }
+    let cells = rows.saturating_mul(cols);
+    if cells > as_u64(opts.max_cells) {
+        return Err(DocError::LimitExceeded(format!("sheet spans {cells} cells (limit {})", opts.max_cells)));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "spreadsheet")]
+fn repeat_count(e: &quick_xml::events::BytesStart<'_>, name: &str) -> Result<u64, DocError> {
+    match attribute(e, name)? {
+        Some(v) => v.trim().parse::<u64>().map_err(|_| DocError::malformed("ods", format!("invalid `{name}` value"))),
+        None => Ok(1),
+    }
+}
+
 /// Identify the format of an Office/EPUB zip container.
 pub(crate) fn identify(bytes: &[u8], opts: &Options) -> Result<Option<Format>, DocError> {
     let mut zip = SafeZip::open(bytes, opts)?;
@@ -152,7 +289,7 @@ pub(crate) fn docx(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
                 "tbl" => {
                     table_depth = table_depth.saturating_sub(1);
                     if table_depth == 0 {
-                        let table = crate::text::render_table(&rows, opts.format);
+                        let table = crate::text::render_table(&rows, opts)?;
                         if !table.is_empty() {
                             push_block(&mut out, &table);
                         }

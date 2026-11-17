@@ -60,35 +60,111 @@ pub fn parse_delimited(text: &str, delimiter: char) -> Vec<Vec<String>> {
 }
 
 /// Render rows as text: Markdown table (first row = header) or tab-separated lines.
-pub fn render_table(rows: &[Vec<String>], format: OutputFormat) -> String {
-    match format {
-        OutputFormat::Markdown => markdown_table(rows),
-        OutputFormat::Text => rows.iter().map(|r| r.join("\t").trim_end().to_owned()).collect::<Vec<_>>().join("\n"),
+///
+/// The table may not be wider than [`Options::max_cols`](crate::Options::max_cols)
+/// columns, and rendering stops as soon as the output exceeds
+/// [`Options::max_output_chars`](crate::Options::max_output_chars), so padding short
+/// rows to the table width can never multiply the output beyond that budget.
+pub fn render_table(rows: &[Vec<String>], opts: &crate::Options) -> Result<String, crate::DocError> {
+    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let mut table = TableWriter::new(width, opts)?;
+    for row in rows {
+        if !table.row(row.iter().map(String::as_str)) {
+            break;
+        }
     }
+    Ok(table.finish())
 }
 
-/// Markdown table with the first row as header. Pipes and newlines in cells are escaped.
+/// Markdown table with the first row as header, using the default limits.
+/// Pipes and newlines in cells are escaped.
 pub fn markdown_table(rows: &[Vec<String>]) -> String {
-    let width = rows.iter().map(Vec::len).max().unwrap_or(0);
-    if width == 0 {
-        return String::new();
+    let opts = crate::Options::default().with_format(OutputFormat::Markdown);
+    render_table(rows, &opts).unwrap_or_default()
+}
+
+/// Streaming table renderer with a running character budget.
+#[derive(Debug)]
+pub(crate) struct TableWriter {
+    out: String,
+    chars: usize,
+    budget: usize,
+    width: usize,
+    markdown: bool,
+    rows: usize,
+}
+
+impl TableWriter {
+    /// A writer for a table `width` columns wide. Fails when the table is wider than
+    /// `opts.max_cols`.
+    pub(crate) fn new(width: usize, opts: &crate::Options) -> Result<Self, crate::DocError> {
+        if width > opts.max_cols {
+            return Err(crate::DocError::LimitExceeded(format!("table has {width} columns (limit {})", opts.max_cols)));
+        }
+        Ok(Self {
+            out: String::new(),
+            chars: 0,
+            budget: opts.max_output_chars,
+            width,
+            markdown: opts.format == OutputFormat::Markdown,
+            rows: 0,
+        })
     }
-    let cell = |s: &str| s.replace('|', "\\|").replace(['\r', '\n'], " ");
-    let line = |r: &[String]| {
-        let mut cells: Vec<String> = r.iter().map(|c| cell(c)).collect();
-        cells.resize(width, String::new());
-        format!("| {} |", cells.join(" | "))
-    };
-    let mut out = Vec::with_capacity(rows.len() + 1);
-    let mut iter = rows.iter();
-    if let Some(header) = iter.next() {
-        out.push(line(header));
-        out.push(format!("|{}", " --- |".repeat(width)));
+
+    /// Append one row. Returns `false` once the output budget is exhausted; further
+    /// rows are ignored.
+    pub(crate) fn row<'a>(&mut self, cells: impl Iterator<Item = &'a str>) -> bool {
+        if self.width == 0 {
+            return true;
+        }
+        if self.chars > self.budget {
+            return false;
+        }
+        let mut line = String::new();
+        if self.markdown {
+            line.push('|');
+            let mut written = 0usize;
+            for cell in cells.take(self.width) {
+                line.push(' ');
+                for c in cell.chars() {
+                    match c {
+                        '|' => line.push_str("\\|"),
+                        '\r' | '\n' => line.push(' '),
+                        c => line.push(c),
+                    }
+                }
+                line.push_str(" |");
+                written += 1;
+            }
+            for _ in written..self.width {
+                line.push_str("  |");
+            }
+        } else {
+            let joined: Vec<&str> = cells.take(self.width).collect();
+            line.push_str(joined.join("\t").trim_end());
+        }
+        self.push_line(&line);
+        self.rows += 1;
+        if self.markdown && self.rows == 1 {
+            let separator = format!("|{}", " --- |".repeat(self.width));
+            self.push_line(&separator);
+        }
+        self.chars <= self.budget
     }
-    for r in iter {
-        out.push(line(r));
+
+    fn push_line(&mut self, line: &str) {
+        if !self.out.is_empty() {
+            self.out.push('\n');
+            self.chars += 1;
+        }
+        self.out.push_str(line);
+        self.chars += line.chars().count();
     }
-    out.join("\n")
+
+    /// The rendered table.
+    pub(crate) fn finish(self) -> String {
+        self.out
+    }
 }
 
 /// Extract the cue text of WebVTT / SRT subtitles (timings, indexes and headers removed).
@@ -282,7 +358,9 @@ pub fn decode_entities(s: &str) -> String {
     while let Some(pos) = rest.find('&') {
         out.push_str(rest.get(..pos).unwrap_or_default());
         let after = rest.get(pos + 1..).unwrap_or_default();
-        let entity_end = after.find(';').filter(|&e| e <= 10);
+        // Entity names are short: only look at a bounded window, so input with many
+        // `&` and no `;` stays linear.
+        let entity_end = after.bytes().take(11).position(|b| b == b';');
         let decoded = entity_end.and_then(|e| decode_entity(after.get(..e).unwrap_or_default()));
         match (decoded, entity_end) {
             (Some(c), Some(e)) => {

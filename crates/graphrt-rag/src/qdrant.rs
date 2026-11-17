@@ -2,8 +2,12 @@
 //!
 //! All datasets share one collection; every point carries `dataset_id`,
 //! `document_id`, `title`, `text`, `content_hash` and `metadata` in its payload.
-//! Dataset scoping and equality metadata conditions are pushed down as Qdrant
-//! filters; other operators are applied after the search by the pipeline.
+//! Dataset scoping is pushed down as a Qdrant filter, and so are metadata
+//! equality conditions whose result cannot differ from the in-process filter
+//! (non-numeric, non-boolean string values). Every other condition is applied
+//! after the search by the pipeline, which over-fetches candidates when a filter
+//! is present. Point ids are UUIDs derived from SHA-256 of the chunk id, so ids
+//! chosen by one tenant cannot be made to collide with another tenant's chunks.
 
 use std::sync::Arc;
 
@@ -81,6 +85,27 @@ struct CountResult {
     count: usize,
 }
 
+#[derive(Deserialize)]
+struct ScrollResponse {
+    result: ScrollResult,
+}
+
+#[derive(Deserialize)]
+struct ScrollResult {
+    #[serde(default)]
+    points: Vec<ScrolledPoint>,
+    #[serde(default)]
+    next_page_offset: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct ScrolledPoint {
+    #[serde(default)]
+    payload: Payload,
+    #[serde(default)]
+    vector: Option<serde_json::Value>,
+}
+
 impl QdrantStore {
     pub fn new(mut config: QdrantConfig) -> Result<Self, RagError> {
         if config.url.trim().is_empty() || config.collection.trim().is_empty() {
@@ -150,7 +175,13 @@ impl QdrantStore {
             )));
         }
         let body = serde_json::json!({ "vectors": { "size": dims, "distance": "Cosine" } });
-        self.call(reqwest::Method::PUT, "", Some(body)).await.map(|_| ())
+        self.call(reqwest::Method::PUT, "", Some(body)).await?;
+        // Index the fields every filter uses, so dataset/document lookups are not full scans.
+        for field in ["dataset_id", "document_id", "content_hash"] {
+            let index = serde_json::json!({ "field_name": field, "field_schema": "keyword" });
+            self.call(reqwest::Method::PUT, "/index?wait=true", Some(index)).await?;
+        }
+        Ok(())
     }
 
     async fn count(&self, filter: serde_json::Value) -> Result<usize, RagError> {
@@ -175,14 +206,14 @@ impl QdrantStore {
     }
 }
 
-/// Qdrant point ids must be unsigned integers or UUIDs; derive a stable u64.
-fn point_id(chunk_id: &str) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in chunk_id.bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0100_0000_01b3);
-    }
-    h >> 1
+/// Qdrant point ids must be unsigned integers or UUIDs; derive a stable UUID from
+/// SHA-256 of the chunk id (collision-resistant, unlike a 64-bit hash).
+fn point_id(chunk_id: &str) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(chunk_id.as_bytes());
+    let hex: String = digest.iter().take(16).map(|b| format!("{b:02x}")).collect();
+    let part = |range: std::ops::Range<usize>| hex.get(range).unwrap_or_default().to_owned();
+    format!("{}-{}-{}-{}-{}", part(0..8), part(8..12), part(12..16), part(16..20), part(20..32))
 }
 
 fn key_match(key: &str, value: serde_json::Value) -> serde_json::Value {
@@ -197,7 +228,7 @@ fn qdrant_filter(datasets: &[String], filter: Option<&MetadataFilter>) -> serde_
         if f.logical_operator == Logical::And {
             for c in &f.conditions {
                 let is_eq = matches!(c.comparison_operator.trim(), "is" | "=" | "==" | "eq");
-                if is_eq && (c.value.is_string() || c.value.is_number() || c.value.is_boolean()) {
+                if is_eq && pushdown_safe(&c.value) {
                     must.push(key_match(&format!("metadata.{}", c.name), c.value.clone()));
                 }
             }
@@ -206,12 +237,51 @@ fn qdrant_filter(datasets: &[String], filter: Option<&MetadataFilter>) -> serde_
     serde_json::json!({ "must": must })
 }
 
+/// Whether Qdrant's type-exact `match` gives the same result as the in-process
+/// `equals`, which also treats `2024 == "2024"` and `true == "true"` as equal.
+/// That holds only for strings that are not numbers, booleans, null or JSON.
+fn pushdown_safe(value: &serde_json::Value) -> bool {
+    let serde_json::Value::String(s) = value else { return false };
+    let t = s.trim();
+    !(t.is_empty()
+        || t.parse::<f64>().is_ok()
+        || matches!(t, "true" | "false" | "null")
+        || t.starts_with(['{', '['])
+        || t.len() != s.len())
+}
+
+fn document_filter(dataset_id: &str, document_id: &str) -> serde_json::Value {
+    serde_json::json!({ "must": [
+        key_match("dataset_id", dataset_id.into()),
+        key_match("document_id", document_id.into()),
+    ]})
+}
+
+/// Decode a point vector (unnamed vectors only).
+fn parse_vector(raw: Option<serde_json::Value>) -> Result<Vec<f32>, RagError> {
+    match raw {
+        None | Some(serde_json::Value::Null) => Ok(Vec::new()),
+        Some(v) => serde_json::from_value(v).map_err(|e| {
+            RagError::Decode(format!("unexpected qdrant vector format (named vectors are not supported): {e}"))
+        }),
+    }
+}
+
 impl VectorStore for QdrantStore {
     fn upsert(&self, chunks: Vec<StoredChunk>) -> BoxFuture<'_, Result<(), RagError>> {
         Box::pin(async move {
             let Some(dims) = chunks.first().map(|c| c.vector.len()) else {
                 return Ok(());
             };
+            for chunk in &chunks {
+                crate::types::check_vector(&chunk.vector, &format!("chunk `{}`", chunk.id))?;
+                if chunk.vector.len() != dims {
+                    return Err(RagError::Input(format!(
+                        "chunks mix {dims}- and {}-dimensional vectors",
+                        chunk.vector.len()
+                    )));
+                }
+            }
             self.ensure_collection(dims).await?;
             let points: Vec<serde_json::Value> = chunks
                 .into_iter()
@@ -254,6 +324,70 @@ impl VectorStore for QdrantStore {
         Box::pin(async move {
             let filter = serde_json::json!({ "must": [key_match("dataset_id", dataset_id.into())] });
             self.delete_matching(filter).await
+        })
+    }
+
+    fn document_chunks<'a>(
+        &'a self,
+        dataset_id: &'a str,
+        document_id: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<StoredChunk>, RagError>> {
+        Box::pin(async move {
+            let mut chunks = Vec::new();
+            let mut offset: Option<serde_json::Value> = None;
+            loop {
+                let mut body = serde_json::json!({
+                    "filter": document_filter(dataset_id, document_id),
+                    "limit": 256,
+                    "with_payload": true,
+                    "with_vector": true,
+                });
+                if let (Some(o), Some(obj)) = (offset.take(), body.as_object_mut()) {
+                    obj.insert("offset".into(), o);
+                }
+                let bytes = match self.call(reqwest::Method::POST, "/points/scroll", Some(body)).await {
+                    Ok(b) => b,
+                    // No collection yet: nothing stored.
+                    Err(RagError::NotFound(_)) => return Ok(chunks),
+                    Err(e) => return Err(e),
+                };
+                let page: ScrollResponse =
+                    serde_json::from_slice(&bytes).map_err(|e| RagError::Decode(e.to_string()))?;
+                for point in page.result.points {
+                    let vector = parse_vector(point.vector)?;
+                    let p = point.payload;
+                    chunks.push(StoredChunk {
+                        id: p.chunk_id,
+                        dataset_id: p.dataset_id,
+                        document_id: p.document_id,
+                        title: p.title,
+                        text: p.text,
+                        metadata: p.metadata,
+                        content_hash: p.content_hash,
+                        vector,
+                    });
+                }
+                match page.result.next_page_offset {
+                    Some(next) if !next.is_null() => offset = Some(next),
+                    _ => return Ok(chunks),
+                }
+            }
+        })
+    }
+
+    fn delete_chunks<'a>(&'a self, dataset_id: &'a str, ids: &'a [String]) -> BoxFuture<'a, Result<usize, RagError>> {
+        Box::pin(async move {
+            let _ = dataset_id;
+            for batch in ids.chunks(256) {
+                let points: Vec<String> = batch.iter().map(|id| point_id(id)).collect();
+                self.call(
+                    reqwest::Method::POST,
+                    "/points/delete?wait=true",
+                    Some(serde_json::json!({ "points": points })),
+                )
+                .await?;
+            }
+            Ok(ids.len())
         })
     }
 
@@ -320,13 +454,24 @@ mod tests {
         let must = q["must"].as_array().unwrap();
         assert_eq!(must.len(), 2);
         assert_eq!(must[1]["key"], "metadata.lang");
+        // Values whose local equality is type-lenient are never pushed down.
+        for value in
+            [serde_json::json!("2024"), serde_json::json!(2024), serde_json::json!(9.5), serde_json::json!("true")]
+        {
+            let cond = MetadataCondition { name: "x".into(), comparison_operator: "is".into(), value };
+            let f = MetadataFilter { logical_operator: Logical::And, conditions: vec![cond] };
+            assert_eq!(qdrant_filter(&["d".to_owned()], Some(&f))["must"].as_array().unwrap().len(), 1);
+        }
         let or = MetadataFilter { logical_operator: Logical::Or, ..f };
         assert_eq!(qdrant_filter(&["d".to_owned()], Some(&or))["must"].as_array().unwrap().len(), 1);
     }
 
     #[test]
-    fn point_ids_are_stable() {
+    fn point_ids_are_stable_uuids() {
         assert_eq!(point_id("a:b:0"), point_id("a:b:0"));
         assert_ne!(point_id("a:b:0"), point_id("a:b:1"));
+        let id = point_id("a:b:0");
+        assert_eq!(id.len(), 36);
+        assert_eq!(id.matches('-').count(), 4);
     }
 }

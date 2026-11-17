@@ -14,6 +14,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = std::fs::read(&path)?;
     let out = extract_detailed(&bytes, None, Some(&path), &Options::default().with_format(format))?;
     println!("{}", out.text);
-    eprintln!("[{} | {} chars{}]", out.format, out.text.chars().count(), if out.truncated { " | truncated" } else { "" });
+    eprintln!(
+        "[{} | {} chars{}]",
+        out.format,
+        out.text.chars().count(),
+        if out.truncated { " | truncated" } else { "" }
+    );
     Ok(())
 }
