@@ -60,4 +60,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p graphrt-cli --profile min-size
-      - run: ls -l target/min-size/graphrt && echo "### graphrt binary: $(du -h target/min-size/graphrt | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Report binary size
+        run: |
+          ls -l target/min-size/graphrt
+          echo "### graphrt binary: $(du -h target/min-size/graphrt | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
