@@ -30,6 +30,8 @@ pub struct ServiceOptions {
     pub files_dir: Option<std::path::PathBuf>,
     /// Plugin search paths.
     pub plugins: crate::extensions::PluginOptions,
+    /// Public keys (hex) whose bundle signatures are trusted (`--trust-key`).
+    pub trust_keys: Vec<String>,
 }
 
 /// Environment variable naming a default providers file.

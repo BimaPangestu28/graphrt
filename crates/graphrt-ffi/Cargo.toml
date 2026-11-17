@@ -44,6 +44,7 @@ graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }
 graphrt-llm = { workspace = true, features = ["openai", "anthropic", "gemini", "bedrock", "typesafe"] }
 graphrt-http.workspace = true
 graphrt-wasm = { workspace = true, features = ["tokio"] }
+graphrt-bundle = { workspace = true, features = ["wasm"] }
 graphrt-code = { workspace = true, optional = true, features = ["js", "tokio"] }
 graphrt-mcp = { workspace = true, optional = true, features = ["http"] }
 # Only to switch on rquickjs' `bindgen` feature (see `mobile-js`); not used directly.

@@ -21,7 +21,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "plugins", "wasm", "otel", "serve"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "plugins", "wasm", "otel", "bundle", "serve"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -38,6 +38,8 @@ rag = ["dep:graphrt-rag"]
 plugins = ["dep:graphrt-plugin", "graphrt-plugin/process", "graphrt-plugin/http", "graphrt-plugin/yaml", "graphrt-plugin/git"]
 # Sandboxed WebAssembly plugins (manifests with `runtime: wasm`, or bare `.wasm` files).
 wasm = ["dep:graphrt-plugin", "graphrt-plugin/yaml", "dep:graphrt-wasm", "graphrt-wasm/tokio"]
+# Portable bundles (`.grt`): `graphrt bundle`, and running / serving bundles directly.
+bundle = ["wasm", "dep:graphrt-bundle", "graphrt-bundle/wasm"]
 # MCP tool servers (`--mcp`).
 mcp = ["dep:graphrt-mcp"]
 # OpenTelemetry traces and metrics over OTLP/HTTP (`--otel`, `--otel-stdout`).
@@ -56,6 +58,7 @@ graphrt-rag = { workspace = true, optional = true, features = ["default"] }
 graphrt-plugin = { workspace = true, optional = true }
 graphrt-wasm = { workspace = true, optional = true }
 graphrt-otel = { workspace = true, optional = true, features = ["http"] }
+graphrt-bundle = { workspace = true, optional = true }
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 tokio = { workspace = true, features = ["rt", "time", "signal", "fs", "io-util"] }
 futures.workspace = true
