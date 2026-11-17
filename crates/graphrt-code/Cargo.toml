@@ -1,13 +1,37 @@
 [package]
 name = "graphrt-code"
+description = "Sandboxed code node (embedded JavaScript, optional remote sandbox) for the graphrt workflow runtime."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["js", "tokio"]
+# Embedded JavaScript via QuickJS.
+js = ["dep:rquickjs"]
+# Run the JS engine on tokio's blocking pool when a tokio runtime is present.
+tokio = ["dep:tokio", "tokio/rt"]
+# HTTP client for a remote sandbox service (e.g. for Python).
+remote = ["dep:graphrt-http", "dep:reqwest"]
 
 [dependencies]
 graphrt-core.workspace = true
+graphrt-http = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+rquickjs = { version = "0.14", optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+futures = { workspace = true, features = ["executor"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true
