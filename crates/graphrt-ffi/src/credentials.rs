@@ -97,8 +97,10 @@ fn to_credential(provider: &str, record: CredentialRecord) -> Result<Credential,
         }
     }
     if let Some(url) = record.base_url.filter(|u| !u.is_empty()) {
-        if !(url.starts_with("https://") || url.starts_with("http://")) {
-            return Err(LlmError::Config(format!("credential base_url for `{provider}` must be http(s)")));
+        if !graphrt_llm::credentials::is_secure_endpoint(&url) {
+            return Err(LlmError::Config(format!(
+                "credential base_url for `{provider}` must be https:// (http only for localhost / 10.0.2.2)"
+            )));
         }
         credential = credential.base_url(url);
     }
@@ -124,7 +126,14 @@ impl CredentialSource for ForeignCredentials {
     fn invalidate(&self, provider: &str) {
         let callback = self.callback.clone();
         let provider = provider.to_owned();
-        let _ = catch_unwind(AssertUnwindSafe(move || callback.invalidate(provider)));
+        let run = move || {
+            let _ = catch_unwind(AssertUnwindSafe(move || callback.invalidate(provider)));
+        };
+        // A Keychain delete may block: never on an async worker thread.
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => drop(handle.spawn_blocking(run)),
+            Err(_) => run(),
+        }
     }
 }
 
@@ -145,6 +154,8 @@ mod tests {
         assert!(to_credential("p", CredentialRecord { secret: String::new(), ..ok.clone() }).is_err());
         assert!(to_credential("p", CredentialRecord { headers_json: Some("[1]".into()), ..ok.clone() }).is_err());
         assert!(to_credential("p", CredentialRecord { base_url: Some("file:///x".into()), ..ok.clone() }).is_err());
+        let plain_http = CredentialRecord { base_url: Some("http://proxy.example.com/v1".into()), ..ok.clone() };
+        assert!(to_credential("p", plain_http).is_err());
         assert!(!format!("{ok:?}").contains("sk-very-secret"));
     }
 }

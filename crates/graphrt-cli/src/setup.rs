@@ -145,21 +145,29 @@ pub async fn services(
         let vars = options.all_vars();
         let mut models = graphrt_llm::ModelRegistry::from_vars(&vars)
             .map_err(|e| CliError::usage(format!("model configuration: {e}")))?;
+        // A `typesafe` entry in the providers file's `credentials` section wins over
+        // TYPESAFE_API_KEY. `source: external` entries are rejected while loading:
+        // the CLI has no host app to supply credentials at run time.
+        let mut system_one = None;
         if let Some(path) = &options.providers {
             let text = std::fs::read_to_string(path)
                 .map_err(|e| CliError::usage(format!("cannot read providers file `{}`: {e}", path.display())))?;
             let value = parse_structured(&text, &format!("providers file `{}`", path.display()))?;
             let config = graphrt_llm::providers::ProvidersConfig::from_value(value)
                 .map_err(|e| CliError::usage(format!("providers file `{}`: {e}", path.display())))?;
-            let overlay = graphrt_llm::ModelRegistry::from_config_with_vars(&config, &vars)
-                .map_err(|e| CliError::usage(format!("providers file `{}`: {e}", path.display())))?;
-            models.merge(overlay);
+            let loaded =
+                config.load(&vars).map_err(|e| CliError::usage(format!("providers file `{}`: {e}", path.display())))?;
+            models.merge(loaded.models);
+            system_one = loaded.system_one;
         }
         services.insert(models);
         // TypeSafe System One (Jev) decision model, when TYPESAFE_API_KEY is set.
-        if let Some(client) = graphrt_llm::typesafe::SystemOneClient::from_vars(&vars)
-            .map_err(|e| CliError::usage(format!("TypeSafe configuration: {e}")))?
-        {
+        let system_one = match system_one {
+            Some(client) => Some(client),
+            None => graphrt_llm::typesafe::SystemOneClient::from_vars(&vars)
+                .map_err(|e| CliError::usage(format!("TypeSafe configuration: {e}")))?,
+        };
+        if let Some(client) = system_one {
             services.insert(Arc::new(client));
         }
     }

@@ -21,8 +21,8 @@ use serde::Deserialize;
 use serde_json::Value as Json;
 
 use super::common::{
-    ContextConfig, MemoryConfig, ModelConfig, PromptTemplate, StreamMode, VisionConfig, build_messages,
-    extract_json_where, invoke, model_for, split_think_tags, usage_value,
+    ContextConfig, FinishCheck, MemoryConfig, ModelConfig, PromptTemplate, StreamMode, VisionConfig, build_messages,
+    check_finish, extract_json_where, invoke, model_for, split_think_tags, usage_value,
 };
 use super::schema;
 use crate::types::ResponseFormat;
@@ -125,6 +125,7 @@ impl LlmNode {
             ReasoningFormat::Separated => StreamMode::SeparateThink,
         };
         let response = invoke(&ctx, model.as_ref(), request, mode).await?;
+        let finish = check_finish(&response)?;
 
         let (text, mut reasoning) = match cfg.reasoning_format {
             ReasoningFormat::Tagged => (response.text.clone(), String::new()),
@@ -147,6 +148,13 @@ impl LlmNode {
             .meta("provider", cfg.model.provider.as_str());
         if !reasoning.is_empty() {
             output = output.with("reasoning", reasoning);
+        }
+        let mut warnings: Vec<Value> = response.warnings.iter().map(|w| Value::from(w.as_str())).collect();
+        if let FinishCheck::Unknown(reason) = &finish {
+            warnings.push(Value::from(format!("unrecognized finish reason `{reason}`")));
+        }
+        if !warnings.is_empty() {
+            output = output.meta("warnings", Value::from(warnings));
         }
         if let Some(schema) = &self.schema {
             let parsed = extract_json_where(&text, |v| schema::matches_top_level_type(v, schema)).ok_or_else(|| {
@@ -213,6 +221,38 @@ mod tests {
             NodeOutcome::Completed(o) => o,
             NodeOutcome::Paused(p) => panic!("unexpected pause {p:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn content_filter_is_an_error_and_unknown_reasons_are_reported() {
+        let node = LlmNode::from_doc(&doc(serde_json::json!({
+            "model": {"provider": "openai", "name": "m"},
+            "prompt_template": [{"role": "user", "text": "hi"}]
+        })))
+        .unwrap();
+        let run = |deltas: Vec<ChatDelta>| {
+            let model = Arc::new(MockModel::new(vec![deltas]));
+            let (ctx, _) = ctx_with(model, VariablePool::new());
+            node.run(ctx)
+        };
+        let err = run(vec![ChatDelta::Finish(crate::types::FinishReason::ContentFilter)]).await.unwrap_err();
+        assert_eq!(err.kind, "content_filter");
+        assert!(!err.retryable);
+        let err = run(vec![ChatDelta::Finish(crate::types::FinishReason::Other("malformed_function_call".into()))])
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, "model_decode");
+        assert!(err.retryable);
+        let out = completed(
+            run(vec![
+                ChatDelta::Warning("dropped `format`".into()),
+                ChatDelta::Text("ok".into()),
+                ChatDelta::Finish(crate::types::FinishReason::Other("language".into())),
+            ])
+            .await,
+        );
+        let warnings = out.metadata["warnings"].to_text();
+        assert!(warnings.contains("dropped `format`") && warnings.contains("language"), "{warnings}");
     }
 
     #[tokio::test]

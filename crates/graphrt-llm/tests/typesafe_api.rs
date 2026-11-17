@@ -289,6 +289,54 @@ async fn rejected_credential_is_refreshed_once() {
 }
 
 #[tokio::test]
+async fn credential_base_url_redirects_to_the_proxy_without_static_headers() {
+    let server = serve(vec![ok(json!({"model": "jev-latest", "answers": {"b": {"type": "noul", "noul": 0.5}},
+                                      "usage": {"input_tokens": 1, "output_tokens": 1}}))])
+    .await;
+    // Configured for the vendor; the broker's credential points at the proxy.
+    let source = Arc::new(graphrt_llm::credentials::StaticCredential::from_credential(
+        Credential::new("proxy-token").base_url(&server.base),
+    ));
+    let mut config = SystemOneConfig::default().credentials(source);
+    config.headers = vec![("x-operator-secret".into(), "do-not-leak".into())];
+    let client = SystemOneClient::new(config).unwrap();
+    let request = SystemOneRequest::new("jev-latest", json!("x")).question("b", Question::noul("?"));
+    client.ask(&request).await.unwrap();
+    let reqs = server.requests();
+    assert_eq!(reqs[0].headers["authorization"], "Bearer proxy-token");
+    assert!(!reqs[0].headers.contains_key("x-operator-secret"));
+}
+
+#[tokio::test]
+async fn answers_that_do_not_match_their_questions_are_rejected() {
+    let server = serve(vec![
+        ok(json!({"model": "m", "answers": {"t": {"type": "choice", "choice": "nope", "confidence": 0.9,
+                                                  "probabilities": {"nope": 1.0}}},
+                  "usage": {"input_tokens": 1, "output_tokens": 1}})),
+        ok(json!({"model": "m", "answers": {"t": {"type": "choice", "choice": "a", "confidence": 0.9,
+                                                  "probabilities": {"b": 1.0}}},
+                  "usage": {"input_tokens": 1, "output_tokens": 1}})),
+        ok(json!({"model": "m", "answers": {"t": {"type": "noul", "noul": 0.2}},
+                  "usage": {"input_tokens": 1, "output_tokens": 1}})),
+    ])
+    .await;
+    let mut criteria = IndexMap::new();
+    criteria.insert("a".to_owned(), json!("A"));
+    criteria.insert("b".to_owned(), json!("B"));
+    let request = SystemOneRequest::new("m", json!("x")).question("t", Question::choice("?", criteria));
+    let client = client(&server);
+    for _ in 0..3 {
+        assert!(matches!(client.ask(&request).await, Err(LlmError::Decode(_))));
+    }
+}
+
+#[test]
+fn base_url_without_key_is_reported() {
+    let vars = vec![("TYPESAFE_BASE_URL".to_owned(), "https://ts.example.com".to_owned())];
+    assert!(SystemOneClient::from_vars(&vars).is_err());
+}
+
+#[tokio::test]
 async fn error_statuses_map_to_typed_errors() {
     let server = serve(vec![
         Reply { status: 429, headers: vec![("retry-after", "2")], body: "{\"detail\":\"slow down\"}".into() },

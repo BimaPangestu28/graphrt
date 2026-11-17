@@ -132,9 +132,9 @@ impl GeminiModel {
         Ok(Self { config, client })
     }
 
-    fn endpoint(&self, model: &str) -> String {
+    fn endpoint(base_url: &str, model: &str) -> String {
         let model = model.strip_prefix("models/").unwrap_or(model);
-        format!("{}/models/{}:streamGenerateContent?alt=sse", self.config.base_url.trim_end_matches('/'), encode(model))
+        format!("{}/models/{}:streamGenerateContent?alt=sse", base_url.trim_end_matches('/'), encode(model))
     }
 
     async fn credential(&self) -> Result<Credential, LlmError> {
@@ -151,21 +151,36 @@ impl GeminiModel {
 impl ChatModel for GeminiModel {
     fn chat(&self, request: ChatRequest) -> BoxFuture<'_, Result<ChatStream, LlmError>> {
         Box::pin(async move {
-            let body = build_body(&request)?;
-            let url = self.endpoint(&request.model);
+            let (body, warnings) = build_body_with_warnings(&request)?;
             let mut retried = false;
             loop {
                 let credential = self.credential().await?;
+                // A credential may move the request to a proxy (thin-proxy pattern).
+                let endpoint = crate::http::resolve_endpoint(&self.config.base_url, credential.base_url.as_deref())?;
+                let url = Self::endpoint(&endpoint.base_url, &request.model);
                 let mut builder = self.client.post(&url).json(&body);
                 builder = match self.config.auth {
                     GeminiAuth::ApiKey => builder.header("x-goog-api-key", credential.secret.as_str()),
                     GeminiAuth::Bearer => builder.bearer_auth(&credential.secret),
                 };
-                for (k, v) in self.config.headers.iter().chain(credential.headers.iter()) {
+                if endpoint.send_static {
+                    for (k, v) in &self.config.headers {
+                        builder = builder.header(k.as_str(), v.as_str());
+                    }
+                }
+                for (k, v) in &credential.headers {
                     builder = builder.header(k.as_str(), v.as_str());
                 }
                 match send_request(builder, classify).await {
-                    Ok(response) => return Ok(sse_stream(response, GeminiDecoder::default())),
+                    Ok(response) => {
+                        let stream = sse_stream(response, GeminiDecoder::default());
+                        if warnings.is_empty() {
+                            return Ok(stream);
+                        }
+                        let head: Vec<Result<ChatDelta, LlmError>> =
+                            warnings.iter().cloned().map(|w| Ok(ChatDelta::Warning(w))).collect();
+                        return Ok(Box::pin(futures::StreamExt::chain(futures::stream::iter(head), stream)));
+                    }
                     Err(LlmError::Auth(_)) if !retried && self.config.credentials.is_some() => {
                         if let Some(source) = &self.config.credentials {
                             source.invalidate(&self.config.provider_name);
@@ -274,9 +289,30 @@ fn function_response(text: &str) -> Json {
     }
 }
 
+/// Prefix of tool-call ids synthesized by the decoder when Gemini sends none.
+const SYNTHETIC_ID_PREFIX: &str = "gemini_call_";
+
+/// Gemini-supplied call id (sent back so parallel calls of the same function
+/// map unambiguously); synthesized ids are not sent.
+fn provider_call_id(id: &str) -> Option<&str> {
+    (!id.is_empty() && !id.starts_with(SYNTHETIC_ID_PREFIX)).then_some(id)
+}
+
 /// Build the JSON request body.
+#[cfg(test)]
 pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
+    build_body_with_warnings(req).map(|(body, _)| body)
+}
+
+/// Build the JSON request body, also returning conversion warnings.
+pub(crate) fn build_body_with_warnings(req: &ChatRequest) -> Result<(Json, Vec<String>), LlmError> {
     check_extra(req)?;
+    if req.extra.get("candidateCount").and_then(Json::as_u64).is_some_and(|n| n > 1) {
+        return Err(LlmError::Config(
+            "`candidateCount` > 1 is not supported: only one candidate is streamed back".into(),
+        ));
+    }
+    let mut warnings: Vec<String> = Vec::new();
     let mut system_parts: Vec<String> = Vec::new();
     let mut turns: Vec<(&'static str, Vec<Json>)> = Vec::new();
     let mut push = |role: &'static str, parts: Vec<Json>| {
@@ -311,7 +347,11 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
                 let mut parts = content_parts(&m.content)?;
                 for c in &m.tool_calls {
                     let args = c.arguments_json().map_err(|e| LlmError::Config(e.to_string()))?;
-                    parts.push(json!({"functionCall": {"name": c.name, "args": args}}));
+                    let mut call = json!({"name": c.name, "args": args});
+                    if let (Some(id), Some(obj)) = (provider_call_id(&c.id), call.as_object_mut()) {
+                        obj.insert("id".into(), json!(id));
+                    }
+                    parts.push(json!({ "functionCall": call }));
                 }
                 push("model", parts);
             }
@@ -324,10 +364,11 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
                 let name = call_names.get(id).copied().ok_or_else(|| {
                     LlmError::Config(format!("tool result `{id}` does not answer any earlier tool call"))
                 })?;
-                push(
-                    "user",
-                    vec![json!({"functionResponse": {"name": name, "response": function_response(&m.text())}})],
-                );
+                let mut response = json!({"name": name, "response": function_response(&m.text())});
+                if let (Some(id), Some(obj)) = (provider_call_id(id), response.as_object_mut()) {
+                    obj.insert("id".into(), json!(id));
+                }
+                push("user", vec![json!({ "functionResponse": response })]);
             }
         }
     }
@@ -341,21 +382,27 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
     body.insert("contents".into(), Json::Array(contents));
 
     if !req.tools.is_empty() {
-        let declarations: Vec<Json> = req
-            .tools
-            .iter()
-            .map(|t| {
-                let mut decl = json!({"name": t.name, "description": t.description});
-                let has_params =
-                    t.parameters.get("properties").and_then(Json::as_object).is_some_and(|p| !p.is_empty());
-                if has_params {
-                    if let Some(obj) = decl.as_object_mut() {
-                        obj.insert("parameters".into(), to_gemini_schema(&t.parameters));
-                    }
+        let mut declarations: Vec<Json> = Vec::with_capacity(req.tools.len());
+        for t in &req.tools {
+            let mut decl = json!({"name": t.name, "description": t.description});
+            let has_params = t.parameters.get("properties").and_then(Json::as_object).is_some_and(|p| !p.is_empty());
+            if has_params {
+                let converted = to_gemini_schema(&t.parameters)
+                    .map_err(|e| LlmError::Config(format!("tool `{}` parameters: {e}", t.name)))?;
+                warnings.extend(converted.dropped.iter().map(|d| format!("tool `{}` parameters {d}", t.name)));
+                if let Some(obj) = decl.as_object_mut() {
+                    obj.insert("parameters".into(), converted.schema);
                 }
-                decl
-            })
-            .collect();
+            } else if t.parameters.as_object().is_some_and(|o| o.keys().any(|k| k != "type" && k != "$schema")) {
+                // e.g. a free-form `additionalProperties` map: Gemini needs declared properties.
+                warnings.push(format!(
+                    "tool `{}`: parameters without `properties` cannot be declared to Gemini; \
+                     the model can only call it with no arguments",
+                    t.name
+                ));
+            }
+            declarations.push(decl);
+        }
         body.insert("tools".into(), json!([{"functionDeclarations": declarations}]));
     }
     if let Some(choice) = &req.tool_choice {
@@ -387,7 +434,9 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
         }
         Some(ResponseFormat::JsonSchema { schema, .. }) => {
             generation.insert("responseMimeType".into(), json!("application/json"));
-            generation.insert("responseSchema".into(), to_gemini_schema(schema));
+            let converted = to_gemini_schema(schema).map_err(|e| LlmError::Config(format!("response schema: {e}")))?;
+            warnings.extend(converted.dropped.iter().map(|d| format!("response schema {d}")));
+            generation.insert("responseSchema".into(), converted.schema);
         }
         _ => {}
     }
@@ -401,7 +450,7 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
     if !generation.is_empty() {
         body.insert("generationConfig".into(), Json::Object(generation));
     }
-    Ok(Json::Object(body))
+    Ok((Json::Object(body), warnings))
 }
 
 /// String formats Gemini accepts; others are rejected by the API and are dropped.
@@ -426,12 +475,29 @@ const COPIED_KEYWORDS: &[&str] = &[
 /// Nesting limit for schema conversion (guards against recursive `$ref`s).
 const MAX_SCHEMA_DEPTH: usize = 24;
 
+/// Keywords that carry no constraint for the model and are dropped silently.
+const IGNORED_KEYWORDS: &[&str] = &["$schema", "$id", "$defs", "definitions", "$comment", "examples", "default"];
+
+/// A converted schema plus the constraints that Gemini cannot express.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GeminiSchema {
+    pub schema: Json,
+    /// `path: keyword` entries for constraints that were dropped. They are
+    /// reported as warnings so callers know the model output is less constrained
+    /// than the original schema.
+    pub dropped: Vec<String>,
+}
+
 /// Convert a JSON Schema into Gemini's OpenAPI-style schema subset: upper-case
-/// types, `nullable` instead of `"null"` types, local `$ref`s inlined,
-/// `const` turned into a one-value `enum`, and unsupported keywords
-/// (`additionalProperties`, `$schema`, unknown formats, ...) dropped.
-pub fn to_gemini_schema(schema: &Json) -> Json {
-    convert_schema(schema, schema, 0)
+/// types, `nullable` instead of `"null"` types, local `$ref`s inlined, `const`
+/// turned into a one-value `enum`. Constraints Gemini cannot express are dropped
+/// and listed in [`GeminiSchema::dropped`]. Unresolvable `$ref`s, recursion
+/// deeper than the nesting limit and non-object schemas are errors — they would
+/// otherwise silently become "accept anything".
+pub fn to_gemini_schema(schema: &Json) -> Result<GeminiSchema, LlmError> {
+    let mut converter = SchemaConverter { root: schema, dropped: Vec::new() };
+    let schema = converter.convert(schema, "$", 0)?;
+    Ok(GeminiSchema { schema, dropped: converter.dropped })
 }
 
 fn resolve_ref<'a>(root: &'a Json, reference: &str) -> Option<&'a Json> {
@@ -455,92 +521,164 @@ fn gemini_type(t: &str) -> Option<&'static str> {
     })
 }
 
-fn convert_schema(schema: &Json, root: &Json, depth: usize) -> Json {
-    let Some(obj) = schema.as_object() else {
-        return json!({});
-    };
-    if depth > MAX_SCHEMA_DEPTH {
-        return json!({});
+struct SchemaConverter<'a> {
+    root: &'a Json,
+    dropped: Vec<String>,
+}
+
+impl SchemaConverter<'_> {
+    fn drop(&mut self, path: &str, what: impl std::fmt::Display) {
+        self.dropped.push(format!("{path}: {what}"));
     }
-    if let Some(target) = obj.get("$ref").and_then(Json::as_str).and_then(|r| resolve_ref(root, r)) {
-        return convert_schema(target, root, depth + 1);
-    }
-    let mut out = Map::new();
-    let mut nullable = obj.get("nullable").and_then(Json::as_bool).unwrap_or(false);
-    match obj.get("type") {
-        Some(Json::String(t)) => {
-            if let Some(g) = gemini_type(t) {
-                out.insert("type".into(), json!(g));
+
+    fn convert(&mut self, schema: &Json, path: &str, depth: usize) -> Result<Json, LlmError> {
+        if depth > MAX_SCHEMA_DEPTH {
+            return Err(LlmError::Config(format!(
+                "JSON Schema at `{path}` nests deeper than {MAX_SCHEMA_DEPTH} levels (recursive `$ref`?); \
+                 Gemini schemas cannot express recursion"
+            )));
+        }
+        let obj = match schema {
+            Json::Object(obj) => obj,
+            Json::Bool(true) => return Ok(json!({})),
+            other => {
+                return Err(LlmError::Config(format!("JSON Schema at `{path}` must be an object, got {other}")));
+            }
+        };
+        if let Some(reference) = obj.get("$ref").and_then(Json::as_str) {
+            let root = self.root;
+            let target = resolve_ref(root, reference).ok_or_else(|| {
+                LlmError::Config(format!("JSON Schema at `{path}`: cannot resolve `$ref` `{reference}`"))
+            })?;
+            return self.convert(target, path, depth + 1);
+        }
+        let mut out = Map::new();
+        let mut nullable = obj.get("nullable").and_then(Json::as_bool).unwrap_or(false);
+        for key in obj.keys() {
+            let known = matches!(
+                key.as_str(),
+                "type"
+                    | "nullable"
+                    | "anyOf"
+                    | "oneOf"
+                    | "format"
+                    | "enum"
+                    | "const"
+                    | "properties"
+                    | "required"
+                    | "items"
+                    | "$ref"
+            ) || COPIED_KEYWORDS.contains(&key.as_str())
+                || IGNORED_KEYWORDS.contains(&key.as_str());
+            if !known {
+                self.drop(path, format!("unsupported keyword `{key}`"));
             }
         }
-        Some(Json::Array(types)) => {
-            let names: Vec<&str> = types.iter().filter_map(Json::as_str).collect();
-            nullable |= names.contains(&"null");
-            if let Some(g) = names.iter().filter(|t| **t != "null").find_map(|t| gemini_type(t)) {
-                out.insert("type".into(), json!(g));
+        match obj.get("type") {
+            Some(Json::String(t)) => match gemini_type(t) {
+                Some(g) => {
+                    out.insert("type".into(), json!(g));
+                }
+                None if t == "null" => nullable = true,
+                None => self.drop(path, format!("unknown type `{t}`")),
+            },
+            Some(Json::Array(types)) => {
+                let names: Vec<&str> = types.iter().filter_map(Json::as_str).collect();
+                nullable |= names.contains(&"null");
+                let non_null: Vec<&str> = names.iter().copied().filter(|t| *t != "null").collect();
+                if let (true, Some(first)) = (non_null.len() > 1, non_null.first()) {
+                    self.drop(path, format!("type union {non_null:?} (only `{first}` kept)"));
+                }
+                if let Some(g) = non_null.iter().find_map(|t| gemini_type(t)) {
+                    out.insert("type".into(), json!(g));
+                }
+            }
+            _ => {}
+        }
+        for variants_key in ["anyOf", "oneOf"] {
+            if let Some(variants) = obj.get(variants_key).and_then(Json::as_array) {
+                let non_null: Vec<&Json> =
+                    variants.iter().filter(|v| v.get("type").and_then(Json::as_str) != Some("null")).collect();
+                nullable |= non_null.len() < variants.len();
+                if variants_key == "oneOf" && non_null.len() > 1 {
+                    self.drop(path, "`oneOf` exclusivity (converted to `anyOf`)");
+                }
+                if let [only] = non_null.as_slice() {
+                    // `anyOf: [X, {type: null}]` is just a nullable X.
+                    if let Json::Object(inner) = self.convert(only, path, depth + 1)? {
+                        for (k, v) in inner {
+                            out.entry(k).or_insert(v);
+                        }
+                    }
+                } else if !non_null.is_empty() {
+                    let mut converted = Vec::with_capacity(non_null.len());
+                    for (i, v) in non_null.iter().enumerate() {
+                        converted.push(self.convert(v, &format!("{path}.{variants_key}[{i}]"), depth + 1)?);
+                    }
+                    out.insert("anyOf".into(), Json::Array(converted));
+                }
             }
         }
-        _ => {}
-    }
-    for variants_key in ["anyOf", "oneOf"] {
-        if let Some(variants) = obj.get(variants_key).and_then(Json::as_array) {
-            let non_null: Vec<&Json> =
-                variants.iter().filter(|v| v.get("type").and_then(Json::as_str) != Some("null")).collect();
-            nullable |= non_null.len() < variants.len();
-            if let [only] = non_null.as_slice() {
-                // `anyOf: [X, {type: null}]` is just a nullable X.
-                if let Json::Object(inner) = convert_schema(only, root, depth + 1) {
-                    for (k, v) in inner {
-                        out.entry(k).or_insert(v);
+        if let Some(format) = obj.get("format").and_then(Json::as_str) {
+            if SUPPORTED_FORMATS.contains(&format) {
+                out.insert("format".into(), json!(format));
+            } else {
+                self.drop(path, format!("format `{format}`"));
+            }
+        }
+        for key in COPIED_KEYWORDS {
+            if let Some(v) = obj.get(*key) {
+                out.insert((*key).to_owned(), v.clone());
+            }
+        }
+        if let Some(Json::Array(values)) = obj.get("enum") {
+            if values.iter().all(Json::is_string) {
+                out.insert("enum".into(), Json::Array(values.clone()));
+                out.entry("type").or_insert_with(|| json!("STRING"));
+            } else {
+                self.drop(path, "`enum` with non-string values (Gemini enums are strings only)");
+            }
+        } else if let Some(value) = obj.get("const") {
+            match value {
+                Json::String(value) => {
+                    out.insert("enum".into(), json!([value]));
+                    out.entry("type").or_insert_with(|| json!("STRING"));
+                }
+                other => self.drop(path, format!("non-string `const` {other}")),
+            }
+        }
+        if let Some(props) = obj.get("properties").and_then(Json::as_object) {
+            let mut converted = Map::new();
+            for (k, v) in props {
+                converted.insert(k.clone(), self.convert(v, &format!("{path}.{k}"), depth + 1)?);
+            }
+            if let Some(required) = obj.get("required").and_then(Json::as_array) {
+                let mut kept = Vec::new();
+                for r in required {
+                    match r.as_str() {
+                        Some(name) if converted.contains_key(name) => kept.push(r.clone()),
+                        _ => self.drop(path, format!("`required` entry {r} that is not a declared property")),
                     }
                 }
-            } else if !non_null.is_empty() {
-                let converted: Vec<Json> = non_null.iter().map(|v| convert_schema(v, root, depth + 1)).collect();
-                out.insert("anyOf".into(), Json::Array(converted));
+                if !kept.is_empty() {
+                    out.insert("required".into(), Json::Array(kept));
+                }
             }
+            out.insert("properties".into(), Json::Object(converted));
+            out.entry("type").or_insert_with(|| json!("OBJECT"));
+        } else if obj.contains_key("required") {
+            self.drop(path, "`required` without `properties`");
         }
-    }
-    if let Some(format) = obj.get("format").and_then(Json::as_str).filter(|f| SUPPORTED_FORMATS.contains(f)) {
-        out.insert("format".into(), json!(format));
-    }
-    for key in COPIED_KEYWORDS {
-        if let Some(v) = obj.get(*key) {
-            out.insert((*key).to_owned(), v.clone());
+        if let Some(items) = obj.get("items") {
+            let converted = self.convert(items, &format!("{path}[]"), depth + 1)?;
+            out.insert("items".into(), converted);
+            out.entry("type").or_insert_with(|| json!("ARRAY"));
         }
-    }
-    if let Some(Json::Array(values)) = obj.get("enum") {
-        if values.iter().all(Json::is_string) {
-            out.insert("enum".into(), Json::Array(values.clone()));
-            out.entry("type").or_insert_with(|| json!("STRING"));
+        if nullable {
+            out.insert("nullable".into(), json!(true));
         }
-    } else if let Some(Json::String(value)) = obj.get("const") {
-        out.insert("enum".into(), json!([value]));
-        out.entry("type").or_insert_with(|| json!("STRING"));
+        Ok(Json::Object(out))
     }
-    if let Some(props) = obj.get("properties").and_then(Json::as_object) {
-        let converted: Map<String, Json> =
-            props.iter().map(|(k, v)| (k.clone(), convert_schema(v, root, depth + 1))).collect();
-        if let Some(required) = obj.get("required").and_then(Json::as_array) {
-            let required: Vec<Json> = required
-                .iter()
-                .filter(|r| r.as_str().is_some_and(|name| converted.contains_key(name)))
-                .cloned()
-                .collect();
-            if !required.is_empty() {
-                out.insert("required".into(), Json::Array(required));
-            }
-        }
-        out.insert("properties".into(), Json::Object(converted));
-        out.entry("type").or_insert_with(|| json!("OBJECT"));
-    }
-    if let Some(items) = obj.get("items") {
-        out.insert("items".into(), convert_schema(items, root, depth + 1));
-        out.entry("type").or_insert_with(|| json!("ARRAY"));
-    }
-    if nullable {
-        out.insert("nullable".into(), json!(true));
-    }
-    Json::Object(out)
 }
 
 fn finish_reason(reason: &str, had_calls: bool) -> FinishReason {
@@ -640,12 +778,17 @@ impl SseDecoder for GeminiDecoder {
                 if let Some(call) = part.get("functionCall") {
                     let index = self.calls;
                     self.calls += 1;
-                    let name = call.get("name").and_then(Json::as_str).unwrap_or_default().to_owned();
+                    let name = call
+                        .get("name")
+                        .and_then(Json::as_str)
+                        .filter(|n| !n.is_empty())
+                        .ok_or_else(|| LlmError::Decode("Gemini returned a functionCall without a name".into()))?
+                        .to_owned();
                     let id = call
                         .get("id")
                         .and_then(Json::as_str)
                         .filter(|id| !id.is_empty())
-                        .map_or_else(|| format!("gemini_call_{index}"), str::to_owned);
+                        .map_or_else(|| format!("{SYNTHETIC_ID_PREFIX}{index}"), str::to_owned);
                     let arguments = match call.get("args") {
                         Some(args @ Json::Object(_)) => args.to_string(),
                         None | Some(Json::Null) => "{}".to_owned(),
@@ -682,11 +825,13 @@ impl SseDecoder for GeminiDecoder {
                 total_tokens: total,
             }));
         }
-        if self.finished {
-            out.extend(self.state());
-            return Ok(Decoded::done(out));
-        }
+        // Keep reading after `finishReason`: a later chunk may still carry the final
+        // `usageMetadata`. The body's end completes the response.
         Ok(Decoded::deltas(out))
+    }
+
+    fn end_of_stream(&mut self) -> Result<Vec<ChatDelta>, LlmError> {
+        if self.finished { Ok(self.state().into_iter().collect()) } else { Err(crate::http::truncated()) }
     }
 }
 
@@ -704,11 +849,15 @@ mod tests {
         for ev in parser.push(fixture.as_bytes()).unwrap() {
             let d = decoder.decode(ev)?;
             deltas.extend(d.deltas);
-            if d.done {
-                return Ok((deltas, true));
-            }
         }
-        Ok((deltas, false))
+        // The body ended: a response is complete only if a finish reason was seen.
+        match decoder.end_of_stream() {
+            Ok(tail) => {
+                deltas.extend(tail);
+                Ok((deltas, true))
+            }
+            Err(_) => Ok((deltas, false)),
+        }
     }
 
     #[test]
@@ -794,7 +943,13 @@ mod tests {
             },
             "required": ["city", "ghost"]
         });
-        let g = to_gemini_schema(&schema);
+        let converted = to_gemini_schema(&schema).unwrap();
+        let g = &converted.schema;
+        // Dropped constraints are reported, not silently lost.
+        let dropped = converted.dropped.join("\n");
+        assert!(dropped.contains("additionalProperties"), "{dropped}");
+        assert!(dropped.contains("format `uri`"), "{dropped}");
+        assert!(dropped.contains("ghost"), "{dropped}");
         assert_eq!(g["type"], "OBJECT");
         assert!(g.get("$schema").is_none() && g.get("additionalProperties").is_none());
         let p = &g["properties"];
@@ -810,9 +965,57 @@ mod tests {
         assert_eq!(p["maybe"]["type"], "NUMBER");
         assert_eq!(p["maybe"]["nullable"], true);
         assert_eq!(g["required"], json!(["city"]));
-        // Recursive references terminate.
+        // Recursive references cannot be expressed: an error instead of an
+        // accept-anything `{}`.
         let recursive = json!({"$defs": {"n": {"type": "object", "properties": {"next": {"$ref": "#/$defs/n"}}}}, "$ref": "#/$defs/n"});
-        assert_eq!(to_gemini_schema(&recursive)["type"], "OBJECT");
+        assert!(matches!(to_gemini_schema(&recursive), Err(LlmError::Config(_))));
+        let dangling = json!({"type": "object", "properties": {"a": {"$ref": "#/$defs/missing"}}});
+        assert!(matches!(to_gemini_schema(&dangling), Err(LlmError::Config(_))));
+        // Integer enums are dropped with a warning, not silently.
+        let ints = to_gemini_schema(&json!({"type": "integer", "enum": [1, 2]})).unwrap();
+        assert!(ints.schema.get("enum").is_none());
+        assert_eq!(ints.dropped.len(), 1);
+    }
+
+    #[test]
+    fn warnings_reach_the_response_and_candidate_count_is_rejected() {
+        let mut req = ChatRequest::new("m", vec![Message::user("x")]);
+        req.response_format = Some(ResponseFormat::JsonSchema {
+            name: "s".into(),
+            schema: json!({"type": "object", "properties": {"a": {"type": "string", "format": "email"}}}),
+            strict: false,
+        });
+        let (_, warnings) = build_body_with_warnings(&req).unwrap();
+        assert!(warnings.iter().any(|w| w.contains("email")), "{warnings:?}");
+        req.extra.insert("candidateCount".into(), json!(2));
+        assert!(matches!(build_body_with_warnings(&req), Err(LlmError::Config(_))));
+    }
+
+    #[test]
+    fn provider_call_ids_are_sent_back() {
+        let mut assistant = Message::assistant("");
+        assistant.tool_calls = vec![
+            ToolCall { id: "abc".into(), name: "f".into(), arguments: "{}".into() },
+            ToolCall { id: "gemini_call_1".into(), name: "f".into(), arguments: "{}".into() },
+        ];
+        let req = ChatRequest::new(
+            "m",
+            vec![Message::user("q"), assistant, Message::tool("abc", "1"), Message::tool("gemini_call_1", "2")],
+        );
+        let body = build_body(&req).unwrap();
+        let contents = body["contents"].as_array().unwrap();
+        let calls = contents[1]["parts"].as_array().unwrap();
+        assert_eq!(calls[0]["functionCall"]["id"], "abc");
+        assert!(calls[1]["functionCall"].get("id").is_none());
+        let responses = contents[2]["parts"].as_array().unwrap();
+        assert_eq!(responses[0]["functionResponse"]["id"], "abc");
+        assert!(responses[1]["functionResponse"].get("id").is_none());
+    }
+
+    #[test]
+    fn function_call_without_name_is_an_error() {
+        let fixture = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"args\":{}}}]}}]}\n\n";
+        assert!(matches!(decode_all(fixture), Err(LlmError::Decode(_))));
     }
 
     const FIXTURE: &str = concat!(
@@ -903,7 +1106,7 @@ mod tests {
     fn endpoint_and_debug() {
         let model = GeminiModel::new(GeminiConfig::new("AIza-secret")).unwrap();
         assert_eq!(
-            model.endpoint("models/gemini-2.5-flash"),
+            GeminiModel::endpoint(GEMINI_BASE_URL, "models/gemini-2.5-flash"),
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
         );
         assert!(!format!("{model:?}").contains("AIza-secret"));

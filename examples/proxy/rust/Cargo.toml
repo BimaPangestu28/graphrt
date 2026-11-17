@@ -25,4 +25,4 @@ base64 = "0.22"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 http-body-util = "0.1"
 # End-to-end test: graphrt's TokenBroker + OpenAI-compatible client against this proxy.
-graphrt-llm = { path = "../../../crates/graphrt-llm", default-features = false, features = ["openai"] }
+graphrt-llm = { path = "../../../crates/graphrt-llm", default-features = false, features = ["openai", "anthropic"] }

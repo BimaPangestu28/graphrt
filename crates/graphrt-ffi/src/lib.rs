@@ -269,22 +269,16 @@ impl Runtime {
         // Credentialed providers replace env-configured ones of the same name; their
         // keys come from the host at request time, never from this config.
         let host_credentials = graphrt_llm::credential_config::HostCredentials::new();
-        graphrt_llm::credential_config::apply(&mut models, &config.credentials, &host_credentials)
+        // A `typesafe`-kind entry is never registered as a chat model: it becomes the
+        // System One client, built from the same cached credential source.
+        let applied = graphrt_llm::credential_config::apply(&mut models, &config.credentials, &host_credentials)
             .map_err(|e| GraphrtError::config(e.to_string()))?;
         services.insert(models);
 
         // TypeSafe System One (Jev): a `typesafe` credentials entry (token broker /
         // host keychain) wins over a static `TYPESAFE_API_KEY` provider variable.
-        let typesafe = match config.credentials.get("typesafe") {
-            Some(entry) => {
-                let source = graphrt_llm::credential_config::build_source("typesafe", entry, &host_credentials)
-                    .map_err(|e| GraphrtError::config(e.to_string()))?;
-                let mut ts = graphrt_llm::typesafe::SystemOneConfig { credentials: Some(source), ..Default::default() };
-                if let Some(url) = &entry.base_url {
-                    ts.base_url.clone_from(url);
-                }
-                Some(graphrt_llm::typesafe::SystemOneClient::new(ts).map_err(|e| GraphrtError::config(e.to_string()))?)
-            }
+        let typesafe = match applied.system_one {
+            Some(client) => Some(client),
             None => graphrt_llm::typesafe::SystemOneClient::from_vars(&vars)
                 .map_err(|e| GraphrtError::config(e.to_string()))?,
         };
@@ -329,14 +323,22 @@ impl Runtime {
 
     /// Register the host's credential callback for `provider` (a name from the
     /// config's `credentials` section), or `"*"` for every provider. Replaces any
-    /// previous callback. Takes effect for requests made after the call.
+    /// previous callback and drops every cached credential, so it takes effect for
+    /// requests made after the call (e.g. a different user signed in).
     pub fn set_credential_provider(&self, provider: String, callback: Arc<dyn CredentialProvider>) {
         self.credentials.set(provider, Arc::new(credentials::ForeignCredentials::new(callback)));
     }
 
-    /// Remove the credential callback registered for `provider` (or `"*"`).
+    /// Remove the credential callback registered for `provider` (or `"*"`) and drop
+    /// every cached credential (sign-out takes effect on the next request).
     pub fn clear_credential_provider(&self, provider: String) {
         self.credentials.remove(&provider);
+    }
+
+    /// Drop every cached credential without changing the registered callbacks
+    /// (e.g. the user signed out of your backend and broker tokens must not be reused).
+    pub fn clear_credential_cache(&self) {
+        self.credentials.clear_cache();
     }
 
     /// Load a sandboxed WebAssembly plugin; its node kinds become available to

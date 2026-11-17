@@ -126,9 +126,10 @@ impl OpenAiModel {
         Ok(Self { config, client })
     }
 
-    fn endpoint(&self, base_url: &str) -> String {
+    fn endpoint(&self, base_url: &str, with_query: bool) -> String {
         let mut url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-        for (i, (k, v)) in self.config.query.iter().enumerate() {
+        let query: &[(String, String)] = if with_query { &self.config.query } else { &[] };
+        for (i, (k, v)) in query.iter().enumerate() {
             url.push(if i == 0 { '?' } else { '&' });
             url.push_str(&percent_encode(k));
             url.push('=');
@@ -152,9 +153,10 @@ fn percent_encode(s: &str) -> String {
 }
 
 impl OpenAiModel {
-    fn request(&self, body: &Json, credential: Option<&Credential>) -> reqwest::RequestBuilder {
-        let base = credential.and_then(|c| c.base_url.as_deref()).unwrap_or(&self.config.base_url);
-        let mut builder = self.client.post(self.endpoint(base)).json(body);
+    fn request(&self, body: &Json, credential: Option<&Credential>) -> Result<reqwest::RequestBuilder, LlmError> {
+        let endpoint =
+            crate::http::resolve_endpoint(&self.config.base_url, credential.and_then(|c| c.base_url.as_deref()))?;
+        let mut builder = self.client.post(self.endpoint(&endpoint.base_url, endpoint.send_static)).json(body);
         let key = credential.map(|c| c.secret.as_str()).or(self.config.api_key.as_deref());
         if let Some(key) = key {
             builder = match &self.config.auth {
@@ -162,15 +164,19 @@ impl OpenAiModel {
                 AuthStyle::Header(name) => builder.header(name.as_str(), key),
             };
         }
-        for (k, v) in &self.config.headers {
-            builder = builder.header(k.as_str(), v.as_str());
+        // Operator headers (gateway keys, org ids) never follow a credential override
+        // to another origin.
+        if endpoint.send_static {
+            for (k, v) in &self.config.headers {
+                builder = builder.header(k.as_str(), v.as_str());
+            }
         }
         if let Some(credential) = credential {
             for (k, v) in &credential.headers {
                 builder = builder.header(k.as_str(), v.as_str());
             }
         }
-        builder
+        Ok(builder)
     }
 }
 
@@ -185,7 +191,7 @@ impl ChatModel for OpenAiModel {
                     Some(source) => Some(source.credential(name).await?),
                     None => None,
                 };
-                let result = send_sse(self.request(&body, credential.as_ref()), OpenAiDecoder::default()).await;
+                let result = send_sse(self.request(&body, credential.as_ref())?, OpenAiDecoder::default()).await;
                 match (result, &self.config.credentials) {
                     // The credential was rejected: drop it and retry once with a fresh one.
                     (Err(LlmError::Auth(_)), Some(source)) if !retried => {

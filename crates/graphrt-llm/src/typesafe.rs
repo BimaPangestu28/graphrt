@@ -70,6 +70,9 @@ pub struct SystemOneConfig {
     pub max_request_bytes: usize,
     /// Responses above this size are rejected.
     pub max_response_bytes: usize,
+    /// Extra headers (e.g. a tenant header). Not sent when a credential moves the
+    /// request to a different origin.
+    pub headers: Vec<(String, String)>,
 }
 
 impl Default for SystemOneConfig {
@@ -81,6 +84,7 @@ impl Default for SystemOneConfig {
             timeout: Duration::from_secs(60),
             max_request_bytes: MAX_BODY_BYTES,
             max_response_bytes: 8 * 1024 * 1024,
+            headers: Vec::new(),
         }
     }
 }
@@ -94,6 +98,7 @@ impl fmt::Debug for SystemOneConfig {
             .field("timeout", &self.timeout)
             .field("max_request_bytes", &self.max_request_bytes)
             .field("max_response_bytes", &self.max_response_bytes)
+            .field("headers", &self.headers.iter().map(|(k, _)| k).collect::<Vec<_>>())
             .finish()
     }
 }
@@ -502,6 +507,9 @@ impl SystemOneClient {
     pub fn from_vars(vars: &[(String, String)]) -> Result<Option<Self>, LlmError> {
         let get = |k: &str| vars.iter().find(|(name, v)| name == k && !v.is_empty()).map(|(_, v)| v.clone());
         let Some(key) = get("TYPESAFE_API_KEY") else {
+            if get("TYPESAFE_BASE_URL").is_some() {
+                return Err(LlmError::Config("TYPESAFE_BASE_URL is set but TYPESAFE_API_KEY is not".into()));
+            }
             return Ok(None);
         };
         let mut config = SystemOneConfig::with_api_key(key);
@@ -521,8 +529,8 @@ impl SystemOneClient {
         &self.config
     }
 
-    fn endpoint(&self) -> String {
-        format!("{}/v1/systemone", self.config.base_url.trim_end_matches('/'))
+    fn endpoint(base_url: &str) -> String {
+        format!("{}/v1/systemone", base_url.trim_end_matches('/'))
     }
 
     async fn credential(&self) -> Result<Credential, LlmError> {
@@ -558,13 +566,20 @@ impl SystemOneClient {
         body: &[u8],
         credential: &Credential,
     ) -> Result<SystemOneResponse, LlmError> {
+        // A credential may move the request to a proxy (thin-proxy pattern).
+        let endpoint = crate::http::resolve_endpoint(&self.config.base_url, credential.base_url.as_deref())?;
         let mut builder = self
             .client
-            .post(self.endpoint())
+            .post(Self::endpoint(&endpoint.base_url))
             .timeout(self.config.timeout)
             .bearer_auth(&credential.secret)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_vec());
+        if endpoint.send_static {
+            for (name, value) in &self.config.headers {
+                builder = builder.header(name.as_str(), value.as_str());
+            }
+        }
         for (name, value) in &credential.headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
@@ -577,9 +592,17 @@ impl SystemOneClient {
         let response = builder.send().await.map_err(network_error)?;
         let status = response.status().as_u16();
         let retry_after = retry_after_ms(response.headers());
+        if (300..400).contains(&status) {
+            return Err(LlmError::BadRequest(format!(
+                "TypeSafe endpoint answered with a redirect (HTTP {status}); redirects are not followed"
+            )));
+        }
         if !(200..300).contains(&status) {
-            let body = read_capped(response, MAX_ERROR_BODY_BYTES).await.unwrap_or_default();
-            return Err(error_for_status(status, &String::from_utf8_lossy(&body), retry_after));
+            let body = match read_capped(response, MAX_ERROR_BODY_BYTES).await {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                Err(e) => format!("(error body unreadable: {e})"),
+            };
+            return Err(error_for_status(status, &body, retry_after));
         }
         let bytes = read_capped(response, self.config.max_response_bytes).await?;
         if bytes.len() > self.config.max_response_bytes {
@@ -593,7 +616,37 @@ impl SystemOneClient {
         if let Some(missing) = request.questions.keys().find(|name| !parsed.answers.contains_key(*name)) {
             return Err(LlmError::Decode(format!("response has no answer for question `{missing}`")));
         }
+        for (name, question) in &request.questions {
+            if let Some(answer) = parsed.answers.get(name) {
+                check_answer(name, question, answer)?;
+            }
+        }
         Ok(parsed)
+    }
+}
+
+/// Check that an answer matches its question: same type, the chosen option is one
+/// of the criteria, and the probability of the chosen option is present.
+fn check_answer(name: &str, question: &Question, answer: &Answer) -> Result<(), LlmError> {
+    let bad = |msg: String| Err(LlmError::Decode(format!("answer to `{name}`: {msg}")));
+    match (question, answer) {
+        (Question::Choice { criteria, .. }, Answer::Choice { choice, probabilities, .. }) => {
+            if !criteria.contains_key(choice) {
+                return bad(format!("chose `{choice}`, which is not one of the options"));
+            }
+            if !probabilities.contains_key(choice) {
+                return bad(format!("no probability for the chosen option `{choice}`"));
+            }
+            Ok(())
+        }
+        (Question::Score { .. }, Answer::Score { probabilities, .. }) => {
+            if probabilities.is_empty() {
+                return bad("score answer without probabilities".into());
+            }
+            Ok(())
+        }
+        (Question::Noul { .. }, Answer::Noul { .. }) | (Question::Box { .. }, Answer::Box { .. }) => Ok(()),
+        (q, _) => bad(format!("answer type does not match the `{}` question", q.kind())),
     }
 }
 

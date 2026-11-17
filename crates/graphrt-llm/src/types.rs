@@ -311,6 +311,9 @@ pub enum ChatDelta {
     Finish(FinishReason),
     /// Opaque provider state for the assistant message; the last one wins.
     ProviderState(serde_json::Value),
+    /// Something the provider adapter changed or dropped while translating the
+    /// request (e.g. unsupported JSON Schema keywords). Surfaced in node metadata.
+    Warning(String),
 }
 
 /// Stream of deltas returned by [`ChatModel::chat`].
@@ -331,6 +334,8 @@ pub struct ChatResponse {
     pub usage: Usage,
     pub finish_reason: Option<FinishReason>,
     pub provider_state: Option<serde_json::Value>,
+    /// Adapter warnings (see [`ChatDelta::Warning`]).
+    pub warnings: Vec<String>,
 }
 
 impl ChatResponse {
@@ -387,6 +392,7 @@ pub async fn collect(mut stream: ChatStream, mut on_delta: impl FnMut(&ChatDelta
             ChatDelta::Usage(u) => response.usage = u,
             ChatDelta::Finish(r) => response.finish_reason = Some(r),
             ChatDelta::ProviderState(s) => response.provider_state = Some(s),
+            ChatDelta::Warning(w) => response.warnings.push(w),
         }
     }
     let mut tool_calls = Vec::with_capacity(calls.len());

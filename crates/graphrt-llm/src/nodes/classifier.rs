@@ -116,10 +116,28 @@ impl ClassifierNode {
                 }
             }
         }
+        if config.engine.as_deref() == Some("chat") && config.model.provider == "typesafe" {
+            return Err(ConfigError::new(
+                doc,
+                "`engine: chat` conflicts with `model.provider: typesafe` (TypeSafe is not a chat model)",
+            ));
+        }
         let node = Self { config };
         if node.uses_system_one() {
             if node.config.classes.len() > 255 {
                 return Err(ConfigError::new(doc, "the typesafe engine supports at most 255 classes"));
+            }
+            // Chat-only settings would be silently ignored by the System One engine.
+            let unsupported = [
+                ("memory", node.config.memory.is_some()),
+                ("vision", node.config.vision.enabled),
+                ("model.completion_params", !node.config.model.completion_params.is_empty()),
+            ];
+            if let Some((name, _)) = unsupported.iter().find(|(_, set)| *set) {
+                return Err(ConfigError::new(
+                    doc,
+                    format!("`{name}` is not supported by the typesafe engine (it only applies to chat models)"),
+                ));
             }
         } else if node.config.min_confidence.is_some()
             || node.config.min_probability.is_some()
@@ -305,7 +323,9 @@ impl ClassifierNode {
             cfg.classes.iter().position(|c| &c.id == choice).ok_or_else(|| {
                 NodeError::new("classification", format!("System One chose unknown class `{choice}`"))
             })?;
-        let probability = probabilities.get(choice).copied().unwrap_or(0.0);
+        let probability = probabilities.get(choice).copied().ok_or_else(|| {
+            NodeError::new("model_decode", format!("System One gave no probability for the chosen class `{choice}`"))
+        })?;
         let fits = match response.answer(Self::FITS) {
             Some(Answer::Noul { noul }) => Some(*noul),
             _ => None,
@@ -487,5 +507,29 @@ mod tests {
                 "classes": [{"id": "a", "name": "x"}], "fallback_class": "zzz"}),
         );
         assert!(ClassifierNode::from_doc(&bad).is_err());
+    }
+
+    #[test]
+    fn typesafe_engine_rejects_chat_only_settings() {
+        let doc = |extra: Json| {
+            let mut config = serde_json::json!({
+                "model": {"provider": "typesafe", "name": "jev-latest"},
+                "query_variable_selector": "sys.query",
+                "classes": [{"id": "a", "name": "x"}],
+            });
+            if let (Some(c), Json::Object(e)) = (config.as_object_mut(), extra) {
+                c.extend(e);
+            }
+            NodeDoc::new("qc", "question-classifier", config)
+        };
+        assert!(ClassifierNode::from_doc(&doc(serde_json::json!({}))).is_ok());
+        for bad in [
+            serde_json::json!({"engine": "chat"}),
+            serde_json::json!({"memory": {"window": {"enabled": true, "size": 3}}}),
+            serde_json::json!({"vision": {"enabled": true}}),
+            serde_json::json!({"model": {"provider": "typesafe", "name": "jev", "completion_params": {"temperature": 0}}}),
+        ] {
+            assert!(ClassifierNode::from_doc(&doc(bad.clone())).is_err(), "{bad}");
+        }
     }
 }

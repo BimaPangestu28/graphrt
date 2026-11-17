@@ -215,4 +215,40 @@ fn config_needs_no_provider_keys_and_rejects_typos() {
     assert!(matches!(err, Err(GraphrtError::InvalidConfig { .. })));
     let err = Runtime::new(r#"{"credentials": {"openai": {"source": "token_broker"}}}"#.into());
     assert!(matches!(err, Err(GraphrtError::InvalidConfig { .. })));
+    // Unknown provider names must say which API they speak.
+    let err = Runtime::new(r#"{"credentials": {"mistral": {"source": "external"}}}"#.into());
+    assert!(matches!(err, Err(GraphrtError::InvalidConfig { .. })));
+    // A typesafe entry is accepted (it builds the System One client, not a chat model).
+    assert!(Runtime::new(r#"{"credentials": {"typesafe": {"source": "external"}}}"#.into()).is_ok());
+    // Plain-http brokers are refused outside localhost.
+    let err = Runtime::new(
+        r#"{"credentials": {"openai": {"source": "token_broker", "url": "http://broker.example.com/t"}}}"#.into(),
+    );
+    assert!(matches!(err, Err(GraphrtError::InvalidConfig { .. })));
+}
+
+/// Returns whichever user is currently "signed in".
+struct SignedIn(Mutex<&'static str>);
+
+impl CredentialProvider for SignedIn {
+    fn get_credential(&self, _provider: String) -> Result<CredentialRecord, GraphrtError> {
+        let user = *self.0.lock().unwrap();
+        Ok(CredentialRecord { secret: user.into(), expires_at_ms: None, headers_json: None, base_url: None })
+    }
+    fn invalidate(&self, _provider: String) {}
+}
+
+#[test]
+fn switching_or_clearing_providers_drops_cached_keys() {
+    let (url, seen) = serve("user-b");
+    let rt = runtime(&url);
+    rt.set_credential_provider("proxy".into(), Arc::new(SignedIn(Mutex::new("user-a"))));
+    // User A's key is rejected by this server, but it was fetched and cached.
+    assert_eq!(run(&rt)["status"], "failed");
+    // User A signs out, user B signs in: the cached key must not be reused.
+    rt.clear_credential_provider("proxy".into());
+    rt.set_credential_provider("proxy".into(), Arc::new(SignedIn(Mutex::new("user-b"))));
+    let result = run(&rt);
+    assert_eq!(result["status"], "succeeded", "{result}");
+    assert_eq!(seen.lock().unwrap().last().map(String::as_str), Some("Bearer user-b"));
 }
