@@ -757,7 +757,11 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_graphrt_ffi_checksum_method_runtime_catalog_json(
     ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_cache(
+    ): Int
     external fun uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runtime_load_bundle(
     ): Int
     external fun uniffi_graphrt_ffi_checksum_method_runtime_load_workflow(
     ): Int
@@ -839,8 +843,12 @@ internal object UniffiLib {
     ): Long
     external fun uniffi_graphrt_ffi_fn_method_runtime_catalog_json(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_method_runtime_clear_credential_cache(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_graphrt_ffi_fn_method_runtime_clear_credential_provider(`ptr`: Long,`provider`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_graphrt_ffi_fn_method_runtime_load_bundle(`ptr`: Long,`bundle`: RustBuffer.ByValue,`trustedKeys`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
     external fun uniffi_graphrt_ffi_fn_method_runtime_load_workflow(`ptr`: Long,`document`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
     external fun uniffi_graphrt_ffi_fn_method_runtime_register_wasm_plugin(`ptr`: Long,`wasm`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1024,7 +1032,13 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_catalog_json() and 0xFFFF) != 58775) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider() and 0xFFFF) != 33078) {
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_cache() and 0xFFFF) != 52143) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider() and 0xFFFF) != 15810) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_load_bundle() and 0xFFFF) != 2040) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_load_workflow() and 0xFFFF) != 197) {
@@ -1033,7 +1047,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin() and 0xFFFF) != 10329) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider() and 0xFFFF) != 12618) {
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider() and 0xFFFF) != 21006) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_graphrt_ffi_checksum_method_workflowhandle_catalog_json() and 0xFFFF) != 16429) {
@@ -2608,9 +2622,25 @@ public interface RuntimeInterface {
     fun `catalogJson`(): kotlin.String
     
     /**
-     * Remove the credential callback registered for `provider` (or `"*"`).
+     * Drop every cached credential without changing the registered callbacks
+     * (e.g. the user signed out of your backend and broker tokens must not be reused).
+     */
+    fun `clearCredentialCache`()
+    
+    /**
+     * Remove the credential callback registered for `provider` (or `"*"`) and drop
+     * every cached credential (sign-out takes effect on the next request).
      */
     fun `clearCredentialProvider`(`provider`: kotlin.String)
+    
+    /**
+     * Open a portable bundle (`.grt` bytes), register its WebAssembly plugins and
+     * compile its entry workflow. Every file is checked against the manifest's
+     * SHA-256; when `trusted_keys` (hex Ed25519 public keys) is non-empty, the
+     * bundle must be signed by one of them. Bundles needing process or HTTP
+     * plugins are rejected: embedded hosts cannot spawn processes.
+     */
+    fun `loadBundle`(`bundle`: kotlin.ByteArray, `trustedKeys`: List<kotlin.String>): WorkflowHandle
     
     /**
      * Parse and compile a workflow (YAML or JSON).
@@ -2626,7 +2656,8 @@ public interface RuntimeInterface {
     /**
      * Register the host's credential callback for `provider` (a name from the
      * config's `credentials` section), or `"*"` for every provider. Replaces any
-     * previous callback. Takes effect for requests made after the call.
+     * previous callback and drops every cached credential, so it takes effect for
+     * requests made after the call (e.g. a different user signed in).
      */
     fun `setCredentialProvider`(`provider`: kotlin.String, `callback`: CredentialProvider)
     
@@ -2769,7 +2800,24 @@ open class Runtime: Disposable, AutoCloseable, RuntimeInterface
 
     
     /**
-     * Remove the credential callback registered for `provider` (or `"*"`).
+     * Drop every cached credential without changing the registered callbacks
+     * (e.g. the user signed out of your backend and broker tokens must not be reused).
+     */override fun `clearCredentialCache`()
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_clear_credential_cache(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Remove the credential callback registered for `provider` (or `"*"`) and drop
+     * every cached credential (sign-out takes effect on the next request).
      */override fun `clearCredentialProvider`(`provider`: kotlin.String)
         = 
     callWithHandle {
@@ -2781,6 +2829,29 @@ open class Runtime: Disposable, AutoCloseable, RuntimeInterface
 }
     }
     
+    
+
+    
+    /**
+     * Open a portable bundle (`.grt` bytes), register its WebAssembly plugins and
+     * compile its entry workflow. Every file is checked against the manifest's
+     * SHA-256; when `trusted_keys` (hex Ed25519 public keys) is non-empty, the
+     * bundle must be signed by one of them. Bundles needing process or HTTP
+     * plugins are rejected: embedded hosts cannot spawn processes.
+     */
+    @Throws(GraphrtException::class)override fun `loadBundle`(`bundle`: kotlin.ByteArray, `trustedKeys`: List<kotlin.String>): WorkflowHandle {
+            return FfiConverterTypeWorkflowHandle.lift(
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_load_bundle(
+        it,
+        
+        FfiConverterByteArray.lower(`bundle`),
+        FfiConverterSequenceString.lower(`trustedKeys`),_status)
+}
+    }
+    )
+    }
     
 
     
@@ -2824,7 +2895,8 @@ open class Runtime: Disposable, AutoCloseable, RuntimeInterface
     /**
      * Register the host's credential callback for `provider` (a name from the
      * config's `credentials` section), or `"*"` for every provider. Replaces any
-     * previous callback. Takes effect for requests made after the call.
+     * previous callback and drops every cached credential, so it takes effect for
+     * requests made after the call (e.g. a different user signed in).
      */override fun `setCredentialProvider`(`provider`: kotlin.String, `callback`: CredentialProvider)
         = 
     callWithHandle {

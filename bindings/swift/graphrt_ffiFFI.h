@@ -384,9 +384,19 @@ uint64_t uniffi_graphrt_ffi_fn_constructor_runtime_new(RustBuffer config_json, R
 RustBuffer uniffi_graphrt_ffi_fn_method_runtime_catalog_json(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_CLEAR_CREDENTIAL_CACHE
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_CLEAR_CREDENTIAL_CACHE
+void uniffi_graphrt_ffi_fn_method_runtime_clear_credential_cache(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_CLEAR_CREDENTIAL_PROVIDER
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_CLEAR_CREDENTIAL_PROVIDER
 void uniffi_graphrt_ffi_fn_method_runtime_clear_credential_provider(uint64_t ptr, RustBuffer provider, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_LOAD_BUNDLE
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_LOAD_BUNDLE
+uint64_t uniffi_graphrt_ffi_fn_method_runtime_load_bundle(uint64_t ptr, RustBuffer bundle, RustBuffer trusted_keys, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_LOAD_WORKFLOW
@@ -795,9 +805,21 @@ uint16_t uniffi_graphrt_ffi_checksum_method_runtime_catalog_json(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_CLEAR_CREDENTIAL_CACHE
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_CLEAR_CREDENTIAL_CACHE
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_cache(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_CLEAR_CREDENTIAL_PROVIDER
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_CLEAR_CREDENTIAL_PROVIDER
 uint16_t uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_LOAD_BUNDLE
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_LOAD_BUNDLE
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_load_bundle(void
     
 );
 #endif

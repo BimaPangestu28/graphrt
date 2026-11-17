@@ -1349,9 +1349,25 @@ public protocol RuntimeProtocol: AnyObject, Sendable {
     func catalogJson()  -> String
     
     /**
-     * Remove the credential callback registered for `provider` (or `"*"`).
+     * Drop every cached credential without changing the registered callbacks
+     * (e.g. the user signed out of your backend and broker tokens must not be reused).
+     */
+    func clearCredentialCache() 
+    
+    /**
+     * Remove the credential callback registered for `provider` (or `"*"`) and drop
+     * every cached credential (sign-out takes effect on the next request).
      */
     func clearCredentialProvider(provider: String) 
+    
+    /**
+     * Open a portable bundle (`.grt` bytes), register its WebAssembly plugins and
+     * compile its entry workflow. Every file is checked against the manifest's
+     * SHA-256; when `trusted_keys` (hex Ed25519 public keys) is non-empty, the
+     * bundle must be signed by one of them. Bundles needing process or HTTP
+     * plugins are rejected: embedded hosts cannot spawn processes.
+     */
+    func loadBundle(bundle: Data, trustedKeys: [String]) throws  -> WorkflowHandle
     
     /**
      * Parse and compile a workflow (YAML or JSON).
@@ -1367,7 +1383,8 @@ public protocol RuntimeProtocol: AnyObject, Sendable {
     /**
      * Register the host's credential callback for `provider` (a name from the
      * config's `credentials` section), or `"*"` for every provider. Replaces any
-     * previous callback. Takes effect for requests made after the call.
+     * previous callback and drops every cached credential, so it takes effect for
+     * requests made after the call (e.g. a different user signed in).
      */
     func setCredentialProvider(provider: String, callback: CredentialProvider) 
     
@@ -1455,7 +1472,20 @@ open func catalogJson() -> String  {
 }
     
     /**
-     * Remove the credential callback registered for `provider` (or `"*"`).
+     * Drop every cached credential without changing the registered callbacks
+     * (e.g. the user signed out of your backend and broker tokens must not be reused).
+     */
+open func clearCredentialCache()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_clear_credential_cache(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Remove the credential callback registered for `provider` (or `"*"`) and drop
+     * every cached credential (sign-out takes effect on the next request).
      */
 open func clearCredentialProvider(provider: String)  {try! rustCall() {
         uniffiCallStatus in
@@ -1464,6 +1494,24 @@ open func clearCredentialProvider(provider: String)  {try! rustCall() {
         FfiConverterString.lower(provider),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * Open a portable bundle (`.grt` bytes), register its WebAssembly plugins and
+     * compile its entry workflow. Every file is checked against the manifest's
+     * SHA-256; when `trusted_keys` (hex Ed25519 public keys) is non-empty, the
+     * bundle must be signed by one of them. Bundles needing process or HTTP
+     * plugins are rejected: embedded hosts cannot spawn processes.
+     */
+open func loadBundle(bundle: Data, trustedKeys: [String])throws  -> WorkflowHandle  {
+    return try  FfiConverterTypeWorkflowHandle_lift(try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_load_bundle(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(bundle),
+        FfiConverterSequenceString.lower(trustedKeys),uniffiCallStatus
+    )
+})
 }
     
     /**
@@ -1496,7 +1544,8 @@ open func registerWasmPlugin(wasm: Data)throws  -> [String]  {
     /**
      * Register the host's credential callback for `provider` (a name from the
      * config's `credentials` section), or `"*"` for every provider. Replaces any
-     * previous callback. Takes effect for requests made after the call.
+     * previous callback and drops every cached credential, so it takes effect for
+     * requests made after the call (e.g. a different user signed in).
      */
 open func setCredentialProvider(provider: String, callback: CredentialProvider)  {try! rustCall() {
         uniffiCallStatus in
@@ -2132,7 +2181,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_graphrt_ffi_checksum_method_runtime_catalog_json() != 58775) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider() != 33078) {
+    if (uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_cache() != 52143) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider() != 15810) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_load_bundle() != 2040) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_graphrt_ffi_checksum_method_runtime_load_workflow() != 197) {
@@ -2141,7 +2196,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin() != 10329) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider() != 12618) {
+    if (uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider() != 21006) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_graphrt_ffi_checksum_method_workflowhandle_catalog_json() != 16429) {

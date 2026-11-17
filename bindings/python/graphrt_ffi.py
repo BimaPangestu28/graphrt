@@ -548,13 +548,17 @@ def _uniffi_check_api_checksums(lib):
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runtime_catalog_json() != 58775:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider() != 33078:
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_cache() != 52143:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider() != 15810:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_load_bundle() != 2040:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runtime_load_workflow() != 197:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin() != 10329:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider() != 12618:
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider() != 21006:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_constructor_runtime_new() != 50642:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -635,9 +639,15 @@ _UniffiLib.uniffi_graphrt_ffi_checksum_method_runhandle_wait_json.restype = ctyp
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_catalog_json.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_catalog_json.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_cache.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_cache.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_load_bundle.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_load_bundle.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_load_workflow.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_load_workflow.restype = ctypes.c_uint16
@@ -737,12 +747,24 @@ _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_catalog_json.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_catalog_json.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_clear_credential_cache.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_clear_credential_cache.restype = None
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_clear_credential_provider.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_clear_credential_provider.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_load_bundle.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_load_bundle.restype = ctypes.c_uint64
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_load_workflow.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -1843,6 +1865,26 @@ class _UniffiFfiConverterTypeRunHandle:
     def write(cls, value: RunHandle, buf: _UniffiRustBuffer):
         buf.write_u64(cls.lower(value))
 
+class _UniffiFfiConverterBytes(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        size = buf.read_i32()
+        if size < 0:
+            raise InternalError("Unexpected negative byte string length")
+        return buf.read(size)
+
+    @staticmethod
+    def check_lower(value):
+        try:
+            memoryview(value)
+        except TypeError:
+            raise TypeError("a bytes-like object is required, not {!r}".format(type(value).__name__))
+
+    @staticmethod
+    def write(value, buf):
+        buf.write_i32(len(value))
+        buf.write(value)
+
 class _UniffiFfiConverterSequenceString(_UniffiConverterRustBuffer):
     @classmethod
     def check_lower(cls, value):
@@ -2077,26 +2119,6 @@ class _UniffiFfiConverterTypeWorkflowHandle:
     def write(cls, value: WorkflowHandle, buf: _UniffiRustBuffer):
         buf.write_u64(cls.lower(value))
 
-class _UniffiFfiConverterBytes(_UniffiConverterRustBuffer):
-    @staticmethod
-    def read(buf):
-        size = buf.read_i32()
-        if size < 0:
-            raise InternalError("Unexpected negative byte string length")
-        return buf.read(size)
-
-    @staticmethod
-    def check_lower(value):
-        try:
-            memoryview(value)
-        except TypeError:
-            raise TypeError("a bytes-like object is required, not {!r}".format(type(value).__name__))
-
-    @staticmethod
-    def write(value, buf):
-        buf.write_i32(len(value))
-        buf.write(value)
-
 
 class RuntimeProtocol(typing.Protocol):
     """
@@ -2109,9 +2131,25 @@ class RuntimeProtocol(typing.Protocol):
         Catalog of every node kind available in this runtime, as a JSON array.
 """
         raise NotImplementedError
+    def clear_credential_cache(self, ) -> None:
+        """
+        Drop every cached credential without changing the registered callbacks
+        (e.g. the user signed out of your backend and broker tokens must not be reused).
+"""
+        raise NotImplementedError
     def clear_credential_provider(self, provider: str) -> None:
         """
-        Remove the credential callback registered for `provider` (or `"*"`).
+        Remove the credential callback registered for `provider` (or `"*"`) and drop
+        every cached credential (sign-out takes effect on the next request).
+"""
+        raise NotImplementedError
+    def load_bundle(self, bundle: bytes,trusted_keys: typing.List[str]) -> WorkflowHandle:
+        """
+        Open a portable bundle (`.grt` bytes), register its WebAssembly plugins and
+        compile its entry workflow. Every file is checked against the manifest's
+        SHA-256; when `trusted_keys` (hex Ed25519 public keys) is non-empty, the
+        bundle must be signed by one of them. Bundles needing process or HTTP
+        plugins are rejected: embedded hosts cannot spawn processes.
 """
         raise NotImplementedError
     def load_workflow(self, document: str) -> WorkflowHandle:
@@ -2129,7 +2167,8 @@ class RuntimeProtocol(typing.Protocol):
         """
         Register the host's credential callback for `provider` (a name from the
         config's `credentials` section), or `"*"` for every provider. Replaces any
-        previous callback. Takes effect for requests made after the call.
+        previous callback and drops every cached credential, so it takes effect for
+        requests made after the call (e.g. a different user signed in).
 """
         raise NotImplementedError
 
@@ -2191,9 +2230,26 @@ class Runtime(RuntimeProtocol):
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
+    def clear_credential_cache(self, ) -> None:
+        """
+        Drop every cached credential without changing the registered callbacks
+        (e.g. the user signed out of your backend and broker tokens must not be reused).
+"""
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_clear_credential_cache,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def clear_credential_provider(self, provider: str) -> None:
         """
-        Remove the credential callback registered for `provider` (or `"*"`).
+        Remove the credential callback registered for `provider` (or `"*"`) and drop
+        every cached credential (sign-out takes effect on the next request).
 """
         
         _UniffiFfiConverterString.check_lower(provider)
@@ -2206,6 +2262,31 @@ class Runtime(RuntimeProtocol):
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
             _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_clear_credential_provider,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def load_bundle(self, bundle: bytes,trusted_keys: typing.List[str]) -> WorkflowHandle:
+        """
+        Open a portable bundle (`.grt` bytes), register its WebAssembly plugins and
+        compile its entry workflow. Every file is checked against the manifest's
+        SHA-256; when `trusted_keys` (hex Ed25519 public keys) is non-empty, the
+        bundle must be signed by one of them. Bundles needing process or HTTP
+        plugins are rejected: embedded hosts cannot spawn processes.
+"""
+        
+        _UniffiFfiConverterBytes.check_lower(bundle)
+
+        _UniffiFfiConverterSequenceString.check_lower(trusted_keys)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterBytes.lower(bundle),
+            _UniffiFfiConverterSequenceString.lower(trusted_keys),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeWorkflowHandle.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_load_bundle,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -2250,7 +2331,8 @@ class Runtime(RuntimeProtocol):
         """
         Register the host's credential callback for `provider` (a name from the
         config's `credentials` section), or `"*"` for every provider. Replaces any
-        previous callback. Takes effect for requests made after the call.
+        previous callback and drops every cached credential, so it takes effect for
+        requests made after the call (e.g. a different user signed in).
 """
         
         _UniffiFfiConverterString.check_lower(provider)
