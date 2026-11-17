@@ -1,5 +1,6 @@
 //! End-to-end tests: model-calling nodes running inside the real engine with a scripted model.
 
+#![cfg(feature = "mock")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::sync::Arc;

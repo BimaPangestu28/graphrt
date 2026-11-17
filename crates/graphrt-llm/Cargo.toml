@@ -10,7 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["openai", "anthropic"]
+default = ["openai", "anthropic", "mock"]
+# `mock::MockModel`, a scripted model for tests and offline examples (no dependencies).
+mock = []
 # OpenAI-compatible chat completions (OpenAI, Azure OpenAI, Ollama, vLLM, Groq, OpenRouter, DeepSeek, ...).
 openai = ["http"]
 # Anthropic Messages API.

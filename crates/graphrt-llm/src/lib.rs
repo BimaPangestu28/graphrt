@@ -13,13 +13,19 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut registry = graphrt_core::Registry::with_builtins();
 //! graphrt_llm::register(&mut registry);
-//! let services = graphrt_core::Services::new().with(graphrt_llm::ModelRegistry::from_env()?);
+//! # #[cfg(feature = "http")]
+//! let models = graphrt_llm::ModelRegistry::from_env()?;
+//! # #[cfg(not(feature = "http"))]
+//! # let models = graphrt_llm::ModelRegistry::new();
+//! let services = graphrt_core::Services::new().with(models);
 //! # let _ = (registry, services);
 //! # Ok(())
 //! # }
 //! ```
 
 pub mod error;
+/// Scripted model for tests and offline examples (feature `mock`, on by default).
+#[cfg(any(test, feature = "mock"))]
 pub mod mock;
 pub mod nodes;
 pub mod registry;
@@ -37,8 +43,8 @@ pub mod openai;
 pub use error::LlmError;
 pub use registry::ModelRegistry;
 pub use types::{
-    ChatDelta, ChatModel, ChatRequest, ChatResponse, ChatStream, ContentPart, FinishReason, Message, ResponseFormat,
-    Role, ToolCall, ToolChoice, collect,
+    ChatDelta, ChatModel, ChatRequest, ChatResponse, ChatStream, ContentPart, FinishReason, InvalidToolArguments,
+    Message, ResponseFormat, Role, ToolCall, ToolChoice, collect,
 };
 
 /// Register the `llm`, `question-classifier`, `parameter-extractor` and `agent` node kinds.

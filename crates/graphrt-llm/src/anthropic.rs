@@ -14,10 +14,11 @@ use graphrt_core::event::Usage;
 use serde_json::{Map, Value as Json, json};
 
 use crate::error::LlmError;
-use crate::http::{SseDecoder, build_client, send_sse};
+use crate::http::{Decoded, SseDecoder, build_client, send_sse};
 use crate::sse::SseEvent;
 use crate::types::{
     ChatDelta, ChatModel, ChatRequest, ChatStream, ContentPart, FinishReason, ResponseFormat, Role, ToolChoice,
+    check_extra,
 };
 
 /// API version header value.
@@ -86,7 +87,7 @@ impl AnthropicModel {
 impl ChatModel for AnthropicModel {
     fn chat(&self, request: ChatRequest) -> BoxFuture<'_, Result<ChatStream, LlmError>> {
         Box::pin(async move {
-            let body = build_body(&request);
+            let body = build_body(&request)?;
             let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
             let mut builder = self.client.post(url).json(&body).header("anthropic-version", ANTHROPIC_VERSION);
             if let Some(key) = &self.config.api_key {
@@ -124,7 +125,8 @@ fn content_blocks(parts: &[ContentPart]) -> Vec<Json> {
 }
 
 /// Build the JSON request body.
-pub(crate) fn build_body(req: &ChatRequest) -> Json {
+pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
+    check_extra(req)?;
     let mut system_parts: Vec<String> = Vec::new();
     // (role, blocks); consecutive messages with the same role are merged, as the API requires alternation.
     let mut turns: Vec<(&'static str, Vec<Json>)> = Vec::new();
@@ -141,14 +143,14 @@ pub(crate) fn build_body(req: &ChatRequest) -> Json {
         match m.role {
             Role::System => system_parts.push(m.text()),
             Role::User => push("user", content_blocks(&m.content)),
-            Role::Tool => push(
-                "user",
-                vec![json!({
-                    "type": "tool_result",
-                    "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
-                    "content": m.text(),
-                })],
-            ),
+            Role::Tool => {
+                let id = m
+                    .tool_call_id
+                    .as_deref()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| LlmError::Config("tool message without tool_call_id".into()))?;
+                push("user", vec![json!({"type": "tool_result", "tool_use_id": id, "content": m.text()})]);
+            }
             Role::Assistant => {
                 let mut blocks = Vec::new();
                 if let Some(Json::Array(state)) = &m.provider_state {
@@ -156,7 +158,9 @@ pub(crate) fn build_body(req: &ChatRequest) -> Json {
                 }
                 blocks.extend(content_blocks(&m.content));
                 for c in &m.tool_calls {
-                    blocks.push(json!({"type": "tool_use", "id": c.id, "name": c.name, "input": c.arguments_json()}));
+                    // The API needs the input as an object; a malformed call must not be replayed as `{}`.
+                    let input = c.arguments_json().map_err(|e| LlmError::Config(e.to_string()))?;
+                    blocks.push(json!({"type": "tool_use", "id": c.id, "name": c.name, "input": input}));
                 }
                 push("assistant", blocks);
             }
@@ -214,7 +218,7 @@ pub(crate) fn build_body(req: &ChatRequest) -> Json {
     for (k, v) in &req.extra {
         body.insert(k.clone(), v.clone());
     }
-    Json::Object(body)
+    Ok(Json::Object(body))
 }
 
 /// Kind of an open content block.
@@ -235,6 +239,10 @@ pub(crate) struct AnthropicDecoder {
     usage: Usage,
     /// Completed thinking blocks, replayed as provider state.
     thinking: Vec<Json>,
+}
+
+fn unknown_block(delta_type: &str, index: u64) -> LlmError {
+    LlmError::Decode(format!("`{delta_type}` for content block {index}, which is not an open block of that kind"))
 }
 
 fn stop_reason(s: &str) -> FinishReason {
@@ -261,9 +269,9 @@ impl AnthropicDecoder {
 }
 
 impl SseDecoder for AnthropicDecoder {
-    fn decode(&mut self, event: SseEvent) -> Result<Option<Vec<ChatDelta>>, LlmError> {
+    fn decode(&mut self, event: SseEvent) -> Result<Decoded, LlmError> {
         if event.data.trim().is_empty() {
-            return Ok(Some(Vec::new()));
+            return Ok(Decoded::default());
         }
         let v: Json =
             serde_json::from_str(&event.data).map_err(|e| LlmError::Decode(format!("{e}: {}", event.data)))?;
@@ -326,6 +334,7 @@ impl SseDecoder for AnthropicDecoder {
                         name: None,
                         arguments: field("partial_json"),
                     }),
+                    ("input_json_delta", _) => return Err(unknown_block(delta_type, index)),
                     ("thinking_delta", Some(Block::Thinking { thinking, .. })) => {
                         let t = field("thinking");
                         thinking.push_str(&t);
@@ -335,7 +344,9 @@ impl SseDecoder for AnthropicDecoder {
                     ("signature_delta", Some(Block::Thinking { signature, .. })) => {
                         signature.push_str(&field("signature"))
                     }
-                    _ => {}
+                    // A lost signature would make the next turn fail; report it now.
+                    ("signature_delta", _) => return Err(unknown_block(delta_type, index)),
+                    _ => {} // citations and future delta types carry nothing we use
                 }
             }
             "content_block_stop" => match self.blocks.remove(&index) {
@@ -359,7 +370,7 @@ impl SseDecoder for AnthropicDecoder {
                 if !self.thinking.is_empty() {
                     out.push(ChatDelta::ProviderState(Json::Array(std::mem::take(&mut self.thinking))));
                 }
-                return if out.is_empty() { Ok(None) } else { Ok(Some(out)) };
+                return Ok(Decoded::done(out));
             }
             "error" => {
                 let err = v.get("error").cloned().unwrap_or(Json::Null);
@@ -374,7 +385,7 @@ impl SseDecoder for AnthropicDecoder {
             }
             _ => {} // ping and future event types
         }
-        Ok(Some(out))
+        Ok(Decoded::deltas(out))
     }
 }
 
@@ -412,7 +423,7 @@ mod tests {
         req.tool_choice = Some(ToolChoice::Required);
         req.stop = vec!["END".into()];
         req.response_format = Some(ResponseFormat::JsonObject);
-        let body = build_body(&req);
+        let body = build_body(&req).unwrap();
         assert_eq!(body["max_tokens"], DEFAULT_MAX_TOKENS);
         assert!(body["system"].as_str().unwrap().starts_with("be brief"));
         let msgs = body["messages"].as_array().unwrap();
@@ -447,15 +458,9 @@ mod tests {
 
     #[tokio::test]
     async fn decode_recorded_stream() {
-        let mut parser = SseParser::new();
-        let mut decoder = AnthropicDecoder::default();
-        let mut deltas = Vec::new();
-        for ev in parser.push(FIXTURE.as_bytes()) {
-            match decoder.decode(ev).unwrap() {
-                Some(d) => deltas.extend(d.into_iter().map(Ok)),
-                None => break,
-            }
-        }
+        let (deltas, done) = decode_all(FIXTURE);
+        assert!(done);
+        let deltas: Vec<Result<ChatDelta, LlmError>> = deltas.into_iter().map(Ok).collect();
         let r = collect(Box::pin(futures::stream::iter(deltas)), |_| {}).await.unwrap();
         assert_eq!(r.text, "Hi");
         assert_eq!(r.reasoning, "hmm");
@@ -467,8 +472,61 @@ mod tests {
         assert_eq!(r.finish_reason, Some(FinishReason::ToolCalls));
         assert_eq!(r.provider_state, Some(json!([{"type": "thinking", "thinking": "hmm", "signature": "sig"}])));
         // The provider state is replayed into the next request.
-        let body = build_body(&ChatRequest::new("m", vec![r.to_message()]));
+        let body = build_body(&ChatRequest::new("m", vec![r.to_message()])).unwrap();
         assert_eq!(body["messages"][0]["content"][0]["signature"], "sig");
+    }
+
+    /// Decode a fixture; returns the deltas and whether `message_stop` was seen.
+    fn decode_all(fixture: &str) -> (Vec<ChatDelta>, bool) {
+        let mut parser = SseParser::new();
+        let mut decoder = AnthropicDecoder::default();
+        let mut deltas = Vec::new();
+        for ev in parser.push(fixture.as_bytes()).unwrap() {
+            let d = decoder.decode(ev).unwrap();
+            deltas.extend(d.deltas);
+            if d.done {
+                return (deltas, true);
+            }
+        }
+        (deltas, false)
+    }
+
+    #[test]
+    fn stream_without_message_stop_is_truncated() {
+        let cut = FIXTURE.split("event: message_delta").next().unwrap();
+        let (_, done) = decode_all(cut);
+        assert!(!done);
+        let mut decoder = AnthropicDecoder::default();
+        let err = decoder.end_of_stream().unwrap_err();
+        assert!(matches!(err, LlmError::Network(_)) && err.is_retryable());
+    }
+
+    #[test]
+    fn deltas_for_unknown_blocks_are_errors() {
+        let mut d = AnthropicDecoder::default();
+        let ev = SseEvent {
+            data: "{\"type\":\"content_block_delta\",\"index\":4,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}".into(),
+            ..SseEvent::default()
+        };
+        assert!(matches!(d.decode(ev), Err(LlmError::Decode(_))));
+    }
+
+    #[test]
+    fn malformed_tool_arguments_are_not_replayed_as_empty_input() {
+        let mut assistant = Message::assistant("");
+        assistant.tool_calls = vec![ToolCall { id: "t".into(), name: "get".into(), arguments: "{\"a\":".into() }];
+        let req = ChatRequest::new("m", vec![Message::user("x"), assistant, Message::tool("t", "r")]);
+        assert!(matches!(build_body(&req), Err(LlmError::Config(_))));
+    }
+
+    #[test]
+    fn final_turn_keeps_tools_with_choice_none() {
+        let req = ChatRequest::new("m", vec![Message::user("x")])
+            .with_tools(vec![ToolSpec { name: "t".into(), description: "d".into(), parameters: json!({}) }])
+            .with_tool_choice(ToolChoice::None);
+        let body = build_body(&req).unwrap();
+        assert_eq!(body["tool_choice"]["type"], "none");
+        assert_eq!(body["tools"][0]["name"], "t");
     }
 
     #[test]

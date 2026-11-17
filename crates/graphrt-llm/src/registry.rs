@@ -11,14 +11,24 @@ use crate::types::ChatModel;
 /// Maps provider names (as used in node configs: `model.provider`) to models.
 ///
 /// Register it with `graphrt_core::Services::insert(registry)`.
+///
+/// Name resolution (see [`ModelRegistry::get`]) is exact, with two explicit
+/// exceptions: aliases added with [`ModelRegistry::alias`], and plugin-style
+/// identifiers `<org>/<provider>/<provider>` (for example
+/// `acme/openai/openai`), which resolve to `<provider>`. Other names, such as
+/// `acme/openai`, are not guessed.
 #[derive(Clone, Default)]
 pub struct ModelRegistry {
     providers: IndexMap<String, Arc<dyn ChatModel>>,
+    aliases: IndexMap<String, String>,
 }
 
 impl fmt::Debug for ModelRegistry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ModelRegistry").field("providers", &self.providers.keys().collect::<Vec<_>>()).finish()
+        f.debug_struct("ModelRegistry")
+            .field("providers", &self.providers.keys().collect::<Vec<_>>())
+            .field("aliases", &self.aliases)
+            .finish()
     }
 }
 
@@ -27,9 +37,26 @@ impl ModelRegistry {
         Self::default()
     }
 
-    /// Register (or replace) a provider.
+    /// Register a provider, replacing any provider already registered under
+    /// `name`. Use [`ModelRegistry::try_add`] to reject duplicates instead.
     pub fn add(&mut self, name: impl Into<String>, model: Arc<dyn ChatModel>) -> &mut Self {
         self.providers.insert(name.into(), model);
+        self
+    }
+
+    /// Register a provider, failing if `name` is already registered.
+    pub fn try_add(&mut self, name: impl Into<String>, model: Arc<dyn ChatModel>) -> Result<&mut Self, LlmError> {
+        let name = name.into();
+        if self.providers.contains_key(&name) {
+            return Err(LlmError::Config(format!("model provider `{name}` is already registered")));
+        }
+        self.providers.insert(name, model);
+        Ok(self)
+    }
+
+    /// Make `alias` resolve to the provider registered as `target`.
+    pub fn alias(&mut self, alias: impl Into<String>, target: impl Into<String>) -> &mut Self {
+        self.aliases.insert(alias.into(), target.into());
         self
     }
 
@@ -47,17 +74,20 @@ impl ModelRegistry {
         self.providers.is_empty()
     }
 
-    /// Resolve a provider name. Exact names win; otherwise the last `/`-separated
-    /// segment is tried (so `vendor/openai/openai` resolves to `openai`).
+    /// Resolve a provider name: an exact name, then an alias, then a
+    /// plugin-style `<org>/<provider>/<provider>` identifier.
     pub fn get(&self, name: &str) -> Result<Arc<dyn ChatModel>, LlmError> {
         if let Some(m) = self.providers.get(name) {
             return Ok(Arc::clone(m));
         }
-        let short = name.rsplit('/').next().unwrap_or(name);
-        self.providers.get(short).cloned().ok_or_else(|| {
-            let known: Vec<&str> = self.names().collect();
-            LlmError::Config(format!("unknown model provider `{name}` (configured: {known:?})"))
-        })
+        if let Some(m) = self.aliases.get(name).and_then(|target| self.providers.get(target)) {
+            return Ok(Arc::clone(m));
+        }
+        if let Some(m) = plugin_provider(name).and_then(|short| self.providers.get(short)) {
+            return Ok(Arc::clone(m));
+        }
+        let known: Vec<&str> = self.names().collect();
+        Err(LlmError::Config(format!("unknown model provider `{name}` (configured: {known:?})")))
     }
 
     /// Build a registry from environment variables:
@@ -89,12 +119,12 @@ impl ModelRegistry {
             if key.is_some() || base.is_some() {
                 let mut cfg = OpenAiConfig::new(base.unwrap_or_else(|| OpenAiConfig::default().base_url), key);
                 cfg.use_max_completion_tokens = cfg.base_url.contains("api.openai.com");
-                registry.add("openai", Arc::new(OpenAiModel::new(cfg)?));
+                registry.try_add("openai", Arc::new(OpenAiModel::new(cfg)?))?;
             }
             if let Some(host) = get("OLLAMA_HOST") {
                 let host = if host.starts_with("http") { host } else { format!("http://{host}") };
                 let cfg = OpenAiConfig::new(format!("{}/v1", host.trim_end_matches('/')), None);
-                registry.add("ollama", Arc::new(OpenAiModel::new(cfg)?));
+                registry.try_add("ollama", Arc::new(OpenAiModel::new(cfg)?))?;
             }
             const PREFIX: &str = "GRAPHRT_OPENAI_COMPAT_";
             for (name, value) in vars {
@@ -105,7 +135,8 @@ impl ModelRegistry {
                 }
                 let key = get(&format!("{PREFIX}{provider}_API_KEY"));
                 let cfg = OpenAiConfig::new(value.clone(), key);
-                registry.add(provider.to_ascii_lowercase(), Arc::new(OpenAiModel::new(cfg)?));
+                // A duplicate (e.g. `..._OPENAI_BASE_URL` next to `OPENAI_API_KEY`) is an error, not an override.
+                registry.try_add(provider.to_ascii_lowercase(), Arc::new(OpenAiModel::new(cfg)?))?;
             }
         }
 
@@ -117,7 +148,7 @@ impl ModelRegistry {
                 if let Some(base) = get("ANTHROPIC_BASE_URL") {
                     cfg.base_url = base;
                 }
-                registry.add("anthropic", Arc::new(AnthropicModel::new(cfg)?));
+                registry.try_add("anthropic", Arc::new(AnthropicModel::new(cfg)?))?;
             }
         }
 
@@ -126,17 +157,48 @@ impl ModelRegistry {
     }
 }
 
+/// `<org>/<provider>/<provider>` -> `<provider>`.
+fn plugin_provider(name: &str) -> Option<&str> {
+    let mut parts = name.split('/');
+    let (org, plugin, provider) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || org.is_empty() || provider.is_empty() || plugin != provider {
+        return None;
+    }
+    Some(provider)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mock::MockModel;
 
     #[test]
-    fn resolves_short_names() {
-        let reg = ModelRegistry::new().with("openai", Arc::new(MockModel::new(vec![])));
+    fn resolves_names_explicitly() {
+        let mut reg = ModelRegistry::new().with("openai", Arc::new(MockModel::new(vec![])));
         assert!(reg.get("openai").is_ok());
         assert!(reg.get("vendor/openai/openai").is_ok());
+        assert!(matches!(reg.get("acme/openai"), Err(LlmError::Config(_))), "no guessing");
+        assert!(matches!(reg.get("a/b/openai"), Err(LlmError::Config(_))));
         assert!(matches!(reg.get("nope"), Err(LlmError::Config(_))));
+        reg.alias("acme/openai", "openai");
+        assert!(reg.get("acme/openai").is_ok());
+    }
+
+    #[test]
+    fn try_add_rejects_duplicates() {
+        let mut reg = ModelRegistry::new();
+        assert!(reg.try_add("m", Arc::new(MockModel::new(vec![]))).is_ok());
+        assert!(matches!(reg.try_add("m", Arc::new(MockModel::new(vec![]))), Err(LlmError::Config(_))));
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn duplicate_env_providers_are_rejected() {
+        let vars = vec![
+            ("OPENAI_API_KEY".to_owned(), "sk-abc".to_owned()),
+            ("GRAPHRT_OPENAI_COMPAT_OPENAI_BASE_URL".to_owned(), "https://other/v1".to_owned()),
+        ];
+        assert!(matches!(ModelRegistry::from_vars(&vars), Err(LlmError::Config(_))));
     }
 
     #[cfg(all(feature = "openai", feature = "anthropic"))]
