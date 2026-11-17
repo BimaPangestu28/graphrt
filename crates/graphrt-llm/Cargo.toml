@@ -1,13 +1,35 @@
 [package]
 name = "graphrt-llm"
+description = "Model providers (OpenAI-compatible, Anthropic) and LLM, classifier, extractor and agent nodes for graphrt."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["openai", "anthropic"]
+# OpenAI-compatible chat completions (OpenAI, Azure OpenAI, Ollama, vLLM, Groq, OpenRouter, DeepSeek, ...).
+openai = ["http"]
+# Anthropic Messages API.
+anthropic = ["http"]
+# Shared HTTP transport (reqwest + rustls with the ring crypto provider).
+http = ["dep:reqwest", "dep:rustls"]
 
 [dependencies]
 graphrt-core.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "json", "stream"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]
 workspace = true
