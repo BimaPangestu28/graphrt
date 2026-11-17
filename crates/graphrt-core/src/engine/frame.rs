@@ -1,0 +1,799 @@
+//! Frame execution: runs one scope (the root graph or one container body run).
+//!
+//! A frame owns its variable pool and per-node / per-edge state; the graph is
+//! shared and immutable. Node futures run concurrently in a
+//! [`FuturesUnordered`]; the frame loop is the only place where state changes,
+//! so no locking is needed. Container nodes receive a [`ScopeRunner`] that runs
+//! their body as a nested frame with the same machinery.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::Duration;
+
+use futures::future::{BoxFuture, Either};
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt};
+use indexmap::IndexMap;
+
+use super::Limits;
+use super::control::{Control, Stop};
+use super::ids::new_id;
+use crate::dsl::ErrorStrategy;
+use crate::event::{Event, FrameId, PauseReason, Usage};
+use crate::graph::{EdgeIx, FAIL_BRANCH, Graph, NodeIx};
+use crate::node::{
+    Clock, EventSink, Node, NodeContext, NodeError, NodeOutcome, NodeOutput, NodeResult, NodeRole, PauseRequest,
+    Resume, Services, Subgraph, SubgraphRequest, SubgraphResult,
+};
+use crate::pool::{ENV, Selector, VariablePool};
+use crate::snapshot::{EdgeStatus, FrameSnapshot, NodeSnapshot, NodeStatus};
+use crate::value::Value;
+
+/// Node kind whose completion marks a loop body run as "broke".
+const LOOP_END_KIND: &str = "loop-end";
+
+/// State shared by every frame of one run.
+pub(crate) struct RunShared {
+    pub(crate) graph: Arc<Graph>,
+    pub(crate) services: Arc<Services>,
+    pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) limits: Limits,
+    pub(crate) control: Arc<Control>,
+    pub(crate) sink: EventSink,
+    pub(crate) steps: AtomicU64,
+    pub(crate) handled_errors: AtomicU32,
+    pub(crate) usage: Mutex<Usage>,
+    /// Environment variables re-applied to every restored frame (snapshots exclude them).
+    pub(crate) env: Vec<(String, Value)>,
+    /// Host input for paused nodes, keyed by node id.
+    pub(crate) resume_inputs: IndexMap<String, Value>,
+}
+
+impl std::fmt::Debug for RunShared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunShared").field("steps", &self.steps).finish_non_exhaustive()
+    }
+}
+
+impl RunShared {
+    pub(crate) fn emit(&self, event: Event) {
+        (self.sink)(event);
+    }
+
+    /// Count one node attempt. Returns `false` (and stops the run) when the step budget is exhausted.
+    fn take_step(&self) -> bool {
+        let used = self.steps.fetch_add(1, Ordering::AcqRel).saturating_add(1);
+        if used > self.limits.max_steps {
+            self.control.stop(Stop::Fail(format!("step limit of {} exceeded", self.limits.max_steps)));
+            return false;
+        }
+        true
+    }
+
+    fn add_usage(&self, usage: &Usage) {
+        let mut total = self.usage.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        total.add(usage);
+    }
+
+    pub(crate) fn total_usage(&self) -> Usage {
+        *self.usage.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.clock.now_ms()
+    }
+}
+
+/// How a frame ended.
+#[derive(Debug)]
+pub(crate) enum FrameOutcome {
+    Completed {
+        pool: VariablePool,
+        outputs: IndexMap<String, Value>,
+        writes: Vec<(Selector, Value)>,
+        usage: Usage,
+        broke: bool,
+    },
+    Failed {
+        error: NodeError,
+        usage: Usage,
+    },
+    Paused {
+        snapshot: FrameSnapshot,
+        reasons: Vec<PauseReason>,
+    },
+    /// The run was aborted or hit a run-wide limit (see [`Control::stop_reason`]).
+    Stopped,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum State {
+    Ready,
+    Running,
+    Succeeded,
+    Failed,
+    Skipped,
+    Paused,
+}
+
+#[derive(Debug)]
+struct NodeRt {
+    state: State,
+    exec_id: Arc<str>,
+    attempt: u32,
+    /// Saved state of a node that paused itself (kept while paused, handed back on resume).
+    resume_state: Option<serde_json::Value>,
+}
+
+/// Result of one node task (all attempts).
+struct TaskDone {
+    ix: NodeIx,
+    attempt: u32,
+    result: NodeResult,
+    elapsed_ms: u64,
+}
+
+/// One executing frame.
+pub(crate) struct Frame {
+    run: Arc<RunShared>,
+    id: FrameId,
+    depth: u32,
+    is_root: bool,
+    scope_nodes: Vec<NodeIx>,
+    scope_ids: HashSet<Arc<str>>,
+    pool: VariablePool,
+    nodes: HashMap<NodeIx, NodeRt>,
+    edges: HashMap<EdgeIx, EdgeStatus>,
+    outputs: IndexMap<String, Value>,
+    writes: Vec<(Selector, Value)>,
+    usage: Usage,
+    broke: bool,
+    reasons: Vec<PauseReason>,
+    ready: VecDeque<NodeIx>,
+}
+
+impl Frame {
+    /// A fresh frame for the scope owned by `owner` (`None` = root).
+    pub(crate) fn fresh(
+        run: Arc<RunShared>,
+        id: FrameId,
+        owner: Option<NodeIx>,
+        depth: u32,
+        pool: VariablePool,
+    ) -> Result<Self, NodeError> {
+        let mut frame = Self::empty(run, id, owner, depth, pool)?;
+        let entry = frame.scope_entry(owner)?;
+        frame.mark_ready(entry);
+        Ok(frame)
+    }
+
+    /// A frame restored from a snapshot. Environment variables are re-applied.
+    pub(crate) fn restore(
+        run: Arc<RunShared>,
+        id: FrameId,
+        owner: Option<NodeIx>,
+        depth: u32,
+        snapshot: FrameSnapshot,
+    ) -> Result<Self, NodeError> {
+        let mut pool = VariablePool::from_snapshot(snapshot.pool);
+        for (name, value) in &run.env {
+            pool.insert(ENV, name, value.clone());
+        }
+        let mut frame = Self::empty(run, id, owner, depth, pool)?;
+        frame.outputs = snapshot.outputs;
+        frame.writes = snapshot.writes;
+        frame.broke = snapshot.broke;
+        frame.usage = snapshot.usage;
+        let graph = frame.run.graph.clone();
+        for (node_id, ns) in snapshot.nodes {
+            let ix = graph
+                .index_of(&node_id)
+                .filter(|ix| frame.scope_nodes.contains(ix))
+                .ok_or_else(|| NodeError::fatal("snapshot", format!("snapshot references unknown node `{node_id}`")))?;
+            let state = match ns.status {
+                NodeStatus::Pending | NodeStatus::Paused => State::Ready,
+                NodeStatus::Succeeded => State::Succeeded,
+                NodeStatus::Failed => State::Failed,
+                NodeStatus::Skipped => State::Skipped,
+            };
+            let resume_state = if ns.status == NodeStatus::Paused { ns.resume_state } else { None };
+            frame.nodes.insert(ix, NodeRt { state, exec_id: Arc::from(ns.exec_id), attempt: ns.attempt, resume_state });
+        }
+        for (edge_id, status) in snapshot.edges {
+            let ex =
+                graph.edges().iter().position(|e| e.id.as_ref() == edge_id).ok_or_else(|| {
+                    NodeError::fatal("snapshot", format!("snapshot references unknown edge `{edge_id}`"))
+                })?;
+            frame.edges.insert(ex, status);
+        }
+        // Queue pending nodes in topological order.
+        let order = frame.scope_nodes.clone();
+        for ix in order {
+            if frame.nodes.get(&ix).is_some_and(|n| n.state == State::Ready) {
+                frame.ready.push_back(ix);
+            }
+        }
+        Ok(frame)
+    }
+
+    fn empty(
+        run: Arc<RunShared>,
+        id: FrameId,
+        owner: Option<NodeIx>,
+        depth: u32,
+        pool: VariablePool,
+    ) -> Result<Self, NodeError> {
+        let scope = match owner {
+            None => run.graph.root_scope(),
+            Some(o) => run.graph.scope_of(o),
+        }
+        .ok_or_else(|| NodeError::fatal("graph", "scope not found"))?;
+        let scope_nodes = scope.nodes.clone();
+        let scope_ids = scope_nodes.iter().filter_map(|&ix| run.graph.node(ix)).map(|n| n.id.clone()).collect();
+        Ok(Self {
+            is_root: owner.is_none(),
+            run,
+            id,
+            depth,
+            scope_nodes,
+            scope_ids,
+            pool,
+            nodes: HashMap::new(),
+            edges: HashMap::new(),
+            outputs: IndexMap::new(),
+            writes: Vec::new(),
+            usage: Usage::default(),
+            broke: false,
+            reasons: Vec::new(),
+            ready: VecDeque::new(),
+        })
+    }
+
+    fn scope_entry(&self, owner: Option<NodeIx>) -> Result<NodeIx, NodeError> {
+        let scope = match owner {
+            None => self.run.graph.root_scope(),
+            Some(o) => self.run.graph.scope_of(o),
+        };
+        scope.map(|s| s.entry).ok_or_else(|| NodeError::fatal("graph", "scope not found"))
+    }
+
+    /// Set a variable directly in this frame's pool.
+    pub(crate) fn set_variable(&mut self, namespace: &str, name: &str, value: Value) {
+        self.pool.insert(namespace, name, value);
+    }
+
+    fn mark_ready(&mut self, ix: NodeIx) {
+        let now = self.run.now_ms();
+        let rt = self.nodes.entry(ix).or_insert_with(|| NodeRt {
+            state: State::Ready,
+            exec_id: Arc::from(new_id(now)),
+            attempt: 0,
+            resume_state: None,
+        });
+        rt.state = State::Ready;
+        self.ready.push_back(ix);
+    }
+
+    fn node_id(&self, ix: NodeIx) -> String {
+        self.run.graph.node(ix).map(|n| n.id.to_string()).unwrap_or_default()
+    }
+
+    /// Run the frame to completion, failure, pause or stop.
+    pub(crate) async fn run(mut self) -> FrameOutcome {
+        let control = self.run.control.clone();
+        let mut running: FuturesUnordered<BoxFuture<'static, TaskDone>> = FuturesUnordered::new();
+        loop {
+            if control.is_stopped() {
+                return FrameOutcome::Stopped;
+            }
+            let seen = control.version();
+            if self.is_root {
+                self.apply_external_updates();
+            }
+            // Schedule ready nodes.
+            if !control.pause_requested() {
+                while running.len() < self.run.limits.max_concurrency.max(1) {
+                    let Some(ix) = self.ready.pop_front() else { break };
+                    running.push(self.start(ix));
+                }
+            }
+            if running.is_empty() {
+                return self.finish();
+            }
+            let next = running.next();
+            let changed = control.changed(seen);
+            futures::pin_mut!(changed);
+            match futures::future::select(next, changed).await {
+                Either::Left((Some(done), _)) => {
+                    if let Some(outcome) = self.on_done(done) {
+                        return outcome;
+                    }
+                }
+                Either::Left((None, _)) | Either::Right(((), _)) => {}
+            }
+        }
+    }
+
+    fn apply_external_updates(&mut self) {
+        for (selector, value) in self.run.control.take_updates() {
+            self.pool.set_path(&selector, value.clone());
+            self.run.emit(Event::VariableUpdated { frame: self.id.clone(), node_id: String::new(), selector, value });
+        }
+    }
+
+    /// Nothing is running: decide between completed and paused.
+    fn finish(self) -> FrameOutcome {
+        let has_paused = self.nodes.values().any(|n| n.state == State::Paused);
+        if has_paused || !self.ready.is_empty() {
+            let reasons = self.reasons.clone();
+            return FrameOutcome::Paused { snapshot: self.snapshot(), reasons };
+        }
+        FrameOutcome::Completed {
+            pool: self.pool,
+            outputs: self.outputs,
+            writes: self.writes,
+            usage: self.usage,
+            broke: self.broke,
+        }
+    }
+
+    /// Serializable state of this frame.
+    pub(crate) fn snapshot(&self) -> FrameSnapshot {
+        let mut nodes = IndexMap::new();
+        for &ix in &self.scope_nodes {
+            let Some(rt) = self.nodes.get(&ix) else { continue };
+            let status = match rt.state {
+                State::Ready | State::Running => {
+                    if rt.resume_state.is_some() {
+                        NodeStatus::Paused
+                    } else {
+                        NodeStatus::Pending
+                    }
+                }
+                State::Paused => NodeStatus::Paused,
+                State::Succeeded => NodeStatus::Succeeded,
+                State::Failed => NodeStatus::Failed,
+                State::Skipped => NodeStatus::Skipped,
+            };
+            nodes.insert(
+                self.node_id(ix),
+                NodeSnapshot {
+                    status,
+                    exec_id: rt.exec_id.to_string(),
+                    attempt: rt.attempt,
+                    resume_state: rt.resume_state.clone(),
+                },
+            );
+        }
+        let mut edges = IndexMap::new();
+        let mut known: Vec<(&EdgeIx, &EdgeStatus)> = self.edges.iter().collect();
+        known.sort_by_key(|(ex, _)| **ex);
+        for (ex, status) in known {
+            if let Some(e) = self.run.graph.edge(*ex) {
+                edges.insert(e.id.to_string(), *status);
+            }
+        }
+        FrameSnapshot {
+            pool: self.pool.to_snapshot(),
+            nodes,
+            edges,
+            outputs: self.outputs.clone(),
+            writes: self.writes.clone(),
+            broke: self.broke,
+            usage: self.usage,
+        }
+    }
+
+    /// Start a node: emit `NodeStarted` and build its task future.
+    fn start(&mut self, ix: NodeIx) -> BoxFuture<'static, TaskDone> {
+        let run = self.run.clone();
+        let Some(gn) = run.graph.node(ix) else {
+            let error = NodeError::fatal("graph", "unknown node index");
+            return Box::pin(futures::future::ready(TaskDone { ix, attempt: 1, result: Err(error), elapsed_ms: 0 }));
+        };
+        let now = run.now_ms();
+        let rt = self.nodes.entry(ix).or_insert_with(|| NodeRt {
+            state: State::Ready,
+            exec_id: Arc::from(new_id(now)),
+            attempt: 0,
+            resume_state: None,
+        });
+        rt.state = State::Running;
+        let exec_id = rt.exec_id.clone();
+        let resume =
+            rt.resume_state.take().map(|state| Resume { state, input: run.resume_inputs.get(gn.id.as_ref()).cloned() });
+
+        run.emit(Event::NodeStarted {
+            frame: self.id.clone(),
+            node_id: gn.id.to_string(),
+            exec_id: exec_id.to_string(),
+            kind: gn.kind.clone(),
+            title: gn.title.clone(),
+            attempt: 1,
+        });
+
+        let subgraph: Option<Arc<dyn Subgraph>> = if gn.role == NodeRole::Container {
+            Some(Arc::new(ScopeRunner {
+                run: run.clone(),
+                owner: ix,
+                parent_frame: self.id.clone(),
+                depth: self.depth,
+            }))
+        } else {
+            None
+        };
+        let node: Arc<dyn Node> = gn.node.clone();
+        let node_id: Arc<str> = gn.id.clone();
+        let policy = gn.policy.clone();
+        let timeout_ms = policy.timeout_ms.or(run.limits.default_node_timeout_ms);
+        let pool = self.pool.clone();
+        let frame = self.id.clone();
+
+        Box::pin(async move {
+            let started = run.now_ms();
+            let mut attempt: u32 = 1;
+            loop {
+                if !run.take_step() {
+                    let error = NodeError::fatal("limit", "step limit exceeded");
+                    return TaskDone { ix, attempt, result: Err(error), elapsed_ms: 0 };
+                }
+                let ctx = NodeContext::new(
+                    node_id.clone(),
+                    exec_id.clone(),
+                    frame.clone(),
+                    attempt,
+                    pool.clone(),
+                    run.services.clone(),
+                    run.clock.clone(),
+                    run.sink.clone(),
+                )
+                .with_resume(resume.clone())
+                .with_subgraph(subgraph.clone());
+                let result = run_attempt(node.as_ref(), ctx, timeout_ms, run.clock.as_ref()).await;
+                match result {
+                    Err(error)
+                        if error.retryable && attempt <= policy.retry.max_retries && !run.control.is_stopped() =>
+                    {
+                        let delay_ms = policy.retry.delay_ms(attempt);
+                        attempt = attempt.saturating_add(1);
+                        run.emit(Event::NodeRetry {
+                            frame: frame.clone(),
+                            node_id: node_id.to_string(),
+                            exec_id: exec_id.to_string(),
+                            attempt,
+                            error: error.to_string(),
+                            delay_ms,
+                        });
+                        if delay_ms > 0 {
+                            run.clock.sleep(Duration::from_millis(delay_ms)).await;
+                        }
+                    }
+                    result => {
+                        let elapsed_ms = run.now_ms().saturating_sub(started);
+                        return TaskDone { ix, attempt, result, elapsed_ms };
+                    }
+                }
+            }
+        })
+    }
+
+    /// Apply a finished node. Returns `Some` when the frame must end now.
+    fn on_done(&mut self, done: TaskDone) -> Option<FrameOutcome> {
+        let TaskDone { ix, attempt, result, elapsed_ms } = done;
+        if let Some(rt) = self.nodes.get_mut(&ix) {
+            rt.attempt = attempt;
+        }
+        if self.run.control.is_stopped() {
+            return Some(FrameOutcome::Stopped);
+        }
+        let Some(gn) = self.run.graph.node(ix) else {
+            return Some(FrameOutcome::Failed {
+                error: NodeError::fatal("graph", "unknown node index"),
+                usage: self.usage,
+            });
+        };
+        let role = gn.role;
+        match result {
+            Ok(NodeOutcome::Completed(output)) => {
+                if role == NodeRole::Branch && output.branch.is_none() {
+                    let error = NodeError::fatal("invalid_branch", "branch node completed without selecting a branch");
+                    return self.on_error(ix, error, elapsed_ms);
+                }
+                self.on_success(ix, output, elapsed_ms);
+                None
+            }
+            Ok(NodeOutcome::Paused(request)) => {
+                self.on_paused(ix, request);
+                None
+            }
+            Err(error) => self.on_error(ix, error, elapsed_ms),
+        }
+    }
+
+    fn exec_id(&self, ix: NodeIx) -> String {
+        self.nodes.get(&ix).map(|n| n.exec_id.to_string()).unwrap_or_default()
+    }
+
+    fn set_state(&mut self, ix: NodeIx, state: State) {
+        if let Some(rt) = self.nodes.get_mut(&ix) {
+            rt.state = state;
+        }
+    }
+
+    fn on_success(&mut self, ix: NodeIx, output: NodeOutput, elapsed_ms: u64) {
+        let graph = self.run.graph.clone();
+        let Some(gn) = graph.node(ix) else { return };
+        let node_id = gn.id.to_string();
+        self.commit(ix, &output.outputs, &output.writes);
+        if let Some(usage) = &output.usage {
+            self.usage.add(usage);
+            if gn.role != NodeRole::Container {
+                self.run.add_usage(usage);
+            }
+        }
+        if gn.role == NodeRole::Response {
+            merge_response(&mut self.outputs, &output.outputs);
+        }
+        if gn.kind == LOOP_END_KIND {
+            self.broke = true;
+        }
+        self.set_state(ix, State::Succeeded);
+        self.run.emit(Event::NodeSucceeded {
+            frame: self.id.clone(),
+            node_id,
+            exec_id: self.exec_id(ix),
+            outputs: output.outputs,
+            branch: output.branch.clone(),
+            usage: output.usage,
+            metadata: output.metadata,
+            elapsed_ms,
+        });
+        match (gn.role, output.branch) {
+            (NodeRole::Branch, Some(handle)) => self.traverse(ix, |h| h == handle),
+            _ => self.traverse(ix, |h| h != FAIL_BRANCH),
+        }
+    }
+
+    fn on_paused(&mut self, ix: NodeIx, request: PauseRequest) {
+        let node_id = self.node_id(ix);
+        let role = self.run.graph.node(ix).map(|n| n.role);
+        let reason = PauseReason {
+            frame: self.id.clone(),
+            node_id: Some(node_id.clone()),
+            kind: request.kind,
+            data: request.data,
+        };
+        if let Some(rt) = self.nodes.get_mut(&ix) {
+            rt.state = State::Paused;
+            rt.resume_state = Some(request.state);
+        }
+        // Container pauses are caused by inner nodes, which already reported their reasons.
+        if role != Some(NodeRole::Container) {
+            self.run.control.add_reason(reason.clone());
+        }
+        self.reasons.push(reason.clone());
+        self.run.emit(Event::NodePaused { frame: self.id.clone(), node_id, exec_id: self.exec_id(ix), reason });
+    }
+
+    fn on_error(&mut self, ix: NodeIx, error: NodeError, elapsed_ms: u64) -> Option<FrameOutcome> {
+        let graph = self.run.graph.clone();
+        let gn = graph.node(ix)?;
+        let node_id = gn.id.to_string();
+        let mut outputs = IndexMap::new();
+        let handled = !matches!(gn.policy.on_error, ErrorStrategy::Fail);
+        if let ErrorStrategy::DefaultValue { values } = &gn.policy.on_error {
+            outputs.extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        if handled {
+            outputs.insert("error_message".to_owned(), Value::from(error.message.as_str()));
+            outputs.insert("error_type".to_owned(), Value::from(error.kind.as_str()));
+        }
+        self.set_state(ix, State::Failed);
+        self.run.emit(Event::NodeFailed {
+            frame: self.id.clone(),
+            node_id,
+            exec_id: self.exec_id(ix),
+            error: error.message.clone(),
+            error_type: error.kind.clone(),
+            handled,
+            outputs: outputs.clone(),
+            elapsed_ms,
+        });
+        match &gn.policy.on_error {
+            ErrorStrategy::Fail => Some(FrameOutcome::Failed { error, usage: self.usage }),
+            ErrorStrategy::FailBranch => {
+                self.run.handled_errors.fetch_add(1, Ordering::AcqRel);
+                self.commit(ix, &outputs, &[]);
+                self.traverse(ix, |h| h == FAIL_BRANCH);
+                None
+            }
+            ErrorStrategy::DefaultValue { values } => {
+                self.run.handled_errors.fetch_add(1, Ordering::AcqRel);
+                self.commit(ix, &outputs, &[]);
+                if gn.role == NodeRole::Branch {
+                    // Branch nodes follow the handle named by the `branch` default, if any;
+                    // otherwise every outgoing path is skipped.
+                    let handle = values.get("branch").and_then(Value::as_str).map(str::to_owned);
+                    self.traverse(ix, |h| handle.as_deref() == Some(h));
+                } else {
+                    self.traverse(ix, |h| h != FAIL_BRANCH);
+                }
+                None
+            }
+        }
+    }
+
+    /// Store outputs under the node namespace and apply its variable writes.
+    fn commit(&mut self, ix: NodeIx, outputs: &IndexMap<String, Value>, writes: &[(Selector, Value)]) {
+        let node_id = self.node_id(ix);
+        self.pool.set_outputs(&node_id, outputs);
+        for (selector, value) in writes {
+            self.pool.set_path(selector, value.clone());
+            if !self.scope_ids.contains(selector.namespace()) {
+                self.writes.push((selector.clone(), value.clone()));
+            }
+            self.run.emit(Event::VariableUpdated {
+                frame: self.id.clone(),
+                node_id: node_id.clone(),
+                selector: selector.clone(),
+                value: value.clone(),
+            });
+        }
+    }
+
+    /// Resolve every outgoing edge of `ix` (taken when `take(handle)`), then
+    /// propagate readiness and skips downstream.
+    fn traverse(&mut self, ix: NodeIx, take: impl Fn(&str) -> bool) {
+        let graph = self.run.graph.clone();
+        let mut targets = Vec::new();
+        for &ex in graph.outgoing(ix) {
+            let Some(edge) = graph.edge(ex) else { continue };
+            let status = if take(&edge.handle) { EdgeStatus::Taken } else { EdgeStatus::Skipped };
+            self.edges.insert(ex, status);
+            targets.push(edge.target);
+        }
+        self.resolve_targets(targets);
+    }
+
+    /// Worklist propagation: a node becomes ready once every incoming edge is
+    /// resolved and at least one is taken; it is skipped when all are skipped.
+    fn resolve_targets(&mut self, mut work: Vec<NodeIx>) {
+        let graph = self.run.graph.clone();
+        while let Some(target) = work.pop() {
+            if self.nodes.contains_key(&target) {
+                continue; // already decided
+            }
+            let mut any_unknown = false;
+            let mut any_taken = false;
+            for &ex in graph.incoming(target) {
+                match self.edges.get(&ex).copied().unwrap_or(EdgeStatus::Unknown) {
+                    EdgeStatus::Unknown => any_unknown = true,
+                    EdgeStatus::Taken => any_taken = true,
+                    EdgeStatus::Skipped => {}
+                }
+            }
+            if any_unknown {
+                continue;
+            }
+            if any_taken {
+                self.mark_ready(target);
+                continue;
+            }
+            // Every incoming edge skipped: skip the node and its outgoing edges.
+            let now = self.run.now_ms();
+            self.nodes.insert(
+                target,
+                NodeRt { state: State::Skipped, exec_id: Arc::from(new_id(now)), attempt: 0, resume_state: None },
+            );
+            self.run.emit(Event::NodeSkipped { frame: self.id.clone(), node_id: self.node_id(target) });
+            for &ex in graph.outgoing(target) {
+                self.edges.insert(ex, EdgeStatus::Skipped);
+                if let Some(edge) = graph.edge(ex) {
+                    work.push(edge.target);
+                }
+            }
+        }
+    }
+}
+
+/// Merge a response node's outputs into the frame outputs: `answer` is
+/// concatenated, other keys overwrite.
+fn merge_response(frame_outputs: &mut IndexMap<String, Value>, outputs: &IndexMap<String, Value>) {
+    for (key, value) in outputs {
+        if key == "answer" {
+            if let Some(Value::String(existing)) = frame_outputs.get(key) {
+                let joined = format!("{existing}{}", value.to_text());
+                frame_outputs.insert(key.clone(), Value::from(joined));
+                continue;
+            }
+        }
+        frame_outputs.insert(key.clone(), value.clone());
+    }
+}
+
+/// Run one attempt with an optional timeout, converting panics into node errors.
+async fn run_attempt(node: &dyn Node, ctx: NodeContext, timeout_ms: Option<u64>, clock: &dyn Clock) -> NodeResult {
+    let fut = AssertUnwindSafe(node.run(ctx)).catch_unwind();
+    let guarded = async {
+        match fut.await {
+            Ok(result) => result,
+            Err(panic) => {
+                let message = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_owned())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "node panicked".to_owned());
+                Err(NodeError::fatal("panic", message))
+            }
+        }
+    };
+    match timeout_ms {
+        Some(ms) if clock.supports_timers() => {
+            let sleep = clock.sleep(Duration::from_millis(ms));
+            futures::pin_mut!(guarded);
+            match futures::future::select(guarded, sleep).await {
+                Either::Left((result, _)) => result,
+                Either::Right(((), _)) => Err(NodeError::timeout(Duration::from_millis(ms))),
+            }
+        }
+        _ => guarded.await,
+    }
+}
+
+/// [`Subgraph`] implementation handed to container nodes.
+#[derive(Debug)]
+pub(crate) struct ScopeRunner {
+    run: Arc<RunShared>,
+    owner: NodeIx,
+    parent_frame: FrameId,
+    depth: u32,
+}
+
+impl Subgraph for ScopeRunner {
+    fn run(&self, request: SubgraphRequest) -> BoxFuture<'_, SubgraphResult> {
+        Box::pin(async move {
+            let depth = self.depth.saturating_add(1);
+            if depth > self.run.limits.max_depth {
+                return SubgraphResult::Failed {
+                    error: NodeError::fatal(
+                        "limit",
+                        format!("container nesting depth limit of {} exceeded", self.run.limits.max_depth),
+                    ),
+                    usage: Usage::default(),
+                };
+            }
+            let owner_id = self.run.graph.node(self.owner).map(|n| n.id.to_string()).unwrap_or_default();
+            let segment = format!("{owner_id}[{}]", request.index);
+            let id: FrameId = if self.parent_frame.is_empty() {
+                Arc::from(segment)
+            } else {
+                Arc::from(format!("{}/{segment}", self.parent_frame))
+            };
+            let frame = match request.resume {
+                Some(snapshot) => Frame::restore(self.run.clone(), id, Some(self.owner), depth, snapshot),
+                None => Frame::fresh(self.run.clone(), id, Some(self.owner), depth, request.pool),
+            };
+            let frame = match frame {
+                Ok(f) => f,
+                Err(error) => return SubgraphResult::Failed { error, usage: Usage::default() },
+            };
+            match frame.run().await {
+                FrameOutcome::Completed { pool, outputs, writes, usage, broke } => {
+                    SubgraphResult::Completed { pool, outputs, writes, usage, broke }
+                }
+                FrameOutcome::Failed { error, usage } => SubgraphResult::Failed { error, usage },
+                FrameOutcome::Paused { snapshot, reasons } => SubgraphResult::Paused { snapshot, reasons },
+                FrameOutcome::Stopped => {
+                    let reason = match self.run.control.stop_reason() {
+                        Some(Stop::Abort(r) | Stop::Fail(r)) => r,
+                        None => "stopped".to_owned(),
+                    };
+                    SubgraphResult::Failed { error: NodeError::fatal("aborted", reason), usage: Usage::default() }
+                }
+            }
+        })
+    }
+}
