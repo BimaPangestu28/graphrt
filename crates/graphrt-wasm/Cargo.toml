@@ -1,13 +1,30 @@
 [package]
 name = "graphrt-wasm"
+description = "Sandboxed WebAssembly plugins for graphrt: add node kinds from portable .wasm modules with fuel and memory limits."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# Run guest calls on tokio's blocking pool when inside a tokio runtime.
+tokio = ["dep:tokio", "tokio/rt"]
+
 [dependencies]
 graphrt-core.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch"] }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+wat = "1"
+graphrt-core = { workspace = true, features = ["tokio"] }
 
 [lints]
 workspace = true

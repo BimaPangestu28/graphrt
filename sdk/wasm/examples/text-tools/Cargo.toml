@@ -1,0 +1,23 @@
+[package]
+name = "text-tools"
+description = "Example graphrt WebAssembly plugin: slugify, word-count (streaming) and length-router (branching)."
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+graphrt-wasm-guest = { path = "../../rust/graphrt-wasm-guest" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Standalone crate: not part of the host workspace.
+[workspace]
