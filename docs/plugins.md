@@ -81,23 +81,23 @@ may also itself be a plugin directory.
 | `version` | Plugin version (free-form, semver recommended). |
 | `protocol_version` | Protocol version the plugin speaks. Currently `1`. |
 | `runtime` | `process`, `http` or `wasm`. |
-| `nodes` | Node descriptors (see the node catalog). Each `kind` must start with `<name>.` unless `allow_unprefixed_kinds` is `true`. |
+| `nodes` | Node descriptors (see the node catalog). Each `kind` must start with `<name>.`. With `allow_unprefixed_kinds: true`, plain names without `.` (e.g. `slugify`) are also allowed; another plugin's `<other>.` namespace never is. Unknown descriptor keys are errors. |
 | `tools` | Tools exposed to `tool` and `agent` nodes under provider `<name>`. |
-| `permissions.env` | Host environment variables passed to the process (in addition to `PATH`, `HOME`, `LANG`, `TMPDIR` and their Windows equivalents). |
-| `permissions.secrets` | When `true`, secret values referenced by node config are sent in plaintext. When `false` (default) they are sent masked as `******`. |
+| `permissions.env` | Host environment variables passed to the process (in addition to `PATH`, `HOME`, `LANG`, `TMPDIR` and their Windows equivalents). An HTTP plugin's `bearer_token_env` must be listed here. |
+| `permissions.secrets` | Requests plaintext secret values in node config and resume input. **Granted only when the operator trusts the plugin** (`--trust-plugin <name>`); otherwise secrets are sent masked as `******` and a warning is printed. |
 | `permissions.network` | Informational: whether the plugin makes network calls. Shown to users before install. |
-| `limits.timeout_ms` | Per-request timeout (default 60 000). The node's own deadline still applies. |
+| `limits.timeout_ms` | Per-request timeout (default 60 000). The node's own deadline still applies. After 3 consecutive timeouts a process plugin is considered stuck: it is killed and restarted on the next request. |
 | `limits.max_concurrency` | Concurrent requests per plugin (default 16). |
-| `limits.max_message_bytes` | Maximum size of one protocol message (default 16 MiB). |
-| `checksums` | Optional `relative path -> sha256` map, verified before every process start. |
+| `limits.max_message_bytes` | Maximum size of one protocol message (default 16 MiB). Sent to the plugin in `initialize` so SDKs read lines of the same size. |
+| `checksums` | Optional `relative path -> sha256` map, verified before every process start. When present it must include the entrypoint (a `command` inside the plugin directory, or the wasm `module`). Pinned files must be regular files, not symlinks. |
 
 Runtime-specific fields:
 
 | Runtime | Fields |
 | --- | --- |
 | `process` | `command`, `args`, `env` (fixed values), `inherit_env` (default `false`), `cwd` (relative to the plugin directory; default: the plugin directory) |
-| `http` | `url`, `headers`, `bearer_token_env` (name of a host environment variable holding the token) |
-| `wasm` | `module` (path relative to the plugin directory). Executed by a WebAssembly loader registered with the host. |
+| `http` | `url`, `headers`, `bearer_token_env` (name of a host environment variable holding the token; it must be listed in `permissions.env`, the plugin must be trusted, and `url` must be `https://` unless it is a loopback address) |
+| `wasm` | `module` (path relative to the plugin directory, no `..`). The graphrt CLI ships the loader (`graphrt_cli::wasm_loader::WasmLoader`); embedders register it with `PluginHost::with_loader`. |
 
 A plugin's process is started lazily, the first time one of its nodes or tools
 runs, and is reused for all later requests.
@@ -120,8 +120,13 @@ Messages are [JSON-RPC 2.0](https://www.jsonrpc.org/specification).
 1. Host → plugin `initialize`
 
    ```json
-   {"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocol_version":1,"host":{"name":"graphrt","version":"0.1.0"}}}
+   {"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocol_version":1,"host":{"name":"graphrt","version":"0.1.0"},"max_message_bytes":16777216}}
    ```
+
+   `max_message_bytes` is the largest line the host will send; the SDKs adopt it.
+   A plugin that receives a longer line should skip it up to the newline and
+   answer that request (id recovered from the line when possible) with an
+   error such as `{"kind": "message_too_large"}`.
 
    Result: `{"protocol_version": 1, "nodes": [...]?, "tools": [...]?}`. `nodes` and
    `tools` are optional; when present they replace the manifest's lists for
@@ -198,7 +203,12 @@ Sent while a `node.run` is in progress (no `id`):
 | --- | --- | --- |
 | `node.chunk` | `{request_id, field, chunk}` | Streams text for output `field` (`node_chunk` event). |
 | `node.progress` | `{request_id, name, data}` | Structured progress (`node_progress` event). |
-| `log` | `{level, message}` | Plugin log line (`debug`/`info`/`warn`/`error`). |
+| `log` | `{level, message, request_id?}` | Plugin log line (`debug`/`info`/`warn`/`error`). Written to the host's stderr as `[plugin <name>] <level>: <message>` (`debug` only with `GRAPHRT_PLUGIN_LOG=debug`); with a `request_id` it also becomes a `plugin_log` progress event of that node. |
+
+Every response must carry `result` or `error`; a response with neither, a
+`node.run` result with unknown keys (e.g. `output` instead of `outputs`), or an
+`id: null` error (the plugin lost a request) is a protocol error. A branching
+node with `fixed` handles must return one of the declared handles.
 
 ### Cancellation
 
@@ -226,18 +236,44 @@ Standard JSON-RPC codes (`-32601` method not found, `-32602` invalid params...)
 are reported as non-retryable `plugin_protocol` errors.
 
 Transport failures are retryable: if the process exits, every in-flight request
-fails with `plugin_crashed`, and the next request restarts the process (with a
-backoff of up to 5 seconds after repeated crashes).
+fails with `plugin_crashed` (the message includes the exit code or signal and
+the end of stderr), and the next request restarts the process (with a backoff
+of up to 5 seconds after repeated crashes). On Unix the plugin runs in its own
+process group, and the whole group is killed on crash, restart or shutdown, so
+wrapper commands (`sh run.sh`, `npx`, `uv run`) do not leave the real plugin
+running.
+
+HTTP plugins: a non-2xx response whose body is a JSON-RPC error keeps that
+error's `kind` and `retryable`; otherwise the first 4 KiB of the body are
+included in the message. 4xx statuses (except 408 and 429) are not retried.
 
 ## Security model
 
+Manifest permissions are **requests**; the operator grants them:
+
+- Plaintext secrets (`permissions.secrets`) and HTTP bearer tokens
+  (`bearer_token_env`) need the plugin to be trusted by name:
+  `graphrt run ... --trust-plugin acme` (repeatable), or
+  `GRAPHRT_TRUSTED_PLUGINS=acme,other`; embedders call `PluginHost::trust`.
+  Untrusted plugins get masked secrets (a warning is printed), and an untrusted
+  HTTP plugin asking for a bearer token does not load.
+- Credentials and secrets are only sent to HTTP plugins over `https://`
+  (loopback addresses excepted).
 - Plugin processes start with a **clean environment**: only the variables listed
   in `permissions.env`, the fixed `env` map and a few basic variables (`PATH`,
-  `HOME`, `LANG`, `TMPDIR`).
-- Secrets are masked unless `permissions.secrets` is `true`.
-- `checksums` pins the files that are executed.
-- A plugin runs with the privileges of the graphrt process. Only install plugins
-  you trust, or use the `wasm` runtime for untrusted code.
+  `HOME`, `LANG`, `TMPDIR`). This is hygiene, not a sandbox: native plugin code
+  runs with the privileges of the graphrt process and can read anything the
+  process can.
+- Plugin node kinds never replace built-in nodes or another plugin's nodes, and
+  a plugin cannot claim another plugin's `<name>.` namespace.
+- `checksums` detect corrupted or partially modified files. They are **not** a
+  signature: the hashes live in the manifest they protect, so anyone who can
+  rewrite the plugin directory can update both, and files are hashed before
+  they are executed by path. Keep plugin directories writable only by the
+  operator, and pin the entrypoint (required when `checksums` is used).
+- Only install native (`process`) plugins you trust. For untrusted code, use the
+  `wasm` runtime: modules run in an interpreter with fuel, memory and output
+  limits and no file system or network access.
 
 ## Writing a plugin
 
@@ -302,7 +338,8 @@ Every command that builds graphs (`run`, `serve`, `validate`, `inspect`,
 nodes appear in `graphrt nodes` and `GET /v1/nodes` with `source:
 "plugin:<name>"`, and plugin tools join MCP tools for `tool` and `agent` nodes
 (provider name = plugin name). A plugin that fails to load is skipped with a
-warning.
+warning. Grant secrets / bearer tokens with `--trust-plugin <name>` (see the
+security model).
 
 A `.wasm` module placed directly in a plugin search path is loaded as a plugin
 on its own (it describes itself; see [WebAssembly plugins](wasm-plugins.md)).
@@ -326,15 +363,18 @@ A plugin is just a directory, so any git repository works:
 use graphrt_core::{Registry, tool::ToolRegistry};
 use graphrt_plugin::PluginHost;
 
-let mut host = PluginHost::new();
+let mut host = PluginHost::new().trust("acme"); // grants requested secrets / bearer tokens
 host.load_dirs(&graphrt_plugin::default_plugin_paths())?;
 let mut registry = Registry::with_builtins();
 let mut tools = ToolRegistry::new();
 host.register(&mut registry, &mut tools)?;
 ```
 
+`PluginHost::plugins()` reports the effective permissions, whether each plugin
+is trusted, and warnings for requests that were not granted.
+
 Custom runtimes (such as `wasm`) are added with `PluginHost::with_loader`. The
 CLI's adapter for `runtime: wasm` (`graphrt_cli::wasm_loader::WasmLoader`) is a
-complete example: it loads the module with graphrt-wasm, applies
-`permissions.secrets`, enforces the `<name>.` kind prefix unless
-`allow_unprefixed_kinds` is set, and returns the node factories.
+complete example: it loads the module with graphrt-wasm, applies the granted
+`permissions.secrets`, and returns the node factories. The host checks every
+kind a loader returns against the same namespace rules as manifest kinds.

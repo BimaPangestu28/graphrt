@@ -359,8 +359,18 @@ impl PluginManifest {
             if node.kind.trim().is_empty() || node.kind.chars().any(char::is_whitespace) {
                 return bad(format!("invalid node kind `{}`", node.kind));
             }
-            if !self.allow_unprefixed_kinds && !node.kind.starts_with(&prefix) {
-                return bad(format!("node kind `{}` must start with `{prefix}`", node.kind));
+            if !node.kind.starts_with(&prefix) {
+                if !self.allow_unprefixed_kinds {
+                    return bad(format!("node kind `{}` must start with `{prefix}`", node.kind));
+                }
+                // Unprefixed kinds are plain names: they may never claim another
+                // plugin's `<name>.` namespace.
+                if node.kind.contains('.') {
+                    return bad(format!(
+                        "node kind `{}` uses another namespace; unprefixed kinds must not contain `.`",
+                        node.kind
+                    ));
+                }
             }
             if node.container {
                 return bad(format!("node kind `{}`: container nodes are not supported by plugins", node.kind));
@@ -380,16 +390,74 @@ impl PluginManifest {
             Runtime::Http(h) if !(h.url.starts_with("http://") || h.url.starts_with("https://")) => {
                 bad(format!("`url` must be an http(s) URL, got `{}`", h.url))
             }
+            Runtime::Http(h) => self.validate_http(h),
             Runtime::Wasm(w) if w.module.trim().is_empty() => bad("`module` must not be empty".into()),
+            Runtime::Wasm(w) if !is_inside(&w.module) => {
+                bad(format!("`module` `{}` must be relative and inside the plugin directory", w.module))
+            }
             _ => Ok(()),
         }?;
         for path in self.checksums.keys() {
-            if Path::new(path).is_absolute() || path.split(['/', '\\']).any(|seg| seg == "..") {
+            if !is_inside(path) {
                 return bad(format!("checksum path `{path}` must be relative and inside the plugin directory"));
+            }
+        }
+        // When checksums are used, the code that actually runs must be pinned too.
+        if !self.checksums.is_empty() {
+            let entrypoint = match &self.runtime {
+                Runtime::Process(p) if Path::new(&p.command).components().count() > 1 && is_inside(&p.command) => {
+                    Some(p.command.trim_start_matches("./"))
+                }
+                Runtime::Wasm(w) => Some(w.module.trim_start_matches("./")),
+                _ => None,
+            };
+            if let Some(entry) = entrypoint {
+                let pinned = self.checksums.keys().any(|k| k.trim_start_matches("./") == entry);
+                if !pinned {
+                    return bad(format!("`checksums` must include the entrypoint `{entry}`"));
+                }
             }
         }
         Ok(())
     }
+
+    /// HTTP plugins receive data over the network, so credentials and secrets
+    /// travel only over TLS (loopback excepted) and the bearer-token variable must
+    /// be declared in `permissions.env` (shown to operators at install time).
+    fn validate_http(&self, h: &HttpRuntime) -> Result<(), PluginError> {
+        let bad = |m: String| Err(PluginError::Manifest(format!("plugin `{}`: {m}", self.name)));
+        let sensitive = h.bearer_token_env.is_some() || self.permissions.secrets;
+        if sensitive && !h.url.starts_with("https://") && !is_loopback_url(&h.url) {
+            return bad(format!(
+                "`url` `{}` must use https:// when `bearer_token_env` or `permissions.secrets` is set",
+                h.url
+            ));
+        }
+        if let Some(var) = &h.bearer_token_env {
+            if !self.permissions.env.iter().any(|e| e == var) {
+                return bad(format!("`bearer_token_env` `{var}` must also be listed in `permissions.env`"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Relative path without `..` segments.
+fn is_inside(path: &str) -> bool {
+    !path.trim().is_empty() && !Path::new(path).is_absolute() && !path.split(['/', '\\']).any(|seg| seg == "..")
+}
+
+/// Whether an http(s) URL points at the local machine.
+fn is_loopback_url(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = if let Some(stripped) = host.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or_default()
+    } else {
+        host.split(':').next().unwrap_or_default()
+    };
+    host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Valid plugin names: `[a-z0-9_-]{1,64}`.
@@ -460,11 +528,66 @@ mod tests {
         let mut v = base();
         v["nodes"][0]["kind"] = "other.x".into();
         assert!(PluginManifest::from_json(&v.to_string()).is_err());
+        // `allow_unprefixed_kinds` allows plain names but never another plugin's namespace.
         v["allow_unprefixed_kinds"] = true.into();
+        assert!(PluginManifest::from_json(&v.to_string()).is_err());
+        v["nodes"][0]["kind"] = "plain".into();
         assert!(PluginManifest::from_json(&v.to_string()).is_ok());
         let mut v = base();
         v["name"] = "Acme Corp".into();
         assert!(PluginManifest::from_json(&v.to_string()).is_err());
+    }
+
+    #[test]
+    fn http_credentials_need_tls_and_declared_env() {
+        let http = |url: &str, extra: serde_json::Value| {
+            let mut v = serde_json::json!({
+                "name": "acme", "runtime": "http", "url": url,
+                "nodes": [{"kind": "acme.x", "title": "X"}]
+            });
+            if let (Some(obj), Some(more)) = (v.as_object_mut(), extra.as_object()) {
+                for (k, val) in more {
+                    obj.insert(k.clone(), val.clone());
+                }
+            }
+            PluginManifest::from_json(&v.to_string())
+        };
+        // Bearer env must be declared, and sent only over TLS (loopback excepted).
+        let token = serde_json::json!({"bearer_token_env": "TOKEN", "permissions": {"env": ["TOKEN"]}});
+        assert!(http("http://evil.example/rpc", token.clone()).is_err());
+        assert!(http("https://plugins.example/rpc", token.clone()).is_ok());
+        assert!(http("http://127.0.0.1:9000/rpc", token.clone()).is_ok());
+        assert!(http("http://localhost/rpc", token).is_ok());
+        let undeclared = serde_json::json!({"bearer_token_env": "AWS_SECRET_ACCESS_KEY"});
+        assert!(http("https://plugins.example/rpc", undeclared).is_err());
+        let secrets = serde_json::json!({"permissions": {"secrets": true}});
+        assert!(http("http://evil.example/rpc", secrets).is_err());
+        assert!(http("http://evil.example/rpc", serde_json::json!({})).is_ok());
+    }
+
+    #[test]
+    fn wasm_module_and_entrypoint_checksums() {
+        let mut v = serde_json::json!({
+            "name": "acme", "runtime": "wasm", "module": "../escape.wasm",
+            "nodes": [{"kind": "acme.x", "title": "X"}]
+        });
+        assert!(PluginManifest::from_json(&v.to_string()).is_err());
+        v["module"] = "plugin.wasm".into();
+        assert!(PluginManifest::from_json(&v.to_string()).is_ok());
+        // Checksums that leave the entrypoint unpinned are rejected.
+        v["checksums"] = serde_json::json!({"other.txt": "00"});
+        assert!(PluginManifest::from_json(&v.to_string()).is_err());
+        v["checksums"] = serde_json::json!({"plugin.wasm": "00"});
+        assert!(PluginManifest::from_json(&v.to_string()).is_ok());
+    }
+
+    #[test]
+    fn loopback_detection() {
+        assert!(is_loopback_url("http://localhost:8080/x"));
+        assert!(is_loopback_url("http://[::1]:80/"));
+        assert!(is_loopback_url("http://user@127.0.0.2/"));
+        assert!(!is_loopback_url("http://localhost.evil.example/"));
+        assert!(!is_loopback_url("http://10.0.0.1/"));
     }
 
     #[test]

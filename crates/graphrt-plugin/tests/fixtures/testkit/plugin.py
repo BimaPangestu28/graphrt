@@ -2,7 +2,9 @@
 
 import asyncio
 import os
+import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "..", "sdk", "python"))
 from graphrt_plugin import Plugin, PluginError, pause  # noqa: E402
@@ -74,6 +76,31 @@ async def approve(ctx, req):
 @plugin.node("testkit.write")
 async def write(ctx, req):
     return {"outputs": {"ok": True}, "writes": [{"selector": ["conversation", "topic"], "value": req.config.get("topic")}]}
+
+
+@plugin.node("testkit.hang")
+async def hang(ctx, req):
+    # Blocks the whole event loop: the plugin cannot even process `node.cancel`.
+    time.sleep(req.config.get("seconds", 30))
+    return {"outputs": {}}
+
+
+@plugin.node("testkit.badbranch")
+async def badbranch(ctx, req):
+    return {"outputs": {}, "branch": "maybe"}
+
+
+@plugin.node("testkit.grandchild")
+async def grandchild(ctx, req):
+    proc = subprocess.Popen(["sleep", "60"])
+    with open(req.config["marker"], "w") as f:
+        f.write(str(proc.pid))
+    os._exit(4)
+
+
+@plugin.node("testkit.nan")
+async def nan(ctx, req):
+    return {"outputs": {"value": float("nan")}}
 
 
 @plugin.tool("add", description="Add two numbers",

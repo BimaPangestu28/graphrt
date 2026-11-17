@@ -17,7 +17,7 @@
 //! # fn main() -> Result<(), graphrt_wasm::WasmError> {
 //! let plugin = WasmPlugin::load_file("plugins/text_tools.wasm", WasmLimits::default())?;
 //! let mut registry = Registry::with_builtins();
-//! plugin.register(&mut registry); // adds e.g. `slugify` and `word-count`
+//! plugin.register(&mut registry)?; // adds e.g. `slugify` and `word-count`
 //! # Ok(()) }
 //! ```
 //!

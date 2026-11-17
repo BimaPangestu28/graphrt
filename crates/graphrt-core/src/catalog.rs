@@ -53,7 +53,11 @@ pub enum Handles {
 }
 
 /// One declared output of a node.
+///
+/// Unknown keys are rejected so a typo in a plugin manifest (`streming`) fails at
+/// load time instead of being ignored.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OutputDescriptor {
     pub name: String,
     #[serde(rename = "type")]
@@ -82,7 +86,11 @@ impl OutputDescriptor {
 }
 
 /// Description of a node kind.
+///
+/// Unknown keys are rejected: a misspelled `config_schema` or `handles` in a
+/// plugin manifest would otherwise silently change how the node behaves.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeDescriptor {
     /// Node `type` used in workflow documents.
     pub kind: String,

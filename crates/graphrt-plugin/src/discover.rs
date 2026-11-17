@@ -46,18 +46,42 @@ pub fn discover(paths: &[PathBuf]) -> Vec<PathBuf> {
     found
 }
 
-/// Lowercase hex SHA-256 of a file.
+/// Lowercase hex SHA-256 of a file, read in chunks (no whole-file buffer).
 pub fn sha256_file(path: &Path) -> Result<String, PluginError> {
-    let bytes =
-        std::fs::read(path).map_err(|e| PluginError::Io { path: path.to_path_buf(), message: e.to_string() })?;
-    let digest = Sha256::digest(&bytes);
-    Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+    use std::io::Read;
+    let io = |e: std::io::Error| PluginError::Io { path: path.to_path_buf(), message: e.to_string() };
+    let mut file = std::fs::File::open(path).map_err(io)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(io)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(buf.get(..n).unwrap_or_default());
+    }
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Verify every `checksums` entry of a manifest.
+///
+/// Limits (see `docs/plugins.md`): the hashes live in the manifest they protect,
+/// so they detect corruption and partial edits, not an attacker who can rewrite
+/// the plugin directory; files are hashed and then executed by path. Keep plugin
+/// directories writable only by the operator. Symlinked files are rejected so a
+/// pinned path cannot be redirected outside the plugin directory.
 pub fn verify_checksums(plugin: &LoadedManifest) -> Result<(), PluginError> {
     for (file, expected) in &plugin.manifest.checksums {
-        let actual = sha256_file(&plugin.resolve(file))?;
+        let path = plugin.resolve(file);
+        let meta = std::fs::symlink_metadata(&path)
+            .map_err(|e| PluginError::Io { path: path.clone(), message: e.to_string() })?;
+        if !meta.file_type().is_file() {
+            return Err(PluginError::Manifest(format!(
+                "plugin `{}`: checksum path `{file}` must be a regular file (not a symlink or directory)",
+                plugin.manifest.name
+            )));
+        }
+        let actual = sha256_file(&path)?;
         if !actual.eq_ignore_ascii_case(expected.trim()) {
             return Err(PluginError::Checksum { plugin: plugin.manifest.name.clone(), file: file.clone() });
         }

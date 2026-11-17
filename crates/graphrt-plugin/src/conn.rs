@@ -29,34 +29,73 @@ struct Pending {
 
 #[derive(Default)]
 struct Shared {
-    pending: Mutex<HashMap<String, Pending>>,
+    /// Pending requests. `None` once the connection is closed: the closed state and
+    /// the pending map change together under this one lock, so a request can never
+    /// be registered after the drain and then wait forever.
+    pending: Mutex<Option<HashMap<String, Pending>>>,
     closed: AtomicBool,
     close_reason: Mutex<Option<String>>,
-    logs: Mutex<std::collections::VecDeque<String>>,
+    logs: Mutex<LogBuffer>,
+    /// Plugin name used in forwarded log events.
+    label: Mutex<String>,
+}
+
+/// Most recent `log` notifications, bounded by line count and total bytes.
+#[derive(Default)]
+struct LogBuffer {
+    lines: std::collections::VecDeque<String>,
+    bytes: usize,
 }
 
 const MAX_LOG_LINES: usize = 200;
+/// Longest log line kept (longer lines are truncated).
+const MAX_LOG_LINE_BYTES: usize = 4 * 1024;
+/// Total bytes of retained log lines.
+const MAX_LOG_BYTES: usize = 256 * 1024;
 
 impl Shared {
+    fn new() -> Self {
+        Self { pending: Mutex::new(Some(HashMap::new())), ..Self::default() }
+    }
+
     fn take_pending(&self, id: &str) -> Option<Pending> {
-        self.pending.lock().ok().and_then(|mut p| p.remove(id))
+        self.pending.lock().ok().and_then(|mut p| p.as_mut().and_then(|m| m.remove(id)))
     }
 
     fn sink_for(&self, request_id: &str) -> Option<NotifySink> {
-        self.pending.lock().ok().and_then(|p| p.get(request_id).and_then(|e| e.sink.clone()))
+        self.pending.lock().ok().and_then(|p| p.as_ref().and_then(|m| m.get(request_id).and_then(|e| e.sink.clone())))
+    }
+
+    /// Register a pending request, or fail if the connection already closed.
+    fn register(&self, id: String, pending: Pending) -> Result<(), CallError> {
+        let mut guard = self.pending.lock().map_err(|_| CallError::Protocol("connection state poisoned".into()))?;
+        match guard.as_mut() {
+            Some(map) => {
+                map.insert(id, pending);
+                Ok(())
+            }
+            None => Err(CallError::Crashed(self.reason())),
+        }
     }
 
     fn close(&self, reason: String) {
-        if self.closed.swap(true, Ordering::SeqCst) {
-            return;
-        }
         if let Ok(mut r) = self.close_reason.lock() {
-            *r = Some(reason.clone());
+            if r.is_none() {
+                *r = Some(reason.clone());
+            }
         }
+        // Mark closed and take every pending request under the same lock.
         let drained: Vec<Pending> = match self.pending.lock() {
-            Ok(mut p) => p.drain().map(|(_, v)| v).collect(),
-            Err(_) => Vec::new(),
+            Ok(mut p) => {
+                self.closed.store(true, Ordering::SeqCst);
+                p.take().map(|m| m.into_values().collect()).unwrap_or_default()
+            }
+            Err(_) => {
+                self.closed.store(true, Ordering::SeqCst);
+                Vec::new()
+            }
         };
+        let reason = self.reason();
         for pending in drained {
             let _receiver_gone = pending.reply.send(Err(CallError::Crashed(reason.clone())));
         }
@@ -66,13 +105,57 @@ impl Shared {
         self.close_reason.lock().ok().and_then(|r| r.clone()).unwrap_or_else(|| "connection closed".into())
     }
 
-    fn push_log(&self, line: String) {
+    fn label(&self) -> String {
+        self.label.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+
+    fn push_log(&self, mut line: String) {
+        truncate_utf8(&mut line, MAX_LOG_LINE_BYTES);
         if let Ok(mut logs) = self.logs.lock() {
-            if logs.len() >= MAX_LOG_LINES {
-                logs.pop_front();
+            logs.bytes = logs.bytes.saturating_add(line.len());
+            logs.lines.push_back(line);
+            while logs.lines.len() > MAX_LOG_LINES || logs.bytes > MAX_LOG_BYTES {
+                match logs.lines.pop_front() {
+                    Some(old) => logs.bytes = logs.bytes.saturating_sub(old.len()),
+                    None => break,
+                }
             }
-            logs.push_back(line);
         }
+    }
+}
+
+/// Cut `s` to at most `max` bytes on a character boundary, marking the cut.
+pub(crate) fn truncate_utf8(s: &mut String, max: usize) {
+    if s.len() <= max {
+        return;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+    s.push_str("…[truncated]");
+}
+
+/// Forward a plugin log line to the operator (stderr), tagged with the plugin name.
+pub(crate) fn forward_log(plugin: &str, level: &str, message: &str) {
+    let mut message = message.to_owned();
+    truncate_utf8(&mut message, MAX_LOG_LINE_BYTES);
+    let level = match level {
+        "error" | "warn" | "warning" | "info" | "debug" | "trace" => level,
+        _ => "info",
+    };
+    // Plugin authors are told to log through the protocol instead of writing to
+    // stdout; surface those lines where operators look. Debug/trace stay quiet
+    // unless `GRAPHRT_PLUGIN_LOG=debug`.
+    let verbose = std::env::var("GRAPHRT_PLUGIN_LOG").is_ok_and(|v| v == "debug" || v == "trace");
+    if matches!(level, "debug" | "trace") && !verbose {
+        return;
+    }
+    let plugin = if plugin.is_empty() { "plugin" } else { plugin };
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("[plugin {plugin}] {level}: {message}");
     }
 }
 
@@ -122,7 +205,7 @@ impl Connection {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        let shared = Arc::new(Shared::default());
+        let shared = Arc::new(Shared::new());
         let (tx, rx) = mpsc::unbounded_channel::<String>();
         let writer_task = tokio::spawn(write_loop(writer, rx, shared.clone()));
         let reader_task = tokio::spawn(read_loop(
@@ -154,7 +237,20 @@ impl Connection {
 
     /// Recent `log` notifications from the plugin (`level: message`).
     pub fn recent_logs(&self) -> Vec<String> {
-        self.shared.logs.lock().map(|l| l.iter().cloned().collect()).unwrap_or_default()
+        self.shared.logs.lock().map(|l| l.lines.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    /// Name used when forwarding the plugin's log lines to the operator.
+    pub fn set_label(&self, label: &str) {
+        if let Ok(mut l) = self.shared.label.lock() {
+            label.clone_into(&mut l);
+        }
+    }
+
+    /// Close the connection (pending requests fail with `reason`) and drop the
+    /// guarded resource on the next drop of this connection.
+    pub fn close(&self, reason: &str) {
+        self.shared.close(reason.to_owned());
     }
 
     /// Send a notification (fire and forget).
@@ -186,12 +282,7 @@ impl Connection {
             )));
         }
         let (reply, rx) = oneshot::channel();
-        match self.shared.pending.lock() {
-            Ok(mut p) => {
-                p.insert(id.clone(), Pending { reply, sink });
-            }
-            Err(_) => return Err(CallError::Protocol("connection state poisoned".into())),
-        }
+        self.shared.register(id.clone(), Pending { reply, sink })?;
         let mut guard = CancelGuard {
             id: id.clone(),
             shared: self.shared.clone(),
@@ -267,11 +358,13 @@ async fn read_loop<R: AsyncBufRead + Unpin>(
             continue;
         }
         match protocol::parse(line) {
-            Ok(Incoming::Response { id, result }) => {
-                if let Some(pending) = shared.take_pending(&id) {
+            Ok(Incoming::Response { id, result }) => match shared.take_pending(&id) {
+                Some(pending) => {
                     let _receiver_gone = pending.reply.send(result);
                 }
-            }
+                // Usually a late answer to a request that timed out or was cancelled.
+                None => forward_log(&shared.label(), "debug", &format!("ignored response to unknown request `{id}`")),
+            },
             Ok(Incoming::Notification(n)) => route_notification(&shared, n),
             Ok(Incoming::Request { id, method }) => {
                 let _closed = writer.send(protocol::method_not_found(&id, &method));
@@ -279,9 +372,17 @@ async fn read_loop<R: AsyncBufRead + Unpin>(
             Err(e) => break e.to_string(),
         }
     };
-    let detail = crash_detail.map(|f| f()).filter(|d| !d.trim().is_empty());
+    let detail = match crash_detail {
+        Some(f) => {
+            // Let the stderr reader and the exit-status watcher catch up so the
+            // report says why the plugin died.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            Some(f()).filter(|d| !d.trim().is_empty())
+        }
+        None => None,
+    };
     let reason = match detail {
-        Some(d) => format!("{reason}; stderr: {d}"),
+        Some(d) => format!("{reason} ({d})"),
         None => reason,
     };
     shared.close(reason);
@@ -291,7 +392,14 @@ fn route_notification(shared: &Shared, n: Notification) {
     if n.method == "log" {
         let level = n.params.get("level").and_then(|v| v.as_str()).unwrap_or("info");
         let message = n.params.get("message").and_then(|v| v.as_str()).unwrap_or_default();
+        forward_log(&shared.label(), level, message);
         shared.push_log(format!("{level}: {message}"));
+        // A log tied to a request also reaches that node's event stream.
+        if let Some(request_id) = n.request_id().map(str::to_owned) {
+            if let Some(sink) = shared.sink_for(&request_id) {
+                sink(n);
+            }
+        }
         return;
     }
     let Some(request_id) = n.request_id().map(str::to_owned) else { return };
@@ -325,5 +433,35 @@ async fn read_line_capped<R: AsyncBufRead + Unpin>(
         if done {
             return Ok(buf.len());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn call_after_close_fails_immediately() {
+        let (client, _server) = tokio::io::duplex(1024);
+        let (r, w) = tokio::io::split(client);
+        let conn = Connection::new(r, w, 1 << 20);
+        conn.close("gone");
+        // Even a caller that passed the `is_closed` check must not register a request
+        // after the drain; `register` refuses it under the same lock.
+        let err = conn.shared.register("x".into(), Pending { reply: oneshot::channel().0, sink: None });
+        assert!(matches!(err, Err(CallError::Crashed(m)) if m == "gone"));
+        let res = conn.call("r-1".into(), "node.run", serde_json::json!({}), None, false).await;
+        assert!(matches!(res, Err(CallError::Crashed(_))));
+    }
+
+    #[test]
+    fn retained_logs_are_bounded() {
+        let shared = Shared::new();
+        for _ in 0..500 {
+            shared.push_log("x".repeat(64 * 1024));
+        }
+        let logs = shared.logs.lock().unwrap();
+        assert!(logs.bytes <= MAX_LOG_BYTES);
+        assert!(logs.lines.iter().all(|l| l.len() <= MAX_LOG_LINE_BYTES + 16));
     }
 }

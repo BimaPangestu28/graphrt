@@ -21,7 +21,7 @@ async fn state(api_key: Option<&str>) -> Arc<AppState> {
     let files = discover(&examples()).expect("discover");
     // Ignore the developer's own installed plugins.
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true },
+        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
         ..ServiceOptions::default()
     };
     let state = build_state(&files, &options, Limits::default(), api_key.map(str::to_owned)).await.expect("state");
@@ -158,7 +158,11 @@ async fn pause_returns_snapshot_and_resume_checks_run_id() {
 async fn plugin_kinds_are_served_and_validated() {
     let plugins = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/examples");
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: vec![plugins.clone()], no_default: true },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: vec![plugins.clone()],
+            no_default: true,
+            trusted: Vec::new(),
+        },
         ..ServiceOptions::default()
     };
     let files = discover(&plugins.join("demo.yaml")).expect("discover");

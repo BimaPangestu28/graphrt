@@ -34,13 +34,22 @@ pub trait Transport: Send + Sync + fmt::Debug {
 
     /// Run the `initialize` handshake (starting the plugin if needed) and return its result.
     fn initialize<'a>(&'a self, clock: &'a Arc<dyn Clock>) -> BoxFuture<'a, Result<serde_json::Value, CallError>>;
+
+    /// A request was abandoned after its timeout. Transports supervising a process
+    /// use this to restart a plugin that stopped answering. Default: no-op.
+    fn note_timeout(&self) {}
+
+    /// A request completed (successfully or with a plugin error). Default: no-op.
+    fn note_answer(&self) {}
 }
 
-/// Parameters of `initialize`.
-pub(crate) fn initialize_params() -> serde_json::Value {
+/// Parameters of `initialize`. `max_message_bytes` tells the plugin how large a
+/// line the host may send, so SDKs size their read buffers to match.
+pub(crate) fn initialize_params(max_message_bytes: usize) -> serde_json::Value {
     serde_json::json!({
         "protocol_version": PROTOCOL_VERSION,
         "host": {"name": "graphrt", "version": env!("CARGO_PKG_VERSION")},
+        "max_message_bytes": max_message_bytes,
     })
 }
 
@@ -79,6 +88,7 @@ pub(crate) async fn with_timeout<T>(
 #[derive(Debug)]
 pub struct IoTransport {
     conn: Connection,
+    max_message_bytes: usize,
     initialized: tokio::sync::OnceCell<serde_json::Value>,
 }
 
@@ -89,7 +99,11 @@ impl IoTransport {
         R: tokio::io::AsyncRead + Send + Unpin + 'static,
         W: tokio::io::AsyncWrite + Send + Unpin + 'static,
     {
-        Self { conn: Connection::new(reader, writer, max_message_bytes), initialized: tokio::sync::OnceCell::new() }
+        Self {
+            conn: Connection::new(reader, writer, max_message_bytes),
+            max_message_bytes,
+            initialized: tokio::sync::OnceCell::new(),
+        }
     }
 
     async fn ensure_initialized(&self, clock: &Arc<dyn Clock>) -> Result<serde_json::Value, CallError> {
@@ -97,7 +111,7 @@ impl IoTransport {
             .initialized
             .get_or_try_init(|| async {
                 let id = self.conn.next_id();
-                let fut = self.conn.call(id, "initialize", initialize_params(), None, false);
+                let fut = self.conn.call(id, "initialize", initialize_params(self.max_message_bytes), None, false);
                 let result = with_timeout(clock, INITIALIZE_TIMEOUT, fut).await?;
                 check_initialize(&result)?;
                 Ok::<_, CallError>(result)

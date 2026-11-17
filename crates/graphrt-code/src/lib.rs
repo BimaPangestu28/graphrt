@@ -105,6 +105,32 @@ pub trait RemoteSandbox: Send + Sync + fmt::Debug {
         inputs: serde_json::Value,
         limits: CodeLimits,
     ) -> BoxFuture<'a, Result<serde_json::Value, NodeError>>;
+
+    /// Like [`RemoteSandbox::execute`], also returning diagnostics (captured output,
+    /// limits that could not be applied). The default reports none.
+    fn execute_detailed<'a>(
+        &'a self,
+        language: &'a str,
+        code: &'a str,
+        inputs: serde_json::Value,
+        limits: CodeLimits,
+    ) -> BoxFuture<'a, Result<SandboxRun, NodeError>> {
+        Box::pin(async move {
+            let result = self.execute(language, code, inputs, limits).await?;
+            Ok(SandboxRun { result, stdout: None, notes: Vec::new() })
+        })
+    }
+}
+
+/// Result of [`RemoteSandbox::execute_detailed`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SandboxRun {
+    /// The object returned by `main`.
+    pub result: serde_json::Value,
+    /// What the code printed (capped), if captured.
+    pub stdout: Option<String>,
+    /// Operator-facing notes, e.g. resource limits the platform could not apply.
+    pub notes: Vec<String>,
 }
 
 /// Where code runs.
@@ -225,7 +251,7 @@ impl CodeNode {
         (serde_json::Value::Object(args), missing)
     }
 
-    async fn execute(&self, ctx: &NodeContext, inputs: serde_json::Value) -> Result<serde_json::Value, NodeError> {
+    async fn execute(&self, ctx: &NodeContext, inputs: serde_json::Value) -> Result<SandboxRun, NodeError> {
         let limits = self.effective_limits(ctx);
         let use_remote = self.sandbox == SandboxChoice::Remote || !embedded_supports(&self.language);
         if use_remote {
@@ -238,9 +264,10 @@ impl CodeNode {
                     ),
                 )
             })?;
-            return sandbox.execute(&self.language, &self.code, inputs, limits).await;
+            return sandbox.execute_detailed(&self.language, &self.code, inputs, limits).await;
         }
-        run_embedded(self.code.clone(), inputs, limits).await
+        let result = run_embedded(self.code.clone(), inputs, limits).await?;
+        Ok(SandboxRun { result, stdout: None, notes: Vec::new() })
     }
 
     fn convert_outputs(&self, result: serde_json::Value, limits: &CodeLimits) -> Result<NodeOutput, NodeError> {
@@ -286,8 +313,14 @@ impl Node for CodeNode {
         Box::pin(async move {
             let limits = self.effective_limits(&ctx);
             let (inputs, missing) = self.build_inputs(&ctx);
-            let result = self.execute(&ctx, inputs).await?;
-            let mut output = self.convert_outputs(result, &limits)?;
+            let run = self.execute(&ctx, inputs).await?;
+            let mut output = self.convert_outputs(run.result, &limits)?;
+            if let Some(stdout) = run.stdout.filter(|s| !s.is_empty()) {
+                output = output.meta("stdout", stdout);
+            }
+            if !run.notes.is_empty() {
+                output = output.meta("sandbox_notes", Value::array(run.notes.into_iter().map(Value::from)));
+            }
             if !missing.is_empty() {
                 output = output.meta("missing_inputs", Value::array(missing.into_iter().map(Value::from)));
             }

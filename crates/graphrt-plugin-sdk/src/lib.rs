@@ -370,21 +370,45 @@ impl Plugin {
         let mut lines = BufReader::new(reader);
         let mut buf = Vec::new();
         let mut shutdown = false;
+        // The host announces its line limit in `initialize`.
+        let mut limit = MAX_MESSAGE_BYTES;
         loop {
             buf.clear();
-            let n = read_line_capped(&mut lines, &mut buf).await?;
-            if n == 0 {
-                break;
+            match read_line_capped(&mut lines, &mut buf, limit).await? {
+                Line::Eof => break,
+                Line::Oversized => {
+                    eprintln!("graphrt plugin {}: dropped a message above {limit} bytes", plugin.name);
+                    let id = recover_id(&buf);
+                    let msg = format!("message exceeds the {limit}-byte limit");
+                    send(&out_tx, error_response(&id, -32600, &msg, Some(json!({"kind": "message_too_large"}))));
+                    continue;
+                }
+                Line::Complete => {}
             }
-            let Ok(text) = std::str::from_utf8(&buf) else { continue };
+            let Ok(text) = std::str::from_utf8(&buf) else {
+                eprintln!("graphrt plugin {}: message is not valid UTF-8", plugin.name);
+                let data = Some(json!({"kind": "plugin_protocol"}));
+                send(&out_tx, error_response(&recover_id(&buf), -32700, "message is not valid UTF-8", data));
+                continue;
+            };
             let text = text.trim();
             if text.is_empty() {
                 continue;
             }
             let Ok(msg) = serde_json::from_str::<Value>(text) else {
-                send(&out_tx, error_response(&Value::Null, -32700, "parse error", None));
+                eprintln!("graphrt plugin {}: unreadable message", plugin.name);
+                let data = Some(json!({"kind": "plugin_protocol"}));
+                send(&out_tx, error_response(&recover_id(&buf), -32700, "parse error", data));
                 continue;
             };
+            if let Some(announced) = msg
+                .get("params")
+                .and_then(|p| p.get("max_message_bytes"))
+                .and_then(Value::as_u64)
+                .filter(|_| msg.get("method").and_then(Value::as_str) == Some("initialize"))
+            {
+                limit = usize::try_from(announced).unwrap_or(usize::MAX).max(1024);
+            }
             let id = msg.get("id").cloned();
             let method = msg.get("method").and_then(Value::as_str).unwrap_or_default().to_owned();
             let params = msg.get("params").cloned().unwrap_or(Value::Null);
@@ -483,13 +507,23 @@ impl Plugin {
         // to deregister) before it is registered.
         let Ok(mut map) = running.lock() else { return };
         let task = tokio::spawn(async move {
-            let result = handler(ctx, req).await;
-            let line = match result {
-                Ok(Outcome::Done(r)) => ok_response(&id, serde_json::to_value(r).unwrap_or(Value::Null)),
-                Ok(Outcome::Pause { kind, data, state }) => {
+            // The handler runs in its own task so a panic becomes an error reply
+            // instead of a silent timeout on the host. Aborting this task (cancel)
+            // aborts the handler too.
+            let inner = AbortOnDrop(tokio::spawn(handler(ctx, req)));
+            let line = match join_handler(inner).await {
+                Some(Ok(Outcome::Done(r))) => encode_result(&id, &r),
+                Some(Ok(Outcome::Pause { kind, data, state })) => {
                     ok_response(&id, json!({"pause": {"kind": kind, "data": data, "state": state}}))
                 }
-                Err(e) => plugin_error_response(&id, &e),
+                Some(Err(e)) => plugin_error_response(&id, &e),
+                None => {
+                    // Cancelled: the host abandoned the request.
+                    if let Ok(mut m) = registry.lock() {
+                        m.remove(&rid);
+                    }
+                    return;
+                }
             };
             send(&out, line);
             if let Ok(mut m) = registry.lock() {
@@ -509,13 +543,85 @@ impl Plugin {
         let call = ToolCall { name, arguments: params.get("arguments").cloned().unwrap_or(Value::Null) };
         let out = out.clone();
         tokio::spawn(async move {
-            let line = match handler(call).await {
-                Ok(r) => ok_response(&id, serde_json::to_value(r).unwrap_or(Value::Null)),
-                Err(e) => plugin_error_response(&id, &e),
+            let inner = AbortOnDrop(tokio::spawn(handler(call)));
+            let line = match join_handler(inner).await {
+                Some(Ok(r)) => encode_result(&id, &r),
+                Some(Err(e)) => plugin_error_response(&id, &e),
+                None => return,
             };
             send(&out, line);
         });
     }
+}
+
+/// Aborts the wrapped task when dropped (so cancelling the outer task stops the handler).
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Wait for a handler task. A panic becomes a `plugin_panic` error; `None` means
+/// the task was cancelled.
+async fn join_handler<T>(mut task: AbortOnDrop<Result<T, PluginError>>) -> Option<Result<T, PluginError>> {
+    match (&mut task.0).await {
+        Ok(result) => Some(result),
+        Err(e) if e.is_panic() => {
+            let payload = e.into_panic();
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_owned())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_owned());
+            eprintln!("graphrt plugin handler panicked: {message}");
+            Some(Err(PluginError::new("plugin_panic", format!("handler panicked: {message}"))))
+        }
+        Err(_) => None,
+    }
+}
+
+/// Serialize a handler result, replying with an error when it cannot be encoded
+/// (never a `null` result the host would mistake for success).
+fn encode_result<T: Serialize>(id: &Value, result: &T) -> String {
+    match serde_json::to_value(result) {
+        Ok(value) => ok_response(id, value),
+        Err(e) => error_response(
+            id,
+            -32000,
+            &format!("result is not valid JSON: {e}"),
+            Some(json!({"kind": "invalid_output"})),
+        ),
+    }
+}
+
+/// Best-effort request id from the start of a line that could not be read.
+fn recover_id(line: &[u8]) -> Value {
+    let head = String::from_utf8_lossy(line.get(..line.len().min(4096)).unwrap_or_default()).into_owned();
+    let Some(pos) = head.find("\"id\"") else { return Value::Null };
+    let rest = head.get(pos + 4..).unwrap_or_default().trim_start();
+    let Some(rest) = rest.strip_prefix(':') else { return Value::Null };
+    let rest = rest.trim_start();
+    // A string id or an integer id.
+    if let Some(body) = rest.strip_prefix('"') {
+        let mut out = String::new();
+        let mut escaped = false;
+        for c in body.chars() {
+            match (escaped, c) {
+                (true, c) => {
+                    out.push(c);
+                    escaped = false;
+                }
+                (false, '\\') => escaped = true,
+                (false, '"') => return Value::String(out),
+                (false, c) => out.push(c),
+            }
+        }
+        return Value::Null;
+    }
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '-').collect();
+    digits.parse::<i64>().map(Value::from).unwrap_or(Value::Null)
 }
 
 struct Running {
@@ -559,27 +665,47 @@ fn plugin_error_response(id: &Value, e: &PluginError) -> String {
     error_response(id, -32000, &e.message, Some(Value::Object(data)))
 }
 
+/// Result of reading one line.
+enum Line {
+    Complete,
+    /// Longer than the limit: the rest of the line was discarded, `buf` holds its start.
+    Oversized,
+    Eof,
+}
+
+/// Read one `\n`-terminated line. Lines above `max` bytes are skipped up to their
+/// newline (keeping the stream in sync) and reported as [`Line::Oversized`].
 async fn read_line_capped<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
     buf: &mut Vec<u8>,
-) -> std::io::Result<usize> {
+    max: usize,
+) -> std::io::Result<Line> {
+    let mut oversized = false;
     loop {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
-            return Ok(buf.len());
+            return Ok(match (buf.is_empty(), oversized) {
+                (_, true) => Line::Oversized,
+                (true, false) => Line::Eof,
+                (false, false) => Line::Complete,
+            });
         }
         let (chunk, done) = match available.iter().position(|b| *b == b'\n') {
             Some(pos) => (available.get(..=pos).unwrap_or(available), true),
             None => (available, false),
         };
-        if buf.len().saturating_add(chunk.len()) > MAX_MESSAGE_BYTES {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "message too large"));
+        if !oversized && buf.len().saturating_add(chunk.len()) > max {
+            oversized = true;
+            // Keep the head (for recovering the request id), drop the rest.
+            let room = 4096usize.saturating_sub(buf.len());
+            buf.extend_from_slice(chunk.get(..room.min(chunk.len())).unwrap_or_default());
+        } else if !oversized {
+            buf.extend_from_slice(chunk);
         }
-        buf.extend_from_slice(chunk);
         let used = chunk.len();
         reader.consume(used);
         if done {
-            return Ok(buf.len());
+            return Ok(if oversized { Line::Oversized } else { Line::Complete });
         }
     }
 }
@@ -720,5 +846,38 @@ mod tests {
         }
         // A cancelled request gets no response.
         assert!(!rest.contains("\"r-1\""), "{rest}");
+    }
+
+    #[tokio::test]
+    async fn panicking_handler_replies_with_an_error() {
+        let plugin = Plugin::new("t").node("t.panic", |_ctx, _req| async move {
+            if true {
+                panic!("kaboom");
+            }
+            Ok(RunResult::new())
+        });
+        let run = r#"{"jsonrpc":"2.0","id":"r-1","method":"node.run","params":{"request_id":"r-1","kind":"t.panic","config":{}}}"#;
+        let msgs = roundtrip(plugin, &format!("{run}\n")).await;
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert_eq!(msgs[0]["id"], "r-1");
+        assert_eq!(msgs[0]["error"]["data"]["kind"], "plugin_panic");
+        assert!(msgs[0]["error"]["message"].as_str().unwrap().contains("kaboom"));
+    }
+
+    #[tokio::test]
+    async fn oversized_message_is_answered_and_stream_stays_in_sync() {
+        let plugin = Plugin::new("t").node("t.ok", |_ctx, _req| async move { Ok(RunResult::new().output("ok", true)) });
+        // The host announces a small limit, then sends a line above it, then a normal request.
+        let init = r#"{"jsonrpc":"2.0","id":"i","method":"initialize","params":{"max_message_bytes":2048}}"#;
+        let big = format!(
+            r#"{{"jsonrpc":"2.0","id":"r-big","method":"node.run","params":{{"kind":"t.ok","config":{{"x":"{}"}}}}}}"#,
+            "y".repeat(5000)
+        );
+        let ok = r#"{"jsonrpc":"2.0","id":"r-2","method":"node.run","params":{"request_id":"r-2","kind":"t.ok","config":{}}}"#;
+        let msgs = roundtrip(plugin, &format!("{init}\n{big}\n{ok}\n")).await;
+        let big_reply = msgs.iter().find(|m| m["id"] == "r-big").expect("reply to oversized request");
+        assert_eq!(big_reply["error"]["data"]["kind"], "message_too_large");
+        let ok_reply = msgs.iter().find(|m| m["id"] == "r-2").expect("later request still served");
+        assert_eq!(ok_reply["result"]["outputs"]["ok"], true);
     }
 }

@@ -40,10 +40,13 @@ impl PluginLoader for WasmLoader {
         let prefix = format!("{name}.");
         let mut nodes = Vec::new();
         for descriptor in wasm.descriptors() {
-            if !manifest.allow_unprefixed_kinds && !descriptor.kind.starts_with(&prefix) {
+            // Plain names are allowed with `allow_unprefixed_kinds`, but a module can
+            // never claim another plugin's `<name>.` namespace.
+            let plain = manifest.allow_unprefixed_kinds && !descriptor.kind.contains('.');
+            if !descriptor.kind.starts_with(&prefix) && !plain {
                 return Err(PluginError::Manifest(format!(
                     "plugin `{name}`: module node kind `{}` must start with `{prefix}` \
-                     (or set `allow_unprefixed_kinds: true`)",
+                     (or be a plain name without `.` with `allow_unprefixed_kinds: true`)",
                     descriptor.kind
                 )));
             }

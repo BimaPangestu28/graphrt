@@ -49,7 +49,12 @@ pub struct PluginInfo {
     pub dir: PathBuf,
     pub nodes: Vec<String>,
     pub tools: Vec<String>,
+    /// Effective permissions (requested permissions the host did not grant are off).
     pub permissions: crate::manifest::Permissions,
+    /// Whether the operator trusts this plugin (see [`PluginHost::trust`]).
+    pub trusted: bool,
+    /// Requested permissions that were not granted, and similar notes for operators.
+    pub warnings: Vec<String>,
 }
 
 /// A node kind with its factory.
@@ -58,13 +63,21 @@ type NodeEntry = (NodeDescriptor, NodeFactory);
 struct Entry {
     plugin: LoadedManifest,
     shared: Option<Arc<PluginShared>>,
+    trusted: bool,
+    warnings: Vec<String>,
 }
 
 /// Loads plugins and registers them into a [`Registry`] and [`ToolRegistry`].
+///
+/// Permissions in a manifest are *requests*. Plaintext secrets and HTTP bearer
+/// tokens taken from the host environment are only granted to plugins the
+/// operator trusts by name ([`PluginHost::trust`]); a manifest cannot grant them
+/// to itself.
 #[derive(Default)]
 pub struct PluginHost {
     entries: Vec<Entry>,
     loaders: HashMap<String, Arc<dyn PluginLoader>>,
+    trusted: std::collections::HashSet<String>,
 }
 
 impl fmt::Debug for PluginHost {
@@ -84,6 +97,48 @@ impl PluginHost {
     pub fn with_loader(mut self, loader: Arc<dyn PluginLoader>) -> Self {
         self.loaders.insert(loader.runtime().to_owned(), loader);
         self
+    }
+
+    /// Trust the plugin named `name`: it may receive plaintext secrets and HTTP
+    /// bearer tokens when its manifest requests them. Call before loading.
+    pub fn trust(mut self, name: impl Into<String>) -> Self {
+        self.trusted.insert(name.into());
+        self
+    }
+
+    /// Trust several plugins by name (see [`PluginHost::trust`]).
+    pub fn with_trusted<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.trusted.extend(names.into_iter().map(Into::into));
+        self
+    }
+
+    /// Apply the host's grants to `plugin`'s requested permissions.
+    fn apply_policy(&self, plugin: &mut LoadedManifest) -> Result<(bool, Vec<String>), PluginError> {
+        let name = plugin.manifest.name.clone();
+        let trusted = self.trusted.contains(&name);
+        let mut warnings = Vec::new();
+        if plugin.manifest.permissions.secrets && !trusted {
+            plugin.manifest.permissions.secrets = false;
+            warnings.push(format!(
+                "plugin `{name}` requests plaintext secrets; they stay masked unless the plugin is trusted \
+                 (e.g. `--trust-plugin {name}`)"
+            ));
+        }
+        if let Runtime::Http(h) = &plugin.manifest.runtime {
+            if let Some(var) = &h.bearer_token_env {
+                if !trusted {
+                    return Err(PluginError::Manifest(format!(
+                        "plugin `{name}`: sending host variable `{var}` as a bearer token requires trusting the \
+                         plugin (e.g. `--trust-plugin {name}`)"
+                    )));
+                }
+            }
+        }
+        Ok((trusted, warnings))
     }
 
     /// Load the plugin whose manifest is at `manifest_path`.
@@ -106,15 +161,17 @@ impl PluginHost {
     }
 
     /// Add an already-parsed plugin.
-    pub fn add(&mut self, plugin: LoadedManifest) -> Result<PluginInfo, PluginError> {
+    pub fn add(&mut self, mut plugin: LoadedManifest) -> Result<PluginInfo, PluginError> {
         let name = plugin.manifest.name.clone();
         if self.entries.iter().any(|e| e.plugin.manifest.name == name) {
             return Err(PluginError::DuplicatePlugin(name));
         }
+        let (trusted, warnings) = self.apply_policy(&mut plugin)?;
         let transport = make_transport(&plugin)?;
         let shared = transport.map(|t| Arc::new(PluginShared::new(&plugin.manifest, t)));
-        let summary = info(&plugin);
-        self.entries.push(Entry { plugin, shared });
+        let entry = Entry { plugin, shared, trusted, warnings };
+        let summary = info(&entry);
+        self.entries.push(entry);
         Ok(summary)
     }
 
@@ -122,7 +179,7 @@ impl PluginHost {
     /// [`crate::IoTransport`]). `plugin.manifest.runtime` is ignored.
     pub fn add_with_transport(
         &mut self,
-        plugin: LoadedManifest,
+        mut plugin: LoadedManifest,
         transport: Arc<dyn Transport>,
     ) -> Result<PluginInfo, PluginError> {
         plugin.manifest.validate()?;
@@ -130,15 +187,17 @@ impl PluginHost {
         if self.entries.iter().any(|e| e.plugin.manifest.name == name) {
             return Err(PluginError::DuplicatePlugin(name));
         }
+        let (trusted, warnings) = self.apply_policy(&mut plugin)?;
         let shared = Some(Arc::new(PluginShared::new(&plugin.manifest, transport)));
-        let summary = info(&plugin);
-        self.entries.push(Entry { plugin, shared });
+        let entry = Entry { plugin, shared, trusted, warnings };
+        let summary = info(&entry);
+        self.entries.push(entry);
         Ok(summary)
     }
 
     /// Loaded plugins.
     pub fn plugins(&self) -> Vec<PluginInfo> {
-        self.entries.iter().map(|e| info(&e.plugin)).collect()
+        self.entries.iter().map(info).collect()
     }
 
     /// Descriptors of every plugin node (for catalogs).
@@ -209,6 +268,7 @@ impl PluginHost {
                         .get(runtime)
                         .ok_or_else(|| PluginError::NoLoader { plugin: name.clone(), runtime: runtime.to_owned() })?;
                     let loaded = loader.load(&entry.plugin)?;
+                    check_loader_kinds(&entry.plugin.manifest, &loaded.nodes)?;
                     let nodes = loaded.nodes.into_iter().map(|(d, f)| (described(&d, &entry.plugin), f)).collect();
                     (nodes, loaded.tools)
                 }
@@ -239,7 +299,8 @@ fn described(descriptor: &NodeDescriptor, plugin: &LoadedManifest) -> NodeDescri
     descriptor.clone().source(format!("plugin:{}", plugin.manifest.name))
 }
 
-fn info(plugin: &LoadedManifest) -> PluginInfo {
+fn info(entry: &Entry) -> PluginInfo {
+    let plugin = &entry.plugin;
     let m = &plugin.manifest;
     PluginInfo {
         name: m.name.clone(),
@@ -250,7 +311,33 @@ fn info(plugin: &LoadedManifest) -> PluginInfo {
         nodes: m.nodes.iter().map(|n| n.kind.clone()).collect(),
         tools: m.tools.iter().map(|t| t.name.clone()).collect(),
         permissions: m.permissions.clone(),
+        trusted: entry.trusted,
+        warnings: entry.warnings.clone(),
     }
+}
+
+/// Node kinds produced by a loader get the same namespace rules as manifest kinds:
+/// `<name>.<kind>`, or (with `allow_unprefixed_kinds`) a plain name without `.`.
+fn check_loader_kinds(manifest: &crate::manifest::PluginManifest, nodes: &[NodeEntry]) -> Result<(), PluginError> {
+    let prefix = format!("{}.", manifest.name);
+    let mut seen = std::collections::HashSet::new();
+    for (descriptor, _) in nodes {
+        let kind = descriptor.kind.as_str();
+        let plain = manifest.allow_unprefixed_kinds && !kind.contains('.') && !kind.is_empty();
+        if !kind.starts_with(&prefix) && !plain {
+            return Err(PluginError::Manifest(format!(
+                "plugin `{}`: node kind `{kind}` must start with `{prefix}`",
+                manifest.name
+            )));
+        }
+        if kind.chars().any(char::is_whitespace) || !seen.insert(kind) {
+            return Err(PluginError::Manifest(format!(
+                "plugin `{}`: invalid or duplicate node kind `{kind}`",
+                manifest.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Transport for built-in runtimes; `None` for runtimes handled by a loader.

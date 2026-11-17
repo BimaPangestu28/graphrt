@@ -26,7 +26,7 @@ use futures::future::BoxFuture;
 use graphrt_core::node::NodeError;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
-use crate::{CodeLimits, RemoteSandbox};
+use crate::{CodeLimits, RemoteSandbox, SandboxRun};
 
 /// Marker preceding the JSON result line on stdout.
 const RESULT_MARKER: &str = "\u{1e}GRAPHRT_RESULT\u{1e}";
@@ -36,9 +36,21 @@ const BOOTSTRAP: &str = r#"
 import io, json, sys, traceback
 _payload = json.loads(sys.stdin.read())
 _real_stdout = sys.stdout
-sys.stdout = io.StringIO()
+_captured = io.StringIO()
+sys.stdout = _captured
 _marker = "\x1eGRAPHRT_RESULT\x1e"
+def _limits():
+    try:
+        import resource
+        _inf = resource.RLIM_INFINITY
+        _cpu = resource.getrlimit(resource.RLIMIT_CPU)[0]
+        _mem = resource.getrlimit(resource.RLIMIT_AS)[0]
+        return {"cpu": -1 if _cpu == _inf else _cpu, "memory": -1 if _mem == _inf else _mem}
+    except Exception:
+        return None
 def _emit(obj):
+    obj["stdout"] = _captured.getvalue()[-65536:]
+    obj["limits"] = _limits()
     _real_stdout.write(_marker + json.dumps(obj, allow_nan=False) + "\n")
     _real_stdout.flush()
 try:
@@ -100,12 +112,7 @@ impl SubprocessPython {
         self
     }
 
-    async fn run(
-        &self,
-        code: &str,
-        inputs: serde_json::Value,
-        limits: CodeLimits,
-    ) -> Result<serde_json::Value, NodeError> {
+    async fn run(&self, code: &str, inputs: serde_json::Value, limits: CodeLimits) -> Result<SandboxRun, NodeError> {
         let workdir = TempDir::create()?;
         let payload = serde_json::json!({ "code": code, "inputs": inputs });
         let payload = serde_json::to_vec(&payload)
@@ -153,8 +160,8 @@ impl SubprocessPython {
             }
         };
         let status = status.map_err(|e| NodeError::new("sandbox", format!("waiting for python failed: {e}")))?;
-        let (stdout_bytes, stdout_truncated) = out;
-        let (stderr_bytes, _) = err;
+        let (stdout_bytes, stdout_truncated) = out?;
+        let (stderr_bytes, _) = err?;
         if stdout_truncated {
             return Err(NodeError::fatal(
                 "invalid_output",
@@ -171,14 +178,23 @@ impl SubprocessPython {
         };
         let envelope: serde_json::Value = serde_json::from_str(line)
             .map_err(|e| NodeError::fatal("sandbox", format!("malformed result from python: {e}")))?;
+        let printed = envelope.get("stdout").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
         if let Some(error) = envelope.get("error").and_then(serde_json::Value::as_str) {
             let kind = envelope.get("kind").and_then(serde_json::Value::as_str).unwrap_or("code_error");
-            return Err(NodeError::fatal(kind, error.to_owned()));
+            // What the code printed before failing is usually the best clue.
+            let message = if printed.trim().is_empty() {
+                error.to_owned()
+            } else {
+                let tail: String = printed.chars().rev().take(2000).collect::<Vec<_>>().into_iter().rev().collect();
+                format!("{error}\n--- printed output ---\n{}", tail.trim_end())
+            };
+            return Err(NodeError::fatal(kind, message));
         }
-        envelope
+        let result = envelope
             .get("result")
             .cloned()
-            .ok_or_else(|| NodeError::fatal("sandbox", "python result envelope has no `result`"))
+            .ok_or_else(|| NodeError::fatal("sandbox", "python result envelope has no `result`"))?;
+        Ok(SandboxRun { result, stdout: Some(printed), notes: limit_notes(envelope.get("limits")) })
     }
 
     #[cfg(unix)]
@@ -214,6 +230,16 @@ impl RemoteSandbox for SubprocessPython {
         inputs: serde_json::Value,
         limits: CodeLimits,
     ) -> BoxFuture<'a, Result<serde_json::Value, NodeError>> {
+        Box::pin(async move { self.execute_detailed(language, code, inputs, limits).await.map(|r| r.result) })
+    }
+
+    fn execute_detailed<'a>(
+        &'a self,
+        language: &'a str,
+        code: &'a str,
+        inputs: serde_json::Value,
+        limits: CodeLimits,
+    ) -> BoxFuture<'a, Result<SandboxRun, NodeError>> {
         Box::pin(async move {
             if language != "python3" {
                 return Err(NodeError::fatal(
@@ -224,6 +250,25 @@ impl RemoteSandbox for SubprocessPython {
             self.run(code, inputs, limits).await
         })
     }
+}
+
+/// Notes for resource limits that the platform did not apply (e.g. `ulimit -v` on macOS).
+fn limit_notes(applied: Option<&serde_json::Value>) -> Vec<String> {
+    if !cfg!(unix) {
+        return vec!["resource limits are not applied on this platform; only the wall-clock timeout is".to_owned()];
+    }
+    let Some(applied) = applied.filter(|v| !v.is_null()) else {
+        return vec!["could not verify the resource limits applied to python".to_owned()];
+    };
+    let mut notes = Vec::new();
+    let unlimited = |key: &str| applied.get(key).and_then(serde_json::Value::as_i64) == Some(-1);
+    if unlimited("cpu") {
+        notes.push("CPU time limit was not applied; only the wall-clock timeout bounds this code".to_owned());
+    }
+    if unlimited("memory") {
+        notes.push("memory limit was not applied (unsupported on this platform)".to_owned());
+    }
+    notes
 }
 
 fn classify_crash(code: Option<i32>, stderr: &str, limits: &CodeLimits) -> NodeError {
@@ -242,15 +287,17 @@ fn classify_crash(code: Option<i32>, stderr: &str, limits: &CodeLimits) -> NodeE
 }
 
 /// Read at most `max` bytes; the flag reports whether more data was available.
-async fn read_capped<R: AsyncRead + Unpin>(reader: Option<R>, max: u64) -> (Vec<u8>, bool) {
+/// A read error is reported, never mistaken for complete output.
+async fn read_capped<R: AsyncRead + Unpin>(reader: Option<R>, max: u64) -> Result<(Vec<u8>, bool), NodeError> {
     let Some(reader) = reader else {
-        return (Vec::new(), false);
+        return Ok((Vec::new(), false));
     };
     let mut buf = Vec::new();
     let mut limited = reader.take(max.saturating_add(1));
-    if limited.read_to_end(&mut buf).await.is_err() {
-        return (buf, false);
-    }
+    limited
+        .read_to_end(&mut buf)
+        .await
+        .map_err(|e| NodeError::new("sandbox", format!("reading python output failed: {e}")))?;
     let truncated = u64::try_from(buf.len()).unwrap_or(u64::MAX) > max;
     if truncated {
         // Drain the rest so the child is not blocked on a full pipe; ignore content.
@@ -262,7 +309,7 @@ async fn read_capped<R: AsyncRead + Unpin>(reader: Option<R>, max: u64) -> (Vec<
             }
         }
     }
-    (buf, truncated)
+    Ok((buf, truncated))
 }
 
 /// Temporary working directory removed on drop.
@@ -304,6 +351,39 @@ mod tests {
 
     fn quick() -> CodeLimits {
         CodeLimits { time_ms: 5_000, ..CodeLimits::default() }
+    }
+
+    #[test]
+    fn printed_output_is_returned_and_attached_to_failures() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let ok = rt
+            .block_on(SubprocessPython::new().execute_detailed(
+                "python3",
+                "def main():\n    print('debug line')\n    return {'x': 1}",
+                serde_json::json!({}),
+                quick(),
+            ))
+            .unwrap();
+        assert_eq!(ok.result, serde_json::json!({"x": 1}));
+        assert_eq!(ok.stdout.as_deref().map(str::trim), Some("debug line"));
+        #[cfg(target_os = "linux")]
+        assert!(ok.notes.is_empty(), "limits should apply on Linux: {:?}", ok.notes);
+
+        let err = run(
+            "def main():\n    print('step 1 done')\n    raise RuntimeError('nope')",
+            serde_json::json!({}),
+            quick(),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("step 1 done"), "{}", err.message);
+    }
+
+    #[test]
+    fn missing_limits_are_reported() {
+        assert!(limit_notes(Some(&serde_json::json!({"cpu": 10, "memory": 1024}))).is_empty());
+        let notes = limit_notes(Some(&serde_json::json!({"cpu": 10, "memory": -1})));
+        assert!(notes.iter().any(|n| n.contains("memory")), "{notes:?}");
+        assert!(!limit_notes(None).is_empty());
     }
 
     #[test]

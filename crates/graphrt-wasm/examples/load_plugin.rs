@@ -15,7 +15,10 @@ fn main() {
     match WasmPlugin::load_file(&path, WasmLimits::default()) {
         Ok(plugin) => {
             let mut registry = Registry::with_builtins();
-            plugin.register(&mut registry);
+            if let Err(e) = plugin.register(&mut registry) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
             match serde_json::to_string_pretty(&plugin.descriptors()) {
                 Ok(json) => println!("{json}"),
                 Err(e) => eprintln!("{e}"),

@@ -24,7 +24,7 @@ fn text_tools() -> WasmPlugin {
 
 fn registry_with(plugin: &WasmPlugin) -> Registry {
     let mut registry = Registry::with_builtins();
-    plugin.register(&mut registry);
+    plugin.register(&mut registry).expect("register");
     registry
 }
 
@@ -44,10 +44,16 @@ fn terminal(events: &[Event]) -> &Event {
 
 /// Minimal hand-written guest. `run_body` must leave an i64 on the stack.
 fn wat_module(manifest: &str, run_body: &str, extra_data: &str) -> Vec<u8> {
+    wat_module_with_imports("", manifest, run_body, extra_data)
+}
+
+/// Like [`wat_module`], with host imports (which must precede other definitions).
+fn wat_module_with_imports(imports: &str, manifest: &str, run_body: &str, extra_data: &str) -> Vec<u8> {
     let escaped = manifest.replace('\\', "\\\\").replace('"', "\\\"");
     let len = manifest.len();
     let text = format!(
         r#"(module
+  {imports}
   (memory (export "memory") 1)
   (global $bump (mut i32) (i32.const 32768))
   (data (i32.const 1024) "{escaped}")
@@ -253,6 +259,68 @@ async fn memory_cap_is_enforced() {
     let module = wat_module(ONE_NODE, "(drop (memory.grow (i32.const 1000))) (i64.const 0)", "");
     let event = run_probe(&module, WasmLimits::default().with_memory_bytes(2 * 65536)).await;
     assert!(failure_type(&event).starts_with("wasm_memory_limit"), "{event:?}");
+}
+
+const CHUNK_IMPORT: &str = r#"(import "graphrt" "chunk" (func $chunk (param i32 i32 i32 i32)))"#;
+const LOG_IMPORT: &str = r#"(import "graphrt" "log" (func $log (param i32 i32 i32)))"#;
+
+/// A guest that streams the same 64 KiB chunk forever.
+fn chunk_flood() -> Vec<u8> {
+    wat_module_with_imports(
+        CHUNK_IMPORT,
+        ONE_NODE,
+        "(loop $l (call $chunk (i32.const 2048) (i32.const 4) (i32.const 0) (i32.const 65536)) (br $l)) (i64.const 0)",
+        r#"(data (i32.const 2048) "text")"#,
+    )
+}
+
+#[tokio::test]
+async fn host_calls_are_charged_against_fuel() {
+    // 1000 calls copying 64 KiB each cost ~65 M fuel: a 10 M budget must run out
+    // long before the event caps are reached.
+    let limits = WasmLimits { max_events: usize::MAX, max_stream_bytes: usize::MAX, ..WasmLimits::default() }
+        .with_fuel(10_000_000);
+    let event = run_probe(&chunk_flood(), limits).await;
+    assert!(failure_type(&event).starts_with("wasm_fuel_exhausted"), "{event:?}");
+}
+
+#[tokio::test]
+async fn streamed_events_are_capped_per_call() {
+    let limits = WasmLimits { max_events: 10, ..WasmLimits::default() };
+    let event = run_probe(&chunk_flood(), limits).await;
+    let failure = failure_type(&event);
+    assert!(failure.starts_with("wasm_invalid_output") && failure.contains("streamed events"), "{failure}");
+
+    let limits = WasmLimits { max_stream_bytes: 4 * 65536, ..WasmLimits::default() };
+    let failure = failure_type(&run_probe(&chunk_flood(), limits).await);
+    assert!(failure.contains("streamed bytes"), "{failure}");
+}
+
+#[tokio::test]
+async fn guest_logs_are_attached_to_failures() {
+    let module = wat_module_with_imports(
+        LOG_IMPORT,
+        ONE_NODE,
+        "(call $log (i32.const 3) (i32.const 2048) (i32.const 17)) unreachable",
+        r#"(data (i32.const 2048) "about to give up!")"#,
+    );
+    let failure = failure_type(&run_probe(&module, WasmLimits::default()).await);
+    assert!(failure.starts_with("wasm_trap") && failure.contains("about to give up!"), "{failure}");
+}
+
+#[test]
+fn modules_cannot_replace_or_squat_node_kinds() {
+    // A module declaring a built-in kind never replaces it.
+    let llm_like = wat_module(r#"{"name":"t","nodes":[{"kind":"answer","title":"Fake"}]}"#, "(i64.const 0)", "");
+    let plugin = WasmPlugin::load(&llm_like, WasmLimits::default()).expect("load");
+    let mut registry = Registry::with_builtins();
+    assert!(matches!(plugin.register(&mut registry), Err(WasmError::KindConflict(k)) if k == "answer"));
+    assert_ne!(registry.descriptor("answer").map(|d| d.source), Some("wasm:t".to_owned()));
+    // Namespaced kinds must use the module's own name.
+    let squat = wat_module(r#"{"name":"t","nodes":[{"kind":"other.x","title":"X"}]}"#, "(i64.const 0)", "");
+    assert!(matches!(WasmPlugin::load(&squat, WasmLimits::default()), Err(WasmError::Manifest(_))));
+    let own = wat_module(r#"{"name":"t","nodes":[{"kind":"t.x","title":"X"}]}"#, "(i64.const 0)", "");
+    assert!(WasmPlugin::load(&own, WasmLimits::default()).is_ok());
 }
 
 #[tokio::test]

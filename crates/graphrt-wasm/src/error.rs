@@ -24,6 +24,8 @@ pub enum WasmError {
     DuplicateKind(String),
     #[error("plugin does not implement node kind `{0}`")]
     UnknownKind(String),
+    #[error("node kind `{0}` is already registered")]
+    KindConflict(String),
     #[error("guest ran out of fuel (CPU budget exhausted)")]
     FuelExhausted,
     #[error("guest exceeded its memory limit")]

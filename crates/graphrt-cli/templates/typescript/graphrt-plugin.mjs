@@ -29,6 +29,20 @@ export function pause(kind, data = null, state = null) {
 
 const RESULT_KEYS = new Set(["outputs", "branch", "writes", "usage", "metadata", "pause"]);
 
+/** Default line limit; the host announces its own in `initialize` (`max_message_bytes`). */
+export const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
+
+/** Best-effort request id from a line that could not be read. */
+function recoverId(text) {
+  const match = /"id"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+)/.exec(text.slice(0, 4096));
+  if (!match) return null;
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+}
+
 function normalizeResult(result) {
   if (result === undefined || result === null) return { outputs: {} };
   if (typeof result !== "object" || Array.isArray(result)) {
@@ -90,6 +104,7 @@ export class Plugin {
     this._descriptors = [];
     this._tools = new Map();
     this._running = new Map();
+    this._maxMessageBytes = MAX_MESSAGE_BYTES;
   }
 
   /**
@@ -112,6 +127,10 @@ export class Plugin {
   /** Serve on stdin/stdout until stdin closes or the host sends `shutdown`. */
   run({ input = process.stdin, output = process.stdout } = {}) {
     this._output = output;
+    // A stray rejection in user code must not silently kill the plugin process.
+    process.on("unhandledRejection", (reason) => {
+      console.error(`graphrt plugin ${this.name}: unhandled rejection:`, reason);
+    });
     const rl = createInterface({ input, crlfDelay: Infinity, terminal: false });
     return new Promise((resolve) => {
       let shutdown = false;
@@ -129,11 +148,21 @@ export class Plugin {
       rl.on("line", (line) => {
         const text = line.trim();
         if (!text) return;
+        if (Buffer.byteLength(text) > this._maxMessageBytes) {
+          console.error(`graphrt plugin ${this.name}: dropped a message above ${this._maxMessageBytes} bytes`);
+          this._error(recoverId(text), -32600, `message exceeds the ${this._maxMessageBytes}-byte limit`, { kind: "message_too_large" });
+          return;
+        }
         let msg;
         try {
           msg = JSON.parse(text);
         } catch {
-          this._send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
+          console.error(`graphrt plugin ${this.name}: unreadable message`);
+          this._error(recoverId(text), -32700, "parse error", { kind: "plugin_protocol" });
+          return;
+        }
+        if (msg === null || typeof msg !== "object" || Array.isArray(msg)) {
+          this._error(null, -32600, "message must be a JSON object", { kind: "plugin_protocol" });
           return;
         }
         if (!this._dispatch(msg)) {
@@ -162,6 +191,9 @@ export class Plugin {
     }
     switch (method) {
       case "initialize": {
+        if (Number.isInteger(params.max_message_bytes) && params.max_message_bytes >= 1024) {
+          this._maxMessageBytes = params.max_message_bytes;
+        }
         const result = { protocol_version: PROTOCOL_VERSION, name: this.name };
         if (this._descriptors.length) result.nodes = this._descriptors;
         if (this._tools.size) result.tools = [...this._tools.values()].map((t) => t.spec);
@@ -205,31 +237,49 @@ export class Plugin {
     const ctx = new RunContext(this, requestId);
     const entry = { ctx, cancelled: false };
     this._running.set(requestId, entry);
-    Promise.resolve()
-      .then(() => handler(ctx, req))
-      .then(
-        (result) => {
-          if (!entry.cancelled) this._reply(id, normalizeResult(result));
-        },
-        (e) => {
-          if (!entry.cancelled) this._error(id, -32000, e instanceof Error ? e.message : String(e), errorData(e));
-        },
-      )
-      .finally(() => this._running.delete(requestId));
+    const run = async () => {
+      try {
+        const result = await handler(ctx, req);
+        // normalizeResult and encoding may throw too: handled below, never unhandled.
+        if (!entry.cancelled) this._reply(id, normalizeResult(result));
+      } catch (e) {
+        if (!(e instanceof PluginError)) console.error(e);
+        if (!entry.cancelled) this._error(id, -32000, e instanceof Error ? e.message : String(e), errorData(e));
+      } finally {
+        this._running.delete(requestId);
+      }
+    };
+    run().catch((e) => this._fatal(id, e));
   }
 
-  async _callTool(id, params) {
-    const tool = this._tools.get(params.name);
-    if (!tool) {
-      this._error(id, -32602, `plugin \`${this.name}\` has no tool \`${params.name}\``, { kind: "unknown_tool" });
-      return;
-    }
+  _callTool(id, params) {
+    const run = async () => {
+      const tool = this._tools.get(params.name);
+      if (!tool) {
+        this._error(id, -32602, `plugin \`${this.name}\` has no tool \`${params.name}\``, { kind: "unknown_tool" });
+        return;
+      }
+      try {
+        let result = await tool.handler(params.arguments ?? {});
+        if (typeof result === "string") result = { text: result };
+        this._reply(id, { text: "", is_error: false, ...(result ?? {}) });
+      } catch (e) {
+        if (!(e instanceof PluginError)) console.error(e);
+        this._error(id, -32000, e instanceof Error ? e.message : String(e), errorData(e));
+      }
+    };
+    run().catch((e) => this._fatal(id, e));
+  }
+
+  /** Last resort when even an error reply failed: log and send a minimal error. */
+  _fatal(id, e) {
+    console.error(e);
     try {
-      let result = await tool.handler(params.arguments ?? {});
-      if (typeof result === "string") result = { text: result };
-      this._reply(id, { text: "", is_error: false, ...(result ?? {}) });
-    } catch (e) {
-      this._error(id, -32000, e instanceof Error ? e.message : String(e), errorData(e));
+      this._output.write(
+        JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: "plugin failed to encode its reply", data: { kind: "plugin_exception" } } }) + "\n",
+      );
+    } catch (inner) {
+      console.error(inner);
     }
   }
 
@@ -238,11 +288,23 @@ export class Plugin {
   }
 
   _notify(method, params) {
-    this._send({ jsonrpc: "2.0", method, params });
+    try {
+      this._send({ jsonrpc: "2.0", method, params });
+    } catch (e) {
+      console.error(`graphrt plugin ${this.name}: dropped \`${method}\` notification:`, e);
+    }
   }
 
   _reply(id, result) {
-    this._send({ jsonrpc: "2.0", id, result });
+    let line;
+    try {
+      line = JSON.stringify({ jsonrpc: "2.0", id, result });
+    } catch (e) {
+      // BigInt, circular structures...: report instead of crashing the process.
+      this._error(id, -32000, `result is not valid JSON: ${e instanceof Error ? e.message : String(e)}`, { kind: "invalid_output" });
+      return;
+    }
+    this._output.write(line + "\n");
   }
 
   _error(id, code, message, data) {
