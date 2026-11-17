@@ -110,6 +110,8 @@ impl ModelRegistry {
     /// | `ANTHROPIC_API_KEY`, optional `ANTHROPIC_BASE_URL` | `anthropic` |
     /// | `OLLAMA_HOST` (default `http://localhost:11434`; always registered) | `ollama` |
     /// | `GRAPHRT_OPENAI_COMPAT_<NAME>_BASE_URL`, optional `..._API_KEY` | `<name>` (lowercase) |
+    /// | `GEMINI_API_KEY` or `GOOGLE_API_KEY`, optional `GEMINI_BASE_URL` | `gemini` |
+    /// | `AWS_REGION` (or `AWS_DEFAULT_REGION`) plus `AWS_BEARER_TOKEN_BEDROCK` or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`), optional `BEDROCK_ENDPOINT_URL` | `bedrock` |
     #[cfg(feature = "http")]
     pub fn from_env() -> Result<Self, LlmError> {
         let vars: Vec<(String, String)> = std::env::vars().collect();
@@ -164,6 +166,44 @@ impl ModelRegistry {
                     cfg.base_url = base;
                 }
                 registry.try_add("anthropic", Arc::new(AnthropicModel::new(cfg)?))?;
+            }
+        }
+
+        #[cfg(feature = "gemini")]
+        {
+            use crate::gemini::{GeminiConfig, GeminiModel};
+            if let Some(key) = get("GEMINI_API_KEY").or_else(|| get("GOOGLE_API_KEY")) {
+                let mut cfg = GeminiConfig::new(key);
+                if let Some(base) = get("GEMINI_BASE_URL") {
+                    cfg.base_url = base;
+                }
+                registry.try_add("gemini", Arc::new(GeminiModel::new(cfg)?))?;
+            }
+        }
+
+        #[cfg(feature = "bedrock")]
+        {
+            use crate::bedrock::{AwsCredentials, BedrockAuth, BedrockConfig, BedrockModel};
+            // Without a region nothing is registered: AWS keys in the environment are
+            // common for unrelated tools and must not break startup.
+            if let Some(region) = get("AWS_REGION").or_else(|| get("AWS_DEFAULT_REGION")) {
+                let auth =
+                    match (get("AWS_BEARER_TOKEN_BEDROCK"), get("AWS_ACCESS_KEY_ID"), get("AWS_SECRET_ACCESS_KEY")) {
+                        (Some(token), _, _) => Some(BedrockAuth::ApiKey(token)),
+                        (None, Some(access_key_id), Some(secret_access_key)) => {
+                            Some(BedrockAuth::SigV4(AwsCredentials {
+                                access_key_id,
+                                secret_access_key,
+                                session_token: get("AWS_SESSION_TOKEN"),
+                            }))
+                        }
+                        _ => None,
+                    };
+                if let Some(auth) = auth {
+                    let mut cfg = BedrockConfig::new(region, auth);
+                    cfg.endpoint = get("BEDROCK_ENDPOINT_URL");
+                    registry.try_add("bedrock", Arc::new(BedrockModel::new(cfg)?))?;
+                }
             }
         }
 
@@ -232,5 +272,39 @@ mod tests {
         assert!(!debug.contains("sk-abc"));
         let debug = format!("{:?}", reg.get("anthropic").unwrap());
         assert!(!debug.contains("ak-xyz"));
+    }
+
+    #[cfg(all(feature = "gemini", feature = "bedrock"))]
+    #[test]
+    fn from_vars_registers_gemini_and_bedrock() {
+        let vars = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+        };
+        let reg = ModelRegistry::from_vars(&vars(&[
+            ("GOOGLE_API_KEY", "AIza-secret"),
+            ("AWS_REGION", "us-west-2"),
+            ("AWS_ACCESS_KEY_ID", "AKID"),
+            ("AWS_SECRET_ACCESS_KEY", "aws-secret"),
+            ("AWS_SESSION_TOKEN", "aws-token"),
+        ]))
+        .unwrap();
+        let debug = format!("{:?} {:?}", reg.get("gemini").unwrap(), reg.get("bedrock").unwrap());
+        assert!(
+            !debug.contains("AIza-secret") && !debug.contains("aws-secret") && !debug.contains("aws-token"),
+            "{debug}"
+        );
+        assert!(debug.contains("us-west-2"));
+
+        let bearer = ModelRegistry::from_vars(&vars(&[
+            ("AWS_DEFAULT_REGION", "eu-central-1"),
+            ("AWS_BEARER_TOKEN_BEDROCK", "bedrock-key"),
+        ]))
+        .unwrap();
+        assert!(format!("{:?}", bearer.get("bedrock").unwrap()).contains("ApiKey(<redacted>)"));
+
+        // Keys without a region register nothing.
+        let none =
+            ModelRegistry::from_vars(&vars(&[("AWS_ACCESS_KEY_ID", "A"), ("AWS_SECRET_ACCESS_KEY", "S")])).unwrap();
+        assert!(none.get("bedrock").is_err());
     }
 }

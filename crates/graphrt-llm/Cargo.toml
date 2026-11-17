@@ -20,7 +20,7 @@ anthropic = ["http"]
 # Google Gemini API (generateContent).
 gemini = ["http"]
 # AWS Bedrock Converse API (SigV4 signed).
-bedrock = ["http"]
+bedrock = ["http", "dep:sha2"]
 # Shared HTTP transport (reqwest + rustls with the ring crypto provider).
 http = ["dep:reqwest", "dep:rustls"]
 
@@ -33,10 +33,11 @@ serde_json.workspace = true
 indexmap.workspace = true
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "json", "stream"] }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+sha2 = { version = "0.10", optional = true, default-features = false }
 
 [dev-dependencies]
 graphrt-core = { workspace = true, features = ["tokio", "jinja"] }
-tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tokio = { workspace = true, features = ["rt", "macros", "time", "net", "io-util", "sync"] }
 
 [lints]
 workspace = true

@@ -1,5 +1,11 @@
 //! Shared HTTP transport for providers: client construction and SSE decoding.
 
+// Which helpers are used depends on the enabled providers.
+#![cfg_attr(
+    not(all(feature = "openai", feature = "anthropic", feature = "gemini", feature = "bedrock")),
+    allow(dead_code)
+)]
+
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -105,14 +111,35 @@ pub(crate) async fn send_sse<D: SseDecoder>(
     request: reqwest::RequestBuilder,
     decoder: D,
 ) -> Result<ChatStream, LlmError> {
+    let response = send_request(request, LlmError::from_status).await?;
+    Ok(sse_stream(response, decoder))
+}
+
+/// Send a request; non-success responses are read (capped) and turned into an
+/// error by `classify(status, body, retry_after_ms)`.
+pub(crate) async fn send_request(
+    request: reqwest::RequestBuilder,
+    classify: impl FnOnce(u16, &str, Option<u64>) -> LlmError,
+) -> Result<reqwest::Response, LlmError> {
     let response = request.send().await.map_err(network_error)?;
     let status = response.status();
     if !status.is_success() {
         let retry = retry_after_ms(response.headers());
         let body = read_error_body(response).await;
-        return Err(LlmError::from_status(status.as_u16(), &body, retry));
+        return Err(classify(status.as_u16(), &body, retry));
     }
+    Ok(response)
+}
 
+/// Body of a successful response as a stream of byte chunks.
+pub(crate) fn byte_stream(
+    response: reqwest::Response,
+) -> futures::stream::BoxStream<'static, Result<Vec<u8>, LlmError>> {
+    response.bytes_stream().map(|r| r.map(|b| b.to_vec()).map_err(network_error)).boxed()
+}
+
+/// Stream an SSE response body through `decoder`.
+pub(crate) fn sse_stream<D: SseDecoder>(response: reqwest::Response, decoder: D) -> ChatStream {
     struct State<D> {
         bytes: futures::stream::BoxStream<'static, Result<Vec<u8>, LlmError>>,
         parser: SseParser,
@@ -147,7 +174,7 @@ pub(crate) async fn send_sse<D: SseDecoder>(
         }
     }
 
-    let bytes = response.bytes_stream().map(|r| r.map(|b| b.to_vec()).map_err(network_error)).boxed();
+    let bytes = byte_stream(response);
     let state = State { bytes, parser: SseParser::new(), decoder, pending: VecDeque::new(), finished: false };
 
     let stream = futures::stream::unfold(state, |mut st| async move {
@@ -187,7 +214,7 @@ pub(crate) async fn send_sse<D: SseDecoder>(
             }
         }
     });
-    Ok(Box::pin(stream))
+    Box::pin(stream)
 }
 
 #[cfg(test)]

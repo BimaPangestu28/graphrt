@@ -1,7 +1,7 @@
 //! Config-driven model providers.
 //!
-//! A providers file declares any number of OpenAI-compatible or Anthropic
-//! endpoints without code:
+//! A providers file declares any number of OpenAI-compatible, Anthropic,
+//! Gemini or Bedrock endpoints without code:
 //!
 //! ```yaml
 //! providers:
@@ -19,6 +19,21 @@
 //!     api_key_env: AZURE_OPENAI_KEY
 //!     auth_header: api-key
 //!     query: { api-version: "2024-06-01" }
+//!   - name: gemini
+//!     kind: gemini
+//!     api_key_env: GEMINI_API_KEY
+//!   - name: vertex
+//!     kind: gemini
+//!     base_url: https://us-central1-aiplatform.googleapis.com/v1/projects/my-project/locations/us-central1/publishers/google
+//!     api_key_env: VERTEX_ACCESS_TOKEN
+//!     auth: bearer                       # gemini: api-key (default) | bearer
+//!   - name: bedrock
+//!     kind: bedrock
+//!     region: us-east-1
+//!     access_key_id_env: AWS_ACCESS_KEY_ID          # SigV4 ...
+//!     secret_access_key_env: AWS_SECRET_ACCESS_KEY
+//!     session_token_env: AWS_SESSION_TOKEN          # optional
+//!     # ... or a Bedrock API key: api_key_env: AWS_BEARER_TOKEN_BEDROCK
 //! ```
 //!
 //! `${VAR}` in `base_url`, `headers` and `query` values is replaced with the
@@ -48,6 +63,10 @@ pub enum ProviderKind {
     Openai,
     /// Anthropic Messages API.
     Anthropic,
+    /// Google Gemini (Gemini API or Vertex AI).
+    Gemini,
+    /// AWS Bedrock Converse API.
+    Bedrock,
 }
 
 /// Default request parameters applied when the node does not set them.
@@ -95,6 +114,21 @@ pub struct ProviderConfig {
     pub models: IndexMap<String, String>,
     #[serde(default)]
     pub defaults: DefaultParams,
+    /// Gemini only: how the key is sent, `api-key` (default) or `bearer`.
+    #[serde(default)]
+    pub auth: Option<String>,
+    /// Bedrock only: AWS region (`${VAR}` allowed).
+    #[serde(default)]
+    pub region: Option<String>,
+    /// Bedrock only: environment variable holding the access key id (SigV4).
+    #[serde(default)]
+    pub access_key_id_env: Option<String>,
+    /// Bedrock only: environment variable holding the secret access key (SigV4).
+    #[serde(default)]
+    pub secret_access_key_env: Option<String>,
+    /// Bedrock only: environment variable holding a session token (optional).
+    #[serde(default)]
+    pub session_token_env: Option<String>,
 }
 
 /// A providers file: either `{providers: [...]}` or a bare list.
@@ -237,9 +271,21 @@ fn build_provider(p: &ProviderConfig, vars: &[(String, String)]) -> Result<Arc<d
         headers.push((k.clone(), interpolate(v, vars).map_err(|var| missing(&ctx, &var))?));
     }
 
+    let protocol_only_fields = [
+        (p.auth.is_some() && p.kind != ProviderKind::Gemini, "auth"),
+        (p.region.is_some() && p.kind != ProviderKind::Bedrock, "region"),
+        (p.access_key_id_env.is_some() && p.kind != ProviderKind::Bedrock, "access_key_id_env"),
+        (p.secret_access_key_env.is_some() && p.kind != ProviderKind::Bedrock, "secret_access_key_env"),
+        (p.session_token_env.is_some() && p.kind != ProviderKind::Bedrock, "session_token_env"),
+    ];
+    if let Some((_, field)) = protocol_only_fields.iter().find(|(bad, _)| *bad) {
+        return Err(LlmError::Config(ctx(&format!("`{field}` is not supported for this provider kind"))));
+    }
     let inner: Arc<dyn ChatModel> = match p.kind {
         ProviderKind::Openai => openai_provider(p, base_url, api_key, headers, vars)?,
         ProviderKind::Anthropic => anthropic_provider(p, base_url, api_key, headers)?,
+        ProviderKind::Gemini => gemini_provider(p, base_url, api_key, headers)?,
+        ProviderKind::Bedrock => bedrock_provider(p, base_url, api_key, headers, vars)?,
     };
     if p.models.is_empty() && p.defaults == DefaultParams::default() {
         return Ok(inner);
@@ -311,6 +357,109 @@ fn anthropic_provider(
     _headers: Vec<(String, String)>,
 ) -> Result<Arc<dyn ChatModel>, LlmError> {
     Err(LlmError::Config(format!("provider `{}`: the `anthropic` feature is disabled in this build", p.name)))
+}
+
+#[cfg(all(feature = "http", feature = "gemini"))]
+fn gemini_provider(
+    p: &ProviderConfig,
+    base_url: Option<String>,
+    api_key: Option<String>,
+    headers: Vec<(String, String)>,
+) -> Result<Arc<dyn ChatModel>, LlmError> {
+    use crate::gemini::{GeminiAuth, GeminiConfig, GeminiModel};
+    if !p.query.is_empty() || p.auth_header.is_some() {
+        return Err(LlmError::Config(format!(
+            "provider `{}`: `query` and `auth_header` are only supported for kind `openai`",
+            p.name
+        )));
+    }
+    let auth = match p.auth.as_deref() {
+        None | Some("api-key") => GeminiAuth::ApiKey,
+        Some("bearer") => GeminiAuth::Bearer,
+        Some(other) => {
+            return Err(LlmError::Config(format!(
+                "provider `{}`: unknown auth `{other}` (expected `api-key` or `bearer`)",
+                p.name
+            )));
+        }
+    };
+    let mut cfg = GeminiConfig { api_key, auth, headers, provider_name: p.name.clone(), ..GeminiConfig::default() };
+    if let Some(base) = base_url {
+        cfg.base_url = base;
+    }
+    Ok(Arc::new(GeminiModel::new(cfg)?))
+}
+
+#[cfg(all(feature = "http", not(feature = "gemini")))]
+fn gemini_provider(
+    p: &ProviderConfig,
+    _base_url: Option<String>,
+    _api_key: Option<String>,
+    _headers: Vec<(String, String)>,
+) -> Result<Arc<dyn ChatModel>, LlmError> {
+    Err(LlmError::Config(format!("provider `{}`: the `gemini` feature is disabled in this build", p.name)))
+}
+
+#[cfg(all(feature = "http", feature = "bedrock"))]
+fn bedrock_provider(
+    p: &ProviderConfig,
+    base_url: Option<String>,
+    api_key: Option<String>,
+    headers: Vec<(String, String)>,
+    vars: &[(String, String)],
+) -> Result<Arc<dyn ChatModel>, LlmError> {
+    use crate::bedrock::{AwsCredentials, BedrockAuth, BedrockConfig, BedrockModel};
+    let ctx = |w: &str| format!("provider `{}`: {w}", p.name);
+    if !p.query.is_empty() || p.auth_header.is_some() {
+        return Err(LlmError::Config(ctx("`query` and `auth_header` are only supported for kind `openai`")));
+    }
+    let region = match &p.region {
+        Some(r) => interpolate(r, vars).map_err(|v| missing(&ctx, &v))?,
+        None => lookup(vars, "AWS_REGION")
+            .or_else(|| lookup(vars, "AWS_DEFAULT_REGION"))
+            .ok_or_else(|| LlmError::Config(ctx("`region` is required (or set AWS_REGION)")))?,
+    };
+    let required = |var: &Option<String>, field: &str| -> Result<Option<String>, LlmError> {
+        match var {
+            Some(name) => lookup(vars, name)
+                .map(Some)
+                .ok_or_else(|| LlmError::Config(ctx(&format!("environment variable `{name}` ({field}) is not set")))),
+            None => Ok(None),
+        }
+    };
+    let access = required(&p.access_key_id_env, "access_key_id_env")?;
+    let secret = required(&p.secret_access_key_env, "secret_access_key_env")?;
+    let session_token = required(&p.session_token_env, "session_token_env")?;
+    let auth = match (api_key, access, secret) {
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+            return Err(LlmError::Config(ctx("use either `api_key_env` or AWS access keys, not both")));
+        }
+        (Some(key), None, None) => BedrockAuth::ApiKey(key),
+        (None, Some(access_key_id), Some(secret_access_key)) => {
+            BedrockAuth::SigV4(AwsCredentials { access_key_id, secret_access_key, session_token })
+        }
+        _ => {
+            return Err(LlmError::Config(ctx(
+                "needs `api_key_env` (Bedrock API key) or both `access_key_id_env` and `secret_access_key_env`",
+            )));
+        }
+    };
+    let mut cfg = BedrockConfig::new(region, auth);
+    cfg.endpoint = base_url;
+    cfg.headers = headers;
+    cfg.provider_name.clone_from(&p.name);
+    Ok(Arc::new(BedrockModel::new(cfg)?))
+}
+
+#[cfg(all(feature = "http", not(feature = "bedrock")))]
+fn bedrock_provider(
+    p: &ProviderConfig,
+    _base_url: Option<String>,
+    _api_key: Option<String>,
+    _headers: Vec<(String, String)>,
+    _vars: &[(String, String)],
+) -> Result<Arc<dyn ChatModel>, LlmError> {
+    Err(LlmError::Config(format!("provider `{}`: the `bedrock` feature is disabled in this build", p.name)))
 }
 
 #[cfg(feature = "http")]
@@ -513,6 +662,49 @@ mod tests {
         let resolved = registry.get("openai").unwrap();
         assert!(!Arc::ptr_eq(&resolved, &env_openai), "the providers file alias must win");
         assert!(format!("{resolved:?}").contains("qwen2.5:14b"), "{resolved:?}");
+    }
+
+    #[cfg(all(feature = "gemini", feature = "bedrock"))]
+    #[test]
+    fn gemini_and_bedrock_entries() {
+        let vars: Vec<(String, String)> = [
+            ("GKEY", "AIza-secret"),
+            ("REGION", "ap-southeast-1"),
+            ("AK", "AKID"),
+            ("SK", "aws-secret"),
+            ("BKEY", "bedrock-key"),
+        ]
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect();
+        let cfg = ProvidersConfig::from_json(
+            r#"[{"name":"g","kind":"gemini","api_key_env":"GKEY"},
+                {"name":"vertex","kind":"gemini","api_key_env":"GKEY","auth":"bearer","base_url":"https://x/v1/projects/p/locations/l/publishers/google"},
+                {"name":"b","kind":"bedrock","region":"${REGION}","access_key_id_env":"AK","secret_access_key_env":"SK"},
+                {"name":"bk","kind":"bedrock","region":"us-east-1","api_key_env":"BKEY"}]"#,
+        )
+        .unwrap();
+        let reg = ModelRegistry::from_config_with_vars(&cfg, &vars).unwrap();
+        let debug = format!("{:?} {:?} {:?}", reg.get("g").unwrap(), reg.get("vertex").unwrap(), reg.get("b").unwrap());
+        assert!(debug.contains("ap-southeast-1") && debug.contains("Bearer"), "{debug}");
+        assert!(!debug.contains("AIza-secret") && !debug.contains("aws-secret"), "{debug}");
+        assert!(reg.get("bk").is_ok());
+
+        let bad = |json: &str| {
+            let cfg = ProvidersConfig::from_json(json).unwrap();
+            ModelRegistry::from_config_with_vars(&cfg, &vars).unwrap_err().to_string()
+        };
+        assert!(bad(r#"[{"name":"x","kind":"bedrock","region":"us-east-1"}]"#).contains("needs"));
+        assert!(
+            bad(
+                r#"[{"name":"x","kind":"bedrock","region":"us-east-1","api_key_env":"BKEY","access_key_id_env":"AK"}]"#
+            )
+            .contains("either")
+        );
+        assert!(bad(r#"[{"name":"x","kind":"gemini","api_key_env":"GKEY","auth":"oauth"}]"#).contains("auth"));
+        assert!(bad(r#"[{"name":"x","kind":"openai","base_url":"http://x","region":"us-east-1"}]"#).contains("region"));
+        assert!(bad(r#"[{"name":"x","kind":"bedrock","region":"us-east-1","access_key_id_env":"NOPE","secret_access_key_env":"SK"}]"#)
+            .contains("NOPE"));
     }
 
     #[cfg(feature = "mock")]
