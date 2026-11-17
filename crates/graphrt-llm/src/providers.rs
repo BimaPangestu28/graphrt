@@ -136,19 +136,29 @@ pub struct ProviderConfig {
 #[serde(from = "ProvidersRepr")]
 pub struct ProvidersConfig {
     pub providers: Vec<ProviderConfig>,
+    /// Providers authenticated by a dynamic credential source (token broker, env var
+    /// read per request, or host-supplied), keyed by provider name. Entries replace
+    /// same-named providers. See `docs/credentials.md`.
+    pub credentials: IndexMap<String, crate::credential_config::ProviderCredentialConfig>,
 }
 
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ProvidersRepr {
-    Wrapped { providers: Vec<ProviderConfig> },
+    Wrapped {
+        #[serde(default)]
+        providers: Vec<ProviderConfig>,
+        #[serde(default)]
+        credentials: IndexMap<String, crate::credential_config::ProviderCredentialConfig>,
+    },
     List(Vec<ProviderConfig>),
 }
 
 impl From<ProvidersRepr> for ProvidersConfig {
     fn from(repr: ProvidersRepr) -> Self {
         match repr {
-            ProvidersRepr::Wrapped { providers } | ProvidersRepr::List(providers) => Self { providers },
+            ProvidersRepr::Wrapped { providers, credentials } => Self { providers, credentials },
+            ProvidersRepr::List(providers) => Self { providers, credentials: IndexMap::new() },
         }
     }
 }
@@ -158,9 +168,14 @@ impl ProvidersConfig {
     pub fn from_value(value: serde_json::Value) -> Result<Self, LlmError> {
         // Decode through a strict wrapper first so typos produce a precise message
         // instead of the generic "did not match any variant" of the untagged enum.
+        let mut credentials = IndexMap::new();
         let entries = match value {
             serde_json::Value::Object(mut map) => {
                 let providers = map.remove("providers").unwrap_or(serde_json::Value::Array(Vec::new()));
+                if let Some(raw) = map.remove("credentials") {
+                    credentials = serde_json::from_value(raw)
+                        .map_err(|e| LlmError::Config(format!("providers config `credentials`: {e}")))?;
+                }
                 if let Some(key) = map.keys().next() {
                     return Err(LlmError::Config(format!("unknown key `{key}` in providers config")));
                 }
@@ -179,7 +194,7 @@ impl ProvidersConfig {
             })?;
             providers.push(cfg);
         }
-        Ok(Self { providers })
+        Ok(Self { providers, credentials })
     }
 
     /// Decode from JSON text.
@@ -229,6 +244,10 @@ impl ModelRegistry {
             for alias in &provider.aliases {
                 registry.alias(alias.clone(), provider.name.clone());
             }
+        }
+        if !config.credentials.is_empty() {
+            let host = crate::credential_config::HostCredentials::new();
+            crate::credential_config::apply(&mut registry, &config.credentials, &host)?;
         }
         Ok(registry)
     }
@@ -533,6 +552,28 @@ impl ChatModel for Configured {
             request.stop.clone_from(&self.defaults.stop);
         }
         self.inner.chat(request)
+    }
+}
+
+#[cfg(all(test, feature = "openai"))]
+mod credentials_section_tests {
+    use super::*;
+
+    #[test]
+    fn credentials_section_registers_dynamic_providers() {
+        let config = ProvidersConfig::from_value(serde_json::json!({
+            "providers": [],
+            "credentials": {
+                "proxy": {"source": "env", "kind": "openai", "var": "PROXY_TOKEN", "base_url": "https://proxy.example.com/v1"}
+            }
+        }))
+        .unwrap();
+        assert_eq!(config.credentials.len(), 1);
+        let registry = ModelRegistry::from_config_with_vars(&config, &[]).unwrap();
+        assert!(registry.get("proxy").is_ok());
+
+        let typo = ProvidersConfig::from_value(serde_json::json!({"credentials": {"p": {"source": "env", "vr": "X"}}}));
+        assert!(typo.is_err());
     }
 }
 
