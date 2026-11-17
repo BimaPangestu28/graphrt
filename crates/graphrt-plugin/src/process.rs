@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -43,6 +43,11 @@ pub struct ProcessTransport {
     failures: AtomicU64,
     /// Consecutive request timeouts of the current process.
     timeouts: AtomicU64,
+    /// A kill was requested while the connection lock was busy; the next
+    /// `connection()` call performs it before handing out the process.
+    kill_pending: Mutex<Option<String>>,
+    /// Fast-path flag mirroring `kill_pending.is_some()`.
+    kill_requested: AtomicBool,
     next_id: AtomicU64,
     stderr: Arc<Mutex<VecDeque<u8>>>,
     /// How the last process exited (code or signal), for crash reports.
@@ -66,6 +71,8 @@ impl ProcessTransport {
             live: tokio::sync::Mutex::new(None),
             failures: AtomicU64::new(0),
             timeouts: AtomicU64::new(0),
+            kill_pending: Mutex::new(None),
+            kill_requested: AtomicBool::new(false),
             next_id: AtomicU64::new(1),
             stderr: Arc::new(Mutex::new(VecDeque::new())),
             exit_status: Arc::new(Mutex::new(None)),
@@ -73,12 +80,21 @@ impl ProcessTransport {
     }
 
     /// Kill the current process (if any). The next request starts a new one.
+    ///
+    /// When the connection lock is busy the kill is recorded and performed by the
+    /// next `connection()` call, so a wedged process is never silently kept.
     fn kill_current(&self, reason: &str) {
-        if let Ok(mut live) = self.live.try_lock() {
-            if let Some(l) = live.take() {
-                // Closing fails in-flight requests; once they release the connection
-                // its guard kills the process group.
-                l.conn.close(reason);
+        match self.live.try_lock() {
+            Ok(mut live) => {
+                if let Some(l) = live.take() {
+                    // Closing fails in-flight requests; once they release the connection
+                    // its guard kills the process group.
+                    l.conn.close(reason);
+                }
+            }
+            Err(_) => {
+                *self.kill_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason.to_owned());
+                self.kill_requested.store(true, Ordering::SeqCst);
             }
         }
     }
@@ -96,6 +112,12 @@ impl ProcessTransport {
     /// Return a live, initialized connection, starting the process if needed.
     async fn connection(&self, clock: &Arc<dyn Clock>) -> Result<(Arc<Connection>, serde_json::Value), CallError> {
         let mut live = self.live.lock().await;
+        if self.kill_requested.swap(false, Ordering::SeqCst) {
+            let reason = self.kill_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+            if let Some(l) = live.take() {
+                l.conn.close(reason.as_deref().unwrap_or("plugin restart requested"));
+            }
+        }
         if let Some(l) = live.as_ref() {
             if !l.conn.is_closed() {
                 return Ok((l.conn.clone(), l.init.clone()));

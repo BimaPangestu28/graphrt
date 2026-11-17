@@ -174,12 +174,45 @@ impl Node for PluginNode {
                 Some(left) => left.min(self.shared.timeout),
                 None => self.shared.timeout,
             };
+            // If the engine's own deadline fires first, this future is dropped before
+            // `track` runs; the guard still counts that as a timeout so a wedged
+            // process is detected and restarted.
+            let mut guard = TimeoutGuard {
+                transport: Arc::clone(&self.shared.transport),
+                clock: Arc::clone(&ctx.clock),
+                deadline_ms: ctx.deadline_ms,
+                settled: false,
+            };
             let call = self.shared.transport.call(id, "node.run", params, Some(sink), true, &ctx.clock);
             let result = with_timeout(&ctx.clock, timeout, call).await;
+            guard.settled = true;
             track(self.shared.transport.as_ref(), &result);
             let result = result.map_err(|e| e.into_node_error(plugin))?;
             outcome_from(plugin, result, self.role, self.fixed_handles.as_deref())
         })
+    }
+}
+
+/// Counts a request that was cancelled at its deadline (future dropped by the
+/// engine) as a timeout. Requests cancelled for other reasons (abort, pause) are
+/// not counted.
+struct TimeoutGuard {
+    transport: Arc<dyn Transport>,
+    clock: Arc<dyn graphrt_core::node::Clock>,
+    deadline_ms: Option<u64>,
+    settled: bool,
+}
+
+impl Drop for TimeoutGuard {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        if let Some(deadline) = self.deadline_ms {
+            if self.clock.now_ms() >= deadline {
+                self.transport.note_timeout();
+            }
+        }
     }
 }
 
