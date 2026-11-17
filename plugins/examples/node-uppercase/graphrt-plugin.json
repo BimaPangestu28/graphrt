@@ -1,0 +1,47 @@
+{
+  "name": "upper",
+  "version": "0.1.0",
+  "description": "Text case transforms and an approval step (JavaScript SDK example)",
+  "license": "Apache-2.0",
+  "runtime": "process",
+  "command": "node",
+  "args": ["plugin.mjs"],
+  "limits": { "timeout_ms": 10000 },
+  "nodes": [
+    {
+      "kind": "upper.transform",
+      "title": "Change case",
+      "category": "transform",
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "mode": { "type": "string", "enum": ["upper", "lower", "title"], "default": "upper" }
+        },
+        "required": ["text"]
+      },
+      "outputs": [
+        { "name": "text", "type": "string", "streaming": true },
+        { "name": "length", "type": "integer" }
+      ]
+    },
+    {
+      "kind": "upper.approve",
+      "title": "Approve text",
+      "category": "human",
+      "config_schema": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] },
+      "outputs": [
+        { "name": "approved", "type": "boolean" },
+        { "name": "text", "type": "string" }
+      ],
+      "handles": { "kind": "fixed", "handles": ["approved", "rejected"] }
+    }
+  ],
+  "tools": [
+    {
+      "name": "shout",
+      "description": "Uppercase a text",
+      "parameters": { "type": "object", "properties": { "text": { "type": "string" } } }
+    }
+  ]
+}

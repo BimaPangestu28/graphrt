@@ -1,0 +1,37 @@
+{
+  "name": "textstats",
+  "version": "0.1.0",
+  "description": "Text statistics (Rust SDK example). Build first: cargo build --release -p graphrt-plugin-sdk --example text_stats",
+  "license": "Apache-2.0",
+  "runtime": "process",
+  "command": "../../../target/release/examples/text_stats",
+  "limits": { "timeout_ms": 5000 },
+  "nodes": [
+    {
+      "kind": "textstats.analyze",
+      "title": "Text statistics",
+      "description": "Count characters, words and sentences; branches on length",
+      "category": "transform",
+      "icon": "chart",
+      "config_schema": {
+        "type": "object",
+        "properties": { "text": { "type": "string", "description": "Text to analyze (templates allowed)" } },
+        "required": ["text"]
+      },
+      "outputs": [
+        { "name": "characters", "type": "integer" },
+        { "name": "words", "type": "integer" },
+        { "name": "sentences", "type": "integer" },
+        { "name": "reading_seconds", "type": "number" }
+      ],
+      "handles": { "kind": "fixed", "handles": ["short", "long"] }
+    }
+  ],
+  "tools": [
+    {
+      "name": "word_count",
+      "description": "Count the words in a text",
+      "parameters": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] }
+    }
+  ]
+}

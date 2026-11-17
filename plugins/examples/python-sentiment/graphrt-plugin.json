@@ -1,0 +1,37 @@
+{
+  "name": "sentiment",
+  "version": "0.1.0",
+  "description": "Lexicon-based sentiment analysis (Python SDK example)",
+  "license": "Apache-2.0",
+  "runtime": "process",
+  "command": "python3",
+  "args": ["-u", "plugin.py"],
+  "limits": { "timeout_ms": 10000, "max_concurrency": 8 },
+  "nodes": [
+    {
+      "kind": "sentiment.analyze",
+      "title": "Sentiment",
+      "description": "Classify text as positive, negative or neutral",
+      "category": "model",
+      "icon": "smile",
+      "config_schema": {
+        "type": "object",
+        "properties": { "text": { "type": "string", "description": "Text to analyze (templates allowed)" } },
+        "required": ["text"]
+      },
+      "outputs": [
+        { "name": "label", "type": "string" },
+        { "name": "score", "type": "number" },
+        { "name": "explanation", "type": "string", "streaming": true }
+      ],
+      "handles": { "kind": "fixed", "handles": ["positive", "negative", "neutral"] }
+    }
+  ],
+  "tools": [
+    {
+      "name": "score",
+      "description": "Sentiment score of a text in [-1, 1]",
+      "parameters": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] }
+    }
+  ]
+}
