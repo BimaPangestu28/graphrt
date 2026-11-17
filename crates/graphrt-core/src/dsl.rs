@@ -227,7 +227,10 @@ impl Workflow {
     /// Parse a YAML document.
     #[cfg(feature = "yaml")]
     pub fn from_yaml(text: &str) -> Result<Self, DocumentError> {
-        let raw: serde_json::Value = serde_saphyr::from_str(text).map_err(|e| DocumentError::Yaml(e.to_string()))?;
+        // YAML 1.2 booleans only: `yes`, `no`, `y`, `n`, `on`, `off` stay strings.
+        let options = serde_saphyr::options! { strict_booleans: true };
+        let raw: serde_json::Value =
+            serde_saphyr::from_str_with_options(text, options).map_err(|e| DocumentError::Yaml(e.to_string()))?;
         Self::from_value(raw)
     }
 
@@ -484,5 +487,14 @@ mod tests {
     fn parses_yaml() {
         let doc = Workflow::parse("graph:\n  nodes:\n    - {id: s, type: start}\n  edges: []\n");
         assert!(matches!(doc, Ok(d) if d.graph.nodes.len() == 1));
+    }
+
+    #[cfg(feature = "yaml")]
+    #[test]
+    fn yaml_uses_strict_booleans() {
+        let doc = Workflow::parse("graph:\n  nodes:\n    - {id: s, type: start, label: n, flag: true}\n").unwrap();
+        let cfg = &doc.graph.nodes[0].config;
+        assert_eq!(cfg.get("label"), Some(&serde_json::json!("n")));
+        assert_eq!(cfg.get("flag"), Some(&serde_json::json!(true)));
     }
 }
