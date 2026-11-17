@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::event::Usage;
-use crate::pool::PoolSnapshot;
+use crate::pool::{PoolSnapshot, Selector};
 use crate::value::Value;
 
 /// Current snapshot format version.
@@ -38,6 +38,15 @@ pub struct FrameSnapshot {
     pub edges: IndexMap<String, EdgeStatus>,
     /// Accumulated response outputs of this frame (answer text, end outputs).
     pub outputs: IndexMap<String, Value>,
+    /// Writes to namespaces outside this frame's scope, in commit order (child frames only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writes: Vec<(Selector, Value)>,
+    /// Whether a `loop-end` node completed in this frame.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub broke: bool,
+    /// Usage accumulated by this frame's nodes.
+    #[serde(default)]
+    pub usage: Usage,
 }
 
 /// Lifecycle state of a node inside a frame.
