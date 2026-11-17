@@ -2,7 +2,7 @@
 //!
 //! ```sh
 //! PROXY_JWT_SECRET=$(openssl rand -hex 32) UPSTREAM_API_KEY=sk-... \
-//! DEMO_USER_TOKEN=demo PUBLIC_BASE_URL=http://localhost:8787/v1 \
+//! DEMO_USER_TOKEN=demo PUBLIC_BASE_URL=http://localhost:8787 \
 //! ALLOWED_MODELS=gpt-4o-mini cargo run --release
 //! ```
 
@@ -17,6 +17,9 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    for warning in config.warnings() {
+        eprintln!("warning: {warning}");
+    }
     let addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".into());
     let router = match graphrt_llm_proxy::router(config) {
         Ok(r) => r,

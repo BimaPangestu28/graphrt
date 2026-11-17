@@ -55,5 +55,57 @@ assert.equal((await call("/v1/chat/completions", "forged.token.x", { model: "all
 assert.equal((await call("/v1/files", issued.token, { model: "allowed-model" })).status, 404);
 assert.equal(seen.length, 1, "rejected requests never reach the provider");
 
+// Anthropic clients: x-api-key token, base_url is the bare origin.
+const anthropicIssued = await (
+  await worker.fetch(
+    new Request("https://proxy.example.com/token", {
+      method: "POST",
+      headers: { authorization: "Bearer user-session", "content-type": "application/json" },
+      body: JSON.stringify({ provider: "anthropic" }),
+    }),
+    env,
+  )
+).json();
+assert.equal(anthropicIssued.base_url, "https://proxy.example.com");
+const viaXApiKey = await worker.fetch(
+  new Request("https://proxy.example.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": anthropicIssued.token },
+    body: JSON.stringify({ model: "allowed-model" }),
+  }),
+  env,
+);
+assert.equal(viaXApiKey.status, 200);
+assert.equal(seen.length, 2);
+
+// Duplicate keys: the checked model is the forwarded model.
+const dup = await worker.fetch(
+  new Request("https://proxy.example.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${issued.token}` },
+    body: '{"model":"expensive","model":"allowed-model"}',
+  }),
+  env,
+);
+assert.equal(dup.status, 200);
+assert.equal(seen.at(-1).model, "allowed-model");
+
+// Misconfiguration fails loudly instead of defaulting.
+const quiet = console.error;
+console.error = () => {};
+for (const bad of [
+  { ...env, TOKEN_TTL_SECS: "15m" },
+  { ...env, UPSTREAM_AUTH: "x-api-kye" },
+  { ...env, UPSTREAM_API_KEY: "" },
+  { ...env, UPSTREAM_BASE_URL: "http://api.example.com/v1" },
+]) {
+  const r = await worker.fetch(new Request("https://proxy.example.com/token", { method: "POST" }), bad);
+  assert.equal(r.status, 500);
+}
+console.error = quiet;
+
+// Malformed signatures are a 401, never a crash.
+await assert.rejects(verifyToken(SECRET, `${t.split(".")[0]}.${t.split(".")[1]}.%%%`, 1000), /malformed/);
+
 upstream.close();
 console.log("worker proxy + token broker OK");
