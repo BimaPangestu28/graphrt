@@ -18,6 +18,46 @@ pub struct ServiceOptions {
     pub allow_private_network: bool,
     /// Path to an MCP servers file (`{"mcpServers": {...}}`).
     pub mcp_config: Option<std::path::PathBuf>,
+    /// Path to a model providers file (YAML or JSON).
+    pub providers: Option<std::path::PathBuf>,
+    /// Register the local `python3` subprocess runner for python code nodes.
+    pub allow_python_subprocess: bool,
+    /// `provider/name` applied to every model-backed node.
+    pub model_override: Option<String>,
+}
+
+/// Environment variable naming a default providers file.
+pub const PROVIDERS_ENV: &str = "GRAPHRT_PROVIDERS";
+
+/// Node kinds whose config carries a `model {provider, name}` object.
+pub const MODEL_NODE_KINDS: &[&str] = &["llm", "question-classifier", "parameter-extractor", "agent"];
+
+/// Parse a `--model provider/name` override. The name may itself contain `/`.
+pub fn parse_model_override(raw: &str) -> Result<(String, String), CliError> {
+    match raw.split_once('/') {
+        Some((provider, name)) if !provider.trim().is_empty() && !name.trim().is_empty() => {
+            Ok((provider.trim().to_owned(), name.trim().to_owned()))
+        }
+        _ => Err(CliError::usage(format!("`--model` expects `provider/name`, got `{raw}`"))),
+    }
+}
+
+/// Point every model-backed node at `provider` / `name`, keeping other model settings
+/// (completion params). Returns the number of nodes changed.
+pub fn apply_model_override(workflow: &mut Workflow, provider: &str, name: &str) -> usize {
+    let mut changed = 0;
+    for node in &mut workflow.graph.nodes {
+        if !MODEL_NODE_KINDS.contains(&node.kind.as_str()) {
+            continue;
+        }
+        let model = node.config.entry("model").or_insert_with(|| serde_json::json!({}));
+        if let serde_json::Value::Object(map) = model {
+            map.insert("provider".into(), serde_json::Value::String(provider.to_owned()));
+            map.insert("name".into(), serde_json::Value::String(name.to_owned()));
+            changed += 1;
+        }
+    }
+    changed
 }
 
 impl ServiceOptions {
@@ -61,10 +101,28 @@ pub fn read_workflow(path: &Path) -> Result<Workflow, CliError> {
 
 /// Parse and compile a workflow.
 pub fn load_graph(path: &Path) -> Result<Arc<Graph>, CliError> {
-    let workflow = read_workflow(path)?;
+    load_graph_with(path, None)
+}
+
+/// Parse and compile a workflow, optionally overriding every node's model (`provider/name`).
+pub fn load_graph_with(path: &Path, model_override: Option<&str>) -> Result<Arc<Graph>, CliError> {
+    let mut workflow = read_workflow(path)?;
+    if let Some(raw) = model_override {
+        let (provider, name) = parse_model_override(raw)?;
+        apply_model_override(&mut workflow, &provider, &name);
+    }
     let graph =
         Graph::build(workflow, &registry()).map_err(|e| CliError::invalid(format!("{}: {e}", path.display())))?;
     Ok(Arc::new(graph))
+}
+
+/// Parse a YAML or JSON document into JSON (YAML 1.2 booleans).
+pub fn parse_structured(text: &str, what: &str) -> Result<serde_json::Value, CliError> {
+    if text.trim_start().starts_with(['{', '[']) {
+        return serde_json::from_str(text).map_err(|e| CliError::usage(format!("invalid {what}: {e}")));
+    }
+    let options = serde_saphyr::options! { strict_booleans: true };
+    serde_saphyr::from_str_with_options(text, options).map_err(|e| CliError::usage(format!("invalid {what}: {e}")))
 }
 
 /// Build the host services for this build's features.
@@ -73,9 +131,40 @@ pub async fn services(options: &ServiceOptions) -> Result<Services, CliError> {
     let mut services = Services::new();
     #[cfg(feature = "llm")]
     {
-        let models = graphrt_llm::ModelRegistry::from_vars(&options.all_vars())
+        let vars = options.all_vars();
+        let mut models = graphrt_llm::ModelRegistry::from_vars(&vars)
             .map_err(|e| CliError::usage(format!("model configuration: {e}")))?;
+        if let Some(path) = &options.providers {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| CliError::usage(format!("cannot read providers file `{}`: {e}", path.display())))?;
+            let value = parse_structured(&text, &format!("providers file `{}`", path.display()))?;
+            let config = graphrt_llm::providers::ProvidersConfig::from_value(value)
+                .map_err(|e| CliError::usage(format!("providers file `{}`: {e}", path.display())))?;
+            let overlay = graphrt_llm::ModelRegistry::from_config_with_vars(&config, &vars)
+                .map_err(|e| CliError::usage(format!("providers file `{}`: {e}", path.display())))?;
+            models.merge(overlay);
+        }
         services.insert(models);
+    }
+    #[cfg(not(feature = "llm"))]
+    {
+        if let Some(path) = &options.providers {
+            return Err(CliError::usage(format!(
+                "`--providers {}` requires a build with the `llm` feature",
+                path.display()
+            )));
+        }
+    }
+    if options.allow_python_subprocess {
+        #[cfg(feature = "python")]
+        {
+            let sandbox: Arc<dyn graphrt_code::RemoteSandbox> = Arc::new(graphrt_code::SubprocessPython::new());
+            services.insert(sandbox);
+        }
+        #[cfg(not(feature = "python"))]
+        {
+            return Err(CliError::usage("`--allow-python-subprocess` requires a build with the `python` feature"));
+        }
     }
     #[cfg(feature = "http")]
     {
@@ -195,6 +284,24 @@ mod tests {
     fn env_file_parsing() {
         let vars = parse_env_file("# c\nA=1\nexport B=\"two words\"\nC='x=y'\n\nbad line\n");
         assert_eq!(vars, vec![("A".into(), "1".into()), ("B".into(), "two words".into()), ("C".into(), "x=y".into())]);
+    }
+
+    #[test]
+    fn model_override_rewrites_model_nodes_only() {
+        let mut wf = Workflow::parse(
+            "graph:\n  nodes:\n    - {id: s, type: start}\n    - {id: l, type: llm, model: {provider: openai, name: gpt-4o-mini, completion_params: {temperature: 0.1}}}\n    - {id: a, type: agent}\n    - {id: t, type: template-transform, model: {provider: x, name: y}}\n",
+        )
+        .unwrap();
+        let (p, n) = parse_model_override("ollama/library/qwen2.5:14b").unwrap();
+        assert_eq!((p.as_str(), n.as_str()), ("ollama", "library/qwen2.5:14b"));
+        assert_eq!(apply_model_override(&mut wf, &p, &n), 2);
+        let llm = &wf.graph.nodes[1].config["model"];
+        assert_eq!(llm["provider"], "ollama");
+        assert_eq!(llm["completion_params"]["temperature"], 0.1);
+        assert_eq!(wf.graph.nodes[2].config["model"]["name"], "library/qwen2.5:14b");
+        assert_eq!(wf.graph.nodes[3].config["model"]["provider"], "x");
+        assert!(parse_model_override("nomodel").is_err());
+        assert!(parse_model_override("/x").is_err());
     }
 
     #[test]

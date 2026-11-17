@@ -52,6 +52,30 @@ async fn health_and_listing() {
 }
 
 #[tokio::test]
+async fn node_catalog_and_validation_endpoints() {
+    let app = router(state(None).await, 1 << 20);
+    let (status, body) = send(app.clone(), Request::get("/v1/nodes").body(Body::empty()).expect("req")).await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let kinds: Vec<&str> = json["nodes"].as_array().expect("array").iter().filter_map(|n| n["kind"].as_str()).collect();
+    assert!(kinds.contains(&"if-else") && kinds.contains(&"start"), "{kinds:?}");
+
+    let valid = serde_json::json!({"graph": {"nodes": [{"id": "s", "type": "start"}, {"id": "e", "type": "end"}],
+        "edges": [{"source": "s", "target": "e"}]}});
+    let (status, body) = send(app.clone(), post("/v1/validate", valid)).await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(json["valid"], true, "{json}");
+
+    let yaml = "graph:\n  nodes:\n    - {id: s, type: start}\n    - {id: x, type: no-such-node}\n  edges: [{source: s, target: x}]\n";
+    let (status, body) = send(app, post("/v1/validate", serde_json::json!({ "document": yaml }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(json["valid"], false);
+    assert!(json["errors"][0].as_str().unwrap_or_default().contains("no-such-node"), "{json}");
+}
+
+#[tokio::test]
 async fn blocking_run_returns_outputs() {
     let app = router(state(None).await, 1 << 20);
     let (status, body) =

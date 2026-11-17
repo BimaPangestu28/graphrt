@@ -20,6 +20,8 @@ pub enum Command {
     Validate(WorkflowArg),
     /// Show nodes, inputs, env variables and build compatibility of a workflow.
     Inspect(WorkflowArg),
+    /// List the node kinds available in this build (the node catalog).
+    Nodes(NodesArgs),
     /// Serve one workflow (file) or many (directory) over HTTP with SSE streaming.
     #[cfg(feature = "serve")]
     Serve(Box<ServeArgs>),
@@ -32,6 +34,17 @@ pub enum Command {
 pub struct WorkflowArg {
     /// Workflow document (.yaml, .yml or .json).
     pub workflow: PathBuf,
+}
+
+/// Options of `graphrt nodes`.
+#[derive(Debug, Args)]
+pub struct NodesArgs {
+    /// Print the catalog (or one descriptor) as JSON, including config schemas.
+    #[arg(long)]
+    pub json: bool,
+    /// Show only this node kind (full descriptor).
+    #[arg(long, value_name = "KIND")]
+    pub kind: Option<String>,
 }
 
 /// How `run` prints results.
@@ -58,6 +71,18 @@ pub struct ServiceArgs {
     /// Allow HTTP requests to private, loopback and link-local addresses.
     #[arg(long)]
     pub allow_private_network: bool,
+    /// Model providers file (YAML or JSON) layered over the environment-based providers.
+    /// Defaults to `$GRAPHRT_PROVIDERS` when set.
+    #[arg(long, value_name = "FILE")]
+    pub providers: Option<PathBuf>,
+    /// Run `python3` code nodes in a local subprocess. NOT a security sandbox: only
+    /// enable for trusted workflows.
+    #[arg(long)]
+    pub allow_python_subprocess: bool,
+    /// Use this model (`provider/name`, e.g. `ollama/qwen2.5:14b`) for every model-backed
+    /// node (llm, question-classifier, parameter-extractor, agent).
+    #[arg(long, value_name = "PROVIDER/NAME")]
+    pub model: Option<String>,
     /// Abort a run after this many milliseconds.
     #[arg(long, value_name = "MS")]
     pub timeout_ms: Option<u64>,

@@ -47,7 +47,48 @@ pub const KIND: &str = "tool";
 
 /// Register the `tool` node kind.
 pub fn register(registry: &mut Registry) {
-    registry.register(KIND, |doc| ToolNode::from_doc(doc).map(|n| Arc::new(n) as Arc<dyn Node>));
+    registry.register_described(descriptor(), |doc| ToolNode::from_doc(doc).map(|n| Arc::new(n) as Arc<dyn Node>));
+}
+
+/// Catalog descriptor of the `tool` node.
+pub fn descriptor() -> crate::catalog::NodeDescriptor {
+    use crate::catalog::schema::{nested, object, selector};
+    use crate::catalog::{NodeCategory, NodeDescriptor, OutputDescriptor};
+    use crate::value::ValueType;
+
+    let parameter = serde_json::json!({
+        "oneOf": [
+            nested(serde_json::json!({ "type": { "const": "mixed" }, "value": { "type": "string" } }), &["type", "value"]),
+            nested(serde_json::json!({ "type": { "const": "variable" }, "value": selector() }), &["type", "value"]),
+            nested(serde_json::json!({ "type": { "const": "constant" }, "value": {} }), &["type"])
+        ]
+    });
+    NodeDescriptor::new(KIND, "Tool", NodeCategory::Integration)
+        .describe(
+            "Calls one tool from a registered tool provider (native tools, MCP servers, plugins). \
+             Arguments: `tool_parameters` (mixed template / variable / constant) override `arguments` \
+             (strings are templates) which override `tool_configurations` (constants).",
+        )
+        .icon("wrench")
+        .source("builtin")
+        .schema(object(
+            serde_json::json!({
+                "provider_id": { "type": "string", "minLength": 1 },
+                "provider": { "type": "string", "minLength": 1 },
+                "provider_name": { "type": "string", "minLength": 1 },
+                "tool_name": { "type": "string", "minLength": 1 },
+                "tool_parameters": { "type": "object", "additionalProperties": parameter },
+                "tool_configurations": { "type": "object" },
+                "arguments": { "type": "object" },
+                "ignore_tool_errors": { "type": "boolean", "default": false }
+            }),
+            &["tool_name"],
+        ))
+        .output(OutputDescriptor::new("text", ValueType::String).describe("Text result"))
+        .output(OutputDescriptor::new("json", ValueType::Any).describe("Structured result, or the text parsed as JSON"))
+        .output(OutputDescriptor::new("files", ValueType::ArrayFile))
+        .output(OutputDescriptor::new("is_error", ValueType::Boolean))
+        .output(OutputDescriptor::new("error", ValueType::String).describe("Error text when the tool reported one"))
 }
 
 /// How one tool argument is produced.

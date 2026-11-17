@@ -17,6 +17,8 @@ js = ["dep:rquickjs"]
 tokio = ["dep:tokio", "tokio/rt"]
 # HTTP client for a remote sandbox service (e.g. for Python).
 remote = ["dep:graphrt-http", "dep:reqwest"]
+# Python via a local `python3` subprocess. NOT a security sandbox: trusted code only.
+python = ["dep:tokio", "tokio/process", "tokio/io-util", "tokio/time", "tokio/rt"]
 
 [dependencies]
 graphrt-core.workspace = true
@@ -31,7 +33,7 @@ tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 futures = { workspace = true, features = ["executor"] }
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 [lints]
 workspace = true

@@ -200,3 +200,71 @@ fn resume_input_requires_snapshot() {
     let out = run(&["run", path.to_str().expect("utf8"), "--resume-input", "review={}"]);
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn nodes_lists_the_catalog() {
+    let out = run(&["nodes"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("if-else"));
+    let out = run(&["nodes", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+    assert!(json.as_array().expect("array").iter().any(|d| d["kind"] == "start"));
+    let out = run(&["nodes", "--kind", "loop", "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+    assert_eq!(json["container"], true);
+    let out = run(&["nodes", "--kind", "nope"]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+#[cfg(feature = "python")]
+fn python_code_requires_explicit_opt_in() {
+    let wf = temp_path("python.yaml");
+    std::fs::write(
+        &wf,
+        "graph:\n  nodes:\n    - {id: start, type: start, variables: [{variable: n, type: number, required: true}]}\n    \
+         - id: py\n      type: code\n      code_language: python3\n      code: \"def main(n):\\n    return {'sq': n * n}\"\n      \
+         variables: [{variable: n, value_selector: [start, n]}]\n    \
+         - {id: end, type: end, outputs: [{variable: sq, value_selector: [py, sq]}]}\n  \
+         edges: [{source: start, target: py}, {source: py, target: end}]\n",
+    )
+    .expect("write workflow");
+    let wf = wf.to_str().expect("utf8");
+    let out = run(&["run", wf, "--input", "n:=7", "--output", "json"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(stdout(&out).contains("sandbox"), "{}", stdout(&out));
+
+    let out = run(&["run", wf, "--input", "n:=7", "--output", "json", "--allow-python-subprocess"]);
+    assert!(out.status.success(), "{} {}", stdout(&out), stderr(&out));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+    assert_eq!(json["outputs"]["sq"], 49);
+}
+
+#[test]
+#[cfg(feature = "llm")]
+fn providers_file_errors_are_reported() {
+    let providers = temp_path("providers.yaml");
+    std::fs::write(
+        &providers,
+        "providers:\n  - name: x\n    kind: openai\n    api_key_env: GRAPHRT_TEST_MISSING_KEY\n",
+    )
+    .expect("write providers");
+    let out = run(&[
+        "run",
+        example("hello.yaml").to_str().expect("utf8"),
+        "--input",
+        "name=A",
+        "--providers",
+        providers.to_str().expect("utf8"),
+    ]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("GRAPHRT_TEST_MISSING_KEY"), "{}", stderr(&out));
+}
+
+#[test]
+#[cfg(feature = "llm")]
+fn model_override_is_validated() {
+    let out = run(&["run", example("chatbot.yaml").to_str().expect("utf8"), "--model", "no-slash"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("provider/name"), "{}", stderr(&out));
+}

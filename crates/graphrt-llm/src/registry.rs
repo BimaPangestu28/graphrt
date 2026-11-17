@@ -66,6 +66,18 @@ impl ModelRegistry {
         self
     }
 
+    /// Remove a provider (and any alias with that name). Returns whether something was removed.
+    pub fn remove(&mut self, name: &str) -> bool {
+        let provider = self.providers.shift_remove(name).is_some();
+        let alias = self.aliases.shift_remove(name).is_some();
+        provider || alias
+    }
+
+    /// Decompose into providers and aliases.
+    pub fn into_parts(self) -> (IndexMap<String, Arc<dyn ChatModel>>, IndexMap<String, String>) {
+        (self.providers, self.aliases)
+    }
+
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.providers.keys().map(String::as_str)
     }

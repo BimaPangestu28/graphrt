@@ -179,4 +179,135 @@ impl NodeDescriptor {
     pub fn bare(kind: &str) -> Self {
         Self::new(kind, kind, NodeCategory::Other)
     }
+
+    /// Whether this is a bare (placeholder) descriptor without real metadata.
+    pub fn is_bare(&self) -> bool {
+        self.title == self.kind && self.description.is_empty() && self.source.is_empty()
+    }
+}
+
+/// Reusable JSON Schema fragments for node config schemas.
+pub mod schema {
+    use serde_json::{Value, json};
+
+    /// Draft used by every config schema.
+    pub const DRAFT: &str = "https://json-schema.org/draft/2020-12/schema";
+
+    /// Top-level config schema with `properties` and `required`. Additional
+    /// properties are allowed because documents may carry builder-only metadata.
+    pub fn object(properties: Value, required: &[&str]) -> Value {
+        json!({ "$schema": DRAFT, "type": "object", "properties": properties, "required": required })
+    }
+
+    /// Nested object schema (no `$schema` key).
+    pub fn nested(properties: Value, required: &[&str]) -> Value {
+        json!({ "type": "object", "properties": properties, "required": required })
+    }
+
+    /// A variable selector: `["namespace", "name", ...]` or `"namespace.name"`.
+    pub fn selector() -> Value {
+        json!({
+            "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+            "oneOf": [
+                { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 2 },
+                { "type": "string", "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$" }
+            ]
+        })
+    }
+
+    /// A text template that may contain `{{#namespace.name#}}` placeholders.
+    pub fn template(description: &str) -> Value {
+        json!({ "type": "string", "description": description })
+    }
+
+    /// Declared value type names (including form-field aliases).
+    pub fn value_type() -> Value {
+        json!({
+            "type": "string",
+            "enum": [
+                "any", "none", "string", "secret", "number", "integer", "float", "boolean", "object", "file",
+                "array[any]", "array[string]", "array[number]", "array[boolean]", "array[object]", "array[file]",
+                "array", "file-list", "json", "text-input", "paragraph", "select", "checkbox"
+            ]
+        })
+    }
+
+    /// `and` / `or`.
+    pub fn logical_operator() -> Value {
+        json!({ "type": "string", "enum": ["and", "or"], "default": "and" })
+    }
+
+    /// Comparison operator names (canonical spellings and ASCII aliases).
+    pub fn comparison_operator() -> Value {
+        json!({
+            "type": "string",
+            "enum": [
+                "contains", "not contains", "start with", "starts with", "start_with", "starts_with",
+                "end with", "ends with", "end_with", "ends_with", "is", "is not", "is_not",
+                "empty", "not empty", "not_empty", "in", "not in", "not_in", "all of", "all_of",
+                "=", "==", "eq", "≠", "!=", "ne", ">", "gt", "<", "lt", "≥", ">=", "ge", "≤", "<=", "le",
+                "null", "is null", "not null", "is not null", "not_null", "exists", "not exists", "not_exists"
+            ]
+        })
+    }
+
+    /// Condition on an attribute (`key`) of list items or files.
+    pub fn key_condition() -> Value {
+        nested(
+            json!({
+                "key": { "type": "string" },
+                "comparison_operator": comparison_operator(),
+                "value": {}
+            }),
+            &["comparison_operator"],
+        )
+    }
+
+    /// One condition: `{variable_selector, comparison_operator, value, sub_variable_condition}`.
+    pub fn condition() -> Value {
+        nested(
+            json!({
+                "variable_selector": selector(),
+                "comparison_operator": comparison_operator(),
+                "value": { "description": "Right-hand side; strings may contain placeholders" },
+                "sub_variable_condition": nested(
+                    json!({
+                        "logical_operator": logical_operator(),
+                        "conditions": { "type": "array", "items": key_condition() }
+                    }),
+                    &[]
+                )
+            }),
+            &["variable_selector", "comparison_operator"],
+        )
+    }
+
+    /// Array of [`condition`]s.
+    pub fn conditions() -> Value {
+        json!({ "type": "array", "items": condition() })
+    }
+
+    /// `[{variable, value_selector}]` bindings.
+    pub fn variable_bindings() -> Value {
+        json!({
+            "type": "array",
+            "items": nested(
+                json!({ "variable": { "type": "string", "minLength": 1 }, "value_selector": selector() }),
+                &["variable", "value_selector"]
+            )
+        })
+    }
+
+    /// Model reference used by model-backed nodes.
+    pub fn model() -> Value {
+        nested(
+            json!({
+                "provider": { "type": "string", "minLength": 1 },
+                "name": { "type": "string", "minLength": 1 },
+                "mode": { "type": "string", "enum": ["chat", "completion"] },
+                "completion_params": { "type": "object" }
+            }),
+            &["provider", "name"],
+        )
+    }
 }

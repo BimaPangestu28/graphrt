@@ -2,6 +2,7 @@
 //! binary and its tests.
 
 pub mod args;
+pub mod catalog;
 pub mod error;
 pub mod inspect;
 pub mod run;
@@ -24,6 +25,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "code") {
         features.push("code");
     }
+    if cfg!(feature = "python") {
+        features.push("python");
+    }
     if cfg!(feature = "mcp") {
         features.push("mcp");
     }
@@ -38,6 +42,7 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
     match cli.command {
         Command::Validate(arg) => inspect::validate(&arg.workflow),
         Command::Inspect(arg) => inspect::inspect(&arg.workflow),
+        Command::Nodes(args) => catalog::nodes(&args),
         Command::Version => {
             use std::io::Write;
             let mut out = std::io::stdout().lock();

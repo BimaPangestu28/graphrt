@@ -153,7 +153,11 @@ pub fn decode_data_url(name: &str, url: &str, max_bytes: u64) -> Result<FileByte
     let (meta, payload) = rest.split_once(',').ok_or_else(|| invalid("data URL without ','"))?;
     let is_base64 = meta.ends_with(";base64");
     let mime = meta.trim_end_matches(";base64").split(';').next().filter(|m| !m.is_empty()).map(str::to_owned);
-    let bytes = if is_base64 { base64_decode(payload).ok_or_else(|| invalid("invalid base64 payload"))? } else { percent_decode(payload) };
+    let bytes = if is_base64 {
+        base64_decode(payload).ok_or_else(|| invalid("invalid base64 payload"))?
+    } else {
+        percent_decode(payload)
+    };
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max_bytes {
         return Err(FileError::TooLarge { name: name.to_owned(), limit: max_bytes });
     }
@@ -197,7 +201,11 @@ pub fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let b = [chunk.first().copied().unwrap_or(0), chunk.get(1).copied().unwrap_or(0), chunk.get(2).copied().unwrap_or(0)];
+        let b = [
+            chunk.first().copied().unwrap_or(0),
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         for i in 0..4 {
             if i <= chunk.len() {

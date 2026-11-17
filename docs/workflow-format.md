@@ -338,7 +338,7 @@ JSON bodies insert values JSON-escaped (inside strings) or as typed JSON
 ### `code`
 
 ```yaml
-code_language: javascript       # python3 requires a remote sandbox service
+code_language: javascript       # or python3 (see below)
 code: |
   function main({ a, b }) {
     return { sum: a + b };
@@ -353,3 +353,39 @@ limits: { memory_bytes: 67108864, time_ms: 10000 }
 
 `main` may be async. No filesystem, network, timers or modules. Declared
 outputs are type-checked.
+
+`python3` code defines `def main(**inputs)` returning a `dict`. It needs a
+sandbox service registered by the host (`Arc<dyn RemoteSandbox>`): either a
+remote sandbox (feature `remote`, `HttpSandbox`) or, for trusted workflows only,
+the local subprocess runner (feature `python`, `SubprocessPython`; the CLI flag
+`--allow-python-subprocess`). The subprocess runner isolates the interpreter
+(`-I -S`, empty environment, temporary working directory) and applies CPU,
+memory and file-size limits plus a timeout, but it is **not a security
+sandbox**: the code runs with the host user's privileges.
+
+```yaml
+code_language: python3
+code: |
+  def main(items):
+      return {"total": sum(i["qty"] for i in items)}
+variables: [{ variable: items, value_selector: [start, items] }]
+outputs: { total: { type: number } }
+```
+
+## Model providers
+
+Model-backed nodes name a provider (`model.provider`) and a model
+(`model.name`). Hosts register providers in a `ModelRegistry`: from the
+environment (`ModelRegistry::from_env`) and/or a providers file
+(`ProvidersConfig` + `ModelRegistry::from_config`; see `docs/cli.md` for the
+format). Provider aliases and model-name aliases let a workflow written for one
+provider run on another without editing it.
+
+## Node catalog
+
+Every node kind publishes a descriptor (title, category, outputs, branch
+handles, config JSON Schema). Run `graphrt nodes --kind <kind> --json` or
+`GET /v1/nodes` to read them, or `Registry::descriptors()` when embedding.
+Descriptors list the handles a node selects itself; the `fail-branch` handle
+comes from the node policy (`on_error: {strategy: fail-branch}`), is available
+on every node kind and is therefore not listed.
