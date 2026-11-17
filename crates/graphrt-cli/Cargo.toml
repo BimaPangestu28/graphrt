@@ -18,7 +18,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "plugins", "wasm", "serve"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "plugins", "wasm", "otel", "serve"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -37,6 +37,8 @@ plugins = ["dep:graphrt-plugin", "graphrt-plugin/process", "graphrt-plugin/http"
 wasm = ["dep:graphrt-plugin", "graphrt-plugin/yaml", "dep:graphrt-wasm", "graphrt-wasm/tokio"]
 # MCP tool servers (`--mcp`).
 mcp = ["dep:graphrt-mcp"]
+# OpenTelemetry traces and metrics over OTLP/HTTP (`--otel`, `--otel-stdout`).
+otel = ["dep:graphrt-otel"]
 # `graphrt serve`: HTTP + SSE API.
 serve = ["dep:axum", "tokio/rt-multi-thread", "tokio/net"]
 
@@ -50,6 +52,7 @@ graphrt-doc = { workspace = true, optional = true, features = ["default", "tokio
 graphrt-rag = { workspace = true, optional = true, features = ["default"] }
 graphrt-plugin = { workspace = true, optional = true }
 graphrt-wasm = { workspace = true, optional = true }
+graphrt-otel = { workspace = true, optional = true, features = ["http"] }
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 tokio = { workspace = true, features = ["rt", "time", "signal", "fs", "io-util"] }
 futures.workspace = true

@@ -87,6 +87,8 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
         assembler = assembler.with_value(&Selector::of("sys", k), v.clone());
     }
 
+    let telemetry = crate::otel::Telemetry::from_args(&args.services, &options.all_vars())?;
+    let mut tracer = crate::otel::tracer_for(telemetry.as_ref(), &graph, None);
     let mut stream = engine.run(input);
     let handle = stream.handle();
     let interrupt = tokio::spawn(async move {
@@ -100,6 +102,7 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
     let mut printer = Printer::new(args.output);
     let mut code = EXIT_FAILED;
     while let Some(event) = stream.next().await {
+        tracer.on_event(&event);
         if args.output == OutputMode::Text {
             for chunk in assembler.push(&event) {
                 printer.text(&chunk.text)?;
@@ -110,6 +113,10 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
         }
     }
     interrupt.abort();
+    tracer.finish();
+    if let Some(telemetry) = &telemetry {
+        telemetry.shutdown().await;
+    }
     Ok(code)
 }
 

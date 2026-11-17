@@ -986,6 +986,7 @@ dependencies = [
  "graphrt-http",
  "graphrt-llm",
  "graphrt-mcp",
+ "graphrt-otel",
  "graphrt-plugin",
  "graphrt-rag",
  "graphrt-wasm",
@@ -1122,7 +1123,13 @@ dependencies = [
 name = "graphrt-otel"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "graphrt-core",
+ "reqwest",
+ "rustls",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

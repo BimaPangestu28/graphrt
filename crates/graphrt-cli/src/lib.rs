@@ -9,6 +9,7 @@ pub mod files;
 pub mod inspect;
 #[cfg(feature = "rag")]
 pub mod kb;
+pub mod otel;
 #[cfg(any(feature = "plugins", feature = "wasm"))]
 pub mod plugin;
 pub mod run;
@@ -50,6 +51,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     }
     if cfg!(feature = "wasm") {
         features.push("wasm");
+    }
+    if cfg!(feature = "otel") {
+        features.push("otel");
     }
     if cfg!(feature = "serve") {
         features.push("serve");
