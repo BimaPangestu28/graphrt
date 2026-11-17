@@ -8,7 +8,8 @@ keywords = ["workflow", "agent", "llm", "cli", "runtime"]
 categories = ["command-line-utilities", "development-tools"]
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# `std::fs::File::lock` (run store) needs Rust 1.89; the libraries keep the workspace MSRV.
+rust-version = "1.89"
 license.workspace = true
 repository.workspace = true
 
@@ -45,7 +46,7 @@ mcp = ["dep:graphrt-mcp"]
 # OpenTelemetry traces and metrics over OTLP/HTTP (`--otel`, `--otel-stdout`).
 otel = ["dep:graphrt-otel"]
 # `graphrt serve`: HTTP + SSE API.
-serve = ["dep:axum", "tokio/rt-multi-thread", "tokio/net"]
+serve = ["dep:axum", "tokio/rt-multi-thread", "tokio/net", "tokio/sync"]
 
 [dependencies]
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }
@@ -66,7 +67,7 @@ serde.workspace = true
 serde_json.workspace = true
 indexmap.workspace = true
 serde-saphyr.workspace = true
-axum ={ version = "0.8", optional = true, default-features = false, features = ["http1", "json", "tokio"] }
+axum ={ version = "0.8", optional = true, default-features = false, features = ["http1", "json", "query", "tokio"] }
 
 [dev-dependencies]
 tower = { version = "0.5", default-features = false, features = ["util"] }

@@ -390,6 +390,13 @@ pub struct ServeArgs {
     /// Maximum request body size in bytes.
     #[arg(long, default_value_t = 2 * 1024 * 1024)]
     pub max_body_bytes: usize,
+    /// Directory for durable run records, events and snapshots (paused runs survive
+    /// restarts and can be resumed by id). Defaults to `$GRAPHRT_STORE`, else in memory.
+    #[arg(long, value_name = "DIR")]
+    pub store: Option<PathBuf>,
+    /// Delete stored runs (except running ones) not updated for this many days.
+    #[arg(long, value_name = "DAYS")]
+    pub store_ttl_days: Option<u64>,
     #[command(flatten)]
     pub services: ServiceArgs,
 }
