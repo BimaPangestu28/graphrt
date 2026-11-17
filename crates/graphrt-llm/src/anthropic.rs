@@ -7,12 +7,14 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
 use graphrt_core::event::Usage;
 use serde_json::{Map, Value as Json, json};
 
+use crate::credentials::{Credential, CredentialSource};
 use crate::error::LlmError;
 use crate::http::{Decoded, SseDecoder, build_client, send_sse};
 use crate::sse::SseEvent;
@@ -35,6 +37,12 @@ pub struct AnthropicConfig {
     /// Extra headers (e.g. `anthropic-beta`).
     pub headers: Vec<(String, String)>,
     pub connect_timeout: Duration,
+    /// Per-request credential source. When set it replaces `api_key`; its headers are
+    /// appended and its `base_url`, if any, overrides `base_url`. A 401/403 response
+    /// invalidates the credential and the request is retried once.
+    pub credentials: Option<Arc<dyn CredentialSource>>,
+    /// Provider name passed to the credential source (default `anthropic`).
+    pub credential_name: String,
 }
 
 impl fmt::Debug for AnthropicConfig {
@@ -43,6 +51,8 @@ impl fmt::Debug for AnthropicConfig {
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("headers", &self.headers.iter().map(|(k, _)| k).collect::<Vec<_>>())
+            .field("credentials", &self.credentials.as_ref().map(|_| "<source>"))
+            .field("credential_name", &self.credential_name)
             .finish_non_exhaustive()
     }
 }
@@ -54,6 +64,8 @@ impl Default for AnthropicConfig {
             api_key: None,
             headers: Vec::new(),
             connect_timeout: Duration::from_secs(10),
+            credentials: None,
+            credential_name: "anthropic".to_owned(),
         }
     }
 }
@@ -61,6 +73,18 @@ impl Default for AnthropicConfig {
 impl AnthropicConfig {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self { api_key: Some(api_key.into()), ..Self::default() }
+    }
+
+    /// Ask `source` for a credential before every request (see [`crate::credentials`]).
+    pub fn with_credentials(mut self, source: Arc<dyn CredentialSource>) -> Self {
+        self.credentials = Some(source);
+        self
+    }
+
+    /// Provider name passed to the credential source.
+    pub fn credential_name(mut self, name: impl Into<String>) -> Self {
+        self.credential_name = name.into();
+        self
     }
 }
 
@@ -84,19 +108,48 @@ impl AnthropicModel {
     }
 }
 
+impl AnthropicModel {
+    fn request(&self, body: &Json, credential: Option<&Credential>) -> reqwest::RequestBuilder {
+        let base = credential.and_then(|c| c.base_url.as_deref()).unwrap_or(&self.config.base_url);
+        let url = format!("{}/v1/messages", base.trim_end_matches('/'));
+        let mut builder = self.client.post(url).json(body).header("anthropic-version", ANTHROPIC_VERSION);
+        let key = credential.map(|c| c.secret.as_str()).or(self.config.api_key.as_deref());
+        if let Some(key) = key {
+            builder = builder.header("x-api-key", key);
+        }
+        for (k, v) in &self.config.headers {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+        if let Some(credential) = credential {
+            for (k, v) in &credential.headers {
+                builder = builder.header(k.as_str(), v.as_str());
+            }
+        }
+        builder
+    }
+}
+
 impl ChatModel for AnthropicModel {
     fn chat(&self, request: ChatRequest) -> BoxFuture<'_, Result<ChatStream, LlmError>> {
         Box::pin(async move {
             let body = build_body(&request)?;
-            let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
-            let mut builder = self.client.post(url).json(&body).header("anthropic-version", ANTHROPIC_VERSION);
-            if let Some(key) = &self.config.api_key {
-                builder = builder.header("x-api-key", key.as_str());
+            let name = self.config.credential_name.as_str();
+            let mut retried = false;
+            loop {
+                let credential = match &self.config.credentials {
+                    Some(source) => Some(source.credential(name).await?),
+                    None => None,
+                };
+                let result = send_sse(self.request(&body, credential.as_ref()), AnthropicDecoder::default()).await;
+                match (result, &self.config.credentials) {
+                    // The credential was rejected: drop it and retry once with a fresh one.
+                    (Err(LlmError::Auth(_)), Some(source)) if !retried => {
+                        source.invalidate(name);
+                        retried = true;
+                    }
+                    (result, _) => return result,
+                }
             }
-            for (k, v) in &self.config.headers {
-                builder = builder.header(k.as_str(), v.as_str());
-            }
-            send_sse(builder, AnthropicDecoder::default()).await
         })
     }
 }

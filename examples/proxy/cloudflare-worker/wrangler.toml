@@ -1,0 +1,15 @@
+name = "graphrt-llm-proxy"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+UPSTREAM_BASE_URL = "https://api.openai.com/v1"
+UPSTREAM_AUTH = "bearer"
+ALLOWED_MODELS = "gpt-4o-mini"
+ALLOWED_PATHS = "/chat/completions"
+TOKEN_TTL_SECS = "900"
+
+# Secrets (never in this file):
+#   wrangler secret put PROXY_JWT_SECRET   # 32+ random bytes, e.g. `openssl rand -hex 32`
+#   wrangler secret put UPSTREAM_API_KEY   # the provider key
+#   wrangler secret put DEMO_USER_TOKEN    # demo only; replace authenticateUser() with your auth

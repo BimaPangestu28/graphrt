@@ -33,6 +33,8 @@ WorkflowHandle
   .run(inputsJson, sysJson, listener) -> RunHandle
   .resume(snapshotJson, inputsJson, secretsJson, listener) -> RunHandle
   .catalogJson() / .warnings() / .name()
+Runtime.setCredentialProvider(provider, callback) // keys from Keychain / Keystore / your backend
+Runtime.clearCredentialProvider(provider)
 RunHandle
   .abort(reason) / .pause(reason) / .updateVariable(selector, valueJson)
   .isFinished() / .waitJson(timeoutMs)           // waitJson blocks: never on the UI thread
@@ -49,7 +51,8 @@ Config JSON (all keys optional):
 
 ```json
 {
-  "providers": { "OPENAI_API_KEY": "sk-...", "OLLAMA_HOST": "http://10.0.2.2:11434" },
+  "credentials": { "openai": { "source": "external" } },
+  "providers": { "OLLAMA_HOST": "http://10.0.2.2:11434" },
   "env": { "CRM_TOKEN": "..." },
   "limits": { "max_steps": 10000, "max_duration_ms": 120000, "default_node_timeout_ms": 60000 },
   "allow_private_network": false,
@@ -61,6 +64,110 @@ Config JSON (all keys optional):
 
 Listener callbacks run on graphrt's worker threads. Exceptions thrown inside a
 callback are swallowed so they cannot break the run.
+
+`providers` takes environment-style keys (`OPENAI_API_KEY`...). That is fine for
+desktop tools and tests, but **never ship a provider key in a mobile app**:
+anything in an APK/IPA can be extracted. Use `credentials` instead.
+
+## Credentials
+
+Declare providers in `credentials` and supply keys at run time (full guide:
+[credentials.md](credentials.md)):
+
+| Pattern | Config entry | The app's `CredentialProvider` returns |
+| --- | --- | --- |
+| Bring your own key | `"openai": {"source": "external"}` | the user's key from Keychain / Keystore |
+| Thin proxy | `"proxy": {"source": "external", "kind": "openai", "base_url": "https://llm-proxy.example.com/v1"}` | the user's session token (verified by your proxy) |
+| Token broker | `"proxy": {"source": "token_broker", "url": "https://llm-proxy.example.com/token", "app_auth": "external", "kind": "openai", "base_url": "https://llm-proxy.example.com/v1"}` | the session token, asked as provider `token_broker`; graphrt fetches and refreshes short-lived model tokens itself |
+
+`get_credential` runs on a background thread and may block (Keychain, IPC,
+network). Results are cached until `expiresAtMs` minus 60 s, or until the
+provider answers 401/403: then `invalidate` is called and `get_credential` is
+asked once more. Errors and exceptions from the callback fail only that model
+call, never the app.
+
+### Android: Keystore-backed storage
+
+```kotlin
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import uniffi.graphrt_ffi.*
+
+/** Bring-your-own-key: the user's key, encrypted with a Keystore-held master key. */
+class KeystoreCredentials(context: Context) : CredentialProvider {
+    private val prefs = EncryptedSharedPreferences.create(
+        context, "llm_keys",
+        MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+    )
+
+    override fun getCredential(provider: String): CredentialRecord {
+        val key = prefs.getString("key_$provider", null)
+            ?: throw GraphrtException.InvalidInput("no API key saved for $provider")
+        return CredentialRecord(secret = key, expiresAtMs = null, headersJson = null, baseUrl = null)
+    }
+
+    override fun invalidate(provider: String) {
+        // The provider rejected the key: ask the user to enter it again.
+        prefs.edit().remove("key_$provider").apply()
+    }
+}
+
+val runtime = Runtime("""{"credentials": {"openai": {"source": "external"}}}""")
+runtime.setCredentialProvider("*", KeystoreCredentials(applicationContext))
+```
+
+### iOS: Keychain
+
+```swift
+import Security
+
+/// Bring-your-own-key from the Keychain. For a token broker, return the user's
+/// session token when `provider == "token_broker"` instead.
+final class KeychainCredentials: CredentialProvider {
+    func getCredential(provider: String) throws -> CredentialRecord {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "llm-keys",
+            kSecAttrAccount as String: provider,
+            kSecReturnData as String: true,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data, let key = String(data: data, encoding: .utf8) else {
+            throw GraphrtError.InvalidInput(message: "no API key saved for \(provider)")
+        }
+        return CredentialRecord(secret: key, expiresAtMs: nil, headersJson: nil, baseUrl: nil)
+    }
+
+    func invalidate(provider: String) {
+        // The provider rejected the key; prompt the user on the main actor.
+    }
+}
+
+let runtime = try Runtime(configJson: #"{"credentials": {"openai": {"source": "external"}}}"#)
+runtime.setCredentialProvider(provider: "*", callback: KeychainCredentials())
+```
+
+### Token broker with your sign-in
+
+```kotlin
+// Config: graphrt asks your backend for short-lived tokens and refreshes them itself.
+val runtime = Runtime("""
+  {"credentials": {"proxy": {
+     "source": "token_broker", "url": "https://llm-proxy.example.com/token",
+     "app_auth": "external", "kind": "openai", "base_url": "https://llm-proxy.example.com/v1"}}}
+""")
+runtime.setCredentialProvider("token_broker", object : CredentialProvider {
+    override fun getCredential(provider: String) =
+        CredentialRecord(secret = auth.currentSessionToken(), expiresAtMs = null, headersJson = null, baseUrl = null)
+    override fun invalidate(provider: String) { auth.refreshSession() }
+})
+// Workflows use: model: { provider: proxy, name: gpt-4o-mini }
+```
+
+Server examples for the proxy and broker: [`examples/proxy/`](../examples/proxy/).
 
 ## Android (Kotlin)
 
@@ -74,7 +181,8 @@ class ChatListener(private val onText: (String) -> Unit) : EventListener {
 }
 
 // Off the main thread (Runtime() may perform MCP handshakes):
-val runtime = Runtime("""{"providers": {"OPENAI_API_KEY": "$key"}}""")
+val runtime = Runtime("""{"credentials": {"openai": {"source": "external"}}}""")
+runtime.setCredentialProvider("*", KeystoreCredentials(applicationContext)) // see Credentials
 val workflow = runtime.loadWorkflow(assets.open("chatbot.yaml").bufferedReader().readText())
 
 val run = workflow.run("{}", """{"query": "What is a DAG?"}""", ChatListener { chunk ->
@@ -105,9 +213,10 @@ final class Listener: EventListener {
     @Published var answer = ""
     private var workflow: WorkflowHandle?
 
-    func load(yaml: String, apiKey: String) async throws {
+    func load(yaml: String) async throws {
         workflow = try await Task.detached {
-            let runtime = try Runtime(configJson: #"{"providers": {"OPENAI_API_KEY": "\#(apiKey)"}}"#)
+            let runtime = try Runtime(configJson: #"{"credentials": {"openai": {"source": "external"}}}"#)
+            runtime.setCredentialProvider(provider: "*", callback: KeychainCredentials()) // see Credentials
             return try runtime.loadWorkflow(document: yaml)
         }.value
     }
@@ -224,7 +333,12 @@ jobs:
   typed errors, pause/resume through JSON, abort, panicking listeners, WASM
   plugin registration.
 - Real FFI boundary: the generated Python bindings were exercised against the
-  Linux `cdylib` (callbacks and typed exceptions).
+  Linux `cdylib` (callbacks and typed exceptions), including a foreign
+  `CredentialProvider` supplying the key for an LLM call to a local server.
+- Credentials (`crates/graphrt-ffi/tests/credentials.rs`): host keys used per
+  request, 401 -> `invalidate` -> one retry, caching, failing / panicking
+  callbacks, config without any provider key. Kotlin / Swift snippets above are
+  checked against the generated bindings' signatures but not compiled.
 - Android: all three ABIs compile and link with NDK r28c; not yet run on a
   device or emulator.
 - iOS: pure-Rust crates (`graphrt-core`, `graphrt-wasm`, `graphrt-doc`,

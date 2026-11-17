@@ -526,6 +526,10 @@ def _uniffi_check_contract_api_version(lib):
 def _uniffi_check_api_checksums(lib):
     if lib.uniffi_graphrt_ffi_checksum_func_graphrt_version() != 60389:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_credentialprovider_get_credential() != 19341:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_credentialprovider_invalidate() != 49006:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_eventlistener_on_event() != 49206:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_eventlistener_on_answer_chunk() != 15801:
@@ -544,9 +548,13 @@ def _uniffi_check_api_checksums(lib):
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runtime_catalog_json() != 58775:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider() != 33078:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runtime_load_workflow() != 197:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin() != 10329:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider() != 12618:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_constructor_runtime_new() != 50642:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -594,6 +602,12 @@ _UniffiLib.ffi_graphrt_ffi_uniffi_contract_version.restype = ctypes.c_uint32
 _UniffiLib.uniffi_graphrt_ffi_checksum_func_graphrt_version.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_func_graphrt_version.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_credentialprovider_get_credential.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_credentialprovider_get_credential.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_credentialprovider_invalidate.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_credentialprovider_invalidate.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_eventlistener_on_event.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_eventlistener_on_event.restype = ctypes.c_uint16
@@ -621,12 +635,18 @@ _UniffiLib.uniffi_graphrt_ffi_checksum_method_runhandle_wait_json.restype = ctyp
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_catalog_json.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_catalog_json.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_load_workflow.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_load_workflow.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_constructor_runtime_new.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_constructor_runtime_new.restype = ctypes.c_uint16
@@ -652,6 +672,18 @@ _UniffiLib.uniffi_graphrt_ffi_fn_func_graphrt_version.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_func_graphrt_version.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_credentialprovider_get_credential.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_credentialprovider_get_credential.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_credentialprovider_invalidate.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_credentialprovider_invalidate.restype = None
 _UniffiLib.uniffi_graphrt_ffi_fn_method_eventlistener_on_event.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -705,6 +737,12 @@ _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_catalog_json.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_catalog_json.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_clear_credential_provider.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_clear_credential_provider.restype = None
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_load_workflow.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -717,6 +755,13 @@ _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_register_wasm_plugin.argtypes = 
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_register_wasm_plugin.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_set_credential_provider.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_set_credential_provider.restype = None
 _UniffiLib.uniffi_graphrt_ffi_fn_constructor_runtime_new.argtypes = (
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -759,6 +804,16 @@ _UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_warnings.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_warnings.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_clone_credentialprovider.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_clone_credentialprovider.restype = ctypes.c_uint64
+_UniffiLib.uniffi_graphrt_ffi_fn_free_credentialprovider.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_free_credentialprovider.restype = None
 _UniffiLib.uniffi_graphrt_ffi_fn_clone_eventlistener.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -799,6 +854,27 @@ _UniffiLib.uniffi_graphrt_ffi_fn_free_workflowhandle.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_free_workflowhandle.restype = None
+_UNIFFI_CALLBACK_INTERFACE_GRAPHRT_FFI_CREDENTIAL_PROVIDER_METHOD0 = ctypes.CFUNCTYPE(None,ctypes.c_uint64,_UniffiRustBuffer,ctypes.POINTER(_UniffiRustBuffer),
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UNIFFI_CALLBACK_INTERFACE_GRAPHRT_FFI_CREDENTIAL_PROVIDER_METHOD1 = ctypes.CFUNCTYPE(None,ctypes.c_uint64,_UniffiRustBuffer,ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UNIFFI_CALLBACK_INTERFACE_CLONE_GRAPHRT_FFI_CREDENTIAL_PROVIDER = ctypes.CFUNCTYPE(ctypes.c_uint64,ctypes.c_uint64,
+)
+_UNIFFI_CALLBACK_INTERFACE_FREE_GRAPHRT_FFI_CREDENTIAL_PROVIDER = ctypes.CFUNCTYPE(None,ctypes.c_uint64,
+)
+class _UniffiVTableCallbackInterfaceGraphrtFfiCredentialProvider(ctypes.Structure):
+    _fields_ = [
+        ("uniffi_free", _UNIFFI_CALLBACK_INTERFACE_FREE_GRAPHRT_FFI_CREDENTIAL_PROVIDER),
+        ("uniffi_clone", _UNIFFI_CALLBACK_INTERFACE_CLONE_GRAPHRT_FFI_CREDENTIAL_PROVIDER),
+        ("get_credential", _UNIFFI_CALLBACK_INTERFACE_GRAPHRT_FFI_CREDENTIAL_PROVIDER_METHOD0),
+        ("invalidate", _UNIFFI_CALLBACK_INTERFACE_GRAPHRT_FFI_CREDENTIAL_PROVIDER_METHOD1),
+    ]
+_UniffiLib.uniffi_graphrt_ffi_fn_init_callback_vtable_credentialprovider.argtypes = (
+    ctypes.POINTER(_UniffiVTableCallbackInterfaceGraphrtFfiCredentialProvider),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_init_callback_vtable_credentialprovider.restype = None
 _UNIFFI_CALLBACK_INTERFACE_GRAPHRT_FFI_EVENT_LISTENER_METHOD0 = ctypes.CFUNCTYPE(None,ctypes.c_uint64,_UniffiRustBuffer,ctypes.c_void_p,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
@@ -864,6 +940,120 @@ class _UniffiFfiConverterString:
         with _UniffiRustBuffer.alloc_with_builder() as builder:
             builder.write(value.encode("utf-8"))
             return builder.finalize()
+
+class _UniffiFfiConverterUInt64(_UniffiConverterPrimitiveInt):
+    CLASS_NAME = "u64"
+    VALUE_MIN = 0
+    VALUE_MAX = 2**64
+
+    @staticmethod
+    def read(buf):
+        return buf.read_u64()
+
+    @staticmethod
+    def write(value, buf):
+        buf.write_u64(value)
+
+class _UniffiFfiConverterOptionalUInt64(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiFfiConverterUInt64.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiFfiConverterUInt64.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiFfiConverterUInt64.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+class _UniffiFfiConverterOptionalString(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiFfiConverterString.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiFfiConverterString.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiFfiConverterString.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+@dataclass
+class CredentialRecord:
+    """
+    A credential returned by the host.
+"""
+    def __init__(self, *, secret:str, expires_at_ms:typing.Optional[int], headers_json:typing.Optional[str], base_url:typing.Optional[str]):
+        self.secret = secret
+        self.expires_at_ms = expires_at_ms
+        self.headers_json = headers_json
+        self.base_url = base_url
+        
+        
+
+    
+    def __str__(self):
+        return "CredentialRecord(secret={}, expires_at_ms={}, headers_json={}, base_url={})".format(self.secret, self.expires_at_ms, self.headers_json, self.base_url)
+    def __eq__(self, other):
+        if self.secret != other.secret:
+            return False
+        if self.expires_at_ms != other.expires_at_ms:
+            return False
+        if self.headers_json != other.headers_json:
+            return False
+        if self.base_url != other.base_url:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeCredentialRecord(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return CredentialRecord(
+            secret=_UniffiFfiConverterString.read(buf),
+            expires_at_ms=_UniffiFfiConverterOptionalUInt64.read(buf),
+            headers_json=_UniffiFfiConverterOptionalString.read(buf),
+            base_url=_UniffiFfiConverterOptionalString.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.secret)
+        _UniffiFfiConverterOptionalUInt64.check_lower(value.expires_at_ms)
+        _UniffiFfiConverterOptionalString.check_lower(value.headers_json)
+        _UniffiFfiConverterOptionalString.check_lower(value.base_url)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.secret, buf)
+        _UniffiFfiConverterOptionalUInt64.write(value.expires_at_ms, buf)
+        _UniffiFfiConverterOptionalString.write(value.headers_json, buf)
+        _UniffiFfiConverterOptionalString.write(value.base_url, buf)
 
 
 
@@ -1022,6 +1212,206 @@ class _UniffiFfiConverterTypeGraphrtError(_UniffiConverterRustBuffer):
         if isinstance(value, GraphrtError.Runtime):
             buf.write_i32(5)
             _UniffiFfiConverterString.write(value.message, buf)
+
+
+class CredentialProvider():
+    """
+    Supplies model credentials. Implemented in the host language.
+
+    `get_credential` may block (Keychain, IPC, a network call to your backend);
+    it is invoked on a background thread. Results are cached until
+    `expires_at_ms` (minus a refresh margin) or until the provider rejects the
+    credential, in which case `invalidate` is called and `get_credential` is
+    asked once more. The provider name `token_broker` is used for the app's own
+    session token when a token broker entry sets `"app_auth": "external"`.
+"""
+    
+    def get_credential(self, provider: str) -> CredentialRecord:
+        """
+        Credential for `provider` (the provider name from the runtime config).
+"""
+        raise NotImplementedError
+    def invalidate(self, provider: str) -> None:
+        """
+        The last credential for `provider` was rejected; drop any cached copy.
+"""
+        raise NotImplementedError
+
+class CredentialProviderImpl(CredentialProvider):
+    """
+    Supplies model credentials. Implemented in the host language.
+
+    `get_credential` may block (Keychain, IPC, a network call to your backend);
+    it is invoked on a background thread. Results are cached until
+    `expires_at_ms` (minus a refresh margin) or until the provider rejects the
+    credential, in which case `invalidate` is called and `get_credential` is
+    asked once more. The provider name `token_broker` is used for the app's own
+    session token when a token broker entry sets `"app_auth": "external"`.
+"""
+    
+    _handle: ctypes.c_uint64
+    
+    def __init__(self, *args, **kwargs):
+        raise ValueError("This class has no default constructor")
+
+    def __del__(self):
+        # In case of partial initialization of instances.
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            _uniffi_rust_call(_UniffiLib.uniffi_graphrt_ffi_fn_free_credentialprovider, handle)
+
+    def _uniffi_clone_handle(self):
+        return _uniffi_rust_call(_UniffiLib.uniffi_graphrt_ffi_fn_clone_credentialprovider, self._handle)
+
+    # Used by alternative constructors or any methods which return this type.
+    @classmethod
+    def _uniffi_make_instance(cls, handle):
+        # Lightly yucky way to bypass the usual __init__ logic
+        # and just create a new instance with the required handle.
+        inst = cls.__new__(cls)
+        inst._handle = handle
+        return inst
+    def get_credential(self, provider: str) -> CredentialRecord:
+        """
+        Credential for `provider` (the provider name from the runtime config).
+"""
+        
+        _UniffiFfiConverterString.check_lower(provider)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(provider),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeCredentialRecord.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_credentialprovider_get_credential,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def invalidate(self, provider: str) -> None:
+        """
+        The last credential for `provider` was rejected; drop any cached copy.
+"""
+        
+        _UniffiFfiConverterString.check_lower(provider)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(provider),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_credentialprovider_invalidate,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+
+
+
+
+# Put all the bits inside a class to keep the top-level namespace clean
+class _UniffiTraitImplCredentialProviderImpl:
+    # For each method, generate a callback function to pass to Rust
+
+    @_UNIFFI_CALLBACK_INTERFACE_GRAPHRT_FFI_CREDENTIAL_PROVIDER_METHOD0
+    def get_credential(
+            uniffi_handle,
+            provider,
+            uniffi_out_return,
+            uniffi_call_status_ptr,
+        ):
+        uniffi_obj = _UniffiFfiConverterTypeCredentialProvider._handle_map.get(uniffi_handle)
+        def make_call():
+            uniffi_args = (_UniffiFfiConverterString.lift(provider), )
+            uniffi_method = uniffi_obj.get_credential
+            return uniffi_method(*uniffi_args)
+        def write_return_value(v):
+            uniffi_out_return[0] = _UniffiFfiConverterTypeCredentialRecord.lower(v)
+        _uniffi_trait_interface_call_with_error(
+                uniffi_call_status_ptr.contents,
+                make_call,
+                write_return_value,
+                GraphrtError,
+                _UniffiFfiConverterTypeGraphrtError.lower,
+        )
+
+    @_UNIFFI_CALLBACK_INTERFACE_GRAPHRT_FFI_CREDENTIAL_PROVIDER_METHOD1
+    def invalidate(
+            uniffi_handle,
+            provider,
+            uniffi_out_return,
+            uniffi_call_status_ptr,
+        ):
+        uniffi_obj = _UniffiFfiConverterTypeCredentialProvider._handle_map.get(uniffi_handle)
+        def make_call():
+            uniffi_args = (_UniffiFfiConverterString.lift(provider), )
+            uniffi_method = uniffi_obj.invalidate
+            return uniffi_method(*uniffi_args)
+        write_return_value = lambda v: None
+        _uniffi_trait_interface_call(
+                uniffi_call_status_ptr.contents,
+                make_call,
+                write_return_value,
+        )
+
+    @_UNIFFI_CALLBACK_INTERFACE_FREE_GRAPHRT_FFI_CREDENTIAL_PROVIDER
+    def _uniffi_free(uniffi_handle):
+        _UniffiFfiConverterTypeCredentialProvider._handle_map.remove(uniffi_handle)
+
+    @_UNIFFI_CALLBACK_INTERFACE_CLONE_GRAPHRT_FFI_CREDENTIAL_PROVIDER
+    def _uniffi_clone(uniffi_handle):
+        return _UniffiFfiConverterTypeCredentialProvider._handle_map.clone(uniffi_handle)
+
+    # Generate the FFI VTable.  This has a field for each callback interface method.
+    _uniffi_vtable = _UniffiVTableCallbackInterfaceGraphrtFfiCredentialProvider(
+        _uniffi_free,
+        _uniffi_clone,
+        get_credential,
+        invalidate,
+    )
+    # Send Rust a pointer to the VTable.  Note: this means we need to keep the struct alive forever,
+    # or else bad things will happen when Rust tries to access it.
+    _UniffiLib.uniffi_graphrt_ffi_fn_init_callback_vtable_credentialprovider(ctypes.byref(_uniffi_vtable))
+
+class _UniffiFfiConverterTypeCredentialProvider:
+    _handle_map = _UniffiHandleMap()
+
+    @staticmethod
+    def lift(value: int):
+        if (value & 1) == 0:
+            # Rust-generated handle, construct a new class that uses the handle to implement the
+            # interface
+            return CredentialProviderImpl._uniffi_make_instance(value)
+        else:
+            # Python-generated handle, get the object from the handle map
+            return _UniffiFfiConverterTypeCredentialProvider._handle_map.remove(value)
+
+    @staticmethod
+    def check_lower(value: CredentialProvider):
+        if not isinstance(value, CredentialProvider):
+            raise TypeError("Expected CredentialProvider subclass, {} found".format(type(value).__name__))
+
+    @staticmethod
+    def lower(value: CredentialProvider):
+         if isinstance(value, CredentialProviderImpl):
+            # Rust-implementated object.  Clone the handle and return it
+            return value._uniffi_clone_handle()
+         else:
+            # Python-implementated object, generate a new vtable handle and return that.
+            return _UniffiFfiConverterTypeCredentialProvider._handle_map.insert(value)
+
+    @classmethod
+    def read(cls, buf: _UniffiRustBuffer):
+        ptr = buf.read_u64()
+        if ptr == 0:
+            raise InternalError("Raw handle value was null")
+        return cls.lift(ptr)
+
+    @classmethod
+    def write(cls, value: CredentialProvider, buf: _UniffiRustBuffer):
+        buf.write_u64(cls.lower(value))
 
 
 class EventListener():
@@ -1275,44 +1665,6 @@ class _UniffiFfiConverterBoolean:
     @classmethod
     def write(cls, value, buf):
         buf.write_u8(value)
-
-class _UniffiFfiConverterUInt64(_UniffiConverterPrimitiveInt):
-    CLASS_NAME = "u64"
-    VALUE_MIN = 0
-    VALUE_MAX = 2**64
-
-    @staticmethod
-    def read(buf):
-        return buf.read_u64()
-
-    @staticmethod
-    def write(value, buf):
-        buf.write_u64(value)
-
-class _UniffiFfiConverterOptionalString(_UniffiConverterRustBuffer):
-    @classmethod
-    def check_lower(cls, value):
-        if value is not None:
-            _UniffiFfiConverterString.check_lower(value)
-
-    @classmethod
-    def write(cls, value, buf):
-        if value is None:
-            buf.write_u8(0)
-            return
-
-        buf.write_u8(1)
-        _UniffiFfiConverterString.write(value, buf)
-
-    @classmethod
-    def read(cls, buf):
-        flag = buf.read_u8()
-        if flag == 0:
-            return None
-        elif flag == 1:
-            return _UniffiFfiConverterString.read(buf)
-        else:
-            raise InternalError("Unexpected flag byte for optional type")
 
 
 class RunHandleProtocol(typing.Protocol):
@@ -1757,6 +2109,11 @@ class RuntimeProtocol(typing.Protocol):
         Catalog of every node kind available in this runtime, as a JSON array.
 """
         raise NotImplementedError
+    def clear_credential_provider(self, provider: str) -> None:
+        """
+        Remove the credential callback registered for `provider` (or `"*"`).
+"""
+        raise NotImplementedError
     def load_workflow(self, document: str) -> WorkflowHandle:
         """
         Parse and compile a workflow (YAML or JSON).
@@ -1766,6 +2123,13 @@ class RuntimeProtocol(typing.Protocol):
         """
         Load a sandboxed WebAssembly plugin; its node kinds become available to
         workflows loaded afterwards. Returns the registered kinds.
+"""
+        raise NotImplementedError
+    def set_credential_provider(self, provider: str,callback: CredentialProvider) -> None:
+        """
+        Register the host's credential callback for `provider` (a name from the
+        config's `credentials` section), or `"*"` for every provider. Replaces any
+        previous callback. Takes effect for requests made after the call.
 """
         raise NotImplementedError
 
@@ -1827,6 +2191,24 @@ class Runtime(RuntimeProtocol):
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
+    def clear_credential_provider(self, provider: str) -> None:
+        """
+        Remove the credential callback registered for `provider` (or `"*"`).
+"""
+        
+        _UniffiFfiConverterString.check_lower(provider)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(provider),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_clear_credential_provider,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def load_workflow(self, document: str) -> WorkflowHandle:
         """
         Parse and compile a workflow (YAML or JSON).
@@ -1861,6 +2243,29 @@ class Runtime(RuntimeProtocol):
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
             _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_register_wasm_plugin,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def set_credential_provider(self, provider: str,callback: CredentialProvider) -> None:
+        """
+        Register the host's credential callback for `provider` (a name from the
+        config's `credentials` section), or `"*"` for every provider. Replaces any
+        previous callback. Takes effect for requests made after the call.
+"""
+        
+        _UniffiFfiConverterString.check_lower(provider)
+
+        _UniffiFfiConverterTypeCredentialProvider.check_lower(callback)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(provider),
+            _UniffiFfiConverterTypeCredentialProvider.lower(callback),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_set_credential_provider,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -1911,7 +2316,10 @@ def graphrt_version() -> str:
 __all__ = [
     "InternalError",
     "GraphrtError",
+    "CredentialRecord",
     "graphrt_version",
+    "CredentialProviderImpl",
+    "CredentialProvider",
     "EventListenerImpl",
     "EventListener",
     "RunHandle",

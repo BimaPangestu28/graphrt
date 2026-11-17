@@ -576,6 +576,273 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 /**
+ * Supplies model credentials. Implemented in the host language.
+ *
+ * `get_credential` may block (Keychain, IPC, a network call to your backend);
+ * it is invoked on a background thread. Results are cached until
+ * `expires_at_ms` (minus a refresh margin) or until the provider rejects the
+ * credential, in which case `invalidate` is called and `get_credential` is
+ * asked once more. The provider name `token_broker` is used for the app's own
+ * session token when a token broker entry sets `"app_auth": "external"`.
+ */
+public protocol CredentialProvider: AnyObject, Sendable {
+    
+    /**
+     * Credential for `provider` (the provider name from the runtime config).
+     */
+    func getCredential(provider: String) throws  -> CredentialRecord
+    
+    /**
+     * The last credential for `provider` was rejected; drop any cached copy.
+     */
+    func invalidate(provider: String) 
+    
+}
+/**
+ * Supplies model credentials. Implemented in the host language.
+ *
+ * `get_credential` may block (Keychain, IPC, a network call to your backend);
+ * it is invoked on a background thread. Results are cached until
+ * `expires_at_ms` (minus a refresh margin) or until the provider rejects the
+ * credential, in which case `invalidate` is called and `get_credential` is
+ * asked once more. The provider name `token_broker` is used for the app's own
+ * session token when a token broker entry sets `"app_auth": "external"`.
+ */
+open class CredentialProviderImpl: CredentialProvider, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_graphrt_ffi_fn_clone_credentialprovider(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_graphrt_ffi_fn_free_credentialprovider(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Credential for `provider` (the provider name from the runtime config).
+     */
+open func getCredential(provider: String)throws  -> CredentialRecord  {
+    return try  FfiConverterTypeCredentialRecord_lift(try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_credentialprovider_get_credential(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(provider),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The last credential for `provider` was rejected; drop any cached copy.
+     */
+open func invalidate(provider: String)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_credentialprovider_invalidate(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(provider),uniffiCallStatus
+    )
+}
+}
+    
+
+    
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceCredentialProvider {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceCredentialProvider = UniffiVTableCallbackInterfaceCredentialProvider(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeCredentialProvider.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface CredentialProvider: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeCredentialProvider.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface CredentialProvider: handle missing in uniffiClone")
+            }
+        },
+        getCredential: { (
+            uniffiHandle: UInt64,
+            provider: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> CredentialRecord in
+                guard let uniffiObj = try? FfiConverterTypeCredentialProvider.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.getCredential(
+                     provider: try FfiConverterString.lift(provider)
+                )
+            }
+
+            
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeCredentialRecord_lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeGraphrtError_lower
+            )
+        },
+        invalidate: { (
+            uniffiHandle: UInt64,
+            provider: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCredentialProvider.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.invalidate(
+                     provider: try FfiConverterString.lift(provider)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceCredentialProvider> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceCredentialProvider>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitCredentialProvider() {
+    uniffi_graphrt_ffi_fn_init_callback_vtable_credentialprovider(UniffiCallbackInterfaceCredentialProvider.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCredentialProvider: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<CredentialProvider>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = CredentialProvider
+
+    public static func lift(_ handle: UInt64) throws -> CredentialProvider {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return CredentialProviderImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: CredentialProvider) -> UInt64 {
+         if let rustImpl = value as? CredentialProviderImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CredentialProvider {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: CredentialProvider, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCredentialProvider_lift(_ handle: UInt64) throws -> CredentialProvider {
+    return try FfiConverterTypeCredentialProvider.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCredentialProvider_lower(_ value: CredentialProvider) -> UInt64 {
+    return FfiConverterTypeCredentialProvider.lower(value)
+}
+
+
+
+
+
+
+/**
  * Receives the events of one run. Implemented in the host language.
  *
  * Callbacks run on a background thread; marshal to your UI thread yourself.
@@ -1082,6 +1349,11 @@ public protocol RuntimeProtocol: AnyObject, Sendable {
     func catalogJson()  -> String
     
     /**
+     * Remove the credential callback registered for `provider` (or `"*"`).
+     */
+    func clearCredentialProvider(provider: String) 
+    
+    /**
      * Parse and compile a workflow (YAML or JSON).
      */
     func loadWorkflow(document: String) throws  -> WorkflowHandle
@@ -1091,6 +1363,13 @@ public protocol RuntimeProtocol: AnyObject, Sendable {
      * workflows loaded afterwards. Returns the registered kinds.
      */
     func registerWasmPlugin(wasm: Data) throws  -> [String]
+    
+    /**
+     * Register the host's credential callback for `provider` (a name from the
+     * config's `credentials` section), or `"*"` for every provider. Replaces any
+     * previous callback. Takes effect for requests made after the call.
+     */
+    func setCredentialProvider(provider: String, callback: CredentialProvider) 
     
 }
 /**
@@ -1176,6 +1455,18 @@ open func catalogJson() -> String  {
 }
     
     /**
+     * Remove the credential callback registered for `provider` (or `"*"`).
+     */
+open func clearCredentialProvider(provider: String)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_clear_credential_provider(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(provider),uniffiCallStatus
+    )
+}
+}
+    
+    /**
      * Parse and compile a workflow (YAML or JSON).
      */
 open func loadWorkflow(document: String)throws  -> WorkflowHandle  {
@@ -1200,6 +1491,21 @@ open func registerWasmPlugin(wasm: Data)throws  -> [String]  {
         FfiConverterData.lower(wasm),uniffiCallStatus
     )
 })
+}
+    
+    /**
+     * Register the host's credential callback for `provider` (a name from the
+     * config's `credentials` section), or `"*"` for every provider. Replaces any
+     * previous callback. Takes effect for requests made after the call.
+     */
+open func setCredentialProvider(provider: String, callback: CredentialProvider)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_set_credential_provider(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(provider),
+        FfiConverterTypeCredentialProvider_lower(callback),uniffiCallStatus
+    )
+}
 }
     
 
@@ -1478,6 +1784,95 @@ public func FfiConverterTypeWorkflowHandle_lower(_ value: WorkflowHandle) -> UIn
 
 
 /**
+ * A credential returned by the host.
+ */
+public struct CredentialRecord: Equatable, Hashable {
+    /**
+     * API key or bearer token for the provider (or the app's token for a proxy).
+     */
+    public var secret: String
+    /**
+     * Absolute expiry in Unix milliseconds; `None` caches until a 401/403.
+     */
+    public var expiresAtMs: UInt64?
+    /**
+     * Extra request headers as a JSON object (`{"x-tenant": "acme"}`), or `None`.
+     */
+    public var headersJson: String?
+    /**
+     * Endpoint override for this credential (e.g. a regional proxy), or `None`.
+     */
+    public var baseUrl: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * API key or bearer token for the provider (or the app's token for a proxy).
+         */secret: String, 
+        /**
+         * Absolute expiry in Unix milliseconds; `None` caches until a 401/403.
+         */expiresAtMs: UInt64?, 
+        /**
+         * Extra request headers as a JSON object (`{"x-tenant": "acme"}`), or `None`.
+         */headersJson: String?, 
+        /**
+         * Endpoint override for this credential (e.g. a regional proxy), or `None`.
+         */baseUrl: String?) {
+        self.secret = secret
+        self.expiresAtMs = expiresAtMs
+        self.headersJson = headersJson
+        self.baseUrl = baseUrl
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CredentialRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCredentialRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CredentialRecord {
+        return
+            try CredentialRecord(
+                secret: FfiConverterString.read(from: &buf), 
+                expiresAtMs: FfiConverterOptionUInt64.read(from: &buf), 
+                headersJson: FfiConverterOptionString.read(from: &buf), 
+                baseUrl: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CredentialRecord, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.secret, into: &buf)
+        FfiConverterOptionUInt64.write(value.expiresAtMs, into: &buf)
+        FfiConverterOptionString.write(value.headersJson, into: &buf)
+        FfiConverterOptionString.write(value.baseUrl, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCredentialRecord_lift(_ buf: RustBuffer) throws -> CredentialRecord {
+    return try FfiConverterTypeCredentialRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCredentialRecord_lower(_ value: CredentialRecord) -> RustBuffer {
+    return FfiConverterTypeCredentialRecord.lower(value)
+}
+
+
+/**
  * Errors surfaced to foreign code as exceptions.
  */
 public 
@@ -1612,6 +2007,30 @@ public func FfiConverterTypeGraphrtError_lower(_ value: GraphrtError) -> RustBuf
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
+    typealias SwiftType = UInt64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
     typealias SwiftType = String?
 
@@ -1713,10 +2132,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_graphrt_ffi_checksum_method_runtime_catalog_json() != 58775) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider() != 33078) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_graphrt_ffi_checksum_method_runtime_load_workflow() != 197) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin() != 10329) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider() != 12618) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_graphrt_ffi_checksum_method_workflowhandle_catalog_json() != 16429) {
@@ -1737,10 +2162,17 @@ private let initializationResult: InitializationResult = {
     if (uniffi_graphrt_ffi_checksum_method_workflowhandle_warnings() != 34745) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_graphrt_ffi_checksum_method_credentialprovider_get_credential() != 19341) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_credentialprovider_invalidate() != 49006) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_graphrt_ffi_checksum_constructor_runtime_new() != 50642) {
         return InitializationResult.apiChecksumMismatch
     }
 
+    uniffiCallbackInitCredentialProvider()
     uniffiCallbackInitEventListener()
     return InitializationResult.ok
 }()

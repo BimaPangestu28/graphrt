@@ -37,7 +37,7 @@ sha2 = { version = "0.10", optional = true, default-features = false }
 
 [dev-dependencies]
 graphrt-core = { workspace = true, features = ["tokio", "jinja"] }
-tokio = { workspace = true, features = ["rt", "macros", "time", "net", "io-util", "sync"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
 
 [lints]
 workspace = true

@@ -264,6 +264,20 @@ typedef void (*UniffiCallbackInterfaceEventListenerMethod2)(uint64_t, RustBuffer
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CREDENTIAL_PROVIDER_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CREDENTIAL_PROVIDER_METHOD0
+typedef void (*UniffiCallbackInterfaceCredentialProviderMethod0)(uint64_t, RustBuffer, RustBuffer* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CREDENTIAL_PROVIDER_METHOD1
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CREDENTIAL_PROVIDER_METHOD1
+typedef void (*UniffiCallbackInterfaceCredentialProviderMethod1)(uint64_t, RustBuffer, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_EVENT_LISTENER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_EVENT_LISTENER
 typedef struct UniffiVTableCallbackInterfaceEventListener {
@@ -273,6 +287,16 @@ typedef struct UniffiVTableCallbackInterfaceEventListener {
     UniffiCallbackInterfaceEventListenerMethod1 _Nonnull onAnswerChunk;
     UniffiCallbackInterfaceEventListenerMethod2 _Nonnull onFinish;
 } UniffiVTableCallbackInterfaceEventListener;
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_CREDENTIAL_PROVIDER
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_CREDENTIAL_PROVIDER
+typedef struct UniffiVTableCallbackInterfaceCredentialProvider {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceCredentialProviderMethod0 _Nonnull getCredential;
+    UniffiCallbackInterfaceCredentialProviderMethod1 _Nonnull invalidate;
+} UniffiVTableCallbackInterfaceCredentialProvider;
 
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CLONE_EVENTLISTENER
@@ -360,6 +384,11 @@ uint64_t uniffi_graphrt_ffi_fn_constructor_runtime_new(RustBuffer config_json, R
 RustBuffer uniffi_graphrt_ffi_fn_method_runtime_catalog_json(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_CLEAR_CREDENTIAL_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_CLEAR_CREDENTIAL_PROVIDER
+void uniffi_graphrt_ffi_fn_method_runtime_clear_credential_provider(uint64_t ptr, RustBuffer provider, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_LOAD_WORKFLOW
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_LOAD_WORKFLOW
 uint64_t uniffi_graphrt_ffi_fn_method_runtime_load_workflow(uint64_t ptr, RustBuffer document, RustCallStatus *_Nonnull out_status
@@ -368,6 +397,11 @@ uint64_t uniffi_graphrt_ffi_fn_method_runtime_load_workflow(uint64_t ptr, RustBu
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_REGISTER_WASM_PLUGIN
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_REGISTER_WASM_PLUGIN
 RustBuffer uniffi_graphrt_ffi_fn_method_runtime_register_wasm_plugin(uint64_t ptr, RustBuffer wasm, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_SET_CREDENTIAL_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_SET_CREDENTIAL_PROVIDER
+void uniffi_graphrt_ffi_fn_method_runtime_set_credential_provider(uint64_t ptr, RustBuffer provider, uint64_t callback, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CLONE_WORKFLOWHANDLE
@@ -408,6 +442,31 @@ uint64_t uniffi_graphrt_ffi_fn_method_workflowhandle_run(uint64_t ptr, RustBuffe
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_WORKFLOWHANDLE_WARNINGS
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_WORKFLOWHANDLE_WARNINGS
 RustBuffer uniffi_graphrt_ffi_fn_method_workflowhandle_warnings(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CLONE_CREDENTIALPROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CLONE_CREDENTIALPROVIDER
+uint64_t uniffi_graphrt_ffi_fn_clone_credentialprovider(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_FREE_CREDENTIALPROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_FREE_CREDENTIALPROVIDER
+void uniffi_graphrt_ffi_fn_free_credentialprovider(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_INIT_CALLBACK_VTABLE_CREDENTIALPROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_INIT_CALLBACK_VTABLE_CREDENTIALPROVIDER
+void uniffi_graphrt_ffi_fn_init_callback_vtable_credentialprovider(const UniffiVTableCallbackInterfaceCredentialProvider* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_CREDENTIALPROVIDER_GET_CREDENTIAL
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_CREDENTIALPROVIDER_GET_CREDENTIAL
+RustBuffer uniffi_graphrt_ffi_fn_method_credentialprovider_get_credential(uint64_t ptr, RustBuffer provider, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_CREDENTIALPROVIDER_INVALIDATE
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_CREDENTIALPROVIDER_INVALIDATE
+void uniffi_graphrt_ffi_fn_method_credentialprovider_invalidate(uint64_t ptr, RustBuffer provider, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_FUNC_GRAPHRT_VERSION
@@ -736,6 +795,12 @@ uint16_t uniffi_graphrt_ffi_checksum_method_runtime_catalog_json(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_CLEAR_CREDENTIAL_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_CLEAR_CREDENTIAL_PROVIDER
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_LOAD_WORKFLOW
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_LOAD_WORKFLOW
 uint16_t uniffi_graphrt_ffi_checksum_method_runtime_load_workflow(void
@@ -745,6 +810,12 @@ uint16_t uniffi_graphrt_ffi_checksum_method_runtime_load_workflow(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_REGISTER_WASM_PLUGIN
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_REGISTER_WASM_PLUGIN
 uint16_t uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_SET_CREDENTIAL_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_SET_CREDENTIAL_PROVIDER
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider(void
     
 );
 #endif
@@ -781,6 +852,18 @@ uint16_t uniffi_graphrt_ffi_checksum_method_workflowhandle_run(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_WORKFLOWHANDLE_WARNINGS
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_WORKFLOWHANDLE_WARNINGS
 uint16_t uniffi_graphrt_ffi_checksum_method_workflowhandle_warnings(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_CREDENTIALPROVIDER_GET_CREDENTIAL
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_CREDENTIALPROVIDER_GET_CREDENTIAL
+uint16_t uniffi_graphrt_ffi_checksum_method_credentialprovider_get_credential(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_CREDENTIALPROVIDER_INVALIDATE
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_CREDENTIALPROVIDER_INVALIDATE
+uint16_t uniffi_graphrt_ffi_checksum_method_credentialprovider_invalidate(void
     
 );
 #endif

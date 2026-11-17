@@ -9,7 +9,28 @@
 //! - token broker: a backend issues short-lived, per-user tokens;
 //! - static keys for servers and tests ([`StaticCredential`]).
 //!
-//! Sources are consulted per request; caching and refresh are the source's job.
+//! Sources are consulted per request. Wrap slow or rate-limited sources in
+//! [`CachedCredentials`], which caches until shortly before expiry and shares
+//! one refresh between concurrent requests.
+//!
+//! | Source | Use |
+//! | --- | --- |
+//! | [`StaticCredential`] | Servers, tests. |
+//! | [`EnvCredentials`] | Servers: read the key from an environment variable at request time. |
+//! | [`FnCredentials`] | Hosts: any async closure (keychain lookup, custom auth). |
+//! | [`TokenBroker`] (feature `http`) | Apps: short-lived tokens from your backend. |
+//!
+//! See `docs/credentials.md` for the threat model and the proxy pattern.
+
+#[cfg(feature = "http")]
+mod broker;
+mod cached;
+mod sources;
+
+#[cfg(feature = "http")]
+pub use broker::{BrokerAuth, TokenBroker, TokenBrokerConfig};
+pub use cached::{CachedCredentials, DEFAULT_REFRESH_SKEW_MS};
+pub use sources::{EnvCredentials, FnCredentials};
 
 use std::fmt;
 
@@ -26,11 +47,14 @@ pub struct Credential {
     pub expires_at_ms: Option<u64>,
     /// Extra headers to attach (e.g. a tenant or session header issued with a token).
     pub headers: Vec<(String, String)>,
+    /// Endpoint override issued with the credential (e.g. a regional proxy). Applied
+    /// in place of the provider's configured base URL when set.
+    pub base_url: Option<String>,
 }
 
 impl Credential {
     pub fn new(secret: impl Into<String>) -> Self {
-        Self { secret: secret.into(), expires_at_ms: None, headers: Vec::new() }
+        Self { secret: secret.into(), expires_at_ms: None, headers: Vec::new(), base_url: None }
     }
 
     pub fn expires_at(mut self, unix_ms: u64) -> Self {
@@ -42,6 +66,33 @@ impl Credential {
         self.headers.push((name.into(), value.into()));
         self
     }
+
+    pub fn base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = Some(base_url.into());
+        self
+    }
+
+    /// Whether the credential is expired (or within `skew_ms` of expiring) at `now_ms`.
+    pub fn is_expired_at(&self, now_ms: u64, skew_ms: u64) -> bool {
+        self.expires_at_ms.is_some_and(|exp| now_ms.saturating_add(skew_ms) >= exp)
+    }
+}
+
+/// Current Unix time in milliseconds. On `wasm32-unknown-unknown`, where there is
+/// no system clock, returns 0: credentials then never expire by time and are
+/// refreshed only through [`CredentialSource::invalidate`].
+pub fn unix_now_ms() -> u64 {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        0
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0)
+    }
 }
 
 impl fmt::Debug for Credential {
@@ -50,6 +101,7 @@ impl fmt::Debug for Credential {
             .field("secret", &"<redacted>")
             .field("expires_at_ms", &self.expires_at_ms)
             .field("headers", &self.headers.iter().map(|(k, _)| k).collect::<Vec<_>>())
+            .field("base_url", &self.base_url)
             .finish()
     }
 }

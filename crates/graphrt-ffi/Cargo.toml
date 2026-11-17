@@ -56,7 +56,7 @@ futures.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync", "macros", "net", "io-util"] }
 
 # UniFFI's proc macros expand to `unsafe` FFI glue in this crate, which the
 # workspace-wide `unsafe_code = "forbid"` would reject. Hand-written code in this
