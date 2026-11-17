@@ -1,13 +1,40 @@
 [package]
 name = "graphrt-rag"
+description = "Retrieval building blocks for graphrt: embedders, vector stores, hybrid search, reranking, chunking and the knowledge-retrieval node."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["http", "qdrant", "fs", "yaml"]
+# OpenAI-compatible embeddings, generic HTTP retriever and HTTP reranker (reqwest + rustls/ring).
+http = ["dep:reqwest", "dep:rustls"]
+# Qdrant vector store over its REST API.
+qdrant = ["http"]
+# File persistence for `MemoryStore`.
+fs = []
+# Load `KnowledgeConfig` from YAML.
+yaml = ["dep:serde-saphyr"]
 
 [dependencies]
 graphrt-core.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+serde-saphyr = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "json"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+
+[dev-dependencies]
+futures = { workspace = true, features = ["executor"] }
+graphrt-core = { workspace = true, features = ["tokio"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 
 [lints]
 workspace = true
