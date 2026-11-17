@@ -17,6 +17,10 @@ mock = []
 openai = ["http"]
 # Anthropic Messages API.
 anthropic = ["http"]
+# Google Gemini API (generateContent).
+gemini = ["http"]
+# AWS Bedrock Converse API (SigV4 signed).
+bedrock = ["http"]
 # Shared HTTP transport (reqwest + rustls with the ring crypto provider).
 http = ["dep:reqwest", "dep:rustls"]
 

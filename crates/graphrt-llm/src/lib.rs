@@ -23,6 +23,7 @@
 //! # }
 //! ```
 
+pub mod credentials;
 pub mod error;
 /// Scripted model for tests and offline examples (feature `mock`, on by default).
 #[cfg(any(test, feature = "mock"))]
@@ -38,6 +39,10 @@ mod http;
 
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
+#[cfg(feature = "bedrock")]
+pub mod bedrock;
+#[cfg(feature = "gemini")]
+pub mod gemini;
 #[cfg(feature = "openai")]
 pub mod openai;
 
