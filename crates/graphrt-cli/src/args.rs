@@ -97,12 +97,21 @@ pub struct PluginArgs {
     /// Ignore `$GRAPHRT_PLUGIN_PATH` and `~/.graphrt/plugins`.
     #[arg(long)]
     pub no_default_plugins: bool,
+    /// Trust a plugin by name: it may receive plaintext secrets and send host
+    /// variables as HTTP bearer tokens when its manifest asks. Repeatable; also
+    /// `$GRAPHRT_TRUSTED_PLUGINS` (comma-separated).
+    #[arg(long = "trust-plugin", value_name = "NAME")]
+    pub trusted: Vec<String>,
 }
 
 impl PluginArgs {
     /// Options for [`crate::extensions::Extensions::load`].
     pub fn options(&self) -> crate::extensions::PluginOptions {
-        crate::extensions::PluginOptions { dirs: self.dirs.clone(), no_default: self.no_default_plugins }
+        crate::extensions::PluginOptions {
+            dirs: self.dirs.clone(),
+            no_default: self.no_default_plugins,
+            trusted: self.trusted.clone(),
+        }
     }
 }
 

@@ -28,8 +28,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 import sys
 import threading
+import traceback
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
@@ -44,7 +46,21 @@ __all__ = [
 ]
 
 PROTOCOL_VERSION = 1
+# Default line limit; the host announces its own in `initialize` (`max_message_bytes`).
 MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+
+_ID_RE = re.compile(rb'"id"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+)')
+
+
+def _recover_id(prefix: bytes) -> Any:
+    """Best-effort request id from the start of a line that could not be read."""
+    match = _ID_RE.search(prefix[:4096])
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except ValueError:
+        return None
 
 
 class PluginError(Exception):
@@ -181,28 +197,55 @@ class Plugin:
         self._running: Dict[str, "asyncio.Task[None]"] = {}
         self._contexts: Dict[str, RunContext] = {}
         self._tool_tasks: "set[asyncio.Task[None]]" = set()
-        queue: "asyncio.Queue[Optional[bytes]]" = asyncio.Queue()
+        queue: "asyncio.Queue[Optional[tuple]]" = asyncio.Queue()
+        limit = [MAX_MESSAGE_BYTES]
 
         def reader() -> None:
             stdin = sys.stdin.buffer
             while True:
-                line = stdin.readline(MAX_MESSAGE_BYTES + 1)
-                self._loop.call_soon_threadsafe(queue.put_nowait, line if line else None)
+                line = stdin.readline(limit[0] + 1)
                 if not line:
+                    self._loop.call_soon_threadsafe(queue.put_nowait, None)
                     return
+                if len(line) > limit[0] and not line.endswith(b"\n"):
+                    # Oversized: drop the rest of the line so the stream stays in sync.
+                    rest = line
+                    while rest and not rest.endswith(b"\n"):
+                        rest = stdin.readline(1 << 20)
+                    self._loop.call_soon_threadsafe(queue.put_nowait, ("oversize", line[:4096]))
+                    continue
+                if b'"initialize"' in line[:4096]:
+                    # Adopt the host's message limit before reading the next line.
+                    try:
+                        announced = json.loads(line).get("params", {}).get("max_message_bytes")
+                        if isinstance(announced, int) and announced >= 1024:
+                            limit[0] = announced
+                    except (ValueError, AttributeError):
+                        pass
+                self._loop.call_soon_threadsafe(queue.put_nowait, ("line", line))
 
         threading.Thread(target=reader, name="graphrt-plugin-stdin", daemon=True).start()
         while True:
-            line = await queue.get()
-            if line is None:
+            item = await queue.get()
+            if item is None:
                 break
-            text = line.decode("utf-8", errors="replace").strip()
-            if not text:
+            kind, line = item
+            if kind == "oversize":
+                msg_id = _recover_id(line)
+                sys.stderr.write(f"graphrt plugin {self.name}: dropped a message above {limit[0]} bytes\n")
+                self._error(msg_id, -32600, f"message exceeds the {limit[0]}-byte limit", {"kind": "message_too_large"})
                 continue
             try:
-                msg = json.loads(text)
+                text = line.decode("utf-8").strip()
+                msg = json.loads(text) if text else None
             except ValueError:
-                self._send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})
+                sys.stderr.write(f"graphrt plugin {self.name}: unreadable message\n")
+                self._error(_recover_id(line), -32700, "parse error", {"kind": "plugin_protocol"})
+                continue
+            if msg is None:
+                continue
+            if not isinstance(msg, dict):
+                self._error(None, -32600, "message must be a JSON object", {"kind": "plugin_protocol"})
                 continue
             if not self._dispatch(msg):
                 # `shutdown`: stop in-flight work.
@@ -280,6 +323,7 @@ class Plugin:
             except PluginError as e:
                 self._error(msg_id, -32000, e.message, _error_data(e))
             except Exception as e:  # noqa: BLE001 - every failure must reach the host
+                traceback.print_exc(file=sys.stderr)
                 self._error(msg_id, -32000, f"{type(e).__name__}: {e}", {"kind": "plugin_exception"})
             finally:
                 self._running.pop(rid, None)
@@ -303,21 +347,35 @@ class Plugin:
         except PluginError as e:
             self._error(msg_id, -32000, e.message, _error_data(e))
         except Exception as e:  # noqa: BLE001
+            traceback.print_exc(file=sys.stderr)
             self._error(msg_id, -32000, f"{type(e).__name__}: {e}", {"kind": "plugin_exception"})
 
     # ---- output ----------------------------------------------------------
 
+    @staticmethod
+    def _encode(msg: Dict[str, Any]) -> str:
+        # Strict JSON: NaN/Infinity and non-JSON values raise instead of producing a
+        # line the host cannot parse (or a silently stringified value).
+        return json.dumps(msg, separators=(",", ":"), allow_nan=False) + "\n"
+
     def _send(self, msg: Dict[str, Any]) -> None:
-        line = json.dumps(msg, separators=(",", ":"), default=str) + "\n"
+        line = self._encode(msg)
         with self._out_lock:
             sys.stdout.write(line)
             sys.stdout.flush()
 
     def _notify(self, method: str, params: Dict[str, Any]) -> None:
-        self._send({"jsonrpc": "2.0", "method": method, "params": params})
+        try:
+            self._send({"jsonrpc": "2.0", "method": method, "params": params})
+        except (TypeError, ValueError) as e:
+            sys.stderr.write(f"graphrt plugin {self.name}: dropped `{method}` notification: {e}\n")
 
     def _reply(self, msg_id: Any, result: Any) -> None:
-        self._send({"jsonrpc": "2.0", "id": msg_id, "result": result})
+        try:
+            self._send({"jsonrpc": "2.0", "id": msg_id, "result": result})
+        except (TypeError, ValueError) as e:
+            # The handler returned something JSON cannot represent (NaN, bytes, sets...).
+            self._error(msg_id, -32000, f"result is not valid JSON: {e}", {"kind": "invalid_output"})
 
     def _error(self, msg_id: Any, code: int, message: str, data: Optional[Dict[str, Any]] = None) -> None:
         error: Dict[str, Any] = {"code": code, "message": message}

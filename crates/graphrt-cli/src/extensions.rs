@@ -30,9 +30,23 @@ pub struct PluginOptions {
     pub dirs: Vec<PathBuf>,
     /// Skip `$GRAPHRT_PLUGIN_PATH` and `~/.graphrt/plugins` (`--no-default-plugins`).
     pub no_default: bool,
+    /// Plugins the operator trusts (`--trust-plugin`, `$GRAPHRT_TRUSTED_PLUGINS`): only
+    /// these may receive plaintext secrets or send host variables as bearer tokens.
+    pub trusted: Vec<String>,
 }
 
+/// Comma-separated plugin names trusted in addition to `--trust-plugin`.
+pub const TRUSTED_PLUGINS_ENV: &str = "GRAPHRT_TRUSTED_PLUGINS";
+
 impl PluginOptions {
+    /// Trusted plugin names from the options and the environment.
+    pub fn trusted_names(&self) -> Vec<String> {
+        let mut names = self.trusted.clone();
+        if let Ok(list) = std::env::var(TRUSTED_PLUGINS_ENV) {
+            names.extend(list.split(',').map(str::trim).filter(|n| !n.is_empty()).map(str::to_owned));
+        }
+        names
+    }
     /// Search paths in priority order.
     pub fn search_paths(&self) -> Vec<PathBuf> {
         let mut paths = self.dirs.clone();
@@ -72,6 +86,9 @@ pub struct PluginSummary {
     /// Why the plugin was skipped, when it failed to load.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Requested permissions that were not granted.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// Node kinds and tools available to one command.
@@ -101,8 +118,9 @@ impl Extensions {
         #[cfg(any(feature = "plugins", feature = "wasm"))]
         {
             let paths = options.search_paths();
+            let trusted = options.trusted_names();
             for manifest in graphrt_plugin::discover(&paths) {
-                ext.add_manifest(&manifest);
+                ext.add_manifest(&manifest, &trusted);
             }
             #[cfg(feature = "wasm")]
             for module in bare_wasm_modules(&paths) {
@@ -111,6 +129,9 @@ impl Extensions {
             for plugin in &ext.plugins {
                 if let Some(error) = &plugin.error {
                     eprintln!("warning: plugin `{}` skipped: {error}", plugin.name);
+                }
+                for warning in &plugin.warnings {
+                    eprintln!("warning: {warning}");
                 }
             }
         }
@@ -127,11 +148,11 @@ impl Extensions {
     }
 
     #[cfg(any(feature = "plugins", feature = "wasm"))]
-    fn add_manifest(&mut self, manifest: &Path) {
+    fn add_manifest(&mut self, manifest: &Path, trusted: &[String]) {
         let mut summary = PluginSummary { path: manifest.to_path_buf(), ..PluginSummary::default() };
         // One host per plugin: a failing plugin never leaves another half-registered.
         #[allow(unused_mut)]
-        let mut host = graphrt_plugin::PluginHost::new();
+        let mut host = graphrt_plugin::PluginHost::new().with_trusted(trusted.iter().cloned());
         #[cfg(feature = "wasm")]
         {
             host = host.with_loader(std::sync::Arc::new(crate::wasm_loader::WasmLoader::default()));
@@ -154,6 +175,7 @@ impl Extensions {
         summary.description.clone_from(&info.description);
         summary.runtime.clone_from(&info.runtime);
         summary.tools.clone_from(&info.tools);
+        summary.warnings.clone_from(&info.warnings);
         // Register into copies so a failure leaves the command's registry untouched.
         let mut registry = self.registry.clone();
         let mut tools = self.tools.clone();
@@ -185,13 +207,10 @@ impl Extensions {
                 summary.name.clone_from(&manifest.name);
                 summary.version.clone_from(&manifest.version);
                 summary.description.clone_from(&manifest.description);
-                let conflict = plugin.descriptors().into_iter().find(|d| self.registry.contains(&d.kind));
-                match conflict {
-                    Some(d) => summary.error = Some(format!("node kind `{}` is already registered", d.kind)),
-                    None => {
-                        summary.nodes = plugin.descriptors().into_iter().map(|d| d.kind).collect();
-                        plugin.register(&mut self.registry);
-                    }
+                // `register` refuses kinds that already exist (built-ins or other plugins).
+                match plugin.register(&mut self.registry) {
+                    Ok(()) => summary.nodes = plugin.descriptors().into_iter().map(|d| d.kind).collect(),
+                    Err(e) => summary.error = Some(e.to_string()),
                 }
             }
             Err(e) => summary.error = Some(e.to_string()),

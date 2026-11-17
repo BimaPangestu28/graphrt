@@ -25,6 +25,10 @@ const STDERR_TAIL_BYTES: usize = 64 * 1024;
 /// Upper bound of the restart backoff.
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
 
+/// Consecutive request timeouts after which a plugin process is considered
+/// wedged and is killed; the next request starts a fresh process.
+pub const MAX_CONSECUTIVE_TIMEOUTS: u64 = 3;
+
 struct Live {
     conn: Arc<Connection>,
     init: serde_json::Value,
@@ -37,8 +41,12 @@ pub struct ProcessTransport {
     live: tokio::sync::Mutex<Option<Live>>,
     /// Consecutive failed starts / crashes, used for backoff.
     failures: AtomicU64,
+    /// Consecutive request timeouts of the current process.
+    timeouts: AtomicU64,
     next_id: AtomicU64,
     stderr: Arc<Mutex<VecDeque<u8>>>,
+    /// How the last process exited (code or signal), for crash reports.
+    exit_status: Arc<Mutex<Option<String>>>,
 }
 
 impl fmt::Debug for ProcessTransport {
@@ -57,8 +65,21 @@ impl ProcessTransport {
             runtime,
             live: tokio::sync::Mutex::new(None),
             failures: AtomicU64::new(0),
+            timeouts: AtomicU64::new(0),
             next_id: AtomicU64::new(1),
             stderr: Arc::new(Mutex::new(VecDeque::new())),
+            exit_status: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Kill the current process (if any). The next request starts a new one.
+    fn kill_current(&self, reason: &str) {
+        if let Ok(mut live) = self.live.try_lock() {
+            if let Some(l) = live.take() {
+                // Closing fails in-flight requests; once they release the connection
+                // its guard kills the process group.
+                l.conn.close(reason);
+            }
         }
     }
 
@@ -107,11 +128,19 @@ impl ProcessTransport {
         // A relative command with a path separator (`./bin/plugin`) is relative to the
         // plugin directory; a bare name (`python3`) is looked up on PATH.
         let command = std::path::Path::new(&self.runtime.command);
-        let program = if command.is_relative() && command.components().count() > 1 {
-            self.plugin.dir.join(command)
-        } else {
-            command.to_path_buf()
-        };
+        let in_plugin_dir = command.is_relative() && command.components().count() > 1;
+        let program = if in_plugin_dir { self.plugin.dir.join(command) } else { command.to_path_buf() };
+        if in_plugin_dir {
+            // A symlinked entrypoint could point anywhere, bypassing checksums.
+            let meta = std::fs::symlink_metadata(&program)
+                .map_err(|e| CallError::Start(format!("cannot stat `{}`: {e}", self.runtime.command)))?;
+            if meta.file_type().is_symlink() {
+                return Err(CallError::Start(format!(
+                    "`{}` is a symlink; plugin entrypoints must be files",
+                    self.runtime.command
+                )));
+            }
+        }
         let mut cmd = tokio::process::Command::new(&program);
         cmd.args(&self.runtime.args);
         let cwd = match &self.runtime.cwd {
@@ -136,9 +165,17 @@ impl ProcessTransport {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
+        // Own process group, so wrappers (`sh run.sh`, `npx`, `uv run`) and every
+        // process they start are killed together.
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         let mut child =
             cmd.spawn().map_err(|e| CallError::Start(format!("cannot run `{}`: {e}", self.runtime.command)))?;
+        let pid = child.id();
+        if let Ok(mut status) = self.exit_status.lock() {
+            *status = None;
+        }
         let stdin = child.stdin.take().ok_or_else(|| CallError::Start("no stdin pipe".into()))?;
         let stdout = child.stdout.take().ok_or_else(|| CallError::Start("no stdout pipe".into()))?;
         if let Some(mut stderr) = child.stderr.take() {
@@ -162,42 +199,85 @@ impl ProcessTransport {
             });
         }
 
-        // The guard owns the child: dropping the connection kills the process.
+        // The guard owns the child: dropping the connection kills the process group.
         let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
+        let exit_status = self.exit_status.clone();
         tokio::spawn(async move {
-            tokio::select! {
-                _ = child.wait() => {}
+            let status = tokio::select! {
+                status = child.wait() => status,
                 _ = kill_rx => {
+                    kill_group(pid);
                     let _already_exited = child.start_kill();
-                    let _status = child.wait().await;
+                    child.wait().await
                 }
+            };
+            // The main process is gone; reap anything it left in its group.
+            kill_group(pid);
+            if let Ok(mut slot) = exit_status.lock() {
+                *slot = Some(match status {
+                    Ok(s) => describe_exit(&s),
+                    Err(e) => format!("unknown exit status ({e})"),
+                });
             }
         });
         let stderr_view = self.stderr.clone();
+        let status_view = self.exit_status.clone();
         let detail: crate::conn::CrashDetail = Arc::new(move || {
-            // Give the stderr reader a moment to catch up is not possible synchronously;
-            // report what has been captured so far.
-            stderr_text(&stderr_view)
+            let status = status_view.lock().ok().and_then(|s| s.clone());
+            let stderr = stderr_text(&stderr_view);
+            match (status, stderr.is_empty()) {
+                (Some(s), true) => s,
+                (Some(s), false) => format!("{s}; stderr: {stderr}"),
+                (None, false) => format!("stderr: {stderr}"),
+                (None, true) => String::new(),
+            }
         });
-        let conn = Arc::new(Connection::with_guard(
-            stdout,
-            stdin,
-            self.plugin.manifest.limits.max_message_bytes,
-            Some(Box::new(kill_tx)),
-            Some(detail),
-        ));
+        let max_message_bytes = self.plugin.manifest.limits.max_message_bytes;
+        let conn =
+            Arc::new(Connection::with_guard(stdout, stdin, max_message_bytes, Some(Box::new(kill_tx)), Some(detail)));
+        conn.set_label(name);
 
         let id = conn.next_id();
-        let init =
-            with_timeout(clock, INITIALIZE_TIMEOUT, conn.call(id, "initialize", initialize_params(), None, false))
-                .await
-                .map_err(|e| match e {
-                    CallError::Crashed(m) => CallError::Start(m),
-                    other => other,
-                })?;
+        let params = initialize_params(max_message_bytes);
+        let init = with_timeout(clock, INITIALIZE_TIMEOUT, conn.call(id, "initialize", params, None, false))
+            .await
+            .map_err(|e| match e {
+                CallError::Crashed(m) => CallError::Start(m),
+                other => other,
+            })?;
         check_initialize(&init)?;
         Ok(Live { conn, init })
     }
+}
+
+/// Kill every process in the plugin's process group (Unix). Uses the `kill`
+/// utility, so no unsafe libc call is needed.
+fn kill_group(pid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        let _no_group_left = std::process::Command::new("kill")
+            .args(["-s", "KILL", "--", &format!("-{pid}")])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
+fn describe_exit(status: &std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("process exited with code {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("process killed by signal {signal}");
+        }
+    }
+    "process exited".to_owned()
 }
 
 fn stderr_text(buf: &Mutex<VecDeque<u8>>) -> String {
@@ -239,5 +319,21 @@ impl Transport for ProcessTransport {
 
     fn initialize<'a>(&'a self, clock: &'a Arc<dyn Clock>) -> BoxFuture<'a, Result<serde_json::Value, CallError>> {
         Box::pin(async move { self.connection(clock).await.map(|(_, init)| init) })
+    }
+
+    fn note_timeout(&self) {
+        let count = self.timeouts.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+        if count >= MAX_CONSECUTIVE_TIMEOUTS {
+            self.timeouts.store(0, Ordering::SeqCst);
+            self.failures.fetch_add(1, Ordering::SeqCst);
+            self.kill_current(&format!(
+                "plugin `{}` stopped answering ({count} consecutive timeouts); restarting it",
+                self.plugin.manifest.name
+            ));
+        }
+    }
+
+    fn note_answer(&self) {
+        self.timeouts.store(0, Ordering::SeqCst);
     }
 }

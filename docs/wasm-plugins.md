@@ -11,7 +11,7 @@ use graphrt_wasm::{WasmLimits, WasmPlugin};
 
 let plugin = WasmPlugin::load_file("plugins/text_tools.wasm", WasmLimits::default())?;
 let mut registry = Registry::with_builtins();
-plugin.register(&mut registry);          // node kinds + catalog descriptors
+plugin.register(&mut registry)?;         // node kinds + catalog descriptors; fails on existing kinds
 for d in plugin.descriptors() { println!("{} ({})", d.kind, d.title); }
 ```
 
@@ -33,9 +33,15 @@ Two ways to ship a module to the `graphrt` CLI:
   module describes its own nodes.
 - **Manifest:** a directory with `graphrt-plugin.json` using `"runtime": "wasm"`
   and `"module": "my_plugin.wasm"`. This adds versioned installs
-  (`graphrt plugin install`), `checksums`, and `permissions.secrets`. Node kinds
-  must start with `<name>.` unless the manifest sets `allow_unprefixed_kinds`.
+  (`graphrt plugin install`), `checksums`, and `permissions.secrets` (granted
+  only to plugins the operator trusts: `--trust-plugin <name>`). Node kinds
+  must start with `<name>.`; with `allow_unprefixed_kinds` plain names without
+  `.` are also accepted. The CLI ships the loader for `runtime: wasm`.
   See [`plugins/examples/wasm-text-tools`](../plugins/examples/wasm-text-tools).
+
+Either way, a module's kinds never replace built-in nodes or another plugin's
+nodes (`WasmPlugin::register` fails with `KindConflict`), and a namespaced kind
+(`a.b`) must use the module's own name as its namespace.
 
 ```sh
 graphrt nodes --plugins plugins/examples --kind slugify
@@ -69,7 +75,12 @@ request/response, release build): **~0.13 ms**.
   randomness.
 - **CPU:** fuel metering (≈1 unit per instruction). Exhausting fuel aborts the
   run with `wasm_fuel_exhausted` (fatal, not retried). Fuel also bounds the
-  module's start function.
+  module's start function. Host imports are charged too: every `log`, `chunk`
+  or `progress` call costs 1 000 fuel plus 1 per byte copied, so a guest cannot
+  make the host do unbounded work inside its budget.
+- **Events:** at most `max_events` `chunk` + `progress` calls and
+  `max_stream_bytes` streamed bytes per call; going past either fails the run.
+  Log lines past `max_logs` are counted, not copied.
 - **Memory:** linear memory is capped per instance (`memory_bytes`, default
   64 MiB); growing past it traps with `wasm_memory_limit`. One memory, one
   instance, bounded tables.
@@ -108,7 +119,7 @@ Guests never need to free: the instance is discarded after each call.
 
 | Import | Signature | Purpose |
 | --- | --- | --- |
-| `log` | `(level: i32, ptr: i32, len: i32)` | Log line, level 0 (trace) .. 4 (error). Returned in the node's `metadata.logs`. |
+| `log` | `(level: i32, ptr: i32, len: i32)` | Log line, level 0 (trace) .. 4 (error). Returned in the node's `metadata.logs`; when the run fails, the last lines are appended to the error message. |
 | `chunk` | `(field_ptr, field_len, ptr, len: i32)` | Stream text for output `field` (emits `node_chunk` events immediately). |
 | `progress` | `(name_ptr, name_len, ptr, len: i32)` | Structured progress (`node_progress` event); payload is JSON. |
 
@@ -237,9 +248,13 @@ which doubles as a minimal reference.
 | `input_bytes` / `output_bytes` | 8 MiB | Request / response JSON caps. |
 | `message_bytes` | 256 KiB | Per log line / chunk / progress payload. |
 | `max_logs` | 100 | Log lines kept per run. |
+| `max_events` | 10 000 | `chunk` + `progress` calls per call. |
+| `max_stream_bytes` | 16 MiB | Bytes streamed through `chunk` + `progress` per call. |
 | `max_recursion_depth` | 1024 | Wasm call depth. |
 | `expose_secrets` | `false` | Hand plaintext secrets to the guest. |
 
-With the `tokio` feature, guest calls run on Tokio's blocking pool when a Tokio
-runtime is active, so long computations never stall other nodes. Node timeouts
-do not interrupt an interpreter mid-call; fuel is the CPU bound.
+With the `tokio` feature (on by default), guest calls run on Tokio's blocking
+pool when a Tokio runtime is active, so long computations never stall other
+nodes or their timeouts. Builds without it run guests inline on the calling
+task. Node timeouts do not interrupt an interpreter mid-call; fuel is the CPU
+bound.

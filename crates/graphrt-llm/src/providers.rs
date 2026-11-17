@@ -168,6 +168,26 @@ impl ModelRegistry {
     /// Like [`ModelRegistry::from_config`] with explicit variables.
     #[cfg(feature = "http")]
     pub fn from_config_with_vars(config: &ProvidersConfig, vars: &[(String, String)]) -> Result<Self, LlmError> {
+        // An alias must not shadow a provider of the same file, and must name exactly
+        // one provider: either mistake would silently route requests elsewhere.
+        let names: std::collections::HashSet<&str> = config.providers.iter().map(|p| p.name.as_str()).collect();
+        let mut aliases: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for provider in &config.providers {
+            for alias in &provider.aliases {
+                if names.contains(alias.as_str()) {
+                    return Err(LlmError::Config(format!(
+                        "provider `{}`: alias `{alias}` is also the name of a provider",
+                        provider.name
+                    )));
+                }
+                if let Some(other) = aliases.insert(alias.as_str(), provider.name.as_str()) {
+                    return Err(LlmError::Config(format!(
+                        "alias `{alias}` is declared by both `{other}` and `{}`",
+                        provider.name
+                    )));
+                }
+            }
+        }
         let mut registry = Self::new();
         for provider in &config.providers {
             let model = build_provider(provider, vars)?;
@@ -422,6 +442,25 @@ mod tests {
         assert!(registry.get("local").is_ok());
         let debug = format!("{registry:?} {:?}", registry.get("openrouter").unwrap());
         assert!(!debug.contains("sk-or-secret"), "{debug}");
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn conflicting_aliases_are_rejected() {
+        let shadow = ProvidersConfig::from_json(
+            r#"[{"name":"a","kind":"openai","base_url":"http://x/v1","aliases":["b"]},
+                {"name":"b","kind":"openai","base_url":"http://y/v1"}]"#,
+        )
+        .unwrap();
+        let err = ModelRegistry::from_config_with_vars(&shadow, &[]).unwrap_err().to_string();
+        assert!(err.contains("alias `b`"), "{err}");
+        let twice = ProvidersConfig::from_json(
+            r#"[{"name":"a","kind":"openai","base_url":"http://x/v1","aliases":["fast"]},
+                {"name":"c","kind":"openai","base_url":"http://y/v1","aliases":["fast"]}]"#,
+        )
+        .unwrap();
+        let err = ModelRegistry::from_config_with_vars(&twice, &[]).unwrap_err().to_string();
+        assert!(err.contains("`fast`") && err.contains("both"), "{err}");
     }
 
     #[cfg(feature = "openai")]

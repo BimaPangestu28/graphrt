@@ -84,7 +84,7 @@ fn install(source: &str, rev: Option<&str>, dir: Option<PathBuf>) -> Result<u8, 
         return Err(CliError::usage(format!("`{source}` is neither a plugin directory nor a git URL")));
     };
     // Make sure the installed copy actually loads before reporting success.
-    let options = PluginOptions { dirs: vec![installed.dir.clone()], no_default: true };
+    let options = PluginOptions { dirs: vec![installed.dir.clone()], no_default: true, ..PluginOptions::default() };
     let extensions = Extensions::load(&options)?;
     let summary = extensions.plugins.iter().find(|p| p.name == installed.manifest.name);
     let mut out = std::io::stdout().lock();

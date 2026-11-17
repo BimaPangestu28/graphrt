@@ -81,11 +81,23 @@ async fn serve_http_plugin() -> std::net::SocketAddr {
                 }
                 let req: serde_json::Value = serde_json::from_slice(&buf[head_end..head_end + content_len]).unwrap();
                 let id = req["id"].clone();
+                let mut status = "200 OK";
                 let (ctype, body) = match req["method"].as_str() {
                     Some("initialize") => (
                         "application/json",
                         json!({"jsonrpc": "2.0", "id": id, "result": {"protocol_version": 1}}).to_string(),
                     ),
+                    Some("node.run") if req["params"]["config"]["text"] == "reject" => {
+                        // An error sent with a non-2xx status keeps its kind and retryability.
+                        status = "422 Unprocessable Entity";
+                        let err = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000,
+                            "message": "text rejected", "data": {"kind": "bad_text", "retryable": false}}});
+                        ("application/json", err.to_string())
+                    }
+                    Some("node.run") if req["params"]["config"]["text"] == "gateway" => {
+                        status = "502 Bad Gateway";
+                        ("text/plain", "upstream down".to_owned())
+                    }
                     Some("node.run") => {
                         let rid = req["params"]["request_id"].clone();
                         let text = req["params"]["config"]["text"].as_str().unwrap_or_default().to_owned();
@@ -105,7 +117,7 @@ async fn serve_http_plugin() -> std::net::SocketAddr {
                     ),
                 };
                 let resp = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: {ctype}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status}\r\ncontent-type: {ctype}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 let _ = sock.write_all(resp.as_bytes()).await;
@@ -128,13 +140,17 @@ async fn http_runtime_streams_ndjson() {
             "url": format!("http://{addr}/rpc"),
             "headers": {"x-plugin-key": "k1"},
             "bearer_token_env": "CARGO_PKG_NAME",
+            "permissions": {"env": ["CARGO_PKG_NAME"]},
             "nodes": [{"kind": "remote.reverse", "title": "Reverse"}],
             "tools": [{"name": "ping", "description": "", "parameters": {}}]
         })
         .to_string(),
     )
     .unwrap();
-    let mut host = PluginHost::new();
+    // Sending a host variable to a remote endpoint needs the operator's trust.
+    let untrusted = PluginHost::new().add(LoadedManifest { manifest: manifest.clone(), dir: PathBuf::from(".") });
+    assert!(matches!(untrusted, Err(e) if e.to_string().contains("trust")));
+    let mut host = PluginHost::new().trust("remote");
     host.add(LoadedManifest { manifest, dir: PathBuf::from(".") }).unwrap();
     let mut registry = Registry::with_builtins();
     let mut tools = ToolRegistry::new();
@@ -150,6 +166,25 @@ async fn http_runtime_streams_ndjson() {
     assert!(events.iter().any(|e| matches!(e, Event::NodeChunk { chunk, .. } if chunk == "rev:")));
     let pong = tools.get("remote").unwrap().call("ping", json!({})).await.unwrap();
     assert_eq!(pong.text, "pong");
+
+    // Error bodies of non-2xx responses are kept, not discarded.
+    let out = json!([{"variable": "out", "value_selector": ["p", "result"]}]);
+    let doc = workflow("remote.reverse", json!({"text": "{{#start.text#}}"}), out.clone());
+    let events = run(&registry, &tools, doc, RunInput::new().input("text", "reject")).await;
+    assert!(
+        matches!(events.last(), Some(Event::RunFailed { error_type, error, .. })
+            if error_type == "bad_text" && error.contains("text rejected")),
+        "{:?}",
+        events.last()
+    );
+    let doc = workflow("remote.reverse", json!({"text": "{{#start.text#}}"}), out);
+    let events = run(&registry, &tools, doc, RunInput::new().input("text", "gateway")).await;
+    assert!(
+        matches!(events.last(), Some(Event::RunFailed { error_type, error, .. })
+            if error_type == "plugin_transport" && error.contains("upstream down")),
+        "{:?}",
+        events.last()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

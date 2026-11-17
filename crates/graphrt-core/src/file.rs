@@ -151,9 +151,17 @@ pub fn decode_data_url(name: &str, url: &str, max_bytes: u64) -> Result<FileByte
     let invalid = |m: &str| FileError::Invalid { name: name.to_owned(), message: m.to_owned() };
     let rest = url.strip_prefix("data:").ok_or_else(|| invalid("not a data URL"))?;
     let (meta, payload) = rest.split_once(',').ok_or_else(|| invalid("data URL without ','"))?;
-    let is_base64 = meta.ends_with(";base64");
-    let mime = meta.trim_end_matches(";base64").split(';').next().filter(|m| !m.is_empty()).map(str::to_owned);
+    // The `;base64` flag is case-insensitive (RFC 2397 media-type parameters).
+    let is_base64 = meta.len() >= 7 && meta.get(meta.len() - 7..).is_some_and(|s| s.eq_ignore_ascii_case(";base64"));
+    let meta = if is_base64 { meta.get(..meta.len() - 7).unwrap_or_default() } else { meta };
+    let mime = meta.split(';').next().filter(|m| !m.is_empty()).map(str::to_owned);
+    let too_large = || FileError::TooLarge { name: name.to_owned(), limit: max_bytes };
     let bytes = if is_base64 {
+        // Reject before decoding: base64 yields 3 bytes per 4 characters.
+        let estimate = u64::try_from(payload.len() / 4 * 3).unwrap_or(u64::MAX);
+        if estimate > max_bytes.saturating_add(3) {
+            return Err(too_large());
+        }
         base64_decode(payload).ok_or_else(|| invalid("invalid base64 payload"))?
     } else {
         percent_decode(payload)
@@ -179,12 +187,18 @@ pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(input.len() * 3 / 4);
     let mut buf: u32 = 0;
     let mut bits = 0u32;
+    let mut padding = false;
     for c in input.bytes() {
-        if c == b'=' {
-            break;
-        }
         if c.is_ascii_whitespace() {
             continue;
+        }
+        if c == b'=' {
+            padding = true;
+            continue;
+        }
+        // Data after padding means a corrupted or concatenated payload.
+        if padding {
+            return None;
         }
         buf = (buf << 6) | val(c)?;
         bits += 6;
@@ -192,6 +206,10 @@ pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
             bits -= 8;
             out.push(u8::try_from((buf >> bits) & 0xff).ok()?);
         }
+    }
+    // A single leftover character cannot encode a byte.
+    if bits >= 6 {
+        return None;
     }
     Some(out)
 }
@@ -258,6 +276,20 @@ mod tests {
         assert_eq!(fb.mime_type.as_deref(), Some("text/plain"));
         let fb = decode_data_url("f", "data:,a%20b", 100).unwrap();
         assert_eq!(fb.bytes, b"a b");
+        // `;BASE64` is the same flag.
+        let fb = decode_data_url("f", "data:text/plain;BASE64,aGVsbG8=", 100).unwrap();
+        assert_eq!(fb.bytes, b"hello");
+        // Oversized payloads are rejected before decoding.
+        let big = format!("data:;base64,{}", "A".repeat(4000));
+        assert!(matches!(decode_data_url("f", &big, 100), Err(FileError::TooLarge { .. })));
+    }
+
+    #[test]
+    fn base64_rejects_trailing_garbage() {
+        assert_eq!(base64_decode("aGk="), Some(b"hi".to_vec()));
+        assert_eq!(base64_decode("aGk=aGk="), None);
+        assert_eq!(base64_decode("aGVsbG8"), Some(b"hello".to_vec()));
+        assert_eq!(base64_decode("a"), None);
         assert!(matches!(decode_data_url("f", "data:,abc", 2), Err(FileError::TooLarge { .. })));
     }
 

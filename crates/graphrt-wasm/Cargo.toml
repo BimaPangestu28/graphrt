@@ -8,7 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+# `tokio` is on by default: without it a guest call (up to its whole fuel budget)
+# runs on the async worker, stalling other nodes and their timeouts.
+default = ["tokio"]
 # Run guest calls on tokio's blocking pool when inside a tokio runtime.
 tokio = ["dep:tokio", "tokio/rt"]
 

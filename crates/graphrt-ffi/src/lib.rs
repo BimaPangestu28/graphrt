@@ -284,7 +284,7 @@ impl Runtime {
             .map_err(|e| GraphrtError::Plugin { message: e.to_string() })?;
         let kinds = plugin.descriptors().into_iter().map(|d| d.kind).collect();
         let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
-        plugin.register(&mut registry);
+        plugin.register(&mut registry).map_err(|e| GraphrtError::Plugin { message: e.to_string() })?;
         Ok(kinds)
     }
 

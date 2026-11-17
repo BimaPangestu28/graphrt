@@ -15,7 +15,11 @@
     { "kind": "testkit.fail", "title": "Fail" },
     { "kind": "testkit.boom", "title": "Boom" },
     { "kind": "testkit.approve", "title": "Approve", "handles": { "kind": "fixed", "handles": ["yes", "no"] } },
-    { "kind": "testkit.write", "title": "Write" }
+    { "kind": "testkit.write", "title": "Write" },
+    { "kind": "testkit.hang", "title": "Hang (blocks the event loop)" },
+    { "kind": "testkit.badbranch", "title": "Bad branch", "handles": { "kind": "fixed", "handles": ["yes", "no"] } },
+    { "kind": "testkit.grandchild", "title": "Spawn a grandchild, then crash" },
+    { "kind": "testkit.nan", "title": "Returns NaN" }
   ],
   "tools": [
     { "name": "add", "description": "Add two numbers", "parameters": { "type": "object" } }

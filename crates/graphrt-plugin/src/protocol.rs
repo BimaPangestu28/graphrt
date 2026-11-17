@@ -55,22 +55,32 @@ struct RawError {
 
 /// Parse one message line.
 pub(crate) fn parse(line: &str) -> Result<Incoming, CallError> {
-    let raw: RawMessage =
+    let value: serde_json::Value =
         serde_json::from_str(line).map_err(|e| CallError::Protocol(format!("invalid JSON-RPC message: {e}")))?;
+    // `"result": null` is a valid (empty) result; a missing `result` is not.
+    let has_result = value.get("result").is_some();
+    let raw: RawMessage =
+        serde_json::from_value(value).map_err(|e| CallError::Protocol(format!("invalid JSON-RPC message: {e}")))?;
     match (raw.id, raw.method) {
         (Some(id), Some(method)) => Ok(Incoming::Request { id, method }),
         (None, Some(method)) => {
             Ok(Incoming::Notification(Notification { method, params: raw.params.unwrap_or(serde_json::Value::Null) }))
+        }
+        (Some(serde_json::Value::Null), None) => {
+            // A plugin answers `id: null` only when it could not read a request at all
+            // (oversized or malformed line): the request it belonged to is lost.
+            let detail = raw.error.map(|e| e.message).unwrap_or_else(|| "no detail".into());
+            Err(CallError::Protocol(format!("plugin could not read a request: {detail}")))
         }
         (Some(id), None) => {
             let id = match id {
                 serde_json::Value::String(s) => s,
                 other => other.to_string(),
             };
-            let result = match (raw.result, raw.error) {
-                (_, Some(err)) => Err(CallError::Remote { code: err.code, message: err.message, data: err.data }),
-                (Some(result), None) => Ok(result),
-                (None, None) => Ok(serde_json::Value::Null),
+            let result = match (raw.error, has_result) {
+                (Some(err), _) => Err(CallError::Remote { code: err.code, message: err.message, data: err.data }),
+                (None, true) => Ok(raw.result.unwrap_or(serde_json::Value::Null)),
+                (None, false) => Err(CallError::Protocol("response has neither `result` nor `error`".into())),
             };
             Ok(Incoming::Response { id, result })
         }
@@ -100,6 +110,7 @@ pub(crate) fn method_not_found(id: &serde_json::Value, method: &str) -> String {
 
 /// `node.run` result.
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RunResultMsg {
     #[serde(default)]
     pub outputs: serde_json::Map<String, serde_json::Value>,
@@ -116,6 +127,7 @@ pub(crate) struct RunResultMsg {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct WriteMsg {
     pub selector: graphrt_core::Selector,
     #[serde(default)]
@@ -123,6 +135,7 @@ pub(crate) struct WriteMsg {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PauseMsg {
     #[serde(default = "default_pause_kind")]
     pub kind: String,
@@ -138,6 +151,7 @@ fn default_pause_kind() -> String {
 
 /// `tool.call` result.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ToolResultMsg {
     #[serde(default)]
     pub text: String,
@@ -165,5 +179,31 @@ mod tests {
         assert!(matches!(parse(r#"{"jsonrpc":"2.0","id":1,"method":"x"}"#), Ok(Incoming::Request { .. })));
         assert!(parse("not json").is_err());
         assert!(parse("{}").is_err());
+    }
+
+    #[test]
+    fn response_without_result_or_error_is_a_protocol_error() {
+        assert!(matches!(
+            parse(r#"{"jsonrpc":"2.0","id":"r-1"}"#),
+            Ok(Incoming::Response { result: Err(CallError::Protocol(_)), .. })
+        ));
+        // An explicit null result is a valid (empty) result at the protocol level.
+        assert!(matches!(
+            parse(r#"{"jsonrpc":"2.0","id":"r-1","result":null}"#),
+            Ok(Incoming::Response { result: Ok(serde_json::Value::Null), .. })
+        ));
+        // `id: null` means the plugin lost a request.
+        assert!(matches!(
+            parse(r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}"#),
+            Err(CallError::Protocol(_))
+        ));
+    }
+
+    #[test]
+    fn result_messages_reject_unknown_fields() {
+        assert!(serde_json::from_str::<RunResultMsg>(r#"{"output":{"a":1}}"#).is_err());
+        assert!(serde_json::from_str::<RunResultMsg>(r#"{"outputs":{"a":1}}"#).is_ok());
+        assert!(serde_json::from_str::<RunResultMsg>("null").is_err());
+        assert!(serde_json::from_str::<ToolResultMsg>(r#"{"txt":"x"}"#).is_err());
     }
 }

@@ -1,5 +1,7 @@
 /** Protocol version implemented by this SDK. */
 export declare const PROTOCOL_VERSION: 1;
+/** Default line limit; the host announces its own in `initialize`. */
+export declare const MAX_MESSAGE_BYTES: number;
 
 /** Error reported to the host as a failed node. */
 export declare class PluginError extends Error {

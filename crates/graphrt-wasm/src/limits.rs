@@ -21,6 +21,10 @@ pub struct WasmLimits {
     pub message_bytes: usize,
     /// Maximum number of log lines kept per run (surfaced in node metadata). Default 100.
     pub max_logs: usize,
+    /// Maximum number of `chunk` + `progress` events per call. Default 10 000.
+    pub max_events: usize,
+    /// Maximum total bytes streamed through `chunk` + `progress` per call. Default 16 MiB.
+    pub max_stream_bytes: usize,
     /// Maximum wasm call-stack depth. Default 1024.
     pub max_recursion_depth: usize,
     /// Hand plaintext secrets to the guest when its config references them.
@@ -38,6 +42,8 @@ impl Default for WasmLimits {
             output_bytes: 8 * 1024 * 1024,
             message_bytes: 256 * 1024,
             max_logs: 100,
+            max_events: 10_000,
+            max_stream_bytes: 16 * 1024 * 1024,
             max_recursion_depth: 1024,
             expose_secrets: false,
         }

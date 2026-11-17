@@ -429,3 +429,143 @@ async fn start_failure_is_reported() {
     let events = collect(&engine(&setup, single_node("ghost.x", json!({}))), RunInput::new()).await;
     assert!(matches!(terminal(&events), Event::RunFailed { error_type, .. } if error_type == "plugin_start"));
 }
+
+fn error_type(events: &[Event]) -> String {
+    match terminal(events) {
+        Event::RunFailed { error_type, .. } => error_type.clone(),
+        other => panic!("expected a failure, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wedged_plugin_is_killed_and_restarted() {
+    let setup = load(&[fixture("testkit")]);
+    let mut hang = single_node("testkit.hang", json!({"seconds": 30}));
+    hang["graph"]["nodes"][1]["timeout_ms"] = json!(300);
+    // The blocked event loop ignores `node.cancel`; after repeated timeouts the
+    // host kills the process instead of queueing more work into it.
+    for _ in 0..graphrt_plugin::MAX_CONSECUTIVE_TIMEOUTS {
+        let events = collect(&engine(&setup, hang.clone()), RunInput::new()).await;
+        assert_eq!(error_type(&events), "timeout");
+    }
+    let started = std::time::Instant::now();
+    let mut echo = single_node("testkit.echo", json!({"v": 1}));
+    echo["graph"]["nodes"][2]["outputs"] = json!([{"variable": "c", "value_selector": ["p", "config"]}]);
+    let events = collect(&engine(&setup, echo), RunInput::new()).await;
+    assert_eq!(outputs(&events)["c"]["v"], 1);
+    assert!(started.elapsed() < Duration::from_secs(10), "restart took {:?}", started.elapsed());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn undeclared_branch_handle_is_an_error() {
+    let setup = load(&[fixture("testkit")]);
+    let events = collect(&engine(&setup, single_node("testkit.badbranch", json!({}))), RunInput::new()).await;
+    assert_eq!(error_type(&events), "plugin_protocol");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unserializable_output_is_an_error_not_a_crash() {
+    let setup = load(&[fixture("testkit")]);
+    let events = collect(&engine(&setup, single_node("testkit.nan", json!({}))), RunInput::new()).await;
+    assert_eq!(error_type(&events), "invalid_output");
+    // The same process keeps serving.
+    let mut echo = single_node("testkit.echo", json!({"v": 2}));
+    echo["graph"]["nodes"][2]["outputs"] = json!([{"variable": "c", "value_selector": ["p", "config"]}]);
+    assert_eq!(outputs(&collect(&engine(&setup, echo), RunInput::new()).await)["c"]["v"], 2);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn crash_kills_the_whole_process_group() {
+    let setup = load(&[fixture("testkit")]);
+    let marker = temp_file("grandchild-pid");
+    let events = collect(
+        &engine(&setup, single_node("testkit.grandchild", json!({"marker": marker.to_str().unwrap()}))),
+        RunInput::new(),
+    )
+    .await;
+    let failure = match terminal(&events) {
+        Event::RunFailed { error, .. } => error.clone(),
+        other => panic!("{other:?}"),
+    };
+    // The crash report says how the process ended.
+    assert!(failure.contains("exited with code 4"), "{failure}");
+    let pid: u32 = std::fs::read_to_string(&marker).unwrap().trim().parse().unwrap();
+    let alive = |pid: u32| match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        // A zombie (state `Z`) is dead, merely not yet reaped.
+        Ok(stat) => !stat.rsplit(')').next().unwrap_or_default().trim_start().starts_with('Z'),
+        Err(_) => false,
+    };
+    let mut gone = false;
+    for _ in 0..40 {
+        if !alive(pid) {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(gone, "grandchild {pid} survived the plugin crash");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_input_secrets_are_masked() {
+    let setup = load(&[fixture("testkit")]);
+    let doc = json!({"graph": {
+        "nodes": [
+            {"id": "start", "type": "start", "variables": []},
+            {"id": "ask", "type": "testkit.approve", "question": "Key?"},
+            {"id": "end", "type": "end", "outputs": [{"variable": "answer", "value_selector": ["ask", "answer"]}]}
+        ],
+        "edges": [
+            {"source": "start", "target": "ask"},
+            {"source": "ask", "target": "end", "handle": "yes"},
+            {"source": "ask", "target": "end", "handle": "no"}
+        ]
+    }});
+    let e = engine(&setup, doc);
+    let events = collect(&e, RunInput::new()).await;
+    let Event::RunPaused { snapshot, .. } = terminal(&events) else { panic!("{:?}", terminal(&events)) };
+    let mut inputs = graphrt_core::IndexMap::new();
+    inputs.insert("ask".to_owned(), Value::Secret(Arc::from("sk-typed-by-a-human")));
+    let events = collect(&e, RunInput::new().resume((**snapshot).clone(), inputs)).await;
+    assert_eq!(outputs(&events)["answer"], "******");
+}
+
+/// The testkit plugin with a manifest that requests plaintext secrets.
+fn secret_requesting_manifest() -> LoadedManifest {
+    let script = fixture("testkit").join("plugin.py");
+    let manifest = PluginManifest::from_json(
+        &json!({
+            "name": "testkit",
+            "runtime": "process",
+            "command": "python3",
+            "args": ["-u", script.to_str().unwrap()],
+            "permissions": {"secrets": true},
+            "nodes": [{"kind": "testkit.echo", "title": "Echo"}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    LoadedManifest { manifest, dir: fixture("testkit") }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn secrets_permission_must_be_granted_by_the_host() {
+    let mut doc = single_node("testkit.echo", json!({"key": "{{#env.API_KEY#}}"}));
+    doc["env"] = json!([{"name": "API_KEY", "type": "secret"}]);
+    doc["graph"]["nodes"][2]["outputs"] = json!([{"variable": "c", "value_selector": ["p", "config"]}]);
+    let input = || RunInput::new().env("API_KEY", Value::Secret(Arc::from("sk-live")));
+
+    for (trusted, expected) in [(false, "******"), (true, "sk-live")] {
+        let mut host = if trusted { PluginHost::new().trust("testkit") } else { PluginHost::new() };
+        let info = host.add(secret_requesting_manifest()).unwrap();
+        assert_eq!(info.permissions.secrets, trusted);
+        assert_eq!(info.warnings.is_empty(), trusted, "{:?}", info.warnings);
+        let mut registry = Registry::with_builtins();
+        let mut tools = ToolRegistry::new();
+        host.register(&mut registry, &mut tools).unwrap();
+        let setup = Setup { registry, tools };
+        let events = collect(&engine(&setup, doc.clone()), input()).await;
+        assert_eq!(outputs(&events)["c"]["key"], expected, "trusted={trusted}");
+    }
+}

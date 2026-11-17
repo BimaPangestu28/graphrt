@@ -54,7 +54,7 @@ pub use manifest::{
     Runtime, WasmRuntime, is_valid_name, manifest_in,
 };
 #[cfg(feature = "process")]
-pub use process::{DEFAULT_PASS_ENV, ProcessTransport};
+pub use process::{DEFAULT_PASS_ENV, MAX_CONSECUTIVE_TIMEOUTS, ProcessTransport};
 pub use protocol::Notification;
 pub use render::{collect_selectors, render_config};
 pub use transport::{IoTransport, Transport};

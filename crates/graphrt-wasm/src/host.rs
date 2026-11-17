@@ -32,7 +32,16 @@ pub(crate) struct HostState {
     max_logs: usize,
     logs: Vec<LogLine>,
     dropped_logs: usize,
+    max_events: usize,
+    events: usize,
+    max_stream_bytes: usize,
+    stream_bytes: usize,
 }
+
+/// Fixed fuel charged for every host call, on top of one unit per byte copied.
+/// Host work is otherwise invisible to the fuel meter, so without this a guest
+/// could make the host copy unbounded data within its fuel budget.
+pub(crate) const HOST_CALL_FUEL: u64 = 1_000;
 
 /// Raised from host functions to abort the guest with a precise error.
 #[derive(Debug)]
@@ -105,6 +114,23 @@ impl Compiled {
 
     /// Instantiate a fresh copy of the module and call one entry point.
     pub(crate) fn call(&self, call: Call<'_>, ctx: Option<NodeContext>) -> Result<CallOutput, WasmError> {
+        self.call_logged(call, ctx).map_err(|f| f.error)
+    }
+
+    /// Like [`Compiled::call`], but a failure keeps the log lines the guest wrote
+    /// before it failed: those usually explain the failure.
+    pub(crate) fn call_logged(&self, call: Call<'_>, ctx: Option<NodeContext>) -> Result<CallOutput, CallFailure> {
+        let mut store = self.new_store(ctx).map_err(|error| CallFailure { error, logs: Vec::new() })?;
+        match self.call_in(&mut store, call) {
+            Ok(bytes) => {
+                let state = store.into_data();
+                Ok(CallOutput { bytes, logs: state.logs, dropped_logs: state.dropped_logs })
+            }
+            Err(error) => Err(CallFailure { error, logs: store.into_data().logs }),
+        }
+    }
+
+    fn new_store(&self, ctx: Option<NodeContext>) -> Result<Store<HostState>, WasmError> {
         let limits = &self.limits;
         let state = HostState {
             limits: StoreLimitsBuilder::new()
@@ -120,11 +146,21 @@ impl Compiled {
             max_logs: limits.max_logs,
             logs: Vec::new(),
             dropped_logs: 0,
+            max_events: limits.max_events,
+            events: 0,
+            max_stream_bytes: limits.max_stream_bytes,
+            stream_bytes: 0,
         };
         let mut store = Store::new(&self.engine, state);
         store.limiter(|s| &mut s.limits);
         store.set_fuel(limits.fuel).map_err(|e| WasmError::Internal(e.to_string()))?;
+        Ok(store)
+    }
 
+    /// Run one entry point in `store`, returning the response bytes.
+    fn call_in(&self, store: &mut Store<HostState>, call: Call<'_>) -> Result<Vec<u8>, WasmError> {
+        let limits = &self.limits;
+        let mut store = store;
         let instance = self.linker.instantiate_and_start(&mut store, &self.module).map_err(|e| match map_trap(&e) {
             Some(err) => err,
             None => WasmError::Instantiate(e.to_string()),
@@ -183,9 +219,14 @@ impl Compiled {
             .and_then(|end| memory.data(&store).get(start..end))
             .ok_or(WasmError::OutOfBounds { ptr, len })?
             .to_vec();
-        let state = store.into_data();
-        Ok(CallOutput { bytes, logs: state.logs, dropped_logs: state.dropped_logs })
+        Ok(bytes)
     }
+}
+
+/// A failed guest call with the log lines written before the failure.
+pub(crate) struct CallFailure {
+    pub error: WasmError,
+    pub logs: Vec<LogLine>,
 }
 
 fn as_u32(v: i32) -> u32 {
@@ -237,19 +278,63 @@ fn read_text(caller: &Caller<'_, HostState>, ptr: i32, len: i32, what: &'static 
     String::from_utf8(bytes).map_err(|_| host_trap(WasmError::InvalidOutput(format!("{what} is not valid UTF-8"))))
 }
 
+/// Charge the guest for host work: a fixed cost plus one unit per byte.
+fn charge(caller: &mut Caller<'_, HostState>, bytes: u64) -> Result<(), wasmi::Error> {
+    let cost = HOST_CALL_FUEL.saturating_add(bytes);
+    let fuel = caller.get_fuel().map_err(|e| host_trap(WasmError::Internal(e.to_string())))?;
+    if fuel < cost {
+        return Err(host_trap(WasmError::FuelExhausted));
+    }
+    caller.set_fuel(fuel - cost).map_err(|e| host_trap(WasmError::Internal(e.to_string())))
+}
+
+/// Reserve one streamed event of `bytes` bytes against the per-call caps.
+fn reserve_event(caller: &mut Caller<'_, HostState>, bytes: u64) -> Result<(), wasmi::Error> {
+    let state = caller.data_mut();
+    if state.events >= state.max_events {
+        return Err(host_trap(WasmError::TooLarge {
+            what: "streamed events",
+            size: state.events.saturating_add(1),
+            limit: state.max_events,
+        }));
+    }
+    let total = state.stream_bytes.saturating_add(usize::try_from(bytes).unwrap_or(usize::MAX));
+    if total > state.max_stream_bytes {
+        return Err(host_trap(WasmError::TooLarge {
+            what: "streamed bytes",
+            size: total,
+            limit: state.max_stream_bytes,
+        }));
+    }
+    state.events += 1;
+    state.stream_bytes = total;
+    Ok(())
+}
+
+fn len_of(len: i32) -> u64 {
+    u64::from(as_u32(len))
+}
+
 fn build_linker(engine: &Engine) -> Result<Linker<HostState>, WasmError> {
     let link_err = |e: wasmi::errors::LinkerError| WasmError::Internal(e.to_string());
     let mut linker = Linker::<HostState>::new(engine);
     linker
         .func_wrap(HOST_MODULE, "log", |mut caller: Caller<'_, HostState>, level: i32, ptr: i32, len: i32| {
-            let message = read_text(&caller, ptr, len, "log line")?;
-            let state = caller.data_mut();
-            if state.logs.len() < state.max_logs {
-                let level = u8::try_from(level.clamp(0, 4)).unwrap_or(2);
-                state.logs.push(LogLine { level, message });
-            } else {
+            // Decide before copying anything, so dropped lines stay cheap.
+            let full = {
+                let state = caller.data();
+                state.logs.len() >= state.max_logs
+            };
+            if full {
+                charge(&mut caller, 0)?;
+                let state = caller.data_mut();
                 state.dropped_logs = state.dropped_logs.saturating_add(1);
+                return Ok(());
             }
+            charge(&mut caller, len_of(len))?;
+            let message = read_text(&caller, ptr, len, "log line")?;
+            let level = u8::try_from(level.clamp(0, 4)).unwrap_or(2);
+            caller.data_mut().logs.push(LogLine { level, message });
             Ok(())
         })
         .map_err(link_err)?;
@@ -257,7 +342,10 @@ fn build_linker(engine: &Engine) -> Result<Linker<HostState>, WasmError> {
         .func_wrap(
             HOST_MODULE,
             "chunk",
-            |caller: Caller<'_, HostState>, field_ptr: i32, field_len: i32, ptr: i32, len: i32| {
+            |mut caller: Caller<'_, HostState>, field_ptr: i32, field_len: i32, ptr: i32, len: i32| {
+                let bytes = len_of(field_len).saturating_add(len_of(len));
+                charge(&mut caller, bytes)?;
+                reserve_event(&mut caller, bytes)?;
                 let field = read_text(&caller, field_ptr, field_len, "chunk field")?;
                 let text = read_text(&caller, ptr, len, "chunk")?;
                 if let Some(ctx) = &caller.data().ctx {
@@ -271,7 +359,10 @@ fn build_linker(engine: &Engine) -> Result<Linker<HostState>, WasmError> {
         .func_wrap(
             HOST_MODULE,
             "progress",
-            |caller: Caller<'_, HostState>, name_ptr: i32, name_len: i32, ptr: i32, len: i32| {
+            |mut caller: Caller<'_, HostState>, name_ptr: i32, name_len: i32, ptr: i32, len: i32| {
+                let bytes = len_of(name_len).saturating_add(len_of(len));
+                charge(&mut caller, bytes)?;
+                reserve_event(&mut caller, bytes)?;
                 let name = read_text(&caller, name_ptr, name_len, "progress name")?;
                 let payload = read_text(&caller, ptr, len, "progress payload")?;
                 let data = match serde_json::from_str::<serde_json::Value>(&payload) {

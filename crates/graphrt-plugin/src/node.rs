@@ -61,6 +61,8 @@ pub(crate) struct PluginNode {
     config: serde_json::Map<String, serde_json::Value>,
     selectors: Vec<Selector>,
     role: NodeRole,
+    /// Declared handles for `Handles::Fixed` nodes; a returned branch must be one of them.
+    fixed_handles: Option<Vec<String>>,
 }
 
 impl fmt::Debug for PluginNode {
@@ -89,12 +91,17 @@ pub(crate) fn build_node(
         Handles::Single => NodeRole::Executable,
         _ => NodeRole::Branch,
     };
+    let fixed_handles = match &descriptor.handles {
+        Handles::Fixed { handles } => Some(handles.clone()),
+        _ => None,
+    };
     Ok(Arc::new(PluginNode {
         shared: shared.clone(),
         kind: descriptor.kind.clone(),
         config: doc.config.clone(),
         selectors: collect_selectors(&doc.config),
         role,
+        fixed_handles,
     }))
 }
 
@@ -120,11 +127,15 @@ impl Node for PluginNode {
 
             let config = render_config(&self.config, &ctx.pool, self.shared.expose_secrets);
             let id = self.shared.transport.next_id();
+            // Resume input follows the same secret policy as the config.
+            let expose = self.shared.expose_secrets;
             let resume = ctx.resume.as_ref().map(|r| {
-                serde_json::json!({
-                    "state": r.state,
-                    "input": r.input.as_ref().map(Value::to_json_exposed).unwrap_or(serde_json::Value::Null),
-                })
+                let input = match r.input.as_ref() {
+                    Some(v) if expose => v.to_json_exposed(),
+                    Some(v) => v.to_json(),
+                    None => serde_json::Value::Null,
+                };
+                serde_json::json!({"state": r.state, "input": input})
             });
             let params = serde_json::json!({
                 "request_id": id,
@@ -148,6 +159,14 @@ impl Node for PluginNode {
                     let data = n.params.get("data").cloned().unwrap_or(serde_json::Value::Null);
                     events.progress(name, Value::from_json(data));
                 }
+                "log" => {
+                    let level = n.params.get("level").and_then(|f| f.as_str()).unwrap_or("info");
+                    let message = n.params.get("message").and_then(|f| f.as_str()).unwrap_or_default();
+                    events.progress(
+                        "plugin_log",
+                        Value::object([("level", Value::from(level)), ("message", Value::from(message))]),
+                    );
+                }
                 _ => {}
             });
 
@@ -156,13 +175,24 @@ impl Node for PluginNode {
                 None => self.shared.timeout,
             };
             let call = self.shared.transport.call(id, "node.run", params, Some(sink), true, &ctx.clock);
-            let result = with_timeout(&ctx.clock, timeout, call).await.map_err(|e| e.into_node_error(plugin))?;
-            outcome_from(plugin, result)
+            let result = with_timeout(&ctx.clock, timeout, call).await;
+            track(self.shared.transport.as_ref(), &result);
+            let result = result.map_err(|e| e.into_node_error(plugin))?;
+            outcome_from(plugin, result, self.role, self.fixed_handles.as_deref())
         })
     }
 }
 
-fn outcome_from(plugin: &str, result: serde_json::Value) -> NodeResult {
+/// Feed request outcomes to the transport's liveness tracking.
+fn track<T>(transport: &dyn Transport, result: &Result<T, CallError>) {
+    match result {
+        Err(CallError::Timeout(_)) => transport.note_timeout(),
+        Ok(_) | Err(CallError::Remote { .. }) => transport.note_answer(),
+        Err(_) => {}
+    }
+}
+
+fn outcome_from(plugin: &str, result: serde_json::Value, role: NodeRole, fixed: Option<&[String]>) -> NodeResult {
     let msg: RunResultMsg = serde_json::from_value(result).map_err(|e| {
         NodeError::fatal("plugin_protocol", format!("plugin `{plugin}` returned an invalid result: {e}"))
     })?;
@@ -180,7 +210,27 @@ fn outcome_from(plugin: &str, result: serde_json::Value) -> NodeResult {
     for (k, v) in msg.metadata {
         out.metadata.insert(k, Value::from_json(v));
     }
-    out.branch = msg.branch;
+    match (role, msg.branch) {
+        (NodeRole::Branch, None) => {
+            return Err(NodeError::fatal(
+                "plugin_protocol",
+                format!("plugin `{plugin}`: branching node returned no `branch`"),
+            ));
+        }
+        (NodeRole::Branch, Some(handle)) => {
+            if let Some(allowed) = fixed {
+                if !allowed.contains(&handle) {
+                    return Err(NodeError::fatal(
+                        "plugin_protocol",
+                        format!("plugin `{plugin}`: branch `{handle}` is not one of the declared handles {allowed:?}"),
+                    ));
+                }
+            }
+            out.branch = Some(handle);
+        }
+        // Non-branching nodes take every edge; a stray `branch` is ignored.
+        (_, _) => {}
+    }
     out.usage = msg.usage;
     out.writes = msg.writes.into_iter().map(|w| (w.selector, Value::from_json(w.value))).collect();
     Ok(NodeOutcome::Completed(out))
@@ -209,7 +259,9 @@ impl ToolRuntime for PluginTools {
             let call = self.shared.transport.call(id, "tool.list", serde_json::json!({}), None, false, &clock);
             match with_timeout(&clock, self.shared.timeout, call).await {
                 Ok(result) => {
-                    let tools = result.get("tools").cloned().unwrap_or(serde_json::Value::Array(Vec::new()));
+                    let tools = result.get("tools").cloned().ok_or_else(|| {
+                        self.error("tool.list", CallError::Protocol("result has no `tools` array".into()))
+                    })?;
                     serde_json::from_value(tools)
                         .map_err(|e| self.error("tool.list", CallError::Protocol(e.to_string())))
                 }
@@ -232,7 +284,9 @@ impl ToolRuntime for PluginTools {
             let id = self.shared.transport.next_id();
             let params = serde_json::json!({"request_id": id, "name": name, "arguments": arguments});
             let call = self.shared.transport.call(id, "tool.call", params, None, true, &clock);
-            let result = with_timeout(&clock, self.shared.timeout, call).await.map_err(|e| self.error(name, e))?;
+            let result = with_timeout(&clock, self.shared.timeout, call).await;
+            track(self.shared.transport.as_ref(), &result);
+            let result = result.map_err(|e| self.error(name, e))?;
             let msg: ToolResultMsg =
                 serde_json::from_value(result).map_err(|e| self.error(name, CallError::Protocol(e.to_string())))?;
             Ok(ToolOutput { text: msg.text, data: Value::from_json(msg.data), is_error: msg.is_error })

@@ -82,12 +82,18 @@ impl WasmPlugin {
     }
 
     /// Register every node kind (with its descriptor) in `registry`.
-    /// Existing kinds with the same name are replaced.
-    pub fn register(&self, registry: &mut Registry) {
+    ///
+    /// Fails, registering nothing, when any kind already exists: a module never
+    /// replaces a built-in node or another plugin's node.
+    pub fn register(&self, registry: &mut Registry) -> Result<(), WasmError> {
+        if let Some(taken) = self.inner.manifest.nodes.iter().find(|d| registry.contains(&d.kind)) {
+            return Err(WasmError::KindConflict(taken.kind.clone()));
+        }
         for descriptor in &self.inner.manifest.nodes {
             let factory = self.make_factory(descriptor);
             registry.register_described(descriptor.clone(), move |doc| factory(doc));
         }
+        Ok(())
     }
 
     /// Factory for one node kind.
@@ -135,9 +141,18 @@ fn validate_manifest(manifest: &mut Manifest) -> Result<(), WasmError> {
         return Err(WasmError::Manifest("plugin declares no node kinds".into()));
     }
     let mut seen = HashSet::new();
+    let prefix = format!("{}.", manifest.name);
     for node in &mut manifest.nodes {
         if node.kind.trim().is_empty() || node.kind.contains(char::is_whitespace) {
             return Err(WasmError::Manifest(format!("invalid node kind `{}`", node.kind)));
+        }
+        // Kinds are either plain names or `<module name>.<kind>`: a module cannot
+        // claim another plugin's namespace.
+        if node.kind.contains('.') && !node.kind.starts_with(&prefix) {
+            return Err(WasmError::Manifest(format!(
+                "node kind `{}` uses another namespace; namespaced kinds must start with `{prefix}`",
+                node.kind
+            )));
         }
         if !seen.insert(node.kind.clone()) {
             return Err(WasmError::DuplicateKind(node.kind.clone()));
@@ -199,7 +214,9 @@ impl Node for WasmNode {
             let input = serde_json::to_vec(&request)
                 .map_err(|e| NodeError::fatal("wasm_internal", format!("encoding request: {e}")))?;
             let output = execute(self.inner.clone(), input, ctx).await?;
-            self.decode(output)
+            let logs = output.logs.clone();
+            // Guest-reported errors get the guest's own log lines, like traps do.
+            self.decode(output).map_err(|e| with_logs(e, &logs))
         })
     }
 }
@@ -276,19 +293,33 @@ fn logs_value(logs: &[LogLine]) -> Value {
     }))
 }
 
-/// Run the guest call. Inside a tokio runtime (feature `tokio`) the interpreter runs on
-/// the blocking pool so it never stalls other nodes; otherwise it runs inline. Either
-/// way the call is bounded by the fuel limit.
+/// Append the last guest log lines to an error message.
+fn with_logs(mut err: NodeError, logs: &[LogLine]) -> NodeError {
+    const TAIL: usize = 5;
+    if logs.is_empty() {
+        return err;
+    }
+    let tail: Vec<String> =
+        logs.iter().skip(logs.len().saturating_sub(TAIL)).map(|l| l.message.chars().take(500).collect()).collect();
+    err.message = format!("{} (guest log: {})", err.message, tail.join(" | "));
+    err
+}
+
+/// Run the guest call. Inside a tokio runtime (feature `tokio`, on by default) the
+/// interpreter runs on the blocking pool so it never stalls other nodes or their
+/// timeouts; otherwise it runs inline. Either way the call is bounded by fuel.
 async fn execute(inner: Arc<Inner>, input: Vec<u8>, ctx: NodeContext) -> Result<CallOutput, NodeError> {
+    let into_error = |f: crate::host::CallFailure| with_logs(NodeError::from(f.error), &f.logs);
     #[cfg(feature = "tokio")]
     {
         if tokio::runtime::Handle::try_current().is_ok() {
-            let joined = tokio::task::spawn_blocking(move || inner.compiled.call(Call::Run(&input), Some(ctx))).await;
+            let joined =
+                tokio::task::spawn_blocking(move || inner.compiled.call_logged(Call::Run(&input), Some(ctx))).await;
             return match joined {
-                Ok(result) => result.map_err(NodeError::from),
+                Ok(result) => result.map_err(into_error),
                 Err(e) => Err(NodeError::fatal("wasm_internal", format!("guest task failed: {e}"))),
             };
         }
     }
-    inner.compiled.call(Call::Run(&input), Some(ctx)).map_err(NodeError::from)
+    inner.compiled.call_logged(Call::Run(&input), Some(ctx)).map_err(into_error)
 }
