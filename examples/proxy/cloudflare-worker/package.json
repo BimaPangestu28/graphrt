@@ -1,0 +1,9 @@
+{
+  "name": "graphrt-llm-proxy-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test.mjs",
+    "deploy": "wrangler deploy"
+  }
+}

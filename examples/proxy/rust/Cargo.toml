@@ -1,0 +1,28 @@
+[package]
+name = "graphrt-llm-proxy"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Example thin LLM proxy and token broker: apps send short-lived tokens, the proxy adds the provider key."
+
+# Standalone example, not part of the graphrt workspace.
+[workspace]
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+
+[dev-dependencies]
+tower = { version = "0.5", default-features = false, features = ["util"] }
+http-body-util = "0.1"
+# End-to-end test: graphrt's TokenBroker + OpenAI-compatible client against this proxy.
+graphrt-llm = { path = "../../../crates/graphrt-llm", default-features = false, features = ["openai"] }
