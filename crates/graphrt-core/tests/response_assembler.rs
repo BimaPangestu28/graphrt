@@ -265,3 +265,237 @@ fn end_nodes_optional_and_flush_on_failure() {
     assert!(a.push(&chunk("llm", "late")).is_empty());
     assert_eq!(a.text_so_far(), "partial\n");
 }
+
+// ---- retries and handled failures -------------------------------------------------------
+
+use graphrt_core::dsl::{ErrorStrategy, NodePolicy, RetryPolicy};
+
+fn retry_policy() -> NodePolicy {
+    NodePolicy { retry: RetryPolicy { max_retries: 2, interval_ms: 0, backoff: 1.0 }, ..NodePolicy::default() }
+}
+
+fn retry(id: &str) -> Event {
+    Event::NodeRetry {
+        frame: Arc::from(""),
+        node_id: id.into(),
+        exec_id: format!("{id}-x"),
+        attempt: 2,
+        error: "network".into(),
+        delay_ms: 0,
+    }
+}
+
+fn handled(id: &str, outputs: &[(&str, Value)]) -> Event {
+    Event::NodeFailed {
+        frame: Arc::from(""),
+        node_id: id.into(),
+        exec_id: format!("{id}-x"),
+        error: "boom".into(),
+        error_type: "model".into(),
+        handled: true,
+        outputs: outputs.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect::<IndexMap<_, _>>(),
+        elapsed_ms: 1,
+    }
+}
+
+fn feed(a: &mut ResponseAssembler, events: &[Event]) -> String {
+    events.iter().map(|ev| texts(&a.push(ev))).collect()
+}
+
+#[test]
+fn retried_node_never_duplicates_partial_attempt() {
+    let g = graph(
+        vec![n("start", "start"), n("llm", "llm").with_policy(retry_policy()), answer("ans", "A:{{#llm.text#}}.")],
+        vec![e("start", "llm"), e("llm", "ans")],
+    );
+    let mut a = ResponseAssembler::new(&g);
+    let before = feed(&mut a, &[started("start"), ok("start", &[]), started("llm"), chunk("llm", "Hel")]);
+    assert_eq!(before, "A:", "retry-enabled nodes are not streamed live");
+    let rest = feed(
+        &mut a,
+        &[
+            retry("llm"),
+            chunk("llm", "Hello"),
+            chunk("llm", " world"),
+            ok("llm", &[("text", Value::from("Hello world"))]),
+        ],
+    );
+    assert_eq!(rest, "Hello world.");
+    assert_eq!(a.text_so_far(), "A:Hello world.");
+}
+
+#[test]
+fn retry_then_default_value_emits_default_not_partial() {
+    let policy = NodePolicy {
+        retry: RetryPolicy { max_retries: 1, interval_ms: 0, backoff: 1.0 },
+        on_error: ErrorStrategy::DefaultValue {
+            values: [("text".to_owned(), Value::from("fallback"))].into_iter().collect(),
+        },
+        ..NodePolicy::default()
+    };
+    let g = graph(
+        vec![n("start", "start"), n("llm", "llm").with_policy(policy), answer("ans", "[{{#llm.text#}}]")],
+        vec![e("start", "llm"), e("llm", "ans")],
+    );
+    let mut a = ResponseAssembler::new(&g);
+    let all = feed(
+        &mut a,
+        &[
+            started("start"),
+            ok("start", &[]),
+            started("llm"),
+            chunk("llm", "par"),
+            retry("llm"),
+            chunk("llm", "tial"),
+            handled("llm", &[("text", Value::from("fallback")), ("error_message", Value::from("boom"))]),
+            run_done(),
+        ],
+    );
+    assert_eq!(all, "[fallback]");
+}
+
+#[test]
+fn fail_branch_failure_renders_nothing_for_variable() {
+    let policy = NodePolicy { on_error: ErrorStrategy::FailBranch, ..NodePolicy::default() };
+    let g = graph(
+        vec![
+            n("start", "start"),
+            n("llm", "llm").with_policy(policy),
+            answer("ok", "ok:{{#llm.text#}}"),
+            answer("err", "err:{{#llm.error_message#}}"),
+        ],
+        vec![e("start", "llm"), e("llm", "ok"), e("llm", "err").with_handle("fail-branch")],
+    );
+    let mut a = ResponseAssembler::new(&g);
+    let all = feed(
+        &mut a,
+        &[
+            started("start"),
+            ok("start", &[]),
+            started("llm"),
+            chunk("llm", "partial"),
+            handled("llm", &[("error_message", Value::from("boom"))]),
+            skipped("ok"),
+            run_done(),
+        ],
+    );
+    assert_eq!(all, "err:boom");
+}
+
+#[test]
+fn branch_default_value_follows_named_handle_for_ordering() {
+    let policy = NodePolicy {
+        on_error: ErrorStrategy::DefaultValue {
+            values: [("branch".to_owned(), Value::from("b"))].into_iter().collect(),
+        },
+        ..NodePolicy::default()
+    };
+    let g = graph(
+        vec![
+            n("start", "start"),
+            n("if", "if-else").with_policy(policy),
+            answer("x", "X"),
+            answer("y", "Y"),
+            n("llm", "llm"),
+            answer("z", "{{#llm.text#}}"),
+        ],
+        vec![
+            e("start", "if"),
+            e("if", "x").with_handle("a"),
+            e("if", "y").with_handle("b"),
+            e("start", "llm"),
+            e("llm", "z"),
+        ],
+    );
+    let mut a = ResponseAssembler::new(&g);
+    let mut all = feed(
+        &mut a,
+        &[
+            started("start"),
+            ok("start", &[]),
+            started("llm"),
+            chunk("llm", "zz"),
+            ok("llm", &[("text", Value::from("zz"))]),
+        ],
+    );
+    assert_eq!(all, "zz");
+    // The engine follows only handle `b`: `x` (handle `a`) must not be treated as certain.
+    all.push_str(&feed(&mut a, &[started("if"), handled("if", &[])]));
+    assert_eq!(all, "zzY");
+    all.push_str(&feed(&mut a, &[skipped("x"), run_done()]));
+    assert_eq!(all, "zzY");
+}
+
+// ---- resume -----------------------------------------------------------------------------
+
+use graphrt_core::pool::VariablePool;
+use graphrt_core::snapshot::{EdgeStatus, FrameSnapshot, NodeSnapshot, NodeStatus};
+
+fn edge_id(a: &str, b: &str, id: &str) -> EdgeDoc {
+    let mut edge = EdgeDoc::new(a, b);
+    edge.id = Some(id.to_owned());
+    edge
+}
+
+fn node_snap(status: NodeStatus) -> NodeSnapshot {
+    NodeSnapshot { status, exec_id: "x".into(), attempt: 1, resume_state: None }
+}
+
+/// start(amount) -> review (pauses) -> answer; a second answer `intro` rendered before the pause.
+fn approval_graph() -> Arc<Graph> {
+    graph(
+        vec![
+            n("start", "start"),
+            answer("intro", "Reviewing {{#start.amount#}}. "),
+            n("review", "if-else"),
+            answer("ans", "Approved {{#start.amount#}} ({{#review.note#}})"),
+        ],
+        vec![
+            edge_id("start", "intro", "e1"),
+            edge_id("intro", "review", "e2"),
+            edge_id("review", "ans", "e3").with_handle("approve"),
+        ],
+    )
+}
+
+fn paused_snapshot() -> FrameSnapshot {
+    let mut pool = VariablePool::new();
+    pool.insert("start", "amount", Value::Int(100));
+    let mut snap = FrameSnapshot { pool: pool.to_snapshot(), ..FrameSnapshot::default() };
+    snap.nodes.insert("start".into(), node_snap(NodeStatus::Succeeded));
+    snap.nodes.insert("intro".into(), node_snap(NodeStatus::Succeeded));
+    snap.nodes.insert("review".into(), node_snap(NodeStatus::Paused));
+    snap.edges.insert("e1".into(), EdgeStatus::Taken);
+    snap.edges.insert("e2".into(), EdgeStatus::Taken);
+    snap.edges.insert("e3".into(), EdgeStatus::Unknown);
+    snap
+}
+
+#[test]
+fn resume_uses_snapshot_values_and_skips_rendered_answers() {
+    let g = approval_graph();
+    let mut a = ResponseAssembler::new(&g).resume_from(&paused_snapshot());
+    let all = feed(
+        &mut a,
+        &[
+            started("review"),
+            ok_branch("review", &[("note", Value::from("fine"))], Some("approve")),
+            started("ans"),
+            ok("ans", &[]),
+            run_done(),
+        ],
+    );
+    assert_eq!(all, "Approved 100 (fine)", "start never re-runs; its outputs come from the snapshot");
+}
+
+#[test]
+fn resume_without_snapshot_would_lose_values() {
+    // Guard for the test above: without `resume_from` the start output is unknown.
+    let g = approval_graph();
+    let mut a = ResponseAssembler::new(&g);
+    let all = feed(
+        &mut a,
+        &[ok_branch("review", &[("note", Value::from("fine"))], Some("approve")), ok("ans", &[]), run_done()],
+    );
+    assert!(all.contains("Approved  (fine)"));
+}

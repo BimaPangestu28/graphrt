@@ -31,7 +31,9 @@
 //!   - a node is certain when one incoming edge comes from a certain source and
 //!     that edge will be taken if the source succeeds: every edge of a
 //!     non-branching node (except `fail-branch` edges), or the edge matching the
-//!     handle a finished branch node selected. Node failures are not anticipated.
+//!     handle a finished branch node selected. Node failures are not anticipated,
+//!     except that an unfinished node with the `fail-branch` strategy makes none
+//!     of its edges certain (either side may be taken).
 //! - While a response is active, its template is drained left to right:
 //!   literal text is emitted immediately; a variable produced by a graph node
 //!   emits that node's buffered stream chunks for the variable's field as they
@@ -43,6 +45,20 @@
 //! - `end` nodes do not stream by default (their outputs are structured data,
 //!   delivered in `RunSucceeded`). Enable [`ResponseAssembler::include_end`] to
 //!   render them as their output values joined by newlines.
+//! - **Retries and handled failures never mix attempts.** A source node whose
+//!   policy allows retries (`retry.max_retries > 0`) or handles errors
+//!   (`on_error` other than `fail`) is *not* streamed live: its chunks are
+//!   buffered and emitted only once the node finishes. A `node_retry` event
+//!   discards the buffered chunks of the failed attempt. On success the final
+//!   attempt's text is emitted; after a handled `default-value` failure the
+//!   default output is emitted instead of any partial text; after a
+//!   `fail-branch` failure (or an unhandled one) nothing is emitted for the
+//!   variable. The trade-off: such nodes lose token-by-token streaming in
+//!   exchange for an answer that always matches the node's final output.
+//! - Ordering after handled failures follows the engine: a non-branch node with
+//!   `default-value` continues along its regular edges, a `fail-branch` node
+//!   along its `fail-branch` edges, and a branch node with `default-value`
+//!   along the handle named by its `branch` default value (no edge if absent).
 //! - A terminal run event (`RunSucceeded`, `RunFailed`, `RunAborted`) flushes
 //!   everything that can still be rendered, as does [`ResponseAssembler::finish`].
 
@@ -56,6 +72,7 @@ use crate::event::Event;
 use crate::graph::{FAIL_BRANCH, Graph, NodeIx};
 use crate::node::NodeRole;
 use crate::pool::{Selector, VariablePool};
+use crate::snapshot::{EdgeStatus, FrameSnapshot, NodeStatus};
 use crate::template::{Part, Template};
 use crate::value::Value;
 
@@ -133,6 +150,12 @@ pub struct ResponseAssembler {
     responses: Vec<Response>,
     status: Vec<Status>,
     branch: Vec<Option<String>>,
+    /// Nodes whose streams are buffered until they finish (retry / handled-error policy).
+    deferred: Vec<bool>,
+    /// Edge states restored from a snapshot (indexed like `Graph::edges`).
+    edge_state: Vec<Option<EdgeStatus>>,
+    /// Response nodes fully rendered before a pause (restored via `resume_from`).
+    rendered: Vec<bool>,
     /// Stream buffers keyed by `(node id, field)`, only for referenced selectors.
     streams: HashMap<(Arc<str>, Arc<str>), StreamBuf>,
     referenced: HashSet<(Arc<str>, Arc<str>)>,
@@ -153,6 +176,13 @@ impl ResponseAssembler {
             responses: Vec::new(),
             status: vec![Status::Unknown; graph.nodes().len()],
             branch: vec![None; graph.nodes().len()],
+            deferred: graph
+                .nodes()
+                .iter()
+                .map(|n| n.policy.retry.max_retries > 0 || !matches!(n.policy.on_error, ErrorStrategy::Fail))
+                .collect(),
+            edge_state: vec![None; graph.edges().len()],
+            rendered: vec![false; graph.nodes().len()],
             streams: HashMap::new(),
             referenced: HashSet::new(),
             pool: VariablePool::new(),
@@ -192,6 +222,50 @@ impl ResponseAssembler {
             self.pool.insert(ns, name, value.clone());
         }
         self
+    }
+
+    /// Continue assembling a resumed run from the root frame snapshot carried by
+    /// `RunPaused` (`snapshot.root`).
+    ///
+    /// Restores every variable value of the snapshot (node outputs included, so
+    /// templates can reference nodes that will not run again), node and edge
+    /// states (for correct ordering), and marks response nodes that already
+    /// succeeded before the pause as rendered, so they are not emitted twice.
+    /// A response that was only partially rendered when the run paused is
+    /// rendered again from the start.
+    pub fn resume_from(mut self, snapshot: &FrameSnapshot) -> Self {
+        let restored = VariablePool::from_snapshot(snapshot.pool.clone());
+        for (ns, name, value) in restored.iter() {
+            self.pool.insert(ns, name, value.clone());
+        }
+        for (ix, edge) in self.graph.edges().iter().enumerate() {
+            if let (Some(state), Some(slot)) = (snapshot.edges.get(edge.id.as_ref()), self.edge_state.get_mut(ix)) {
+                *slot = Some(*state);
+            }
+        }
+        for (node_id, node) in &snapshot.nodes {
+            let Some(ix) = self.root_node(node_id) else { continue };
+            let status = match node.status {
+                NodeStatus::Succeeded => Status::Succeeded,
+                NodeStatus::Skipped => Status::Skipped,
+                NodeStatus::Failed if self.has_taken_outgoing(ix) => Status::Handled,
+                NodeStatus::Failed => Status::Failed,
+                NodeStatus::Paused => Status::Started,
+                NodeStatus::Pending => Status::Unknown,
+            };
+            if let Some(slot) = self.status.get_mut(ix) {
+                *slot = status;
+            }
+            if let Some(slot) = self.rendered.get_mut(ix) {
+                *slot = status == Status::Succeeded;
+            }
+        }
+        self.rebuild_responses();
+        self
+    }
+
+    fn has_taken_outgoing(&self, ix: NodeIx) -> bool {
+        self.graph.outgoing(ix).iter().any(|&ex| self.edge_state.get(ex).copied().flatten() == Some(EdgeStatus::Taken))
     }
 
     /// All response text emitted so far, concatenated.
@@ -234,6 +308,11 @@ impl ResponseAssembler {
             }
             Event::NodeSkipped { frame, node_id } if frame.is_empty() => {
                 self.set_status(node_id, Status::Skipped);
+            }
+            Event::NodeRetry { frame, node_id, .. } if frame.is_empty() => {
+                // The failed attempt's partial output must never reach the answer.
+                self.streams.retain(|(node, _), _| node.as_ref() != node_id.as_str());
+                return out;
             }
             Event::RunSucceeded { .. } | Event::RunFailed { .. } | Event::RunAborted { .. } => {
                 out.extend(self.finish());
@@ -280,7 +359,8 @@ impl ResponseAssembler {
                 "end" if self.include_end => end_parts(&node.doc.config),
                 _ => continue,
             };
-            responses.push(Response { node: ix, id: node.id.clone(), parts, queued: false, done: false });
+            let rendered = self.rendered.get(ix).copied().unwrap_or(false);
+            responses.push(Response { node: ix, id: node.id.clone(), parts, queued: rendered, done: rendered });
         }
         self.referenced = responses
             .iter()
@@ -339,20 +419,32 @@ impl ResponseAssembler {
 
     /// Whether an incoming edge of `ix` will be taken given its (certain) source.
     fn has_certain_edge(&self, ix: NodeIx, certain: &[bool]) -> bool {
-        self.graph.incoming(ix).iter().filter_map(|&ex| self.graph.edge(ex)).any(|edge| {
+        self.graph.incoming(ix).iter().filter_map(|&ex| self.graph.edge(ex).map(|e| (ex, e))).any(|(ex, edge)| {
             if !certain.get(edge.source).copied().unwrap_or(false) {
                 return false;
+            }
+            // States restored from a snapshot are authoritative.
+            match self.edge_state.get(ex).copied().flatten() {
+                Some(EdgeStatus::Taken) => return true,
+                Some(EdgeStatus::Skipped) => return false,
+                Some(EdgeStatus::Unknown) | None => {}
             }
             let Some(src) = self.graph.node(edge.source) else { return false };
             let status = self.status_of(edge.source);
             let fail_branch = matches!(src.policy.on_error, ErrorStrategy::FailBranch);
             match status {
                 Status::Failed | Status::Skipped => false,
-                Status::Handled => !fail_branch || edge.handle.as_ref() == FAIL_BRANCH,
+                Status::Handled if fail_branch => edge.handle.as_ref() == FAIL_BRANCH,
+                Status::Handled if src.role == NodeRole::Branch => {
+                    default_branch(&src.policy.on_error).as_deref() == Some(edge.handle.as_ref())
+                }
+                Status::Handled => edge.handle.as_ref() != FAIL_BRANCH,
                 Status::Succeeded if src.role == NodeRole::Branch => {
                     self.branch.get(edge.source).and_then(Option::as_deref) == Some(edge.handle.as_ref())
                 }
                 _ if src.role == NodeRole::Branch => false,
+                // Unfinished fail-branch node: which side it takes is not known yet.
+                _ if fail_branch => false,
                 _ => edge.handle.as_ref() != FAIL_BRANCH,
             }
         })
@@ -386,8 +478,14 @@ impl ResponseAssembler {
                     active.offset = 0;
                 }
                 Some(Part::Var(sel)) => {
-                    let step =
-                        resolve_var(&self.graph, &self.status, &self.streams, &self.pool, &sel, active.offset, flush);
+                    let sources = Sources {
+                        graph: &self.graph,
+                        status: &self.status,
+                        deferred: &self.deferred,
+                        streams: &self.streams,
+                        pool: &self.pool,
+                    };
+                    let step = resolve_var(&sources, &sel, active.offset, flush);
                     if !step.text.is_empty() {
                         emit(&mut self.emitted, out, &id, step.text);
                     }
@@ -421,15 +519,17 @@ struct Step {
     complete: bool,
 }
 
-fn resolve_var(
-    graph: &Graph,
-    status: &[Status],
-    streams: &HashMap<(Arc<str>, Arc<str>), StreamBuf>,
-    pool: &VariablePool,
-    sel: &Selector,
-    offset: usize,
-    flush: bool,
-) -> Step {
+/// Read-only view of the state a template variable is resolved from.
+struct Sources<'a> {
+    graph: &'a Graph,
+    status: &'a [Status],
+    deferred: &'a [bool],
+    streams: &'a HashMap<(Arc<str>, Arc<str>), StreamBuf>,
+    pool: &'a VariablePool,
+}
+
+fn resolve_var(sources: &Sources<'_>, sel: &Selector, offset: usize, flush: bool) -> Step {
+    let Sources { graph, status, deferred, streams, pool } = *sources;
     let node_ix = graph.index_of(sel.namespace()).filter(|&ix| graph.node(ix).is_some_and(|n| n.parent.is_none()));
     let Some(ix) = node_ix else {
         // Not produced by a root graph node: host-provided value (or nothing).
@@ -437,12 +537,28 @@ fn resolve_var(
     };
     let node_status = status.get(ix).copied().unwrap_or(Status::Unknown);
 
-    // Streamed tokens available for a whole-field reference.
+    let is_deferred = deferred.get(ix).copied().unwrap_or(false);
     let key = (Arc::from(sel.namespace()), Arc::from(sel.name()));
-    let buffered = if sel.path().is_empty() { streams.get(&key) } else { None };
+    let buffered = if sel.path().is_empty() { streams.get(&key).filter(|b| !b.text.is_empty()) } else { None };
+
+    if is_deferred {
+        // Emitted only once the node has finished, from its final attempt.
+        let text = match node_status {
+            Status::Succeeded => match buffered {
+                Some(buf) => buf.text.clone(),
+                None => pool.get(sel).map(|v| v.to_text()).unwrap_or_default(),
+            },
+            // Default-value outputs (or nothing on fail-branch, whose outputs are only error fields).
+            Status::Handled => pool.get(sel).map(|v| v.to_text()).unwrap_or_default(),
+            _ => String::new(),
+        };
+        return Step { text, offset: 0, complete: node_status.finished() || flush };
+    }
+
+    // Live streaming: emit whatever was buffered beyond `offset`.
     let mut text = String::new();
     let mut new_offset = offset;
-    let streamed = buffered.is_some_and(|b| !b.text.is_empty());
+    let streamed = buffered.is_some();
     if let Some(buf) = buffered {
         if let Some(rest) = buf.text.get(offset..) {
             text.push_str(rest);
@@ -470,6 +586,14 @@ fn resolve_var(
         }
     };
     Step { text, offset: new_offset, complete }
+}
+
+/// Handle named by a `branch` entry of a `default-value` strategy.
+fn default_branch(strategy: &ErrorStrategy) -> Option<String> {
+    match strategy {
+        ErrorStrategy::DefaultValue { values } => values.get("branch").and_then(Value::as_str).map(str::to_owned),
+        _ => None,
+    }
 }
 
 fn emit(emitted: &mut String, out: &mut Vec<ResponseChunk>, id: &str, text: String) {
