@@ -198,7 +198,11 @@ impl Node for ListOperatorNode {
     }
 
     fn inputs(&self) -> Vec<Selector> {
-        vec![self.config.variable.clone()]
+        let mut out = vec![self.config.variable.clone()];
+        for c in &self.config.filter_by.conditions {
+            crate::condition::expected_selectors(&c.value, &mut out);
+        }
+        out
     }
 }
 

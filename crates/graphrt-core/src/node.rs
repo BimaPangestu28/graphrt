@@ -317,8 +317,21 @@ impl Clock for TokioClock {
     fn now_ms(&self) -> u64 {
         NoTimerClock.now_ms()
     }
+    /// Outside a Tokio runtime this completes immediately instead of panicking
+    /// (and [`Clock::supports_timers`] reports `false`, so timeouts are not
+    /// enforced). Inside a runtime, the runtime must have its time driver enabled
+    /// (`enable_time()` / `enable_all()`).
     fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
-        Box::pin(tokio::time::sleep(duration))
+        if tokio::runtime::Handle::try_current().is_ok() {
+            Box::pin(tokio::time::sleep(duration))
+        } else {
+            Box::pin(futures::future::ready(()))
+        }
+    }
+
+    /// `true` only when called from inside a Tokio runtime.
+    fn supports_timers(&self) -> bool {
+        tokio::runtime::Handle::try_current().is_ok()
     }
 }
 

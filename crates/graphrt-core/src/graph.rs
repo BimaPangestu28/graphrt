@@ -94,6 +94,31 @@ pub enum GraphError {
     MultipleEntries { scope: String, nodes: Vec<String> },
     #[error("graph has no nodes")]
     Empty,
+    #[error("invalid node id `{id}`: {reason}")]
+    InvalidNodeId { id: String, reason: String },
+    #[error("node `{node}` references `{selector}`, but no node or variable namespace `{namespace}` exists")]
+    UnknownReference { node: String, selector: String, namespace: String },
+}
+
+/// Namespaces that are not node ids.
+const RESERVED_NAMESPACES: &[&str] = &[crate::pool::SYS, crate::pool::ENV, crate::pool::CONVERSATION];
+
+fn validate_node_id(id: &str) -> Result<(), GraphError> {
+    let reason = if id.is_empty() {
+        Some("must not be empty")
+    } else if RESERVED_NAMESPACES.contains(&id) {
+        Some("is a reserved variable namespace")
+    } else if id.contains('.') {
+        Some("must not contain `.` (it separates selector parts)")
+    } else if id.chars().any(char::is_whitespace) {
+        Some("must not contain whitespace")
+    } else {
+        None
+    };
+    match reason {
+        Some(reason) => Err(GraphError::InvalidNodeId { id: id.to_owned(), reason: reason.to_owned() }),
+        None => Ok(()),
+    }
 }
 
 /// An executable graph.
@@ -130,6 +155,7 @@ impl Graph {
         // Nodes.
         let mut index: HashMap<Arc<str>, NodeIx> = HashMap::with_capacity(docs.len());
         for (ix, doc) in docs.iter().enumerate() {
+            validate_node_id(&doc.id)?;
             if index.insert(Arc::from(doc.id.as_str()), ix).is_some() {
                 return Err(GraphError::DuplicateNode(doc.id.clone()));
             }
@@ -247,6 +273,8 @@ impl Graph {
             scopes.insert(owner, Scope { owner, entry, nodes: order });
         }
 
+        validate_references(&nodes, &index, &mut warnings)?;
+
         let fingerprint = fingerprint(&workflow);
         Ok(Self { nodes, edges, index, outgoing, incoming, scopes, warnings, fingerprint, workflow })
     }
@@ -326,6 +354,70 @@ impl Graph {
     pub fn workflow(&self) -> &Workflow {
         &self.workflow
     }
+}
+
+/// Check every selector a node declares in [`Node::inputs`]:
+///
+/// - its namespace must be a reserved namespace (`sys`, `env`, `conversation`)
+///   or a node id — otherwise the build fails, so typos surface at load time
+///   instead of silently resolving to null at run time;
+/// - a referenced node should be visible: in the same scope or an enclosing
+///   one (including the enclosing containers themselves), or inside the
+///   referencing container's own body. Other references only produce a warning,
+///   because they resolve to null at run time.
+fn validate_references(
+    nodes: &[GraphNode],
+    index: &HashMap<Arc<str>, NodeIx>,
+    warnings: &mut Vec<String>,
+) -> Result<(), GraphError> {
+    for (ix, n) in nodes.iter().enumerate() {
+        for selector in n.node.inputs() {
+            let namespace = selector.namespace();
+            if RESERVED_NAMESPACES.contains(&namespace) {
+                continue;
+            }
+            let Some(&target) = index.get(namespace) else {
+                return Err(GraphError::UnknownReference {
+                    node: n.id.to_string(),
+                    selector: selector.to_string(),
+                    namespace: namespace.to_owned(),
+                });
+            };
+            if !is_visible(nodes, ix, target) {
+                warnings.push(format!(
+                    "node `{}` references `{selector}` from a different container body; it will resolve to null",
+                    n.id
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether node `from` can read the outputs of node `target`.
+fn is_visible(nodes: &[GraphNode], from: NodeIx, target: NodeIx) -> bool {
+    let parent_of = |ix: NodeIx| nodes.get(ix).and_then(|n| n.parent);
+    let target_scope = parent_of(target);
+    // Same or enclosing scope.
+    let mut scope = parent_of(from);
+    loop {
+        if scope == target_scope {
+            return true;
+        }
+        match scope {
+            Some(s) => scope = parent_of(s),
+            None => break,
+        }
+    }
+    // Inside the referencing node's own body (a container reading its body outputs).
+    let mut cur = target_scope;
+    while let Some(c) = cur {
+        if c == from {
+            return true;
+        }
+        cur = parent_of(c);
+    }
+    false
 }
 
 fn find_entry(

@@ -16,6 +16,7 @@ use crate::dsl::NodeDoc;
 use crate::node::{
     ConfigError, Node, NodeContext, NodeError, NodeOutcome, NodeOutput, NodeResult, NodeRole, PauseRequest,
 };
+use crate::pool::Selector;
 use crate::template::Template;
 use crate::value::Value;
 
@@ -177,6 +178,16 @@ impl Node for HumanInputNode {
                 _ => Ok(NodeOutcome::Paused(self.pause(&ctx))),
             }
         })
+    }
+
+    fn inputs(&self) -> Vec<Selector> {
+        let mut out: Vec<Selector> = self.prompt.iter().flat_map(|t| t.selectors().cloned()).collect();
+        for field in &self.fields {
+            if let Some(default) = &field.default {
+                crate::condition::expected_selectors(default, &mut out);
+            }
+        }
+        out
     }
 }
 

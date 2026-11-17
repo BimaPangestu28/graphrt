@@ -306,6 +306,16 @@ impl Node for LoopNode {
     fn run(&self, ctx: NodeContext) -> BoxFuture<'_, NodeResult> {
         Box::pin(self.execute(ctx))
     }
+
+    fn inputs(&self) -> Vec<Selector> {
+        let mut out: Vec<Selector> = self.break_conditions.iter().flat_map(Condition::selectors).collect();
+        for v in &self.vars {
+            if let Initial::Variable(sel) = &v.initial {
+                out.push(sel.clone());
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]

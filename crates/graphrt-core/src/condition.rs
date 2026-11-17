@@ -150,6 +150,34 @@ pub struct Condition {
     pub sub_variable_condition: Option<SubConditionGroup>,
 }
 
+impl Condition {
+    /// Every selector this condition reads: the variable plus any placeholders in
+    /// the expected value(s), including file sub-conditions.
+    pub fn selectors(&self) -> Vec<Selector> {
+        let mut out = vec![self.variable_selector.clone()];
+        expected_selectors(&self.value, &mut out);
+        if let Some(group) = &self.sub_variable_condition {
+            for c in &group.conditions {
+                expected_selectors(&c.value, &mut out);
+            }
+        }
+        out
+    }
+}
+
+/// Selectors referenced by placeholders inside a configured expected value.
+pub(crate) fn expected_selectors(raw: &serde_json::Value, out: &mut Vec<Selector>) {
+    match raw {
+        serde_json::Value::String(s) if s.contains("{{#") => out.extend(Template::parse(s).selectors().cloned()),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                expected_selectors(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Attribute conditions applied to each file.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SubConditionGroup {
@@ -195,7 +223,7 @@ impl ConditionTrace {
 
 /// Resolve an expected value from configuration: strings are parsed as templates
 /// (a lone placeholder keeps its typed value), arrays are resolved element-wise.
-pub fn resolve_expected(raw: &serde_json::Value, pool: &VariablePool) -> Value {
+pub(crate) fn resolve_expected(raw: &serde_json::Value, pool: &VariablePool) -> Value {
     match raw {
         serde_json::Value::String(s) => {
             if s.contains("{{#") {
@@ -285,7 +313,7 @@ fn evaluate_file_group(
 }
 
 /// Evaluate key conditions against one item, combining with `logical`. Empty = `true`.
-pub fn key_group_matches(
+pub(crate) fn key_group_matches(
     item: &Value,
     conditions: &[KeyCondition],
     logical: LogicalOperator,
@@ -306,7 +334,7 @@ pub fn key_group_matches(
 }
 
 /// Evaluate one key condition against an item.
-pub fn key_condition_matches(item: &Value, c: &KeyCondition, pool: &VariablePool) -> Result<bool, ConditionError> {
+pub(crate) fn key_condition_matches(item: &Value, c: &KeyCondition, pool: &VariablePool) -> Result<bool, ConditionError> {
     let actual = item_attribute(item, &c.key);
     let expected = if c.comparison_operator.is_unary() { Value::Null } else { resolve_expected(&c.value, pool) };
     compare(c.comparison_operator, &actual, &expected)
@@ -314,7 +342,7 @@ pub fn key_condition_matches(item: &Value, c: &KeyCondition, pool: &VariablePool
 
 /// Look up `key` in an item: empty key = the item, otherwise a file attribute or
 /// a dotted object path.
-pub fn item_attribute(item: &Value, key: &str) -> Value {
+pub(crate) fn item_attribute(item: &Value, key: &str) -> Value {
     if key.is_empty() {
         return item.clone();
     }
@@ -328,7 +356,7 @@ pub fn item_attribute(item: &Value, key: &str) -> Value {
 }
 
 /// Apply an operator to an actual and an (already resolved) expected value.
-pub fn compare(op: Operator, actual: &Value, expected: &Value) -> Result<bool, ConditionError> {
+pub(crate) fn compare(op: Operator, actual: &Value, expected: &Value) -> Result<bool, ConditionError> {
     let err = || ConditionError { operator: op.as_str(), actual: actual.type_name(), expected: expected.to_text() };
     Ok(match op {
         Operator::Null | Operator::NotExists => actual.is_null(),
@@ -429,7 +457,7 @@ fn text_of(v: &Value) -> Option<Arc<str>> {
 }
 
 /// Numeric view of a value: numbers, and strings that parse as numbers.
-pub fn number_of(v: &Value) -> Option<f64> {
+pub(crate) fn number_of(v: &Value) -> Option<f64> {
     match v {
         Value::Int(_) | Value::Float(_) => v.as_f64(),
         Value::String(s) => s.trim().parse::<f64>().ok(),
@@ -453,7 +481,7 @@ fn bool_of(v: &Value) -> Option<bool> {
 
 /// Equality across representations: numbers numerically (strings parsed),
 /// booleans against boolean-like strings, otherwise structural or textual equality.
-pub fn loose_eq(a: &Value, b: &Value) -> bool {
+pub(crate) fn loose_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Null, Value::Null) => true,
         (Value::Null, _) | (_, Value::Null) => false,

@@ -336,7 +336,9 @@ impl Node for IterationNode {
     }
 
     fn inputs(&self) -> Vec<Selector> {
-        vec![self.config.iterator_selector.clone()]
+        let mut out = vec![self.config.iterator_selector.clone()];
+        out.extend(self.config.output_selector.iter().cloned());
+        out
     }
 }
 
