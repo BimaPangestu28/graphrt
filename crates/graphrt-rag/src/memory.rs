@@ -180,39 +180,143 @@ impl MemoryStore {
         Ok(result)
     }
 
-    fn insert_all(&self, chunks: Vec<StoredChunk>) -> Result<(), RagError> {
+    /// Insert or replace chunks. The whole batch is validated first, so an error
+    /// leaves the store unchanged.
+    pub(crate) fn insert_all(&self, chunks: Vec<StoredChunk>) -> Result<(), RagError> {
+        self.write(|data| insert_batch(data, chunks))
+    }
+
+    /// Replace the whole content with `chunks` (validated first; unchanged on error).
+    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+    pub(crate) fn replace_all(&self, chunks: Vec<StoredChunk>) -> Result<(), RagError> {
         self.write(|data| {
-            // Validate the whole batch before changing anything.
-            let mut batch_dims: HashMap<&str, usize> = HashMap::new();
-            for chunk in &chunks {
-                check_vector(&chunk.vector, &format!("chunk `{}`", chunk.id))?;
-                let len = chunk.vector.len();
-                if let Some(ds) = data.get(&chunk.dataset_id) {
-                    ds.check_dimension(&chunk.dataset_id, len, &format!("chunk `{}`", chunk.id))?;
-                }
-                match batch_dims.get(chunk.dataset_id.as_str()) {
-                    Some(&d) if d != len => {
-                        return Err(RagError::Input(format!(
-                            "chunks for dataset `{}` mix {d}- and {len}-dimensional vectors",
-                            chunk.dataset_id
-                        )));
-                    }
-                    _ => {
-                        batch_dims.insert(&chunk.dataset_id, len);
-                    }
-                }
-            }
-            for chunk in chunks {
-                data.entry(chunk.dataset_id.clone()).or_default().insert(chunk);
-            }
+            let mut fresh = Data::new();
+            insert_batch(&mut fresh, chunks)?;
+            *data = fresh;
             Ok(())
         })
+    }
+
+    pub(crate) fn remove_document(&self, dataset_id: &str, document_id: &str) -> Result<usize, RagError> {
+        self.write(|data| Ok(data.get_mut(dataset_id).map_or(0, |ds| ds.remove_document(document_id))))
+    }
+
+    pub(crate) fn remove_dataset(&self, dataset_id: &str) -> Result<usize, RagError> {
+        self.write(|data| Ok(data.remove(dataset_id).map_or(0, |ds| ds.entries.len())))
+    }
+
+    pub(crate) fn remove_chunks(&self, dataset_id: &str, ids: &[String]) -> Result<usize, RagError> {
+        self.write(|data| Ok(data.get_mut(dataset_id).map_or(0, |ds| ids.iter().filter(|id| ds.remove_id(id)).count())))
+    }
+
+    pub(crate) fn find_document_chunks(
+        &self,
+        dataset_id: &str,
+        document_id: &str,
+    ) -> Result<Vec<StoredChunk>, RagError> {
+        self.read(|data| {
+            let Some(ds) = data.get(dataset_id) else { return Vec::new() };
+            let Some(ids) = ds.by_document.get(document_id) else { return Vec::new() };
+            ids.iter()
+                .filter_map(|id| ds.by_id.get(id).and_then(|&ix| ds.entries.get(ix)))
+                .map(|e| e.chunk.clone())
+                .collect()
+        })
+    }
+
+    /// Exact cosine search over every chunk of the requested datasets.
+    pub(crate) fn vector_search(&self, query: &VectorQuery<'_>) -> Result<Vec<Hit>, RagError> {
+        check_vector(query.vector, "the query")?;
+        self.read(|data| {
+            let q_norm = norm(query.vector);
+            let mut scored: Vec<(f32, &Entry)> = Vec::new();
+            for (id, ds) in query.datasets.iter().filter_map(|id| data.get(id).map(|ds| (id, ds))) {
+                ds.check_dimension(id, query.vector.len(), "the query")?;
+                for entry in &ds.entries {
+                    if !passes(query.filter, &entry.chunk) {
+                        continue;
+                    }
+                    let denom = q_norm * entry.norm;
+                    let score = if denom > 0.0 { dot(query.vector, &entry.chunk.vector) / denom } else { 0.0 };
+                    scored.push((score, entry));
+                }
+            }
+            Ok(top_hits(scored, query.top_k))
+        })?
+    }
+
+    /// BM25 search with per-dataset statistics.
+    pub(crate) fn bm25_search(&self, query: &KeywordQuery<'_>) -> Result<Vec<Hit>, RagError> {
+        let terms: Vec<String> = tokenize(query.text);
+        self.read(|data| {
+            let mut scored: Vec<(f32, &Entry)> = Vec::new();
+            for ds in query.datasets.iter().filter_map(|id| data.get(id)) {
+                let n = ds.entries.len();
+                if n == 0 {
+                    continue;
+                }
+                #[allow(clippy::cast_precision_loss)]
+                let (n_f, avgdl) = (n as f32, (ds.total_length as f32 / n as f32).max(1.0));
+                for entry in &ds.entries {
+                    if !passes(query.filter, &entry.chunk) {
+                        continue;
+                    }
+                    let mut score = 0.0f32;
+                    #[allow(clippy::cast_precision_loss)]
+                    let dl = entry.length as f32;
+                    for term in &terms {
+                        let Some(&tf) = entry.terms.get(term) else { continue };
+                        #[allow(clippy::cast_precision_loss)]
+                        let df = ds.doc_freq.get(term).copied().unwrap_or(0) as f32;
+                        let idf = ((n_f - df + 0.5) / (df + 0.5) + 1.0).ln();
+                        #[allow(clippy::cast_precision_loss)]
+                        let tf = tf as f32;
+                        score += idf * (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avgdl));
+                    }
+                    if score > 0.0 {
+                        scored.push((score, entry));
+                    }
+                }
+            }
+            top_hits(scored, query.top_k)
+        })
+    }
+
+    pub(crate) fn has_hash(&self, dataset_id: &str, content_hash: &str) -> Result<bool, RagError> {
+        self.read(|data| data.get(dataset_id).is_some_and(|ds| ds.hashes.contains_key(content_hash)))
     }
 
     #[cfg(not(feature = "fs"))]
     fn persist_locked(&self, _data: &Data) -> Result<(), RagError> {
         Ok(())
     }
+}
+
+/// Validate a batch (finite vectors, one dimension per dataset), then insert it.
+fn insert_batch(data: &mut Data, chunks: Vec<StoredChunk>) -> Result<(), RagError> {
+    let mut batch_dims: HashMap<&str, usize> = HashMap::new();
+    for chunk in &chunks {
+        check_vector(&chunk.vector, &format!("chunk `{}`", chunk.id))?;
+        let len = chunk.vector.len();
+        if let Some(ds) = data.get(&chunk.dataset_id) {
+            ds.check_dimension(&chunk.dataset_id, len, &format!("chunk `{}`", chunk.id))?;
+        }
+        match batch_dims.get(chunk.dataset_id.as_str()) {
+            Some(&d) if d != len => {
+                return Err(RagError::Input(format!(
+                    "chunks for dataset `{}` mix {d}- and {len}-dimensional vectors",
+                    chunk.dataset_id
+                )));
+            }
+            _ => {
+                batch_dims.insert(&chunk.dataset_id, len);
+            }
+        }
+    }
+    for chunk in chunks {
+        data.entry(chunk.dataset_id.clone()).or_default().insert(chunk);
+    }
+    Ok(())
 }
 
 fn poisoned() -> RagError {
@@ -353,13 +457,11 @@ impl VectorStore for MemoryStore {
         dataset_id: &'a str,
         document_id: &'a str,
     ) -> BoxFuture<'a, Result<usize, RagError>> {
-        let result = self.write(|data| Ok(data.get_mut(dataset_id).map_or(0, |ds| ds.remove_document(document_id))));
-        Box::pin(futures::future::ready(result))
+        Box::pin(futures::future::ready(self.remove_document(dataset_id, document_id)))
     }
 
     fn delete_dataset<'a>(&'a self, dataset_id: &'a str) -> BoxFuture<'a, Result<usize, RagError>> {
-        let result = self.write(|data| Ok(data.remove(dataset_id).map_or(0, |ds| ds.entries.len())));
-        Box::pin(futures::future::ready(result))
+        Box::pin(futures::future::ready(self.remove_dataset(dataset_id)))
     }
 
     fn document_chunks<'a>(
@@ -367,44 +469,15 @@ impl VectorStore for MemoryStore {
         dataset_id: &'a str,
         document_id: &'a str,
     ) -> BoxFuture<'a, Result<Vec<StoredChunk>, RagError>> {
-        let result = self.read(|data| {
-            let Some(ds) = data.get(dataset_id) else { return Vec::new() };
-            let Some(ids) = ds.by_document.get(document_id) else { return Vec::new() };
-            ids.iter()
-                .filter_map(|id| ds.by_id.get(id).and_then(|&ix| ds.entries.get(ix)))
-                .map(|e| e.chunk.clone())
-                .collect()
-        });
-        Box::pin(futures::future::ready(result))
+        Box::pin(futures::future::ready(self.find_document_chunks(dataset_id, document_id)))
     }
 
     fn delete_chunks<'a>(&'a self, dataset_id: &'a str, ids: &'a [String]) -> BoxFuture<'a, Result<usize, RagError>> {
-        let result = self.write(|data| {
-            Ok(data.get_mut(dataset_id).map_or(0, |ds| ids.iter().filter(|id| ds.remove_id(id)).count()))
-        });
-        Box::pin(futures::future::ready(result))
+        Box::pin(futures::future::ready(self.remove_chunks(dataset_id, ids)))
     }
 
     fn search<'a>(&'a self, query: VectorQuery<'a>) -> BoxFuture<'a, Result<Vec<Hit>, RagError>> {
-        let result = check_vector(query.vector, "the query").and_then(|()| {
-            self.read(|data| {
-                let q_norm = norm(query.vector);
-                let mut scored: Vec<(f32, &Entry)> = Vec::new();
-                for (id, ds) in query.datasets.iter().filter_map(|id| data.get(id).map(|ds| (id, ds))) {
-                    ds.check_dimension(id, query.vector.len(), "the query")?;
-                    for entry in &ds.entries {
-                        if !passes(query.filter, &entry.chunk) {
-                            continue;
-                        }
-                        let denom = q_norm * entry.norm;
-                        let score = if denom > 0.0 { dot(query.vector, &entry.chunk.vector) / denom } else { 0.0 };
-                        scored.push((score, entry));
-                    }
-                }
-                Ok(top_hits(scored, query.top_k))
-            })?
-        });
-        Box::pin(futures::future::ready(result))
+        Box::pin(futures::future::ready(self.vector_search(&query)))
     }
 
     fn supports_keyword(&self) -> bool {
@@ -412,40 +485,7 @@ impl VectorStore for MemoryStore {
     }
 
     fn keyword_search<'a>(&'a self, query: KeywordQuery<'a>) -> BoxFuture<'a, Result<Vec<Hit>, RagError>> {
-        let terms: Vec<String> = tokenize(query.text);
-        let result = self.read(|data| {
-            let mut scored: Vec<(f32, &Entry)> = Vec::new();
-            for ds in query.datasets.iter().filter_map(|id| data.get(id)) {
-                let n = ds.entries.len();
-                if n == 0 {
-                    continue;
-                }
-                #[allow(clippy::cast_precision_loss)]
-                let (n_f, avgdl) = (n as f32, (ds.total_length as f32 / n as f32).max(1.0));
-                for entry in &ds.entries {
-                    if !passes(query.filter, &entry.chunk) {
-                        continue;
-                    }
-                    let mut score = 0.0f32;
-                    #[allow(clippy::cast_precision_loss)]
-                    let dl = entry.length as f32;
-                    for term in &terms {
-                        let Some(&tf) = entry.terms.get(term) else { continue };
-                        #[allow(clippy::cast_precision_loss)]
-                        let df = ds.doc_freq.get(term).copied().unwrap_or(0) as f32;
-                        let idf = ((n_f - df + 0.5) / (df + 0.5) + 1.0).ln();
-                        #[allow(clippy::cast_precision_loss)]
-                        let tf = tf as f32;
-                        score += idf * (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avgdl));
-                    }
-                    if score > 0.0 {
-                        scored.push((score, entry));
-                    }
-                }
-            }
-            top_hits(scored, query.top_k)
-        });
-        Box::pin(futures::future::ready(result))
+        Box::pin(futures::future::ready(self.bm25_search(&query)))
     }
 
     fn contains_hash<'a>(
@@ -453,8 +493,7 @@ impl VectorStore for MemoryStore {
         dataset_id: &'a str,
         content_hash: &'a str,
     ) -> BoxFuture<'a, Result<bool, RagError>> {
-        let result = self.read(|data| data.get(dataset_id).is_some_and(|ds| ds.hashes.contains_key(content_hash)));
-        Box::pin(futures::future::ready(result))
+        Box::pin(futures::future::ready(self.has_hash(dataset_id, content_hash)))
     }
 }
 
