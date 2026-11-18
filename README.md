@@ -50,22 +50,17 @@ start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
 ## Install
 
 ```sh
-cargo install graphrt-cli            # installs the `graphrt` binary (Rust 1.89+)
-```
-
-> Prebuilt binaries for 0.1.0 (the `install.sh` one-liner below, Windows
-> archives) and the container image are not published yet; until they are,
-> install with cargo.
-
-```sh
 # Linux / macOS: prebuilt static binary (verifies SHA256SUMS)
 curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/install.sh | sh
 
-# container
+# with Rust (1.89+)
+cargo install graphrt-cli            # installs the `graphrt` binary
+
+# container (image not published for 0.1.0 yet; `docker build -t graphrt .` meanwhile)
 docker run --rm -p 8080:8080 -v "$PWD/flows:/workflows" ghcr.io/bimapangestu28/graphrt
 ```
 
-Windows and other archives are on the [releases page](https://github.com/BimaPangestu28/graphrt/releases).
+macOS and Linux archives are on the [releases page](https://github.com/BimaPangestu28/graphrt/releases); the Windows archive follows.
 Libraries are on crates.io: `graphrt-core` (runtime) plus integration crates such as
 `graphrt-llm`, `graphrt-http`, `graphrt-rag`.
 
