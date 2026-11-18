@@ -11,7 +11,9 @@ use crate::extensions::{Extensions, PluginOptions, PluginSummary};
 pub fn plugin(args: PluginCmdArgs) -> Result<u8, CliError> {
     match args.command {
         PluginCommand::List { json, plugins } => list(&plugins.options(), json),
-        PluginCommand::Install { source, rev, dir } => install(&source, rev.as_deref(), dir),
+        PluginCommand::Install { source, rev, subdir, dir } => {
+            install(&InstallSource { source: &source, rev: rev.as_deref(), subdir: subdir.as_deref() }, dir)
+        }
         PluginCommand::Remove { name, dir } => remove(&name, dir),
         PluginCommand::Info { name, json, plugins } => info(&name, &plugins.options(), json),
         PluginCommand::New { name, lang, dir } => scaffold(&name, lang, dir),
@@ -70,16 +72,29 @@ fn is_git_url(source: &str) -> bool {
     source.contains("://") || source.starts_with("git@") || source.ends_with(".git")
 }
 
-fn install(source: &str, rev: Option<&str>, dir: Option<PathBuf>) -> Result<u8, CliError> {
+/// What `graphrt plugin install` was asked to install.
+struct InstallSource<'a> {
+    source: &'a str,
+    rev: Option<&'a str>,
+    subdir: Option<&'a str>,
+}
+
+fn install(request: &InstallSource<'_>, dir: Option<PathBuf>) -> Result<u8, CliError> {
     let root = install_root(dir)?;
+    let source = request.source;
     let local = Path::new(source);
     let installed = if local.is_dir() {
-        if rev.is_some() {
+        if request.rev.is_some() {
             return Err(CliError::usage("`--rev` only applies to git sources"));
+        }
+        if request.subdir.is_some() {
+            return Err(CliError::usage(
+                "`--subdir` only applies to git sources; pass the plugin directory itself instead",
+            ));
         }
         graphrt_plugin::install_from_dir(local, &root).map_err(|e| CliError::failed(e.to_string()))?
     } else if is_git_url(source) {
-        install_git(source, rev, &root)?
+        install_git(request, &root)?
     } else {
         return Err(CliError::usage(format!("`{source}` is neither a plugin directory nor a git URL")));
     };
@@ -113,12 +128,16 @@ fn install(source: &str, rev: Option<&str>, dir: Option<PathBuf>) -> Result<u8, 
 }
 
 #[cfg(feature = "plugins")]
-fn install_git(source: &str, rev: Option<&str>, root: &Path) -> Result<graphrt_plugin::LoadedManifest, CliError> {
-    graphrt_plugin::install_from_git(source, rev, root).map_err(|e| CliError::failed(e.to_string()))
+fn install_git(request: &InstallSource<'_>, root: &Path) -> Result<graphrt_plugin::LoadedManifest, CliError> {
+    let result = match request.subdir {
+        Some(subdir) => graphrt_plugin::install_from_git_subdir(request.source, request.rev, subdir, root),
+        None => graphrt_plugin::install_from_git(request.source, request.rev, root),
+    };
+    result.map_err(|e| CliError::failed(e.to_string()))
 }
 
 #[cfg(not(feature = "plugins"))]
-fn install_git(_source: &str, _rev: Option<&str>, _root: &Path) -> Result<graphrt_plugin::LoadedManifest, CliError> {
+fn install_git(_request: &InstallSource<'_>, _root: &Path) -> Result<graphrt_plugin::LoadedManifest, CliError> {
     Err(CliError::usage("installing from git requires a build with the `plugins` feature"))
 }
 

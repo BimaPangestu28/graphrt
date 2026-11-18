@@ -39,12 +39,12 @@ mod render;
 mod transport;
 
 pub use conn::{Connection, NotifySink};
-#[cfg(feature = "git")]
-pub use discover::install_from_git;
 pub use discover::{
     PLUGIN_PATH_ENV, default_install_dir, default_plugin_paths, discover, install_from_dir, sha256_file,
     verify_checksums,
 };
+#[cfg(feature = "git")]
+pub use discover::{install_from_git, install_from_git_subdir};
 pub use error::{CallError, PluginError};
 pub use host::{LoadedPlugin, PluginHost, PluginInfo, PluginLoader};
 #[cfg(feature = "http")]

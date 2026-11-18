@@ -189,6 +189,65 @@ fn install_list_info_remove() {
     assert_eq!(out.status.code(), Some(2));
 }
 
+/// Copy a plugin example into `dst` (files only; the examples are flat).
+fn copy_plugin(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("plugin dir");
+    for entry in std::fs::read_dir(src).expect("read example") {
+        let entry = entry.expect("entry");
+        if entry.file_type().expect("file type").is_file() {
+            std::fs::copy(entry.path(), dst.join(entry.file_name())).expect("copy");
+        }
+    }
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(["-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "init.defaultBranch=main"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("spawn git");
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn install_from_git_monorepo_subdirectory() {
+    if !has("git") {
+        eprintln!("skipping: git is required");
+        return;
+    }
+    let home = scratch("install-subdir");
+    let repo = home.join("collection");
+    copy_plugin(&plugin_examples().join("python-sentiment"), &repo.join("sentiment"));
+    std::fs::write(repo.join("README.md"), "plugins").expect("readme");
+    git(&repo, &["init", "--quiet"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "--quiet", "-m", "fixture"]);
+    git(&repo, &["tag", "v1"]);
+    let url = format!("file://{}", repo.display());
+    let dest = home.join("installed");
+    let dest_arg = dest.to_str().unwrap();
+
+    // The repository root has no manifest, so a plain install fails...
+    let out = graphrt(&home, &["plugin", "install", &url, "--rev", "v1", "--dir", dest_arg]);
+    assert!(!out.status.success());
+    // ...and `--subdir` picks the plugin out of the collection.
+    let out = graphrt(&home, &["plugin", "install", &url, "--rev", "v1", "--subdir", "sentiment", "--dir", dest_arg]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("installed sentiment"), "{}", stdout(&out));
+    assert!(dest.join("sentiment/graphrt-plugin.json").is_file());
+    assert!(!dest.join("sentiment/README.md").exists());
+
+    let out = graphrt(&home, &["plugin", "install", &url, "--subdir", "../sentiment", "--dir", dest_arg]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("`..` is not allowed"), "{}", stderr(&out));
+
+    // `--subdir` with a local directory is a usage error.
+    let local = repo.join("sentiment");
+    let out = graphrt(&home, &["plugin", "install", local.to_str().unwrap(), "--subdir", "x", "--dir", dest_arg]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+}
+
 #[test]
 fn scaffolded_python_plugin_runs() {
     if !has("python3") {

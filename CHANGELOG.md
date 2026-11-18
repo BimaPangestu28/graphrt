@@ -18,6 +18,11 @@ releases may contain breaking changes; they are called out under **Changed**.
 - `graphrt-ffi`: the SQLite knowledge store is available on mobile, so bundles
   using `stores: { ...: { type: sqlite } }` load on Android and iOS
   (built and linked for Android arm64; iOS not built yet).
+- `graphrt plugin install <git-url> --subdir <path>` installs a plugin from a
+  subdirectory of a git repository, so monorepos with one plugin per directory
+  (such as `graphrt-plugins`) work. Absolute paths, `..` and symlinks are
+  rejected; only that directory is copied. Library: `graphrt-plugin` adds
+  `install_from_git_subdir` (`install_from_git` is unchanged).
 
 ## [0.1.0] - 2026-11-18
 
