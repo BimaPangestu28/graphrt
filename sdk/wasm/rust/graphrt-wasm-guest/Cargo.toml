@@ -4,7 +4,7 @@ description = "Guest SDK for writing graphrt WebAssembly plugins in Rust."
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/BimaPangestu28/agentic-rust-runtime"
+repository = "https://github.com/BimaPangestu28/graphrt"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

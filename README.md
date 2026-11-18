@@ -1,6 +1,6 @@
 # graphrt
 
-[![CI](https://github.com/BimaPangestu28/agentic-rust-runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/BimaPangestu28/agentic-rust-runtime/actions/workflows/ci.yml)
+[![CI](https://github.com/BimaPangestu28/graphrt/actions/workflows/ci.yml/badge.svg)](https://github.com/BimaPangestu28/graphrt/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/graphrt-core.svg)](https://crates.io/crates/graphrt-core)
 [![docs.rs](https://img.shields.io/docsrs/graphrt-core)](https://docs.rs/graphrt-core)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -51,7 +51,7 @@ start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
 
 ```sh
 # Linux / macOS: prebuilt static binary (verifies SHA256SUMS)
-curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/agentic-rust-runtime/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/install.sh | sh
 
 # with Rust
 cargo install graphrt-cli            # installs the `graphrt` binary
@@ -60,7 +60,7 @@ cargo install graphrt-cli            # installs the `graphrt` binary
 docker run --rm -p 8080:8080 -v "$PWD/flows:/workflows" ghcr.io/bimapangestu28/graphrt
 ```
 
-Windows and other archives are on the [releases page](https://github.com/BimaPangestu28/agentic-rust-runtime/releases).
+Windows and other archives are on the [releases page](https://github.com/BimaPangestu28/graphrt/releases).
 Libraries are on crates.io: `graphrt-core` (runtime) plus integration crates such as
 `graphrt-llm`, `graphrt-http`, `graphrt-rag`.
 

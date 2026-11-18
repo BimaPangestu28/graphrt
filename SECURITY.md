@@ -6,7 +6,7 @@ plugins, often with access to secrets. We take security reports seriously.
 ## Reporting a vulnerability
 
 **Do not open a public issue.** Report privately through
-[GitHub Security Advisories](https://github.com/BimaPangestu28/agentic-rust-runtime/security/advisories/new).
+[GitHub Security Advisories](https://github.com/BimaPangestu28/graphrt/security/advisories/new).
 
 Please include:
 

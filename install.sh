@@ -1,7 +1,7 @@
 #!/bin/sh
 # graphrt installer — run your agent everywhere.
 #
-#   curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/agentic-rust-runtime/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/install.sh | sh
 #   curl -fsSL .../install.sh | sh -s -- --version v0.1.0 --dir /usr/local/bin
 #   curl -fsSL .../install.sh | sh -s -- --uninstall
 #
@@ -17,7 +17,7 @@
 # installs the single `graphrt` binary. Never runs sudo or prompts.
 set -eu
 
-REPO="${GRAPHRT_REPO:-BimaPangestu28/agentic-rust-runtime}"
+REPO="${GRAPHRT_REPO:-BimaPangestu28/graphrt}"
 BIN="graphrt"
 version="${GRAPHRT_VERSION:-latest}"
 dir="${GRAPHRT_INSTALL_DIR:-}"

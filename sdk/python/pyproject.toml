@@ -8,7 +8,7 @@ requires-python = ">=3.9"
 dependencies = []
 
 [project.urls]
-source = "https://github.com/BimaPangestu28/agentic-rust-runtime"
+source = "https://github.com/BimaPangestu28/graphrt"
 
 [build-system]
 requires = ["hatchling"]
