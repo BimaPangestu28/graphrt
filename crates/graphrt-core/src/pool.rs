@@ -124,7 +124,9 @@ impl<'de> Deserialize<'de> for Selector {
 }
 
 type Namespace = Arc<IndexMap<Arc<str>, Value>>;
-type Shard = Arc<HashMap<Arc<str>, Namespace>>;
+type ShardMap = HashMap<Arc<str>, Namespace>;
+/// `None` until a namespace hashing to the shard is written.
+type Shard = Option<Arc<ShardMap>>;
 
 /// Number of shards in the namespace table. Every node owns a namespace, so a
 /// large graph has many; sharding keeps a copy-on-write update proportional to
@@ -134,9 +136,13 @@ const SHARDS: usize = 32;
 
 /// Namespace table split into [`SHARDS`] independently shared maps. Cloning is
 /// O(1); an update copies at most the shard array (`SHARDS` pointers) and one shard.
+///
+/// Shards and the shard array are allocated on first write: an empty table
+/// costs no allocation, where eagerly creating every shard cost 33 per pool
+/// and a pool is created for every execution frame.
 #[derive(Clone, Default)]
 struct Table {
-    shards: Arc<[Shard; SHARDS]>,
+    shards: Option<Arc<[Shard; SHARDS]>>,
 }
 
 /// Shard index of a namespace (FNV-1a: stable and fast for short ids).
@@ -151,24 +157,27 @@ fn shard_of(namespace: &str) -> usize {
 }
 
 impl Table {
-    #[allow(clippy::indexing_slicing)] // shard_of() < SHARDS by construction
-    fn shard(&self, namespace: &str) -> &HashMap<Arc<str>, Namespace> {
-        &self.shards[shard_of(namespace)]
+    fn shard(&self, namespace: &str) -> Option<&ShardMap> {
+        self.shards.as_ref()?.get(shard_of(namespace))?.as_deref()
     }
 
-    /// Mutable shard holding `namespace`, copying shared structure as needed.
+    /// Mutable shard holding `namespace`, allocating or copying shared structure as needed.
     #[allow(clippy::indexing_slicing)] // shard_of() < SHARDS by construction
-    fn shard_mut(&mut self, namespace: &str) -> &mut HashMap<Arc<str>, Namespace> {
-        let shards = Arc::make_mut(&mut self.shards);
-        Arc::make_mut(&mut shards[shard_of(namespace)])
+    fn shard_mut(&mut self, namespace: &str) -> &mut ShardMap {
+        let shards = Arc::make_mut(self.shards.get_or_insert_with(Default::default));
+        Arc::make_mut(shards[shard_of(namespace)].get_or_insert_with(Default::default))
     }
 
     fn get(&self, namespace: &str) -> Option<&Namespace> {
-        self.shard(namespace).get(namespace)
+        self.shard(namespace)?.get(namespace)
     }
 
     fn entry(&mut self, namespace: &str) -> &mut Namespace {
-        self.shard_mut(namespace).entry(Arc::from(namespace)).or_default()
+        let shard = self.shard_mut(namespace);
+        // Reuse the existing key (a reference-count bump) instead of allocating
+        // a new `Arc<str>` on every write to a namespace that already exists.
+        let key = shard.get_key_value(namespace).map_or_else(|| Arc::from(namespace), |(key, _)| Arc::clone(key));
+        shard.entry(key).or_default()
     }
 
     fn remove(&mut self, namespace: &str) {
@@ -178,7 +187,7 @@ impl Table {
     }
 
     fn iter(&self) -> impl Iterator<Item = (&Arc<str>, &Namespace)> {
-        self.shards.iter().flat_map(|shard| shard.iter())
+        self.shards.iter().flat_map(|shards| shards.iter().flatten()).flat_map(|shard| shard.iter())
     }
 }
 
