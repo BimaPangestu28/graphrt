@@ -68,9 +68,8 @@ impl RemoteSandbox for HttpSandbox {
             });
             let body = serde_json::to_vec(&payload)
                 .map_err(|e| NodeError::fatal("invalid_input", format!("cannot encode sandbox request: {e}")))?;
-            let mut request = self
-                .client
-                .client(true)
+            let http = self.client.client(true).map_err(|e| NodeError::fatal("sandbox", e.to_string()))?;
+            let mut request = http
                 .post(self.url.clone())
                 .header("content-type", "application/json")
                 .timeout(Duration::from_millis(limits.time_ms.saturating_add(5_000)))

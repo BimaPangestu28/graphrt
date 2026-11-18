@@ -28,7 +28,7 @@ use serde_json::{Map, Value as Json, json};
 
 use crate::credentials::{Credential, CredentialSource};
 use crate::error::LlmError;
-use crate::http::{Decoded, SseDecoder, build_client, send_request, sse_stream};
+use crate::http::{Decoded, SseDecoder, send_request, sse_stream};
 use crate::sse::SseEvent;
 use crate::types::{
     ChatDelta, ChatModel, ChatRequest, ChatStream, ContentPart, FinishReason, ResponseFormat, Role, ToolChoice,
@@ -117,7 +117,7 @@ impl GeminiConfig {
 #[derive(Clone)]
 pub struct GeminiModel {
     config: GeminiConfig,
-    client: reqwest::Client,
+    client: crate::http::LazyClient,
 }
 
 impl fmt::Debug for GeminiModel {
@@ -128,7 +128,7 @@ impl fmt::Debug for GeminiModel {
 
 impl GeminiModel {
     pub fn new(config: GeminiConfig) -> Result<Self, LlmError> {
-        let client = build_client(config.connect_timeout)?;
+        let client = crate::http::LazyClient::new(config.connect_timeout);
         Ok(Self { config, client })
     }
 
@@ -158,7 +158,7 @@ impl ChatModel for GeminiModel {
                 // A credential may move the request to a proxy (thin-proxy pattern).
                 let endpoint = crate::http::resolve_endpoint(&self.config.base_url, credential.base_url.as_deref())?;
                 let url = Self::endpoint(&endpoint.base_url, &request.model);
-                let mut builder = self.client.post(&url).json(&body);
+                let mut builder = self.client.get()?.post(&url).json(&body);
                 builder = match self.config.auth {
                     GeminiAuth::ApiKey => builder.header("x-goog-api-key", credential.secret.as_str()),
                     GeminiAuth::Bearer => builder.bearer_auth(&credential.secret),

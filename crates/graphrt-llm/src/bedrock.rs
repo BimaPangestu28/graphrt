@@ -40,7 +40,7 @@ use serde_json::{Map, Value as Json, json};
 pub use self::sigv4::AwsCredentials;
 use crate::credentials::CredentialSource;
 use crate::error::LlmError;
-use crate::http::{build_client, byte_stream, send_request};
+use crate::http::{byte_stream, send_request};
 use crate::types::{
     ChatDelta, ChatModel, ChatRequest, ChatStream, ContentPart, FinishReason, ResponseFormat, Role, ToolChoice,
     check_extra,
@@ -135,7 +135,7 @@ impl BedrockConfig {
 #[derive(Clone)]
 pub struct BedrockModel {
     config: BedrockConfig,
-    client: reqwest::Client,
+    client: crate::http::LazyClient,
 }
 
 impl fmt::Debug for BedrockModel {
@@ -151,7 +151,7 @@ impl BedrockModel {
         if !valid_region {
             return Err(LlmError::Config(format!("invalid AWS region `{}`", config.region)));
         }
-        let client = build_client(config.connect_timeout)?;
+        let client = crate::http::LazyClient::new(config.connect_timeout);
         Ok(Self { config, client })
     }
 
@@ -167,7 +167,8 @@ impl BedrockModel {
             let credential = source.credential(&self.config.provider_name).await?;
             let endpoint = crate::http::resolve_endpoint(&configured, credential.base_url.as_deref())?;
             let url = parse(&endpoint.base_url)?;
-            let mut builder = self.client.post(url).header("content-type", "application/json").body(body.to_vec());
+            let mut builder =
+                self.client.get()?.post(url).header("content-type", "application/json").body(body.to_vec());
             builder = builder.bearer_auth(&credential.secret);
             for (k, v) in &credential.headers {
                 builder = builder.header(k.as_str(), v.as_str());
@@ -180,7 +181,8 @@ impl BedrockModel {
             return Ok(builder);
         }
         let url = parse(&configured)?;
-        let mut builder = self.client.post(url.clone()).header("content-type", "application/json").body(body.to_vec());
+        let mut builder =
+            self.client.get()?.post(url.clone()).header("content-type", "application/json").body(body.to_vec());
         {
             match &self.config.auth {
                 Some(BedrockAuth::ApiKey(key)) => builder = builder.bearer_auth(key),

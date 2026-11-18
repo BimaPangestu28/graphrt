@@ -16,7 +16,7 @@ use serde_json::{Map, Value as Json, json};
 
 use crate::credentials::{Credential, CredentialSource};
 use crate::error::LlmError;
-use crate::http::{Decoded, SseDecoder, build_client, send_sse};
+use crate::http::{Decoded, SseDecoder, send_sse};
 use crate::sse::SseEvent;
 use crate::types::{
     ChatDelta, ChatModel, ChatRequest, ChatStream, ContentPart, FinishReason, ResponseFormat, Role, ToolChoice,
@@ -92,7 +92,7 @@ impl AnthropicConfig {
 #[derive(Clone)]
 pub struct AnthropicModel {
     config: AnthropicConfig,
-    client: reqwest::Client,
+    client: crate::http::LazyClient,
 }
 
 impl fmt::Debug for AnthropicModel {
@@ -103,7 +103,7 @@ impl fmt::Debug for AnthropicModel {
 
 impl AnthropicModel {
     pub fn new(config: AnthropicConfig) -> Result<Self, LlmError> {
-        let client = build_client(config.connect_timeout)?;
+        let client = crate::http::LazyClient::new(config.connect_timeout);
         Ok(Self { config, client })
     }
 }
@@ -113,7 +113,7 @@ impl AnthropicModel {
         let endpoint =
             crate::http::resolve_endpoint(&self.config.base_url, credential.and_then(|c| c.base_url.as_deref()))?;
         let url = format!("{}/v1/messages", endpoint.base_url.trim_end_matches('/'));
-        let mut builder = self.client.post(url).json(body).header("anthropic-version", ANTHROPIC_VERSION);
+        let mut builder = self.client.get()?.post(url).json(body).header("anthropic-version", ANTHROPIC_VERSION);
         let key = credential.map(|c| c.secret.as_str()).or(self.config.api_key.as_deref());
         if let Some(key) = key {
             builder = builder.header("x-api-key", key);

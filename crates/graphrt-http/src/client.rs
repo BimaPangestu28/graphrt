@@ -1,7 +1,7 @@
 //! Policy-enforcing HTTP client service.
 
 use std::net::SocketAddr;
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Once, OnceLock};
 use std::time::Duration;
 
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
@@ -10,7 +10,7 @@ use reqwest::redirect;
 use crate::policy::{EgressError, EgressPolicy};
 
 /// Error building an [`HttpClient`].
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ClientError {
     #[error("invalid proxy `{0}`: {1}")]
@@ -32,24 +32,32 @@ pub enum ClientError {
 #[derive(Clone, Debug)]
 pub struct HttpClient {
     policy: Arc<EgressPolicy>,
-    verified: reqwest::Client,
-    unverified: reqwest::Client,
+    clients: Arc<Clients>,
+}
+
+/// The four reqwest clients, each built on first use: building one loads the
+/// system trust store, and most runs need one variant or none at all.
+#[derive(Debug, Default)]
+struct Clients {
+    verified: OnceLock<Result<reqwest::Client, ClientError>>,
+    unverified: OnceLock<Result<reqwest::Client, ClientError>>,
     /// Clients that never follow redirects; the `http-request` node follows them
     /// itself so it can strip credentials on cross-origin hops.
-    manual_verified: reqwest::Client,
-    manual_unverified: reqwest::Client,
+    manual_verified: OnceLock<Result<reqwest::Client, ClientError>>,
+    manual_unverified: OnceLock<Result<reqwest::Client, ClientError>>,
 }
 
 impl HttpClient {
-    /// Build a client enforcing `policy`.
+    /// Build a client enforcing `policy`. The proxy setting is validated here;
+    /// the underlying connections are set up on first use.
+    ///
+    /// @throws `ClientError::Proxy` when `policy.proxy` is not a valid proxy URL.
     pub fn new(policy: EgressPolicy) -> Result<Self, ClientError> {
         install_crypto_provider();
-        let policy = Arc::new(policy);
-        let verified = build(&policy, true, true)?;
-        let unverified = build(&policy, false, true)?;
-        let manual_verified = build(&policy, true, false)?;
-        let manual_unverified = build(&policy, false, false)?;
-        Ok(Self { policy, verified, unverified, manual_verified, manual_unverified })
+        if let Some(proxy_url) = &policy.proxy {
+            reqwest::Proxy::all(proxy_url).map_err(|e| ClientError::Proxy(proxy_url.clone(), e.to_string()))?;
+        }
+        Ok(Self { policy: Arc::new(policy), clients: Arc::default() })
     }
 
     /// Client with [`EgressPolicy::trusted`], for operator-configured endpoints.
@@ -61,18 +69,34 @@ impl HttpClient {
         &self.policy
     }
 
-    /// Underlying client. `verify_tls = false` disables certificate verification.
+    /// Underlying client, built on first use. `verify_tls = false` disables
+    /// certificate verification.
     ///
     /// Redirects are followed automatically (each hop re-validated). reqwest strips only
     /// `authorization`, `cookie` and `proxy-authorization` on cross-host hops, so callers
     /// sending other credential headers should use [`HttpClient::manual_redirect_client`].
-    pub fn client(&self, verify_tls: bool) -> &reqwest::Client {
-        if verify_tls { &self.verified } else { &self.unverified }
+    ///
+    /// @throws `ClientError::Build` when the TLS backend cannot be initialised.
+    pub fn client(&self, verify_tls: bool) -> Result<&reqwest::Client, ClientError> {
+        let cell = if verify_tls { &self.clients.verified } else { &self.clients.unverified };
+        self.get(cell, verify_tls, true)
     }
 
     /// Client that never follows redirects: 3xx responses are returned to the caller.
-    pub fn manual_redirect_client(&self, verify_tls: bool) -> &reqwest::Client {
-        if verify_tls { &self.manual_verified } else { &self.manual_unverified }
+    ///
+    /// @throws `ClientError::Build` when the TLS backend cannot be initialised.
+    pub fn manual_redirect_client(&self, verify_tls: bool) -> Result<&reqwest::Client, ClientError> {
+        let cell = if verify_tls { &self.clients.manual_verified } else { &self.clients.manual_unverified };
+        self.get(cell, verify_tls, false)
+    }
+
+    fn get<'a>(
+        &self,
+        cell: &'a OnceLock<Result<reqwest::Client, ClientError>>,
+        verify_tls: bool,
+        follow_redirects: bool,
+    ) -> Result<&'a reqwest::Client, ClientError> {
+        cell.get_or_init(|| build(&self.policy, verify_tls, follow_redirects)).as_ref().map_err(Clone::clone)
     }
 
     /// Validate a URL against the policy (scheme, host lists, literal addresses).

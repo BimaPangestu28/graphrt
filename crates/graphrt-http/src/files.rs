@@ -34,9 +34,9 @@ impl FileResolver for HttpFileResolver {
             let url = reqwest::Url::parse(raw)
                 .map_err(|e| FileError::Invalid { name: name.clone(), message: format!("invalid URL: {e}") })?;
             self.client.check_url(&url).map_err(|e| FileError::Denied { name: name.clone(), reason: e.to_string() })?;
-            let mut response = self
-                .client
-                .client(true)
+            let http =
+                self.client.client(true).map_err(|e| FileError::Io { name: name.clone(), message: e.to_string() })?;
+            let mut response = http
                 .get(url)
                 .send()
                 .await

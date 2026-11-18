@@ -16,7 +16,7 @@ use serde_json::{Map, Value as Json, json};
 
 use crate::credentials::{Credential, CredentialSource};
 use crate::error::LlmError;
-use crate::http::{Decoded, SseDecoder, build_client, send_sse, truncated};
+use crate::http::{Decoded, SseDecoder, send_sse, truncated};
 use crate::sse::SseEvent;
 use crate::types::{
     ChatDelta, ChatModel, ChatRequest, ChatStream, ContentPart, FinishReason, Message, ResponseFormat, Role,
@@ -111,7 +111,7 @@ impl OpenAiConfig {
 #[derive(Clone)]
 pub struct OpenAiModel {
     config: OpenAiConfig,
-    client: reqwest::Client,
+    client: crate::http::LazyClient,
 }
 
 impl fmt::Debug for OpenAiModel {
@@ -122,7 +122,7 @@ impl fmt::Debug for OpenAiModel {
 
 impl OpenAiModel {
     pub fn new(config: OpenAiConfig) -> Result<Self, LlmError> {
-        let client = build_client(config.connect_timeout)?;
+        let client = crate::http::LazyClient::new(config.connect_timeout);
         Ok(Self { config, client })
     }
 
@@ -156,7 +156,7 @@ impl OpenAiModel {
     fn request(&self, body: &Json, credential: Option<&Credential>) -> Result<reqwest::RequestBuilder, LlmError> {
         let endpoint =
             crate::http::resolve_endpoint(&self.config.base_url, credential.and_then(|c| c.base_url.as_deref()))?;
-        let mut builder = self.client.post(self.endpoint(&endpoint.base_url, endpoint.send_static)).json(body);
+        let mut builder = self.client.get()?.post(self.endpoint(&endpoint.base_url, endpoint.send_static)).json(body);
         let key = credential.map(|c| c.secret.as_str()).or(self.config.api_key.as_deref());
         if let Some(key) = key {
             builder = match &self.config.auth {

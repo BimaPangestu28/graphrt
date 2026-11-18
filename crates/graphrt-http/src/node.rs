@@ -426,7 +426,9 @@ impl HttpRequestNode {
     ) -> Result<(reqwest::Response, reqwest::Url, usize), NodeError> {
         let started = std::time::Instant::now();
         let max_redirects = client.policy().max_redirects;
-        let http = client.manual_redirect_client(self.ssl_verify);
+        let http = client
+            .manual_redirect_client(self.ssl_verify)
+            .map_err(|e| NodeError::fatal("http_client", e.to_string()))?;
         let mut redirects = 0usize;
         loop {
             let remaining = total_timeout.saturating_sub(started.elapsed());

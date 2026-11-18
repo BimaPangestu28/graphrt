@@ -484,7 +484,7 @@ impl SystemOneResponse {
 #[derive(Clone)]
 pub struct SystemOneClient {
     config: SystemOneConfig,
-    client: reqwest::Client,
+    client: crate::http::LazyClient,
 }
 
 impl fmt::Debug for SystemOneClient {
@@ -498,7 +498,7 @@ impl SystemOneClient {
         if config.api_key.is_none() && config.credentials.is_none() {
             return Err(LlmError::Config("TypeSafe client needs an API key or a credential source".into()));
         }
-        let client = crate::http::build_client(Duration::from_secs(10))?;
+        let client = crate::http::LazyClient::new(Duration::from_secs(10));
         Ok(Self { config, client })
     }
 
@@ -570,6 +570,7 @@ impl SystemOneClient {
         let endpoint = crate::http::resolve_endpoint(&self.config.base_url, credential.base_url.as_deref())?;
         let mut builder = self
             .client
+            .get()?
             .post(Self::endpoint(&endpoint.base_url))
             .timeout(self.config.timeout)
             .bearer_auth(&credential.secret)

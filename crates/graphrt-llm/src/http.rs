@@ -7,6 +7,7 @@
 )]
 
 use std::collections::VecDeque;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -31,6 +32,33 @@ pub(crate) fn build_client(connect_timeout: Duration) -> Result<reqwest::Client,
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| LlmError::Config(format!("cannot build HTTP client: {e}")))
+}
+
+/// An HTTP client built on first use.
+///
+/// Building a client loads the system trust store (hundreds of certificate
+/// files on Linux, Security.framework on macOS), so providers that a run never
+/// calls should not pay for it at startup. Clones share the same client.
+#[derive(Clone, Debug)]
+pub(crate) struct LazyClient {
+    connect_timeout: Duration,
+    cell: Arc<OnceLock<Result<reqwest::Client, String>>>,
+}
+
+impl LazyClient {
+    pub(crate) fn new(connect_timeout: Duration) -> Self {
+        Self { connect_timeout, cell: Arc::new(OnceLock::new()) }
+    }
+
+    /// The client, built on the first call.
+    ///
+    /// @throws `LlmError::Config` when the TLS backend cannot be initialised.
+    pub(crate) fn get(&self) -> Result<&reqwest::Client, LlmError> {
+        self.cell
+            .get_or_init(|| build_client(self.connect_timeout).map_err(|e| e.to_string()))
+            .as_ref()
+            .map_err(|message| LlmError::Config(message.clone()))
+    }
 }
 
 use crate::credentials::is_secure_endpoint;

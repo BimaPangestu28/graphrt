@@ -132,7 +132,7 @@ impl fmt::Debug for TokenBrokerConfig {
 #[derive(Clone)]
 pub struct TokenBroker {
     config: TokenBrokerConfig,
-    client: reqwest::Client,
+    client: crate::http::LazyClient,
 }
 
 impl fmt::Debug for TokenBroker {
@@ -160,7 +160,7 @@ struct BrokerResponse {
 impl TokenBroker {
     pub fn new(config: TokenBrokerConfig) -> Result<Self, LlmError> {
         crate::credentials::require_secure_endpoint(&config.url, "token broker url")?;
-        let client = crate::http::build_client(Duration::from_secs(10))?;
+        let client = crate::http::LazyClient::new(Duration::from_secs(10));
         Ok(Self { config, client })
     }
 
@@ -172,7 +172,7 @@ impl TokenBroker {
     async fn fetch(&self, provider: &str) -> Result<Credential, LlmError> {
         let mut body = self.config.claims.clone();
         body.insert("provider".into(), serde_json::Value::String(provider.to_owned()));
-        let mut request = self.client.post(&self.config.url).timeout(self.config.timeout).json(&body);
+        let mut request = self.client.get()?.post(&self.config.url).timeout(self.config.timeout).json(&body);
         for (k, v) in &self.config.headers {
             request = request.header(k.as_str(), v.as_str());
         }
