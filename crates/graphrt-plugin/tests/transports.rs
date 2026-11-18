@@ -243,3 +243,41 @@ async fn rust_sdk_plugin_in_process() {
     let echoed = tools.get("stats").unwrap().call("echo", json!({"v": 7})).await.unwrap();
     assert_eq!(echoed.text, "7");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_tool_images_reach_the_host() {
+    let (host_side, plugin_side) = tokio::io::duplex(1 << 16);
+    let (plugin_r, plugin_w) = tokio::io::split(plugin_side);
+    let plugin = Plugin::new("screen")
+        .tool(json!({"name": "shot", "description": "", "parameters": {}}), |_call| async move {
+            Ok(ToolResult::text("800x600").with_image_base64("image/png", "aGVsbG8="))
+        })
+        .tool(json!({"name": "bad", "description": "", "parameters": {}}), |_call| async move {
+            Ok(ToolResult::text("odd").with_image_base64("image/bmp", "aGVs"))
+        });
+    tokio::spawn(plugin.serve(plugin_r, plugin_w));
+    let (host_r, host_w) = tokio::io::split(host_side);
+    let transport = Arc::new(IoTransport::new(host_r, host_w, 1 << 20));
+    let manifest = PluginManifest::from_json(
+        &json!({
+            "name": "screen",
+            "runtime": "process",
+            "command": "in-process",
+            "tools": [{"name": "shot", "description": "", "parameters": {}}, {"name": "bad", "description": "", "parameters": {}}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut host = PluginHost::new();
+    host.add_with_transport(LoadedManifest { manifest, dir: PathBuf::from(".") }, transport).unwrap();
+    let mut registry = Registry::with_builtins();
+    let mut tools = ToolRegistry::new();
+    host.register(&mut registry, &mut tools).unwrap();
+
+    let runtime = tools.get("screen").unwrap();
+    let shot = runtime.call("shot", json!({})).await.unwrap();
+    assert_eq!(shot.text, "800x600");
+    assert_eq!(shot.images, vec![graphrt_core::tool::ToolImage::png("aGVsbG8=")]);
+    let err = runtime.call("bad", json!({})).await.unwrap_err();
+    assert!(err.message.contains("invalid `images`") && err.message.contains("image/bmp"), "{err}");
+}

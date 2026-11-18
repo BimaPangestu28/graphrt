@@ -16,6 +16,10 @@ Write node kinds and tools for graphrt in Python::
     async def score(args):
         return {"text": "0.9"}
 
+    @plugin.tool("screenshot", description="Capture the screen")
+    async def screenshot(args):
+        return {"text": "1280x800", "images": [{"media_type": "image/png", "data": png_bytes}]}
+
     if __name__ == "__main__":
         plugin.run()
 
@@ -26,6 +30,8 @@ The plugin talks newline-delimited JSON-RPC 2.0 over stdin/stdout. Never
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import inspect
 import json
 import re
@@ -42,12 +48,23 @@ __all__ = [
     "RunRequest",
     "Resume",
     "pause",
+    "tool_result",
     "PROTOCOL_VERSION",
+    "TOOL_IMAGES_FEATURE",
+    "MAX_TOOL_IMAGES",
+    "MAX_TOOL_IMAGE_BYTES",
+    "TOOL_IMAGE_MEDIA_TYPES",
 ]
 
 PROTOCOL_VERSION = 1
 # Default line limit; the host announces its own in `initialize` (`max_message_bytes`).
 MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+# Feature a host lists in `initialize` when tool results may carry `images`.
+TOOL_IMAGES_FEATURE = "tool_images"
+# Tool result image limits (the host enforces the same).
+MAX_TOOL_IMAGES = 4
+MAX_TOOL_IMAGE_BYTES = 5 * 1024 * 1024
+TOOL_IMAGE_MEDIA_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif")
 
 _ID_RE = re.compile(rb'"id"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+)')
 
@@ -133,6 +150,68 @@ class RunContext:
         await self._cancelled.wait()
 
 
+def _encode_image(image: Any, index: int) -> Dict[str, str]:
+    """One ``images`` entry as sent on the wire: ``{media_type, data_base64}`` or ``{url}``."""
+
+    def fail(message: str) -> PluginError:
+        return PluginError(f"image #{index}: {message}", kind="invalid_output")
+
+    if not isinstance(image, dict):
+        raise fail("must be a dict")
+    if "url" in image:
+        url = image["url"]
+        if not isinstance(url, str) or not url.lower().startswith("https://"):
+            raise fail("`url` must start with https://")
+        return {"url": url}
+    media_type = image.get("media_type")
+    if media_type not in TOOL_IMAGE_MEDIA_TYPES:
+        raise fail(f"media type `{media_type}` is not supported (use {', '.join(TOOL_IMAGE_MEDIA_TYPES)})")
+    raw = image.get("data")
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        size = len(raw)
+        encoded = base64.b64encode(bytes(raw)).decode("ascii")
+    elif isinstance(image.get("data_base64"), str):
+        encoded = image["data_base64"]
+        try:
+            size = len(base64.b64decode(encoded, validate=True))
+        except (binascii.Error, ValueError):
+            raise fail("`data_base64` is not valid base64") from None
+    else:
+        raise fail("give `data` (bytes) or `data_base64` (a base64 string)")
+    if size == 0:
+        raise fail("image data is empty")
+    if size > MAX_TOOL_IMAGE_BYTES:
+        raise fail(f"image is {size} bytes, above the {MAX_TOOL_IMAGE_BYTES}-byte limit")
+    return {"media_type": media_type, "data_base64": encoded}
+
+
+def tool_result(result: Any, host_supports_images: bool = True) -> Dict[str, Any]:
+    """Normalize a tool handler's return value into a ``tool.call`` result.
+
+    Images are validated and encoded; for hosts without image support they
+    are dropped and the text says so, so the call still succeeds.
+    """
+    if isinstance(result, str):
+        result = {"text": result}
+    out: Dict[str, Any] = {"text": "", "is_error": False, **(result or {})}
+    images = out.pop("images", None)
+    if images is None:
+        return out
+    if not isinstance(images, (list, tuple)):
+        raise PluginError("`images` must be a list", kind="invalid_output")
+    if len(images) > MAX_TOOL_IMAGES:
+        raise PluginError(f"{len(images)} images in one tool result, above the limit of {MAX_TOOL_IMAGES}",
+                          kind="invalid_output")
+    if not images:
+        return out
+    if not host_supports_images:
+        note = f"[{len(images)} image(s) omitted: the graphrt host does not support image tool results]"
+        out["text"] = f"{out['text']}\n{note}" if out["text"] else note
+        return out
+    out["images"] = [_encode_image(image, i) for i, image in enumerate(images)]
+    return out
+
+
 NodeHandler = Callable[[RunContext, RunRequest], Awaitable[Any]]
 ToolHandler = Callable[[Dict[str, Any]], Awaitable[Any]]
 
@@ -172,7 +251,10 @@ class Plugin:
              ) -> Callable[[ToolHandler], ToolHandler]:
         """Decorator registering a tool ``async def handler(arguments)``.
 
-        Return a string, or ``{"text": ..., "data": ..., "is_error": bool}``.
+        Return a string, or ``{"text": ..., "data": ..., "is_error": bool, "images": [...]}``.
+        ``images`` entries are ``{"media_type": "image/png", "data": b"..."}``
+        (or ``"data_base64"``) or ``{"url": "https://..."}``: at most 4,
+        png/jpeg/webp/gif, 5 MiB each.
         """
 
         def register(fn: ToolHandler) -> ToolHandler:
@@ -199,6 +281,8 @@ class Plugin:
         self._tool_tasks: "set[asyncio.Task[None]]" = set()
         queue: "asyncio.Queue[Optional[tuple]]" = asyncio.Queue()
         limit = [MAX_MESSAGE_BYTES]
+        self._limit = limit
+        self._host_features: List[str] = []
 
         def reader() -> None:
             stdin = sys.stdin.buffer
@@ -274,6 +358,8 @@ class Plugin:
                     task.cancel()
             return True
         if method == "initialize":
+            features = params.get("features")
+            self._host_features = [f for f in features if isinstance(f, str)] if isinstance(features, list) else []
             result: Dict[str, Any] = {"protocol_version": PROTOCOL_VERSION, "name": self.name}
             if self._descriptors:
                 result["nodes"] = self._descriptors
@@ -341,9 +427,7 @@ class Plugin:
             result = tool.handler(params.get("arguments") or {})
             if inspect.isawaitable(result):
                 result = await result
-            if isinstance(result, str):
-                result = {"text": result}
-            self._reply(msg_id, {"text": "", "is_error": False, **(result or {})})
+            self._reply(msg_id, tool_result(result, TOOL_IMAGES_FEATURE in self._host_features))
         except PluginError as e:
             self._error(msg_id, -32000, e.message, _error_data(e))
         except Exception as e:  # noqa: BLE001
@@ -372,10 +456,21 @@ class Plugin:
 
     def _reply(self, msg_id: Any, result: Any) -> None:
         try:
-            self._send({"jsonrpc": "2.0", "id": msg_id, "result": result})
+            line = self._encode({"jsonrpc": "2.0", "id": msg_id, "result": result})
         except (TypeError, ValueError) as e:
             # The handler returned something JSON cannot represent (NaN, bytes, sets...).
             self._error(msg_id, -32000, f"result is not valid JSON: {e}", {"kind": "invalid_output"})
+            return
+        # A line above the host's limit would break the connection: report it instead.
+        limit = self._limit[0] if hasattr(self, "_limit") else MAX_MESSAGE_BYTES
+        size = len(line.encode("utf-8"))
+        if size > limit:
+            self._error(msg_id, -32000, f"result is {size} bytes, above the {limit}-byte message limit",
+                        {"kind": "message_too_large"})
+            return
+        with self._out_lock:
+            sys.stdout.write(line)
+            sys.stdout.flush()
 
     def _error(self, msg_id: Any, code: int, message: str, data: Optional[Dict[str, Any]] = None) -> None:
         error: Dict[str, Any] = {"code": code, "message": message}

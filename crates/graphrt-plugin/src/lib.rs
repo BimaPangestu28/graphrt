@@ -57,4 +57,4 @@ pub use manifest::{
 pub use process::{DEFAULT_PASS_ENV, MAX_CONSECUTIVE_TIMEOUTS, ProcessTransport};
 pub use protocol::Notification;
 pub use render::{collect_selectors, render_config};
-pub use transport::{IoTransport, Transport};
+pub use transport::{HOST_FEATURES, IoTransport, Transport};

@@ -39,3 +39,10 @@ plugin. Pair it with a `graphrt-plugin.json` manifest; see `docs/plugins.md`.
 - `ctx.cancelled` / `await ctx.wait_cancelled()`; cancelled handlers are also
   interrupted with `asyncio.CancelledError`.
 - Never `print()` to stdout: stdout carries the protocol.
+- Tools can return images for the model:
+  `{"text": ..., "images": [{"media_type": "image/png", "data": png_bytes}]}`
+  (or `"data_base64"`, or `{"url": "https://..."}`); at most 4,
+  png/jpeg/webp/gif, 5 MiB each. Hosts without image support get the text
+  plus a note instead.
+
+Tests: `python3 -m unittest discover -s sdk/python`.
