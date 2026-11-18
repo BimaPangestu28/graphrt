@@ -38,7 +38,9 @@ import json, sys
 meta = json.load(sys.stdin)
 pkgs = {p["name"]: p for p in meta["packages"] if p.get("publish") != []}
 deps = {
-    n: sorted({d["name"] for d in p["dependencies"] if d["name"] in pkgs and d["kind"] in (None, "build")})
+    # Dev-dependencies count too: `cargo publish` keeps versioned dev-dependencies
+    # in the manifest and requires them to exist on crates.io already.
+    n: sorted({d["name"] for d in p["dependencies"] if d["name"] in pkgs and d["name"] != n})
     for n, p in pkgs.items()
 }
 order, seen = [], set()
