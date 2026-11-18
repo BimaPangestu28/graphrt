@@ -65,6 +65,18 @@ serving, and a much faster engine and server. Contains breaking API changes
   `DocumentSummary`, `KnowledgeBase::{list_documents, document_chunks,
   delete_document, is_managed}`, `RagError::Unsupported`; `IngestReport` is
   serializable.
+- Tools can return images that the `agent` node shows to the model, enabling
+  vision loops such as computer use (screenshot, then click by coordinates).
+  `ToolOutput` gains `images` (`ToolImage::Base64 {media_type, data_base64}` or
+  `ToolImage::Url`), checked against `check_images` (4 per result, 5 MiB each,
+  png/jpeg/webp/gif, https URLs). Anthropic, Gemini 3+ and Bedrock Claude/Nova
+  receive them inside the tool result; OpenAI-compatible servers and other
+  models get them in a user message right after the tool results. New agent
+  option `keep_tool_images` keeps only the latest N image-bearing results.
+  Plugin protocol: `tool.call` results accept `images`, and `initialize`
+  announces `features: ["tool_images"]`; the Python, TypeScript and Rust SDKs
+  send images only to hosts that announce it. MCP image blocks are forwarded
+  too. See `docs/tool-images.md`.
 - `graphrt-rag`: `LocalEmbedder` (feature `local-embed`), sentence embeddings
   computed in-process with candle on the CPU: no embedding server, API key or
   network once the model is cached. BERT-family models from Hugging Face
@@ -154,6 +166,15 @@ serving, and a much faster engine and server. Contains breaking API changes
   runs/s. With it gated the same machine measures ~300k runs/s for the llm
   graph and ~390k for a no-LLM graph at 11 workers (a measurement fix, not a
   runtime speed-up).
+
+### Changed
+- `graphrt_core::tool::ToolOutput` has a new `images` field and derives
+  `Default`: struct literals must add `images: Vec::new()` or
+  `..ToolOutput::default()` (`ToolOutput::text` / `ToolOutput::error` are
+  unchanged). `graphrt_plugin_sdk::ToolResult` likewise gains `images`.
+- Plugin SDKs (Python, TypeScript) answer `message_too_large` instead of
+  writing a reply line above the host's `max_message_bytes`, which used to
+  break the connection.
 
 ## [0.1.0] - 2026-11-18
 

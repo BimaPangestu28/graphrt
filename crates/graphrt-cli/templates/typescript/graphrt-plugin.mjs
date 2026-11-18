@@ -32,6 +32,64 @@ const RESULT_KEYS = new Set(["outputs", "branch", "writes", "usage", "metadata",
 /** Default line limit; the host announces its own in `initialize` (`max_message_bytes`). */
 export const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
 
+/** Feature a host lists in `initialize` when tool results may carry `images`. */
+export const TOOL_IMAGES_FEATURE = "tool_images";
+/** Tool result image limits (the host enforces the same). */
+export const MAX_TOOL_IMAGES = 4;
+export const MAX_TOOL_IMAGE_BYTES = 5 * 1024 * 1024;
+export const TOOL_IMAGE_MEDIA_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/** One `images` entry as sent on the wire: `{media_type, data_base64}` or `{url}`. */
+function encodeImage(image, index) {
+  const fail = (message) => {
+    throw new PluginError(`image #${index}: ${message}`, { kind: "invalid_output" });
+  };
+  if (image === null || typeof image !== "object") fail("must be an object");
+  if (image.url !== undefined) {
+    if (typeof image.url !== "string" || !/^https:\/\//i.test(image.url)) fail("`url` must start with https://");
+    return { url: image.url };
+  }
+  const mediaType = image.media_type ?? image.mediaType;
+  if (!TOOL_IMAGE_MEDIA_TYPES.includes(mediaType)) {
+    fail(`media type \`${mediaType}\` is not supported (use ${TOOL_IMAGE_MEDIA_TYPES.join(", ")})`);
+  }
+  let data = image.data_base64 ?? image.dataBase64;
+  let size;
+  if (data === undefined && image.data instanceof Uint8Array) {
+    size = image.data.byteLength;
+    data = Buffer.from(image.data.buffer, image.data.byteOffset, image.data.byteLength).toString("base64");
+  } else if (typeof data === "string" && data.length % 4 !== 1 && BASE64_RE.test(data)) {
+    size = Math.floor((data.replace(/=+$/, "").length * 3) / 4);
+  } else {
+    fail("give `data_base64` (a base64 string) or `data` (a Buffer / Uint8Array)");
+  }
+  if (size === 0) fail("image data is empty");
+  if (size > MAX_TOOL_IMAGE_BYTES) fail(`image is ${size} bytes, above the ${MAX_TOOL_IMAGE_BYTES}-byte limit`);
+  return { media_type: mediaType, data_base64: data };
+}
+
+/** Normalize a tool handler's return value into a `tool.call` result. */
+export function toolResult(result, { hostSupportsImages = true } = {}) {
+  if (typeof result === "string") result = { text: result };
+  const { images, ...rest } = result ?? {};
+  const out = { text: "", is_error: false, ...rest };
+  if (images === undefined || images === null) return out;
+  if (!Array.isArray(images)) throw new PluginError("`images` must be an array", { kind: "invalid_output" });
+  if (images.length > MAX_TOOL_IMAGES) {
+    throw new PluginError(`${images.length} images in one tool result, above the limit of ${MAX_TOOL_IMAGES}`, { kind: "invalid_output" });
+  }
+  if (images.length === 0) return out;
+  if (!hostSupportsImages) {
+    const note = `[${images.length} image(s) omitted: the graphrt host does not support image tool results]`;
+    out.text = out.text ? `${out.text}\n${note}` : note;
+    return out;
+  }
+  out.images = images.map(encodeImage);
+  return out;
+}
+
 /** Best-effort request id from a line that could not be read. */
 function recoverId(text) {
   const match = /"id"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+)/.exec(text.slice(0, 4096));
@@ -105,6 +163,7 @@ export class Plugin {
     this._tools = new Map();
     this._running = new Map();
     this._maxMessageBytes = MAX_MESSAGE_BYTES;
+    this._hostFeatures = [];
   }
 
   /**
@@ -118,7 +177,11 @@ export class Plugin {
     return this;
   }
 
-  /** Register a tool `async (args) => string | {text, data?, is_error?}`. */
+  /**
+   * Register a tool `async (args) => string | {text, data?, is_error?, images?}`.
+   * `images` entries are `{media_type, data_base64}`, `{media_type, data: Buffer}`
+   * or `{url: "https://..."}`; at most 4, png/jpeg/webp/gif, 5 MiB each.
+   */
   tool(spec, handler) {
     this._tools.set(spec.name, { spec: { description: "", parameters: { type: "object" }, ...spec }, handler });
     return this;
@@ -194,6 +257,7 @@ export class Plugin {
         if (Number.isInteger(params.max_message_bytes) && params.max_message_bytes >= 1024) {
           this._maxMessageBytes = params.max_message_bytes;
         }
+        this._hostFeatures = Array.isArray(params.features) ? params.features : [];
         const result = { protocol_version: PROTOCOL_VERSION, name: this.name };
         if (this._descriptors.length) result.nodes = this._descriptors;
         if (this._tools.size) result.tools = [...this._tools.values()].map((t) => t.spec);
@@ -260,9 +324,9 @@ export class Plugin {
         return;
       }
       try {
-        let result = await tool.handler(params.arguments ?? {});
-        if (typeof result === "string") result = { text: result };
-        this._reply(id, { text: "", is_error: false, ...(result ?? {}) });
+        const result = await tool.handler(params.arguments ?? {});
+        const hostSupportsImages = this._hostFeatures.includes(TOOL_IMAGES_FEATURE);
+        this._reply(id, toolResult(result, { hostSupportsImages }));
       } catch (e) {
         if (!(e instanceof PluginError)) console.error(e);
         this._error(id, -32000, e instanceof Error ? e.message : String(e), errorData(e));
@@ -302,6 +366,12 @@ export class Plugin {
     } catch (e) {
       // BigInt, circular structures...: report instead of crashing the process.
       this._error(id, -32000, `result is not valid JSON: ${e instanceof Error ? e.message : String(e)}`, { kind: "invalid_output" });
+      return;
+    }
+    // A line above the host's limit would break the connection: report it instead.
+    const size = Buffer.byteLength(line);
+    if (size > this._maxMessageBytes) {
+      this._error(id, -32000, `result is ${size} bytes, above the ${this._maxMessageBytes}-byte message limit`, { kind: "message_too_large" });
       return;
     }
     this._output.write(line + "\n");

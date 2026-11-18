@@ -210,15 +210,56 @@ pub struct ToolResult {
     #[serde(skip_serializing_if = "Value::is_null")]
     pub data: Value,
     pub is_error: bool,
+    /// Images shown to the model (at most 4; png, jpeg, webp or gif; 5 MiB
+    /// each). Dropped with a note in `text` when the host does not support them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ToolImage>,
 }
+
+/// An image in a tool result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum ToolImage {
+    /// Inline bytes, base64 encoded (standard alphabet).
+    Base64 { media_type: String, data_base64: String },
+    /// A remote `https://` image.
+    Url { url: String },
+}
+
+/// Feature the host lists in `initialize` when `tool.call` results may carry images.
+pub const TOOL_IMAGES_FEATURE: &str = "tool_images";
 
 impl ToolResult {
     pub fn text(text: impl Into<String>) -> Self {
-        Self { text: text.into(), data: Value::Null, is_error: false }
+        Self { text: text.into(), ..Self::default() }
     }
 
     pub fn error(text: impl Into<String>) -> Self {
-        Self { text: text.into(), data: Value::Null, is_error: true }
+        Self { text: text.into(), is_error: true, ..Self::default() }
+    }
+
+    /// Attach an inline image (`media_type` such as `image/png`, data in base64).
+    pub fn with_image_base64(mut self, media_type: impl Into<String>, data_base64: impl Into<String>) -> Self {
+        self.images.push(ToolImage::Base64 { media_type: media_type.into(), data_base64: data_base64.into() });
+        self
+    }
+
+    /// Attach a remote `https://` image.
+    pub fn with_image_url(mut self, url: impl Into<String>) -> Self {
+        self.images.push(ToolImage::Url { url: url.into() });
+        self
+    }
+
+    /// For hosts that did not announce [`TOOL_IMAGES_FEATURE`]: drop the
+    /// images and say so in the text, so older hosts still accept the result.
+    fn without_unsupported_images(mut self, host_supports_images: bool) -> Self {
+        if host_supports_images || self.images.is_empty() {
+            return self;
+        }
+        let count = std::mem::take(&mut self.images).len();
+        let note = format!("[{count} image(s) omitted: the graphrt host does not support image tool results]");
+        self.text = if self.text.is_empty() { note } else { format!("{}\n{note}", self.text) };
+        self
     }
 
     pub fn with_data(mut self, data: impl Serialize) -> Self {
@@ -370,8 +411,9 @@ impl Plugin {
         let mut lines = BufReader::new(reader);
         let mut buf = Vec::new();
         let mut shutdown = false;
-        // The host announces its line limit in `initialize`.
+        // The host announces its line limit and optional features in `initialize`.
         let mut limit = MAX_MESSAGE_BYTES;
+        let mut host_supports_images = false;
         loop {
             buf.clear();
             match read_line_capped(&mut lines, &mut buf, limit).await? {
@@ -427,6 +469,10 @@ impl Plugin {
                 }
                 (_, None) => {}
                 ("initialize", Some(id)) => {
+                    host_supports_images = params
+                        .get("features")
+                        .and_then(Value::as_array)
+                        .is_some_and(|f| f.iter().any(|v| v.as_str() == Some(TOOL_IMAGES_FEATURE)));
                     let mut result = Map::new();
                     result.insert("protocol_version".into(), json!(PROTOCOL_VERSION));
                     result.insert("name".into(), json!(plugin.name));
@@ -443,7 +489,9 @@ impl Plugin {
                 ("tool.list", Some(id)) => {
                     send(&out_tx, ok_response(&id, json!({"tools": plugin.tool_specs})));
                 }
-                ("tool.call", Some(id)) => plugin.start_tool(id, params, &out_tx),
+                ("tool.call", Some(id)) => {
+                    plugin.start_tool(id, params, &out_tx, ToolHost { supports_images: host_supports_images, limit });
+                }
                 (other, Some(id)) => {
                     send(&out_tx, error_response(&id, -32601, &format!("method `{other}` not found"), None));
                 }
@@ -533,7 +581,7 @@ impl Plugin {
         map.insert(request_id, Running { task, cancelled, notify });
     }
 
-    fn start_tool(&self, id: Value, params: Value, out: &mpsc::UnboundedSender<String>) {
+    fn start_tool(&self, id: Value, params: Value, out: &mpsc::UnboundedSender<String>, host: ToolHost) {
         let name = params.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
         let Some(handler) = self.tools.get(&name).cloned() else {
             let msg = format!("plugin `{}` has no tool `{name}`", self.name);
@@ -545,13 +593,27 @@ impl Plugin {
         tokio::spawn(async move {
             let inner = AbortOnDrop(tokio::spawn(handler(call)));
             let line = match join_handler(inner).await {
-                Some(Ok(r)) => encode_result(&id, &r),
+                Some(Ok(r)) => encode_result(&id, &r.without_unsupported_images(host.supports_images)),
                 Some(Err(e)) => plugin_error_response(&id, &e),
                 None => return,
+            };
+            // A line above the host's limit would break the connection: report it instead.
+            let line = if line.len() > host.limit {
+                let msg = format!("tool result is {} bytes, above the {}-byte message limit", line.len(), host.limit);
+                error_response(&id, -32000, &msg, Some(json!({"kind": "message_too_large"})))
+            } else {
+                line
             };
             send(&out, line);
         });
     }
+}
+
+/// What the host announced in `initialize` that shapes tool results.
+#[derive(Clone, Copy, Debug)]
+struct ToolHost {
+    supports_images: bool,
+    limit: usize,
 }
 
 /// Aborts the wrapped task when dropped (so cancelling the outer task stops the handler).
@@ -783,6 +845,51 @@ mod tests {
         assert_eq!(by_id("r-5")["result"]["outputs"]["input"], "yes");
         assert_eq!(by_id("t-1")["result"]["text"], "42");
         assert_eq!(by_id("x")["error"]["code"], -32601);
+    }
+
+    fn screenshot_plugin() -> Plugin {
+        Plugin::new("screen").tool(json!({"name": "shot", "description": "", "parameters": {}}), |call| async move {
+            let size = call.arguments["size"].as_u64().unwrap_or(8) as usize;
+            Ok(ToolResult::text("800x600").with_image_base64("image/png", "A".repeat(size)))
+        })
+    }
+
+    async fn call_shot(init_params: &str, size: usize) -> Value {
+        let input = [
+            format!(r#"{{"jsonrpc":"2.0","id":"i","method":"initialize","params":{init_params}}}"#),
+            format!(r#"{{"jsonrpc":"2.0","id":"t","method":"tool.call","params":{{"name":"shot","arguments":{{"size":{size}}}}}}}"#),
+            String::new(),
+        ]
+        .join("\n");
+        let msgs = tokio::time::timeout(std::time::Duration::from_secs(5), roundtrip_wait(screenshot_plugin(), &input))
+            .await
+            .unwrap();
+        msgs.into_iter().find(|m| m["id"] == "t").unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn tool_images_are_sent_to_hosts_that_support_them() {
+        let reply = call_shot(r#"{"features":["tool_images"]}"#, 8).await;
+        assert_eq!(
+            reply["result"],
+            json!({"text": "800x600", "is_error": false, "images": [{"media_type": "image/png", "data_base64": "AAAAAAAA"}]})
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_images_are_dropped_for_older_hosts() {
+        let reply = call_shot("{}", 8).await;
+        assert_eq!(
+            reply["result"],
+            json!({"text": "800x600\n[1 image(s) omitted: the graphrt host does not support image tool results]", "is_error": false})
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_tool_results_are_reported_not_sent() {
+        let reply = call_shot(r#"{"features":["tool_images"],"max_message_bytes":2048}"#, 4096).await;
+        assert_eq!(reply["error"]["data"]["kind"], "message_too_large");
+        assert!(reply.get("result").is_none());
     }
 
     /// Like [`roundtrip`], but keeps stdin open until every request is answered.

@@ -43,6 +43,10 @@ pub trait Transport: Send + Sync + fmt::Debug {
     fn note_answer(&self) {}
 }
 
+/// Optional protocol features this host supports, announced in `initialize`
+/// (`tool_images`: `tool.call` results may carry `images`).
+pub const HOST_FEATURES: &[&str] = &["tool_images"];
+
 /// Parameters of `initialize`. `max_message_bytes` tells the plugin how large a
 /// line the host may send, so SDKs size their read buffers to match.
 pub(crate) fn initialize_params(max_message_bytes: usize) -> serde_json::Value {
@@ -50,6 +54,7 @@ pub(crate) fn initialize_params(max_message_bytes: usize) -> serde_json::Value {
         "protocol_version": PROTOCOL_VERSION,
         "host": {"name": "graphrt", "version": env!("CARGO_PKG_VERSION")},
         "max_message_bytes": max_message_bytes,
+        "features": HOST_FEATURES,
     })
 }
 
@@ -143,5 +148,17 @@ impl Transport for IoTransport {
 
     fn initialize<'a>(&'a self, clock: &'a Arc<dyn Clock>) -> BoxFuture<'a, Result<serde_json::Value, CallError>> {
         Box::pin(self.ensure_initialized(clock))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialize_announces_features() {
+        let params = initialize_params(1024);
+        assert_eq!(params["max_message_bytes"], 1024);
+        assert_eq!(params["features"], serde_json::json!(["tool_images"]));
     }
 }

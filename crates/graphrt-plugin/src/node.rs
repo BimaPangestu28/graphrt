@@ -320,13 +320,12 @@ impl ToolRuntime for PluginTools {
             let result = with_timeout(&clock, self.shared.timeout, call).await;
             track(self.shared.transport.as_ref(), &result);
             let result = result.map_err(|e| self.error(name, e))?;
-            let msg: ToolResultMsg =
-                serde_json::from_value(result).map_err(|e| self.error(name, CallError::Protocol(e.to_string())))?;
+            let msg = ToolResultMsg::parse(result).map_err(|e| self.error(name, e))?;
             Ok(ToolOutput {
                 text: msg.text,
                 data: Value::from_json(msg.data),
                 is_error: msg.is_error,
-                images: Vec::new(),
+                images: msg.images,
             })
         })
     }

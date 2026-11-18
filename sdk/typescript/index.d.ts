@@ -61,7 +61,27 @@ export interface ToolSpec {
   parameters?: Record<string, unknown>;
 }
 
-export type ToolResult = string | { text: string; data?: unknown; is_error?: boolean };
+/** Feature a host lists in `initialize` when tool results may carry `images`. */
+export declare const TOOL_IMAGES_FEATURE: "tool_images";
+export declare const MAX_TOOL_IMAGES: number;
+export declare const MAX_TOOL_IMAGE_BYTES: number;
+export declare const TOOL_IMAGE_MEDIA_TYPES: string[];
+
+export type ToolImageMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+
+/** An image shown to the model with a tool result (at most 4; 5 MiB each). */
+export type ToolImage =
+  | { media_type: ToolImageMediaType; data_base64: string }
+  | { media_type: ToolImageMediaType; data: Uint8Array }
+  | { url: string };
+
+export type ToolResult = string | { text: string; data?: unknown; is_error?: boolean; images?: ToolImage[] };
+
+/** Normalize a handler result into a `tool.call` result (images dropped with a note for older hosts). */
+export declare function toolResult(
+  result: ToolResult | null | undefined,
+  options?: { hostSupportsImages?: boolean },
+): { text: string; data?: unknown; is_error: boolean; images?: Array<{ media_type: string; data_base64: string } | { url: string }> };
 
 export type NodeHandler = (
   ctx: RunContext,

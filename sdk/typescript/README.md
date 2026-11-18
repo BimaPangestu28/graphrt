@@ -28,3 +28,9 @@ Pair it with a `graphrt-plugin.json` manifest; see `docs/plugins.md`.
 - `ctx.chunk(field, text)`, `ctx.progress(name, data)`, `ctx.log(message)`.
 - `ctx.signal` aborts when the host cancels the request.
 - Never `console.log` (stdout carries the protocol); use `console.error`.
+- Tools can return images for the model:
+  `{ text, images: [{ media_type: "image/png", data: pngBuffer }] }` (or
+  `data_base64`, or `{ url: "https://..." }`); at most 4, png/jpeg/webp/gif,
+  5 MiB each. Hosts without image support get the text plus a note instead.
+
+Tests: `npm test` (Node's built-in runner).

@@ -120,10 +120,14 @@ Messages are [JSON-RPC 2.0](https://www.jsonrpc.org/specification).
 1. Host → plugin `initialize`
 
    ```json
-   {"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocol_version":1,"host":{"name":"graphrt","version":"0.1.0"},"max_message_bytes":16777216}}
+   {"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocol_version":1,"host":{"name":"graphrt","version":"0.1.0"},"max_message_bytes":16777216,"features":["tool_images"]}}
    ```
 
    `max_message_bytes` is the largest line the host will send; the SDKs adopt it.
+   It also bounds what the host reads: a longer line from the plugin breaks the
+   connection, so the SDKs answer `message_too_large` instead of sending one.
+   `features` lists optional protocol features the host supports (absent on
+   older hosts): `tool_images` means `tool.call` results may carry `images`.
    A plugin that receives a longer line should skip it up to the newline and
    answer that request (id recovered from the line when possible) with an
    error such as `{"kind": "message_too_large"}`.
@@ -220,7 +224,21 @@ response for it is ignored.
 
 - `tool.list` → `{"tools": [ToolSpec...]}` (optional; the manifest's `tools` are
   used when the method is not implemented).
-- `tool.call {name, arguments}` → `{"text": "...", "data": <json>?, "is_error": false}`.
+- `tool.call {name, arguments}` → `{"text": "...", "data": <json>?, "is_error": false, "images": [...]?}`.
+
+`images` (only when the host announced `tool_images`) shows images to the
+model, for example a screenshot for a computer-use loop:
+
+```json
+{"text": "1280x800 screenshot", "images": [{"media_type": "image/png", "data_base64": "iVBORw0KGgo..."}, {"url": "https://example.com/chart.png"}]}
+```
+
+At most 4 images, `image/png`, `image/jpeg`, `image/webp` or `image/gif`, up
+to 5 MiB each (decoded); URLs must be `https://`. A result that breaks these
+rules fails the call with a `plugin_protocol` error. The whole result must
+still fit in `max_message_bytes`. Older hosts reject unknown result fields, so
+the SDKs drop images (adding a note to `text`) when `tool_images` was not
+announced. Per-provider encoding is described in [tool-images.md](tool-images.md).
 
 ### Errors
 
@@ -300,6 +318,10 @@ import { Plugin } from "graphrt-plugin";
 
 const plugin = new Plugin("acme");
 plugin.node("acme.upper", async (ctx, req) => ({ outputs: { text: String(req.config.text).toUpperCase() } }));
+plugin.tool({ name: "screenshot", description: "Capture the screen" }, async () => ({
+  text: "1280x800",
+  images: [{ media_type: "image/png", data: await capturePng() }], // Buffer, or data_base64
+}));
 plugin.run();
 ```
 

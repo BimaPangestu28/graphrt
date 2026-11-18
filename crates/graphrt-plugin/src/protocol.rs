@@ -159,6 +159,19 @@ pub(crate) struct ToolResultMsg {
     pub data: serde_json::Value,
     #[serde(default)]
     pub is_error: bool,
+    /// Images for the model (`{media_type, data_base64}` or `{url}`).
+    #[serde(default)]
+    pub images: Vec<graphrt_core::tool::ToolImage>,
+}
+
+impl ToolResultMsg {
+    /// Parse and validate a `tool.call` result.
+    pub(crate) fn parse(result: serde_json::Value) -> Result<Self, CallError> {
+        let msg: Self = serde_json::from_value(result).map_err(|e| CallError::Protocol(e.to_string()))?;
+        graphrt_core::tool::check_images(&msg.images)
+            .map_err(|e| CallError::Protocol(format!("invalid `images` in tool result: {e}")))?;
+        Ok(msg)
+    }
 }
 
 #[cfg(test)]
@@ -205,5 +218,26 @@ mod tests {
         assert!(serde_json::from_str::<RunResultMsg>(r#"{"outputs":{"a":1}}"#).is_ok());
         assert!(serde_json::from_str::<RunResultMsg>("null").is_err());
         assert!(serde_json::from_str::<ToolResultMsg>(r#"{"txt":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn tool_results_with_images() {
+        let msg = ToolResultMsg::parse(serde_json::json!({
+            "text": "shot",
+            "images": [{"media_type": "image/png", "data_base64": "aGVsbG8="}, {"url": "https://x/a.png"}]
+        }))
+        .unwrap();
+        assert_eq!(msg.images.len(), 2);
+        assert!(ToolResultMsg::parse(serde_json::json!({"text": "plain"})).unwrap().images.is_empty());
+        let invalid = [
+            serde_json::json!({"images": [{"media_type": "image/tiff", "data_base64": "aGVs"}]}),
+            serde_json::json!({"images": [{"media_type": "image/png", "data_base64": "%%%"}]}),
+            serde_json::json!({"images": [{"url": "file:///etc/passwd"}]}),
+            serde_json::json!({"images": [{"bytes": "aGVs"}]}),
+            serde_json::json!({"images": vec![serde_json::json!({"url": "https://x/a.png"}); 5]}),
+        ];
+        for result in invalid {
+            assert!(matches!(ToolResultMsg::parse(result.clone()), Err(CallError::Protocol(_))), "{result}");
+        }
     }
 }
