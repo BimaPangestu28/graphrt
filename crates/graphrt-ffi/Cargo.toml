@@ -35,7 +35,7 @@ mobile-js = ["code-js", "dep:rquickjs"]
 mcp-http = ["dep:graphrt-mcp"]
 # document-extractor node (pure Rust).
 doc = ["dep:graphrt-doc"]
-# knowledge-retrieval node (memory / Qdrant / HTTP retrievers).
+# knowledge-retrieval node (memory / SQLite / Qdrant / HTTP retrievers; SQLite is compiled from C).
 rag = ["dep:graphrt-rag"]
 # Enables the `uniffi-bindgen` binary used to generate Kotlin / Swift bindings.
 bindgen-cli = ["uniffi/cli"]
@@ -51,7 +51,7 @@ graphrt-mcp = { workspace = true, optional = true, features = ["http"] }
 # Only to switch on rquickjs' `bindgen` feature (see `mobile-js`); not used directly.
 rquickjs = { version = "0.14", optional = true, default-features = false, features = ["bindgen"] }
 graphrt-doc = { workspace = true, optional = true, features = ["pdf", "office", "spreadsheet", "epub", "email", "tokio"] }
-graphrt-rag = { workspace = true, optional = true, features = ["http", "qdrant", "fs", "yaml"] }
+graphrt-rag = { workspace = true, optional = true, features = ["http", "qdrant", "fs", "sqlite", "yaml"] }
 uniffi = { version = "0.32", default-features = false }
 thiserror.workspace = true
 serde = { workspace = true }

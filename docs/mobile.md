@@ -15,7 +15,7 @@ Everything in the embedded build avoids spawning processes (forbidden on iOS):
 | `llm`, `agent`, `question-classifier`, `parameter-extractor` | yes | yes | OpenAI-compatible + Anthropic over rustls |
 | `http-request` | yes | yes | SSRF guard on by default |
 | `code` (JavaScript) | yes | yes | QuickJS interpreter, no JIT (App Store friendly) |
-| `document-extractor`, `knowledge-retrieval` | yes | yes | memory / Qdrant / HTTP retrievers |
+| `document-extractor`, `knowledge-retrieval` | yes | yes | memory / SQLite / Qdrant / HTTP retrievers (SQLite verified on Android arm64; iOS not yet built) |
 | WebAssembly plugins | yes | yes | wasmi interpreter, no JIT |
 | MCP tools over HTTP | yes | yes | stdio MCP servers are rejected |
 | Python code, process plugins, stdio MCP | no | no | need child processes |

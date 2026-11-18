@@ -7,6 +7,11 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- `graphrt-ffi`: the SQLite knowledge store is available on mobile, so bundles
+  using `stores: { ...: { type: sqlite } }` load on Android and iOS
+  (built and linked for Android arm64; iOS not built yet).
+
 ## [0.1.0] - 2026-11-18
 
 First public release: one small runtime that runs agentic AI workflows on a
