@@ -8,6 +8,8 @@
 //!   with incremental writes and several processes sharing the database.
 //! - [`OpenAiEmbedder`], [`HttpReranker`], [`HttpRetriever`] (feature `http`) and
 //!   [`QdrantStore`] (feature `qdrant`).
+//! - [`LocalEmbedder`] (feature `local-embed`): sentence embeddings computed in
+//!   this process with candle, no embedding server or API key.
 //! - [`chunk_text`] and [`Ingestor`] for indexing documents.
 //! - [`KnowledgeBase`]: the service the node uses, built in code or from a
 //!   [`KnowledgeConfig`] file.
@@ -37,6 +39,8 @@ mod hash;
 mod http;
 mod ingest;
 mod kb;
+#[cfg(feature = "local-embed")]
+mod local_embed;
 mod memory;
 mod node;
 mod pipeline;
@@ -61,6 +65,8 @@ pub use http::{
 };
 pub use ingest::{Document, IngestReport, Ingestor};
 pub use kb::{DatasetConfig, DatasetInfo, EnvLookup, KnowledgeBase, KnowledgeConfig};
+#[cfg(feature = "local-embed")]
+pub use local_embed::{DEFAULT_LOCAL_MODEL, LocalEmbedder, LocalEmbedderConfig, Pooling};
 pub use memory::{MemoryStore, cosine, dot, tokenize};
 pub use node::{KIND, KnowledgeRetrievalNode, descriptor, register};
 pub use pipeline::{StoreRetriever, finalize, merge_weighted, rerank};

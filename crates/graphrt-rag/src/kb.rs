@@ -198,6 +198,7 @@ fn top_score(hits: &[Hit]) -> f32 {
 /// ```yaml
 /// embedders:
 ///   default: { type: openai, base_url: "http://localhost:11434/v1", model: nomic-embed-text }
+///   inproc:  { type: local, model: sentence-transformers/all-MiniLM-L6-v2 }   # feature `local-embed`
 ///   cloud:   { type: openai, model: text-embedding-3-small, api_key_env: OPENAI_API_KEY }
 /// rerankers:
 ///   cohere: { type: http, base_url: "https://api.cohere.com/v2", model: rerank-v3.5, api_key_env: COHERE_API_KEY }
@@ -402,6 +403,13 @@ fn build_embedder(name: &str, raw: &serde_json::Value, env: EnvLookup<'_>) -> Re
             let cfg: crate::http::OpenAiEmbedderConfig = parse(name, value)?;
             Ok(Arc::new(crate::http::OpenAiEmbedder::new(cfg)?))
         }
+        #[cfg(feature = "local-embed")]
+        "local" => {
+            let mut value = raw.as_object().cloned().unwrap_or_default();
+            value.remove("type");
+            let config: crate::local_embed::LocalEmbedderConfig = parse(name, serde_json::Value::Object(value))?;
+            Ok(Arc::new(crate::local_embed::LocalEmbedder::new(config)?))
+        }
         "hash" => {
             check_keys(name, raw, &["dimensions"], false)?;
             let dims = match raw.get("dimensions") {
@@ -601,6 +609,23 @@ mod tests {
         let hits = second.retrieve(&RetrievalRequest::new("returned within days", vec!["faq".into()])).await.unwrap();
         assert_eq!(hits.first().map(|h| h.document_id.as_str()), Some("returns"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "local-embed")]
+    #[test]
+    fn local_embedder_from_config_is_lazy_and_strict() {
+        let build = |embedder: serde_json::Value| {
+            KnowledgeConfig::from_json(&serde_json::json!({ "embedders": { "e": embedder } }).to_string())
+                .unwrap()
+                .build_with_env(&|_| None)
+        };
+        // Nothing is downloaded or loaded while building the knowledge base.
+        assert!(build(serde_json::json!({ "type": "local" })).is_ok());
+        assert!(build(serde_json::json!({ "type": "local", "path": "/not/loaded/yet" })).is_ok());
+        let typo = build(serde_json::json!({ "type": "local", "modle": "x/y" })).unwrap_err();
+        assert!(typo.to_string().contains("modle"), "{typo}");
+        let traversal = build(serde_json::json!({ "type": "local", "model": "../../etc" })).unwrap_err();
+        assert!(traversal.to_string().contains("`model`"), "{traversal}");
     }
 
     #[cfg(feature = "sqlite")]

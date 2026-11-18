@@ -3,6 +3,14 @@
 # (`ollama pull nomic-embed-text`) and chunks live in a SQLite file next to
 # this config. `{ type: memory, path: examples/rag/.store.json }` keeps them
 # in a JSON file instead (no SQLite, but the whole file is rewritten on change).
+#
+# No Ollama? With a CLI built with `--features local-embed`, the model runs
+# inside graphrt (downloaded once from Hugging Face, then fully offline):
+#   local: { type: local, model: sentence-transformers/all-MiniLM-L6-v2 }
+# For Indonesian and other languages:
+#   local: { type: local, model: intfloat/multilingual-e5-small,
+#            query_prefix: "query: ", document_prefix: "passage: " }
+# Changing the embedder changes the vectors: re-ingest the dataset afterwards.
 embedders:
   local:
     type: ollama

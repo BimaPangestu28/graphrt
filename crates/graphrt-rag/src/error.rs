@@ -36,6 +36,10 @@ pub enum RagError {
     /// Local persistence failure.
     #[error("I/O error: {0}")]
     Io(String),
+    /// An in-process model could not be loaded or run (missing or corrupt files,
+    /// unsupported architecture, inference failure).
+    #[error("embedding model error: {0}")]
+    Model(String),
 }
 
 impl RagError {
@@ -61,6 +65,7 @@ impl RagError {
             RagError::Store(_) => "store",
             RagError::NotFound(_) => "not_found",
             RagError::Io(_) => "io",
+            RagError::Model(_) => "model",
         }
     }
 }

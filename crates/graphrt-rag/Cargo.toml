@@ -22,6 +22,10 @@ qdrant = ["http", "dep:sha2"]
 fs = []
 # `SqliteStore`: a persistent store in one SQLite file (SQLite is compiled in).
 sqlite = ["dep:rusqlite"]
+# `LocalEmbedder`: sentence-embedding models (BERT family) run in-process with
+# candle, on the CPU. Downloading models from Hugging Face needs `http`;
+# a local model directory works without it.
+local-embed = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
 # Load `KnowledgeConfig` from YAML.
 yaml = ["dep:serde-saphyr"]
 # Ingest PDF / Office / spreadsheet / HTML / EPUB / email files via graphrt-doc.
@@ -38,6 +42,10 @@ indexmap.workspace = true
 serde-saphyr = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "json"] }
 sha2 = { version = "0.11", optional = true, default-features = false }
+candle-core = { version = "0.11", optional = true, default-features = false }
+candle-nn = { version = "0.11", optional = true, default-features = false }
+candle-transformers = { version = "0.11", optional = true, default-features = false }
+tokenizers = { version = "0.23", optional = true, default-features = false, features = ["fancy-regex"] }
 rusqlite = { version = "0.40", optional = true, features = ["bundled"] }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 
