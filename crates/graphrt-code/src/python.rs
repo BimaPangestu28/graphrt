@@ -434,8 +434,14 @@ mod tests {
         )
         .unwrap();
         let keys: Vec<String> = serde_json::from_value(out["keys"].clone()).unwrap();
+        // `__CF_USER_TEXT_ENCODING` is added by macOS CoreFoundation inside the
+        // Python process itself (it appears even under `env -i`); it holds only
+        // the uid and text encoding, nothing taken from the host environment.
         assert!(
-            keys.iter().all(|k| matches!(k.as_str(), "PATH" | "PYTHONIOENCODING" | "LC_CTYPE" | "PWD" | "SHLVL" | "_")),
+            keys.iter().all(|k| matches!(
+                k.as_str(),
+                "PATH" | "PYTHONIOENCODING" | "LC_CTYPE" | "PWD" | "SHLVL" | "_" | "__CF_USER_TEXT_ENCODING"
+            )),
             "{keys:?}"
         );
     }
