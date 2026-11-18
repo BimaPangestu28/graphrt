@@ -242,12 +242,23 @@ pub enum PluginCommand {
         plugins: PluginArgs,
     },
     /// Install a plugin from a local directory or a git URL.
+    ///
+    /// Examples:
+    ///   graphrt plugin install ./acme
+    ///   graphrt plugin install https://github.com/acme/graphrt-acme --rev v1.2.0
+    ///   graphrt plugin install https://github.com/acme/plugins --rev v1.2.0 --subdir acme
+    #[command(verbatim_doc_comment)]
     Install {
         /// Plugin directory, or a git URL (`https://...`, `git@...`, `*.git`).
         source: String,
         /// Branch or tag to check out (git sources).
         #[arg(long, value_name = "REV")]
         rev: Option<String>,
+        /// Install the plugin in this subdirectory of the repository (git
+        /// sources), for collections with one plugin per directory, e.g.
+        /// `--subdir whatsapp-api`. Must be relative, without `..` or symlinks.
+        #[arg(long, value_name = "PATH")]
+        subdir: Option<String>,
         /// Install into this directory instead of `~/.graphrt/plugins`.
         #[arg(long, value_name = "DIR")]
         dir: Option<PathBuf>,

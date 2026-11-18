@@ -326,6 +326,7 @@ async fn main() -> std::io::Result<()> {
 graphrt run workflow.yaml --plugins ./my-plugins     # try plugins in place
 graphrt plugin install ./acme                        # copy into ~/.graphrt/plugins
 graphrt plugin install https://github.com/acme/graphrt-acme --rev v1.2.0
+graphrt plugin install https://github.com/acme/plugins --rev v1.2.0 --subdir acme   # monorepo
 graphrt plugin list                                  # what is installed, and load errors
 graphrt plugin info acme                             # node descriptors
 graphrt plugin remove acme
@@ -341,6 +342,19 @@ nodes appear in `graphrt nodes` and `GET /v1/nodes` with `source:
 warning. Grant secrets / bearer tokens with `--trust-plugin <name>` (see the
 security model).
 
+`--subdir <path>` installs the plugin in a subdirectory of a git repository,
+for collections with one plugin per directory (such as
+[graphrt-plugins](https://github.com/BimaPangestu28/graphrt-plugins)):
+
+```sh
+graphrt plugin install https://github.com/BimaPangestu28/graphrt-plugins --rev main --subdir whatsapp-api
+```
+
+The path must be relative to the repository root; absolute paths, `..`
+components and symlinks along the path are rejected. Only that directory is
+copied into the install directory, after the usual manifest, name and checksum
+checks. From Rust, the same is `graphrt_plugin::install_from_git_subdir`.
+
 A `.wasm` module placed directly in a plugin search path is loaded as a plugin
 on its own (it describes itself; see [WebAssembly plugins](wasm-plugins.md)).
 
@@ -349,13 +363,16 @@ on its own (it describes itself; see [WebAssembly plugins](wasm-plugins.md)).
 A plugin is just a directory, so any git repository works:
 
 1. Put `graphrt-plugin.json` at the repository root, with a unique `name` and
-   node kinds prefixed `<name>.`.
+   node kinds prefixed `<name>.`. A monorepo can instead hold one plugin per
+   directory (each with its own manifest); users then add `--subdir <dir>`.
+   Checksum paths are relative to that plugin's directory.
 2. Vendor the SDK file (`graphrt_plugin.py` / `graphrt-plugin.mjs`) or document
    how to install it; `graphrt plugin new` vendors it for you.
 3. For compiled plugins, commit release binaries (or a build step users run)
    and pin them with `checksums` in the manifest; `graphrt plugin install`
    verifies them before copying, and the host verifies them before every start.
-4. Tag releases; users install with `graphrt plugin install <git-url> --rev <tag>`.
+4. Tag releases; users install with `graphrt plugin install <git-url> --rev <tag>`
+   (plus `--subdir <dir>` for a plugin in a monorepo).
 
 ## Host API
 
