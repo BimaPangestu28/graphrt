@@ -32,7 +32,7 @@ use crate::http::{Decoded, SseDecoder, send_request, sse_stream};
 use crate::sse::SseEvent;
 use crate::types::{
     ChatDelta, ChatModel, ChatRequest, ChatStream, ContentPart, FinishReason, ResponseFormat, Role, ToolChoice,
-    check_extra,
+    check_extra, tool_images_intro,
 };
 
 /// Default Gemini API base URL.
@@ -298,6 +298,18 @@ fn provider_call_id(id: &str) -> Option<&str> {
     (!id.is_empty() && !id.starts_with(SYNTHETIC_ID_PREFIX)).then_some(id)
 }
 
+/// Whether `model` accepts media inside `functionResponse.parts` (Gemini 3 and
+/// later). Unknown names use the fallback, which every model accepts.
+fn supports_multimodal_function_responses(model: &str) -> bool {
+    let lowered = model.to_ascii_lowercase();
+    let Some(start) = lowered.rfind("gemini-") else {
+        return false;
+    };
+    let rest = lowered.get(start + "gemini-".len()..).unwrap_or_default();
+    let major: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    major.parse::<u32>().is_ok_and(|major| major >= 3)
+}
+
 /// Build the JSON request body.
 #[cfg(test)]
 pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
@@ -326,7 +338,13 @@ pub(crate) fn build_body_with_warnings(req: &ChatRequest) -> Result<(Json, Vec<S
     };
     // Tool call id -> function name, from earlier assistant messages.
     let mut call_names: HashMap<&str, &str> = HashMap::new();
+    let native_media = supports_multimodal_function_responses(&req.model);
+    // Fallback for older models: tool images go after the run of function responses.
+    let mut deferred: Vec<Json> = Vec::new();
     for m in &req.messages {
+        if m.role != Role::Tool && !deferred.is_empty() {
+            push("user", std::mem::take(&mut deferred));
+        }
         match m.role {
             Role::System => system_parts.push(m.text()),
             Role::User => push("user", content_parts(&m.content)?),
@@ -365,12 +383,25 @@ pub(crate) fn build_body_with_warnings(req: &ChatRequest) -> Result<(Json, Vec<S
                     LlmError::Config(format!("tool result `{id}` does not answer any earlier tool call"))
                 })?;
                 let mut response = json!({"name": name, "response": function_response(&m.text())});
-                if let (Some(id), Some(obj)) = (provider_call_id(id), response.as_object_mut()) {
-                    obj.insert("id".into(), json!(id));
+                let images: Vec<ContentPart> = m.images().cloned().collect();
+                if let Some(obj) = response.as_object_mut() {
+                    if let Some(id) = provider_call_id(id) {
+                        obj.insert("id".into(), json!(id));
+                    }
+                    if !images.is_empty() && native_media {
+                        obj.insert("parts".into(), Json::Array(content_parts(&images)?));
+                    }
                 }
                 push("user", vec![json!({ "functionResponse": response })]);
+                if !images.is_empty() && !native_media {
+                    deferred.push(json!({"text": tool_images_intro(Some(name), id)}));
+                    deferred.extend(content_parts(&images)?);
+                }
             }
         }
+    }
+    if !deferred.is_empty() {
+        push("user", deferred);
     }
 
     let mut body = Map::new();
@@ -1060,6 +1091,64 @@ mod tests {
         assert_eq!(responses[0]["functionResponse"]["name"], "weather");
         assert_eq!(responses[0]["functionResponse"]["response"]["result"], "sunny");
         assert_eq!(responses[1]["functionResponse"]["response"]["t"], "noon");
+    }
+
+    fn screenshot_history(model: &str) -> ChatRequest {
+        let mut assistant = Message::assistant("");
+        assistant.tool_calls = vec![
+            ToolCall { id: "c1".into(), name: "screenshot".into(), arguments: "{}".into() },
+            ToolCall { id: "c2".into(), name: "clock".into(), arguments: "{}".into() },
+        ];
+        ChatRequest::new(
+            model,
+            vec![
+                Message::user("look"),
+                assistant,
+                Message::tool_with_images("c1", "1280x800", ["data:image/png;base64,AAAA".to_owned()]),
+                Message::tool("c2", "noon"),
+                Message::user("next"),
+            ],
+        )
+    }
+
+    #[test]
+    fn gemini_3_gets_images_inside_the_function_response() {
+        let body = build_body(&screenshot_history("gemini-3-pro-preview")).unwrap();
+        assert_eq!(
+            body["contents"][2],
+            json!({"role": "user", "parts": [
+                {"functionResponse": {"name": "screenshot", "id": "c1", "response": {"result": "1280x800"},
+                    "parts": [{"inlineData": {"mimeType": "image/png", "data": "AAAA"}}]}},
+                {"functionResponse": {"name": "clock", "id": "c2", "response": {"result": "noon"}}},
+                {"text": "next"}
+            ]})
+        );
+    }
+
+    #[test]
+    fn older_gemini_gets_images_after_the_function_responses() {
+        let body = build_body(&screenshot_history("gemini-2.5-flash")).unwrap();
+        assert_eq!(
+            body["contents"][2],
+            json!({"role": "user", "parts": [
+                {"functionResponse": {"name": "screenshot", "id": "c1", "response": {"result": "1280x800"}}},
+                {"functionResponse": {"name": "clock", "id": "c2", "response": {"result": "noon"}}},
+                {"text": "Images returned by tool `screenshot` (call c1):"},
+                {"inlineData": {"mimeType": "image/png", "data": "AAAA"}},
+                {"text": "next"}
+            ]})
+        );
+    }
+
+    #[test]
+    fn multimodal_function_response_models() {
+        assert!(supports_multimodal_function_responses("gemini-3-flash"));
+        assert!(supports_multimodal_function_responses("models/gemini-3.1-pro"));
+        assert!(supports_multimodal_function_responses("publishers/google/models/gemini-4-hydrogen"));
+        assert!(supports_multimodal_function_responses("gemini-10-ultra"));
+        assert!(!supports_multimodal_function_responses("gemini-2.5-pro"));
+        assert!(!supports_multimodal_function_responses("gemini-exp-1206"));
+        assert!(!supports_multimodal_function_responses("my-tuned-model"));
     }
 
     #[test]

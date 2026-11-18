@@ -136,6 +136,24 @@ impl Message {
         m
     }
 
+    /// A tool result answering `call_id` with images (`https://` or `data:`
+    /// URLs) after the text. Providers that cannot put images in a tool
+    /// result send them in a user turn right after the tool results.
+    pub fn tool_with_images(
+        call_id: impl Into<String>,
+        text: impl Into<String>,
+        image_urls: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let mut m = Self::tool(call_id, text);
+        m.content.extend(image_urls.into_iter().map(|url| ContentPart::Image { url, detail: None }));
+        m
+    }
+
+    /// Image parts, in order.
+    pub fn images(&self) -> impl Iterator<Item = &ContentPart> {
+        self.content.iter().filter(|p| matches!(p, ContentPart::Image { .. }))
+    }
+
     /// Concatenated text parts.
     pub fn text(&self) -> String {
         let mut out = String::new();
@@ -145,6 +163,30 @@ impl Message {
             }
         }
         out
+    }
+}
+
+/// Text of a tool message for providers whose tool results are text-only:
+/// the message text plus a note saying how many images follow.
+pub(crate) fn tool_text_with_image_note(m: &Message) -> String {
+    let text = m.text();
+    let count = m.images().count();
+    if count == 0 {
+        return text;
+    }
+    let note = if count == 1 {
+        "[1 image attached after the tool results]".to_owned()
+    } else {
+        format!("[{count} images attached after the tool results]")
+    };
+    if text.is_empty() { note } else { format!("{text}\n{note}") }
+}
+
+/// Text introducing the images of one tool result in the fallback user turn.
+pub(crate) fn tool_images_intro(name: Option<&str>, call_id: &str) -> String {
+    match name {
+        Some(name) => format!("Images returned by tool `{name}` (call {call_id}):"),
+        None => format!("Images returned by tool call {call_id}:"),
     }
 }
 
@@ -481,6 +523,18 @@ mod tests {
         let req = ChatRequest::new("m", vec![]).with_extra("seed", serde_json::json!(1)).with_temperature(0.1);
         assert!(check_extra(&req).is_ok());
         assert_eq!(req.temperature, Some(0.1));
+    }
+
+    #[test]
+    fn tool_messages_with_images() {
+        let m = Message::tool_with_images("c1", "shot", ["data:image/png;base64,AAAA".to_owned()]);
+        assert_eq!(m.text(), "shot");
+        assert_eq!(m.images().count(), 1);
+        assert_eq!(tool_text_with_image_note(&m), "shot\n[1 image attached after the tool results]");
+        let m = Message::tool_with_images("c1", "", vec!["https://x/a.png".to_owned(); 2]);
+        assert_eq!(tool_text_with_image_note(&m), "[2 images attached after the tool results]");
+        assert_eq!(tool_text_with_image_note(&Message::tool("c1", "plain")), "plain");
+        assert_eq!(tool_images_intro(Some("screenshot"), "c1"), "Images returned by tool `screenshot` (call c1):");
     }
 
     #[tokio::test]

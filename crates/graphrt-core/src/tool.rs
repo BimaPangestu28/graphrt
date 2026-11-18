@@ -20,7 +20,7 @@ pub struct ToolSpec {
 }
 
 /// Result of a tool call.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToolOutput {
     /// Text handed back to a model.
     pub text: String,
@@ -28,15 +28,140 @@ pub struct ToolOutput {
     pub data: Value,
     /// Whether the tool reported an error (the agent loop may still continue).
     pub is_error: bool,
+    /// Images shown to the model next to `text` (see [`check_images`] for limits).
+    pub images: Vec<ToolImage>,
 }
 
 impl ToolOutput {
     pub fn text(text: impl Into<String>) -> Self {
-        Self { text: text.into(), data: Value::Null, is_error: false }
+        Self { text: text.into(), ..Self::default() }
     }
 
     pub fn error(text: impl Into<String>) -> Self {
-        Self { text: text.into(), data: Value::Null, is_error: true }
+        Self { text: text.into(), is_error: true, ..Self::default() }
+    }
+
+    /// Attach an image.
+    pub fn with_image(mut self, image: ToolImage) -> Self {
+        self.images.push(image);
+        self
+    }
+}
+
+/// Most images one tool result may carry.
+pub const MAX_TOOL_IMAGES: usize = 4;
+/// Largest decoded size of one tool result image, in bytes (5 MiB).
+pub const MAX_TOOL_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+/// Media types accepted for tool result images (supported by every built-in provider).
+pub const TOOL_IMAGE_MEDIA_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+/// An image returned by a tool.
+///
+/// Serialized as `{"media_type", "data_base64"}` or `{"url"}` (the plugin
+/// protocol's `tool.call` `images` entries).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolImage {
+    /// Inline bytes, base64 encoded (standard alphabet).
+    Base64 { media_type: String, data_base64: String },
+    /// A remote image (`https://` only).
+    Url { url: String },
+}
+
+impl ToolImage {
+    /// An inline PNG from base64 text.
+    pub fn png(data_base64: impl Into<String>) -> Self {
+        Self::Base64 { media_type: "image/png".into(), data_base64: data_base64.into() }
+    }
+
+    /// An inline JPEG from base64 text.
+    pub fn jpeg(data_base64: impl Into<String>) -> Self {
+        Self::Base64 { media_type: "image/jpeg".into(), data_base64: data_base64.into() }
+    }
+
+    /// The image as a URL: `data:<media_type>;base64,<data>` or the remote URL.
+    pub fn to_url(&self) -> String {
+        match self {
+            ToolImage::Base64 { media_type, data_base64 } => format!("data:{media_type};base64,{data_base64}"),
+            ToolImage::Url { url } => url.clone(),
+        }
+    }
+
+    /// Check this image against the media type, encoding and size limits.
+    pub fn check(&self) -> Result<(), ToolImageError> {
+        match self {
+            ToolImage::Url { url } => {
+                if url.len() > 8 && url.get(..8).is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://")) {
+                    Ok(())
+                } else {
+                    Err(ToolImageError::new("image URLs must start with https:// (send inline images as base64)"))
+                }
+            }
+            ToolImage::Base64 { media_type, data_base64 } => {
+                if !TOOL_IMAGE_MEDIA_TYPES.contains(&media_type.as_str()) {
+                    return Err(ToolImageError::new(format!(
+                        "image media type `{media_type}` is not supported (use {})",
+                        TOOL_IMAGE_MEDIA_TYPES.join(", ")
+                    )));
+                }
+                let decoded = base64_decoded_len(data_base64)
+                    .ok_or_else(|| ToolImageError::new("image data is not valid base64"))?;
+                if decoded == 0 {
+                    return Err(ToolImageError::new("image data is empty"));
+                }
+                if decoded > MAX_TOOL_IMAGE_BYTES {
+                    return Err(ToolImageError::new(format!(
+                        "image is {decoded} bytes, above the {MAX_TOOL_IMAGE_BYTES}-byte limit"
+                    )));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// A tool result image that breaks a limit.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct ToolImageError(pub String);
+
+impl ToolImageError {
+    fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+/// Check the images of one tool result: at most [`MAX_TOOL_IMAGES`], each
+/// passing [`ToolImage::check`].
+pub fn check_images(images: &[ToolImage]) -> Result<(), ToolImageError> {
+    if images.len() > MAX_TOOL_IMAGES {
+        return Err(ToolImageError::new(format!(
+            "{} images in one tool result, above the limit of {MAX_TOOL_IMAGES}",
+            images.len()
+        )));
+    }
+    for (index, image) in images.iter().enumerate() {
+        image.check().map_err(|e| ToolImageError::new(format!("image #{index}: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Decoded length of standard base64 text (padding optional), or `None` when
+/// the text is not base64. Validates without allocating.
+fn base64_decoded_len(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let body = bytes.strip_suffix(b"==").or_else(|| bytes.strip_suffix(b"=")).unwrap_or(bytes);
+    let alphabet = |b: &u8| b.is_ascii_alphanumeric() || *b == b'+' || *b == b'/';
+    if !body.iter().all(alphabet) {
+        return None;
+    }
+    let padded = body.len() != bytes.len();
+    if padded && bytes.len() % 4 != 0 {
+        return None;
+    }
+    match body.len() % 4 {
+        1 => None,
+        rest => Some(body.len() / 4 * 3 + rest.saturating_sub(1)),
     }
 }
 
@@ -85,5 +210,68 @@ impl ToolRegistry {
 
     pub fn providers(&self) -> impl Iterator<Item = (&str, &Arc<dyn ToolRuntime>)> {
         self.providers.iter().map(|(k, v)| (k.as_str(), v))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constructors_have_no_images() {
+        assert!(ToolOutput::text("a").images.is_empty());
+        let err = ToolOutput::error("b");
+        assert!(err.is_error && err.images.is_empty());
+        let out = ToolOutput::text("shot").with_image(ToolImage::png("aGVsbG8="));
+        assert_eq!(out.images.len(), 1);
+    }
+
+    #[test]
+    fn image_urls() {
+        assert_eq!(ToolImage::png("AAAA").to_url(), "data:image/png;base64,AAAA");
+        assert_eq!(ToolImage::Url { url: "https://x/a.png".into() }.to_url(), "https://x/a.png");
+    }
+
+    #[test]
+    fn serde_shapes() {
+        let images: Vec<ToolImage> = serde_json::from_value(serde_json::json!([
+            {"media_type": "image/png", "data_base64": "AAAA"},
+            {"url": "https://x/a.png"}
+        ]))
+        .unwrap();
+        assert_eq!(images[0], ToolImage::png("AAAA"));
+        assert_eq!(images[1], ToolImage::Url { url: "https://x/a.png".into() });
+        assert!(serde_json::from_value::<ToolImage>(serde_json::json!({"data": "AAAA"})).is_err());
+    }
+
+    #[test]
+    fn base64_lengths() {
+        assert_eq!(base64_decoded_len("aGVsbG8="), Some(5));
+        assert_eq!(base64_decoded_len("aGVsbG8"), Some(5));
+        assert_eq!(base64_decoded_len("aGVsbA=="), Some(4));
+        assert_eq!(base64_decoded_len("aGVs"), Some(3));
+        assert_eq!(base64_decoded_len("aGVsb"), None);
+        assert_eq!(base64_decoded_len("aGV="), Some(2));
+        assert_eq!(base64_decoded_len("aG V"), None);
+        assert_eq!(base64_decoded_len("aGVsbG8=="), None);
+        assert_eq!(base64_decoded_len(""), Some(0));
+    }
+
+    #[test]
+    fn limits_are_enforced() {
+        assert!(check_images(&[ToolImage::png("aGVsbG8="), ToolImage::jpeg("aGVs")]).is_ok());
+        let too_many = vec![ToolImage::png("aGVs"); MAX_TOOL_IMAGES + 1];
+        assert!(check_images(&too_many).unwrap_err().to_string().contains("limit of 4"));
+        let bmp = ToolImage::Base64 { media_type: "image/bmp".into(), data_base64: "aGVs".into() };
+        assert!(check_images(&[bmp]).unwrap_err().to_string().contains("image/bmp"));
+        assert!(ToolImage::png("not base64!").check().is_err());
+        assert!(ToolImage::png("").check().is_err());
+        let big = "A".repeat((MAX_TOOL_IMAGE_BYTES / 3 + 1) * 4);
+        assert!(ToolImage::png(big).check().unwrap_err().to_string().contains("limit"));
+        let exact = "A".repeat(MAX_TOOL_IMAGE_BYTES / 3 * 4);
+        assert!(ToolImage::png(exact).check().is_ok());
+        assert!(ToolImage::Url { url: "http://x/a.png".into() }.check().is_err());
+        assert!(ToolImage::Url { url: "data:image/png;base64,AAAA".into() }.check().is_err());
+        assert!(ToolImage::Url { url: "HTTPS://x/a.png".into() }.check().is_ok());
     }
 }

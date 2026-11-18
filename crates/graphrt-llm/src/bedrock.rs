@@ -43,7 +43,7 @@ use crate::error::LlmError;
 use crate::http::{byte_stream, send_request};
 use crate::types::{
     ChatDelta, ChatModel, ChatRequest, ChatStream, ContentPart, FinishReason, ResponseFormat, Role, ToolChoice,
-    check_extra,
+    check_extra, tool_images_intro,
 };
 
 /// `extra` keys placed at the request top level.
@@ -324,6 +324,14 @@ fn content_blocks(parts: &[ContentPart]) -> Result<Vec<Json>, LlmError> {
     Ok(out)
 }
 
+/// Whether `model` (an id, inference profile or ARN) accepts images inside
+/// `toolResult` blocks: per the Bedrock reference, Anthropic Claude and Amazon
+/// Nova models. Other models get the images in the user turn instead.
+fn supports_tool_result_images(model: &str) -> bool {
+    let lowered = model.to_ascii_lowercase();
+    lowered.contains("anthropic.claude") || lowered.contains("amazon.nova")
+}
+
 /// Build the Converse request body.
 pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
     check_extra(req)?;
@@ -338,11 +346,21 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
             _ => turns.push((role, blocks)),
         }
     };
+    let native_images = supports_tool_result_images(&req.model);
+    let mut call_names: HashMap<&str, &str> = HashMap::new();
+    // Fallback for other models: tool images go after the run of tool results.
+    let mut deferred: Vec<Json> = Vec::new();
     for m in &req.messages {
+        if m.role != Role::Tool && !deferred.is_empty() {
+            push("user", std::mem::take(&mut deferred));
+        }
         match m.role {
             Role::System => system_parts.push(m.text()),
             Role::User => push("user", content_blocks(&m.content)?),
             Role::Assistant => {
+                for c in &m.tool_calls {
+                    call_names.insert(c.id.as_str(), c.name.as_str());
+                }
                 let mut blocks = Vec::new();
                 if let Some(Json::Array(state)) = m.provider_state.as_ref().and_then(|s| s.get(STATE_KEY)) {
                     blocks.extend(state.iter().cloned());
@@ -361,13 +379,25 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
                     .filter(|id| !id.is_empty())
                     .ok_or_else(|| LlmError::Config("tool message without tool_call_id".into()))?;
                 let text = m.text();
-                let content = match serde_json::from_str::<Json>(&text) {
-                    Ok(value @ Json::Object(_)) => json!([{"json": value}]),
-                    _ => json!([{"text": text}]),
+                let mut content = match serde_json::from_str::<Json>(&text) {
+                    Ok(value @ Json::Object(_)) => vec![json!({"json": value})],
+                    _ => vec![json!({"text": text})],
                 };
+                let images: Vec<ContentPart> = m.images().cloned().collect();
+                if !images.is_empty() {
+                    if native_images {
+                        content.extend(content_blocks(&images)?);
+                    } else {
+                        deferred.push(json!({"text": tool_images_intro(call_names.get(id).copied(), id)}));
+                        deferred.extend(content_blocks(&images)?);
+                    }
+                }
                 push("user", vec![json!({"toolResult": {"toolUseId": id, "content": content}})]);
             }
         }
+    }
+    if !deferred.is_empty() {
+        push("user", deferred);
     }
     match &req.response_format {
         Some(ResponseFormat::JsonObject) => {
@@ -782,6 +812,47 @@ mod tests {
         assert!(body["toolConfig"]["toolChoice"]["any"].is_object());
         assert_eq!(body["additionalModelRequestFields"]["thinking"]["budget_tokens"], 1024);
         assert_eq!(body["guardrailConfig"]["guardrailIdentifier"], "g");
+    }
+
+    fn screenshot_history(model: &str) -> ChatRequest {
+        let mut assistant = Message::assistant("");
+        assistant.tool_calls = vec![ToolCall { id: "tu1".into(), name: "screenshot".into(), arguments: "{}".into() }];
+        ChatRequest::new(
+            model,
+            vec![
+                Message::user("look"),
+                assistant,
+                Message::tool_with_images("tu1", "1280x800", ["data:image/jpeg;base64,AAAA".to_owned()]),
+            ],
+        )
+    }
+
+    #[test]
+    fn claude_and_nova_get_images_inside_the_tool_result() {
+        for model in ["us.anthropic.claude-sonnet-4-5-v1:0", "amazon.nova-pro-v1:0"] {
+            let body = build_body(&screenshot_history(model)).unwrap();
+            assert_eq!(
+                body["messages"][2],
+                json!({"role": "user", "content": [{"toolResult": {"toolUseId": "tu1", "content": [
+                    {"text": "1280x800"},
+                    {"image": {"format": "jpeg", "source": {"bytes": "AAAA"}}}
+                ]}}]}),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_models_get_images_after_the_tool_results() {
+        let body = build_body(&screenshot_history("meta.llama3-2-90b-instruct-v1:0")).unwrap();
+        assert_eq!(
+            body["messages"][2],
+            json!({"role": "user", "content": [
+                {"toolResult": {"toolUseId": "tu1", "content": [{"text": "1280x800"}]}},
+                {"text": "Images returned by tool `screenshot` (call tu1):"},
+                {"image": {"format": "jpeg", "source": {"bytes": "AAAA"}}}
+            ]})
+        );
     }
 
     #[test]

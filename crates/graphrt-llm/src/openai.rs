@@ -20,7 +20,7 @@ use crate::http::{Decoded, SseDecoder, send_sse, truncated};
 use crate::sse::SseEvent;
 use crate::types::{
     ChatDelta, ChatModel, ChatRequest, ChatStream, ContentPart, FinishReason, Message, ResponseFormat, Role,
-    ToolChoice, check_extra,
+    ToolChoice, check_extra, tool_images_intro, tool_text_with_image_note,
 };
 
 /// How the API key is sent.
@@ -236,7 +236,7 @@ fn message_json(m: &Message) -> Result<Json, LlmError> {
                 .as_deref()
                 .filter(|id| !id.is_empty())
                 .ok_or_else(|| LlmError::Config("tool message without tool_call_id".into()))?;
-            json!({"role": "tool", "tool_call_id": id, "content": m.text()})
+            json!({"role": "tool", "tool_call_id": id, "content": tool_text_with_image_note(m)})
         }
         Role::Assistant => {
             let mut obj = Map::new();
@@ -256,6 +256,37 @@ fn message_json(m: &Message) -> Result<Json, LlmError> {
     })
 }
 
+/// Encode the conversation. Tool messages are text-only in chat completions,
+/// so images from tool results go in one user message after the run of tool
+/// messages they belong to.
+fn messages_json(messages: &[Message]) -> Result<Vec<Json>, LlmError> {
+    let mut out = Vec::with_capacity(messages.len());
+    let mut call_names: HashMap<&str, &str> = HashMap::new();
+    let mut deferred: Vec<Json> = Vec::new();
+    for m in messages {
+        if m.role != Role::Tool && !deferred.is_empty() {
+            out.push(json!({"role": "user", "content": std::mem::take(&mut deferred)}));
+        }
+        for c in &m.tool_calls {
+            call_names.insert(c.id.as_str(), c.name.as_str());
+        }
+        out.push(message_json(m)?);
+        if m.role == Role::Tool && m.images().next().is_some() {
+            let id = m.tool_call_id.as_deref().unwrap_or_default();
+            let intro = tool_images_intro(call_names.get(id).copied(), id);
+            deferred.push(json!({"type": "text", "text": intro}));
+            let images: Vec<ContentPart> = m.images().cloned().collect();
+            if let Json::Array(parts) = content_json(&images) {
+                deferred.extend(parts);
+            }
+        }
+    }
+    if !deferred.is_empty() {
+        out.push(json!({"role": "user", "content": deferred}));
+    }
+    Ok(out)
+}
+
 /// Build the JSON request body.
 pub(crate) fn build_body(req: &ChatRequest, config: &OpenAiConfig) -> Result<Json, LlmError> {
     check_extra(req)?;
@@ -267,8 +298,7 @@ pub(crate) fn build_body(req: &ChatRequest, config: &OpenAiConfig) -> Result<Jso
     }
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model));
-    let messages = req.messages.iter().map(message_json).collect::<Result<Vec<_>, _>>()?;
-    body.insert("messages".into(), Json::Array(messages));
+    body.insert("messages".into(), Json::Array(messages_json(&req.messages)?));
     body.insert("stream".into(), json!(true));
     if config.include_usage {
         body.insert("stream_options".into(), json!({"include_usage": true}));
@@ -520,6 +550,68 @@ mod tests {
         let body = build_body(&req, &cfg).unwrap();
         assert_eq!(body["max_completion_tokens"], 10);
         assert!(body.get("stream_options").is_none());
+    }
+
+    fn two_tool_calls() -> Message {
+        let mut assistant = Message::assistant("");
+        assistant.tool_calls = vec![
+            ToolCall { id: "c1".into(), name: "screenshot".into(), arguments: "{}".into() },
+            ToolCall { id: "c2".into(), name: "clock".into(), arguments: "{}".into() },
+        ];
+        assistant
+    }
+
+    #[test]
+    fn tool_images_follow_the_tool_messages_in_a_user_message() {
+        let req = ChatRequest::new(
+            "gpt-4o",
+            vec![
+                Message::user("what is on screen?"),
+                two_tool_calls(),
+                Message::tool_with_images("c1", "1280x800", ["data:image/png;base64,AAAA".to_owned()]),
+                Message::tool("c2", "noon"),
+                Message::user("thanks"),
+            ],
+        );
+        let body = build_body(&req, &OpenAiConfig::default()).unwrap();
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "user", "content": "what is on screen?"},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "screenshot", "arguments": "{}"}},
+                    {"id": "c2", "type": "function", "function": {"name": "clock", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "c1", "content": "1280x800\n[1 image attached after the tool results]"},
+                {"role": "tool", "tool_call_id": "c2", "content": "noon"},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Images returned by tool `screenshot` (call c1):"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+                ]},
+                {"role": "user", "content": "thanks"}
+            ])
+        );
+    }
+
+    #[test]
+    fn tool_images_at_the_end_of_the_history_are_flushed() {
+        let req = ChatRequest::new(
+            "gpt-4o",
+            vec![
+                Message::user("q"),
+                two_tool_calls(),
+                Message::tool_with_images("c1", "", ["https://x/a.png".to_owned()]),
+                Message::tool_with_images("c2", "b", ["https://x/b.png".to_owned()]),
+            ],
+        );
+        let body = build_body(&req, &OpenAiConfig::default()).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[2]["content"], "[1 image attached after the tool results]");
+        let images = &messages[4];
+        assert_eq!(images["role"], "user");
+        assert_eq!(images["content"][2]["text"], "Images returned by tool `clock` (call c2):");
+        assert_eq!(images["content"][3]["image_url"]["url"], "https://x/b.png");
     }
 
     #[test]

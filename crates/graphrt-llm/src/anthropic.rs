@@ -19,8 +19,8 @@ use crate::error::LlmError;
 use crate::http::{Decoded, SseDecoder, send_sse};
 use crate::sse::SseEvent;
 use crate::types::{
-    ChatDelta, ChatModel, ChatRequest, ChatStream, ContentPart, FinishReason, ResponseFormat, Role, ToolChoice,
-    check_extra,
+    ChatDelta, ChatModel, ChatRequest, ChatStream, ContentPart, FinishReason, Message, ResponseFormat, Role,
+    ToolChoice, check_extra,
 };
 
 /// API version header value.
@@ -180,6 +180,15 @@ fn content_blocks(parts: &[ContentPart]) -> Vec<Json> {
         .collect()
 }
 
+/// `tool_result.content`: the text, or text and image blocks when the tool
+/// returned images (Anthropic accepts images inside tool results).
+fn tool_result_content(m: &Message) -> Json {
+    if m.images().next().is_none() {
+        return Json::String(m.text());
+    }
+    Json::Array(content_blocks(&m.content))
+}
+
 /// Build the JSON request body.
 pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
     check_extra(req)?;
@@ -205,7 +214,10 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
                     .as_deref()
                     .filter(|id| !id.is_empty())
                     .ok_or_else(|| LlmError::Config("tool message without tool_call_id".into()))?;
-                push("user", vec![json!({"type": "tool_result", "tool_use_id": id, "content": m.text()})]);
+                push(
+                    "user",
+                    vec![json!({"type": "tool_result", "tool_use_id": id, "content": tool_result_content(m)})],
+                );
             }
             Role::Assistant => {
                 let mut blocks = Vec::new();
@@ -449,7 +461,7 @@ impl SseDecoder for AnthropicDecoder {
 mod tests {
     use super::*;
     use crate::sse::SseParser;
-    use crate::types::{Message, ToolCall, collect};
+    use crate::types::{ToolCall, collect};
     use graphrt_core::tool::ToolSpec;
 
     #[test]
@@ -492,6 +504,36 @@ mod tests {
         assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
         assert_eq!(body["tool_choice"]["type"], "any");
         assert_eq!(body["stop_sequences"][0], "END");
+    }
+
+    #[test]
+    fn tool_images_are_sent_inside_the_tool_result() {
+        let mut assistant = Message::assistant("");
+        assistant.tool_calls = vec![ToolCall { id: "tu1".into(), name: "screenshot".into(), arguments: "{}".into() }];
+        let req = ChatRequest::new(
+            "claude-sonnet",
+            vec![
+                Message::user("look"),
+                assistant,
+                Message::tool_with_images(
+                    "tu1",
+                    "1280x800",
+                    ["data:image/png;base64,AAAA".to_owned(), "https://x/a.jpg".to_owned()],
+                ),
+            ],
+        );
+        let body = build_body(&req).unwrap();
+        assert_eq!(
+            body["messages"][2],
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": [
+                {"type": "text", "text": "1280x800"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+                {"type": "image", "source": {"type": "url", "url": "https://x/a.jpg"}}
+            ]}]})
+        );
+        // Without images the content stays a plain string.
+        let req = ChatRequest::new("m", vec![Message::user("x"), req.messages[1].clone(), Message::tool("tu1", "ok")]);
+        assert_eq!(build_body(&req).unwrap()["messages"][2]["content"][0]["content"], "ok");
     }
 
     const FIXTURE: &str = concat!(

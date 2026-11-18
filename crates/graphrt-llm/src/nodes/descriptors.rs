@@ -235,14 +235,15 @@ pub(crate) fn agent() -> NodeDescriptor {
                 "memory": memory(),
                 "vision": vision(),
                 "require_approval": { "type": "array", "items": { "type": "string" } },
-                "max_tool_output_chars": { "type": "integer", "minimum": 1, "default": 32000 }
+                "max_tool_output_chars": { "type": "integer", "minimum": 1, "default": 32000 },
+                "keep_tool_images": { "type": "integer", "minimum": 0 }
             }),
             &["model"],
         ))
         .output(OutputDescriptor::new("text", ValueType::String).streaming().describe("Final answer"))
         .output(
             OutputDescriptor::new("tool_calls", ValueType::ArrayObject)
-                .describe("[{name, provider, tool, arguments, result, is_error}]"),
+                .describe("[{name, provider, tool, arguments, result, is_error, images}]"),
         )
         .output(OutputDescriptor::new("iterations", ValueType::Integer))
         .output(
