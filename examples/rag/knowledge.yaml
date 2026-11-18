@@ -1,14 +1,16 @@
 # Knowledge base used by examples/rag/rag.yaml.
-# Embeddings come from a local Ollama (`ollama pull nomic-embed-text`);
-# chunks are stored in a JSON file next to this config.
+# Everything stays on this machine: embeddings come from a local Ollama
+# (`ollama pull nomic-embed-text`) and chunks live in a SQLite file next to
+# this config. `{ type: memory, path: examples/rag/.store.json }` keeps them
+# in a JSON file instead (no SQLite, but the whole file is rewritten on change).
 embedders:
   local:
     type: ollama
     model: nomic-embed-text
 stores:
   local:
-    type: memory
-    path: examples/rag/.store.json
+    type: sqlite
+    path: examples/rag/.store.db
 datasets:
   - id: handbook
     name: Company handbook

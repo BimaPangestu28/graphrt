@@ -202,7 +202,8 @@ fn top_score(hits: &[Hit]) -> f32 {
 /// rerankers:
 ///   cohere: { type: http, base_url: "https://api.cohere.com/v2", model: rerank-v3.5, api_key_env: COHERE_API_KEY }
 /// stores:
-///   local:  { type: memory, path: ./kb.json }
+///   local:  { type: sqlite, path: ./kb.db }
+///   json:   { type: memory, path: ./kb.json }
 ///   vector: { type: qdrant, url: "http://localhost:6333", collection: kb, api_key_env: QDRANT_API_KEY }
 /// datasets:
 ///   - { id: handbook, name: Handbook, store: local, embedder: default, reranker: cohere }
@@ -452,6 +453,15 @@ fn build_store(name: &str, raw: &serde_json::Value, env: EnvLookup<'_>) -> Resul
                 None => Ok(Arc::new(crate::memory::MemoryStore::new())),
             }
         }
+        #[cfg(feature = "sqlite")]
+        "sqlite" => {
+            check_keys(name, raw, &["path"], false)?;
+            let path =
+                raw.get("path").and_then(serde_json::Value::as_str).filter(|p| !p.trim().is_empty()).ok_or_else(
+                    || RagError::Config(format!("store `{name}`: `path` (the database file) is required")),
+                )?;
+            Ok(Arc::new(crate::sqlite::SqliteStore::open(path)?))
+        }
         #[cfg(feature = "qdrant")]
         "qdrant" => {
             check_keys(name, raw, &["url", "collection", "create_collection"], true)?;
@@ -564,5 +574,40 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.datasets.len(), 1);
         assert!(cfg.build_with_env(&|_| None).is_ok());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn sqlite_store_from_config_persists_between_builds() {
+        let dir = std::env::temp_dir().join(format!("graphrt-rag-kb-sqlite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("kb.db");
+        let config = KnowledgeConfig::from_json(
+            &serde_json::json!({
+                "embedders": { "e": { "type": "hash", "dimensions": 64 } },
+                "stores": { "local": { "type": "sqlite", "path": path } },
+                "datasets": [{ "id": "faq", "store": "local", "embedder": "e" }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let first = config.build_with_env(&|_| None).unwrap();
+        ingest(&first, "faq", "returns", "Items can be returned within 30 days.").await;
+        drop(first);
+
+        let second = config.build_with_env(&|_| None).unwrap();
+        let hits = second.retrieve(&RetrievalRequest::new("returned within days", vec!["faq".into()])).await.unwrap();
+        assert_eq!(hits.first().map(|h| h.document_id.as_str()), Some("returns"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_store_requires_a_path() {
+        let config = KnowledgeConfig::from_json(r#"{"stores":{"local":{"type":"sqlite"}}}"#).unwrap();
+        let error = config.build_with_env(&|_| None).unwrap_err();
+        assert!(error.to_string().contains("`path` (the database file) is required"), "{error}");
     }
 }

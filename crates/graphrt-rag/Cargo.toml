@@ -13,13 +13,15 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["http", "qdrant", "fs", "yaml", "doc"]
+default = ["http", "qdrant", "fs", "sqlite", "yaml", "doc"]
 # OpenAI-compatible embeddings, generic HTTP retriever and HTTP reranker (reqwest + rustls/ring).
 http = ["dep:reqwest", "dep:rustls"]
 # Qdrant vector store over its REST API.
 qdrant = ["http", "dep:sha2"]
 # File persistence for `MemoryStore`.
 fs = []
+# `SqliteStore`: a persistent store in one SQLite file (SQLite is compiled in).
+sqlite = ["dep:rusqlite"]
 # Load `KnowledgeConfig` from YAML.
 yaml = ["dep:serde-saphyr"]
 # Ingest PDF / Office / spreadsheet / HTML / EPUB / email files via graphrt-doc.
@@ -36,6 +38,7 @@ indexmap.workspace = true
 serde-saphyr = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "json"] }
 sha2 = { version = "0.11", optional = true, default-features = false }
+rusqlite = { version = "0.40", optional = true, features = ["bundled"] }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 
 [dev-dependencies]

@@ -4,6 +4,8 @@
 //!
 //! - [`Embedder`], [`VectorStore`], [`Reranker`], [`Retriever`]: pluggable traits.
 //! - [`MemoryStore`]: in-process cosine + BM25 store (optionally file-backed).
+//! - [`SqliteStore`] (feature `sqlite`): the same search over one SQLite file,
+//!   with incremental writes and several processes sharing the database.
 //! - [`OpenAiEmbedder`], [`HttpReranker`], [`HttpRetriever`] (feature `http`) and
 //!   [`QdrantStore`] (feature `qdrant`).
 //! - [`chunk_text`] and [`Ingestor`] for indexing documents.
@@ -40,6 +42,8 @@ mod node;
 mod pipeline;
 #[cfg(feature = "qdrant")]
 mod qdrant;
+#[cfg(feature = "sqlite")]
+mod sqlite;
 mod types;
 
 #[cfg(feature = "doc")]
@@ -62,6 +66,8 @@ pub use node::{KIND, KnowledgeRetrievalNode, descriptor, register};
 pub use pipeline::{StoreRetriever, finalize, merge_weighted, rerank};
 #[cfg(feature = "qdrant")]
 pub use qdrant::{QdrantConfig, QdrantStore};
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteStore;
 pub use types::{
     Embedder, Extractor, Hit, HybridWeights, KeywordQuery, Metadata, PlainTextExtractor, Reranker, RetrievalRequest,
     Retriever, StoredChunk, VectorQuery, VectorStore, check_vector, content_hash,
