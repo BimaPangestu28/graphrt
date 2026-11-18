@@ -545,7 +545,12 @@ mod tests {
     #[tokio::test]
     async fn tool_node_with_native_tools() {
         let tools = NativeTools::new().with(echo_spec(), |args| async move {
-            Ok(ToolOutput { text: "done".into(), data: Value::from_json(args), is_error: false })
+            Ok(ToolOutput {
+                text: "done".into(),
+                data: Value::from_json(args),
+                is_error: false,
+                ..ToolOutput::default()
+            })
         });
         let node = ToolNode::from_doc(&doc(serde_json::json!({
             "provider_id": "mock", "tool_name": "echo", "arguments": {"text": "{{#start.city#}}"}

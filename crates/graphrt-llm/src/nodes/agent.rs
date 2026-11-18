@@ -23,9 +23,14 @@
 //! optionally with a `reason`. Calls without a decision (including when the
 //! resume input is missing or not understood) keep the run paused.
 //!
+//! Tool results may carry images (see `docs/tool-images.md`): they are checked
+//! against the limits of [`check_images`] (invalid ones are dropped with a
+//! note to the model) and follow the result text in the `tool` message.
+//! `keep_tool_images` bounds how many image-bearing results keep their images.
+//!
 //! Progress events: `agent_step`, `agent_thought`, `tool_call`, `tool_result`,
 //! `tool_denied`. Outputs: `text`, `tool_calls`
-//! (`[{name, provider, tool, arguments, result, is_error}]`), `iterations`,
+//! (`[{name, provider, tool, arguments, result, is_error, images}]`), `iterations`,
 //! `stopped_reason` (`completed`, `max_iterations` or `length`), `usage`.
 
 use std::collections::{HashMap, HashSet};
@@ -36,7 +41,7 @@ use graphrt_core::dsl::NodeDoc;
 use graphrt_core::event::Usage;
 use graphrt_core::node::{ConfigError, NodeOutcome, NodeResult, PauseRequest, parse_config};
 use graphrt_core::template::Template;
-use graphrt_core::tool::{ToolOutput, ToolRegistry, ToolRuntime, ToolSpec};
+use graphrt_core::tool::{ToolImage, ToolOutput, ToolRegistry, ToolRuntime, ToolSpec, check_images};
 use graphrt_core::value::Value;
 use graphrt_core::{Node, NodeContext, NodeError, NodeOutput, Selector};
 use serde::{Deserialize, Serialize};
@@ -45,7 +50,7 @@ use serde_json::{Value as Json, json};
 use super::common::{
     FinishCheck, MemoryConfig, ModelConfig, StreamMode, VisionConfig, check_finish, invoke, model_for, usage_value,
 };
-use crate::types::{FinishReason, Message, Role, ToolCall, ToolChoice};
+use crate::types::{ContentPart, FinishReason, Message, Role, ToolCall, ToolChoice};
 
 /// Upper bound for `max_iterations`.
 pub const MAX_ITERATIONS_LIMIT: u32 = 100;
@@ -122,6 +127,10 @@ pub struct AgentConfig {
     /// Tool results longer than this (in characters) are truncated. Default 32 000.
     #[serde(default = "default_max_tool_output")]
     pub max_tool_output_chars: usize,
+    /// Keep the images of only the last N image-bearing tool results in the
+    /// conversation (older ones become a text placeholder). Default: keep all.
+    #[serde(default)]
+    pub keep_tool_images: Option<usize>,
 }
 
 /// A tool bound for one run.
@@ -146,6 +155,9 @@ struct ToolLogEntry {
     arguments: Json,
     result: String,
     is_error: bool,
+    /// Images sent to the model with the result.
+    #[serde(default)]
+    images: usize,
 }
 
 /// Persistable loop state, used to pause for tool approval.
@@ -339,6 +351,9 @@ impl AgentNode {
             let final_turn = state.iteration >= cfg.max_iterations;
             let offer_tools = !tools.is_empty();
             let can_call_tools = offer_tools && !final_turn;
+            if let Some(keep) = cfg.keep_tool_images {
+                prune_tool_images(&mut state.messages, keep);
+            }
             let mut request = cfg.model.request(state.messages.clone(), &ctx.pool)?;
             if offer_tools {
                 // Tools stay declared on the final turn: the history may contain tool calls,
@@ -429,7 +444,7 @@ impl AgentNode {
             .map(|e| {
                 Value::from_json(json!({
                     "name": e.name, "provider": e.provider, "tool": e.tool,
-                    "arguments": e.arguments, "result": e.result, "is_error": e.is_error,
+                    "arguments": e.arguments, "result": e.result, "is_error": e.is_error, "images": e.images,
                 }))
             })
             .collect();
@@ -474,8 +489,21 @@ impl AgentNode {
     /// Append a tool result to the conversation and the log.
     fn record(&self, state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, output: ToolOutput) {
         let bound = tools.iter().find(|t| t.exposed == call.name);
-        let text = truncate(&output.text, self.config.max_tool_output_chars);
-        state.messages.push(Message::tool(call.id.clone(), text.clone()));
+        let mut text = truncate(&output.text, self.config.max_tool_output_chars);
+        let images = match check_images(&output.images) {
+            Ok(()) => output.images,
+            Err(e) => {
+                let note = format!("[images dropped: {e}]");
+                text = if text.is_empty() { note } else { format!("{text}\n{note}") };
+                Vec::new()
+            }
+        };
+        let image_count = images.len();
+        state.messages.push(Message::tool_with_images(
+            call.id.clone(),
+            text.clone(),
+            images.iter().map(ToolImage::to_url),
+        ));
         state.log.push(ToolLogEntry {
             id: call.id.clone(),
             name: call.name.clone(),
@@ -484,6 +512,7 @@ impl AgentNode {
             arguments: log_arguments(call),
             result: text,
             is_error: output.is_error,
+            images: image_count,
         });
     }
 
@@ -509,10 +538,37 @@ impl AgentNode {
         for (call, output) in calls.iter().zip(outputs) {
             ctx.progress(
                 "tool_result",
-                Value::from_json(json!({"id": call.id, "name": call.name, "is_error": output.is_error})),
+                Value::from_json(
+                    json!({"id": call.id, "name": call.name, "is_error": output.is_error, "images": output.images.len()}),
+                ),
             );
             self.record(state, tools, call, output);
         }
+    }
+}
+
+/// Replace the images of all but the last `keep` image-bearing tool results
+/// with a text placeholder, so a screenshot loop does not resend every
+/// screenshot on every turn.
+fn prune_tool_images(messages: &mut [Message], keep: usize) {
+    let mut seen = 0;
+    for message in messages.iter_mut().rev().filter(|m| m.role == Role::Tool) {
+        let count = message.images().count();
+        if count == 0 {
+            continue;
+        }
+        seen += 1;
+        if seen <= keep {
+            continue;
+        }
+        let note = if count == 1 {
+            "[1 image removed from history]".to_owned()
+        } else {
+            format!("[{count} images removed from history]")
+        };
+        let text = message.text();
+        let text = if text.is_empty() { note } else { format!("{text}\n{note}") };
+        message.content = vec![ContentPart::Text { text }];
     }
 }
 
@@ -691,6 +747,27 @@ mod tests {
         }
     }
 
+    /// Tools: `screenshot {}` (one PNG), `bad_image {}` (an unsupported type).
+    #[derive(Debug, Default)]
+    struct ScreenTools;
+
+    impl ToolRuntime for ScreenTools {
+        fn list(&self) -> BoxFuture<'_, Result<Vec<ToolSpec>, ToolError>> {
+            let spec = |name: &str| ToolSpec { name: name.into(), description: "d".into(), parameters: json!({}) };
+            Box::pin(async move { Ok(vec![spec("screenshot"), spec("bad_image")]) })
+        }
+
+        fn call<'a>(&'a self, name: &'a str, _arguments: Json) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+            Box::pin(async move {
+                Ok(match name {
+                    "screenshot" => ToolOutput::text("800x600").with_image(ToolImage::png("aGVsbG8=")),
+                    _ => ToolOutput::text("odd")
+                        .with_image(ToolImage::Base64 { media_type: "image/bmp".into(), data_base64: "aGVs".into() }),
+                })
+            })
+        }
+    }
+
     struct Setup {
         model: Arc<MockModel>,
         tools: Arc<MathTools>,
@@ -708,6 +785,7 @@ mod tests {
     fn ctx(s: &Setup) -> NodeContext {
         let mut tool_registry = ToolRegistry::new();
         tool_registry.add("math", Arc::clone(&s.tools) as Arc<dyn ToolRuntime>);
+        tool_registry.add("screen", Arc::new(ScreenTools) as Arc<dyn ToolRuntime>);
         let services = Services::new()
             .with(ModelRegistry::new().with("openai", Arc::clone(&s.model) as Arc<dyn crate::ChatModel>))
             .with(tool_registry);
@@ -773,6 +851,58 @@ mod tests {
             })
             .collect();
         assert_eq!(progress, ["agent_step", "tool_call", "tool_call", "tool_result", "tool_result", "agent_step"]);
+    }
+
+    #[tokio::test]
+    async fn tool_images_reach_the_model() {
+        let s = setup(vec![MockModel::tool_calls(&[("c1", "screenshot", "{}")]), MockModel::text("a login form")]);
+        let out = completed(agent(json!({"tools": ["screen/*"]})).run(ctx(&s)).await);
+        let requests = s.model.requests();
+        let result = &requests[1].messages[3];
+        assert_eq!(result.role, Role::Tool);
+        assert_eq!(result.text(), "800x600");
+        assert_eq!(
+            result.images().cloned().collect::<Vec<_>>(),
+            vec![ContentPart::Image { url: "data:image/png;base64,aGVsbG8=".into(), detail: None }]
+        );
+        let log = out.outputs["tool_calls"].as_array().unwrap().to_vec();
+        assert_eq!(log[0].get_path(&["images"]), Some(Value::Int(1)));
+        let reported = s.events.lock().unwrap().iter().find_map(|e| match e {
+            Event::NodeProgress { name, data, .. } if name == "tool_result" => data.get_path(&["images"]),
+            _ => None,
+        });
+        assert_eq!(reported, Some(Value::Int(1)));
+    }
+
+    #[tokio::test]
+    async fn invalid_tool_images_are_dropped_with_a_note() {
+        let s = setup(vec![MockModel::tool_calls(&[("c1", "bad_image", "{}")]), MockModel::text("ok")]);
+        completed(agent(json!({"tools": ["screen/*"]})).run(ctx(&s)).await);
+        let result = &s.model.requests()[1].messages[3];
+        assert_eq!(result.images().count(), 0);
+        assert!(
+            result.text().starts_with("odd\n[images dropped: image #0: image media type `image/bmp`"),
+            "{}",
+            result.text()
+        );
+    }
+
+    #[tokio::test]
+    async fn keep_tool_images_prunes_older_screenshots() {
+        let s = setup(vec![
+            MockModel::tool_calls(&[("c1", "screenshot", "{}")]),
+            MockModel::tool_calls(&[("c2", "screenshot", "{}")]),
+            MockModel::tool_calls(&[("c3", "screenshot", "{}")]),
+            MockModel::text("done"),
+        ]);
+        completed(agent(json!({"tools": ["screen/*"], "keep_tool_images": 2})).run(ctx(&s)).await);
+        let last = s.model.requests().last().cloned().unwrap();
+        let results: Vec<&Message> = last.messages.iter().filter(|m| m.role == Role::Tool).collect();
+        assert_eq!(results.iter().map(|m| m.images().count()).collect::<Vec<_>>(), [0, 1, 1]);
+        assert_eq!(results[0].text(), "800x600\n[1 image removed from history]");
+        // The second request still had every image (only two existed).
+        let second = &s.model.requests()[2];
+        assert_eq!(second.messages.iter().map(|m| m.images().count()).sum::<usize>(), 2);
     }
 
     #[tokio::test]

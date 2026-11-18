@@ -276,13 +276,15 @@ max_tool_calls_per_turn: 8
 parallel_tool_calls: true
 require_approval: [mcp:github/create_issue]   # or ["*"]
 memory: { window: { enabled: true, size: 20 } }
+keep_tool_images: 3   # optional: images of only the last 3 image-bearing tool results
 ```
 
 Runs a tool-calling loop until the model answers without tools (the last
 allowed iteration runs without tools). Tools in `require_approval` pause the run
 (kind `tool_approval`); resume with `{"approved": true}` or
-`{"approvals": {"<call id>": true}}`. Outputs `text`, `tool_calls`,
-`iterations`, `usage`.
+`{"approvals": {"<call id>": true}}`. Tool results can include images, which
+the model sees (see [tool-images.md](tool-images.md)). Outputs `text`,
+`tool_calls`, `iterations`, `usage`.
 
 ### `question-classifier` (branch)
 

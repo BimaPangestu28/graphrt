@@ -96,7 +96,12 @@ fn math_tools(fail_two: bool) -> ToolRegistry {
             if fail_two && n == 2 {
                 return Ok(ToolOutput::error("two is not allowed"));
             }
-            Ok(ToolOutput { text: (n * 2).to_string(), data: Value::Int(n * 2), is_error: false })
+            Ok(ToolOutput {
+                text: (n * 2).to_string(),
+                data: Value::Int(n * 2),
+                is_error: false,
+                ..ToolOutput::default()
+            })
         })
         .with(spec("slow"), |_| async {
             tokio::time::sleep(Duration::from_secs(30)).await;
@@ -590,7 +595,12 @@ async fn tool_node_runs_inside_parallel_iteration() {
             async move {
                 counter.fetch_add(1, Ordering::SeqCst);
                 let n = args.get("n").and_then(Json::as_i64).unwrap_or(0);
-                Ok(ToolOutput { text: String::new(), data: Value::Int(n + 1), is_error: false })
+                Ok(ToolOutput {
+                    text: String::new(),
+                    data: Value::Int(n + 1),
+                    is_error: false,
+                    ..ToolOutput::default()
+                })
             }
         },
     );
