@@ -12,10 +12,16 @@
       "import": "./index.mjs"
     }
   },
-  "files": ["index.mjs", "index.d.ts", "README.md"],
-  "engines": { "node": ">=18" },
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/BimaPangestu28/graphrt"
+    "url": "git+https://github.com/BimaPangestu28/graphrt.git"
   }
 }
