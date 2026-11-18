@@ -3,12 +3,13 @@ name = "graphrt-bundle"
 description = "Portable graphrt bundles: one signed file holding a workflow, its plugins and configs, deployable anywhere."
 readme = "README.md"
 documentation = "https://docs.rs/graphrt-bundle"
-homepage = "https://github.com/BimaPangestu28/agentic-rust-runtime"
+homepage = "https://github.com/BimaPangestu28/graphrt"
 keywords = ["bundle", "deploy", "workflow", "agent", "packaging"]
 categories = ["development-tools"]
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# wasmi 2.0.1 (2.0.0 is yanked) needs Rust 1.86; the rest of the workspace stays on 1.85.
+rust-version = "1.86"
 license.workspace = true
 repository.workspace = true
 
