@@ -322,7 +322,7 @@ impl Frame {
     }
 
     fn node_id(&self, ix: NodeIx) -> String {
-        self.run.graph.node(ix).map(|n| n.id.to_string()).unwrap_or_default()
+        self.run.graph.node(ix).map(|n| String::from(&*n.id)).unwrap_or_default()
     }
 
     /// Run the frame to completion, failure, pause or stop.
@@ -410,7 +410,7 @@ impl Frame {
                 self.node_id(ix),
                 NodeSnapshot {
                     status,
-                    exec_id: rt.exec_id.to_string(),
+                    exec_id: String::from(&*rt.exec_id),
                     attempt: rt.attempt,
                     resume_state: rt.resume_state.clone(),
                 },
@@ -421,7 +421,7 @@ impl Frame {
         known.sort_by_key(|(ex, _)| **ex);
         for (ex, status) in known {
             if let Some(e) = self.run.graph.edge(*ex) {
-                edges.insert(e.id.to_string(), *status);
+                edges.insert(String::from(&*e.id), *status);
             }
         }
         FrameSnapshot {
@@ -456,8 +456,8 @@ impl Frame {
 
         run.emit(Event::NodeStarted {
             frame: self.id.clone(),
-            node_id: gn.id.to_string(),
-            exec_id: exec_id.to_string(),
+            node_id: String::from(&*gn.id),
+            exec_id: String::from(&*exec_id),
             kind: gn.kind.clone(),
             title: gn.title.clone(),
             attempt: 1,
@@ -518,8 +518,8 @@ impl Frame {
                         attempt = attempt.saturating_add(1);
                         run.emit(Event::NodeRetry {
                             frame: frame.clone(),
-                            node_id: node_id.to_string(),
-                            exec_id: exec_id.to_string(),
+                            node_id: String::from(&*node_id),
+                            exec_id: String::from(&*exec_id),
                             attempt,
                             error: error.to_string(),
                             delay_ms,
@@ -570,7 +570,7 @@ impl Frame {
     }
 
     fn exec_id(&self, ix: NodeIx) -> String {
-        self.nodes.get(&ix).map(|n| n.exec_id.to_string()).unwrap_or_default()
+        self.nodes.get(&ix).map(|n| String::from(&*n.exec_id)).unwrap_or_default()
     }
 
     fn set_state(&mut self, ix: NodeIx, state: State) {
@@ -582,7 +582,7 @@ impl Frame {
     fn on_success(&mut self, ix: NodeIx, output: NodeOutput, elapsed_ms: u64) -> Option<FrameOutcome> {
         let graph = self.run.graph.clone();
         let gn = graph.node(ix)?;
-        let node_id = gn.id.to_string();
+        let node_id = String::from(&*gn.id);
         if let Err(error) = self.commit(ix, &output.outputs, &output.writes) {
             return self.on_error(ix, error, elapsed_ms);
         }
@@ -640,7 +640,7 @@ impl Frame {
     fn on_error(&mut self, ix: NodeIx, error: NodeError, elapsed_ms: u64) -> Option<FrameOutcome> {
         let graph = self.run.graph.clone();
         let gn = graph.node(ix)?;
-        let node_id = gn.id.to_string();
+        let node_id = String::from(&*gn.id);
         let mut outputs = IndexMap::new();
         let handled = !matches!(gn.policy.on_error, ErrorStrategy::Fail);
         if let ErrorStrategy::DefaultValue { values } = &gn.policy.on_error {
@@ -708,6 +708,12 @@ impl Frame {
                     format!("nodes may not write `{selector}`: `{namespace}` variables are owned by the host"),
                 ));
             }
+        }
+        if writes.is_empty() {
+            // Nothing can fail: skip the undo log (one selector and one value
+            // lookup per output), which most nodes would never use.
+            self.pool.set_outputs(&node_id, outputs);
+            return Ok(());
         }
         // Apply in place (cloning the pool here would force a copy-on-write copy on
         // every commit), remembering prior values so a failing write is undone.
@@ -891,7 +897,7 @@ impl Subgraph for ScopeRunner {
                     usage: Usage::default(),
                 };
             }
-            let owner_id = self.run.graph.node(self.owner).map(|n| n.id.to_string()).unwrap_or_default();
+            let owner_id = self.run.graph.node(self.owner).map(|n| String::from(&*n.id)).unwrap_or_default();
             let segment = format!("{owner_id}[{}]", request.index);
             let id: FrameId = if self.parent_frame.is_empty() {
                 Arc::from(segment)
