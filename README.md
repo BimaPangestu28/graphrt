@@ -56,7 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/install
 # with Rust (1.89+)
 cargo install graphrt-cli            # installs the `graphrt` binary
 
-# container (image not published for 0.1.0 yet; `docker build -t graphrt .` meanwhile)
+# container (linux/amd64, linux/arm64)
 docker run --rm -p 8080:8080 -v "$PWD/flows:/workflows" ghcr.io/bimapangestu28/graphrt
 ```
 
