@@ -7,19 +7,7 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
-### Added
-- `graphrt-rag`: `SqliteStore` (feature `sqlite`, on by default), a persistent
-  knowledge store in one SQLite file: `stores: { local: { type: sqlite, path: kb.db } }`.
-  Writes touch only the changed rows, several processes can share the file, and
-  search results match `MemoryStore` (exact cosine, per-dataset BM25).
-  `examples/rag` now uses it.
-
-### Changed
-- `graphrt-bundle`: building a bundle fails when a knowledge store is a SQLite
-  database whose write-ahead log still holds commits, instead of shipping a copy
-  that misses them.
-
-## [0.1.0] - 2026-11-17
+## [0.1.0] - 2026-11-18
 
 First public release: one small runtime that runs agentic AI workflows on a
 laptop, a server, a container, the edge or a phone.
@@ -66,8 +54,10 @@ laptop, a server, a container, the edge or a phone.
 - `graphrt-mcp`: Model Context Protocol tools over stdio (clean environment) and HTTP.
 - `graphrt-doc`: document-extractor for PDF, DOCX, PPTX, XLSX/ODS, EPUB, HTML,
   CSV, e-mail and subtitles, hardened against hostile files.
-- `graphrt-rag`: knowledge-retrieval node, embedders, in-memory (persistent) and
-  Qdrant stores, hybrid vector + BM25 search, reranking, chunking, ingestion.
+- `graphrt-rag`: knowledge-retrieval node, embedders, in-memory (optionally
+  JSON-file backed), SQLite and Qdrant stores, hybrid vector + BM25 search,
+  reranking, chunking, ingestion. The SQLite store keeps a knowledge base in
+  one local file with incremental writes, shared safely between processes.
 
 **Extensibility**
 - `graphrt-plugin`: plug-and-play plugins over JSON-RPC (process or HTTP), with
@@ -84,6 +74,7 @@ laptop, a server, a container, the edge or a phone.
 - `graphrt-bundle`: portable `.grt` bundles (workflow, WebAssembly plugins,
   configs) with per-file SHA-256 and optional Ed25519 signatures;
   `graphrt bundle build|inspect|verify|sign|keygen`, `graphrt run app.grt`.
+  Building refuses a SQLite store whose write-ahead log still holds commits.
 
 **Operations**
 - `graphrt-otel`: OpenTelemetry traces and metrics over OTLP/HTTP (`--otel`,
@@ -97,5 +88,5 @@ laptop, a server, a container, the edge or a phone.
   credentials, plugins, WebAssembly runtime, document extraction and retrieval,
   with regression tests for every finding.
 
-[Unreleased]: https://github.com/BimaPangestu28/agentic-rust-runtime/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/BimaPangestu28/agentic-rust-runtime/releases/tag/v0.1.0
+[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/BimaPangestu28/graphrt/releases/tag/v0.1.0
