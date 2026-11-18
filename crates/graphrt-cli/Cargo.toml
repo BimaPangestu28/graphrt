@@ -48,11 +48,15 @@ bundle = ["wasm", "dep:graphrt-bundle", "graphrt-bundle/wasm"]
 mcp = ["dep:graphrt-mcp"]
 # OpenTelemetry traces and metrics over OTLP/HTTP (`--otel`, `--otel-stdout`).
 otel = ["dep:graphrt-otel"]
+# mimalloc as the global allocator. Much faster than musl's allocator, which the
+# static release binaries and the container image would otherwise use.
+mimalloc = ["dep:mimalloc"]
 # `graphrt serve`: HTTP + SSE API.
 serve = ["dep:axum", "tokio/rt-multi-thread", "tokio/net", "tokio/sync"]
 
 [dependencies]
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }
+mimalloc = { version = "0.1.52", optional = true, default-features = false }
 graphrt-llm = { workspace = true, optional = true, features = ["openai", "anthropic", "gemini", "bedrock", "typesafe"] }
 graphrt-http = { workspace = true, optional = true }
 graphrt-code = { workspace = true, optional = true, features = ["js", "tokio"] }
