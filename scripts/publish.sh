@@ -50,6 +50,38 @@ for n in sorted(deps):
 print(" ".join(order))
 ')
 
+# crates.io rate-limits brand-new crates (a small burst, then one every few
+# minutes), so a first release of the whole workspace hits HTTP 429 part way.
+# Wait and retry instead of failing; other errors still stop the script.
+retry_wait="${PUBLISH_RETRY_WAIT:-600}"
+retry_limit="${PUBLISH_RETRY_LIMIT:-12}"
+publish_with_retry() {
+    attempt=1
+    while :; do
+        log=$(mktemp)
+        if cargo publish -p "$1" --locked 2>&1 | tee "$log"; then
+            status=0
+        else
+            status=1
+        fi
+        # `tee` hides cargo's exit status, so read it from the log as well.
+        if [ "$status" -eq 0 ] && ! grep -q "^error" "$log"; then
+            rm -f "$log"
+            return 0
+        fi
+        if grep -qiE "429|too many" "$log" && [ "$attempt" -lt "$retry_limit" ]; then
+            rm -f "$log"
+            echo "    rate limited by crates.io; retrying $1 in ${retry_wait}s (attempt $attempt/$retry_limit)"
+            sleep "$retry_wait"
+            attempt=$((attempt + 1))
+            continue
+        fi
+        rm -f "$log"
+        echo "publishing $1 failed; fix it and resume with: scripts/publish.sh --execute --from $1" >&2
+        return 1
+    done
+}
+
 echo "publish order: $order"
 started=0
 [ -z "$from" ] && started=1
@@ -60,7 +92,7 @@ for crate in $order; do
     fi
     if [ "$execute" -eq 1 ]; then
         echo "==> publishing $crate"
-        cargo publish -p "$crate" --locked
+        publish_with_retry "$crate"
         echo "    waiting ${delay}s for the index"
         sleep "$delay"
     else
