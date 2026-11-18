@@ -43,6 +43,15 @@ releases may contain breaking changes; they are called out under **Changed**.
   ~20% less engine time per template node.
 - Net effect, `graphrt run hello.yaml` (static musl binary, Linux arm64):
   10.1 ms → 6.5 ms wall clock, 3.1 ms → 0.6 ms user CPU.
+- Fewer allocations per run and per node execution: a variable pool allocates
+  its namespace shards on first write (an empty pool was 33 allocations, one per
+  execution frame), namespace keys are reused instead of re-allocated on every
+  write, node commits without variable writes skip the undo log, execution ids
+  are written without `format!`, and `Arc<str>` ids are copied without going
+  through `Display`. On the benchmark harness (Apple M-series, same machine
+  before and after): 1,000 concurrent instant runs 63k → 82k runs/s (+31%),
+  per-node scheduling 1.55 → 1.27 µs (noop chain) and 2.31 → 1.57 µs (1,000-way
+  fan-out), time to first streamed chunk overhead 14.5 → 11.6 µs.
 
 ## [0.1.0] - 2026-11-18
 
