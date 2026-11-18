@@ -196,6 +196,11 @@ async fn errors_map_to_node_errors() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn timeout_cancels_the_plugin_request() {
     let setup = load(&[fixture("testkit")]);
+    // Start the plugin process first: on slow interpreters (e.g. a pyenv shim,
+    // ~0.3 s) the 300 ms timeout below would otherwise expire before the handler
+    // starts, and a task cancelled before it runs never reaches its `except`.
+    let warmup = collect(&engine(&setup, single_node("testkit.echo", json!({}))), RunInput::new()).await;
+    assert!(matches!(terminal(&warmup), Event::RunSucceeded { .. }), "{warmup:?}");
     let marker = temp_file("cancel-marker");
     let mut doc = single_node("testkit.sleep", json!({"ms": 5000, "cancel_marker": marker.to_str().unwrap()}));
     doc["graph"]["nodes"][1]["timeout_ms"] = json!(300);
