@@ -159,9 +159,11 @@ impl BundleBuilder {
         Ok(self)
     }
 
-    /// Add a knowledge-base config (YAML or JSON). Memory stores whose `path` exists
-    /// under `base_dir` are copied into `knowledge/` and the path rewritten, so a
-    /// prebuilt index ships with the bundle. Inline secrets are rejected.
+    /// Add a knowledge-base config (YAML or JSON). Stores whose `path` exists under
+    /// `base_dir` (memory JSON files, SQLite databases) are copied into
+    /// `knowledge/` and the path rewritten, so a prebuilt index ships with the
+    /// bundle. Inline secrets are rejected, and so is a SQLite database whose
+    /// write-ahead log still holds commits (the copy would silently miss them).
     pub fn knowledge(mut self, text: &str, base_dir: &Path) -> Result<Self, BundleError> {
         let mut value = parse_structured(text, "knowledge config")?;
         check_no_inline_secrets(&value, "knowledge config")?;
@@ -172,6 +174,7 @@ impl BundleBuilder {
                 if !source.is_file() {
                     continue;
                 }
+                reject_uncheckpointed_sqlite(store_name, &source)?;
                 let bytes = read_file(&source)?;
                 let file_name = source.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
                 let file_name = file_name.trim_start_matches('.');
@@ -286,6 +289,26 @@ fn read_file(path: &Path) -> Result<Vec<u8>, BundleError> {
         return Err(BundleError::Build(format!("{}: larger than {MAX_FILE_BYTES} bytes", path.display())));
     }
     std::fs::read(path).map_err(|e| BundleError::io(path, &e))
+}
+
+/// Fail when `source` is a SQLite database with a non-empty `-wal` file beside
+/// it: those commits are not in the main file yet (a writer is still open, or
+/// one crashed). Closing every connection checkpoints and removes the log.
+fn reject_uncheckpointed_sqlite(store_name: &str, source: &Path) -> Result<(), BundleError> {
+    let mut wal_name = source.as_os_str().to_owned();
+    wal_name.push("-wal");
+    let wal = Path::new(&wal_name);
+    let pending = std::fs::metadata(wal).is_ok_and(|m| m.is_file() && m.len() > 0);
+    if !pending {
+        return Ok(());
+    }
+    Err(BundleError::Build(format!(
+        "store `{store_name}`: {} has uncommitted write-ahead log {}; stop every process using the \
+         database (or run `sqlite3 {} 'PRAGMA wal_checkpoint(TRUNCATE)'`) and build again",
+        source.display(),
+        wal.display(),
+        source.display()
+    )))
 }
 
 /// Regular files under `dir` as (`/`-separated relative path, bytes), sorted.

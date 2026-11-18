@@ -261,3 +261,25 @@ fn knowledge_store_ships_and_is_relocated() {
     assert!(Path::new(path).is_file(), "{path}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn sqlite_store_with_pending_write_ahead_log_is_rejected() {
+    let dir = std::env::temp_dir().join(format!("graphrt-bundle-kb-wal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("kb.db"), b"main file").unwrap();
+    std::fs::write(dir.join("kb.db-wal"), b"pending commits").unwrap();
+    let kb = "stores:\n  local: { type: sqlite, path: kb.db }\ndatasets:\n  - { id: d, store: local }\n";
+    let build =
+        || BundleBuilder::new("kb", "1").workflow("w.yaml", read("examples/hello.yaml")).unwrap().knowledge(kb, &dir);
+
+    let Err(BundleError::Build(message)) = build() else { panic!("expected a build error") };
+    assert!(message.contains("write-ahead log"), "{message}");
+
+    // An empty log (left after a clean checkpoint) is fine.
+    std::fs::write(dir.join("kb.db-wal"), b"").unwrap();
+    let bytes = build().unwrap().build().unwrap();
+    let bundle = Bundle::open(&bytes, &OpenOptions::default()).unwrap();
+    assert!(bundle.file("knowledge/local-kb.db").is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}

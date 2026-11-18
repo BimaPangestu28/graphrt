@@ -7,6 +7,18 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- `graphrt-rag`: `SqliteStore` (feature `sqlite`, on by default), a persistent
+  knowledge store in one SQLite file: `stores: { local: { type: sqlite, path: kb.db } }`.
+  Writes touch only the changed rows, several processes can share the file, and
+  search results match `MemoryStore` (exact cosine, per-dataset BM25).
+  `examples/rag` now uses it.
+
+### Changed
+- `graphrt-bundle`: building a bundle fails when a knowledge store is a SQLite
+  database whose write-ahead log still holds commits, instead of shipping a copy
+  that misses them.
+
 ## [0.1.0] - 2026-11-17
 
 First public release: one small runtime that runs agentic AI workflows on a
