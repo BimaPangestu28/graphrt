@@ -8,6 +8,13 @@ releases may contain breaking changes; they are called out under **Changed**.
 ## [Unreleased]
 
 ### Added
+- `graphrt-rag`: `LocalEmbedder` (feature `local-embed`), sentence embeddings
+  computed in-process with candle on the CPU: no embedding server, API key or
+  network once the model is cached. BERT-family models from Hugging Face
+  (`sentence-transformers/all-MiniLM-L6-v2` by default; `intfloat/multilingual-e5-small`
+  for Indonesian and other languages) or a local model directory. Configured as
+  `embedders: { local: { type: local, model: ... } }`. On by default in
+  `graphrt-cli` (feature `local-embed`, about +2.1 MiB).
 - `graphrt-ffi`: the SQLite knowledge store is available on mobile, so bundles
   using `stores: { ...: { type: sqlite } }` load on Android and iOS
   (built and linked for Android arm64; iOS not built yet).

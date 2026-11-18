@@ -270,6 +270,10 @@ Measured with `cargo build -p graphrt-cli --profile min-size` (opt-level `z`, LT
 | + `plugins`, `wasm` | 9.7 MiB |
 | default (+ `doc`, `rag`) | 12.2 MiB |
 
+In-process embedding models (`local-embed`, on by default after 0.1.0) add
+about 2.1 MiB (measured on macOS arm64: 10.3 MiB → 12.4 MiB);
+models themselves are downloaded on first use, not bundled.
+
 Every feature is optional: build only what a deployment needs.
 
 ## Architecture

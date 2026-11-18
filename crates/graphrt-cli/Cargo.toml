@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "plugins", "wasm", "otel", "bundle", "serve"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -35,6 +35,9 @@ python = ["code", "graphrt-code/python"]
 doc = ["dep:graphrt-doc"]
 # knowledge-retrieval node (`--knowledge`): embeddings, vector stores, hybrid search, rerank.
 rag = ["dep:graphrt-rag"]
+# In-process embeddings for knowledge bases (`type: local` embedders): BERT-family
+# models run on the CPU with candle, downloaded once from Hugging Face.
+local-embed = ["rag", "graphrt-rag/local-embed"]
 # Plugins running as child processes or HTTP services (`--plugins`, `graphrt plugin`).
 plugins = ["dep:graphrt-plugin", "graphrt-plugin/process", "graphrt-plugin/http", "graphrt-plugin/yaml", "graphrt-plugin/git"]
 # Sandboxed WebAssembly plugins (manifests with `runtime: wasm`, or bare `.wasm` files).
