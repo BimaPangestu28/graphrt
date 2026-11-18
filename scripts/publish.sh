@@ -9,6 +9,10 @@
 #   --delay SECONDS   wait between crates so the index catches up (default 30)
 #   --from CRATE      resume from this crate (skip earlier ones)
 #
+# Environment: PUBLISH_RETRY_WAIT / PUBLISH_RETRY_LIMIT (rate-limit retries),
+# PUBLISH_VERIFY=0 (skip verification builds). Versions already on crates.io
+# are skipped, so re-running a release is safe.
+#
 # Crates with `publish = false` are skipped. The order is computed from
 # `cargo metadata`, so new crates are picked up automatically. Requires python3.
 set -eu
@@ -21,7 +25,7 @@ while [ $# -gt 0 ]; do
         --execute) execute=1 ;;
         --delay) shift; delay="$1" ;;
         --from) shift; from="$1" ;;
-        -h | --help) sed -n '2,15p' "$0"; exit 0 ;;
+        -h | --help) sed -n '2,19p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -54,12 +58,17 @@ print(" ".join(order))
 # minutes), so a first release of the whole workspace hits HTTP 429 part way.
 # Wait and retry instead of failing; other errors still stop the script.
 retry_wait="${PUBLISH_RETRY_WAIT:-600}"
+# PUBLISH_VERIFY=0 skips cargo's per-crate verification build (only after the
+# whole workspace has been built and tested from this exact checkout).
+verify_flag=""
+[ "${PUBLISH_VERIFY:-1}" = "0" ] && verify_flag="--no-verify"
 retry_limit="${PUBLISH_RETRY_LIMIT:-12}"
 publish_with_retry() {
     attempt=1
     while :; do
         log=$(mktemp)
-        if cargo publish -p "$1" --locked 2>&1 | tee "$log"; then
+        # shellcheck disable=SC2086 # $verify_flag is empty or one flag
+        if cargo publish -p "$1" --locked $verify_flag 2>&1 | tee "$log"; then
             status=0
         else
             status=1
@@ -67,6 +76,13 @@ publish_with_retry() {
         # `tee` hides cargo's exit status, so read it from the log as well.
         if [ "$status" -eq 0 ] && ! grep -q "^error" "$log"; then
             rm -f "$log"
+            return 0
+        fi
+        # Re-running a release (e.g. the tag workflow after a manual publish)
+        # must not fail on versions that are already on crates.io.
+        if grep -qiE "already (exists|uploaded)" "$log"; then
+            rm -f "$log"
+            echo "    $1 is already published at this version; skipping"
             return 0
         fi
         if grep -qiE "429|too many" "$log" && [ "$attempt" -lt "$retry_limit" ]; then
