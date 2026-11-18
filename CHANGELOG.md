@@ -23,6 +23,26 @@ releases may contain breaking changes; they are called out under **Changed**.
   (such as `graphrt-plugins`) work. Absolute paths, `..` and symlinks are
   rejected; only that directory is copied. Library: `graphrt-plugin` adds
   `install_from_git_subdir` (`install_from_git` is unchanged).
+- `graphrt-core`: `Registry::register_lazily_described`, which builds a node
+  kind's catalog descriptor only when it is first requested.
+- `graphrt-cli`: optional `mimalloc` feature to replace the global allocator.
+
+### Changed
+- **Breaking** (`graphrt-http`): `HttpClient::client` and
+  `HttpClient::manual_redirect_client` return `Result<&reqwest::Client, ClientError>`;
+  the four underlying clients are built on first use. `ClientError` is `Clone`.
+
+### Performance
+- Startup no longer loads the system trust store for HTTP clients a run never
+  uses: LLM providers (`graphrt-llm`) and `graphrt-http` build their clients on
+  the first request. `graphrt run hello.yaml` used to read every CA certificate
+  six times (361 file opens, now 1).
+- Built-in node kinds build their catalog descriptors lazily: node registry
+  construction went from ~530 µs to ~7 µs.
+- `template-transform` compiles its template once instead of on every run:
+  ~20% less engine time per template node.
+- Net effect, `graphrt run hello.yaml` (static musl binary, Linux arm64):
+  10.1 ms → 6.5 ms wall clock, 3.1 ms → 0.6 ms user CPU.
 
 ## [0.1.0] - 2026-11-18
 
