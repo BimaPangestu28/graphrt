@@ -308,7 +308,7 @@ pub fn descriptor() -> NodeDescriptor {
 
 /// Register the `knowledge-retrieval` node.
 pub fn register(registry: &mut Registry) {
-    registry.register_described(descriptor(), |doc| {
+    registry.register_lazily_described(KIND, descriptor, |doc| {
         let node: Arc<dyn Node> = Arc::new(KnowledgeRetrievalNode::from_doc(doc)?);
         Ok(node)
     });

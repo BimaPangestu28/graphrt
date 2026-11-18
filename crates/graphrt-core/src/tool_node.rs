@@ -47,7 +47,9 @@ pub const KIND: &str = "tool";
 
 /// Register the `tool` node kind.
 pub fn register(registry: &mut Registry) {
-    registry.register_described(descriptor(), |doc| ToolNode::from_doc(doc).map(|n| Arc::new(n) as Arc<dyn Node>));
+    registry.register_lazily_described(KIND, descriptor, |doc| {
+        ToolNode::from_doc(doc).map(|n| Arc::new(n) as Arc<dyn Node>)
+    });
 }
 
 /// Catalog descriptor of the `tool` node.

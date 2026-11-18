@@ -58,10 +58,18 @@ pub use types::{
 
 /// Register the `llm`, `question-classifier`, `parameter-extractor` and `agent` node kinds.
 pub fn register(registry: &mut graphrt_core::Registry) {
-    registry.register_described(nodes::descriptors::llm(), nodes::llm::factory);
-    registry.register_described(nodes::descriptors::question_classifier(), nodes::classifier::factory);
-    registry.register_described(nodes::descriptors::parameter_extractor(), nodes::extractor::factory);
-    registry.register_described(nodes::descriptors::agent(), nodes::agent::factory);
+    registry.register_lazily_described("llm", nodes::descriptors::llm, nodes::llm::factory);
+    registry.register_lazily_described(
+        "question-classifier",
+        nodes::descriptors::question_classifier,
+        nodes::classifier::factory,
+    );
+    registry.register_lazily_described(
+        "parameter-extractor",
+        nodes::descriptors::parameter_extractor,
+        nodes::extractor::factory,
+    );
+    registry.register_lazily_described("agent", nodes::descriptors::agent, nodes::agent::factory);
     #[cfg(feature = "typesafe")]
-    registry.register_described(nodes::descriptors::system_one(), nodes::system_one::factory);
+    registry.register_lazily_described("system-one", nodes::descriptors::system_one, nodes::system_one::factory);
 }

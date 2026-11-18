@@ -37,7 +37,9 @@ use graphrt_core::node::{Node, Registry};
 
 /// Register the `http-request` node kind.
 pub fn register(registry: &mut Registry) {
-    registry.register_described(descriptor(), |doc| Ok(Arc::new(HttpRequestNode::from_doc(doc)?) as Arc<dyn Node>));
+    registry.register_lazily_described(KIND, descriptor, |doc| {
+        Ok(Arc::new(HttpRequestNode::from_doc(doc)?) as Arc<dyn Node>)
+    });
 }
 
 /// Catalog descriptor of the `http-request` node.

@@ -27,6 +27,19 @@ fn every_registered_kind_has_a_real_descriptor() {
 }
 
 #[test]
+fn lazily_built_descriptors_describe_the_kind_they_are_registered_under() {
+    // Built-in kinds register a descriptor *function* next to a kind string;
+    // a typo there would show the descriptor under the wrong kind.
+    let registry = setup::builtin_registry();
+    for kind in registry.kinds() {
+        let descriptor = registry.descriptor(kind).expect("registered kind");
+        assert_eq!(descriptor.kind, kind, "descriptor registered under `{kind}` describes `{}`", descriptor.kind);
+        let again = registry.descriptor(kind).expect("registered kind");
+        assert_eq!(descriptor, again, "a lazily built descriptor must be stable for `{kind}`");
+    }
+}
+
+#[test]
 fn example_node_configs_match_their_schemas() {
     let registry = setup::builtin_registry();
     let mut checked = 0;

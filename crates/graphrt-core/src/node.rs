@@ -10,7 +10,7 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -544,11 +544,31 @@ impl NodeContext {
 /// Builds a node from its document.
 pub type NodeFactory = Arc<dyn Fn(&NodeDoc) -> Result<Arc<dyn Node>, ConfigError> + Send + Sync>;
 
+/// Builds a node kind's catalog descriptor.
+pub type DescriptorFn = fn() -> crate::catalog::NodeDescriptor;
+
+/// A catalog descriptor, either given up front or built on first request.
+///
+/// Descriptors carry JSON Schemas and are only read by catalog consumers
+/// (`graphrt nodes`, `GET /v1/nodes`, builders), never while compiling or
+/// running a graph, so built-in kinds build theirs lazily: registering every
+/// built-in eagerly cost about half a millisecond of every process start.
+#[derive(Clone)]
+enum DescriptorSlot {
+    Ready(Box<crate::catalog::NodeDescriptor>),
+    Lazy(Arc<LazyDescriptor>),
+}
+
+struct LazyDescriptor {
+    build: DescriptorFn,
+    built: OnceLock<crate::catalog::NodeDescriptor>,
+}
+
 /// Maps node kinds (`llm`, `if-else`, ...) to factories.
 #[derive(Clone, Default)]
 pub struct Registry {
     factories: HashMap<String, NodeFactory>,
-    descriptors: HashMap<String, crate::catalog::NodeDescriptor>,
+    descriptors: HashMap<String, DescriptorSlot>,
 }
 
 impl fmt::Debug for Registry {
@@ -589,14 +609,28 @@ impl Registry {
     {
         let kind = descriptor.kind.clone();
         self.factories.insert(kind.clone(), Arc::new(factory));
-        self.descriptors.insert(kind, descriptor);
+        self.descriptors.insert(kind, DescriptorSlot::Ready(Box::new(descriptor)));
+        self
+    }
+
+    /// Register a factory whose catalog descriptor is built by `descriptor` the
+    /// first time it is requested. Use this for kinds registered on every start
+    /// (built-ins), so processes that never list the catalog skip building it.
+    /// The built descriptor's `kind` must be `kind`.
+    pub fn register_lazily_described<F>(&mut self, kind: &str, descriptor: DescriptorFn, factory: F) -> &mut Self
+    where
+        F: Fn(&NodeDoc) -> Result<Arc<dyn Node>, ConfigError> + Send + Sync + 'static,
+    {
+        self.factories.insert(kind.to_owned(), Arc::new(factory));
+        let slot = LazyDescriptor { build: descriptor, built: OnceLock::new() };
+        self.descriptors.insert(kind.to_owned(), DescriptorSlot::Lazy(Arc::new(slot)));
         self
     }
 
     /// Attach or replace the descriptor of an already-registered kind.
     pub fn describe(&mut self, descriptor: crate::catalog::NodeDescriptor) -> &mut Self {
         if self.factories.contains_key(&descriptor.kind) {
-            self.descriptors.insert(descriptor.kind.clone(), descriptor);
+            self.descriptors.insert(descriptor.kind.clone(), DescriptorSlot::Ready(Box::new(descriptor)));
         }
         self
     }
@@ -606,7 +640,12 @@ impl Registry {
         if !self.factories.contains_key(kind) {
             return None;
         }
-        Some(self.descriptors.get(kind).cloned().unwrap_or_else(|| crate::catalog::NodeDescriptor::bare(kind)))
+        let descriptor = match self.descriptors.get(kind) {
+            None => crate::catalog::NodeDescriptor::bare(kind),
+            Some(DescriptorSlot::Ready(descriptor)) => (**descriptor).clone(),
+            Some(DescriptorSlot::Lazy(slot)) => slot.built.get_or_init(slot.build).clone(),
+        };
+        Some(descriptor)
     }
 
     /// Catalog of every registered kind, sorted by kind.

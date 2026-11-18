@@ -272,6 +272,7 @@ pub fn descriptor() -> NodeDescriptor {
 
 /// Register the `document-extractor` node.
 pub fn register(registry: &mut Registry) {
-    registry
-        .register_described(descriptor(), |doc| Ok(Arc::new(DocumentExtractorNode::from_doc(doc)?) as Arc<dyn Node>));
+    registry.register_lazily_described(KIND, descriptor, |doc| {
+        Ok(Arc::new(DocumentExtractorNode::from_doc(doc)?) as Arc<dyn Node>)
+    });
 }

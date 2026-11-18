@@ -45,18 +45,22 @@ mod template_transform;
 
 /// Register every built-in core node kind.
 pub fn register_builtins(registry: &mut Registry) {
+    registry.register_lazily_described("start", descriptors::start, |doc| {
+        Ok(Arc::new(start::StartNode::new(doc, parse_config(doc)?)?))
+    });
     registry
-        .register_described(descriptors::start(), |doc| Ok(Arc::new(start::StartNode::new(doc, parse_config(doc)?)?)));
-    registry.register_described(descriptors::end(), |doc| Ok(Arc::new(end::EndNode::new(parse_config(doc)?))));
-    registry.register_described(descriptors::answer(), |doc| Ok(Arc::new(answer::AnswerNode::new(parse_config(doc)?))));
-    registry.register_described(descriptors::if_else(), |doc| {
+        .register_lazily_described("end", descriptors::end, |doc| Ok(Arc::new(end::EndNode::new(parse_config(doc)?))));
+    registry.register_lazily_described("answer", descriptors::answer, |doc| {
+        Ok(Arc::new(answer::AnswerNode::new(parse_config(doc)?)))
+    });
+    registry.register_lazily_described("if-else", descriptors::if_else, |doc| {
         Ok(Arc::new(if_else::IfElseNode::new(doc, parse_config(doc)?)?))
     });
-    registry.register_described(descriptors::aggregator(), |doc| {
+    registry.register_lazily_described("variable-aggregator", descriptors::aggregator, |doc| {
         Ok(Arc::new(aggregator::AggregatorNode::new(parse_config(doc)?)))
     });
-    registry.register_described(descriptors::assigner(), build_assigner);
-    registry.register_described(descriptors::variable_assigner(), |doc| {
+    registry.register_lazily_described("assigner", descriptors::assigner, build_assigner);
+    registry.register_lazily_described("variable-assigner", descriptors::variable_assigner, |doc| {
         let is_assigner = doc.config.contains_key("items") || doc.config.contains_key("assigned_variable_selector");
         if is_assigner {
             build_assigner(doc)
@@ -64,24 +68,27 @@ pub fn register_builtins(registry: &mut Registry) {
             Ok(Arc::new(aggregator::AggregatorNode::new(parse_config(doc)?)))
         }
     });
-    registry.register_described(descriptors::list_operator(), |doc| {
+    registry.register_lazily_described("list-operator", descriptors::list_operator, |doc| {
         Ok(Arc::new(list_operator::ListOperatorNode::new(doc, parse_config(doc)?)?))
     });
-    registry.register_described(descriptors::iteration(), |doc| {
+    registry.register_lazily_described("iteration", descriptors::iteration, |doc| {
         Ok(Arc::new(iteration::IterationNode::new(doc, parse_config(doc)?)?))
     });
-    registry.register_described(descriptors::loop_node(), |doc| {
+    registry.register_lazily_described("loop", descriptors::loop_node, |doc| {
         Ok(Arc::new(loop_node::LoopNode::new(doc, parse_config(doc)?)?))
     });
-    registry.register_described(descriptors::iteration_start(), |_| Ok(Arc::new(markers::ScopeStartNode)));
-    registry.register_described(descriptors::loop_start(), |_| Ok(Arc::new(markers::ScopeStartNode)));
-    registry.register_described(descriptors::loop_end(), |_| Ok(Arc::new(markers::LoopEndNode)));
-    registry.register_described(descriptors::human_input(), |doc| {
+    registry.register_lazily_described("iteration-start", descriptors::iteration_start, |_| {
+        Ok(Arc::new(markers::ScopeStartNode))
+    });
+    registry
+        .register_lazily_described("loop-start", descriptors::loop_start, |_| Ok(Arc::new(markers::ScopeStartNode)));
+    registry.register_lazily_described("loop-end", descriptors::loop_end, |_| Ok(Arc::new(markers::LoopEndNode)));
+    registry.register_lazily_described("human-input", descriptors::human_input, |doc| {
         Ok(Arc::new(human_input::HumanInputNode::new(doc, parse_config(doc)?)?))
     });
     crate::tool_node::register(registry);
     #[cfg(feature = "jinja")]
-    registry.register_described(descriptors::template_transform(), |doc| {
+    registry.register_lazily_described("template-transform", descriptors::template_transform, |doc| {
         Ok(Arc::new(template_transform::TemplateTransformNode::new(doc, parse_config(doc)?)?))
     });
 }
