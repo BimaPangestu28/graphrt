@@ -9,6 +9,7 @@
 //! graphrt-bench streaming       # time to first answer chunk vs raw model stream
 //! graphrt-bench startup         # parse + build time for small / large graphs
 //! graphrt-bench pool            # bytes allocated by a variable-pool clone
+//! graphrt-bench allocs          # allocations per run / per node of the engine shapes
 //! graphrt-bench mem-paused N    # peak RSS holding N paused runs (+ snapshot size)
 //! graphrt-bench mem-inflight N  # peak RSS with N runs in flight (50 ms model)
 //! ```
@@ -37,7 +38,7 @@ use graphrt_llm::{LlmError, ModelRegistry};
 use serde_json::{Value as Json, json};
 
 // ---------------------------------------------------------------------------
-// Allocation counter (used by the `pool` section only). It is off unless a
+// Allocation counter (used by the `pool` and `allocs` sections only). It is off unless a
 // section turns it on: counting every allocation on one shared atomic makes all
 // cores contend on a single cache line and would distort the concurrency numbers.
 // ---------------------------------------------------------------------------
@@ -45,6 +46,7 @@ use serde_json::{Value as Json, json};
 struct Counting;
 
 static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 static COUNTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // SAFETY: forwards every call to the system allocator unchanged; only counts bytes.
@@ -52,9 +54,18 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if COUNTING.load(Ordering::Relaxed) {
             ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed);
+            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
         }
         // SAFETY: same contract as the caller's.
         unsafe { System.alloc(layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        if COUNTING.load(Ordering::Relaxed) {
+            ALLOCATED.fetch_add(new_size, Ordering::Relaxed);
+            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        }
+        // SAFETY: same contract as the caller's.
+        unsafe { System.realloc(ptr, layout, new_size) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         // SAFETY: same contract as the caller's.
@@ -501,6 +512,42 @@ fn section_pool() -> Json {
     })
 }
 
+/// Allocations (count and bytes, reallocations included) per run and per node
+/// for the engine graph shapes, on a current-thread runtime.
+fn section_allocs() -> Json {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+    let measure = |e: &Engine, nodes: usize, input: &dyn Fn() -> RunInput| -> Json {
+        for _ in 0..3 {
+            rt.block_on(e.run_to_end(input()));
+        }
+        let runs = 20;
+        let (count0, bytes0) = (ALLOCATIONS.load(Ordering::Relaxed), ALLOCATED.load(Ordering::Relaxed));
+        COUNTING.store(true, Ordering::Relaxed);
+        for _ in 0..runs {
+            let end = rt.block_on(e.run_to_end(input()));
+            assert!(matches!(end, Event::RunSucceeded { .. }), "run failed: {end:?}");
+        }
+        COUNTING.store(false, Ordering::Relaxed);
+        let count = ALLOCATIONS.load(Ordering::Relaxed) - count0;
+        let bytes = ALLOCATED.load(Ordering::Relaxed) - bytes0;
+        #[allow(clippy::cast_precision_loss)]
+        let per_node = count as f64 / (runs * nodes) as f64;
+        json!({"nodes": nodes, "allocs_per_run": count / runs, "bytes_per_run": bytes / runs,
+               "allocs_per_node": per_node})
+    };
+    let mut out = serde_json::Map::new();
+    let x = || RunInput::new().input("x", "hello");
+    for kind in ["noop", "template"] {
+        let e = engine(chain(100, kind), Services::new());
+        out.insert(format!("chain_{kind}_100"), measure(&e, 102, &x));
+    }
+    let e = engine(fan(100), Services::new());
+    out.insert("fan_out_in_100".into(), measure(&e, 103, &RunInput::new));
+    let e = engine(llm_graph(), services(0, 10));
+    out.insert("llm_10_chunks".into(), measure(&e, 3, &|| RunInput::new().sys("query", "hi")));
+    Json::Object(out)
+}
+
 fn rss_kib(field: &str) -> u64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     status
@@ -577,6 +624,7 @@ fn main() {
         "streaming" => section_streaming(),
         "startup" => section_startup(),
         "pool" => section_pool(),
+        "allocs" => section_allocs(),
         "mem-paused" => section_mem_paused(n),
         "mem-inflight" => section_mem_inflight(n),
         other => {
