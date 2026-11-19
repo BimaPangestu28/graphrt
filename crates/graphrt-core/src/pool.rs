@@ -9,7 +9,8 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
+use std::sync::{Arc, OnceLock};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -124,7 +125,63 @@ impl<'de> Deserialize<'de> for Selector {
 }
 
 type Namespace = Arc<IndexMap<Arc<str>, Value>>;
-type ShardMap = HashMap<Arc<str>, Namespace>;
+type ShardMap = HashMap<Arc<str>, Namespace, BuildHasherDefault<NamespaceHasher>>;
+
+/// Hasher for namespace names in the shard maps.
+///
+/// Every node commit looks its namespace up, and SipHash (the std default) was
+/// a visible share of the engine's per-node cost. Names are short ids from the
+/// workflow document or the host, so a word-at-a-time multiplicative hash
+/// (FxHash-style) suffices; it is keyed per process so collisions cannot be
+/// precomputed.
+#[derive(Clone, Copy)]
+struct NamespaceHasher(u64);
+
+/// Per-process key of [`NamespaceHasher`].
+fn namespace_hash_seed() -> u64 {
+    static SEED: OnceLock<u64> = OnceLock::new();
+    *SEED.get_or_init(|| std::collections::hash_map::RandomState::new().build_hasher().finish())
+}
+
+impl Default for NamespaceHasher {
+    fn default() -> Self {
+        Self(namespace_hash_seed())
+    }
+}
+
+impl NamespaceHasher {
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+impl Hasher for NamespaceHasher {
+    fn finish(&self) -> u64 {
+        // The multiply leaves the low bits (the table's bucket index) weakest.
+        self.0.rotate_left(26)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            let mut word = [0u8; 8];
+            word.copy_from_slice(chunk);
+            self.add(u64::from_le_bytes(word));
+        }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut word = [0u8; 8];
+            if let Some(head) = word.get_mut(..rest.len()) {
+                head.copy_from_slice(rest);
+            }
+            self.add(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u8(&mut self, byte: u8) {
+        self.add(u64::from(byte));
+    }
+}
 /// `None` until a namespace hashing to the shard is written.
 type Shard = Option<Arc<ShardMap>>;
 
@@ -405,6 +462,28 @@ mod tests {
         let from_list: Result<Selector, _> = serde_json::from_str("[\"n\",\"v\"]");
         let from_str: Result<Selector, _> = serde_json::from_str("\"n.v\"");
         assert_eq!(from_list.ok(), from_str.ok());
+    }
+
+    #[test]
+    fn namespace_hasher_separates_similar_ids() {
+        let hash = |s: &str| BuildHasherDefault::<NamespaceHasher>::default().hash_one(s);
+        assert_eq!(hash("node_12"), hash("node_12"));
+        let ids: std::collections::HashSet<u64> = (0..10_000).map(|i| hash(&format!("n{i}"))).collect();
+        assert_eq!(ids.len(), 10_000);
+        // Ids differing only past the first 8-byte word, or by a trailing byte.
+        assert_ne!(hash("longer_node_id_a"), hash("longer_node_id_b"));
+        assert_ne!(hash("abcdefgh"), hash("abcdefgh\0"));
+    }
+
+    #[test]
+    fn many_namespaces_stay_addressable() {
+        let mut p = VariablePool::new();
+        for i in 0..2_000 {
+            p.insert(&format!("node{i}"), "v", Value::Int(i));
+        }
+        for i in 0..2_000 {
+            assert_eq!(p.get(&sel(&format!("node{i}.v"))), Some(Value::Int(i)));
+        }
     }
 
     #[test]
