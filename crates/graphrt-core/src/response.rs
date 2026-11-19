@@ -358,7 +358,7 @@ impl ResponseAssembler {
             if node.role != NodeRole::Response {
                 continue;
             }
-            let parts = match node.kind.as_str() {
+            let parts = match &*node.kind {
                 "answer" => node
                     .doc
                     .config

@@ -32,7 +32,7 @@ struct OpenNode {
     span: Span,
     frame: String,
     node_id: std::sync::Arc<str>,
-    kind: String,
+    kind: std::sync::Arc<str>,
     chunks: u64,
 }
 
@@ -156,10 +156,10 @@ impl EventTracer {
                     return;
                 }
                 let parent = self.parent_for_frame(frame, now);
-                let name = if title.is_empty() { kind.clone() } else { title.clone() };
+                let name = if title.is_empty() { kind.to_string() } else { title.to_string() };
                 let mut span = Span::new(self.trace_id, Some(parent), name, now);
                 span.set("graphrt.node.id", node_id.as_ref());
-                span.set("graphrt.node.kind", kind.as_str());
+                span.set("graphrt.node.kind", kind.as_ref());
                 span.set("graphrt.node.exec_id", exec_id.as_ref());
                 span.set("graphrt.node.attempt", *attempt);
                 if !frame.is_empty() {
@@ -354,7 +354,7 @@ impl EventTracer {
         let kind = self
             .graph
             .as_ref()
-            .and_then(|g| g.node_by_id(&owner).map(|n| n.kind.clone()))
+            .and_then(|g| g.node_by_id(&owner).map(|n| n.kind.to_string()))
             .unwrap_or_else(|| "frame".to_owned());
         let mut span = Span::new(self.trace_id, Some(parent), format!("{kind} {segment}"), now);
         span.set("graphrt.frame", frame);

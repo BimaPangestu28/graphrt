@@ -476,7 +476,7 @@ impl WorkflowHandle {
     /// Descriptors of the node kinds this workflow uses, as a JSON array.
     pub fn catalog_json(&self) -> String {
         let registry = self.runtime.registry.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut kinds: Vec<&str> = self.graph.nodes().iter().map(|n| n.kind.as_str()).collect();
+        let mut kinds: Vec<&str> = self.graph.nodes().iter().map(|n| n.kind.as_ref()).collect();
         kinds.sort_unstable();
         kinds.dedup();
         let descriptors: Vec<_> = kinds.into_iter().filter_map(|k| registry.descriptor(k)).collect();

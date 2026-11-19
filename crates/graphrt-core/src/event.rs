@@ -63,8 +63,8 @@ pub enum Event {
         frame: FrameId,
         node_id: std::sync::Arc<str>,
         exec_id: std::sync::Arc<str>,
-        kind: String,
-        title: String,
+        kind: std::sync::Arc<str>,
+        title: std::sync::Arc<str>,
         attempt: u32,
     },
     /// Incremental output, e.g. LLM tokens for output `field`.

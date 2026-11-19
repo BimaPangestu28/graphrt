@@ -30,8 +30,9 @@ pub type EdgeIx = usize;
 /// A compiled node.
 pub struct GraphNode {
     pub id: Arc<str>,
-    pub kind: String,
-    pub title: String,
+    /// Shared with every `NodeStarted` event, so starting a node copies no strings.
+    pub kind: Arc<str>,
+    pub title: Arc<str>,
     /// Owning container, `None` for the root scope.
     pub parent: Option<NodeIx>,
     pub policy: NodePolicy,
@@ -176,8 +177,8 @@ impl Graph {
             let node = registry.build(doc)?;
             nodes.push(GraphNode {
                 id: Arc::from(doc.id.as_str()),
-                kind: doc.kind.clone(),
-                title: doc.label().to_owned(),
+                kind: Arc::from(doc.kind.as_str()),
+                title: Arc::from(doc.label()),
                 parent,
                 policy: doc.policy.clone(),
                 role: node.role(),
