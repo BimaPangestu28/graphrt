@@ -329,6 +329,28 @@ fn symlink_and_hardlink_entries_are_refused() {
 }
 
 #[test]
+fn tarball_whose_manifest_disagrees_with_the_index_is_refused() {
+    let home = scratch("mismatch");
+    // The index says demo 1.0.0, the tarball's manifest says demo 2.0.0.
+    let wrong_version = FixturePlugin::with_entries("demo", "1.0.0", &plugin_entries("demo", "2.0.0"));
+    // The index says impostor, the tarball's `impostor/` directory holds plugin `other`.
+    let mut renamed = plugin_entries("other", "1.0.0");
+    for entry in &mut renamed {
+        entry.path = entry.path.replacen("other", "impostor", 1);
+    }
+    let wrong_name = FixturePlugin::with_entries("impostor", "1.0.0", &renamed);
+    let index = write_catalog(&home.join("catalog"), &[wrong_version, wrong_name]);
+
+    let output = install(&home, "demo", &index, &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(stderr(&output).contains("the tarball holds `demo` 2.0.0 instead"), "{}", stderr(&output));
+    let output = install(&home, "impostor", &index, &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(stderr(&output).contains("the tarball holds `other` 1.0.0 instead"), "{}", stderr(&output));
+    assert_eq!(installed_files(&home), 0);
+}
+
+#[test]
 fn tarball_larger_than_the_catalog_says_is_refused() {
     let home = scratch("oversized");
     let mut oversized = FixturePlugin::valid("demo", "1.0.0");
