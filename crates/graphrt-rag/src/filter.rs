@@ -143,10 +143,10 @@ fn is_empty(v: Option<&serde_json::Value>) -> bool {
 }
 
 fn equals(actual: &serde_json::Value, expected: &serde_json::Value) -> bool {
-    if let (Some(a), Some(b)) = (as_number(actual), as_number(expected)) {
-        if matches!(actual, serde_json::Value::Number(_)) || matches!(expected, serde_json::Value::Number(_)) {
-            return a == b;
-        }
+    if let (Some(a), Some(b)) = (as_number(actual), as_number(expected))
+        && (matches!(actual, serde_json::Value::Number(_)) || matches!(expected, serde_json::Value::Number(_)))
+    {
+        return a == b;
     }
     as_text(actual) == as_text(expected)
 }
