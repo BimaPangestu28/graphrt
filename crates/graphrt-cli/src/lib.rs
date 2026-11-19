@@ -15,6 +15,8 @@ pub mod knowledge_api;
 pub mod otel;
 #[cfg(any(feature = "plugins", feature = "wasm"))]
 pub mod plugin;
+#[cfg(any(feature = "plugins", feature = "wasm"))]
+pub mod plugin_catalog;
 pub mod run;
 #[cfg(feature = "serve")]
 pub mod serve;

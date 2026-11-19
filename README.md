@@ -235,6 +235,7 @@ if __name__ == "__main__":
 graphrt plugin new acme --lang python        # or typescript, rust
 graphrt run acme/example.yaml --plugins acme --input who=World
 graphrt plugin install ./acme                # or a git URL; lands in ~/.graphrt/plugins
+graphrt plugin install open-meteo            # or a name from the plugin catalog (`graphrt plugin search`)
 graphrt nodes                                # plugin kinds show up next to built-ins
 ```
 
