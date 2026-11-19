@@ -70,6 +70,7 @@ pub async fn list_datasets(State(state): State<Arc<AppState>>) -> Response {
             serde_json::json!({
                 "id": d.id, "name": d.name, "description": d.description,
                 "managed": knowledge.kb.is_managed(&d.id),
+                "chunking": knowledge.kb.is_managed(&d.id).then(|| knowledge.kb.chunking(&d.id)).flatten(),
             })
         })
         .collect();

@@ -19,6 +19,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+use crate::chunker::ChunkerConfig;
 use crate::error::RagError;
 use crate::ingest::Ingestor;
 use crate::pipeline::{StoreRetriever, finalize, rerank};
@@ -41,6 +42,8 @@ struct DatasetEntry {
     info: DatasetInfo,
     retriever: Arc<dyn Retriever>,
     store: Option<(Arc<dyn VectorStore>, Arc<dyn Embedder>)>,
+    /// How documents ingested into this dataset are chunked.
+    chunking: ChunkerConfig,
 }
 
 /// Dataset id -> retriever registry.
@@ -80,7 +83,12 @@ impl KnowledgeBase {
         let retriever = StoreRetriever::new(store.clone(), embedder.clone()).with_reranker(reranker);
         self.datasets.insert(
             info.id.clone(),
-            DatasetEntry { info, retriever: Arc::new(retriever), store: Some((store, embedder)) },
+            DatasetEntry {
+                info,
+                retriever: Arc::new(retriever),
+                store: Some((store, embedder)),
+                chunking: ChunkerConfig::default(),
+            },
         );
         self
     }
@@ -94,7 +102,8 @@ impl KnowledgeBase {
 
     /// Add (or replace) a dataset served by an external retriever.
     pub fn add_retriever(&mut self, info: DatasetInfo, retriever: Arc<dyn Retriever>) -> &mut Self {
-        self.datasets.insert(info.id.clone(), DatasetEntry { info, retriever, store: None });
+        self.datasets
+            .insert(info.id.clone(), DatasetEntry { info, retriever, store: None, chunking: ChunkerConfig::default() });
         self
     }
 
@@ -112,11 +121,38 @@ impl KnowledgeBase {
         self.datasets.contains_key(dataset_id)
     }
 
-    /// An ingestor for a store-backed dataset (`None` for external retrievers or unknown ids).
+    /// An ingestor for a store-backed dataset (`None` for external retrievers or unknown ids),
+    /// using the dataset's chunking settings.
     pub fn ingestor(&self, dataset_id: &str) -> Option<Ingestor> {
         let entry = self.datasets.get(dataset_id)?;
         let (store, embedder) = entry.store.as_ref()?;
-        Some(Ingestor::new(store.clone(), embedder.clone()))
+        Some(Ingestor::new(store.clone(), embedder.clone()).chunker(entry.chunking.clone()))
+    }
+
+    /// Set how documents ingested into `dataset_id` are chunked (e.g. parent-child).
+    ///
+    /// @throws `RagError::NotFound` for an unknown dataset, `RagError::Config` when
+    /// `parent_max_chars` is not larger than `max_chars`.
+    pub fn set_chunking(&mut self, dataset_id: &str, chunking: ChunkerConfig) -> Result<&mut Self, RagError> {
+        if chunking.max_chars == 0 {
+            return Err(RagError::Config(format!("dataset `{dataset_id}`: `chunking.max_chars` must be positive")));
+        }
+        if chunking.parent_max_chars.is_some_and(|p| p <= chunking.max_chars) {
+            return Err(RagError::Config(format!(
+                "dataset `{dataset_id}`: `chunking.parent_max_chars` must be larger than `max_chars`"
+            )));
+        }
+        let entry = self
+            .datasets
+            .get_mut(dataset_id)
+            .ok_or_else(|| RagError::NotFound(format!("unknown dataset `{dataset_id}`")))?;
+        entry.chunking = chunking;
+        Ok(self)
+    }
+
+    /// The chunking settings of a dataset.
+    pub fn chunking(&self, dataset_id: &str) -> Option<&ChunkerConfig> {
+        self.datasets.get(dataset_id).map(|d| &d.chunking)
     }
 
     fn entry(&self, id: &str) -> Result<&DatasetEntry, RagError> {
@@ -327,6 +363,10 @@ pub struct DatasetConfig {
     /// External retriever definition (instead of store + embedder).
     #[serde(default)]
     pub retriever: Option<serde_json::Value>,
+    /// Chunking of ingested documents, e.g. `{ max_chars: 400, parent_max_chars: 1500 }`
+    /// for parent-child retrieval (store-backed datasets).
+    #[serde(default)]
+    pub chunking: Option<ChunkerConfig>,
 }
 
 /// Resolves environment variable names to values (`std::env::var` in production).
@@ -405,6 +445,9 @@ impl KnowledgeConfig {
                 .cloned()
                 .ok_or_else(|| RagError::Config(format!("unknown embedder `{embedder_key}`")))?;
             kb.add_store_dataset(info, store, embedder, lookup_reranker(&ds.reranker)?);
+            if let Some(chunking) = &ds.chunking {
+                kb.set_chunking(&ds.id, chunking.clone())?;
+            }
         }
         Ok(kb)
     }
@@ -652,6 +695,51 @@ mod tests {
         kb.set_document_enabled("pets", "cats", true).await.unwrap();
         assert!(found(&kb.retrieve(&query).await.unwrap()));
         assert_eq!(kb.set_document_enabled("pets", "nope", false).await.unwrap_err().kind(), "not_found");
+    }
+
+    #[tokio::test]
+    async fn parent_child_datasets_return_whole_parents_once() {
+        let mut kb = KnowledgeBase::new().with_store_dataset(
+            "docs",
+            Arc::new(MemoryStore::new()),
+            Arc::new(HashEmbedder::new(256)),
+            None,
+        );
+        let chunking = ChunkerConfig { max_chars: 60, overlap: 0, markdown: false, parent_max_chars: Some(220) };
+        kb.set_chunking("docs", chunking).unwrap();
+        let text = "Leave policy. Every employee gets 24 days of paid annual leave. Unused leave carries over for six months. Sick leave is separate.\n\n\
+                    Expense policy. Expenses below 500 USD are approved by your manager. Larger ones need finance approval.";
+        ingest(&kb, "docs", "handbook", text).await;
+        let children = kb.document_chunks("docs", "handbook").await.unwrap();
+        assert!(children.len() > 2, "the document is split into several children");
+
+        let request = RetrievalRequest::new("annual leave days carries over", vec!["docs".into()]).top_k(5);
+        let hits = kb.retrieve(&request).await.unwrap();
+        let leave: Vec<&Hit> = hits.iter().filter(|h| h.content.contains("24 days")).collect();
+        assert_eq!(leave.len(), 1, "children of one parent collapse into one hit: {hits:?}");
+        let parent = &leave[0].content;
+        assert!(parent.contains("Leave policy") && parent.contains("Sick leave"), "whole parent returned: {parent}");
+        assert!(!parent.contains("Expense"), "parents stay separate: {parent}");
+    }
+
+    #[test]
+    fn chunking_config_is_validated() {
+        let build = |chunking: serde_json::Value| {
+            KnowledgeConfig::from_json(
+                &serde_json::json!({
+                    "embedders": { "e": { "type": "hash" } },
+                    "stores": { "m": { "type": "memory" } },
+                    "datasets": [{ "id": "d", "store": "m", "embedder": "e", "chunking": chunking }]
+                })
+                .to_string(),
+            )
+            .unwrap()
+            .build_with_env(&|_| None)
+        };
+        let kb = build(serde_json::json!({ "max_chars": 300, "parent_max_chars": 1200 })).unwrap();
+        assert_eq!(kb.chunking("d").unwrap().parent_max_chars, Some(1200));
+        let error = build(serde_json::json!({ "max_chars": 300, "parent_max_chars": 200 })).unwrap_err();
+        assert!(error.to_string().contains("parent_max_chars"), "{error}");
     }
 
     #[tokio::test]

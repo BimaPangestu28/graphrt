@@ -24,6 +24,12 @@ releases may contain breaking changes; they are called out under **Changed**.
   `KnowledgeBase::set_document_enabled`): a disabled document keeps its chunks
   and stays disabled across re-ingestion, but no search returns it (memory,
   SQLite and Qdrant stores; reserved chunk metadata key `_disabled`).
+- Parent-child chunking per dataset (`chunking: { max_chars, parent_max_chars }`
+  in the knowledge config, `KnowledgeBase::set_chunking`): small children are
+  embedded and searched, and retrieval returns each matching parent once,
+  rebuilt from its children (nothing extra stored). `ChunkerConfig` gains
+  `parent_max_chars` and `TextChunk` gains `parent` (**breaking** for struct
+  literals); children carry `parent_index` metadata.
 - `graphrt-rag`: `VectorStore::list_documents` (memory and SQLite stores),
   `DocumentSummary`, `KnowledgeBase::{list_documents, document_chunks,
   delete_document, is_managed}`, `RagError::Unsupported`; `IngestReport` is

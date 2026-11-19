@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crate::chunker::{ChunkerConfig, chunk_text};
 use crate::error::RagError;
 use crate::types::{
-    DISABLED_KEY, Embedder, Extractor, Metadata, StoredChunk, VectorStore, check_vector, content_hash, is_disabled,
+    DISABLED_KEY, Embedder, Extractor, Metadata, PARENT_KEY, StoredChunk, VectorStore, check_vector, content_hash,
+    is_disabled,
 };
 
 /// A document to ingest.
@@ -126,6 +127,9 @@ impl Ingestor {
             metadata.insert("chunk_index".into(), serde_json::Value::from(chunk.index));
             if let Some(h) = &chunk.heading {
                 metadata.insert("heading".into(), serde_json::Value::String(h.clone()));
+            }
+            if let Some(parent) = chunk.parent {
+                metadata.insert(PARENT_KEY.into(), serde_json::Value::from(parent));
             }
             if disabled {
                 metadata.insert(DISABLED_KEY.into(), serde_json::Value::Bool(true));

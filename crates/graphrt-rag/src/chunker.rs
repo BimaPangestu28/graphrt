@@ -21,6 +21,12 @@ pub struct ChunkerConfig {
     /// Split at Markdown headings and record them as chunk metadata.
     #[serde(default = "yes")]
     pub markdown: bool,
+    /// Parent-child mode: split the text into parents of up to this many characters,
+    /// then each parent into children of `max_chars` (without overlap). Children are
+    /// embedded and searched; retrieval returns their parent's text. Must be larger
+    /// than `max_chars`.
+    #[serde(default)]
+    pub parent_max_chars: Option<usize>,
 }
 
 fn default_max() -> usize {
@@ -35,14 +41,19 @@ fn yes() -> bool {
 
 impl Default for ChunkerConfig {
     fn default() -> Self {
-        Self { max_chars: default_max(), overlap: default_overlap(), markdown: true }
+        Self { max_chars: default_max(), overlap: default_overlap(), markdown: true, parent_max_chars: None }
     }
 }
 
 impl ChunkerConfig {
     /// Size limits expressed in approximate tokens (1 token ≈ 4 characters).
     pub fn from_tokens(max_tokens: usize, overlap_tokens: usize) -> Self {
-        Self { max_chars: max_tokens.saturating_mul(4), overlap: overlap_tokens.saturating_mul(4), markdown: true }
+        Self {
+            max_chars: max_tokens.saturating_mul(4),
+            overlap: overlap_tokens.saturating_mul(4),
+            markdown: true,
+            parent_max_chars: None,
+        }
     }
 }
 
@@ -54,13 +65,42 @@ pub struct TextChunk {
     pub text: String,
     /// Heading path, e.g. `Guide > Install`, when the chunk is under a Markdown heading.
     pub heading: Option<String>,
+    /// Index of the parent chunk in parent-child mode.
+    pub parent: Option<usize>,
 }
 
 /// Separators tried in order, coarse to fine. The empty separator means "split by character".
 const SEPARATORS: &[&str] = &["\n\n", "\n", ". ", "? ", "! ", "; ", ", ", " ", ""];
 
-/// Split `text` into chunks.
+/// Split `text` into chunks (children carrying their parent index in parent-child mode).
 pub fn chunk_text(text: &str, config: &ChunkerConfig) -> Vec<TextChunk> {
+    match config.parent_max_chars.filter(|&p| p > config.max_chars) {
+        Some(parent_max) => chunk_with_parents(text, config, parent_max),
+        None => chunk_flat(text, config),
+    }
+}
+
+/// Parents of up to `parent_max` characters, each split into children of
+/// `max_chars`. Children have no overlap, so joining a parent's children gives
+/// back its text and the parent never needs to be stored separately.
+fn chunk_with_parents(text: &str, config: &ChunkerConfig, parent_max: usize) -> Vec<TextChunk> {
+    let parent_config = ChunkerConfig { max_chars: parent_max, overlap: 0, parent_max_chars: None, ..config.clone() };
+    let child_config = ChunkerConfig { overlap: 0, markdown: false, parent_max_chars: None, ..config.clone() };
+    let mut children = Vec::new();
+    for (parent_index, parent) in chunk_flat(text, &parent_config).into_iter().enumerate() {
+        for child in chunk_flat(&parent.text, &child_config) {
+            children.push(TextChunk {
+                index: children.len(),
+                text: child.text,
+                heading: parent.heading.clone(),
+                parent: Some(parent_index),
+            });
+        }
+    }
+    children
+}
+
+fn chunk_flat(text: &str, config: &ChunkerConfig) -> Vec<TextChunk> {
     let max = config.max_chars.max(1);
     let overlap = config.overlap.min(max / 2);
     let sections = if config.markdown { markdown_sections(text) } else { vec![(None, text.to_owned())] };
@@ -82,7 +122,7 @@ pub fn chunk_text(text: &str, config: &ChunkerConfig) -> Vec<TextChunk> {
                 _ => trimmed.to_owned(),
             };
             previous = Some(trimmed.to_owned());
-            chunks.push(TextChunk { index: chunks.len(), text, heading: heading.clone() });
+            chunks.push(TextChunk { index: chunks.len(), text, heading: heading.clone(), parent: None });
         }
     }
     chunks
@@ -205,7 +245,7 @@ mod tests {
     #[test]
     fn respects_max_size_and_keeps_text() {
         let text = "Alpha beta gamma. Delta epsilon zeta. Eta theta iota. Kappa lambda mu.".repeat(20);
-        let cfg = ChunkerConfig { max_chars: 100, overlap: 0, markdown: false };
+        let cfg = ChunkerConfig { max_chars: 100, overlap: 0, markdown: false, parent_max_chars: None };
         let chunks = chunk_text(&text, &cfg);
         assert!(chunks.len() > 5);
         for c in &chunks {
@@ -218,7 +258,7 @@ mod tests {
     #[test]
     fn overlap_repeats_previous_tail() {
         let text = "one two three four five six seven eight nine ten eleven twelve";
-        let cfg = ChunkerConfig { max_chars: 25, overlap: 10, markdown: false };
+        let cfg = ChunkerConfig { max_chars: 25, overlap: 10, markdown: false, parent_max_chars: None };
         let chunks = chunk_text(text, &cfg);
         assert!(chunks.len() >= 2);
         let second = &chunks[1].text;
@@ -240,7 +280,7 @@ mod tests {
     #[test]
     fn multibyte_text_is_split_on_char_boundaries() {
         let text = "日本語のテキストです。".repeat(50);
-        let cfg = ChunkerConfig { max_chars: 30, overlap: 5, markdown: false };
+        let cfg = ChunkerConfig { max_chars: 30, overlap: 5, markdown: false, parent_max_chars: None };
         let chunks = chunk_text(&text, &cfg);
         assert!(chunks.len() > 10);
         assert!(chunks.iter().all(|c| char_len(&c.text) <= 36));
@@ -251,5 +291,34 @@ mod tests {
         let cfg = ChunkerConfig::from_tokens(256, 32);
         assert_eq!(cfg.max_chars, 1024);
         assert_eq!(cfg.overlap, 128);
+    }
+    #[test]
+    fn parent_child_mode_splits_parents_into_children_without_overlap() {
+        let paragraph =
+            |topic: &str| format!("{topic} first sentence here. {topic} second sentence here. {topic} third one.");
+        let text = format!("{}\n\n{}\n\n{}", paragraph("Alpha"), paragraph("Beta"), paragraph("Gamma"));
+        let cfg = ChunkerConfig { max_chars: 40, overlap: 30, markdown: false, parent_max_chars: Some(90) };
+        let chunks = chunk_text(&text, &cfg);
+        assert!(chunks.iter().all(|c| c.parent.is_some()), "every chunk is a child");
+        assert!(chunks.iter().all(|c| c.text.chars().count() <= 40), "children fit max_chars");
+        assert!(chunks.windows(2).all(|w| w[0].index + 1 == w[1].index), "indexes are sequential");
+        let parents: std::collections::BTreeSet<usize> = chunks.iter().filter_map(|c| c.parent).collect();
+        assert!(parents.len() >= 3, "{parents:?}");
+        // No overlap: every word of the text appears once across children.
+        let words = |s: &str| s.split_whitespace().count();
+        assert_eq!(chunks.iter().map(|c| words(&c.text)).sum::<usize>(), words(&text));
+        // A parent's children never mix topics from different paragraphs.
+        for p in parents {
+            let joined: Vec<&str> = chunks.iter().filter(|c| c.parent == Some(p)).map(|c| c.text.as_str()).collect();
+            let joined = joined.join(" ");
+            let topics = ["Alpha", "Beta", "Gamma"].iter().filter(|t| joined.contains(*t)).count();
+            assert_eq!(topics, 1, "parent {p} mixes paragraphs: {joined}");
+        }
+    }
+
+    #[test]
+    fn parent_size_not_above_child_size_means_flat_chunks() {
+        let cfg = ChunkerConfig { max_chars: 50, overlap: 0, markdown: false, parent_max_chars: Some(50) };
+        assert!(chunk_text("one two three four five six seven", &cfg).iter().all(|c| c.parent.is_none()));
     }
 }

@@ -24,3 +24,5 @@ datasets:
     name: Company handbook
     store: local
     embedder: local
+    # Parent-child retrieval: search small chunks, return their whole section.
+    # chunking: { max_chars: 400, parent_max_chars: 1600 }

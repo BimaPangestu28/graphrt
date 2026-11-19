@@ -1,13 +1,16 @@
 //! The built-in retrieval pipeline: vector + keyword search, weighted merge,
 //! optional reranking, threshold and top-k.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
 
 use crate::error::RagError;
-use crate::types::{Embedder, Hit, KeywordQuery, Reranker, RetrievalRequest, Retriever, VectorQuery, VectorStore};
+use crate::types::{
+    Embedder, Hit, KeywordQuery, PARENT_KEY, Reranker, RetrievalRequest, Retriever, StoredChunk, VectorQuery,
+    VectorStore,
+};
 
 /// How many candidates each search returns before merging (multiple of `top_k`).
 const CANDIDATE_FACTOR: usize = 4;
@@ -104,12 +107,61 @@ impl Retriever for StoreRetriever {
             if let Some(filter) = &request.filter {
                 hits.retain(|h| filter.matches(&h.metadata));
             }
+            // Parent-child datasets: return each matching child's parent (once).
+            hits = expand_parents(self.store.as_ref(), hits).await?;
             if let (true, Some(reranker)) = (request.rerank, &self.reranker) {
                 hits = rerank(reranker.as_ref(), query, hits).await?;
             }
             Ok(finalize(hits, request.score_threshold, request.top_k))
         })
     }
+}
+
+/// Replace child-chunk hits (metadata `parent_index`) by their parent's text,
+/// rebuilt from the parent's children in order. Several children of one parent
+/// collapse into a single hit with the best score. Each document is read once.
+/// Hits without a parent pass through unchanged.
+async fn expand_parents(store: &dyn VectorStore, hits: Vec<Hit>) -> Result<Vec<Hit>, RagError> {
+    let parent_of = |hit: &Hit| hit.metadata.get(PARENT_KEY).and_then(serde_json::Value::as_u64);
+    if !hits.iter().any(|h| parent_of(h).is_some()) {
+        return Ok(hits);
+    }
+    let mut documents: HashMap<(String, String), Vec<StoredChunk>> = HashMap::new();
+    for hit in hits.iter().filter(|h| parent_of(h).is_some()) {
+        if let std::collections::hash_map::Entry::Vacant(slot) =
+            documents.entry((hit.dataset_id.clone(), hit.document_id.clone()))
+        {
+            slot.insert(store.document_chunks(&hit.dataset_id, &hit.document_id).await?);
+        }
+    }
+    let mut seen: HashSet<(String, String, u64)> = HashSet::new();
+    let mut expanded = Vec::with_capacity(hits.len());
+    // Hits arrive best first, so the first child of each parent carries its best score.
+    let mut ordered = hits;
+    ordered.sort_by(|a, b| b.score.total_cmp(&a.score));
+    for mut hit in ordered {
+        let Some(parent) = parent_of(&hit) else {
+            expanded.push(hit);
+            continue;
+        };
+        let key = (hit.dataset_id.clone(), hit.document_id.clone(), parent);
+        if !seen.insert(key) {
+            continue;
+        }
+        if let Some(chunks) = documents.get(&(hit.dataset_id.clone(), hit.document_id.clone())) {
+            let mut children: Vec<&StoredChunk> = chunks
+                .iter()
+                .filter(|c| c.metadata.get(PARENT_KEY).and_then(serde_json::Value::as_u64) == Some(parent))
+                .collect();
+            children
+                .sort_by_key(|c| c.metadata.get("chunk_index").and_then(serde_json::Value::as_u64).unwrap_or(u64::MAX));
+            if !children.is_empty() {
+                hit.content = children.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join(" ");
+            }
+        }
+        expanded.push(hit);
+    }
+    Ok(expanded)
 }
 
 /// Blend vector (cosine, clamped to `[0, 1]`) and keyword (BM25 divided by the

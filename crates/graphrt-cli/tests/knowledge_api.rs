@@ -91,6 +91,8 @@ async fn documents_can_be_added_listed_inspected_searched_and_deleted() {
         .map(|d| (d["id"].as_str().unwrap().to_owned(), d["managed"].as_bool().unwrap()))
         .collect();
     assert_eq!(managed, [("handbook".to_owned(), true), ("remote".to_owned(), false)]);
+    assert_eq!(body["datasets"][0]["chunking"]["max_chars"], 1000, "managed datasets report their chunking");
+    assert_eq!(body["datasets"][1]["chunking"], Value::Null);
 
     let leave = json!({ "document_id": "leave", "title": "Leave policy",
                         "text": "Every employee gets 24 days of paid annual leave.",

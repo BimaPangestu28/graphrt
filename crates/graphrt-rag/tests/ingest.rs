@@ -12,7 +12,7 @@ use graphrt_rag::{
 };
 
 fn small_chunks() -> ChunkerConfig {
-    ChunkerConfig { max_chars: 40, overlap: 0, markdown: false }
+    ChunkerConfig { max_chars: 40, overlap: 0, markdown: false, parent_max_chars: None }
 }
 
 fn ingestor(store: &Arc<MemoryStore>, embedder: Arc<dyn Embedder>) -> Ingestor {

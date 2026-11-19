@@ -85,8 +85,11 @@ pub fn is_disabled(metadata: &Metadata) -> bool {
     metadata.get(DISABLED_KEY).and_then(serde_json::Value::as_bool).unwrap_or(false)
 }
 
+/// Chunk metadata key holding a child chunk's parent index (parent-child chunking).
+pub const PARENT_KEY: &str = "parent_index";
+
 /// Chunk metadata keys managed per chunk by graphrt, not part of a document's metadata.
-pub(crate) const PER_CHUNK_KEYS: [&str; 3] = ["chunk_index", "heading", DISABLED_KEY];
+pub(crate) const PER_CHUNK_KEYS: [&str; 4] = ["chunk_index", "heading", DISABLED_KEY, PARENT_KEY];
 
 /// Default and largest page size for document listings.
 pub const DEFAULT_DOCUMENT_PAGE: usize = 50;
