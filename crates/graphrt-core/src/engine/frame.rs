@@ -32,6 +32,7 @@ use crate::node::{
 use crate::pool::{ENV, SYS, Selector, VariablePool};
 use crate::snapshot::{EdgeStatus, FrameSnapshot, NodeSnapshot, NodeStatus};
 use crate::value::Value;
+use crate::variables::Variables;
 
 /// Node kind whose completion marks a loop body run as "broke".
 const LOOP_END_KIND: &str = "loop-end";
@@ -706,14 +707,14 @@ impl Frame {
         let graph = self.run.graph.clone();
         let gn = graph.node(ix)?;
         let node_id = Arc::clone(&gn.id);
-        let mut outputs = IndexMap::new();
+        let mut outputs = Variables::new();
         let handled = !matches!(gn.policy.on_error, ErrorStrategy::Fail);
         if let ErrorStrategy::DefaultValue { values } = &gn.policy.on_error {
-            outputs.extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
+            outputs.extend(values.iter().map(|(k, v)| (k, v.clone())));
         }
         if handled {
-            outputs.insert("error_message".to_owned(), Value::from(error.message.as_str()));
-            outputs.insert("error_type".to_owned(), Value::from(error.kind.as_str()));
+            outputs.insert("error_message", Value::from(error.message.as_str()));
+            outputs.insert("error_type", Value::from(error.kind.as_str()));
         }
         self.set_state(ix, State::Failed);
         self.run.emit(Event::NodeFailed {
@@ -758,12 +759,7 @@ impl Frame {
     ///
     /// All-or-nothing: writes to `sys.*` / `env.*` (host-owned) and writes to
     /// out-of-range array indexes are rejected before anything is committed.
-    fn commit(
-        &mut self,
-        ix: NodeIx,
-        outputs: &IndexMap<String, Value>,
-        writes: &[(Selector, Value)],
-    ) -> Result<(), NodeError> {
+    fn commit(&mut self, ix: NodeIx, outputs: &Variables, writes: &[(Selector, Value)]) -> Result<(), NodeError> {
         let node_id = self.node_id(ix);
         for (selector, _) in writes {
             let namespace = selector.namespace();
@@ -777,8 +773,7 @@ impl Frame {
         if writes.is_empty() {
             // Nothing can fail: skip the undo log (one selector and one value
             // lookup per output), which most nodes would never use.
-            let known_keys = self.run.graph.output_keys(ix, || outputs.keys().map(String::as_str));
-            self.pool.set_outputs_shared(&node_id, outputs, known_keys);
+            self.pool.set_outputs_shared(&node_id, outputs);
             return Ok(());
         }
         // Apply in place (cloning the pool here would force a copy-on-write copy on
@@ -789,8 +784,7 @@ impl Frame {
             let previous = self.pool.get(&root);
             undo.push((root, previous));
         }
-        let known_keys = self.run.graph.output_keys(ix, || outputs.keys().map(String::as_str));
-        self.pool.set_outputs_shared(&node_id, outputs, known_keys);
+        self.pool.set_outputs_shared(&node_id, outputs);
         for (selector, value) in writes {
             let root = selector.root();
             let previous = self.pool.get(&root);
@@ -923,16 +917,16 @@ fn poll_tasks<F: Future<Output = TaskDone>>(
 
 /// Merge a response node's outputs into the frame outputs: `answer` is
 /// concatenated, other keys overwrite.
-fn merge_response(frame_outputs: &mut IndexMap<String, Value>, outputs: &IndexMap<String, Value>) {
+fn merge_response(frame_outputs: &mut IndexMap<String, Value>, outputs: &Variables) {
     for (key, value) in outputs {
         if key == "answer" {
             if let Some(Value::String(existing)) = frame_outputs.get(key) {
                 let joined = format!("{existing}{}", value.to_text());
-                frame_outputs.insert(key.clone(), Value::from(joined));
+                frame_outputs.insert(key.to_owned(), Value::from(joined));
                 continue;
             }
         }
-        frame_outputs.insert(key.clone(), value.clone());
+        frame_outputs.insert(key.to_owned(), value.clone());
     }
 }
 

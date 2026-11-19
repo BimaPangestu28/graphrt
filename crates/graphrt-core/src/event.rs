@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::pool::Selector;
 use crate::snapshot::Snapshot;
 use crate::value::Value;
+use crate::variables::Variables;
 
 /// Identifies an execution frame. The root frame is the empty string; child
 /// frames are `"<container_node>[<index>]"` segments joined by `/`, e.g.
@@ -95,7 +96,8 @@ pub enum Event {
         frame: FrameId,
         node_id: std::sync::Arc<str>,
         exec_id: std::sync::Arc<str>,
-        outputs: IndexMap<String, Value>,
+        /// The node's outputs, shared with its pool namespace (cloning is cheap).
+        outputs: Variables,
         /// Selected branch handle for branch nodes.
         #[serde(skip_serializing_if = "Option::is_none")]
         branch: Option<String>,
@@ -113,8 +115,9 @@ pub enum Event {
         error: String,
         error_type: String,
         handled: bool,
-        #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
-        outputs: IndexMap<String, Value>,
+        /// Outputs committed by the error strategy (`error_message`, defaults...).
+        #[serde(default, skip_serializing_if = "Variables::is_empty")]
+        outputs: Variables,
         elapsed_ms: u64,
     },
     /// The node will not run because every incoming path was skipped.

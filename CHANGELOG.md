@@ -7,6 +7,29 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Changed (Breaking)
+- Node outputs and pool namespaces use the new `graphrt_core::Variables` map
+  (keys are `graphrt_core::VarName`) instead of `IndexMap<String, Value>` /
+  `IndexMap<Arc<str>, Value>`. It is a reference-counted, insertion-ordered
+  flat map: cloning is a reference-count bump, so a node's outputs become its
+  pool namespace and its event payload without being copied. Affected:
+  - `NodeOutput::outputs` is `Variables`; `NodeOutput::with` takes
+    `impl Into<VarName>` (string literals, `String`, `&String`, `Arc<str>`).
+  - `Event::NodeSucceeded::outputs` and `Event::NodeFailed::outputs` are
+    `Variables` (same JSON).
+  - `VariablePool::namespace()` returns `Option<&Variables>` and
+    `VariablePool::set_outputs` takes `&Variables`.
+
+  Migration: most code compiles unchanged, since `Variables` has the familiar
+  `get`, `insert`, `remove`, `iter`, `keys`, `values`, `len`, `contains_key`,
+  `extend` and `collect()` API. Iteration yields `(&str, &Value)` instead of
+  `(&String, &Value)`; use `.to_owned()` where a `String` is needed. Pass a
+  non-`'static` `&str` name as `name.to_owned()`. `outputs.insert("x".into(), v)`
+  becomes `outputs.insert("x", v)`. Convert with `Variables::from(index_map)`,
+  `variables.to_index_map()` or `IndexMap::from(variables)`. Indexing a missing
+  name (`outputs["x"]`) yields `Value::Null` instead of panicking. `remove`
+  keeps the order of the remaining entries (like `IndexMap::shift_remove`).
+
 ### Performance
 - Engine: fewer allocations and less work per node execution. Node task
   futures are stored unboxed and are less than half their former size (584 ->

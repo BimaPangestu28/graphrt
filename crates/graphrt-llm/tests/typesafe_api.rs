@@ -143,7 +143,7 @@ fn outputs(events: &[Event]) -> IndexMap<String, Value> {
     }
 }
 
-fn node_outputs(events: &[Event], id: &str) -> IndexMap<String, Value> {
+fn node_outputs(events: &[Event], id: &str) -> graphrt_core::Variables {
     events
         .iter()
         .find_map(|e| match e {

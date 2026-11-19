@@ -195,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures",
  "indexmap",
@@ -203,13 +203,14 @@ dependencies = [
  "serde",
  "serde-saphyr",
  "serde_json",
+ "smallvec",
  "thiserror",
  "tokio",
 ]
 
 [[package]]
 name = "graphrt-llm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures",
  "graphrt-core",

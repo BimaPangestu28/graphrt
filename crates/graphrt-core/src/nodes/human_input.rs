@@ -161,7 +161,7 @@ impl HumanInputNode {
                 out.outputs.insert(f.name.clone(), v);
             }
         }
-        out.outputs.insert("action".into(), Value::from(action.as_str()));
+        out.outputs.insert("action", Value::from(action.as_str()));
         Ok(out.branch(action))
     }
 }

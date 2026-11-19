@@ -7,6 +7,7 @@
 //! - [`node`]: the node contract, registry and host services.
 //! - [`engine`]: the scheduler that runs a graph and streams [`event::Event`]s.
 //! - [`nodes`]: built-in control-flow and data nodes.
+//! - [`variables`]: the shared map of node outputs and pool namespaces.
 //!
 //! The core has no dependency on any async runtime, HTTP client or model
 //! provider; those live in separate crates and plug in through
@@ -29,6 +30,7 @@ pub mod template;
 pub mod tool;
 pub mod tool_node;
 pub mod value;
+pub mod variables;
 
 pub use dsl::Workflow;
 pub use engine::{Engine, RunHandle, RunInput, RunStream};
@@ -38,6 +40,7 @@ pub use node::{Node, NodeContext, NodeError, NodeOutcome, NodeOutput, NodeRole, 
 pub use pool::{Selector, VariablePool};
 pub use snapshot::Snapshot;
 pub use value::{Value, ValueType};
+pub use variables::{VarName, Variables};
 
 /// Re-exported so hosts use the same `IndexMap` version as the public API.
 pub use indexmap;

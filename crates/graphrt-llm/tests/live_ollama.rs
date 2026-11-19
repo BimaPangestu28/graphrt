@@ -85,7 +85,7 @@ fn node_outputs(events: &[Event], id: &str) -> IndexMap<String, Value> {
     events
         .iter()
         .find_map(|e| match e {
-            Event::NodeSucceeded { node_id, outputs, .. } if node_id.as_ref() == id => Some(outputs.clone()),
+            Event::NodeSucceeded { node_id, outputs, .. } if node_id.as_ref() == id => Some(outputs.to_index_map()),
             _ => None,
         })
         .unwrap_or_else(|| panic!("node `{id}` did not succeed: {:?}", events.last()))

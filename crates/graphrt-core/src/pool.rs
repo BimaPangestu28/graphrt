@@ -2,10 +2,11 @@
 //!
 //! A [`Selector`] addresses a value as `namespace.name[.path...]`, where the
 //! namespace is a node id or one of the reserved namespaces ([`SYS`], [`ENV`],
-//! [`CONVERSATION`]). The [`VariablePool`] stores one map per namespace behind an
-//! `Arc`, and the namespace table itself is shared too: cloning a pool (for a
-//! node context, an iteration item or a loop round) is O(1), and writes copy
-//! only the touched namespace (plus the table, when it is shared).
+//! [`CONVERSATION`]). The [`VariablePool`] stores one [`Variables`] map per
+//! namespace (shared on clone), and the namespace table itself is shared too:
+//! cloning a pool (for a node context, an iteration item or a loop round) is
+//! O(1), and writes copy only the touched namespace (plus the table, when it is
+//! shared). A node's outputs become its namespace without being copied.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -16,6 +17,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::value::{Value, ValueType};
+use crate::variables::Variables;
 
 /// System variables (`sys.query`, `sys.files`, `sys.run_id`, ...). Written by the host only.
 pub const SYS: &str = "sys";
@@ -124,7 +126,7 @@ impl<'de> Deserialize<'de> for Selector {
     }
 }
 
-type Namespace = Arc<IndexMap<Arc<str>, Value>>;
+type Namespace = Variables;
 type ShardMap = HashMap<Arc<str>, Namespace, BuildHasherDefault<NamespaceHasher>>;
 
 /// Hasher for namespace names in the shard maps.
@@ -262,19 +264,18 @@ impl Table {
     }
 }
 
-fn insert_outputs(namespace: &mut Namespace, outputs: &IndexMap<String, Value>, known_keys: &[Arc<str>]) {
-    let ns = Arc::make_mut(namespace);
-    ns.reserve(outputs.len());
-    for (position, (k, v)) in outputs.iter().enumerate() {
-        ns.insert(shared_key(k, position, known_keys), v.clone());
+/// Store a node's outputs in its namespace. An empty namespace (the usual
+/// case: a node's first commit) takes the outputs map itself, a reference-count
+/// bump; otherwise the outputs are merged in.
+fn store_outputs(namespace: &mut Namespace, outputs: &Variables) {
+    if namespace.is_empty() {
+        namespace.clone_from(outputs);
+        return;
     }
-}
-
-/// `name` as an `Arc<str>`: a clone of the matching `known` entry (looked up at
-/// `position` first, where it usually is), else a new allocation.
-fn shared_key(name: &str, position: usize, known: &[Arc<str>]) -> Arc<str> {
-    let at_position = known.get(position).filter(|key| key.as_ref() == name);
-    at_position.or_else(|| known.iter().find(|key| key.as_ref() == name)).map_or_else(|| Arc::from(name), Arc::clone)
+    namespace.reserve(outputs.len());
+    for (name, value) in outputs.named_entries() {
+        namespace.insert(name.clone(), value.clone());
+    }
 }
 
 /// Variable storage for one execution frame.
@@ -325,7 +326,7 @@ impl VariablePool {
 
     /// Set a variable by namespace and name.
     pub fn insert(&mut self, namespace: &str, name: &str, value: Value) {
-        Arc::make_mut(self.namespaces.entry(namespace)).insert(Arc::from(name), value);
+        self.namespaces.entry(namespace).insert_str(name, value);
     }
 
     /// Write into a nested path, creating intermediate objects as needed.
@@ -348,7 +349,7 @@ impl VariablePool {
         if !self.namespaces.get(selector.namespace())?.contains_key(selector.name()) {
             return None;
         }
-        Arc::make_mut(self.namespaces.entry(selector.namespace())).shift_remove(selector.name())
+        self.namespaces.entry(selector.namespace()).remove(selector.name())
     }
 
     /// Drop a whole namespace (e.g. a node's outputs before a loop round re-runs it).
@@ -356,26 +357,21 @@ impl VariablePool {
         self.namespaces.remove(namespace);
     }
 
-    /// Bulk-insert a node's outputs.
-    pub fn set_outputs(&mut self, namespace: &str, outputs: &IndexMap<String, Value>) {
-        insert_outputs(self.namespaces.entry(namespace), outputs, &[]);
+    /// Bulk-insert a node's outputs. Into an empty namespace this shares
+    /// `outputs` instead of copying it.
+    pub fn set_outputs(&mut self, namespace: &str, outputs: &Variables) {
+        store_outputs(self.namespaces.entry(namespace), outputs);
     }
 
     /// [`VariablePool::set_outputs`] for a namespace the caller already holds as
     /// an `Arc<str>` (the engine's node ids), which avoids copying the name.
-    /// Output names found in `known_keys` share that allocation.
-    pub(crate) fn set_outputs_shared(
-        &mut self,
-        namespace: &Arc<str>,
-        outputs: &IndexMap<String, Value>,
-        known_keys: &[Arc<str>],
-    ) {
-        insert_outputs(self.namespaces.entry_shared(namespace), outputs, known_keys);
+    pub(crate) fn set_outputs_shared(&mut self, namespace: &Arc<str>, outputs: &Variables) {
+        store_outputs(self.namespaces.entry_shared(namespace), outputs);
     }
 
     /// All variables in a namespace.
-    pub fn namespace(&self, namespace: &str) -> Option<&IndexMap<Arc<str>, Value>> {
-        self.namespaces.get(namespace).map(AsRef::as_ref)
+    pub fn namespace(&self, namespace: &str) -> Option<&Variables> {
+        self.namespaces.get(namespace)
     }
 
     pub fn contains(&self, selector: &Selector) -> bool {
@@ -384,7 +380,7 @@ impl VariablePool {
 
     /// Iterate `(namespace, name, value)`.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str, &Value)> {
-        self.namespaces.iter().flat_map(|(ns, vars)| vars.iter().map(move |(k, v)| (ns.as_ref(), k.as_ref(), v)))
+        self.namespaces.iter().flat_map(|(ns, vars)| vars.iter().map(move |(k, v)| (ns.as_ref(), k, v)))
     }
 
     /// Serializable form for snapshots. The [`ENV`] namespace is excluded: the host
@@ -408,9 +404,8 @@ impl VariablePool {
     pub fn from_snapshot(snapshot: PoolSnapshot) -> Self {
         let mut pool = Self::new();
         for (ns, vars) in snapshot.0 {
-            for (k, v) in vars {
-                pool.insert(&ns, &k, v.from_snapshot_value());
-            }
+            let restored: Variables = vars.into_iter().map(|(k, v)| (k, v.from_snapshot_value())).collect();
+            store_outputs(pool.namespaces.entry(&ns), &restored);
         }
         pool
     }
@@ -502,15 +497,17 @@ mod tests {
     }
 
     #[test]
-    fn shared_key_reuses_known_names() {
-        let known: Vec<Arc<str>> = vec![Arc::from("text"), Arc::from("usage")];
-        // Same position, other position, unknown.
-        assert!(Arc::ptr_eq(&shared_key("text", 0, &known), &known[0]));
-        assert!(Arc::ptr_eq(&shared_key("text", 1, &known), &known[0]));
-        let fresh = shared_key("other", 0, &known);
-        assert_eq!(fresh.as_ref(), "other");
-        assert!(!known.iter().any(|k| Arc::ptr_eq(k, &fresh)));
-        assert_eq!(shared_key("x", 5, &[]).as_ref(), "x");
+    fn outputs_become_the_namespace_without_a_copy() {
+        let outputs = Variables::from([("text", Value::from("hi"))]);
+        let mut p = VariablePool::new();
+        p.set_outputs("llm", &outputs);
+        assert!(p.namespace("llm").is_some_and(|ns| ns.ptr_eq(&outputs)));
+        // A namespace that already holds variables merges instead.
+        p.insert("loop", "i", Value::Int(1));
+        p.set_outputs("loop", &outputs);
+        let merged = p.namespace("loop").map(|ns| ns.keys().collect::<Vec<_>>());
+        assert_eq!(merged, Some(vec!["i", "text"]));
+        assert_eq!(outputs.len(), 1, "the caller's map is not modified");
     }
 
     #[test]
