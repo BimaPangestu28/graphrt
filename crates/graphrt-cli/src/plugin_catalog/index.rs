@@ -281,7 +281,8 @@ impl std::fmt::Display for SelectionError {
 }
 
 /// Pick the entry for `spec`: the exact version when one is requested,
-/// otherwise the highest version by semver precedence.
+/// otherwise the highest release version by semver precedence (the highest
+/// prerelease only when the plugin has no release).
 ///
 /// # Errors
 /// [`SelectionError`] when the name or the requested version is not listed.
@@ -289,7 +290,7 @@ pub fn select_entry<'a>(index: &'a CatalogIndex, spec: &PluginSpec) -> Result<&'
     let mut candidates: Vec<&CatalogEntry> =
         index.plugins.iter().filter(|entry| entry.is_well_formed() && entry.name == spec.name).collect();
     candidates.sort_by(|left, right| compare_versions(&left.version, &right.version));
-    let Some(latest) = candidates.last().copied() else {
+    let Some(latest) = preferred_latest(&candidates) else {
         return Err(SelectionError::UnknownName(spec.name.clone()));
     };
     let Some(requested) = &spec.version else {
@@ -302,22 +303,34 @@ pub fn select_entry<'a>(index: &'a CatalogIndex, spec: &PluginSpec) -> Result<&'
     })
 }
 
+/// The highest release version, or the highest prerelease when there is no release.
+fn preferred_latest<'a>(entries: &[&'a CatalogEntry]) -> Option<&'a CatalogEntry> {
+    let highest = |prereleases_allowed: bool| {
+        entries
+            .iter()
+            .copied()
+            .filter(|entry| prereleases_allowed || !is_prerelease(&entry.version))
+            .max_by(|left, right| compare_versions(&left.version, &right.version))
+    };
+    highest(false).or_else(|| highest(true))
+}
+
+fn is_prerelease(version: &str) -> bool {
+    parse_version(version).is_some_and(|parsed| parsed.prerelease.is_some())
+}
+
 /// The latest entry of every plugin whose name or description contains `query`
 /// (case-insensitive; every plugin when `query` is `None`), sorted by name.
 pub fn search_entries<'a>(index: &'a CatalogIndex, query: Option<&str>) -> Vec<&'a CatalogEntry> {
     let needle = query.map(str::to_lowercase).unwrap_or_default();
-    let mut latest_by_name: std::collections::BTreeMap<&str, &CatalogEntry> = std::collections::BTreeMap::new();
+    let mut entries_by_name: std::collections::BTreeMap<&str, Vec<&CatalogEntry>> = std::collections::BTreeMap::new();
     for entry in index.plugins.iter().filter(|entry| entry.is_well_formed()) {
         let matches = entry.name.to_lowercase().contains(&needle) || entry.description.to_lowercase().contains(&needle);
-        if !matches {
-            continue;
-        }
-        let slot = latest_by_name.entry(entry.name.as_str()).or_insert(entry);
-        if compare_versions(&entry.version, &slot.version) == Ordering::Greater {
-            *slot = entry;
+        if matches {
+            entries_by_name.entry(entry.name.as_str()).or_default().push(entry);
         }
     }
-    latest_by_name.into_values().collect()
+    entries_by_name.values().filter_map(|entries| preferred_latest(entries)).collect()
 }
 
 #[cfg(test)]
@@ -478,6 +491,21 @@ mod tests {
         );
         let missing_name = select_entry(&index, &PluginSpec { name: "nosuch".into(), version: None });
         assert_eq!(missing_name.unwrap_err(), SelectionError::UnknownName("nosuch".into()));
+    }
+
+    #[test]
+    fn bare_names_skip_prereleases_unless_only_prereleases_exist() {
+        let bare = PluginSpec { name: "demo".into(), version: None };
+        let mixed = index_of(vec![entry("demo", "1.0.0"), entry("demo", "1.1.0-rc.1"), entry("demo", "0.9.0")]);
+        assert_eq!(select_entry(&mixed, &bare).unwrap().version, "1.0.0");
+        assert_eq!(search_entries(&mixed, None)[0].version, "1.0.0");
+        let exact = PluginSpec { name: "demo".into(), version: Some("1.1.0-rc.1".into()) };
+        assert_eq!(select_entry(&mixed, &exact).unwrap().version, "1.1.0-rc.1");
+        let only_prereleases = index_of(vec![entry("demo", "2.0.0-alpha"), entry("demo", "2.0.0-beta")]);
+        assert_eq!(select_entry(&only_prereleases, &bare).unwrap().version, "2.0.0-beta");
+        assert_eq!(search_entries(&only_prereleases, None)[0].version, "2.0.0-beta");
+        let build_metadata = index_of(vec![entry("demo", "1.0.0"), entry("demo", "1.0.1+build.5")]);
+        assert_eq!(select_entry(&build_metadata, &bare).unwrap().version, "1.0.1+build.5");
     }
 
     #[test]
