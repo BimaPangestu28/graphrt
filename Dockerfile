@@ -8,6 +8,7 @@
 # Build args:
 #   FEATURES   cargo features of graphrt-cli (empty = the CLI's default set)
 #   PROFILE    cargo profile (default: min-size)
+#   GRAPHRT_TELEMETRY_URL  opt-in telemetry endpoint baked into the binary (default: none)
 #
 # The binary is linked statically against musl, so the runtime stage needs no
 # libc. The runtime image is distroless/static: CA certificates, a `nonroot`
@@ -23,6 +24,11 @@ WORKDIR /src
 COPY . .
 ARG FEATURES=""
 ARG PROFILE=min-size
+# Opt-in usage telemetry (docs/telemetry.md): reports from this image say
+# `build: docker`; without GRAPHRT_TELEMETRY_URL the binary has no endpoint and
+# telemetry stays inert. Build args are visible to `option_env!` during the build.
+ARG GRAPHRT_BUILD=docker
+ARG GRAPHRT_TELEMETRY_URL=""
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     set -eux; \

@@ -23,6 +23,16 @@ releases may contain breaking changes; they are called out under **Changed**.
   succeeds, fails, aborts or pauses, through the HTTP egress policy (private
   networks refused unless `--allow-private-network`, no redirects), retried
   with exponential backoff on network errors, `408`, `429` and `5xx`.
+- Opt-in anonymous usage telemetry for the `graphrt` binary (`telemetry`
+  feature, in the default set). Off by default; on only after
+  `graphrt telemetry enable` or `GRAPHRT_TELEMETRY=1`, and always off with
+  `DO_NOT_TRACK`, in CI, or without an endpoint (`GRAPHRT_TELEMETRY_URL` at
+  build or run time). At most one report a day, sent from a background
+  thread with a 5 s timeout: a random install id, version, OS/arch,
+  features, build (`cli`/`docker`) and per-day counts of runs and `serve`
+  requests, aggregated in `telemetry.json` in the user config directory.
+  `graphrt telemetry status` prints exactly what would be sent. Not in the
+  embedded or FFI libraries. See docs/telemetry.md.
 
 ### Performance
 - Engine: fewer allocations and less work per node execution. Node task

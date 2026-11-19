@@ -317,10 +317,13 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
     // Webhook deliveries authenticate themselves (signature, else the bearer key).
     let hooks = Router::new().route("/v1/hooks/{hook}", post(crate::webhooks::receive));
+    let counted = api.merge(hooks);
+    // Opt-in usage telemetry counts API requests (in memory); health checks are not counted.
+    #[cfg(feature = "telemetry")]
+    let counted = counted.layer(middleware::from_fn(crate::telemetry::count_requests));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .merge(api)
-        .merge(hooks)
+        .merge(counted)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)
 }
@@ -885,6 +888,8 @@ fn launch(
     });
     let active = live::spawn(run, assembler, record, Arc::clone(&state.store), on_finish, tracer);
     state.track(Arc::clone(&active));
+    #[cfg(feature = "telemetry")]
+    crate::telemetry::count_run();
     active
 }
 

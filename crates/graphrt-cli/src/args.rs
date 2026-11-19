@@ -34,8 +34,36 @@ pub enum Command {
     /// Build, inspect, verify and sign portable bundles (`.grt`).
     #[cfg(feature = "bundle")]
     Bundle(BundleArgs),
+    /// Opt in to or out of anonymous usage telemetry, or show exactly what it sends.
+    #[cfg(feature = "telemetry")]
+    Telemetry(TelemetryArgs),
     /// Print version and enabled features.
     Version,
+}
+
+/// Options of `graphrt telemetry`.
+#[cfg(feature = "telemetry")]
+#[derive(Debug, Args)]
+pub struct TelemetryArgs {
+    #[command(subcommand)]
+    pub command: TelemetryCommand,
+}
+
+/// `graphrt telemetry` subcommands. Telemetry is off unless enabled; see docs/telemetry.md.
+#[cfg(feature = "telemetry")]
+#[derive(Debug, Subcommand)]
+pub enum TelemetryCommand {
+    /// Opt in: send one anonymous report a day (install id, version, OS/arch, features,
+    /// daily run and request counts).
+    Enable,
+    /// Opt out and delete the install id and unsent counts.
+    Disable,
+    /// Show whether telemetry is on, why, and the exact next report.
+    Status {
+        /// Print JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Options of `graphrt bundle`.

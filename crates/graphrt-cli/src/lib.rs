@@ -7,7 +7,7 @@ pub mod catalog;
 pub mod error;
 pub mod extensions;
 pub mod files;
-#[cfg(feature = "serve")]
+#[cfg(any(feature = "serve", feature = "telemetry"))]
 pub mod hex;
 pub mod inspect;
 #[cfg(feature = "rag")]
@@ -23,6 +23,8 @@ pub mod serve;
 pub mod setup;
 #[cfg(feature = "serve")]
 pub mod store;
+#[cfg(feature = "telemetry")]
+pub mod telemetry;
 #[cfg(feature = "wasm")]
 pub mod wasm_loader;
 #[cfg(feature = "serve")]
@@ -70,6 +72,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "serve") {
         features.push("serve");
     }
+    if cfg!(feature = "telemetry") {
+        features.push("telemetry");
+    }
     features
 }
 
@@ -81,6 +86,8 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         #[cfg(any(feature = "plugins", feature = "wasm"))]
         Command::Plugin(args) => plugin::plugin(args),
         Command::Nodes(args) => catalog::nodes(&args),
+        #[cfg(feature = "telemetry")]
+        Command::Telemetry(args) => telemetry::telemetry(&args),
         #[cfg(feature = "bundle")]
         Command::Bundle(args) => bundle_cmd::bundle(args),
         Command::Version => {

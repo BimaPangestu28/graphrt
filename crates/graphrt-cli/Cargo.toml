@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "telemetry"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -54,6 +54,9 @@ mimalloc = ["dep:mimalloc"]
 # `graphrt serve`: HTTP + SSE API, webhook triggers (`--webhooks`). Completion
 # callbacks of webhooks additionally need `http` (they go through its egress policy).
 serve = ["dep:axum", "dep:sha2", "tokio/rt-multi-thread", "tokio/net", "tokio/sync"]
+# Opt-in anonymous usage telemetry of the CLI binary (`graphrt telemetry`). Off
+# by default and inert unless an endpoint is configured; see docs/telemetry.md.
+telemetry = ["http", "dep:getrandom"]
 
 [dependencies]
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }
@@ -77,6 +80,7 @@ indexmap.workspace = true
 serde-saphyr.workspace = true
 reqwest = { workspace = true, optional = true }
 sha2 = { version = "0.11", optional = true, default-features = false }
+getrandom = { version = "0.3", optional = true }
 axum ={ version = "0.8", optional = true, default-features = false, features = ["http1", "json", "query", "tokio"] }
 
 [dev-dependencies]
