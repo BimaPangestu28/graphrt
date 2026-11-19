@@ -294,7 +294,7 @@ impl ResponseAssembler {
                 self.set_status(node_id, Status::Started);
             }
             Event::NodeChunk { frame, node_id, field, chunk, .. } => {
-                let key: (Arc<str>, Arc<str>) = (Arc::clone(node_id), Arc::from(field.as_str()));
+                let key: (Arc<str>, Arc<str>) = (Arc::clone(node_id), Arc::clone(field));
                 if frame.is_empty() && self.referenced.contains(&key) {
                     self.streams.entry(key).or_default().text.push_str(chunk);
                 } else if self.pass_through && !chunk.is_empty() {

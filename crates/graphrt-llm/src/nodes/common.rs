@@ -1,6 +1,6 @@
 //! Configuration and prompt assembly shared by the model-calling nodes.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use graphrt_core::event::Usage;
 use graphrt_core::template::{Part, Template};
@@ -487,19 +487,21 @@ pub async fn invoke(
     let mut splitter = ThinkSplitter::default();
     let response = collect(stream, |delta| match (mode, delta) {
         (StreamMode::Off, _) => {}
-        (StreamMode::Raw, ChatDelta::Text(t)) if !t.is_empty() => ctx.chunk("text", t.clone()),
+        (StreamMode::Raw, ChatDelta::Text(t)) if !t.is_empty() => {
+            ctx.chunk_shared(StreamField::Text.shared(), t.clone())
+        }
         (StreamMode::SeparateThink, ChatDelta::Text(t)) => {
             for (field, piece) in splitter.push(t) {
-                ctx.chunk(field.as_str(), piece);
+                ctx.chunk_shared(field.shared(), piece);
             }
         }
-        (_, ChatDelta::Reasoning(t)) if !t.is_empty() => ctx.chunk("reasoning", t.clone()),
+        (_, ChatDelta::Reasoning(t)) if !t.is_empty() => ctx.chunk_shared(StreamField::Reasoning.shared(), t.clone()),
         _ => {}
     })
     .await?;
     if mode == StreamMode::SeparateThink {
         for (field, piece) in splitter.finish() {
-            ctx.chunk(field.as_str(), piece);
+            ctx.chunk_shared(field.shared(), piece);
         }
     }
     Ok(response)
@@ -543,11 +545,23 @@ pub enum StreamField {
     Reasoning,
 }
 
+static TEXT_FIELD: LazyLock<Arc<str>> = LazyLock::new(|| Arc::from("text"));
+static REASONING_FIELD: LazyLock<Arc<str>> = LazyLock::new(|| Arc::from("reasoning"));
+
 impl StreamField {
     pub fn as_str(self) -> &'static str {
         match self {
             StreamField::Text => "text",
             StreamField::Reasoning => "reasoning",
+        }
+    }
+
+    /// The field name as a shared string for [`NodeContext::chunk_shared`]:
+    /// one allocation per process instead of one per chunk.
+    pub fn shared(self) -> &'static Arc<str> {
+        match self {
+            StreamField::Text => &TEXT_FIELD,
+            StreamField::Reasoning => &REASONING_FIELD,
         }
     }
 }

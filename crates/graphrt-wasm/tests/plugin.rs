@@ -157,7 +157,9 @@ async fn word_count_streams_chunks_progress_and_logs() {
     let chunks: Vec<String> = events
         .iter()
         .filter_map(|e| match e {
-            Event::NodeChunk { node_id, field, chunk, .. } if node_id.as_ref() == "wc" && field == "report" => {
+            Event::NodeChunk { node_id, field, chunk, .. }
+                if node_id.as_ref() == "wc" && field.as_ref() == "report" =>
+            {
                 Some(chunk.clone())
             }
             _ => None,

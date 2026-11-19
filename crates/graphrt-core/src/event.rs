@@ -72,7 +72,9 @@ pub enum Event {
         frame: FrameId,
         node_id: std::sync::Arc<str>,
         exec_id: std::sync::Arc<str>,
-        field: String,
+        /// Output field the chunk belongs to. Shared: nodes that stream many
+        /// chunks reuse one allocation (see [`crate::NodeContext::chunk_shared`]).
+        field: std::sync::Arc<str>,
         chunk: String,
     },
     /// Structured progress emitted by a node (agent steps, tool calls, iteration progress...).

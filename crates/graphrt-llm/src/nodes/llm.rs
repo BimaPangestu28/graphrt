@@ -280,7 +280,7 @@ mod tests {
             .unwrap()
             .iter()
             .filter_map(|e| match e {
-                Event::NodeChunk { field, chunk, .. } => Some((field.clone(), chunk.clone())),
+                Event::NodeChunk { field, chunk, .. } => Some((field.to_string(), chunk.clone())),
                 _ => None,
             })
             .collect();
@@ -332,7 +332,7 @@ mod tests {
         let mut reasoning = String::new();
         for e in events.lock().unwrap().iter() {
             if let Event::NodeChunk { field, chunk, .. } = e {
-                match field.as_str() {
+                match field.as_ref() {
                     "text" => streamed.push_str(chunk),
                     _ => reasoning.push_str(chunk),
                 }
