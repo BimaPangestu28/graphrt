@@ -16,6 +16,7 @@ graphrt serve examples/ --store ./runs --store-ttl-days 30
 | *(neither)* | In-memory store. Runs are lost when the server stops. |
 | `--store-ttl-days <n>` | Hourly cleanup of runs (any status except running) not updated for `n` days. |
 | `--max-runs <n>` | In-memory store only: keep at most `n` runs (default 1000, `0` = unlimited). The oldest finished runs are dropped first; running and paused runs are always kept. |
+| `--max-active-runs <n>` | At most `n` runs execute at once (default 256, `0` = unlimited); further starts and resumes get `429 Too Many Requests`. Paused runs do not count. |
 
 ### Small devices
 
