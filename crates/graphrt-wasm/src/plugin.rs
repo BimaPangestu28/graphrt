@@ -252,13 +252,13 @@ impl WasmNode {
                 );
             }
             (NodeRole::Branch, Some(handle)) => {
-                if let Some(allowed) = &self.fixed_handles {
-                    if !allowed.contains(&handle) {
-                        return Err(WasmError::InvalidOutput(format!(
-                            "branch `{handle}` is not one of the declared handles {allowed:?}"
-                        ))
-                        .into());
-                    }
+                if let Some(allowed) = &self.fixed_handles
+                    && !allowed.contains(&handle)
+                {
+                    return Err(WasmError::InvalidOutput(format!(
+                        "branch `{handle}` is not one of the declared handles {allowed:?}"
+                    ))
+                    .into());
                 }
                 out.branch = Some(handle);
             }

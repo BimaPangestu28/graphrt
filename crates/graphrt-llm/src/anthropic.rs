@@ -159,12 +159,11 @@ impl ChatModel for AnthropicModel {
 
 /// Convert an image URL into an Anthropic image source (`url` or inline `base64`).
 fn image_source(url: &str) -> Json {
-    if let Some(rest) = url.strip_prefix("data:") {
-        if let Some((meta, data)) = rest.split_once(',') {
-            if let Some(media_type) = meta.strip_suffix(";base64") {
-                return json!({"type": "base64", "media_type": media_type, "data": data});
-            }
-        }
+    if let Some(rest) = url.strip_prefix("data:")
+        && let Some((meta, data)) = rest.split_once(',')
+        && let Some(media_type) = meta.strip_suffix(";base64")
+    {
+        return json!({"type": "base64", "media_type": media_type, "data": data});
     }
     json!({"type": "url", "url": url})
 }

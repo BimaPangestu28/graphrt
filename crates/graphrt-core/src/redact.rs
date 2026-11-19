@@ -81,10 +81,10 @@ impl SecretSet {
         if plaintext.len() < MIN_SCRUB_LEN {
             return;
         }
-        if let Ok(mut values) = self.values.lock() {
-            if !values.iter().any(|known| known == plaintext) {
-                values.push(Arc::clone(plaintext));
-            }
+        if let Ok(mut values) = self.values.lock()
+            && !values.iter().any(|known| known == plaintext)
+        {
+            values.push(Arc::clone(plaintext));
         }
     }
 

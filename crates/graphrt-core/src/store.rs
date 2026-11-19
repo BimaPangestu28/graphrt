@@ -251,10 +251,10 @@ pub fn stored_event_type(event: &StoredEvent) -> Option<&str> {
 /// snapshot carried by `run_paused` is dropped (stores keep it separately).
 pub fn event_to_json(event: &Event) -> serde_json::Value {
     let mut json = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
-    if let Some(obj) = json.as_object_mut() {
-        if obj.get("type").and_then(serde_json::Value::as_str) == Some("run_paused") {
-            obj.remove("snapshot");
-        }
+    if let Some(obj) = json.as_object_mut()
+        && obj.get("type").and_then(serde_json::Value::as_str) == Some("run_paused")
+    {
+        obj.remove("snapshot");
     }
     json
 }

@@ -414,16 +414,16 @@ impl AgentNode {
             state.messages.push(assistant);
 
             let mut calls = response.tool_calls;
-            if let Some(limit) = cfg.max_tool_calls_per_turn {
-                if calls.len() > limit {
-                    for call in calls.split_off(limit) {
-                        self.record(
-                            &mut state,
-                            &tools,
-                            &call,
-                            ToolOutput::error("rejected: too many tool calls in one turn"),
-                        );
-                    }
+            if let Some(limit) = cfg.max_tool_calls_per_turn
+                && calls.len() > limit
+            {
+                for call in calls.split_off(limit) {
+                    self.record(
+                        &mut state,
+                        &tools,
+                        &call,
+                        ToolOutput::error("rejected: too many tool calls in one turn"),
+                    );
                 }
             }
             let mut runnable = Vec::with_capacity(calls.len());

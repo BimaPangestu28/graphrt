@@ -154,10 +154,8 @@ impl SourceMap {
     /// Best position for a diagnostic about `path`: the key (when `prefer_key`)
     /// or the value at the path, else the closest enclosing value that has one.
     pub fn locate(&self, path: &DocPath, prefer_key: bool) -> Option<SourceSpan> {
-        if prefer_key {
-            if let Some(span) = self.key(path) {
-                return Some(span);
-            }
+        if prefer_key && let Some(span) = self.key(path) {
+            return Some(span);
         }
         let mut current = Some(path.clone());
         while let Some(p) = current {

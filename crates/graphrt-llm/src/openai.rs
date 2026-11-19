@@ -291,10 +291,10 @@ fn messages_json(messages: &[Message]) -> Result<Vec<Json>, LlmError> {
 pub(crate) fn build_body(req: &ChatRequest, config: &OpenAiConfig) -> Result<Json, LlmError> {
     check_extra(req)?;
     // Only the first choice is decoded; asking for more would silently discard them.
-    if let Some(n) = req.extra.get("n") {
-        if n.as_u64() != Some(1) {
-            return Err(LlmError::Config(format!("`n` must be 1 (got {n}); only one choice is supported")));
-        }
+    if let Some(n) = req.extra.get("n")
+        && n.as_u64() != Some(1)
+    {
+        return Err(LlmError::Config(format!("`n` must be 1 (got {n}); only one choice is supported")));
     }
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model));

@@ -107,10 +107,10 @@ impl RunShared {
     /// Host input for a node resumed in `frame`: the frame-qualified key
     /// (`"iter[2]/approve"`) wins over the plain node id (`"approve"`).
     fn resume_input(&self, frame: &str, node_id: &str) -> Option<Value> {
-        if !frame.is_empty() {
-            if let Some(value) = self.resume_inputs.get(&format!("{frame}/{node_id}")) {
-                return Some(value.clone());
-            }
+        if !frame.is_empty()
+            && let Some(value) = self.resume_inputs.get(&format!("{frame}/{node_id}"))
+        {
+            return Some(value.clone());
         }
         self.resume_inputs.get(node_id).cloned()
     }
@@ -976,11 +976,11 @@ fn poll_tasks<F: Future<Output = TaskDone>>(
     running: &mut FuturesUnordered<F>,
 ) -> std::task::Poll<Option<TaskDone>> {
     use std::task::Poll;
-    if let Some(task) = solo.as_mut().as_pin_mut() {
-        if let Poll::Ready(done) = task.poll(cx) {
-            solo.set(None);
-            return Poll::Ready(Some(done));
-        }
+    if let Some(task) = solo.as_mut().as_pin_mut()
+        && let Poll::Ready(done) = task.poll(cx)
+    {
+        solo.set(None);
+        return Poll::Ready(Some(done));
     }
     match running.poll_next_unpin(cx) {
         Poll::Ready(None) if solo.is_some() => Poll::Pending,
@@ -992,12 +992,12 @@ fn poll_tasks<F: Future<Output = TaskDone>>(
 /// concatenated, other keys overwrite.
 fn merge_response(frame_outputs: &mut IndexMap<String, Value>, outputs: &Variables) {
     for (key, value) in outputs {
-        if key == "answer" {
-            if let Some(Value::String(existing)) = frame_outputs.get(key) {
-                let joined = format!("{existing}{}", value.to_text());
-                frame_outputs.insert(key.to_owned(), Value::from(joined));
-                continue;
-            }
+        if key == "answer"
+            && let Some(Value::String(existing)) = frame_outputs.get(key)
+        {
+            let joined = format!("{existing}{}", value.to_text());
+            frame_outputs.insert(key.to_owned(), Value::from(joined));
+            continue;
         }
         frame_outputs.insert(key.to_owned(), value.clone());
     }

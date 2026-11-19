@@ -138,10 +138,10 @@ impl HttpTransport {
                     let message = n.params.get("message").and_then(|v| v.as_str()).unwrap_or_default();
                     crate::conn::forward_log(&self.name, level, message);
                 }
-                if n.request_id() == Some(id) {
-                    if let Some(sink) = sink {
-                        sink(n);
-                    }
+                if n.request_id() == Some(id)
+                    && let Some(sink) = sink
+                {
+                    sink(n);
                 }
                 Ok(None)
             }

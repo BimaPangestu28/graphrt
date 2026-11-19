@@ -354,10 +354,10 @@ impl ResponseAssembler {
                 if self.referenced.contains(node_id.as_ref()) {
                     self.pool.set_outputs(node_id, outputs);
                 }
-                if let Some(ix) = self.root_node(node_id) {
-                    if let Some(b) = self.branch.get_mut(ix) {
-                        b.clone_from(branch);
-                    }
+                if let Some(ix) = self.root_node(node_id)
+                    && let Some(b) = self.branch.get_mut(ix)
+                {
+                    b.clone_from(branch);
                 }
                 self.set_status(node_id, Status::Succeeded);
             }
@@ -459,15 +459,15 @@ impl ResponseAssembler {
     }
 
     fn set_status(&mut self, node_id: &str, status: Status) {
-        if let Some(ix) = self.root_node(node_id) {
-            if let Some(s) = self.status.get_mut(ix) {
-                // Never downgrade a finished node back to "started" (retries reuse the id).
-                if !(s.finished() && status == Status::Started) {
-                    if *s != status {
-                        self.changed.push(ix);
-                    }
-                    *s = status;
+        if let Some(ix) = self.root_node(node_id)
+            && let Some(s) = self.status.get_mut(ix)
+        {
+            // Never downgrade a finished node back to "started" (retries reuse the id).
+            if !(s.finished() && status == Status::Started) {
+                if *s != status {
+                    self.changed.push(ix);
                 }
+                *s = status;
             }
         }
     }
@@ -509,24 +509,23 @@ impl ResponseAssembler {
                     full = true;
                     break;
                 }
-                if now != before {
-                    if let Some(c) = certain.get_mut(ix) {
-                        *c = now;
-                    }
+                if now != before
+                    && let Some(c) = certain.get_mut(ix)
+                {
+                    *c = now;
                 }
                 // Even when `ix` itself was already certain, its outgoing edges may
                 // have become certain (e.g. a branch picked its handle).
                 if now {
                     for &ex in self.graph.outgoing(ix) {
-                        if let Some(edge) = self.graph.edge(ex) {
-                            if !certain.get(edge.target).copied().unwrap_or(false)
-                                && self.compute_certain(edge.target, entry, &certain)
-                            {
-                                if let Some(c) = certain.get_mut(edge.target) {
-                                    *c = true;
-                                }
-                                work.push(edge.target);
+                        if let Some(edge) = self.graph.edge(ex)
+                            && !certain.get(edge.target).copied().unwrap_or(false)
+                            && self.compute_certain(edge.target, entry, &certain)
+                        {
+                            if let Some(c) = certain.get_mut(edge.target) {
+                                *c = true;
                             }
+                            work.push(edge.target);
                         }
                     }
                 }
@@ -701,28 +700,27 @@ fn resolve_var(sources: &Sources<'_>, sel: &Selector, offset: usize, flush: bool
     let mut text = String::new();
     let mut new_offset = offset;
     let streamed = buffered.is_some();
-    if let Some(buf) = buffered {
-        if let Some(rest) = buf.text.get(offset..) {
-            text.push_str(rest);
-            new_offset = buf.text.len();
-        }
+    if let Some(buf) = buffered
+        && let Some(rest) = buf.text.get(offset..)
+    {
+        text.push_str(rest);
+        new_offset = buf.text.len();
     }
 
     let complete = match node_status {
         Status::Skipped | Status::Failed => true,
         Status::Succeeded | Status::Handled => {
-            if !streamed {
-                if let Some(v) = pool.get(sel) {
-                    text.push_str(&v.to_text());
-                }
+            if !streamed && let Some(v) = pool.get(sel) {
+                text.push_str(&v.to_text());
             }
             true
         }
         Status::Unknown | Status::Started => {
-            if flush && !streamed {
-                if let Some(v) = pool.get(sel) {
-                    text.push_str(&v.to_text());
-                }
+            if flush
+                && !streamed
+                && let Some(v) = pool.get(sel)
+            {
+                text.push_str(&v.to_text());
             }
             flush
         }

@@ -156,7 +156,7 @@ fn base64_decoded_len(text: &str) -> Option<usize> {
         return None;
     }
     let padded = body.len() != bytes.len();
-    if padded && bytes.len() % 4 != 0 {
+    if padded && !bytes.len().is_multiple_of(4) {
         return None;
     }
     match body.len() % 4 {

@@ -94,10 +94,10 @@ impl ClassifierNode {
                 return Err(ConfigError::new(doc, format!("class ids must be unique and non-empty (`{}`)", class.id)));
             }
         }
-        if let Some(fallback) = &config.fallback_class {
-            if !config.classes.iter().any(|c| &c.id == fallback) {
-                return Err(ConfigError::new(doc, format!("fallback_class `{fallback}` is not a configured class")));
-            }
+        if let Some(fallback) = &config.fallback_class
+            && !config.classes.iter().any(|c| &c.id == fallback)
+        {
+            return Err(ConfigError::new(doc, format!("fallback_class `{fallback}` is not a configured class")));
         }
         match config.engine.as_deref() {
             None | Some("chat" | "typesafe") => {}
@@ -110,10 +110,10 @@ impl ClassifierNode {
             ("min_probability", config.min_probability),
             ("companion_threshold", Some(config.companion_threshold)),
         ] {
-            if let Some(v) = value {
-                if !(0.0..=1.0).contains(&v) {
-                    return Err(ConfigError::new(doc, format!("{name} must be between 0 and 1")));
-                }
+            if let Some(v) = value
+                && !(0.0..=1.0).contains(&v)
+            {
+                return Err(ConfigError::new(doc, format!("{name} must be between 0 and 1")));
             }
         }
         if config.engine.as_deref() == Some("chat") && config.model.provider == "typesafe" {
@@ -332,15 +332,15 @@ impl ClassifierNode {
         };
 
         let mut reasons: Vec<String> = Vec::new();
-        if let Some(min) = cfg.min_confidence {
-            if *confidence < min {
-                reasons.push(format!("confidence {confidence:.3} < {min}"));
-            }
+        if let Some(min) = cfg.min_confidence
+            && *confidence < min
+        {
+            reasons.push(format!("confidence {confidence:.3} < {min}"));
         }
-        if let Some(min) = cfg.min_probability {
-            if probability < min {
-                reasons.push(format!("probability {probability:.3} < {min}"));
-            }
+        if let Some(min) = cfg.min_probability
+            && probability < min
+        {
+            reasons.push(format!("probability {probability:.3} < {min}"));
         }
         if cfg.companion_noul {
             match fits {

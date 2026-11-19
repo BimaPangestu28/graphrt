@@ -441,10 +441,10 @@ fn as_list(expected: &Value) -> Vec<Value> {
         Value::Array(items) => items.iter().cloned().collect(),
         Value::String(s) => {
             let trimmed = s.trim();
-            if trimmed.starts_with('[') {
-                if let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                    return items.into_iter().map(Value::from_json).collect();
-                }
+            if trimmed.starts_with('[')
+                && let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(trimmed)
+            {
+                return items.into_iter().map(Value::from_json).collect();
             }
             trimmed.split(',').map(|p| Value::from(p.trim())).filter(|v| !v.is_empty()).collect()
         }

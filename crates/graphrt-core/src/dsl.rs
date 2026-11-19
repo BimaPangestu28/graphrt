@@ -630,10 +630,8 @@ fn decode_decls(
     let mut decls: Vec<VariableDecl> = Vec::with_capacity(items.len());
     for (i, item) in items.into_iter().enumerate() {
         let item_path = path.index(i);
-        if strict {
-            if let serde_json::Value::Object(obj) = &item {
-                check_keys(obj, &item_path, &DECL_KEYS, true, out);
-            }
+        if strict && let serde_json::Value::Object(obj) = &item {
+            check_keys(obj, &item_path, &DECL_KEYS, true, out);
         }
         match serde_json::from_value::<VariableDecl>(item) {
             Ok(decl) => {
@@ -808,12 +806,12 @@ fn extract_policy(
 
     if let Some(v) = obj.remove("on_error") {
         let at = path.key("on_error");
-        if let serde_json::Value::Object(map) = &v {
-            if strict {
-                let mut found = Vec::new();
-                check_keys(map, &at, &ON_ERROR_KEYS, true, &mut found);
-                found.into_iter().for_each(&mut push);
-            }
+        if let serde_json::Value::Object(map) = &v
+            && strict
+        {
+            let mut found = Vec::new();
+            check_keys(map, &at, &ON_ERROR_KEYS, true, &mut found);
+            found.into_iter().for_each(&mut push);
         }
         let strategy = v.get("strategy").and_then(serde_json::Value::as_str).map(str::to_owned);
         match (&strategy, serde_json::from_value::<ErrorStrategy>(v)) {
@@ -868,12 +866,12 @@ fn extract_policy(
 
     if let Some(v) = obj.remove("retry") {
         let at = path.key("retry");
-        if let serde_json::Value::Object(map) = &v {
-            if strict {
-                let mut found = Vec::new();
-                check_keys(map, &at, &RETRY_KEYS, true, &mut found);
-                found.into_iter().for_each(&mut push);
-            }
+        if let serde_json::Value::Object(map) = &v
+            && strict
+        {
+            let mut found = Vec::new();
+            check_keys(map, &at, &RETRY_KEYS, true, &mut found);
+            found.into_iter().for_each(&mut push);
         }
         match serde_json::from_value(v) {
             Ok(retry) => policy.retry = retry,

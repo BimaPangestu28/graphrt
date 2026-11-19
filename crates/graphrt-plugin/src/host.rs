@@ -128,15 +128,14 @@ impl PluginHost {
                  (e.g. `--trust-plugin {name}`)"
             ));
         }
-        if let Runtime::Http(h) = &plugin.manifest.runtime {
-            if let Some(var) = &h.bearer_token_env {
-                if !trusted {
-                    return Err(PluginError::Manifest(format!(
-                        "plugin `{name}`: sending host variable `{var}` as a bearer token requires trusting the \
+        if let Runtime::Http(h) = &plugin.manifest.runtime
+            && let Some(var) = &h.bearer_token_env
+            && !trusted
+        {
+            return Err(PluginError::Manifest(format!(
+                "plugin `{name}`: sending host variable `{var}` as a bearer token requires trusting the \
                          plugin (e.g. `--trust-plugin {name}`)"
-                    )));
-                }
-            }
+            )));
         }
         Ok((trusted, warnings))
     }

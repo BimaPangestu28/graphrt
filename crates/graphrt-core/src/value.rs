@@ -466,10 +466,11 @@ fn json_to_value(json: serde_json::Value, trusted: bool) -> Value {
                 Value::Array(Arc::new(items.into_iter().map(|v| json_to_value(v, trusted)).collect()))
             }
             serde_json::Value::Object(map) => {
-                if trusted && map.contains_key(FILE_MARKER_KEY) {
-                    if let Ok(file) = serde_json::from_value::<File>(serde_json::Value::Object(map.clone())) {
-                        return Value::File(Arc::new(file));
-                    }
+                if trusted
+                    && map.contains_key(FILE_MARKER_KEY)
+                    && let Ok(file) = serde_json::from_value::<File>(serde_json::Value::Object(map.clone()))
+                {
+                    return Value::File(Arc::new(file));
                 }
                 Value::Object(Arc::new(map.into_iter().map(|(k, v)| (k, json_to_value(v, trusted))).collect()))
             }

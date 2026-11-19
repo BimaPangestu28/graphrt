@@ -441,12 +441,11 @@ pub fn build_messages(
     // contains it (a message referencing `sys.query`); otherwise it would be sent twice.
     // An explicit `query_prompt_template` is always appended.
     let template_has_query = template.messages().iter().any(|m| m.text.selectors().any(is_sys_query));
-    if let Some(mem) = memory {
-        if mem.query_prompt_template.is_some() || !template_has_query {
-            if let Some(query) = mem.query(pool) {
-                messages.push(Message::user(query));
-            }
-        }
+    if let Some(mem) = memory
+        && (mem.query_prompt_template.is_some() || !template_has_query)
+        && let Some(query) = mem.query(pool)
+    {
+        messages.push(Message::user(query));
     }
     if !images.is_empty() {
         match messages.iter_mut().rev().find(|m| m.role == Role::User) {
@@ -707,10 +706,10 @@ pub fn extract_json(text: &str) -> Option<Json> {
 pub fn extract_json_where(text: &str, accept: impl Fn(&Json) -> bool) -> Option<Json> {
     let (answer, _) = split_think_tags(text);
     let trimmed = answer.trim();
-    if let Ok(v) = serde_json::from_str::<Json>(trimmed) {
-        if accept(&v) {
-            return Some(v);
-        }
+    if let Ok(v) = serde_json::from_str::<Json>(trimmed)
+        && accept(&v)
+    {
+        return Some(v);
     }
     let bytes = trimmed.as_bytes();
     let mut search_from = 0;
@@ -721,12 +720,11 @@ pub fn extract_json_where(text: &str, accept: impl Fn(&Json) -> bool) -> Option<
             return None;
         }
         let start = search_from + offset;
-        if let Some(candidate) = matching_close(bytes, start).and_then(|end| trimmed.get(start..=end)) {
-            if let Ok(v) = serde_json::from_str::<Json>(candidate) {
-                if accept(&v) {
-                    return Some(v);
-                }
-            }
+        if let Some(candidate) = matching_close(bytes, start).and_then(|end| trimmed.get(start..=end))
+            && let Ok(v) = serde_json::from_str::<Json>(candidate)
+            && accept(&v)
+        {
+            return Some(v);
         }
         search_from = start + 1;
     }

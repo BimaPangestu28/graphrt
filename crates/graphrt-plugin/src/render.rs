@@ -46,21 +46,21 @@ fn render_object(
     }
     // Siblings are added after the walk so they never overwrite user keys.
     for (key, value) in map {
-        if let serde_json::Value::String(s) = value {
-            if has_placeholder(s) {
-                let raw_key = format!("{key}_raw");
-                if !out.contains_key(&raw_key) {
-                    out.insert(raw_key, value.clone());
-                }
+        if let serde_json::Value::String(s) = value
+            && has_placeholder(s)
+        {
+            let raw_key = format!("{key}_raw");
+            if !out.contains_key(&raw_key) {
+                out.insert(raw_key, value.clone());
             }
         }
-        if key.ends_with("selector") {
-            if let Some(selector) = as_selector(value) {
-                let value_key = format!("{key}_value");
-                if !out.contains_key(&value_key) {
-                    let resolved = pool.get(&selector).map(|v| to_json(&v, expose)).unwrap_or(serde_json::Value::Null);
-                    out.insert(value_key, resolved);
-                }
+        if key.ends_with("selector")
+            && let Some(selector) = as_selector(value)
+        {
+            let value_key = format!("{key}_value");
+            if !out.contains_key(&value_key) {
+                let resolved = pool.get(&selector).map(|v| to_json(&v, expose)).unwrap_or(serde_json::Value::Null);
+                out.insert(value_key, resolved);
             }
         }
     }
@@ -92,11 +92,11 @@ fn render_value(value: &serde_json::Value, pool: &VariablePool, expose: bool) ->
 
 fn collect_object(map: &serde_json::Map<String, serde_json::Value>, out: &mut Vec<Selector>) {
     for (key, value) in map {
-        if key.ends_with("selector") {
-            if let Some(selector) = as_selector(value) {
-                out.push(selector);
-                continue;
-            }
+        if key.ends_with("selector")
+            && let Some(selector) = as_selector(value)
+        {
+            out.push(selector);
+            continue;
         }
         collect_value(value, out);
     }

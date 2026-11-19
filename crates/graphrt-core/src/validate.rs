@@ -278,10 +278,10 @@ fn backticked(message: &str) -> Option<&str> {
 fn parse_raw(text: &str) -> Result<serde_json::Value, Box<Diagnostic>> {
     let syntax = |message: String, line: usize, column: usize| {
         let mut d = Diagnostic::error("syntax", DocPath::root(), message);
-        if let (Ok(line), Ok(column)) = (u32::try_from(line), u32::try_from(column)) {
-            if line > 0 {
-                d.span = Some(SourceSpan { line, column: column.max(1), len: 1 });
-            }
+        if let (Ok(line), Ok(column)) = (u32::try_from(line), u32::try_from(column))
+            && line > 0
+        {
+            d.span = Some(SourceSpan { line, column: column.max(1), len: 1 });
         }
         Box::new(d)
     };
@@ -391,10 +391,10 @@ fn check_node(doc: &NodeDoc, path: &DocPath, registry: &Registry, out: &mut Vec<
         );
         return None;
     }
-    if doc.strict {
-        if let Some(descriptor) = registry.descriptor_ref(&doc.kind) {
-            out.extend(config_diagnostics(doc, descriptor, path));
-        }
+    if doc.strict
+        && let Some(descriptor) = registry.descriptor_ref(&doc.kind)
+    {
+        out.extend(config_diagnostics(doc, descriptor, path));
     }
     match registry.build(doc) {
         Ok(node) => Some(node),
@@ -602,10 +602,10 @@ fn check_edges(
     let mut edge_ids = HashSet::new();
     for (k, edge) in workflow.graph.edges.iter().enumerate() {
         let path = paths.edge(k);
-        if let Some(id) = &edge.id {
-            if !edge_ids.insert(id.as_str()) {
-                out.push(Diagnostic::error("duplicate-edge", path.key("id"), format!("duplicate edge id `{id}`")));
-            }
+        if let Some(id) = &edge.id
+            && !edge_ids.insert(id.as_str())
+        {
+            out.push(Diagnostic::error("duplicate-edge", path.key("id"), format!("duplicate edge id `{id}`")));
         }
         let mut lookup = |end: &str, id: &str| match index.get(id) {
             Some(&ix) => Some(ix),

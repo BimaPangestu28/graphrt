@@ -350,10 +350,10 @@ impl Stream for RunStream {
         if self.finished {
             return Poll::Ready(None);
         }
-        if let Some(driver) = self.driver.as_mut() {
-            if driver.as_mut().poll(cx).is_ready() {
-                self.driver = None;
-            }
+        if let Some(driver) = self.driver.as_mut()
+            && driver.as_mut().poll(cx).is_ready()
+        {
+            self.driver = None;
         }
         let event = match self.queue.pop() {
             Some(event) => Some(event),

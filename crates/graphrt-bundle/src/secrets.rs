@@ -34,17 +34,17 @@ fn walk(value: &serde_json::Value, path: &mut Vec<String>, what: &str) -> Result
     match value {
         serde_json::Value::Object(map) => {
             for (key, child) in map {
-                if is_secret_key(key) {
-                    if let serde_json::Value::String(s) = child {
-                        if !s.trim().is_empty() && !is_env_reference(s) {
-                            path.push(key.clone());
-                            let at = path.join(".");
-                            return Err(BundleError::Secret(format!(
-                                "{what}: `{at}` holds an inline secret; bundles never carry credentials — \
+                if is_secret_key(key)
+                    && let serde_json::Value::String(s) = child
+                    && !s.trim().is_empty()
+                    && !is_env_reference(s)
+                {
+                    path.push(key.clone());
+                    let at = path.join(".");
+                    return Err(BundleError::Secret(format!(
+                        "{what}: `{at}` holds an inline secret; bundles never carry credentials — \
                                  reference an environment variable (`{key}_env` or `${{VAR}}`) instead"
-                            )));
-                        }
-                    }
+                    )));
                 }
                 path.push(key.clone());
                 walk(child, path, what)?;

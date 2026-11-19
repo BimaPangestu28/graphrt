@@ -448,10 +448,10 @@ pub(crate) fn build_body(req: &ChatRequest) -> Result<Json, LlmError> {
             Some(ToolChoice::Tool(name)) => Some(json!({"tool": {"name": name}})),
             _ => None,
         };
-        if let Some(choice) = choice {
-            if let Some(obj) = tool_config.as_object_mut() {
-                obj.insert("toolChoice".into(), choice);
-            }
+        if let Some(choice) = choice
+            && let Some(obj) = tool_config.as_object_mut()
+        {
+            obj.insert("toolChoice".into(), choice);
         }
         body.insert("toolConfig".into(), tool_config);
     }

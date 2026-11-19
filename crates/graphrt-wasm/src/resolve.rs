@@ -26,13 +26,13 @@ pub fn resolve_config(config: &Json, pool: &VariablePool, expose_secrets: bool) 
         Json::Object(map) => {
             let mut out = serde_json::Map::with_capacity(map.len());
             for (key, value) in map {
-                if is_selector_key(key) {
-                    if let Some(selector) = parse_selector(value) {
-                        out.insert(key.clone(), value.clone());
-                        let resolved = pool.get(&selector).map(|v| to_json(&v, expose_secrets)).unwrap_or(Json::Null);
-                        out.insert(format!("{key}_value"), resolved);
-                        continue;
-                    }
+                if is_selector_key(key)
+                    && let Some(selector) = parse_selector(value)
+                {
+                    out.insert(key.clone(), value.clone());
+                    let resolved = pool.get(&selector).map(|v| to_json(&v, expose_secrets)).unwrap_or(Json::Null);
+                    out.insert(format!("{key}_value"), resolved);
+                    continue;
                 }
                 out.insert(key.clone(), resolve_config(value, pool, expose_secrets));
             }
