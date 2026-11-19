@@ -33,6 +33,11 @@ releases may contain breaking changes; they are called out under **Changed**.
   as "Incorrect API key provided: sk-...", an HTTP error snippet from an echo
   endpoint, an exception in code) was recorded verbatim. New public helpers in
   `graphrt_core::redact`. Also in 0.2.0.
+- LLM providers: error bodies of failed provider requests are scrubbed of the
+  credentials the request carried (`Authorization`, `x-api-key`,
+  `x-goog-api-key`, `api-key` headers, `key` query parameters) before they
+  become error messages. OpenAI-compatible gateways and self-hosted servers
+  often echo the full key. Also in 0.2.0.
 - Dependencies: `rusqlite` 0.40 -> 0.41 (bundled SQLite 3.54), fixing
   RUSTSEC-2026-0459 / CVE-2026-119375 (uninitialized page-cache memory read
   through a crafted database and `-wal` pair) in `graphrt-rag`'s `SqliteStore`.
