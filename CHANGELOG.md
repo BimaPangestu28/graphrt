@@ -39,6 +39,8 @@ releases may contain breaking changes; they are called out under **Changed**.
   finished node already read is reused for the next node's start and for any
   nodes skipped in the same step, and a batch of nodes started together shares
   one reading.
+- Engine: execution ids are written as characters into a reused per-thread
+  buffer, which drops the UTF-8 validation pass each id needed (same format).
 - Engine: fewer allocations and less work per node execution. Node task
   futures are stored unboxed and are less than half their former size (584 ->
   264 bytes); a node that runs alone (chains, fan-ins) is polled without a

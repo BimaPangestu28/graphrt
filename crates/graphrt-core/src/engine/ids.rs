@@ -1,5 +1,6 @@
 //! Process-unique identifiers for runs and node executions, without a UUID dependency.
 
+use std::cell::RefCell;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,66 +29,44 @@ fn seed() -> u64 {
 /// engine profiles). The output is identical to
 /// `format!("{now_ms:011x}-{:08x}-{n:x}", mixed & 0xffff_ffff)`.
 pub(crate) fn new_id(now_ms: u64) -> String {
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mixed = seed() ^ n.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    let mut id = String::with_capacity(16 + 1 + 8 + 1 + 16);
-    push_hex(&mut id, now_ms, 11);
-    id.push('-');
-    push_hex(&mut id, mixed & 0xffff_ffff, 8);
-    id.push('-');
-    push_hex(&mut id, n, 1);
+    let mut id = String::with_capacity(ID_CAPACITY);
+    write_id(&mut id, now_ms);
     id
 }
 
-/// [`new_id`] directly as an `Arc<str>`: written into a stack buffer, so minting
-/// an execution id costs one allocation instead of two.
-pub(crate) fn new_id_arc(now_ms: u64) -> std::sync::Arc<str> {
+/// Longest id: 16 + 1 + 8 + 1 + 16 hex digits and separators.
+const ID_CAPACITY: usize = 42;
+
+fn write_id(out: &mut String, now_ms: u64) {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mixed = seed() ^ n.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    let mut buf = HexBuf::default();
-    buf.hex(now_ms, 11);
-    buf.byte(b'-');
-    buf.hex(mixed & 0xffff_ffff, 8);
-    buf.byte(b'-');
-    buf.hex(n, 1);
-    std::sync::Arc::from(buf.as_str())
+    push_hex(out, now_ms, 11);
+    out.push('-');
+    push_hex(out, mixed & 0xffff_ffff, 8);
+    out.push('-');
+    push_hex(out, n, 1);
 }
 
-/// Fixed-size ASCII buffer for ids (11 + 1 + 8 + 1 + 16 hex digits at most).
-struct HexBuf {
-    bytes: [u8; 48],
-    len: usize,
-}
-
-impl Default for HexBuf {
-    fn default() -> Self {
-        Self { bytes: [0; 48], len: 0 }
+/// [`new_id`] directly as an `Arc<str>`, minted once per node execution.
+///
+/// The digits go into a reused per-thread `String`, so the id costs only the
+/// `Arc` allocation. Building it as `char`s keeps the buffer valid UTF-8 by
+/// construction; the earlier byte buffer needed a `from_utf8` pass per id,
+/// which was a measurable share of a node's cost.
+pub(crate) fn new_id_arc(now_ms: u64) -> std::sync::Arc<str> {
+    thread_local! {
+        static SCRATCH: RefCell<String> = const { RefCell::new(String::new()) };
     }
-}
-
-impl HexBuf {
-    fn byte(&mut self, b: u8) {
-        if let Some(slot) = self.bytes.get_mut(self.len) {
-            *slot = b;
-            self.len += 1;
+    SCRATCH.with(|scratch| match scratch.try_borrow_mut() {
+        Ok(mut buf) => {
+            buf.clear();
+            buf.reserve(ID_CAPACITY);
+            write_id(&mut buf, now_ms);
+            std::sync::Arc::from(buf.as_str())
         }
-    }
-
-    fn hex(&mut self, value: u64, min_width: usize) {
-        const DIGITS: &[u8; 16] = b"0123456789abcdef";
-        let digits = (64 - value.leading_zeros()).div_ceil(4).max(1) as usize;
-        for _ in digits..min_width {
-            self.byte(b'0');
-        }
-        for i in (0..digits).rev() {
-            let nibble = (value >> (i * 4)) & 0xf;
-            self.byte(DIGITS.get(nibble as usize).copied().unwrap_or(b'0'));
-        }
-    }
-
-    fn as_str(&self) -> &str {
-        self.bytes.get(..self.len).and_then(|b| std::str::from_utf8(b).ok()).unwrap_or_default()
-    }
+        // Not reentrant in practice; fall back rather than panic.
+        Err(_) => std::sync::Arc::from(new_id(now_ms)),
+    })
 }
 
 /// Append `value` in lowercase hex, left-padded with zeros to `min_width` digits.
