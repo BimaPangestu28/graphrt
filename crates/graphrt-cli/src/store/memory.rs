@@ -6,8 +6,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use futures::future::{BoxFuture, ready};
 use graphrt_core::Snapshot;
 use graphrt_core::store::{
-    INTERRUPTED_BY_RESTART, RunFilter, RunPage, RunRecord, RunStatus, RunStore, StoreError, StoreResult, page_of,
-    sort_newest_first, validate_run_id,
+    INTERRUPTED_BY_RESTART, RunFilter, RunPage, RunRecord, RunStatus, RunStore, StoreError, StoreResult, StoredEvent,
+    page_of, sort_newest_first, validate_run_id,
 };
 
 /// Default per-run event cap.
@@ -22,7 +22,7 @@ pub const MAX_PAGE: usize = 500;
 #[derive(Debug, Default)]
 struct Entry {
     record: Option<RunRecord>,
-    events: Vec<serde_json::Value>,
+    events: Vec<StoredEvent>,
     snapshot: Option<Snapshot>,
 }
 
@@ -133,7 +133,7 @@ impl RunStore for MemoryStore {
         Box::pin(ready(result))
     }
 
-    fn append_events<'a>(&'a self, run_id: &'a str, events: Vec<serde_json::Value>) -> BoxFuture<'a, StoreResult<()>> {
+    fn append_events<'a>(&'a self, run_id: &'a str, events: Vec<StoredEvent>) -> BoxFuture<'a, StoreResult<()>> {
         let max = self.max_events;
         let result = validate_run_id(run_id).and_then(|()| {
             let mut runs = self.lock();
@@ -151,7 +151,7 @@ impl RunStore for MemoryStore {
         Box::pin(ready(result))
     }
 
-    fn events<'a>(&'a self, run_id: &'a str, from: u64) -> BoxFuture<'a, StoreResult<Vec<serde_json::Value>>> {
+    fn events<'a>(&'a self, run_id: &'a str, from: u64) -> BoxFuture<'a, StoreResult<Vec<StoredEvent>>> {
         let result = validate_run_id(run_id).and_then(|()| {
             let mut runs = self.lock();
             let entry = existing(&mut runs, run_id)?;
@@ -291,12 +291,12 @@ mod tests {
         assert_eq!(block_on(store.claim_resume("r1", 2)).unwrap().status, RunStatus::Running);
         assert!(matches!(block_on(store.claim_resume("r1", 3)), Err(StoreError::Conflict(_))));
 
-        block_on(store.append_events("r1", vec![serde_json::json!(1), serde_json::json!(2)])).unwrap();
-        block_on(store.append_events("r1", vec![serde_json::json!(3), serde_json::json!(4)])).unwrap();
+        block_on(store.append_events("r1", crate::store::raw(&["1", "2"]))).unwrap();
+        block_on(store.append_events("r1", crate::store::raw(&["3", "4"]))).unwrap();
         let rec = block_on(store.get("r1")).unwrap().unwrap();
         assert_eq!(rec.event_count, 3);
         assert!(rec.events_truncated);
-        assert_eq!(block_on(store.events("r1", 1)).unwrap(), vec![serde_json::json!(2), serde_json::json!(3)]);
+        assert_eq!(crate::store::texts(&block_on(store.events("r1", 1)).unwrap()), ["2", "3"]);
 
         assert_eq!(block_on(store.recover_interrupted(9)).unwrap(), 1);
         assert_eq!(block_on(store.get("r1")).unwrap().unwrap().status, RunStatus::Failed);

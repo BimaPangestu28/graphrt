@@ -24,7 +24,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use futures::future::BoxFuture;
 use graphrt_core::Snapshot;
 use graphrt_core::store::{
-    RunFilter, RunPage, RunRecord, RunStore, StoreError, StoreResult, page_of, sort_newest_first, validate_run_id,
+    RunFilter, RunPage, RunRecord, RunStore, StoreError, StoreResult, StoredEvent, page_of, sort_newest_first,
+    validate_run_id,
 };
 
 use super::memory::{DEFAULT_MAX_EVENTS, MAX_PAGE, claim, mark_interrupted, purgeable};
@@ -249,7 +250,7 @@ impl RunStore for FileStore {
         })
     }
 
-    fn append_events<'a>(&'a self, run_id: &'a str, events: Vec<serde_json::Value>) -> BoxFuture<'a, StoreResult<()>> {
+    fn append_events<'a>(&'a self, run_id: &'a str, events: Vec<StoredEvent>) -> BoxFuture<'a, StoreResult<()>> {
         let run_id = run_id.to_owned();
         self.blocking(move |inner| {
             let (dir, mut record) = inner.require_record(&run_id)?;
@@ -259,7 +260,7 @@ impl RunStore for FileStore {
             let dropped = events.len() > room;
             let mut buf = Vec::new();
             for event in events.iter().take(room) {
-                serde_json::to_writer(&mut buf, event).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+                buf.extend_from_slice(event.get().as_bytes());
                 buf.push(b'\n');
             }
             if !buf.is_empty() {
@@ -278,7 +279,7 @@ impl RunStore for FileStore {
         })
     }
 
-    fn events<'a>(&'a self, run_id: &'a str, from: u64) -> BoxFuture<'a, StoreResult<Vec<serde_json::Value>>> {
+    fn events<'a>(&'a self, run_id: &'a str, from: u64) -> BoxFuture<'a, StoreResult<Vec<StoredEvent>>> {
         let run_id = run_id.to_owned();
         self.blocking(move |inner| {
             let (dir, _) = inner.require_record(&run_id)?;
@@ -291,7 +292,7 @@ impl RunStore for FileStore {
             let mut out = Vec::new();
             for line in BufReader::new(file).lines().skip(skip) {
                 let line = line.map_err(|e| io("cannot read events", &e))?;
-                let value = serde_json::from_str(&line)
+                let value = serde_json::value::RawValue::from_string(line)
                     .map_err(|e| StoreError::Corrupt(format!("event line in run `{run_id}`: {e}")))?;
                 out.push(value);
             }
@@ -381,8 +382,8 @@ mod tests {
         store.create(paused).await.unwrap();
         store.create(RunRecord::running("r1", "wf", "fp", 2)).await.unwrap();
         assert!(matches!(store.create(RunRecord::running("r1", "wf", "fp", 2)).await, Err(StoreError::Conflict(_))));
-        store.append_events("p1", vec![serde_json::json!({"a": 1}), serde_json::json!({"b": 2})]).await.unwrap();
-        store.append_events("p1", vec![serde_json::json!({"c": 3})]).await.unwrap();
+        store.append_events("p1", crate::store::raw(&[r#"{"a":1}"#, r#"{"b":2}"#])).await.unwrap();
+        store.append_events("p1", crate::store::raw(&[r#"{"c":3}"#])).await.unwrap();
         drop(store);
 
         let store = FileStore::open(&dir).unwrap();
@@ -392,7 +393,7 @@ mod tests {
         assert_eq!(p1.status, RunStatus::Paused);
         assert_eq!(p1.event_count, 2);
         assert!(p1.events_truncated);
-        assert_eq!(store.events("p1", 1).await.unwrap(), vec![serde_json::json!({"b": 2})]);
+        assert_eq!(crate::store::texts(&store.events("p1", 1).await.unwrap()), [r#"{"b":2}"#]);
 
         let (a, b) = tokio::join!(store.claim_resume("p1", 6), store.claim_resume("p1", 6));
         assert!(a.is_ok() != b.is_ok(), "exactly one claim must win");

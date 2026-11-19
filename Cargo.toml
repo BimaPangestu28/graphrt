@@ -43,7 +43,7 @@ graphrt-bundle = { path = "crates/graphrt-bundle", version = "0.1.0", default-fe
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 thiserror = "2"
 serde = { version = "1", features = ["derive", "rc"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 indexmap = { version = "2", features = ["serde"] }
 minijinja = { version = "3", default-features = false, features = ["builtins", "serde", "json", "fuel", "macros", "multi_template"] }
 serde-saphyr = "2"

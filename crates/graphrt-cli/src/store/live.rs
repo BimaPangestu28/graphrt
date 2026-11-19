@@ -7,7 +7,7 @@ use futures::StreamExt;
 use graphrt_core::Event;
 use graphrt_core::engine::{RunHandle, RunStream};
 use graphrt_core::response::ResponseAssembler;
-use graphrt_core::store::{RunRecord, RunStore, event_to_json, now_ms};
+use graphrt_core::store::{RunRecord, RunStore, StoredEvent, event_to_stored, now_ms};
 use tokio::sync::{broadcast, watch};
 
 /// Events kept in memory per active run for late subscribers.
@@ -131,12 +131,12 @@ async fn drive(
     mut tracer: crate::otel::RunTracer,
 ) {
     let run_id = record.run_id.clone();
-    let mut pending: Vec<serde_json::Value> = Vec::new();
+    let mut pending: Vec<StoredEvent> = Vec::new();
     while let Some(event) = run.next().await {
         tracer.on_event(&event);
         assembler.push(&event);
         let terminal = event.is_terminal();
-        pending.push(event_to_json(&event));
+        pending.push(event_to_stored(&event));
         {
             let mut feed = active.feed();
             if feed.events.len() < FEED_CAP {

@@ -196,11 +196,12 @@ pub trait RunStore: Send + Sync + fmt::Debug {
     fn list(&self, filter: RunFilter) -> BoxFuture<'_, StoreResult<RunPage>>;
     /// Remove a run and everything stored for it. Returns whether it existed.
     fn delete<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, StoreResult<bool>>;
-    /// Append events (already serialized, secrets masked). Stores may cap the
-    /// number of events kept per run; they then set `events_truncated`.
-    fn append_events<'a>(&'a self, run_id: &'a str, events: Vec<serde_json::Value>) -> BoxFuture<'a, StoreResult<()>>;
+    /// Append events (already serialized by [`event_to_stored`], secrets masked).
+    /// Stores may cap the number of events kept per run; they then set
+    /// `events_truncated`.
+    fn append_events<'a>(&'a self, run_id: &'a str, events: Vec<StoredEvent>) -> BoxFuture<'a, StoreResult<()>>;
     /// Stored events, starting at index `from`.
-    fn events<'a>(&'a self, run_id: &'a str, from: u64) -> BoxFuture<'a, StoreResult<Vec<serde_json::Value>>>;
+    fn events<'a>(&'a self, run_id: &'a str, from: u64) -> BoxFuture<'a, StoreResult<Vec<StoredEvent>>>;
     fn save_snapshot<'a>(&'a self, run_id: &'a str, snapshot: &'a Snapshot) -> BoxFuture<'a, StoreResult<()>>;
     fn load_snapshot<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, StoreResult<Option<Snapshot>>>;
     /// Atomically move a `paused` run to `running` and return the updated record.
@@ -216,6 +217,35 @@ pub trait RunStore: Send + Sync + fmt::Debug {
 
 /// Error message stored on runs interrupted by a host restart.
 pub const INTERRUPTED_BY_RESTART: &str = "interrupted by restart";
+
+/// An event serialized as one JSON object, the form in which stores keep events.
+///
+/// Holding the JSON text instead of a [`serde_json::Value`] tree saves building
+/// a map per event on the way in and re-serializing it on the way out.
+pub type StoredEvent = Box<serde_json::value::RawValue>;
+
+/// Serialize an event for storage: the same JSON as [`event_to_json`], written
+/// straight to text.
+pub fn event_to_stored(event: &Event) -> StoredEvent {
+    let text = match event {
+        // Rare, and the snapshot has to be dropped: go through the tree.
+        Event::RunPaused { .. } => serde_json::to_string(&event_to_json(event)),
+        _ => serde_json::to_string(event),
+    };
+    text.ok()
+        .and_then(|text| serde_json::value::RawValue::from_string(text).ok())
+        .unwrap_or_else(|| serde_json::value::RawValue::NULL.to_owned())
+}
+
+/// The `type` field of a stored event (e.g. `node_started`), if it has one.
+pub fn stored_event_type(event: &StoredEvent) -> Option<&str> {
+    #[derive(Deserialize)]
+    struct TypeOnly<'a> {
+        #[serde(rename = "type", borrow)]
+        kind: Option<&'a str>,
+    }
+    serde_json::from_str::<TypeOnly<'_>>(event.get()).ok().and_then(|t| t.kind)
+}
 
 /// Serialize an event for storage. Secrets are masked by the value serializer; the
 /// snapshot carried by `run_paused` is dropped (stores keep it separately).
@@ -338,5 +368,21 @@ mod tests {
         let json = event_to_json(&event);
         assert_eq!(json["type"], "run_paused");
         assert!(json.get("snapshot").is_none());
+        let stored = event_to_stored(&event);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(stored.get()).unwrap(), json);
+        assert_eq!(stored_event_type(&stored), Some("run_paused"));
+    }
+
+    #[test]
+    fn stored_event_text_matches_the_json_tree() {
+        let mut outputs = IndexMap::new();
+        outputs.insert("z".to_owned(), Value::from("last"));
+        outputs.insert("a".to_owned(), Value::Secret(std::sync::Arc::from("sk-live")));
+        outputs.insert("n".to_owned(), Value::from_json(serde_json::json!(1.5)));
+        let event = Event::RunSucceeded { outputs, usage: Usage::default(), handled_errors: 0, elapsed_ms: 7 };
+        let stored = event_to_stored(&event);
+        assert_eq!(stored.get(), event_to_json(&event).to_string());
+        assert!(!stored.get().contains("sk-live"));
+        assert_eq!(stored_event_type(&stored), Some("run_succeeded"));
     }
 }

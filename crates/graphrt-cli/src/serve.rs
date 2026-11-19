@@ -42,7 +42,9 @@ use futures::{Stream, StreamExt};
 use graphrt_core::engine::{Limits, ResumeFrom, RunInput};
 use graphrt_core::node::TokioClock;
 use graphrt_core::response::ResponseAssembler;
-use graphrt_core::store::{RunFilter, RunRecord, RunStatus, RunStore, StoreError, event_to_json, now_ms};
+use graphrt_core::store::{
+    RunFilter, RunRecord, RunStatus, RunStore, StoreError, StoredEvent, event_to_stored, now_ms, stored_event_type,
+};
 use graphrt_core::{Engine, Event, Graph, Selector, Snapshot, Value};
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -723,11 +725,11 @@ async fn run_events(
     if query.stream == Some(false) {
         let mut all = stored;
         if let Some((_, sub)) = subscription {
-            all.extend(sub.backlog.iter().map(event_to_json));
+            all.extend(sub.backlog.iter().map(event_to_stored));
         }
-        return Json(serde_json::Value::Array(all)).into_response();
+        return Json(all).into_response();
     }
-    let replay = futures::stream::iter(stored.into_iter().map(|json| Ok(json_sse(&json))));
+    let replay = futures::stream::iter(stored.into_iter().map(|json| Ok(stored_sse(&json))));
     match subscription {
         None => Sse::new(replay.boxed()).into_response(),
         Some((_, sub)) => {
@@ -871,13 +873,19 @@ fn sse_stream(
     })
 }
 
+/// A live event; unlike stored ones, `run_paused` keeps its snapshot here.
 fn sse_event(event: &Event) -> SseEvent {
-    json_sse(&serde_json::to_value(event).unwrap_or(serde_json::Value::Null))
+    let text = serde_json::to_string(event).unwrap_or_else(|_| "null".to_owned());
+    match serde_json::value::RawValue::from_string(text) {
+        Ok(json) => stored_sse(&json),
+        Err(_) => SseEvent::default().event("event").data("null"),
+    }
 }
 
-fn json_sse(json: &serde_json::Value) -> SseEvent {
-    let name = json.get("type").and_then(|t| t.as_str()).unwrap_or("event").to_owned();
-    SseEvent::default().event(name).data(json.to_string())
+/// One SSE message per event, named after the event's `type`.
+fn stored_sse(event: &StoredEvent) -> SseEvent {
+    let name = stored_event_type(event).unwrap_or("event");
+    SseEvent::default().event(name).data(event.get())
 }
 
 /// The JSON body returned to blocking callers.

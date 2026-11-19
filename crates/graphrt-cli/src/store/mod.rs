@@ -26,3 +26,15 @@ pub fn open(dir: Option<&PathBuf>, max_runs: usize) -> Result<Arc<dyn RunStore>,
         None => Ok(Arc::new(MemoryStore::new().max_runs(max_runs))),
     }
 }
+
+/// Stored events from JSON texts, for store tests.
+#[cfg(test)]
+pub(crate) fn raw(texts: &[&str]) -> Vec<graphrt_core::store::StoredEvent> {
+    texts.iter().filter_map(|text| serde_json::value::RawValue::from_string((*text).to_owned()).ok()).collect()
+}
+
+/// The JSON texts of stored events, for store tests.
+#[cfg(test)]
+pub(crate) fn texts(events: &[graphrt_core::store::StoredEvent]) -> Vec<&str> {
+    events.iter().map(|event| event.get()).collect()
+}
