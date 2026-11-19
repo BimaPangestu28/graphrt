@@ -512,8 +512,11 @@ impl Frame {
         });
         rt.state = State::Running;
         let exec_id = Arc::clone(rt.exec_id.get_or_insert_with(|| new_id_arc(started)));
-        let resume =
-            rt.resume_state.take().map(|state| Resume { state, input: run.resume_input(&self.id, gn.id.as_ref()) });
+        // Boxed: resuming is rare, and the task future carries this for its whole life.
+        let resume: Option<Box<Resume>> = rt
+            .resume_state
+            .take()
+            .map(|state| Box::new(Resume { state, input: run.resume_input(&self.id, gn.id.as_ref()) }));
 
         run.emit(Event::NodeStarted {
             frame: self.id.clone(),
@@ -564,30 +567,34 @@ impl Frame {
                     run.clock.clone(),
                     run.sink.clone(),
                 )
-                .with_resume(resume.clone())
+                .with_resume(resume.as_deref().cloned())
                 .with_subgraph(subgraph.clone())
                 .with_deadline(deadline_ms);
-                let result = run_attempt(node.as_ref(), ctx, timeout_ms, run.clock.as_ref()).await;
-                let error = match result {
-                    Err(error) if error.retryable && attempt <= retry.max_retries && !run.control.is_stopped() => error,
-                    result => {
-                        let elapsed_ms = run.now_ms().saturating_sub(started);
-                        return TaskDone { ix, attempt, result, elapsed_ms };
-                    }
+                // The result and the error stay inside this block, so the task
+                // does not reserve room for them while it waits for a retry.
+                let delay_ms = {
+                    let result = run_attempt(node.as_ref(), ctx, timeout_ms, run.clock.as_ref()).await;
+                    let error = match result {
+                        Err(error) if error.retryable && attempt <= retry.max_retries && !run.control.is_stopped() => {
+                            error
+                        }
+                        result => {
+                            let elapsed_ms = run.now_ms().saturating_sub(started);
+                            return TaskDone { ix, attempt, result, elapsed_ms };
+                        }
+                    };
+                    let delay_ms = retry_delay_ms(&retry, attempt, &error);
+                    run.emit(Event::NodeRetry {
+                        frame: frame.clone(),
+                        node_id: Arc::clone(&node_id),
+                        exec_id: Arc::clone(&exec_id),
+                        attempt: attempt.saturating_add(1),
+                        error: error.to_string(),
+                        delay_ms,
+                    });
+                    delay_ms
                 };
-                // Report the error before waiting, so neither it nor the result it
-                // came from is kept in the task across the retry delay.
-                let delay_ms = retry_delay_ms(&retry, attempt, &error);
                 attempt = attempt.saturating_add(1);
-                run.emit(Event::NodeRetry {
-                    frame: frame.clone(),
-                    node_id: Arc::clone(&node_id),
-                    exec_id: Arc::clone(&exec_id),
-                    attempt,
-                    error: error.to_string(),
-                    delay_ms,
-                });
-                drop(error);
                 if delay_ms > 0 {
                     run.clock.sleep(Duration::from_millis(delay_ms)).await;
                 }
