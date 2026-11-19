@@ -15,6 +15,25 @@ graphrt serve examples/ --store ./runs --store-ttl-days 30
 | `--store <dir>` (or `$GRAPHRT_STORE`) | Durable directory store. Paused runs survive restarts. |
 | *(neither)* | In-memory store. Runs are lost when the server stops. |
 | `--store-ttl-days <n>` | Hourly cleanup of runs (any status except running) not updated for `n` days. |
+| `--max-runs <n>` | In-memory store only: keep at most `n` runs (default 1000, `0` = unlimited). The oldest finished runs are dropped first; running and paused runs are always kept. |
+
+### Small devices
+
+A finished run with its events takes roughly 10–20 KiB in the in-memory store,
+so memory grows with `--max-runs`, not with uptime. Measured with a static
+musl build (`--no-default-features --features llm,http,wasm,serve`, 6.3 MiB)
+on Linux arm64 under cgroup limits, serving a 3-node workflow for 37,000
+requests:
+
+| CPU | Memory limit | `--max-runs` | Steady RSS | Requests/s | p50 / p99 |
+| --- | --- | --- | --- | --- | --- |
+| 0.1 | 16 MiB | 100 | ~3 MiB | ~100 | 100 / 200 ms |
+| 0.25 | 16 MiB | 100 | ~3.4 MiB | ~600 | 4 / 89 ms |
+| 1.0 | 64 MiB | 1000 (default build) | ~21 MiB | ~4,600 | 2 / 4 ms |
+
+At 0.1 CPU the latency is the kernel's CPU quota (10 ms per 100 ms period),
+not graphrt. On devices with little memory, lower `--max-runs` (or use
+`--store` on flash storage) and build only the features you need.
 
 Directory layout:
 

@@ -7,7 +7,14 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Fixed
+- `graphrt serve` without `--store` kept every run (record and events) in memory
+  forever: under a 32 MiB limit the server was OOM-killed after ~1,800 runs. The
+  in-memory store now keeps at most `--max-runs` runs (default 1000), dropping
+  the oldest finished runs first and always keeping running and paused ones.
+
 ### Added
+- `graphrt serve --max-runs <n>`; see docs/serving.md for small-device numbers.
 - `graphrt-rag`: `LocalEmbedder` (feature `local-embed`), sentence embeddings
   computed in-process with candle on the CPU: no embedding server, API key or
   network once the model is cached. BERT-family models from Hugging Face
