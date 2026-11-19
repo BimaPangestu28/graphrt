@@ -265,6 +265,7 @@ impl VariablePool {
     /// Bulk-insert a node's outputs.
     pub fn set_outputs(&mut self, namespace: &str, outputs: &IndexMap<String, Value>) {
         let ns = Arc::make_mut(self.namespaces.entry(namespace));
+        ns.reserve(outputs.len());
         for (k, v) in outputs {
             ns.insert(Arc::from(k.as_str()), v.clone());
         }

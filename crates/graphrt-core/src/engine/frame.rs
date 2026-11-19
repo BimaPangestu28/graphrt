@@ -159,10 +159,11 @@ pub(crate) struct Frame {
     depth: u32,
     is_root: bool,
     scope_nodes: Vec<NodeIx>,
-    scope_ids: HashSet<Arc<str>>,
+    /// Ids of the scope's nodes, built on the first variable write that needs them.
+    scope_ids: std::cell::OnceCell<HashSet<Arc<str>>>,
     pool: VariablePool,
-    nodes: HashMap<NodeIx, NodeRt>,
-    edges: HashMap<EdgeIx, EdgeStatus>,
+    nodes: ByIndex<NodeRt>,
+    edges: ByIndex<EdgeStatus>,
     outputs: IndexMap<String, Value>,
     writes: Vec<(Selector, Value)>,
     usage: Usage,
@@ -172,7 +173,7 @@ pub(crate) struct Frame {
     /// Incoming-edge tallies of nodes not yet decided, so readiness checks cost
     /// O(1) per resolved edge instead of rescanning every incoming edge (which
     /// made wide fan-ins quadratic). Built lazily from `edges` on first use.
-    incoming: HashMap<NodeIx, Incoming>,
+    incoming: ByIndex<Incoming>,
 }
 
 /// Resolution state of a node's incoming edges.
@@ -180,6 +181,38 @@ pub(crate) struct Frame {
 struct Incoming {
     unresolved: usize,
     taken: bool,
+}
+
+/// Hasher for the frame's maps keyed by graph indices (`NodeIx`, `EdgeIx`): one
+/// multiplication instead of SipHash. The keys are internal indices, never user
+/// input, so hash-flooding resistance buys nothing here.
+#[derive(Clone, Copy, Default)]
+struct IndexHasher(u64);
+
+impl std::hash::Hasher for IndexHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(*byte)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        }
+    }
+
+    fn write_usize(&mut self, index: usize) {
+        // Fibonacci hashing: spreads consecutive indices over the high bits the
+        // hash table uses for its control bytes.
+        self.0 = (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+
+/// A map keyed by graph indices.
+type ByIndex<V> = HashMap<usize, V, std::hash::BuildHasherDefault<IndexHasher>>;
+
+/// An empty [`ByIndex`] sized for `capacity` entries.
+fn by_index<V>(capacity: usize) -> ByIndex<V> {
+    HashMap::with_capacity_and_hasher(capacity, std::hash::BuildHasherDefault::default())
 }
 
 impl Frame {
@@ -275,24 +308,30 @@ impl Frame {
         }
         .ok_or_else(|| NodeError::fatal("graph", "scope not found"))?;
         let scope_nodes = scope.nodes.clone();
-        let scope_ids = scope_nodes.iter().filter_map(|&ix| run.graph.node(ix)).map(|n| n.id.clone()).collect();
+        let scope_len = scope_nodes.len();
         Ok(Self {
             is_root: owner.is_none(),
             run,
             id,
             depth,
             scope_nodes,
-            scope_ids,
+            scope_ids: std::cell::OnceCell::new(),
             pool,
-            nodes: HashMap::new(),
-            edges: HashMap::new(),
+            nodes: by_index(scope_len),
+            edges: by_index(scope_len),
             outputs: IndexMap::new(),
             writes: Vec::new(),
             usage: Usage::default(),
             broke: false,
             reasons: Vec::new(),
             ready: VecDeque::new(),
-            incoming: HashMap::new(),
+            incoming: by_index(scope_len),
+        })
+    }
+
+    fn scope_ids(&self) -> &HashSet<Arc<str>> {
+        self.scope_ids.get_or_init(|| {
+            self.scope_nodes.iter().filter_map(|&ix| self.run.graph.node(ix)).map(|n| n.id.clone()).collect()
         })
     }
 
@@ -741,7 +780,7 @@ impl Frame {
             }
         }
         let external: Vec<(Selector, Value)> =
-            writes.iter().filter(|(selector, _)| !self.scope_ids.contains(selector.namespace())).cloned().collect();
+            writes.iter().filter(|(selector, _)| !self.scope_ids().contains(selector.namespace())).cloned().collect();
         merge_writes(&mut self.writes, external);
         for (selector, value) in writes {
             self.run.emit(Event::VariableUpdated {
