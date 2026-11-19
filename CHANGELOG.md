@@ -7,6 +7,37 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- `graphrt serve --webhooks <file>`: webhook triggers. `POST /v1/hooks/{hook}`
+  starts an async run of the hook's workflow from any JSON body and answers
+  `202` with the run id. Bodies map to inputs by JSON Pointer and header
+  (`inputs`, `headers`) or pass whole (`body_input`, default `body`).
+  Optional HMAC-SHA256 signature checks in the GitHub, Stripe, Slack, generic
+  or graphrt formats, compared in constant time, with a replay window for the
+  timestamped ones; secrets from the environment, `--env-file` or a file.
+  An idempotency key header (default `Idempotency-Key`) maps redeliveries to
+  the first run, durably with `--store`. Deliveries share `--max-body-bytes`.
+  `GET /v1/hooks` lists the hooks. See docs/serving.md.
+- Webhook completion callbacks (`callback`): a signed
+  (`X-Graphrt-Signature: t=..,v1=..`) JSON result POSTed when the run
+  succeeds, fails, aborts or pauses, through the HTTP egress policy (private
+  networks refused unless `--allow-private-network`, no redirects), retried
+  with exponential backoff on network errors, `408`, `429` and `5xx`.
+- Opt-in anonymous usage telemetry for the `graphrt` binary (`telemetry`
+  feature, in the default set). Off by default; on only after
+  `graphrt telemetry enable` or `GRAPHRT_TELEMETRY=1`, and always off with
+  `DO_NOT_TRACK`, in CI, or without an endpoint (`GRAPHRT_TELEMETRY_URL` at
+  build or run time). At most one report a day, sent from a background
+  thread with a 5 s timeout: a random install id, version, OS/arch,
+  features, build (`cli`/`docker`) and per-day counts of runs and `serve`
+  requests, aggregated in `telemetry.json` in the user config directory.
+  `graphrt telemetry status` prints exactly what would be sent. Not in the
+  embedded or FFI libraries. See docs/telemetry.md.
+- `tools/telemetry-collector/`: a Cloudflare Worker + D1 collector for those
+  reports (strict payload validation, no IP addresses stored, schema, wrangler
+  config template, weekly-active-installs and daily-runs queries). Not
+  deployed.
+
 ### Performance
 - Engine: fewer allocations and less work per node execution. Node task
   futures are stored unboxed and are less than half their former size (584 ->

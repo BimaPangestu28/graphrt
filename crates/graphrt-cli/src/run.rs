@@ -96,6 +96,8 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
     let telemetry = crate::otel::Telemetry::from_args(&args.services, &options.all_vars())?;
     let mut tracer = crate::otel::tracer_for(telemetry.as_ref(), &graph, None);
     let mut stream = engine.run(input);
+    #[cfg(feature = "telemetry")]
+    crate::telemetry::count_run();
     let handle = stream.handle();
     let interrupt = tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {

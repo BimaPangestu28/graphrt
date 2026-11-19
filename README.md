@@ -287,8 +287,25 @@ Custom nodes, services, model providers and native tools are covered in
 | Code | QuickJS with memory, stack and time limits, no filesystem, network, timers or modules. |
 | MCP | stdio servers start with an empty environment plus an explicit allow-list; every call has a timeout; tools can be allow-listed. |
 | Plugins | Process plugins start lazily with an empty environment plus the variables their manifest lists, optional `checksums` verified before every start, per-request timeouts and message size caps; secrets are masked unless the manifest asks for them. WebAssembly plugins run in an interpreter with fuel and memory limits and no system imports. A plugin can never replace a built-in or another plugin's node kind. |
-| Server | Optional bearer auth (constant-time comparison), request body limit, env values cannot be set by requests. |
+| Server | Optional bearer auth (constant-time comparison), request body limit, env values cannot be set by requests. Webhooks verify HMAC-SHA256 signatures in constant time with a replay window; completion callbacks are signed and go through the egress policy. |
 | Limits | Step budget, run duration, per-node timeouts, container depth, iteration/loop caps. |
+
+### Privacy: usage telemetry
+
+The `graphrt` binary has **opt-in** anonymous usage telemetry, **off by
+default**. Nothing is sent unless you run `graphrt telemetry enable` (or set
+`GRAPHRT_TELEMETRY=1`), and never when `DO_NOT_TRACK` is set, in CI, or when
+the build has no telemetry endpoint. `graphrt telemetry status` prints exactly
+what would be sent; `graphrt telemetry disable` turns it off and deletes the
+local id and counts.
+
+When on, at most one report a day contains only: a random install id, the
+graphrt version, OS and CPU architecture, the compiled features, the build
+(`cli` or `docker`), and per-day counts of runs and `serve` requests. It never
+contains workflows, inputs, outputs, file paths, host names or IP addresses.
+The embedded and FFI libraries contain no telemetry, and builds without the
+`telemetry` feature (such as the small-device server build) contain none
+either. Details: [docs/telemetry.md](docs/telemetry.md).
 
 ## Binary size
 

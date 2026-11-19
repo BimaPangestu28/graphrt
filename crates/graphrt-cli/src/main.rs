@@ -11,7 +11,13 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match graphrt_cli::execute(cli) {
+    // Opt-in usage telemetry lives here, in the binary only (never in the library).
+    #[cfg(feature = "telemetry")]
+    let telemetry = graphrt_cli::telemetry::Session::begin(&cli.command);
+    let result = graphrt_cli::execute(cli);
+    #[cfg(feature = "telemetry")]
+    telemetry.end();
+    match result {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("error: {error}");
