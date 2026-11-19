@@ -11,6 +11,8 @@
 #   --keep  keep the temporary worktree afterwards (for debugging)
 # Environment: GRAPHRT_CI_TARGET_DIR (default: ~/.cache/graphrt-ci-local/target)
 #
+# Tests run with --no-fail-fast so every failing test binary is reported, not just the first.
+#
 # Needs rustup. The msrv job needs the 1.85 toolchain and the wasm job the
 # wasm32-unknown-unknown target; the script installs them with rustup if missing.
 set -euo pipefail
@@ -62,9 +64,9 @@ for job in "${ALL_JOBS[@]}"; do
   case "$job" in
     fmt) command=(cargo fmt --all -- --check) ;;
     clippy) command=(cargo clippy --workspace --all-targets --all-features) ;;
-    test) command=(cargo test --workspace --all-features) ;;
+    test) command=(cargo test --workspace --all-features --no-fail-fast) ;;
     msrv) is_skipped msrv || ensure_toolchain "$MSRV_TOOLCHAIN"; command=(cargo "+$MSRV_TOOLCHAIN" check -p graphrt-core) ;;
-    minimal-core) command=(cargo test -p graphrt-core --no-default-features) ;;
+    minimal-core) command=(cargo test -p graphrt-core --no-default-features --no-fail-fast) ;;
     wasm) is_skipped wasm || ensure_wasm_target
       command=(cargo build -p graphrt-core --no-default-features --features yaml,jinja --target wasm32-unknown-unknown) ;;
     size) command=(cargo build -p graphrt-cli --profile min-size) ;;
