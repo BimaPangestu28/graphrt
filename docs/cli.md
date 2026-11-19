@@ -156,7 +156,7 @@ one broken plugin never blocks unrelated workflows.
 | --- | --- |
 | `graphrt plugin list [--json]` | Every plugin found: name, version, runtime, node kinds, tools, and load errors. |
 | `graphrt plugin install <dir\|git-url> [--rev R] [--subdir P] [--dir D]` | Copy a plugin into `~/.graphrt/plugins/<name>` (or `D`), verify its checksums and check that it loads. Git sources (`https://…`, `git@…`, `*.git`) are cloned with the `git` executable; `--rev` picks a branch or tag. |
-| `graphrt plugin install <name>[@version] [--index I] [--yes] [--dir D]` | Install from the plugin catalog: the latest version, or the exact one. The tarball is downloaded over https, checked against the catalog's sha256, extracted safely and installed like a directory. Experimental and high-ToS-risk plugins need `--yes`. |
+| `graphrt plugin install <name>[@version] [--index I] [--yes] [--dir D]` | Install from the plugin catalog: the latest version, or the exact one. The tarball is downloaded over https, checked against the catalog's sha256, extracted safely and installed like a directory. Plugins not labelled stable/beta with a none/low/medium ToS risk (including unlabelled ones) need `--yes`. |
 | `graphrt plugin search [query] [--index I]` | Catalog plugins whose name or description contains `query`: name, latest version, status and a one-line description. |
 | `graphrt plugin remove <name> [--dir D]` | Delete an installed plugin. |
 | `graphrt plugin info <name> [--json]` | Manifest summary and node descriptors. |
@@ -182,13 +182,13 @@ directory and looks like `name` or `name@1.2.3` is a catalog name.
 | Option | Description |
 | --- | --- |
 | `--index URL\|PATH` | Catalog index: an `https://` URL, a `file://` URL or a local path. Overrides `$GRAPHRT_PLUGIN_INDEX`; the default is the graphrt-plugins `catalog` release. Plain `http://` is refused. |
-| `--yes`, `-y` | Install a plugin labelled `experimental` or with ToS risk `high`. Without it such installs stop with exit code 2 (graphrt has no interactive prompt). |
+| `--yes`, `-y` | Install a plugin that is not labelled status `stable`/`beta` with ToS risk `none`/`low`/`medium`: `experimental`, ToS risk `high`, an unrecognised label, or no label at all. Without it such installs stop with exit code 2 (graphrt has no interactive prompt). |
 
 ```sh
 graphrt plugin search weather
 graphrt plugin install open-meteo           # latest version
 graphrt plugin install open-meteo@0.1.0     # exact version
-graphrt plugin install whatsapp-web --yes   # experimental, ToS risk high
+graphrt plugin install whatsapp-web --yes   # experimental, ToS risk high (or unlabelled)
 GRAPHRT_PLUGIN_INDEX=/srv/mirror/index.json graphrt plugin install open-meteo
 ```
 
