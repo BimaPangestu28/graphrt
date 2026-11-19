@@ -408,10 +408,40 @@ impl Frame {
                     if let Some(outcome) = self.on_done(done) {
                         return outcome;
                     }
+                    if let Some(outcome) = self.commit_finished(&mut running) {
+                        return outcome;
+                    }
                 }
                 Either::Left((None, _)) | Either::Right(((), _)) => {}
             }
         }
+    }
+
+    /// Apply every task in `running` that has already finished, before the
+    /// loop starts new nodes.
+    ///
+    /// Running nodes hold snapshots of the pool, so the first commit after a
+    /// node starts copies the namespace table and the touched shard. Starting a
+    /// node between every two commits (as happens in a wide fan-out) made every
+    /// commit pay that copy; committing the finished batch first makes it share
+    /// one copy of the table and of each shard it touches.
+    ///
+    /// The tasks are polled with a no-op waker. That is sound because the frame
+    /// loop always polls `running` again with its real waker before waiting.
+    fn commit_finished<F: Future<Output = TaskDone>>(
+        &mut self,
+        running: &mut FuturesUnordered<F>,
+    ) -> Option<FrameOutcome> {
+        if running.is_empty() {
+            return None;
+        }
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        while let std::task::Poll::Ready(Some(done)) = running.poll_next_unpin(&mut cx) {
+            if let Some(outcome) = self.on_done(done) {
+                return Some(outcome);
+            }
+        }
+        None
     }
 
     fn apply_external_updates(&mut self) {

@@ -467,6 +467,31 @@ async fn max_concurrency_one_runs_branches_one_at_a_time() {
 }
 
 #[tokio::test]
+async fn wide_fan_out_of_instant_nodes_commits_every_branch() {
+    // Instant branches finish in batches that are committed together before
+    // the next ones start; every output must still reach the join.
+    let width = 40;
+    let mut nodes = vec![node("start", "src", json!({}))];
+    let mut edges = Vec::new();
+    let mut joined = String::new();
+    for i in 0..width {
+        let id = format!("b{i}");
+        nodes.push(node(&id, "echo", json!({"template": format!("{i},")})));
+        edges.push(edge("start", &id));
+        edges.push(edge(&id, "join"));
+        joined.push_str(&format!("{{{{#{id}.out#}}}}"));
+    }
+    nodes.push(node("join", "end", json!({"name": "all", "value": joined})));
+    let engine = Engine::new(build(nodes, edges)).with_limits(Limits { max_concurrency: 8, ..Limits::default() });
+    let events = collect(&engine, RunInput::new()).await;
+    let expected: String = (0..width).map(|i| format!("{i},")).collect();
+    assert_eq!(outputs(&events).get("all"), Some(&Value::from(expected)));
+    let order = started(&events);
+    assert_eq!(order.len(), width + 2, "{order:?}");
+    assert_eq!(order.last().map(String::as_str), Some("join"));
+}
+
+#[tokio::test]
 async fn branch_skip_propagation_with_mixed_join() {
     // start -> if -(yes)-> y ; if -(no)-> n -> n2 ; y -> join ; n2 -> join
     let g = build(

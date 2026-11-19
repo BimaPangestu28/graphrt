@@ -31,6 +31,10 @@ releases may contain breaking changes; they are called out under **Changed**.
   keeps the order of the remaining entries (like `IndexMap::shift_remove`).
 
 ### Performance
+- Engine: nodes that have already finished are committed together before new
+  nodes start. In a wide fan-out every commit used to copy the namespace table
+  and a shard because a freshly started sibling held a snapshot of it; a batch
+  of completions now shares one copy.
 - Engine: fewer allocations and less work per node execution. Node task
   futures are stored unboxed and are less than half their former size (584 ->
   264 bytes); a node that runs alone (chains, fan-ins) is polled without a
