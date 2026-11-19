@@ -75,6 +75,7 @@ pub use qdrant::{QdrantConfig, QdrantStore};
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteStore;
 pub use types::{
-    Embedder, Extractor, Hit, HybridWeights, KeywordQuery, Metadata, PlainTextExtractor, Reranker, RetrievalRequest,
-    Retriever, StoredChunk, VectorQuery, VectorStore, check_vector, content_hash,
+    DEFAULT_DOCUMENT_PAGE, DocumentSummary, Embedder, Extractor, Hit, HybridWeights, KeywordQuery, MAX_DOCUMENT_PAGE,
+    Metadata, PlainTextExtractor, Reranker, RetrievalRequest, Retriever, StoredChunk, VectorQuery, VectorStore,
+    check_vector, content_hash,
 };

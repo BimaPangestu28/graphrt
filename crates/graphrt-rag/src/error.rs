@@ -40,6 +40,10 @@ pub enum RagError {
     /// unsupported architecture, inference failure).
     #[error("embedding model error: {0}")]
     Model(String),
+    /// The dataset or store does not support this operation (e.g. listing the
+    /// documents of an external retriever).
+    #[error("not supported: {0}")]
+    Unsupported(String),
 }
 
 impl RagError {
@@ -66,6 +70,7 @@ impl RagError {
             RagError::NotFound(_) => "not_found",
             RagError::Io(_) => "io",
             RagError::Model(_) => "model",
+            RagError::Unsupported(_) => "unsupported",
         }
     }
 }

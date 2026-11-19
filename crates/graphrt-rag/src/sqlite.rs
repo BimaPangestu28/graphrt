@@ -26,7 +26,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::error::RagError;
 use crate::memory::MemoryStore;
-use crate::types::{Hit, KeywordQuery, Metadata, StoredChunk, VectorQuery, VectorStore};
+use crate::types::{DocumentSummary, Hit, KeywordQuery, Metadata, StoredChunk, VectorQuery, VectorStore};
 
 /// Version of the table layout written to the `graphrt_meta` table.
 const SCHEMA_VERSION: i64 = 1;
@@ -363,6 +363,15 @@ impl VectorStore for SqliteStore {
             |index, removed| index.remove_chunks(dataset_id, ids).map(|_| removed),
         );
         Box::pin(futures::future::ready(result))
+    }
+
+    fn list_documents<'a>(
+        &'a self,
+        dataset_id: &'a str,
+        limit: usize,
+        after: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<Vec<DocumentSummary>, RagError>> {
+        Box::pin(futures::future::ready(self.read(|index| index.document_summaries(dataset_id, limit, after))))
     }
 
     fn search<'a>(&'a self, query: VectorQuery<'a>) -> BoxFuture<'a, Result<Vec<Hit>, RagError>> {

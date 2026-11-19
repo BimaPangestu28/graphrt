@@ -41,7 +41,7 @@ impl Document {
 }
 
 /// Outcome of an ingestion.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IngestReport {
     /// New or changed chunks that were embedded and stored.
     pub stored: usize,

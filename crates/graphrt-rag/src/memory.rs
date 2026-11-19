@@ -24,7 +24,9 @@ use futures::future::BoxFuture;
 
 use crate::error::RagError;
 use crate::filter::MetadataFilter;
-use crate::types::{Hit, KeywordQuery, StoredChunk, VectorQuery, VectorStore, check_vector};
+use crate::types::{
+    DocumentSummary, Hit, KeywordQuery, PER_CHUNK_KEYS, StoredChunk, VectorQuery, VectorStore, check_vector,
+};
 
 /// BM25 parameters.
 const BM25_K1: f32 = 1.2;
@@ -282,6 +284,22 @@ impl MemoryStore {
         })
     }
 
+    /// Documents of a dataset ordered by id, `limit` at most, after the `after` id.
+    pub(crate) fn document_summaries(
+        &self,
+        dataset_id: &str,
+        limit: usize,
+        after: Option<&str>,
+    ) -> Result<Vec<DocumentSummary>, RagError> {
+        self.read(|data| {
+            let Some(ds) = data.get(dataset_id) else { return Vec::new() };
+            let mut ids: Vec<&String> =
+                ds.by_document.keys().filter(|id| after.is_none_or(|after| id.as_str() > after)).collect();
+            ids.sort_unstable();
+            ids.into_iter().take(limit).map(|id| summarize(ds, id)).collect()
+        })
+    }
+
     pub(crate) fn has_hash(&self, dataset_id: &str, content_hash: &str) -> Result<bool, RagError> {
         self.read(|data| data.get(dataset_id).is_some_and(|ds| ds.hashes.contains_key(content_hash)))
     }
@@ -289,6 +307,31 @@ impl MemoryStore {
     #[cfg(not(feature = "fs"))]
     fn persist_locked(&self, _data: &Data) -> Result<(), RagError> {
         Ok(())
+    }
+}
+
+/// Summary of one document from its chunks (title and metadata from the first chunk).
+fn summarize(ds: &Dataset, document_id: &str) -> DocumentSummary {
+    let mut chunks: Vec<&StoredChunk> = ds
+        .by_document
+        .get(document_id)
+        .into_iter()
+        .flatten()
+        .filter_map(|id| ds.by_id.get(id).and_then(|&ix| ds.entries.get(ix)))
+        .map(|e| &e.chunk)
+        .collect();
+    chunks.sort_by_key(|c| c.metadata.get("chunk_index").and_then(serde_json::Value::as_u64).unwrap_or(u64::MAX));
+    let first = chunks.first();
+    let mut metadata = first.map(|c| c.metadata.clone()).unwrap_or_default();
+    for key in PER_CHUNK_KEYS {
+        metadata.remove(key);
+    }
+    DocumentSummary {
+        document_id: document_id.to_owned(),
+        title: first.map(|c| c.title.clone()).unwrap_or_default(),
+        chunks: chunks.len(),
+        characters: chunks.iter().map(|c| c.text.chars().count()).sum(),
+        metadata,
     }
 }
 
@@ -474,6 +517,15 @@ impl VectorStore for MemoryStore {
 
     fn delete_chunks<'a>(&'a self, dataset_id: &'a str, ids: &'a [String]) -> BoxFuture<'a, Result<usize, RagError>> {
         Box::pin(futures::future::ready(self.remove_chunks(dataset_id, ids)))
+    }
+
+    fn list_documents<'a>(
+        &'a self,
+        dataset_id: &'a str,
+        limit: usize,
+        after: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<Vec<DocumentSummary>, RagError>> {
+        Box::pin(futures::future::ready(self.document_summaries(dataset_id, limit, after)))
     }
 
     fn search<'a>(&'a self, query: VectorQuery<'a>) -> BoxFuture<'a, Result<Vec<Hit>, RagError>> {

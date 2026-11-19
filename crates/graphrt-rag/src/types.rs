@@ -59,6 +59,28 @@ impl Hit {
     }
 }
 
+/// One document of a dataset, as listed by [`VectorStore::list_documents`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DocumentSummary {
+    pub document_id: String,
+    #[serde(default)]
+    pub title: String,
+    /// Number of stored chunks.
+    pub chunks: usize,
+    /// Total characters across the chunks.
+    pub characters: usize,
+    /// Document-level metadata (the per-chunk `chunk_index` and `heading` keys are left out).
+    #[serde(default)]
+    pub metadata: Metadata,
+}
+
+/// Chunk metadata keys set per chunk by the ingestor, not part of a document's metadata.
+pub(crate) const PER_CHUNK_KEYS: [&str; 2] = ["chunk_index", "heading"];
+
+/// Default and largest page size for document listings.
+pub const DEFAULT_DOCUMENT_PAGE: usize = 50;
+pub const MAX_DOCUMENT_PAGE: usize = 500;
+
 /// Vector similarity query.
 #[derive(Clone, Debug)]
 pub struct VectorQuery<'a> {
@@ -127,6 +149,19 @@ pub trait VectorStore: Send + Sync + fmt::Debug {
 
     /// Remove chunks by id. Returns the number removed when known.
     fn delete_chunks<'a>(&'a self, dataset_id: &'a str, ids: &'a [String]) -> BoxFuture<'a, Result<usize, RagError>>;
+
+    /// Up to `limit` documents of a dataset ordered by document id, starting after
+    /// `after` (a document id from the previous page). Stores that cannot list
+    /// return [`RagError::Unsupported`].
+    fn list_documents<'a>(
+        &'a self,
+        dataset_id: &'a str,
+        limit: usize,
+        after: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<Vec<DocumentSummary>, RagError>> {
+        let _ = (dataset_id, limit, after);
+        Box::pin(futures::future::ready(Err(RagError::Unsupported("this store cannot list documents".into()))))
+    }
 
     /// Nearest neighbours by cosine similarity, best first.
     fn search<'a>(&'a self, query: VectorQuery<'a>) -> BoxFuture<'a, Result<Vec<Hit>, RagError>>;

@@ -22,7 +22,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::RagError;
 use crate::ingest::Ingestor;
 use crate::pipeline::{StoreRetriever, finalize, rerank};
-use crate::types::{Embedder, Hit, Reranker, RetrievalRequest, Retriever, VectorStore};
+use crate::types::{
+    DocumentSummary, Embedder, Hit, MAX_DOCUMENT_PAGE, Reranker, RetrievalRequest, Retriever, StoredChunk, VectorStore,
+};
 
 /// Public description of a dataset.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +121,49 @@ impl KnowledgeBase {
 
     fn entry(&self, id: &str) -> Result<&DatasetEntry, RagError> {
         self.datasets.get(id).ok_or_else(|| RagError::NotFound(format!("unknown dataset `{id}`")))
+    }
+
+    /// Whether documents can be added to, listed in and removed from this dataset
+    /// (store-backed datasets; `false` for external retrievers and unknown ids).
+    pub fn is_managed(&self, dataset_id: &str) -> bool {
+        self.datasets.get(dataset_id).is_some_and(|d| d.store.is_some())
+    }
+
+    /// The store of a store-backed dataset.
+    ///
+    /// @throws `RagError::NotFound` for an unknown dataset, `RagError::Unsupported`
+    /// for one served by an external retriever.
+    fn managed_store(&self, dataset_id: &str) -> Result<&Arc<dyn VectorStore>, RagError> {
+        let entry = self.entry(dataset_id)?;
+        entry
+            .store
+            .as_ref()
+            .map(|(store, _)| store)
+            .ok_or_else(|| RagError::Unsupported(format!("dataset `{dataset_id}` is served by an external retriever")))
+    }
+
+    /// Up to `limit` documents of a dataset (capped at [`MAX_DOCUMENT_PAGE`]),
+    /// ordered by id and starting after the `after` id.
+    pub async fn list_documents(
+        &self,
+        dataset_id: &str,
+        limit: usize,
+        after: Option<&str>,
+    ) -> Result<Vec<DocumentSummary>, RagError> {
+        let limit = limit.clamp(1, MAX_DOCUMENT_PAGE);
+        self.managed_store(dataset_id)?.list_documents(dataset_id, limit, after).await
+    }
+
+    /// Chunks of one document in chunk order (vectors included).
+    pub async fn document_chunks(&self, dataset_id: &str, document_id: &str) -> Result<Vec<StoredChunk>, RagError> {
+        let mut chunks = self.managed_store(dataset_id)?.document_chunks(dataset_id, document_id).await?;
+        chunks.sort_by_key(|c| c.metadata.get("chunk_index").and_then(serde_json::Value::as_u64).unwrap_or(u64::MAX));
+        Ok(chunks)
+    }
+
+    /// Remove a document. Returns the number of chunks removed (0 when it did not exist).
+    pub async fn delete_document(&self, dataset_id: &str, document_id: &str) -> Result<usize, RagError> {
+        self.managed_store(dataset_id)?.delete_document(dataset_id, document_id).await
     }
 
     /// Query every dataset concurrently. Returns `(dataset id, hits)` in request order.
@@ -519,6 +564,49 @@ mod tests {
 
     async fn ingest(kb: &KnowledgeBase, ds: &str, id: &str, text: &str) {
         kb.ingestor(ds).unwrap().ingest(&Document::new(ds, id, text)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn documents_can_be_listed_paged_inspected_and_deleted() {
+        let kb = kb_with_two_datasets();
+        let ingestor = kb.ingestor("pets").unwrap();
+        let mut meta = crate::types::Metadata::new();
+        meta.insert("lang".into(), serde_json::json!("en"));
+        let long = "Cats purr. ".repeat(200);
+        ingestor.ingest(&Document::new("pets", "cats", long).title("Cats").metadata(meta)).await.unwrap();
+        ingest(&kb, "pets", "dogs", "Dogs bark.").await;
+        ingest(&kb, "pets", "birds", "Birds sing.").await;
+
+        let first = kb.list_documents("pets", 2, None).await.unwrap();
+        let ids: Vec<&str> = first.iter().map(|d| d.document_id.as_str()).collect();
+        assert_eq!(ids, ["birds", "cats"]);
+        let cats = &first[1];
+        assert_eq!(cats.title, "Cats");
+        assert!(cats.chunks > 1, "long document is split");
+        assert_eq!(cats.metadata.get("lang"), Some(&serde_json::json!("en")));
+        assert!(!cats.metadata.contains_key("chunk_index"), "per-chunk keys are not document metadata");
+        let next = kb.list_documents("pets", 2, Some("cats")).await.unwrap();
+        assert_eq!(next.iter().map(|d| d.document_id.as_str()).collect::<Vec<_>>(), ["dogs"]);
+
+        let chunks = kb.document_chunks("pets", "cats").await.unwrap();
+        assert_eq!(chunks.len(), cats.chunks);
+        let order: Vec<u64> = chunks.iter().map(|c| c.metadata["chunk_index"].as_u64().unwrap()).collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "chunks come in document order: {order:?}");
+
+        assert_eq!(kb.delete_document("pets", "cats").await.unwrap(), cats.chunks);
+        assert_eq!(kb.delete_document("pets", "cats").await.unwrap(), 0);
+        assert_eq!(kb.list_documents("pets", 50, None).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn external_and_unknown_datasets_are_not_managed() {
+        let store_kb = kb_with_two_datasets();
+        let retriever = store_kb.datasets.get("pets").unwrap().retriever.clone();
+        let kb = KnowledgeBase::new().with_retriever("remote", retriever);
+        assert!(!kb.is_managed("remote"));
+        assert_eq!(kb.list_documents("remote", 10, None).await.unwrap_err().kind(), "unsupported");
+        assert_eq!(kb.delete_document("remote", "x").await.unwrap_err().kind(), "unsupported");
+        assert_eq!(kb.list_documents("missing", 10, None).await.unwrap_err().kind(), "not_found");
     }
 
     #[tokio::test]
