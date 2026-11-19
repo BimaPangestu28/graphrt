@@ -47,13 +47,18 @@ fn one() -> u64 {
     1
 }
 
-/// A loop variable declaration.
+/// A loop variable declaration: `{name, type, input_type, value}`.
+///
+/// The import-layout spellings `label`, `var_type` and `value_type` are
+/// accepted as deprecated aliases (`value_type` meant the input source, not a
+/// value type, which was ambiguous).
 #[derive(Clone, Debug, Deserialize)]
 pub struct LoopVariable {
+    #[serde(rename = "name", alias = "label")]
     pub label: String,
-    #[serde(default = "any")]
+    #[serde(rename = "type", alias = "var_type", default = "any")]
     pub var_type: ValueType,
-    #[serde(default)]
+    #[serde(rename = "input_type", alias = "value_type", default)]
     pub value_type: LoopValueSource,
     /// A literal (for `constant`) or a selector (for `variable`).
     #[serde(default)]

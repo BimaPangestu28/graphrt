@@ -158,7 +158,8 @@ pub(crate) fn system_one() -> NodeDescriptor {
                 "route_by": { "type": "string", "description": "Choice question to branch on" },
                 "min_confidence": probability("Below it, take the `low_confidence` handle"),
                 "min_probability": probability("Below it, take the `low_confidence` handle"),
-                "long_context": { "type": "boolean", "default": false }
+                "long_context": { "type": "boolean", "default": false },
+                "allow_missing": { "type": "boolean", "default": false, "description": "Placeholders for missing variables become null instead of failing" }
             }),
             &["questions"],
         ))

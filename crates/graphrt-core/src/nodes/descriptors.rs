@@ -3,7 +3,7 @@
 use serde_json::json;
 
 use crate::catalog::schema::{
-    conditions, key_condition, logical_operator, nested, object, selector, template, value_type,
+    conditions, deprecated_alias, key_condition, logical_operator, nested, object, selector, template, value_type,
 };
 use crate::catalog::{Handles, NodeCategory, NodeDescriptor, OutputDescriptor};
 use crate::value::ValueType;
@@ -214,14 +214,18 @@ pub(crate) fn iteration() -> NodeDescriptor {
 }
 
 pub(crate) fn loop_node() -> NodeDescriptor {
+    let input_type = json!({ "type": "string", "enum": ["constant", "variable"], "default": "constant" });
     let var = nested(
         json!({
-            "label": { "type": "string", "minLength": 1 },
-            "var_type": value_type(),
-            "value_type": { "type": "string", "enum": ["constant", "variable"], "default": "constant" },
-            "value": {}
+            "name": { "type": "string", "minLength": 1 },
+            "type": value_type(),
+            "input_type": input_type,
+            "value": { "description": "A literal (input_type `constant`) or a selector (`variable`)" },
+            "label": deprecated_alias(json!({ "type": "string", "minLength": 1 }), "name"),
+            "var_type": deprecated_alias(value_type(), "type"),
+            "value_type": deprecated_alias(input_type.clone(), "input_type")
         }),
-        &["label"],
+        &[],
     );
     base("loop", "Loop", NodeCategory::Logic, "loop")
         .describe(
@@ -284,7 +288,8 @@ pub(crate) fn human_input() -> NodeDescriptor {
                 "content": template("Alias of `prompt`"),
                 "form": nested(json!({ "fields": { "type": "array", "items": field } }), &[]),
                 "inputs": { "type": "array", "items": field },
-                "actions": { "type": "array", "items": action, "description": "Defaults to a single `submit` action" }
+                "actions": { "type": "array", "items": action, "description": "Defaults to a single `submit` action" },
+                "expire_after_ms": { "type": "integer", "minimum": 0, "description": "How long the host should wait for a response (reported as `timeout_ms` in the pause data)" }
             }),
             &[],
         ))
