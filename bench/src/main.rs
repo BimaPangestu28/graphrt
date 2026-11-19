@@ -13,6 +13,7 @@
 //! graphrt-bench mem-paused N    # peak RSS holding N paused runs (+ snapshot size)
 //! graphrt-bench mem-inflight N  # peak RSS with N runs in flight (50 ms model)
 //! graphrt-bench llm-ab [ROUNDS] # instant-LLM throughput, CPU µs and latency per run (A/B runs)
+//! graphrt-bench llm-runs N C [stream]  # N instant-LLM runs, C in flight (0: sequential), for `time -l`
 //! ```
 //!
 //! `GRAPHRT_BENCH_WORKERS=<n>` sets the worker threads of the multi-thread
@@ -22,7 +23,9 @@
 //! All model calls use an in-process mock: numbers measure the runtime, not any
 //! model provider.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(not(feature = "mimalloc"))]
+use std::alloc::System;
+use std::alloc::{GlobalAlloc, Layout};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -441,6 +444,60 @@ fn section_llm_ab(rounds: usize) -> Json {
            "rows": rows, "sequential_p50_us": lat["p50_ms"].as_f64().unwrap_or(0.0) * 1000.0})
 }
 
+/// One instant-model LLM run; with `stream`, every event goes through a
+/// `ResponseAssembler` (like a streaming client) instead of being discarded.
+async fn llm_run(e: &Engine, stream: bool) {
+    if !stream {
+        let end = e.run_to_end(RunInput::new().sys("query", "hi")).await;
+        assert!(matches!(end, Event::RunSucceeded { .. }), "{end:?}");
+        return;
+    }
+    let mut assembler = ResponseAssembler::new(e.graph());
+    let mut events = e.run(RunInput::new().sys("query", "hi"));
+    let mut chunks = 0;
+    while let Some(event) = events.next().await {
+        chunks += assembler.push(&event).len();
+    }
+    assert!(chunks > 0, "no answer chunks");
+}
+
+/// `n` instant-model LLM runs, `concurrency` at a time on the multi-thread
+/// runtime (0: one after another on a current-thread runtime). Meant to be run
+/// under `/usr/bin/time -l` and differenced against `n = 0`, so per-run
+/// instructions and cycles can be compared on a busy machine.
+fn section_llm_runs(n: usize, concurrency: usize, stream: bool) -> Json {
+    let e = Arc::new(engine(llm_graph(), services(0, 10)));
+    let t = Instant::now();
+    let cpu0 = cpu_time();
+    if concurrency == 0 {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        for _ in 0..n {
+            rt.block_on(llm_run(&e, stream));
+        }
+    } else {
+        let rt = multi_thread_runtime();
+        let mut left = n;
+        while left > 0 {
+            let batch = left.min(concurrency);
+            left -= batch;
+            rt.block_on(async {
+                let handles: Vec<_> = (0..batch)
+                    .map(|_| {
+                        let e = Arc::clone(&e);
+                        tokio::spawn(async move { llm_run(&e, stream).await })
+                    })
+                    .collect();
+                for h in handles {
+                    h.await.expect("join");
+                }
+            });
+        }
+    }
+    let runs = n.max(1) as f64;
+    json!({"runs": n, "concurrency": concurrency, "stream": stream, "wall_us_per_run": us(t.elapsed()) / runs,
+           "cpu_us_per_run": us(cpu_time() - cpu0) / runs})
+}
+
 fn section_concurrency() -> Json {
     let rt = multi_thread_runtime();
     let threads = worker_threads();
@@ -704,6 +761,11 @@ fn main() {
         "mem-paused" => section_mem_paused(n),
         "mem-inflight" => section_mem_inflight(n),
         "llm-ab" => section_llm_ab(args.get(2).and_then(|v| v.parse().ok()).unwrap_or(100)),
+        "llm-runs" => section_llm_runs(
+            n,
+            args.get(3).and_then(|v| v.parse().ok()).unwrap_or(0),
+            args.get(4).is_some_and(|v| v == "stream"),
+        ),
         other => {
             eprintln!("unknown section `{other}`; see the module docs");
             std::process::exit(2);
