@@ -154,6 +154,8 @@ struct TaskDone {
     attempt: u32,
     result: NodeResult,
     elapsed_ms: u64,
+    /// Clock reading taken when the task finished, if it read the clock.
+    finished_ms: Option<u64>,
 }
 
 /// One executing frame.
@@ -178,6 +180,9 @@ pub(crate) struct Frame {
     /// O(1) per resolved edge instead of rescanning every incoming edge (which
     /// made wide fan-ins quadratic). Built lazily from `edges` on first use.
     incoming: ByIndex<Incoming>,
+    /// Clock reading shared by the work done between two waits of the frame
+    /// loop (see [`Frame::now_ms`]); cleared before every wait.
+    burst_now_ms: Option<u64>,
 }
 
 /// Resolution state of a node's incoming edges.
@@ -332,6 +337,7 @@ impl Frame {
             reasons: Vec::new(),
             ready: VecDeque::new(),
             incoming: by_index(scope_len),
+            burst_now_ms: None,
         })
     }
 
@@ -363,6 +369,17 @@ impl Frame {
         });
         rt.state = State::Ready;
         self.ready.push_back(ix);
+    }
+
+    /// The current time for bookkeeping done without waiting: node starts (id
+    /// and start time) and skips.
+    ///
+    /// Everything between two waits of the frame loop takes microseconds, so it
+    /// shares one clock reading, seeded by the finishing time a completed task
+    /// already read. A chain then reads the clock once per node instead of
+    /// twice, and a batch of nodes started together reads it once.
+    fn now_ms(&mut self) -> u64 {
+        *self.burst_now_ms.get_or_insert_with(|| self.run.now_ms())
     }
 
     fn node_id(&self, ix: NodeIx) -> Arc<str> {
@@ -400,6 +417,7 @@ impl Frame {
             if running.is_empty() && solo.is_none() {
                 return self.finish();
             }
+            self.burst_now_ms = None;
             let next = futures::future::poll_fn(|cx| poll_tasks(cx, solo.as_mut(), &mut running));
             let changed = control.changed(seen);
             futures::pin_mut!(changed);
@@ -532,9 +550,10 @@ impl Frame {
                 attempt: 1,
                 result: Err(error),
                 elapsed_ms: 0,
+                finished_ms: None,
             }));
         };
-        let started = run.now_ms();
+        let started = self.now_ms();
         let rt = self.nodes.entry(ix).or_insert_with(|| NodeRt {
             state: State::Ready,
             exec_id: None,
@@ -582,7 +601,7 @@ impl Frame {
             loop {
                 if !run.take_step() {
                     let error = NodeError::fatal("limit_exceeded", "step limit exceeded");
-                    return TaskDone { ix, attempt, result: Err(error), elapsed_ms: 0 };
+                    return TaskDone { ix, attempt, result: Err(error), elapsed_ms: 0, finished_ms: None };
                 }
                 let deadline_ms = match timeout_ms {
                     Some(ms) if run.clock.supports_timers() => Some(run.now_ms().saturating_add(ms)),
@@ -610,8 +629,9 @@ impl Frame {
                             error
                         }
                         result => {
-                            let elapsed_ms = run.now_ms().saturating_sub(started);
-                            return TaskDone { ix, attempt, result, elapsed_ms };
+                            let finished = run.now_ms();
+                            let elapsed_ms = finished.saturating_sub(started);
+                            return TaskDone { ix, attempt, result, elapsed_ms, finished_ms: Some(finished) };
                         }
                     };
                     let delay_ms = retry_delay_ms(&retry, attempt, &error);
@@ -635,7 +655,10 @@ impl Frame {
 
     /// Apply a finished node. Returns `Some` when the frame must end now.
     fn on_done(&mut self, done: TaskDone) -> Option<FrameOutcome> {
-        let TaskDone { ix, attempt, result, elapsed_ms } = done;
+        let TaskDone { ix, attempt, result, elapsed_ms, finished_ms } = done;
+        if finished_ms.is_some() {
+            self.burst_now_ms = finished_ms;
+        }
         if let Some(rt) = self.nodes.get_mut(&ix) {
             rt.attempt = attempt;
         }
@@ -909,7 +932,7 @@ impl Frame {
                 continue;
             }
             // Every incoming edge skipped: skip the node and its outgoing edges.
-            let now = self.run.now_ms();
+            let now = self.now_ms();
             self.nodes.insert(
                 target,
                 NodeRt { state: State::Skipped, exec_id: Some(new_id_arc(now)), attempt: 0, resume_state: None },

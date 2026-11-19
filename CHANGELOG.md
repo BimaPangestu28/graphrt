@@ -35,6 +35,10 @@ releases may contain breaking changes; they are called out under **Changed**.
   nodes start. In a wide fan-out every commit used to copy the namespace table
   and a shard because a freshly started sibling held a snapshot of it; a batch
   of completions now shares one copy.
+- Engine: the clock is read about once per node instead of twice. The time a
+  finished node already read is reused for the next node's start and for any
+  nodes skipped in the same step, and a batch of nodes started together shares
+  one reading.
 - Engine: fewer allocations and less work per node execution. Node task
   futures are stored unboxed and are less than half their former size (584 ->
   264 bytes); a node that runs alone (chains, fan-ins) is polled without a

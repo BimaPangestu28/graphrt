@@ -1181,3 +1181,44 @@ fn runs_without_any_async_runtime() {
     let ev = rt.block_on(engine.run_to_end(RunInput::new().input("n", 7)));
     assert!(matches!(ev, Event::RunSucceeded { outputs, .. } if outputs.get("n") == Some(&Value::Int(7))));
 }
+
+/// A timer-less clock that counts its readings.
+#[derive(Debug, Default)]
+struct CountingClock {
+    reads: AtomicU32,
+}
+
+impl graphrt_core::node::Clock for CountingClock {
+    fn now_ms(&self) -> u64 {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        1_700_000_000_000
+    }
+    fn sleep(&self, _duration: Duration) -> BoxFuture<'static, ()> {
+        Box::pin(futures::future::ready(()))
+    }
+    fn supports_timers(&self) -> bool {
+        false
+    }
+}
+
+#[tokio::test]
+async fn a_chain_reads_the_clock_about_once_per_node() {
+    let len = 50;
+    let mut nodes = vec![node("start", "src", json!({}))];
+    let mut edges = Vec::new();
+    let mut prev = "start".to_owned();
+    for i in 0..len {
+        let id = format!("n{i}");
+        nodes.push(node(&id, "echo", json!({"template": "x"})));
+        edges.push(edge(&prev, &id));
+        prev = id;
+    }
+    let clock = Arc::new(CountingClock::default());
+    let engine = Engine::new(build(nodes, edges)).with_clock(clock.clone());
+    let events = collect(&engine, RunInput::new()).await;
+    assert!(matches!(events.last(), Some(Event::RunSucceeded { .. })));
+    let reads = clock.reads.load(Ordering::Relaxed);
+    // One reading per node (its completion, reused for the next start) plus a
+    // few per run; two per node would be over 100.
+    assert!(reads <= len + 10, "{reads} clock reads for {len} nodes");
+}
