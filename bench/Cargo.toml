@@ -18,6 +18,13 @@ graphrt-llm = { path = "../crates/graphrt-llm", default-features = false, featur
 futures = "0.3"
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+libc = "0.2"
+mimalloc = { version = "0.1.52", optional = true, default-features = false }
+
+[features]
+# Count allocations on top of mimalloc instead of the system allocator
+# (same allocator as `graphrt-cli --features mimalloc`).
+mimalloc = ["dep:mimalloc"]
 
 [profile.release]
 opt-level = 3
