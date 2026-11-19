@@ -9,7 +9,7 @@ categories = ["command-line-utilities", "development-tools"]
 version.workspace = true
 edition.workspace = true
 # `std::fs::File::lock` (run store) needs Rust 1.89; the libraries keep the workspace MSRV.
-rust-version = "1.89"
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

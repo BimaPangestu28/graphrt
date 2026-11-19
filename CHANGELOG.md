@@ -24,6 +24,13 @@ are reported exactly as in 0.3.0.
 - `graphrt run` on a 1,000-node chain (macOS arm64, `min-size` build): 0.3.0
   55 ms, 0.3.1 16 ms, 0.2.0 15 ms.
 
+### Changed
+- Every crate now declares Rust **1.89** as its MSRV (was 1.85 for most). The
+  declaration was wrong, not the code: `graphrt-core`'s default `yaml` feature
+  has needed 1.89 since 0.2.0 through `serde-saphyr` 2, and the CLI, FFI and
+  RAG crates already declared it. The MSRV CI job (and `scripts/ci-local.sh`)
+  now checks the whole workspace on 1.89.
+
 ### Added
 - The iOS sample app is verified on a physical iPhone (iOS 18.3); its README
   has the device build, install and launch steps.

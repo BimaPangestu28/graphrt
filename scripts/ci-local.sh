@@ -13,11 +13,11 @@
 #
 # Tests run with --no-fail-fast so every failing test binary is reported, not just the first.
 #
-# Needs rustup. The msrv job needs the 1.85 toolchain and the wasm job the
+# Needs rustup. The msrv job needs the 1.89 toolchain and the wasm job the
 # wasm32-unknown-unknown target; the script installs them with rustup if missing.
 set -euo pipefail
 
-MSRV_TOOLCHAIN="1.85"
+MSRV_TOOLCHAIN="1.89"
 ALL_JOBS=(fmt clippy test msrv minimal-core wasm size)
 skipped_jobs=()
 keep_worktree=false
@@ -65,7 +65,7 @@ for job in "${ALL_JOBS[@]}"; do
     fmt) command=(cargo fmt --all -- --check) ;;
     clippy) command=(cargo clippy --workspace --all-targets --all-features) ;;
     test) command=(cargo test --workspace --all-features --no-fail-fast) ;;
-    msrv) is_skipped msrv || ensure_toolchain "$MSRV_TOOLCHAIN"; command=(cargo "+$MSRV_TOOLCHAIN" check -p graphrt-core) ;;
+    msrv) is_skipped msrv || ensure_toolchain "$MSRV_TOOLCHAIN"; command=(cargo "+$MSRV_TOOLCHAIN" check --workspace) ;;
     minimal-core) command=(cargo test -p graphrt-core --no-default-features --no-fail-fast) ;;
     wasm) is_skipped wasm || ensure_wasm_target
       command=(cargo build -p graphrt-core --no-default-features --features yaml,jinja --target wasm32-unknown-unknown) ;;

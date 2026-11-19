@@ -25,13 +25,13 @@ jobs:
       - run: cargo test --workspace --all-features
 
   msrv:
-    name: MSRV (core)
+    name: MSRV (1.89, every crate)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85
+      - uses: dtolnay/rust-toolchain@1.89
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check -p graphrt-core
+      - run: cargo check --workspace
 
   minimal-core:
     name: core without default features
