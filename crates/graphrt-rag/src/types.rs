@@ -69,13 +69,24 @@ pub struct DocumentSummary {
     pub chunks: usize,
     /// Total characters across the chunks.
     pub characters: usize,
+    /// `false` when the document is disabled (kept, but skipped by searches).
+    pub enabled: bool,
     /// Document-level metadata (the per-chunk `chunk_index` and `heading` keys are left out).
     #[serde(default)]
     pub metadata: Metadata,
 }
 
-/// Chunk metadata keys set per chunk by the ingestor, not part of a document's metadata.
-pub(crate) const PER_CHUNK_KEYS: [&str; 2] = ["chunk_index", "heading"];
+/// Reserved chunk metadata key marking a disabled document: its chunks stay
+/// stored but every search skips them.
+pub const DISABLED_KEY: &str = "_disabled";
+
+/// Whether chunk metadata marks its document as disabled.
+pub fn is_disabled(metadata: &Metadata) -> bool {
+    metadata.get(DISABLED_KEY).and_then(serde_json::Value::as_bool).unwrap_or(false)
+}
+
+/// Chunk metadata keys managed per chunk by graphrt, not part of a document's metadata.
+pub(crate) const PER_CHUNK_KEYS: [&str; 3] = ["chunk_index", "heading", DISABLED_KEY];
 
 /// Default and largest page size for document listings.
 pub const DEFAULT_DOCUMENT_PAGE: usize = 50;

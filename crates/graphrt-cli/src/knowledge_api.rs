@@ -225,6 +225,30 @@ pub async fn get_document(
     }
 }
 
+/// Body of `PATCH /v1/knowledge/datasets/{dataset}/documents/{document}`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentPatch {
+    enabled: bool,
+}
+
+/// `PATCH /v1/knowledge/datasets/{dataset}/documents/{document}`: enable or disable
+/// a document (a disabled document is kept but never retrieved).
+pub async fn patch_document(
+    State(state): State<Arc<AppState>>,
+    UrlPath((dataset, document_id)): UrlPath<(String, String)>,
+    Json(patch): Json<DocumentPatch>,
+) -> Response {
+    let Some(knowledge) = state.knowledge() else { return not_served() };
+    match knowledge.kb.set_document_enabled(&dataset, &document_id, patch.enabled).await {
+        Ok(chunks) => {
+            Json(serde_json::json!({ "document_id": document_id, "enabled": patch.enabled, "chunks": chunks }))
+                .into_response()
+        }
+        Err(e) => rag_error(&e),
+    }
+}
+
 /// `DELETE /v1/knowledge/datasets/{dataset}/documents/{document}`
 pub async fn delete_document(
     State(state): State<Arc<AppState>>,

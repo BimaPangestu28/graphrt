@@ -130,6 +130,22 @@ async fn documents_can_be_added_listed_inspected_searched_and_deleted() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["hits"][0]["document_id"], "leave");
 
+    let disable = json!({ "enabled": false });
+    let (status, body) =
+        send(&app, json_request("PATCH", "/v1/knowledge/datasets/handbook/documents/leave", &disable)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = send(&app, json_request("POST", "/v1/knowledge/retrieve", &query)).await;
+    assert!(body["hits"].as_array().unwrap().iter().all(|h| h["document_id"] != "leave"), "{body}");
+    let (_, body) = send(&app, get("/v1/knowledge/datasets/handbook/documents?after=expenses")).await;
+    assert_eq!(body["documents"][0]["enabled"], false);
+    let enable = json!({ "enabled": true });
+    send(&app, json_request("PATCH", "/v1/knowledge/datasets/handbook/documents/leave", &enable)).await;
+    let (_, body) = send(&app, json_request("POST", "/v1/knowledge/retrieve", &query)).await;
+    assert_eq!(body["hits"][0]["document_id"], "leave");
+    let (status, _) =
+        send(&app, json_request("PATCH", "/v1/knowledge/datasets/handbook/documents/nope", &enable)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
     let delete = Request::delete("/v1/knowledge/datasets/handbook/documents/leave").body(Body::empty()).unwrap();
     let (status, body) = send(&app, delete).await;
     assert_eq!(status, StatusCode::OK);

@@ -161,6 +161,37 @@ impl KnowledgeBase {
         Ok(chunks)
     }
 
+    /// Enable or disable a document: a disabled document keeps its chunks (and
+    /// stays disabled across re-ingestion) but no search returns it. Returns the
+    /// number of chunks of the document.
+    ///
+    /// @throws `RagError::NotFound` when the document does not exist.
+    pub async fn set_document_enabled(
+        &self,
+        dataset_id: &str,
+        document_id: &str,
+        enabled: bool,
+    ) -> Result<usize, RagError> {
+        let store = self.managed_store(dataset_id)?;
+        let mut chunks = store.document_chunks(dataset_id, document_id).await?;
+        if chunks.is_empty() {
+            return Err(RagError::NotFound(format!("unknown document `{document_id}` in dataset `{dataset_id}`")));
+        }
+        let count = chunks.len();
+        chunks.retain(|c| crate::types::is_disabled(&c.metadata) == enabled);
+        for chunk in &mut chunks {
+            if enabled {
+                chunk.metadata.remove(crate::types::DISABLED_KEY);
+            } else {
+                chunk.metadata.insert(crate::types::DISABLED_KEY.into(), serde_json::Value::Bool(true));
+            }
+        }
+        if !chunks.is_empty() {
+            store.upsert(chunks).await?;
+        }
+        Ok(count)
+    }
+
     /// Remove a document. Returns the number of chunks removed (0 when it did not exist).
     pub async fn delete_document(&self, dataset_id: &str, document_id: &str) -> Result<usize, RagError> {
         self.managed_store(dataset_id)?.delete_document(dataset_id, document_id).await
@@ -596,6 +627,31 @@ mod tests {
         assert_eq!(kb.delete_document("pets", "cats").await.unwrap(), cats.chunks);
         assert_eq!(kb.delete_document("pets", "cats").await.unwrap(), 0);
         assert_eq!(kb.list_documents("pets", 50, None).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn disabled_documents_are_kept_but_never_retrieved() {
+        let kb = kb_with_two_datasets();
+        ingest(&kb, "pets", "cats", "Cats are small furry pets that purr.").await;
+        ingest(&kb, "pets", "dogs", "Dogs are loyal pets that bark.").await;
+        let query = RetrievalRequest::new("pets that purr", vec!["pets".into()]).top_k(5);
+        let found = |hits: &[Hit]| hits.iter().any(|h| h.document_id == "cats");
+        assert!(found(&kb.retrieve(&query).await.unwrap()));
+
+        assert!(kb.set_document_enabled("pets", "cats", false).await.unwrap() >= 1);
+        assert!(!found(&kb.retrieve(&query).await.unwrap()), "disabled document retrieved");
+        let docs = kb.list_documents("pets", 10, None).await.unwrap();
+        let cats = docs.iter().find(|d| d.document_id == "cats").unwrap();
+        assert!(!cats.enabled);
+        assert!(!cats.metadata.contains_key(crate::types::DISABLED_KEY), "flag is not document metadata");
+
+        // A new version of a disabled document stays disabled.
+        ingest(&kb, "pets", "cats", "Cats are small furry pets that purr and nap.").await;
+        assert!(!found(&kb.retrieve(&query).await.unwrap()), "re-ingestion re-enabled the document");
+
+        kb.set_document_enabled("pets", "cats", true).await.unwrap();
+        assert!(found(&kb.retrieve(&query).await.unwrap()));
+        assert_eq!(kb.set_document_enabled("pets", "nope", false).await.unwrap_err().kind(), "not_found");
     }
 
     #[tokio::test]

@@ -263,7 +263,7 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
             .route("/v1/knowledge/datasets/{dataset}/documents", get(k::list_documents).post(k::put_text_document))
             .route(
                 "/v1/knowledge/datasets/{dataset}/documents/{document}",
-                get(k::get_document).merge(delete(k::delete_document)),
+                get(k::get_document).merge(delete(k::delete_document)).merge(axum::routing::patch(k::patch_document)),
             )
             .route(
                 "/v1/knowledge/datasets/{dataset}/documents/{document}/file",

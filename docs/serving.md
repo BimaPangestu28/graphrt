@@ -128,10 +128,11 @@ UI (datasets, documents, chunks, retrieval testing).
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /v1/knowledge/datasets` | `{datasets: [{id, name, description, managed}]}`. `managed` is false for datasets served by an external retriever (read-only). |
-| `GET /v1/knowledge/datasets/{dataset}/documents?limit=&after=` | Documents ordered by id: `{documents: [{document_id, title, chunks, characters, metadata}], next}`. Pass `next` as `after` for the following page; `next` is null at the end. `limit` defaults to 50, at most 500. |
+| `GET /v1/knowledge/datasets/{dataset}/documents?limit=&after=` | Documents ordered by id: `{documents: [{document_id, title, chunks, characters, enabled, metadata}], next}`. Pass `next` as `after` for the following page; `next` is null at the end. `limit` defaults to 50, at most 500. |
 | `POST /v1/knowledge/datasets/{dataset}/documents` | Add or replace a document from text: `{document_id, text, title?, metadata?}`. |
 | `PUT /v1/knowledge/datasets/{dataset}/documents/{document}/file?name=&title=` | Add or replace a document from a raw file body (PDF, Office, HTML, Markdown, EPUB, CSV, e-mail, ...). `name` (e.g. `report.pdf`) and `Content-Type` select the format. Limited by `--max-upload-bytes` (default 16 MiB). |
 | `GET /v1/knowledge/datasets/{dataset}/documents/{document}` | The document's chunks in order: `{document_id, chunks: [{id, title, text, characters, metadata}]}` (vectors are never sent). |
+| `PATCH /v1/knowledge/datasets/{dataset}/documents/{document}` | `{enabled: false}` disables a document: it is kept (and stays disabled when re-uploaded) but no search returns it; `{enabled: true}` restores it. Listings show `enabled`. |
 | `DELETE /v1/knowledge/datasets/{dataset}/documents/{document}` | `{deleted_chunks}`; 404 when the document does not exist. |
 | `POST /v1/knowledge/retrieve` | Retrieval testing: `{query, datasets, top_k?, score_threshold?, filter?, weights?, rerank?}` returns `{hits, elapsed_ms}`, exactly as the node would retrieve. |
 

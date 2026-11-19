@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use crate::chunker::{ChunkerConfig, chunk_text};
 use crate::error::RagError;
-use crate::types::{Embedder, Extractor, Metadata, StoredChunk, VectorStore, check_vector, content_hash};
+use crate::types::{
+    DISABLED_KEY, Embedder, Extractor, Metadata, StoredChunk, VectorStore, check_vector, content_hash, is_disabled,
+};
 
 /// A document to ingest.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -107,6 +109,8 @@ impl Ingestor {
             .map(|c| (c.id.clone(), c))
             .collect();
 
+        // A disabled document stays disabled when a new version is ingested.
+        let disabled = existing.values().any(|c| is_disabled(&c.metadata));
         let mut report = IngestReport::default();
         let mut seen: HashSet<String> = HashSet::new();
         let mut fresh: Vec<StoredChunk> = Vec::new();
@@ -122,6 +126,9 @@ impl Ingestor {
             metadata.insert("chunk_index".into(), serde_json::Value::from(chunk.index));
             if let Some(h) = &chunk.heading {
                 metadata.insert("heading".into(), serde_json::Value::String(h.clone()));
+            }
+            if disabled {
+                metadata.insert(DISABLED_KEY.into(), serde_json::Value::Bool(true));
             }
             let mut stored = StoredChunk {
                 id,

@@ -20,6 +20,10 @@ releases may contain breaking changes; they are called out under **Changed**.
   (`--max-upload-bytes`, default 16 MiB), inspect a document's chunks, delete
   documents, and test retrieval, all on the knowledge base the workflows use.
   Ingestion runs one request at a time to keep small devices responsive.
+- Documents can be disabled and re-enabled (`PATCH .../documents/{document}`,
+  `KnowledgeBase::set_document_enabled`): a disabled document keeps its chunks
+  and stays disabled across re-ingestion, but no search returns it (memory,
+  SQLite and Qdrant stores; reserved chunk metadata key `_disabled`).
 - `graphrt-rag`: `VectorStore::list_documents` (memory and SQLite stores),
   `DocumentSummary`, `KnowledgeBase::{list_documents, document_chunks,
   delete_document, is_managed}`, `RagError::Unsupported`; `IngestReport` is

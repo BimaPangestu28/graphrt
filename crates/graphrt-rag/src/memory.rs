@@ -26,6 +26,7 @@ use crate::error::RagError;
 use crate::filter::MetadataFilter;
 use crate::types::{
     DocumentSummary, Hit, KeywordQuery, PER_CHUNK_KEYS, StoredChunk, VectorQuery, VectorStore, check_vector,
+    is_disabled,
 };
 
 /// BM25 parameters.
@@ -331,6 +332,7 @@ fn summarize(ds: &Dataset, document_id: &str) -> DocumentSummary {
         title: first.map(|c| c.title.clone()).unwrap_or_default(),
         chunks: chunks.len(),
         characters: chunks.iter().map(|c| c.text.chars().count()).sum(),
+        enabled: !first.is_some_and(|c| is_disabled(&c.metadata)),
         metadata,
     }
 }
@@ -550,7 +552,7 @@ impl VectorStore for MemoryStore {
 }
 
 fn passes(filter: Option<&MetadataFilter>, chunk: &StoredChunk) -> bool {
-    filter.is_none_or(|f| f.matches(&chunk.metadata))
+    !is_disabled(&chunk.metadata) && filter.is_none_or(|f| f.matches(&chunk.metadata))
 }
 
 fn top_hits(mut scored: Vec<(f32, &Entry)>, top_k: usize) -> Vec<Hit> {

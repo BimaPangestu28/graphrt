@@ -234,7 +234,9 @@ fn qdrant_filter(datasets: &[String], filter: Option<&MetadataFilter>) -> serde_
             }
         }
     }
-    serde_json::json!({ "must": must })
+    // Disabled documents stay stored but are never returned.
+    let disabled = key_match(&format!("metadata.{}", crate::types::DISABLED_KEY), serde_json::Value::Bool(true));
+    serde_json::json!({ "must": must, "must_not": [disabled] })
 }
 
 /// Whether Qdrant's type-exact `match` gives the same result as the in-process
