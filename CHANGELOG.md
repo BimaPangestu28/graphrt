@@ -70,6 +70,9 @@ releases may contain breaking changes; they are called out under **Changed**.
   0.2.0.
 - `Debug` output of `OtelConfig` (OTLP headers) and the MCP `StdioConfig`
   (`env`) / `HttpConfig` (headers, bearer token) shows names only, never values.
+- Docs: new [docs/security.md](docs/security.md) (sandbox limits, egress
+  policy, masking guarantees and their limits, deployment knobs); SECURITY.md
+  now has a threat model, explicit scope and supported versions (0.2.x, 0.3.x).
 - Dependencies: `rusqlite` 0.40 -> 0.41 (bundled SQLite 3.54), fixing
   RUSTSEC-2026-0459 / CVE-2026-119375 (uninitialized page-cache memory read
   through a crafted database and `-wal` pair) in `graphrt-rag`'s `SqliteStore`.

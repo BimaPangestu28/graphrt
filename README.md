@@ -281,14 +281,18 @@ Custom nodes, services, model providers and native tools are covered in
 
 | Concern | Default |
 | --- | --- |
-| Secrets | `secret` values are masked in events, logs, `Debug` and templates; `env.*` is never written to snapshots. Plaintext is only exposed to nodes that must transmit it (HTTP auth, code inputs). |
-| Network egress | `http-request` resolves DNS itself, rejects loopback/private/link-local/CGNAT/metadata addresses (including IPv4-mapped IPv6), pins the checked address and re-checks every redirect. `--allow-private-network` opts out. |
+| Secrets | `secret` values are masked in events, logs, `Debug` and templates; `env.*` is never written to snapshots. Plaintext is only exposed to nodes that must transmit it (HTTP auth, code inputs). Node error messages are scrubbed of every secret the run knows (and provider errors of the request's credentials); strings a code node returns that contain a secret become secrets again. |
+| Network egress | Every workflow-controlled URL (`http-request`, file downloads) resolves DNS itself, rejects loopback/private/link-local/unique-local/CGNAT/cloud-metadata addresses (in any IP notation, including IPv4-embedding IPv6 forms), connects only to the checked addresses and re-checks every redirect. `--allow-private-network` opts out. |
 | Templates | `{{#…#}}` placeholders are parsed once; resolved values are never re-parsed (no prompt/template injection). Jinja runs without filesystem access, with a fuel budget and output cap. |
-| Code | QuickJS with memory, stack and time limits, no filesystem, network, timers or modules. |
+| Code | QuickJS on its own stack-sized thread with memory, stack and time limits that workflows can only lower (and never switch off), no filesystem, network, environment, timers or modules; a fresh runtime per execution. |
 | MCP | stdio servers start with an empty environment plus an explicit allow-list; every call has a timeout; tools can be allow-listed. |
 | Plugins | Process plugins start lazily with an empty environment plus the variables their manifest lists, optional `checksums` verified before every start, per-request timeouts and message size caps; secrets are masked unless the manifest asks for them. WebAssembly plugins run in an interpreter with fuel and memory limits and no system imports. A plugin can never replace a built-in or another plugin's node kind. |
-| Server | Optional bearer auth (constant-time comparison), request body limit, env values cannot be set by requests. |
+| Server | Optional bearer auth (constant-time comparison); without a key, a loopback server only accepts loopback `Host` names (DNS rebinding). Body and upload limits, a cap on concurrently executing runs (`--max-active-runs`), no CORS, env values cannot be set by requests. |
 | Limits | Step budget, run duration, per-node timeouts, container depth, iteration/loop caps. |
+
+The threat model, sandbox limits, egress rules and deployment knobs are in
+[docs/security.md](docs/security.md); how to report a vulnerability is in
+[SECURITY.md](SECURITY.md).
 
 ## Binary size
 
