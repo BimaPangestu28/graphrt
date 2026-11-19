@@ -28,6 +28,13 @@ releases may contain breaking changes; they are called out under **Changed**.
 - `graphrt-cli`: optional `mimalloc` feature to replace the global allocator.
 
 ### Changed
+- **Breaking** (`graphrt-core`): the `node_id` and `exec_id` fields of every
+  `Event` variant are `Arc<str>` instead of `String`, so the engine shares the
+  ids it already holds instead of allocating two strings per event (every
+  streamed chunk included). Serialized events are unchanged. Migrating:
+  compare with `node_id.as_ref() == "llm"` instead of `node_id == "llm"`, use
+  `node_id.to_string()` where a `String` is needed, and `.into()` when building
+  an event from a `String`.
 - **Breaking** (`graphrt-http`): `HttpClient::client` and
   `HttpClient::manual_redirect_client` return `Result<&reqwest::Client, ClientError>`;
   the four underlying clients are built on first use. `ClientError` is `Clone`.
@@ -52,6 +59,10 @@ releases may contain breaking changes; they are called out under **Changed**.
   before and after): 1,000 concurrent instant runs 63k → 82k runs/s (+31%),
   per-node scheduling 1.55 → 1.27 µs (noop chain) and 2.31 → 1.57 µs (1,000-way
   fan-out), time to first streamed chunk overhead 14.5 → 11.6 µs.
+- Shared `Arc<str>` event ids (see **Changed**) took the same benchmark to
+  94k runs/s (+49% over 0.1.0 in total), 1.06 µs per noop node and a 10.2 µs
+  streaming overhead. The response assembler and the OpenTelemetry tracer key
+  their maps by the shared ids too.
 
 ## [0.1.0] - 2026-11-18
 
