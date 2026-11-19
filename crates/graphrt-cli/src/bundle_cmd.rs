@@ -101,7 +101,7 @@ fn open(path: &Path, trust: &[String]) -> Result<graphrt_bundle::Bundle, CliErro
 #[cfg(feature = "bundle")]
 fn apply_bundle_configs(bundle: &graphrt_bundle::Bundle, options: &mut ServiceOptions) -> Result<(), CliError> {
     let fingerprint = graphrt_bundle::sha256_hex(bundle.manifest_bytes());
-    let dir = std::env::temp_dir().join(format!("graphrt-bundle-{}", fingerprint.get(..16).unwrap_or(&fingerprint)));
+    let dir = create_private_dir(fingerprint.get(..16).unwrap_or(&fingerprint))?;
     bundle.extract_to(&dir).map_err(|e| CliError::failed(format!("cannot extract bundle: {e}")))?;
     if options.providers.is_none()
         && let Some((rel, _)) = bundle.providers_config()
@@ -119,6 +119,25 @@ fn apply_bundle_configs(bundle: &graphrt_bundle::Bundle, options: &mut ServiceOp
         options.knowledge = Some(target);
     }
     Ok(())
+}
+
+/// Create a new, owner-only (`0700` on Unix) directory in the temp dir for extracted
+/// bundle configs. The name is unique per invocation and creation fails if the path
+/// exists, so another local user cannot pre-create it (or plant symlinks in it) to
+/// redirect writes or swap `providers.json` between extraction and use.
+#[cfg(feature = "bundle")]
+fn create_private_dir(label: &str) -> Result<std::path::PathBuf, CliError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
+    let unique = format!("{}-{}-{nanos}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
+    let dir = std::env::temp_dir().join(format!("graphrt-bundle-{label}-{unique}"));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&dir).map_err(|e| CliError::failed(format!("cannot create `{}`: {e}", dir.display())))?;
+    Ok(dir)
 }
 
 /// Execute `graphrt bundle ...`.
@@ -362,4 +381,25 @@ fn println_out(text: &str) -> Result<(), CliError> {
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     writeln!(out, "{text}").map_err(|e| CliError::failed(e.to_string()))
+}
+
+#[cfg(all(test, feature = "bundle"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extraction_dirs_are_fresh_and_private() {
+        let first = create_private_dir("test").unwrap();
+        let second = create_private_dir("test").unwrap();
+        assert_ne!(first, second, "every invocation gets its own directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&first).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "extraction dir must be owner-only: {mode:o}");
+        }
+        for dir in [first, second] {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
 }

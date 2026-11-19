@@ -323,7 +323,13 @@ impl TempDir {
             .map(|d| d.subsec_nanos())
             .unwrap_or_default();
         let dir = std::env::temp_dir().join(format!("graphrt-py-{}-{n}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir)
+        // A fresh directory only: never adopt one (or a symlink) another local user
+        // created at the predictable name. Owner-only on Unix.
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+            .create(&dir)
             .map_err(|e| NodeError::new("sandbox", format!("cannot create a working directory: {e}")))?;
         Ok(Self(dir))
     }
@@ -444,6 +450,22 @@ mod tests {
             )),
             "{keys:?}"
         );
+    }
+
+    #[test]
+    fn working_directory_is_fresh_and_private() {
+        let dir = TempDir::create().unwrap();
+        // Creating the same path again must fail rather than adopt the existing directory.
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        assert!(builder.create(dir.path()).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "working directory must be owner-only: {mode:o}");
+        }
     }
 
     #[test]

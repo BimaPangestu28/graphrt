@@ -14,8 +14,9 @@ pub enum ConfigError {
     Invalid { var: String, message: String },
 }
 
-/// Exporter settings resolved from environment variables.
-#[derive(Clone, Debug, PartialEq)]
+/// Exporter settings resolved from environment variables. `Debug` shows header
+/// names only.
+#[derive(Clone, PartialEq)]
 pub struct OtelConfig {
     /// `OTEL_SDK_DISABLED=true`.
     pub disabled: bool,
@@ -30,6 +31,21 @@ pub struct OtelConfig {
     pub resource: Resource,
     /// Attach truncated node outputs to spans (`GRAPHRT_OTEL_CAPTURE_CONTENT=true`).
     pub capture_content: bool,
+}
+
+impl std::fmt::Debug for OtelConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let header_names: Vec<&str> = self.headers.iter().map(|(name, _)| name.as_str()).collect();
+        f.debug_struct("OtelConfig")
+            .field("disabled", &self.disabled)
+            .field("endpoint_configured", &self.endpoint_configured)
+            .field("traces_endpoint", &self.traces_endpoint)
+            .field("metrics_endpoint", &self.metrics_endpoint)
+            .field("headers", &header_names)
+            .field("resource", &self.resource)
+            .field("capture_content", &self.capture_content)
+            .finish()
+    }
 }
 
 impl Default for OtelConfig {
@@ -161,6 +177,14 @@ mod tests {
 
     fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    #[test]
+    fn debug_hides_header_values() {
+        let cfg =
+            OtelConfig::from_vars(&vars(&[("OTEL_EXPORTER_OTLP_HEADERS", "x-honeycomb-team=hc-secret-key")])).unwrap();
+        let shown = format!("{cfg:?}");
+        assert!(shown.contains("x-honeycomb-team") && !shown.contains("hc-secret-key"), "{shown}");
     }
 
     #[test]

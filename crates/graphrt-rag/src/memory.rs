@@ -482,10 +482,10 @@ mod persistence {
     /// platform; failure only weakens crash durability, so it is ignored.
     fn sync_parent_dir(path: &Path) {
         #[cfg(unix)]
-        if let Some(dir) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            if let Ok(handle) = std::fs::File::open(dir) {
-                let _best_effort = handle.sync_all();
-            }
+        if let Some(dir) = path.parent().filter(|p| !p.as_os_str().is_empty())
+            && let Ok(handle) = std::fs::File::open(dir)
+        {
+            let _best_effort = handle.sync_all();
         }
         #[cfg(not(unix))]
         let _ = path;

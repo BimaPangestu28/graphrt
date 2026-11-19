@@ -136,8 +136,10 @@ impl Compiled {
             limits: StoreLimitsBuilder::new()
                 .memory_size(limits.memory_bytes)
                 .memories(1)
-                .tables(8)
-                .table_elements(1_000_000)
+                // Tables live outside linear memory; keep them small so they do not
+                // add tens of MB per instance on top of `memory_bytes`.
+                .tables(4)
+                .table_elements(100_000)
                 .instances(1)
                 .trap_on_grow_failure(true)
                 .build(),

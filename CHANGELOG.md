@@ -38,6 +38,78 @@ releases may contain breaking changes; they are called out under **Changed**.
   config template, weekly-active-installs and daily-runs queries). Not
   deployed.
 
+### Security
+- `code` node (JavaScript): a workflow could switch off the sandbox's memory
+  and stack limits by asking for `limits.memory_bytes: 0` or
+  `limits.stack_bytes: 0` (QuickJS reads zero as "unlimited"), and unbounded
+  recursion then overflowed the native stack and aborted the whole process
+  (for example `graphrt serve`). An operator stack ceiling above 16 MiB had the
+  same effect, and one above the executor's thread stack (2 MiB on tokio's
+  blocking pool) crashed the process too. Limits now have floors (1 MiB heap,
+  64 KiB stack) and a 16 MiB stack ceiling, and JavaScript runs on a dedicated
+  thread sized from the stack limit, so deep recursion is always a catchable
+  `RangeError`. Also in 0.2.0.
+- `code` node (JavaScript): error messages thrown by scripts are truncated to
+  8 KiB, so a script cannot push megabytes into events and run records; an
+  operator time limit too large for the clock no longer panics; a long chain of
+  promise jobs is bounded by the time limit between jobs as well.
+- Python subprocess runner: the working directory is created fresh and
+  owner-only (`0700`) instead of adopting an existing directory at the
+  predictable temp path.
+- Engine: node error messages are scrubbed of every secret the run has seen
+  (`type: secret` env variables, secret-typed inputs, re-supplied resume
+  secrets, secret outputs) before they reach `node_failed` / `node_retry` /
+  `run_failed` events, `error_message` outputs of handled errors, the run store
+  and OTel spans. Previously an error that echoed a key (a provider body such
+  as "Incorrect API key provided: sk-...", an HTTP error snippet from an echo
+  endpoint, an exception in code) was recorded verbatim. New public helpers in
+  `graphrt_core::redact`. Also in 0.2.0.
+- LLM providers: error bodies of failed provider requests are scrubbed of the
+  credentials the request carried (`Authorization`, `x-api-key`,
+  `x-goog-api-key`, `api-key` headers, `key` query parameters) before they
+  become error messages. OpenAI-compatible gateways and self-hosted servers
+  often echo the full key. Also in 0.2.0.
+- `code` node: returned strings containing a secret input (`key`, or
+  `"Bearer " + key`) are re-tagged as secrets, so they are masked in
+  `node_succeeded` events, SSE, run records and snapshots while staying usable
+  downstream; captured Python stdout is scrubbed. Previously they were stored
+  in plaintext. Also in 0.2.0.
+- HTTP egress policy: also blocks the IPv4-translated form `::ffff:0:a.b.c.d`
+  (judged by the embedded IPv4 address), the local-use NAT64 prefix
+  `64:ff9b:1::/48`, Teredo `2001::/32` and the Azure WireServer address
+  `168.63.129.16`. Also in 0.2.0.
+- OTel HTTP exporter: redirects are no longer followed, so vendor key headers
+  cannot follow a redirect to another host.
+- Bundles: `graphrt run/serve --bundle` extracted configs to a fixed,
+  predictable directory in the shared temp dir and reused it if it existed, so
+  another local user could pre-create it and plant symlinks or swap
+  `providers.json` (e.g. pointing `base_url` at their server). Each invocation
+  now extracts into a new owner-only (`0700`) directory. Signatures are checked
+  with strict Ed25519 verification. Also in 0.2.0.
+- Plugins: `limits.max_message_bytes` is capped at 256 MiB; WebAssembly
+  plugins get at most 4 tables of 100,000 elements (was 8 x 1,000,000), which
+  lived outside the `memory_bytes` budget.
+- `graphrt serve`: new `--max-active-runs` (default 256, `0` = unlimited)
+  caps runs executing at once; further starts and resumes get `429`.
+  Previously `"async": true` requests could start unlimited parallel runs
+  (`--max-runs` only bounds kept records). Also in 0.2.0.
+- `graphrt serve` without an API key on a loopback address now accepts only
+  loopback `Host` names (`localhost`, `127.0.0.1`, `[::1]`), blocking DNS
+  rebinding from web pages; a non-loopback address without a key prints an
+  explicit warning. Run store I/O errors no longer return server file paths to
+  clients, and `top_k` on `/v1/knowledge/retrieve` is capped at 100. Also in
+  0.2.0.
+- `Debug` output of `OtelConfig` (OTLP headers) and the MCP `StdioConfig`
+  (`env`) / `HttpConfig` (headers, bearer token) shows names only, never values.
+- Docs: new [docs/security.md](docs/security.md) (sandbox limits, egress
+  policy, masking guarantees and their limits, deployment knobs); SECURITY.md
+  now has a threat model, explicit scope and supported versions (0.2.x, 0.3.x).
+- Dependencies: `rusqlite` 0.40 -> 0.41 (bundled SQLite 3.54), fixing
+  RUSTSEC-2026-0459 / CVE-2026-119375 (uninitialized page-cache memory read
+  through a crafted database and `-wal` pair) in `graphrt-rag`'s `SqliteStore`.
+  `graphrt-rag` now needs Rust 1.89. `paste` (unmaintained, build-time only, via
+  candle) is acknowledged in `deny.toml`. Also in 0.2.0.
+
 ### Performance
 - Engine: fewer allocations and less work per node execution. Node task
   futures are stored unboxed and are less than half their former size (584 ->

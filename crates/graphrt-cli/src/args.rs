@@ -450,6 +450,10 @@ pub struct ServeArgs {
     /// callbacks. See docs/serving.md.
     #[arg(long, value_name = "FILE")]
     pub webhooks: Option<PathBuf>,
+    /// Maximum number of runs executing at the same time (started or resumed); further
+    /// requests get `429 Too Many Requests` (0 = unlimited). Paused runs do not count.
+    #[arg(long, value_name = "N", default_value_t = crate::serve::DEFAULT_MAX_ACTIVE_RUNS)]
+    pub max_active_runs: usize,
     #[command(flatten)]
     pub services: ServiceArgs,
 }

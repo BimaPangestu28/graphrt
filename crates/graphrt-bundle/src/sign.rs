@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::error::BundleError;
@@ -76,7 +76,8 @@ pub(crate) fn verify_manifest(manifest: &[u8], sig: &BundleSignature) -> Result<
     let key = parse_public_key(&sig.public_key)?;
     let bytes = unhex(&sig.signature).ok_or_else(|| BundleError::Signature("signature is not hex".into()))?;
     let array: [u8; 64] = bytes.try_into().map_err(|_| BundleError::Signature("signature must be 64 bytes".into()))?;
-    key.verify(manifest, &Signature::from_bytes(&array))
+    // Strict verification also rejects small-order keys and non-canonical signatures.
+    key.verify_strict(manifest, &Signature::from_bytes(&array))
         .map_err(|_| BundleError::Signature("signature does not match the manifest".into()))?;
     Ok(hex(key.as_bytes()))
 }

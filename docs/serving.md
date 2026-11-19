@@ -16,6 +16,7 @@ graphrt serve examples/ --store ./runs --store-ttl-days 30
 | *(neither)* | In-memory store. Runs are lost when the server stops. |
 | `--store-ttl-days <n>` | Hourly cleanup of runs (any status except running) not updated for `n` days. |
 | `--max-runs <n>` | In-memory store only: keep at most `n` runs (default 1000, `0` = unlimited). The oldest finished runs are dropped first; running and paused runs are always kept. |
+| `--max-active-runs <n>` | At most `n` runs execute at once (default 256, `0` = unlimited); further starts and resumes get `429 Too Many Requests`. Paused runs do not count. |
 
 ### Small devices
 
@@ -201,7 +202,13 @@ a different body under a used key also returns the first run.
 
 Deliveries share `--max-body-bytes` (default 2 MiB) with the rest of the API:
 larger bodies answer `413`. The body must be JSON (`400` otherwise); unknown
-hooks answer `404`.
+hooks answer `404`. Webhook runs count against `--max-active-runs` like API
+runs, so a busy server answers `429` and the sender retries.
+
+A server on a loopback address without an API key accepts only loopback `Host`
+names (DNS rebinding protection). When you expose such a server through a
+tunnel or reverse proxy that forwards its own host name, set an API key
+(`GRAPHRT_API_KEY`, or the variable named by `--api-key-env`): signed hooks still authenticate by signature alone.
 
 ### Completion callbacks
 

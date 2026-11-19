@@ -326,6 +326,9 @@ pub struct RetrieveBody {
     rerank: bool,
 }
 
+/// Largest `top_k` accepted by `POST /v1/knowledge/retrieve`; larger values are lowered.
+pub const MAX_RETRIEVE_TOP_K: usize = 100;
+
 /// `POST /v1/knowledge/retrieve`: run a query exactly as the `knowledge-retrieval` node would.
 pub async fn retrieve(State(state): State<Arc<AppState>>, Json(body): Json<RetrieveBody>) -> Response {
     let Some(knowledge) = state.knowledge() else { return not_served() };
@@ -334,7 +337,9 @@ pub async fn retrieve(State(state): State<Arc<AppState>>, Json(body): Json<Retri
         .filter(body.filter)
         .rerank(body.rerank);
     if let Some(top_k) = body.top_k {
-        request = request.top_k(top_k);
+        // The value goes to stores and external retrievers as given; bound the work
+        // (and the response) a single request can ask for.
+        request = request.top_k(top_k.min(MAX_RETRIEVE_TOP_K));
     }
     if let Some(weights) = body.weights {
         request = request.weights(weights);
