@@ -64,7 +64,9 @@ pub use http::{
     OpenAiEmbedderConfig, Secret,
 };
 pub use ingest::{Document, IngestReport, Ingestor};
-pub use kb::{DatasetConfig, DatasetInfo, EnvLookup, KnowledgeBase, KnowledgeConfig};
+pub use kb::{
+    DatasetConfig, DatasetDetails, DatasetInfo, DatasetSpec, EnvLookup, KnowledgeBase, KnowledgeConfig, ResourceNames,
+};
 #[cfg(feature = "local-embed")]
 pub use local_embed::{DEFAULT_LOCAL_MODEL, LocalEmbedder, LocalEmbedderConfig, Pooling};
 pub use memory::{MemoryStore, cosine, dot, tokenize};

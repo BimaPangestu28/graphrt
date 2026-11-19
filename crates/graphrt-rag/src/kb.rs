@@ -14,7 +14,7 @@
 //! let services = Services::new().with(kb);
 //! ```
 
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -44,12 +44,74 @@ struct DatasetEntry {
     store: Option<(Arc<dyn VectorStore>, Arc<dyn Embedder>)>,
     /// How documents ingested into this dataset are chunked.
     chunking: ChunkerConfig,
+    /// Names of the config's store and embedder backing this dataset, when known.
+    names: Option<(String, String)>,
+    /// Set for datasets created at runtime with [`KnowledgeBase::create_dataset`].
+    runtime: Option<DatasetSpec>,
 }
 
+/// A dataset created at runtime from the stores, embedders and rerankers a
+/// knowledge config declares (see [`KnowledgeBase::create_dataset`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DatasetSpec {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// Name of a store in the knowledge config.
+    pub store: String,
+    /// Name of an embedder in the knowledge config.
+    pub embedder: String,
+    /// Name of a reranker in the knowledge config.
+    #[serde(default)]
+    pub reranker: Option<String>,
+    #[serde(default)]
+    pub chunking: Option<ChunkerConfig>,
+}
+
+/// A dataset as listed for management UIs.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DatasetDetails {
+    #[serde(flatten)]
+    pub info: DatasetInfo,
+    /// Documents can be added, listed and removed (store-backed datasets).
+    pub managed: bool,
+    /// Created at runtime (and removable); `false` for datasets from the config.
+    pub runtime: bool,
+    pub store: Option<String>,
+    pub embedder: Option<String>,
+    pub chunking: Option<ChunkerConfig>,
+}
+
+/// Names of the stores, embedders and rerankers runtime datasets can use.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ResourceNames {
+    pub stores: Vec<String>,
+    pub embedders: Vec<String>,
+    pub rerankers: Vec<String>,
+}
+
+/// Named building blocks declared by a knowledge config.
+#[derive(Clone, Debug, Default)]
+struct Resources {
+    stores: IndexMap<String, Arc<dyn VectorStore>>,
+    embedders: IndexMap<String, Arc<dyn Embedder>>,
+    rerankers: IndexMap<String, Arc<dyn Reranker>>,
+}
+
+type Registry = IndexMap<String, DatasetEntry>;
+
 /// Dataset id -> retriever registry.
+///
+/// Clones share their datasets: a dataset added to or removed from one clone
+/// (for example by the management API) is seen by every other clone (for
+/// example the one the workflows' `knowledge-retrieval` nodes hold).
 #[derive(Clone, Debug, Default)]
 pub struct KnowledgeBase {
-    datasets: IndexMap<String, DatasetEntry>,
+    datasets: Arc<RwLock<Registry>>,
+    resources: Arc<Resources>,
     /// Reranker applied across datasets in multi-dataset retrieval.
     reranker: Option<Arc<dyn Reranker>>,
 }
@@ -57,6 +119,15 @@ pub struct KnowledgeBase {
 impl KnowledgeBase {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    // Every mutation replaces whole entries, so data behind a poisoned lock is still consistent.
+    fn read(&self) -> RwLockReadGuard<'_, Registry> {
+        self.datasets.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, Registry> {
+        self.datasets.write().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Add a dataset backed by the built-in store pipeline.
@@ -80,17 +151,31 @@ impl KnowledgeBase {
         embedder: Arc<dyn Embedder>,
         reranker: Option<Arc<dyn Reranker>>,
     ) -> &mut Self {
-        let retriever = StoreRetriever::new(store.clone(), embedder.clone()).with_reranker(reranker);
-        self.datasets.insert(
-            info.id.clone(),
-            DatasetEntry {
-                info,
-                retriever: Arc::new(retriever),
-                store: Some((store, embedder)),
-                chunking: ChunkerConfig::default(),
-            },
-        );
+        self.insert_store_dataset(info, store, embedder, reranker, ChunkerConfig::default(), None, None);
         self
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_store_dataset(
+        &self,
+        info: DatasetInfo,
+        store: Arc<dyn VectorStore>,
+        embedder: Arc<dyn Embedder>,
+        reranker: Option<Arc<dyn Reranker>>,
+        chunking: ChunkerConfig,
+        names: Option<(String, String)>,
+        runtime: Option<DatasetSpec>,
+    ) {
+        let retriever = StoreRetriever::new(store.clone(), embedder.clone()).with_reranker(reranker);
+        let entry = DatasetEntry {
+            info,
+            retriever: Arc::new(retriever),
+            store: Some((store, embedder)),
+            chunking,
+            names,
+            runtime,
+        };
+        self.write().insert(entry.info.id.clone(), entry);
     }
 
     /// Add a dataset served by an external retriever.
@@ -102,8 +187,15 @@ impl KnowledgeBase {
 
     /// Add (or replace) a dataset served by an external retriever.
     pub fn add_retriever(&mut self, info: DatasetInfo, retriever: Arc<dyn Retriever>) -> &mut Self {
-        self.datasets
-            .insert(info.id.clone(), DatasetEntry { info, retriever, store: None, chunking: ChunkerConfig::default() });
+        let entry = DatasetEntry {
+            info,
+            retriever,
+            store: None,
+            chunking: ChunkerConfig::default(),
+            names: None,
+            runtime: None,
+        };
+        self.write().insert(entry.info.id.clone(), entry);
         self
     }
 
@@ -113,18 +205,127 @@ impl KnowledgeBase {
         self
     }
 
-    pub fn datasets(&self) -> impl Iterator<Item = &DatasetInfo> {
-        self.datasets.values().map(|d| &d.info)
+    /// Every dataset's id, name and description, in registration order.
+    pub fn datasets(&self) -> Vec<DatasetInfo> {
+        self.read().values().map(|d| d.info.clone()).collect()
+    }
+
+    /// Every dataset with what a management UI shows about it.
+    pub fn dataset_details(&self) -> Vec<DatasetDetails> {
+        self.read()
+            .values()
+            .map(|d| DatasetDetails {
+                info: d.info.clone(),
+                managed: d.store.is_some(),
+                runtime: d.runtime.is_some(),
+                store: d.names.as_ref().map(|(store, _)| store.clone()),
+                embedder: d.names.as_ref().map(|(_, embedder)| embedder.clone()),
+                chunking: d.store.as_ref().map(|_| d.chunking.clone()),
+            })
+            .collect()
+    }
+
+    /// The stores, embedders and rerankers [`KnowledgeBase::create_dataset`] can use.
+    pub fn resource_names(&self) -> ResourceNames {
+        ResourceNames {
+            stores: self.resources.stores.keys().cloned().collect(),
+            embedders: self.resources.embedders.keys().cloned().collect(),
+            rerankers: self.resources.rerankers.keys().cloned().collect(),
+        }
+    }
+
+    /// Create a store-backed dataset at runtime from the named resources of the
+    /// knowledge config. Every clone of this knowledge base sees it at once.
+    ///
+    /// @throws `RagError::Input` for an invalid or taken id, an unknown store,
+    /// embedder or reranker name, or invalid chunking.
+    pub fn create_dataset(&self, spec: DatasetSpec) -> Result<DatasetDetails, RagError> {
+        validate_dataset_id(&spec.id)?;
+        let lookup = |kind: &str, name: &str, found: bool| {
+            if found {
+                Ok(())
+            } else {
+                Err(RagError::Input(format!("unknown {kind} `{name}` in the knowledge config")))
+            }
+        };
+        let store = self.resources.stores.get(&spec.store).cloned();
+        lookup("store", &spec.store, store.is_some())?;
+        let embedder = self.resources.embedders.get(&spec.embedder).cloned();
+        lookup("embedder", &spec.embedder, embedder.is_some())?;
+        let reranker = match &spec.reranker {
+            Some(name) => {
+                let reranker = self.resources.rerankers.get(name).cloned();
+                lookup("reranker", name, reranker.is_some())?;
+                reranker
+            }
+            None => None,
+        };
+        let chunking = spec.chunking.clone().unwrap_or_default();
+        validate_chunking(&spec.id, &chunking).map_err(|e| RagError::Input(e.to_string()))?;
+        let (Some(store), Some(embedder)) = (store, embedder) else {
+            return Err(RagError::Input("store and embedder are required".into()));
+        };
+        let info = DatasetInfo { id: spec.id.clone(), name: spec.name.clone(), description: spec.description.clone() };
+        {
+            // Check and insert under one lock so two requests cannot create the same id.
+            let mut registry = self.write();
+            if registry.contains_key(&spec.id) {
+                return Err(RagError::Input(format!("dataset `{}` already exists", spec.id)));
+            }
+            let retriever = StoreRetriever::new(store.clone(), embedder.clone()).with_reranker(reranker);
+            registry.insert(
+                spec.id.clone(),
+                DatasetEntry {
+                    info,
+                    retriever: Arc::new(retriever),
+                    store: Some((store, embedder)),
+                    chunking,
+                    names: Some((spec.store.clone(), spec.embedder.clone())),
+                    runtime: Some(spec.clone()),
+                },
+            );
+        }
+        self.dataset_details()
+            .into_iter()
+            .find(|d| d.info.id == spec.id)
+            .ok_or_else(|| RagError::Store(format!("dataset `{}` vanished after creation", spec.id)))
+    }
+
+    /// Delete a dataset created at runtime together with its documents.
+    /// Returns the number of chunks removed.
+    ///
+    /// @throws `RagError::NotFound` for an unknown dataset, `RagError::Unsupported`
+    /// for one declared in the knowledge config (edit the config instead).
+    pub async fn remove_dataset(&self, dataset_id: &str) -> Result<usize, RagError> {
+        let entry = self.entry(dataset_id)?;
+        if entry.runtime.is_none() {
+            return Err(RagError::Unsupported(format!(
+                "dataset `{dataset_id}` is declared in the knowledge config; remove it there"
+            )));
+        }
+        // Delete the data first: if that fails the dataset stays, instead of leaving orphaned chunks.
+        let removed = match &entry.store {
+            Some((store, _)) => store.delete_dataset(dataset_id).await?,
+            None => 0,
+        };
+        self.write().shift_remove(dataset_id);
+        Ok(removed)
+    }
+
+    /// Specs of the datasets created at runtime, for persisting them.
+    pub fn runtime_datasets(&self) -> Vec<DatasetSpec> {
+        self.read().values().filter_map(|d| d.runtime.clone()).collect()
     }
 
     pub fn contains(&self, dataset_id: &str) -> bool {
-        self.datasets.contains_key(dataset_id)
+        self.read().contains_key(dataset_id)
     }
 
     /// An ingestor for a store-backed dataset (`None` for external retrievers or unknown ids),
     /// using the dataset's chunking settings.
     pub fn ingestor(&self, dataset_id: &str) -> Option<Ingestor> {
-        let entry = self.datasets.get(dataset_id)?;
+        let registry = self.read();
+        let entry = registry.get(dataset_id)?;
         let (store, embedder) = entry.store.as_ref()?;
         Some(Ingestor::new(store.clone(), embedder.clone()).chunker(entry.chunking.clone()))
     }
@@ -134,46 +335,41 @@ impl KnowledgeBase {
     /// @throws `RagError::NotFound` for an unknown dataset, `RagError::Config` when
     /// `parent_max_chars` is not larger than `max_chars`.
     pub fn set_chunking(&mut self, dataset_id: &str, chunking: ChunkerConfig) -> Result<&mut Self, RagError> {
-        if chunking.max_chars == 0 {
-            return Err(RagError::Config(format!("dataset `{dataset_id}`: `chunking.max_chars` must be positive")));
+        validate_chunking(dataset_id, &chunking)?;
+        {
+            let mut registry = self.write();
+            let entry = registry
+                .get_mut(dataset_id)
+                .ok_or_else(|| RagError::NotFound(format!("unknown dataset `{dataset_id}`")))?;
+            entry.chunking = chunking;
         }
-        if chunking.parent_max_chars.is_some_and(|p| p <= chunking.max_chars) {
-            return Err(RagError::Config(format!(
-                "dataset `{dataset_id}`: `chunking.parent_max_chars` must be larger than `max_chars`"
-            )));
-        }
-        let entry = self
-            .datasets
-            .get_mut(dataset_id)
-            .ok_or_else(|| RagError::NotFound(format!("unknown dataset `{dataset_id}`")))?;
-        entry.chunking = chunking;
         Ok(self)
     }
 
     /// The chunking settings of a dataset.
-    pub fn chunking(&self, dataset_id: &str) -> Option<&ChunkerConfig> {
-        self.datasets.get(dataset_id).map(|d| &d.chunking)
+    pub fn chunking(&self, dataset_id: &str) -> Option<ChunkerConfig> {
+        self.read().get(dataset_id).map(|d| d.chunking.clone())
     }
 
-    fn entry(&self, id: &str) -> Result<&DatasetEntry, RagError> {
-        self.datasets.get(id).ok_or_else(|| RagError::NotFound(format!("unknown dataset `{id}`")))
+    /// A copy of a dataset's entry (cheap: shared handles), so no lock is held across awaits.
+    fn entry(&self, id: &str) -> Result<DatasetEntry, RagError> {
+        self.read().get(id).cloned().ok_or_else(|| RagError::NotFound(format!("unknown dataset `{id}`")))
     }
 
     /// Whether documents can be added to, listed in and removed from this dataset
     /// (store-backed datasets; `false` for external retrievers and unknown ids).
     pub fn is_managed(&self, dataset_id: &str) -> bool {
-        self.datasets.get(dataset_id).is_some_and(|d| d.store.is_some())
+        self.read().get(dataset_id).is_some_and(|d| d.store.is_some())
     }
 
     /// The store of a store-backed dataset.
     ///
     /// @throws `RagError::NotFound` for an unknown dataset, `RagError::Unsupported`
     /// for one served by an external retriever.
-    fn managed_store(&self, dataset_id: &str) -> Result<&Arc<dyn VectorStore>, RagError> {
+    fn managed_store(&self, dataset_id: &str) -> Result<Arc<dyn VectorStore>, RagError> {
         let entry = self.entry(dataset_id)?;
         entry
             .store
-            .as_ref()
             .map(|(store, _)| store)
             .ok_or_else(|| RagError::Unsupported(format!("dataset `{dataset_id}` is served by an external retriever")))
     }
@@ -241,7 +437,7 @@ impl KnowledgeBase {
     ) -> Result<Vec<(String, Vec<Hit>)>, RagError> {
         let mut jobs = Vec::with_capacity(request.datasets.len());
         for id in &request.datasets {
-            let entry = self.entry(id)?;
+            let retriever = self.entry(id)?.retriever;
             let sub = RetrievalRequest {
                 datasets: vec![id.clone()],
                 // Threshold and top-k are applied after merging.
@@ -249,7 +445,7 @@ impl KnowledgeBase {
                 rerank: rerank_each,
                 ..request.clone()
             };
-            jobs.push(async move { entry.retriever.retrieve(&sub).await.map(|hits| (id.clone(), hits)) });
+            jobs.push(async move { retriever.retrieve(&sub).await.map(|hits| (id.clone(), hits)) });
         }
         futures::future::try_join_all(jobs).await
     }
@@ -284,6 +480,34 @@ impl KnowledgeBase {
             .max_by(|a, b| top_score(&a.1).total_cmp(&top_score(&b.1)));
         Ok(best.map(|(_, hits)| finalize(hits, request.score_threshold, request.top_k)).unwrap_or_default())
     }
+}
+
+/// Runtime dataset ids appear in URLs and file names: 1-64 ASCII letters,
+/// digits, `-`, `_` or `.`, not starting with `.`.
+fn validate_dataset_id(id: &str) -> Result<(), RagError> {
+    let ok = !id.is_empty()
+        && id.len() <= 64
+        && !id.starts_with('.')
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if ok {
+        Ok(())
+    } else {
+        Err(RagError::Input(format!(
+            "invalid dataset id `{id}`: use 1-64 ASCII letters, digits, `-`, `_` or `.`, not starting with `.`"
+        )))
+    }
+}
+
+fn validate_chunking(dataset_id: &str, chunking: &ChunkerConfig) -> Result<(), RagError> {
+    if chunking.max_chars == 0 {
+        return Err(RagError::Config(format!("dataset `{dataset_id}`: `chunking.max_chars` must be positive")));
+    }
+    if chunking.parent_max_chars.is_some_and(|p| p <= chunking.max_chars) {
+        return Err(RagError::Config(format!(
+            "dataset `{dataset_id}`: `chunking.parent_max_chars` must be larger than `max_chars`"
+        )));
+    }
+    Ok(())
 }
 
 /// Reject requests that would otherwise silently match nothing.
@@ -444,11 +668,16 @@ impl KnowledgeConfig {
                 .get(embedder_key)
                 .cloned()
                 .ok_or_else(|| RagError::Config(format!("unknown embedder `{embedder_key}`")))?;
-            kb.add_store_dataset(info, store, embedder, lookup_reranker(&ds.reranker)?);
-            if let Some(chunking) = &ds.chunking {
-                kb.set_chunking(&ds.id, chunking.clone())?;
-            }
+            let chunking = ds.chunking.clone().unwrap_or_default();
+            validate_chunking(&ds.id, &chunking)?;
+            let names = Some((store_key.to_owned(), embedder_key.to_owned()));
+            kb.insert_store_dataset(info, store, embedder, lookup_reranker(&ds.reranker)?, chunking, names, None);
         }
+        kb.resources = Arc::new(Resources {
+            stores: stores.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
+            embedders: embedders.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
+            rerankers: rerankers.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
+        });
         Ok(kb)
     }
 }
@@ -742,10 +971,75 @@ mod tests {
         assert!(error.to_string().contains("parent_max_chars"), "{error}");
     }
 
+    fn config_kb() -> KnowledgeBase {
+        KnowledgeConfig::from_json(
+            &serde_json::json!({
+                "embedders": { "e": { "type": "hash", "dimensions": 64 } },
+                "stores": { "shared": { "type": "memory" } },
+                "datasets": [{ "id": "static", "store": "shared", "embedder": "e" }]
+            })
+            .to_string(),
+        )
+        .unwrap()
+        .build_with_env(&|_| None)
+        .unwrap()
+    }
+
+    fn spec(id: &str) -> DatasetSpec {
+        DatasetSpec {
+            id: id.into(),
+            name: "Runtime".into(),
+            description: String::new(),
+            store: "shared".into(),
+            embedder: "e".into(),
+            reranker: None,
+            chunking: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_datasets_are_shared_by_clones_and_removable() {
+        let api = config_kb();
+        let workflows = api.clone();
+        assert_eq!(api.resource_names().stores, ["shared"]);
+
+        let created = api.create_dataset(spec("notes")).unwrap();
+        assert!(created.runtime && created.managed);
+        assert_eq!(created.store.as_deref(), Some("shared"));
+        assert!(workflows.contains("notes"), "clones see runtime datasets");
+
+        ingest(&api, "notes", "n1", "Runtime datasets work like any other dataset.").await;
+        ingest(&api, "static", "s1", "The static dataset shares the store.").await;
+        let hits = workflows.retrieve(&RetrievalRequest::new("runtime datasets", vec!["notes".into()])).await.unwrap();
+        assert_eq!(hits.first().map(|h| h.document_id.as_str()), Some("n1"));
+
+        assert_eq!(api.runtime_datasets(), vec![spec("notes")]);
+        assert_eq!(api.remove_dataset("notes").await.unwrap(), 1);
+        assert!(!workflows.contains("notes"));
+        assert_eq!(api.list_documents("static", 10, None).await.unwrap().len(), 1, "other datasets keep their data");
+        assert_eq!(api.remove_dataset("static").await.unwrap_err().kind(), "unsupported");
+        assert_eq!(api.remove_dataset("missing").await.unwrap_err().kind(), "not_found");
+    }
+
+    #[test]
+    fn runtime_dataset_specs_are_validated() {
+        let kb = config_kb();
+        let error = |spec: DatasetSpec| kb.create_dataset(spec).unwrap_err().to_string();
+        assert!(error(spec("static")).contains("already exists"));
+        assert!(error(spec("bad/id")).contains("invalid dataset id"));
+        assert!(error(spec("")).contains("invalid dataset id"));
+        assert!(error(DatasetSpec { store: "nope".into(), ..spec("a") }).contains("unknown store `nope`"));
+        assert!(error(DatasetSpec { embedder: "nope".into(), ..spec("b") }).contains("unknown embedder `nope`"));
+        assert!(error(DatasetSpec { reranker: Some("nope".into()), ..spec("c") }).contains("unknown reranker"));
+        let bad_chunking = ChunkerConfig { max_chars: 100, overlap: 0, markdown: true, parent_max_chars: Some(50) };
+        assert!(error(DatasetSpec { chunking: Some(bad_chunking), ..spec("d") }).contains("parent_max_chars"));
+        assert_eq!(kb.datasets().len(), 1, "failed creations leave nothing behind");
+    }
+
     #[tokio::test]
     async fn external_and_unknown_datasets_are_not_managed() {
         let store_kb = kb_with_two_datasets();
-        let retriever = store_kb.datasets.get("pets").unwrap().retriever.clone();
+        let retriever = store_kb.entry("pets").unwrap().retriever;
         let kb = KnowledgeBase::new().with_retriever("remote", retriever);
         assert!(!kb.is_managed("remote"));
         assert_eq!(kb.list_documents("remote", 10, None).await.unwrap_err().kind(), "unsupported");
