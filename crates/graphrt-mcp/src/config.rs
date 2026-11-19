@@ -51,8 +51,8 @@ pub enum McpTransport {
     Http(HttpConfig),
 }
 
-/// Child-process server.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Child-process server. `Debug` shows `env` names only.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StdioConfig {
     pub command: String,
@@ -76,8 +76,8 @@ pub struct StdioConfig {
     pub show_stderr: bool,
 }
 
-/// Streamable HTTP server.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Streamable HTTP server. `Debug` shows header names only and hides the token.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpConfig {
     pub url: String,
@@ -87,6 +87,32 @@ pub struct HttpConfig {
     /// Bearer token for the `Authorization` header (without the `Bearer ` prefix).
     #[serde(default, alias = "bearerToken")]
     pub bearer_token: Option<String>,
+}
+
+impl std::fmt::Debug for StdioConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let env_names: Vec<&String> = self.env.keys().collect();
+        f.debug_struct("StdioConfig")
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("env", &env_names)
+            .field("pass_env", &self.pass_env)
+            .field("inherit_env", &self.inherit_env)
+            .field("cwd", &self.cwd)
+            .field("show_stderr", &self.show_stderr)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for HttpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let header_names: Vec<&String> = self.headers.keys().collect();
+        f.debug_struct("HttpConfig")
+            .field("url", &self.url)
+            .field("headers", &header_names)
+            .field("bearer_token", &self.bearer_token.as_ref().map(|_| "******"))
+            .finish()
+    }
 }
 
 /// Every key a server entry may contain, used to validate configs strictly.
@@ -231,6 +257,20 @@ mod tests {
 
     fn parse(value: serde_json::Value) -> Result<McpServerConfig, String> {
         serde_json::from_value::<McpServerConfig>(value).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn debug_hides_secret_values() {
+        let stdio = parse(serde_json::json!({"name": "a", "command": "x", "env": {"TOKEN": "env-secret-1"}})).unwrap();
+        let http = parse(serde_json::json!({
+            "name": "b", "url": "https://x/mcp", "bearer_token": "bearer-secret-2", "headers": {"x-key": "hdr-secret-3"}
+        }))
+        .unwrap();
+        let shown = format!("{stdio:?} {http:?}");
+        for secret in ["env-secret-1", "bearer-secret-2", "hdr-secret-3"] {
+            assert!(!shown.contains(secret), "{shown}");
+        }
+        assert!(shown.contains("TOKEN") && shown.contains("x-key"), "{shown}");
     }
 
     #[test]
