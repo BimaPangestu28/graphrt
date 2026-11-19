@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -27,18 +27,18 @@ keywords = ["workflow", "agent", "llm", "runtime", "graph"]
 categories = ["asynchronous", "development-tools"]
 
 [workspace.dependencies]
-graphrt-core = { path = "crates/graphrt-core", version = "0.2.0", default-features = false }
-graphrt-llm = { path = "crates/graphrt-llm", version = "0.2.0", default-features = false }
-graphrt-http = { path = "crates/graphrt-http", version = "0.2.0", default-features = false }
-graphrt-code = { path = "crates/graphrt-code", version = "0.2.0", default-features = false }
-graphrt-mcp = { path = "crates/graphrt-mcp", version = "0.2.0", default-features = false }
-graphrt-doc = { path = "crates/graphrt-doc", version = "0.2.0", default-features = false }
-graphrt-rag = { path = "crates/graphrt-rag", version = "0.2.0", default-features = false }
-graphrt-plugin = { path = "crates/graphrt-plugin", version = "0.2.0", default-features = false }
-graphrt-plugin-sdk = { path = "crates/graphrt-plugin-sdk", version = "0.2.0", default-features = false }
-graphrt-wasm = { path = "crates/graphrt-wasm", version = "0.2.0", default-features = false }
-graphrt-otel = { path = "crates/graphrt-otel", version = "0.2.0", default-features = false }
-graphrt-bundle = { path = "crates/graphrt-bundle", version = "0.2.0", default-features = false }
+graphrt-core = { path = "crates/graphrt-core", version = "0.2.1", default-features = false }
+graphrt-llm = { path = "crates/graphrt-llm", version = "0.2.1", default-features = false }
+graphrt-http = { path = "crates/graphrt-http", version = "0.2.1", default-features = false }
+graphrt-code = { path = "crates/graphrt-code", version = "0.2.1", default-features = false }
+graphrt-mcp = { path = "crates/graphrt-mcp", version = "0.2.1", default-features = false }
+graphrt-doc = { path = "crates/graphrt-doc", version = "0.2.1", default-features = false }
+graphrt-rag = { path = "crates/graphrt-rag", version = "0.2.1", default-features = false }
+graphrt-plugin = { path = "crates/graphrt-plugin", version = "0.2.1", default-features = false }
+graphrt-plugin-sdk = { path = "crates/graphrt-plugin-sdk", version = "0.2.1", default-features = false }
+graphrt-wasm = { path = "crates/graphrt-wasm", version = "0.2.1", default-features = false }
+graphrt-otel = { path = "crates/graphrt-otel", version = "0.2.1", default-features = false }
+graphrt-bundle = { path = "crates/graphrt-bundle", version = "0.2.1", default-features = false }
 
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 thiserror = "2"

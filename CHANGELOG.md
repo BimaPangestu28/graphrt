@@ -7,6 +7,31 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-19
+
+Security patch release for 0.2.0: sandbox limits that could be switched off,
+secret plaintext in error messages and code outputs, more SSRF address forms,
+unbounded concurrent runs and DNS rebinding in `graphrt serve`, predictable
+temp directories, and a SQLite CVE. No breaking API changes; upgrading is
+recommended for every 0.2.0 user.
+
+Upgrade notes:
+- **MSRV:** `graphrt-rag` now needs **Rust 1.89** (was 1.85), because the
+  patched SQLite is only in `rusqlite` 0.41, which declares Rust 1.89. No
+  `rusqlite` 0.40.x or `libsqlite3-sys` 0.38.x release carries the fix (the
+  advisory lists `libsqlite3-sys >= 0.39.0` as patched, and that needs Rust
+  1.88). `graphrt-ffi` enables `graphrt-rag` (with `sqlite`) through its
+  default `rag` feature, so a default `graphrt-ffi` build needs Rust 1.89 too.
+  `graphrt-cli` already needed 1.89; the other crates keep their MSRV.
+- `graphrt serve` refuses new and resumed runs with `429 Too Many Requests`
+  while 256 runs execute (`--max-active-runs`, `0` = unlimited).
+- `graphrt serve` without an API key on a loopback address answers `403` to
+  requests whose `Host` is not a loopback name. If you put a reverse proxy in
+  front of such a server, set an API key or have the proxy forward a
+  loopback `Host`.
+- Plugin manifests asking for `limits.max_message_bytes` above 256 MiB are
+  rejected.
+
 ### Security
 - `code` node (JavaScript): a workflow could switch off the sandbox's memory
   and stack limits by asking for `limits.memory_bytes: 0` or
@@ -17,7 +42,8 @@ releases may contain breaking changes; they are called out under **Changed**.
   blocking pool) crashed the process too. Limits now have floors (1 MiB heap,
   64 KiB stack) and a 16 MiB stack ceiling, and JavaScript runs on a dedicated
   thread sized from the stack limit, so deep recursion is always a catchable
-  `RangeError`.
+  `RangeError`. The `graphrt-code` `tokio` feature no longer changes behaviour
+  and is kept for compatibility.
 - `code` node (JavaScript): error messages thrown by scripts are truncated to
   8 KiB, so a script cannot push megabytes into events and run records; an
   operator time limit too large for the clock no longer panics; a long chain of
@@ -32,7 +58,7 @@ releases may contain breaking changes; they are called out under **Changed**.
   and OTel spans. Previously an error that echoed a key (a provider body such
   as "Incorrect API key provided: sk-...", an HTTP error snippet from an echo
   endpoint, an exception in code) was recorded verbatim. New public helpers in
-  `graphrt_core::redact`.
+  `graphrt_core::redact` (`redact_secrets`, `SecretSet`, `MIN_SCRUB_LEN`).
 - LLM providers: error bodies of failed provider requests are scrubbed of the
   credentials the request carried (`Authorization`, `x-api-key`,
   `x-goog-api-key`, `api-key` headers, `key` query parameters) before they
@@ -54,30 +80,31 @@ releases may contain breaking changes; they are called out under **Changed**.
   another local user could pre-create it and plant symlinks or swap
   `providers.json` (e.g. pointing `base_url` at their server). Each invocation
   now extracts into a new owner-only (`0700`) directory. Signatures are checked
-  with strict Ed25519 verification. Also in 0.2.0.
+  with strict Ed25519 verification.
 - Plugins: `limits.max_message_bytes` is capped at 256 MiB; WebAssembly
   plugins get at most 4 tables of 100,000 elements (was 8 x 1,000,000), which
   lived outside the `memory_bytes` budget.
 - `graphrt serve`: new `--max-active-runs` (default 256, `0` = unlimited)
   caps runs executing at once; further starts and resumes get `429`.
   Previously `"async": true` requests could start unlimited parallel runs
-  (`--max-runs` only bounds kept records). Also in 0.2.0.
+  (`--max-runs` only bounds kept records). `AppState::with_max_active_runs`
+  sets it for embedders (default unlimited there).
 - `graphrt serve` without an API key on a loopback address now accepts only
   loopback `Host` names (`localhost`, `127.0.0.1`, `[::1]`), blocking DNS
   rebinding from web pages; a non-loopback address without a key prints an
   explicit warning. Run store I/O errors no longer return server file paths to
-  clients, and `top_k` on `/v1/knowledge/retrieve` is capped at 100. Also in
-  0.2.0.
+  clients, and `top_k` on `/v1/knowledge/retrieve` is capped at 100.
 - `Debug` output of `OtelConfig` (OTLP headers) and the MCP `StdioConfig`
   (`env`) / `HttpConfig` (headers, bearer token) shows names only, never values.
+- Dependencies: `rusqlite` 0.40 -> 0.41 (bundled SQLite 3.54.1), fixing
+  RUSTSEC-2026-0459 / CVE-2026-119375 (uninitialized page-cache memory read
+  through a crafted database and `-wal` pair) in `graphrt-rag`'s `SqliteStore`.
+  This raises `graphrt-rag`'s MSRV to Rust 1.89 (see the upgrade notes).
+  `paste` (unmaintained, build-time only, via candle) is acknowledged in
+  `deny.toml`.
 - Docs: new [docs/security.md](docs/security.md) (sandbox limits, egress
   policy, masking guarantees and their limits, deployment knobs); SECURITY.md
   now has a threat model, explicit scope and supported versions.
-- Dependencies: `rusqlite` 0.40 -> 0.41 (bundled SQLite 3.54), fixing
-  RUSTSEC-2026-0459 / CVE-2026-119375 (uninitialized page-cache memory read
-  through a crafted database and `-wal` pair) in `graphrt-rag`'s `SqliteStore`.
-  `graphrt-rag` now needs Rust 1.89. `paste` (unmaintained, build-time only, via
-  candle) is acknowledged in `deny.toml`.
 
 ## [0.2.0] - 2026-11-19
 
@@ -290,6 +317,7 @@ laptop, a server, a container, the edge or a phone.
   credentials, plugins, WebAssembly runtime, document extraction and retrieval,
   with regression tests for every finding.
 
-[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/BimaPangestu28/graphrt/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/BimaPangestu28/graphrt/releases/tag/v0.1.0

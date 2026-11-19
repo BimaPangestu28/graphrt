@@ -1478,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-bundle"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ed25519-dalek",
  "futures",
@@ -1497,7 +1497,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "clap",
@@ -1526,7 +1526,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-code"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures",
  "graphrt-core",
@@ -1541,7 +1541,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures",
  "indexmap",
@@ -1555,7 +1555,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-doc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "calamine",
  "encoding_rs",
@@ -1574,7 +1574,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-ffi"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures",
  "graphrt-bundle",
@@ -1597,7 +1597,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-http"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -1614,7 +1614,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-llm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures",
  "graphrt-core",
@@ -1630,7 +1630,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures",
  "graphrt-core",
@@ -1646,7 +1646,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-otel"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures",
  "graphrt-core",
@@ -1659,7 +1659,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-plugin"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures",
  "graphrt-core",
@@ -1677,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-plugin-sdk"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1686,7 +1686,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-rag"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -1709,7 +1709,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-wasm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures",
  "graphrt-core",
