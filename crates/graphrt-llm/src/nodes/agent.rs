@@ -26,7 +26,8 @@
 //! Tool results may carry images (see `docs/tool-images.md`): they are checked
 //! against the limits of [`check_images`] (invalid ones are dropped with a
 //! note to the model) and follow the result text in the `tool` message.
-//! `keep_tool_images` bounds how many image-bearing results keep their images.
+//! `keep_tool_images` (default 3, `null` for all) bounds how many image-bearing
+//! results keep their images.
 //!
 //! Progress events: `agent_step`, `agent_thought`, `tool_call`, `tool_result`,
 //! `tool_denied`. Outputs: `text`, `tool_calls`
@@ -97,6 +98,10 @@ fn default_max_tool_output() -> usize {
     32_000
 }
 
+fn default_keep_tool_images() -> Option<usize> {
+    Some(3)
+}
+
 /// Configuration of the `agent` node.
 #[derive(Clone, Debug, Deserialize)]
 pub struct AgentConfig {
@@ -128,8 +133,9 @@ pub struct AgentConfig {
     #[serde(default = "default_max_tool_output")]
     pub max_tool_output_chars: usize,
     /// Keep the images of only the last N image-bearing tool results in the
-    /// conversation (older ones become a text placeholder). Default: keep all.
-    #[serde(default)]
+    /// conversation (older ones become a text placeholder). Default 3, since
+    /// images are resent on every turn; `null` keeps every image.
+    #[serde(default = "default_keep_tool_images")]
     pub keep_tool_images: Option<usize>,
 }
 
@@ -903,6 +909,35 @@ mod tests {
         // The second request still had every image (only two existed).
         let second = &s.model.requests()[2];
         assert_eq!(second.messages.iter().map(|m| m.images().count()).sum::<usize>(), 2);
+    }
+
+    fn four_screenshots() -> Vec<Vec<crate::ChatDelta>> {
+        vec![
+            MockModel::tool_calls(&[("c1", "screenshot", "{}")]),
+            MockModel::tool_calls(&[("c2", "screenshot", "{}")]),
+            MockModel::tool_calls(&[("c3", "screenshot", "{}")]),
+            MockModel::tool_calls(&[("c4", "screenshot", "{}")]),
+            MockModel::text("done"),
+        ]
+    }
+
+    fn images_per_tool_result(s: &Setup) -> Vec<usize> {
+        let last = s.model.requests().last().cloned().unwrap();
+        last.messages.iter().filter(|m| m.role == Role::Tool).map(|m| m.images().count()).collect()
+    }
+
+    #[tokio::test]
+    async fn keep_tool_images_defaults_to_the_last_three() {
+        let s = setup(four_screenshots());
+        completed(agent(json!({"tools": ["screen/*"]})).run(ctx(&s)).await);
+        assert_eq!(images_per_tool_result(&s), [0, 1, 1, 1]);
+    }
+
+    #[tokio::test]
+    async fn keep_tool_images_null_keeps_every_image() {
+        let s = setup(four_screenshots());
+        completed(agent(json!({"tools": ["screen/*"], "keep_tool_images": null})).run(ctx(&s)).await);
+        assert_eq!(images_per_tool_result(&s), [1, 1, 1, 1]);
     }
 
     #[tokio::test]

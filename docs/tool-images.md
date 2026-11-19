@@ -56,8 +56,9 @@ encoded line before sending it and report `message_too_large` instead.
 Images are resent on every later model turn, which adds up quickly in a
 screenshot loop. `agent.keep_tool_images: N` keeps only the images of the last
 N image-bearing tool results in the conversation; older ones are replaced by
-the text `[image removed from history]`. The default keeps everything;
-computer-use loops usually want 1-3.
+a text note such as `[1 image removed from history]`. The default is 3, which
+suits computer-use loops; set it to `null` to keep every image, or `0` to keep
+none after the turn that produced them.
 
 ## Provider encoding
 
