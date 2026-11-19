@@ -85,7 +85,7 @@ fn node_outputs(events: &[Event], id: &str) -> IndexMap<String, Value> {
     events
         .iter()
         .find_map(|e| match e {
-            Event::NodeSucceeded { node_id, outputs, .. } if node_id == id => Some(outputs.clone()),
+            Event::NodeSucceeded { node_id, outputs, .. } if node_id.as_ref() == id => Some(outputs.clone()),
             _ => None,
         })
         .unwrap_or_else(|| panic!("node `{id}` did not succeed: {:?}", events.last()))
@@ -141,7 +141,7 @@ async fn llm_streams_tokens_and_reports_usage() {
     let chunks: Vec<String> = events
         .iter()
         .filter_map(|e| match e {
-            Event::NodeChunk { node_id, field, chunk, .. } if node_id == "llm" && field == "text" => {
+            Event::NodeChunk { node_id, field, chunk, .. } if node_id.as_ref() == "llm" && field == "text" => {
                 Some(chunk.clone())
             }
             _ => None,

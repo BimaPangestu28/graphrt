@@ -343,7 +343,7 @@ fn started(events: &[Event]) -> Vec<String> {
     events
         .iter()
         .filter_map(|e| match e {
-            Event::NodeStarted { node_id, frame, .. } if frame.is_empty() => Some(node_id.clone()),
+            Event::NodeStarted { node_id, frame, .. } if frame.is_empty() => Some(node_id.to_string()),
             _ => None,
         })
         .collect()
@@ -353,7 +353,7 @@ fn skipped(events: &[Event]) -> Vec<String> {
     events
         .iter()
         .filter_map(|e| match e {
-            Event::NodeSkipped { node_id, .. } => Some(node_id.clone()),
+            Event::NodeSkipped { node_id, .. } => Some(node_id.to_string()),
             _ => None,
         })
         .collect()
@@ -450,11 +450,9 @@ async fn branch_skip_propagation_with_mixed_join() {
     assert_eq!(sk, ["n", "n2"]);
     assert!(!started(&events).contains(&"n".to_owned()));
     // The branch node reports its selection.
-    assert!(
-        events.iter().any(
-            |e| matches!(e, Event::NodeSucceeded { node_id, branch: Some(b), .. } if node_id == "if" && b == "yes")
-        )
-    );
+    assert!(events.iter().any(
+        |e| matches!(e, Event::NodeSucceeded { node_id, branch: Some(b), .. } if node_id.as_ref() == "if" && b == "yes")
+    ));
 }
 
 #[tokio::test]
@@ -481,7 +479,11 @@ async fn branch_without_selection_fails_node_not_engine() {
         Event::RunFailed { error, .. } => assert!(error.contains("invalid_branch"), "{error}"),
         other => panic!("unexpected {other:?}"),
     }
-    assert!(events.iter().any(|e| matches!(e, Event::NodeFailed { node_id, handled: false, .. } if node_id == "if")));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::NodeFailed { node_id, handled: false, .. } if node_id.as_ref() == "if"))
+    );
 }
 
 #[tokio::test]
@@ -506,9 +508,9 @@ async fn chunks_follow_node_started_and_precede_success() {
     );
     let events = collect(&Engine::new(g), RunInput::new()).await;
     let pos = |pred: &dyn Fn(&Event) -> bool| events.iter().position(pred).expect("event present");
-    let started = pos(&|e| matches!(e, Event::NodeStarted { node_id, .. } if node_id == "llm"));
-    let chunk = pos(&|e| matches!(e, Event::NodeChunk { node_id, .. } if node_id == "llm"));
-    let done = pos(&|e| matches!(e, Event::NodeSucceeded { node_id, .. } if node_id == "llm"));
+    let started = pos(&|e| matches!(e, Event::NodeStarted { node_id, .. } if node_id.as_ref() == "llm"));
+    let chunk = pos(&|e| matches!(e, Event::NodeChunk { node_id, .. } if node_id.as_ref() == "llm"));
+    let done = pos(&|e| matches!(e, Event::NodeSucceeded { node_id, .. } if node_id.as_ref() == "llm"));
     assert!(started < chunk && chunk < done);
 }
 
@@ -550,7 +552,7 @@ async fn variable_writes_are_applied_and_reported() {
     });
     let events = collect(&Engine::new(g), RunInput::new()).await;
     assert_eq!(outputs(&events).get("c"), Some(&Value::Int(5)));
-    assert!(events.iter().any(|e| matches!(e, Event::VariableUpdated { node_id, .. } if node_id == "set")));
+    assert!(events.iter().any(|e| matches!(e, Event::VariableUpdated { node_id, .. } if node_id.as_ref() == "set")));
 }
 
 #[tokio::test]
@@ -677,7 +679,7 @@ async fn retries_with_backoff_do_not_block_parallel_nodes() {
     assert_eq!(retries, 2);
     let fast_done = events
         .iter()
-        .position(|e| matches!(e, Event::NodeSucceeded { node_id, .. } if node_id == "fast"))
+        .position(|e| matches!(e, Event::NodeSucceeded { node_id, .. } if node_id.as_ref() == "fast"))
         .expect("fast done");
     let second_retry = events.iter().rposition(|e| matches!(e, Event::NodeRetry { .. })).expect("retry present");
     assert!(fast_done < second_retry, "the parallel node must finish while retries wait");
@@ -688,7 +690,7 @@ async fn retries_with_backoff_do_not_block_parallel_nodes() {
         other => panic!("unexpected {other:?}"),
     }
     // Execution id is stable across attempts.
-    let ids: Vec<&String> = events
+    let ids: Vec<&std::sync::Arc<str>> = events
         .iter()
         .filter_map(|e| match e {
             Event::NodeRetry { exec_id, .. } | Event::NodeSucceeded { exec_id, node_id: _, .. } => Some(exec_id),
@@ -788,14 +790,14 @@ async fn abort_cancels_in_flight_node() {
     let t0 = std::time::Instant::now();
     let mut events = Vec::new();
     while let Some(e) = stream.next().await {
-        if matches!(&e, Event::NodeStarted { node_id, .. } if node_id == "slow") {
+        if matches!(&e, Event::NodeStarted { node_id, .. } if node_id.as_ref() == "slow") {
             handle.abort("user cancelled");
         }
         events.push(e);
     }
     assert!(t0.elapsed() < Duration::from_millis(1000));
     assert!(matches!(terminal(&events), Event::RunAborted { reason, .. } if reason == "user cancelled"));
-    assert!(!events.iter().any(|e| matches!(e, Event::NodeSucceeded { node_id, .. } if node_id == "slow")));
+    assert!(!events.iter().any(|e| matches!(e, Event::NodeSucceeded { node_id, .. } if node_id.as_ref() == "slow")));
 }
 
 #[cfg(feature = "tokio")] // needs a timer-capable clock
@@ -813,7 +815,7 @@ async fn external_variable_update_applies_to_root() {
     let handle = stream.handle();
     let mut events = Vec::new();
     while let Some(e) = stream.next().await {
-        if matches!(&e, Event::NodeStarted { node_id, .. } if node_id == "wait") {
+        if matches!(&e, Event::NodeStarted { node_id, .. } if node_id.as_ref() == "wait") {
             handle.update_variable(Selector::of("conversation", "flag"), Value::Bool(true));
         }
         events.push(e);
@@ -847,7 +849,7 @@ async fn external_pause_and_resume_round_trip() {
     let handle = stream.handle();
     let mut events = Vec::new();
     while let Some(e) = stream.next().await {
-        if matches!(&e, Event::NodeStarted { node_id, .. } if node_id == "a") {
+        if matches!(&e, Event::NodeStarted { node_id, .. } if node_id.as_ref() == "a") {
             handle.pause("maintenance");
         }
         events.push(e);
@@ -858,7 +860,7 @@ async fn external_pause_and_resume_round_trip() {
         other => panic!("unexpected {other:?}"),
     }
     // In-flight `a` finished; `b` is pending.
-    assert!(events.iter().any(|e| matches!(e, Event::NodeSucceeded { node_id, .. } if node_id == "a")));
+    assert!(events.iter().any(|e| matches!(e, Event::NodeSucceeded { node_id, .. } if node_id.as_ref() == "a")));
     assert!(!started(&events).contains(&"b".to_owned()));
 
     let json_text = snapshot.to_json().expect("json");
@@ -891,8 +893,8 @@ async fn node_pause_lets_other_branches_finish_then_resumes_with_input() {
     );
     let engine = Engine::new(g);
     let events = collect(&engine, RunInput::new()).await;
-    assert!(events.iter().any(|e| matches!(e, Event::NodePaused { node_id, .. } if node_id == "ask")));
-    assert!(events.iter().any(|e| matches!(e, Event::NodeSucceeded { node_id, .. } if node_id == "other")));
+    assert!(events.iter().any(|e| matches!(e, Event::NodePaused { node_id, .. } if node_id.as_ref() == "ask")));
+    assert!(events.iter().any(|e| matches!(e, Event::NodeSucceeded { node_id, .. } if node_id.as_ref() == "other")));
     match terminal(&events) {
         Event::RunPaused { reasons, .. } => {
             assert_eq!(reasons.len(), 1);
@@ -981,7 +983,7 @@ async fn container_runs_body_frames() {
     let frames: Vec<String> = events
         .iter()
         .filter_map(|e| match e {
-            Event::NodeStarted { node_id, frame, .. } if node_id == "dbl" => Some(frame.to_string()),
+            Event::NodeStarted { node_id, frame, .. } if node_id.as_ref() == "dbl" => Some(frame.to_string()),
             _ => None,
         })
         .collect();
@@ -998,9 +1000,9 @@ async fn container_body_failure_fails_container() {
     );
     let events = collect(&Engine::new(g), RunInput::new()).await;
     assert!(events.iter().any(
-        |e| matches!(e, Event::NodeFailed { node_id, frame, .. } if node_id == "bad" && frame.as_ref() == "box[0]")
+        |e| matches!(e, Event::NodeFailed { node_id, frame, .. } if node_id.as_ref() == "bad" && frame.as_ref() == "box[0]")
     ));
-    assert!(events.iter().any(|e| matches!(e, Event::NodeFailed { node_id, .. } if node_id == "box")));
+    assert!(events.iter().any(|e| matches!(e, Event::NodeFailed { node_id, .. } if node_id.as_ref() == "box")));
     assert!(matches!(terminal(&events), Event::RunFailed { .. }));
 }
 
@@ -1020,11 +1022,9 @@ async fn container_external_writes_and_loop_end() {
     // loop-end breaks after the first body run.
     assert_eq!(outputs(&events).get("items"), Some(&Value::array([Value::Int(0)])));
     // The write to `conversation` was forwarded to the root frame.
-    assert!(
-        events.iter().any(
-            |e| matches!(e, Event::VariableUpdated { node_id, frame, .. } if node_id == "box" && frame.is_empty())
-        )
-    );
+    assert!(events.iter().any(
+        |e| matches!(e, Event::VariableUpdated { node_id, frame, .. } if node_id.as_ref() == "box" && frame.is_empty())
+    ));
 }
 
 #[tokio::test]

@@ -294,7 +294,7 @@ impl ResponseAssembler {
                 self.set_status(node_id, Status::Started);
             }
             Event::NodeChunk { frame, node_id, field, chunk, .. } => {
-                let key: (Arc<str>, Arc<str>) = (Arc::from(node_id.as_str()), Arc::from(field.as_str()));
+                let key: (Arc<str>, Arc<str>) = (Arc::clone(node_id), Arc::from(field.as_str()));
                 if frame.is_empty() && self.referenced.contains(&key) {
                     self.streams.entry(key).or_default().text.push_str(chunk);
                 } else if self.pass_through && !chunk.is_empty() {
@@ -321,7 +321,7 @@ impl ResponseAssembler {
             }
             Event::NodeRetry { frame, node_id, .. } if frame.is_empty() => {
                 // The failed attempt's partial output must never reach the answer.
-                self.streams.retain(|(node, _), _| node.as_ref() != node_id.as_str());
+                self.streams.retain(|(node, _), _| node.as_ref() != node_id.as_ref());
                 return out;
             }
             Event::RunSucceeded { .. } | Event::RunFailed { .. } | Event::RunAborted { .. } => {

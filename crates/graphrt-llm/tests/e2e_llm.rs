@@ -97,7 +97,7 @@ async fn llm_tokens_stream_into_the_answer_in_order() {
     let mut streamed_before_llm_finished = 0;
     let mut llm_finished = false;
     for event in &events {
-        if matches!(event, Event::NodeSucceeded { node_id, .. } if node_id == "llm") {
+        if matches!(event, Event::NodeSucceeded { node_id, .. } if node_id.as_ref() == "llm") {
             llm_finished = true;
         }
         for chunk in assembler.push(event) {
@@ -136,7 +136,7 @@ async fn question_classifier_routes_to_the_selected_branch() {
     let engine = Engine::new(g).with_services(services(&model, None));
     let events = collect(&engine, RunInput::new().sys("query", "my app crashes")).await;
     assert_eq!(answer(&events), "support team (technical support)");
-    assert!(events.iter().any(|e| matches!(e, Event::NodeSkipped { node_id, .. } if node_id == "billing")));
+    assert!(events.iter().any(|e| matches!(e, Event::NodeSkipped { node_id, .. } if node_id.as_ref() == "billing")));
 }
 
 #[tokio::test]
@@ -229,7 +229,9 @@ async fn agent_runs_parallel_tool_calls_then_answers() {
     let log = events
         .iter()
         .find_map(|e| match e {
-            Event::NodeSucceeded { node_id, outputs, .. } if node_id == "agent" => outputs.get("tool_calls").cloned(),
+            Event::NodeSucceeded { node_id, outputs, .. } if node_id.as_ref() == "agent" => {
+                outputs.get("tool_calls").cloned()
+            }
             _ => None,
         })
         .unwrap()

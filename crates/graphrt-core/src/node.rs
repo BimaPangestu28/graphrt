@@ -517,8 +517,8 @@ impl NodeContext {
     pub fn chunk(&self, field: &str, chunk: impl Into<String>) {
         (self.sink)(Event::NodeChunk {
             frame: self.frame.clone(),
-            node_id: String::from(&*self.node_id),
-            exec_id: String::from(&*self.exec_id),
+            node_id: Arc::clone(&self.node_id),
+            exec_id: Arc::clone(&self.exec_id),
             field: field.to_owned(),
             chunk: chunk.into(),
         });
@@ -528,8 +528,8 @@ impl NodeContext {
     pub fn progress(&self, name: &str, data: Value) {
         (self.sink)(Event::NodeProgress {
             frame: self.frame.clone(),
-            node_id: String::from(&*self.node_id),
-            exec_id: String::from(&*self.exec_id),
+            node_id: Arc::clone(&self.node_id),
+            exec_id: Arc::clone(&self.exec_id),
             name: name.to_owned(),
             data,
         });

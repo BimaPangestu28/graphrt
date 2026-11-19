@@ -176,7 +176,8 @@ async fn llm_node_streams_bedrock_tokens_with_sigv4() {
     let events: Vec<Event> =
         Engine::new(g).with_services(services).run(RunInput::new().sys("query", "hi")).collect().await;
     assert_eq!(outputs(&events).get("answer").map(Value::to_text).as_deref(), Some("Hello"));
-    let chunks = events.iter().filter(|e| matches!(e, Event::NodeChunk { node_id, .. } if node_id == "llm")).count();
+    let chunks =
+        events.iter().filter(|e| matches!(e, Event::NodeChunk { node_id, .. } if node_id.as_ref() == "llm")).count();
     assert_eq!(chunks, 2);
 
     let raw = requests.recv().await.unwrap();

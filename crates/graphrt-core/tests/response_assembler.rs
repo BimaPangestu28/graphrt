@@ -63,7 +63,7 @@ fn started(id: &str) -> Event {
     Event::NodeStarted {
         frame: Arc::from(""),
         node_id: id.into(),
-        exec_id: format!("{id}-x"),
+        exec_id: format!("{id}-x").into(),
         kind: "x".into(),
         title: id.into(),
         attempt: 1,
@@ -78,7 +78,7 @@ fn chunk_in(frame: &str, id: &str, text: &str) -> Event {
     Event::NodeChunk {
         frame: Arc::from(frame),
         node_id: id.into(),
-        exec_id: format!("{id}-x"),
+        exec_id: format!("{id}-x").into(),
         field: "text".into(),
         chunk: text.into(),
     }
@@ -92,7 +92,7 @@ fn ok_branch(id: &str, outputs: &[(&str, Value)], branch: Option<&str>) -> Event
     Event::NodeSucceeded {
         frame: Arc::from(""),
         node_id: id.into(),
-        exec_id: format!("{id}-x"),
+        exec_id: format!("{id}-x").into(),
         outputs: outputs.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect::<IndexMap<_, _>>(),
         branch: branch.map(str::to_owned),
         usage: None,
@@ -283,7 +283,7 @@ fn retry(id: &str) -> Event {
     Event::NodeRetry {
         frame: Arc::from(""),
         node_id: id.into(),
-        exec_id: format!("{id}-x"),
+        exec_id: format!("{id}-x").into(),
         attempt: 2,
         error: "network".into(),
         delay_ms: 0,
@@ -294,7 +294,7 @@ fn handled(id: &str, outputs: &[(&str, Value)]) -> Event {
     Event::NodeFailed {
         frame: Arc::from(""),
         node_id: id.into(),
-        exec_id: format!("{id}-x"),
+        exec_id: format!("{id}-x").into(),
         error: "boom".into(),
         error_type: "model".into(),
         handled: true,

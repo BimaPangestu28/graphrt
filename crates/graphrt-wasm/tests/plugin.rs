@@ -157,7 +157,7 @@ async fn word_count_streams_chunks_progress_and_logs() {
     let chunks: Vec<String> = events
         .iter()
         .filter_map(|e| match e {
-            Event::NodeChunk { node_id, field, chunk, .. } if node_id == "wc" && field == "report" => {
+            Event::NodeChunk { node_id, field, chunk, .. } if node_id.as_ref() == "wc" && field == "report" => {
                 Some(chunk.clone())
             }
             _ => None,
@@ -166,7 +166,7 @@ async fn word_count_streams_chunks_progress_and_logs() {
     assert_eq!(chunks, ["1: one\n", "2: two\n", "3: three\n"]);
     assert!(events.iter().any(|e| matches!(e, Event::NodeProgress { name, .. } if name == "counted")));
     let meta = events.iter().find_map(|e| match e {
-        Event::NodeSucceeded { node_id, metadata, .. } if node_id == "wc" => Some(metadata.clone()),
+        Event::NodeSucceeded { node_id, metadata, .. } if node_id.as_ref() == "wc" => Some(metadata.clone()),
         _ => None,
     });
     let logs = meta.and_then(|m| m.get("logs").cloned()).expect("logs metadata");
@@ -198,7 +198,7 @@ async fn branching_plugin_node_routes_edges() {
     };
     for (text, expected, skipped) in [("hi", "short", "l"), ("a much longer text", "long", "s")] {
         let events = collect(&engine(doc(text), &registry), RunInput::new()).await;
-        assert!(events.iter().any(|e| matches!(e, Event::NodeSkipped { node_id, .. } if node_id == skipped)));
+        assert!(events.iter().any(|e| matches!(e, Event::NodeSkipped { node_id, .. } if node_id.as_ref() == skipped)));
         match terminal(&events) {
             Event::RunSucceeded { outputs, .. } => assert_eq!(outputs.get("answer"), Some(&Value::from(expected))),
             other => panic!("{other:?}"),

@@ -31,7 +31,7 @@ const CONTENT_LIMIT: usize = 4096;
 struct OpenNode {
     span: Span,
     frame: String,
-    node_id: String,
+    node_id: std::sync::Arc<str>,
     kind: String,
     chunks: u64,
 }
@@ -51,11 +51,11 @@ pub struct EventTracer {
     sampled: bool,
     root: Option<Span>,
     /// Open node spans by execution id.
-    nodes: HashMap<String, OpenNode>,
+    nodes: HashMap<std::sync::Arc<str>, OpenNode>,
     /// Latest execution id per `(frame, node id)`, used to find container spans.
-    by_node: HashMap<(String, String), String>,
+    by_node: HashMap<(String, std::sync::Arc<str>), std::sync::Arc<str>>,
     /// Container node span ids by `(frame, node id)` (kept after the node ends).
-    containers: HashMap<(String, String), SpanId>,
+    containers: HashMap<(String, std::sync::Arc<str>), SpanId>,
     /// Open container body (frame) spans by frame id.
     frames: HashMap<String, Span>,
     finished: bool,
@@ -158,9 +158,9 @@ impl EventTracer {
                 let parent = self.parent_for_frame(frame, now);
                 let name = if title.is_empty() { kind.clone() } else { title.clone() };
                 let mut span = Span::new(self.trace_id, Some(parent), name, now);
-                span.set("graphrt.node.id", node_id.as_str());
+                span.set("graphrt.node.id", node_id.as_ref());
                 span.set("graphrt.node.kind", kind.as_str());
-                span.set("graphrt.node.exec_id", exec_id.as_str());
+                span.set("graphrt.node.exec_id", exec_id.as_ref());
                 span.set("graphrt.node.attempt", *attempt);
                 if !frame.is_empty() {
                     span.set("graphrt.frame", frame.as_ref());
@@ -251,7 +251,7 @@ impl EventTracer {
             }
             Event::NodeSkipped { frame, node_id } => {
                 let root = self.ensure_root(now);
-                let mut attrs = vec![("graphrt.node.id".to_owned(), AttrValue::from(node_id.as_str()))];
+                let mut attrs = vec![("graphrt.node.id".to_owned(), AttrValue::from(node_id.as_ref()))];
                 if !frame.is_empty() {
                     attrs.push(("graphrt.frame".to_owned(), AttrValue::from(frame.as_ref())));
                 }
@@ -347,7 +347,7 @@ impl EventTracer {
             Some((owner, rest)) => (owner.to_owned(), rest.trim_end_matches(']').to_owned()),
             None => (segment.to_owned(), String::new()),
         };
-        let parent = match self.containers.get(&(parent_frame.clone(), owner.clone())) {
+        let parent = match self.containers.get(&(parent_frame.clone(), std::sync::Arc::from(owner.as_str()))) {
             Some(id) => *id,
             None => self.parent_for_frame(&parent_frame, now),
         };
@@ -428,7 +428,7 @@ impl EventTracer {
 
     fn finish_run(&mut self, status: &str, elapsed_ms: u64, now: u64) {
         // Close whatever is still open (dropped nodes after an abort or failure).
-        let open: Vec<String> = self.nodes.keys().cloned().collect();
+        let open: Vec<std::sync::Arc<str>> = self.nodes.keys().cloned().collect();
         for exec in open {
             if let Some(mut node) = self.nodes.remove(&exec) {
                 node.span.set("graphrt.node.interrupted", true);

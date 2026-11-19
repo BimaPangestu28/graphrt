@@ -321,8 +321,8 @@ impl Frame {
         self.ready.push_back(ix);
     }
 
-    fn node_id(&self, ix: NodeIx) -> String {
-        self.run.graph.node(ix).map(|n| String::from(&*n.id)).unwrap_or_default()
+    fn node_id(&self, ix: NodeIx) -> Arc<str> {
+        self.run.graph.node(ix).map_or_else(|| Arc::from(""), |n| Arc::clone(&n.id))
     }
 
     /// Run the frame to completion, failure, pause or stop.
@@ -368,7 +368,7 @@ impl Frame {
             if self.pool.set_path(&selector, value.clone()).is_err() {
                 continue;
             }
-            self.run.emit(Event::VariableUpdated { frame: self.id.clone(), node_id: String::new(), selector, value });
+            self.run.emit(Event::VariableUpdated { frame: self.id.clone(), node_id: Arc::from(""), selector, value });
         }
     }
 
@@ -407,7 +407,7 @@ impl Frame {
                 State::Skipped => NodeStatus::Skipped,
             };
             nodes.insert(
-                self.node_id(ix),
+                String::from(&*self.node_id(ix)),
                 NodeSnapshot {
                     status,
                     exec_id: String::from(&*rt.exec_id),
@@ -456,8 +456,8 @@ impl Frame {
 
         run.emit(Event::NodeStarted {
             frame: self.id.clone(),
-            node_id: String::from(&*gn.id),
-            exec_id: String::from(&*exec_id),
+            node_id: Arc::clone(&gn.id),
+            exec_id: Arc::clone(&exec_id),
             kind: gn.kind.clone(),
             title: gn.title.clone(),
             attempt: 1,
@@ -518,8 +518,8 @@ impl Frame {
                         attempt = attempt.saturating_add(1);
                         run.emit(Event::NodeRetry {
                             frame: frame.clone(),
-                            node_id: String::from(&*node_id),
-                            exec_id: String::from(&*exec_id),
+                            node_id: Arc::clone(&node_id),
+                            exec_id: Arc::clone(&exec_id),
                             attempt,
                             error: error.to_string(),
                             delay_ms,
@@ -569,8 +569,8 @@ impl Frame {
         }
     }
 
-    fn exec_id(&self, ix: NodeIx) -> String {
-        self.nodes.get(&ix).map(|n| String::from(&*n.exec_id)).unwrap_or_default()
+    fn exec_id(&self, ix: NodeIx) -> Arc<str> {
+        self.nodes.get(&ix).map_or_else(|| Arc::from(""), |n| Arc::clone(&n.exec_id))
     }
 
     fn set_state(&mut self, ix: NodeIx, state: State) {
@@ -582,7 +582,7 @@ impl Frame {
     fn on_success(&mut self, ix: NodeIx, output: NodeOutput, elapsed_ms: u64) -> Option<FrameOutcome> {
         let graph = self.run.graph.clone();
         let gn = graph.node(ix)?;
-        let node_id = String::from(&*gn.id);
+        let node_id = Arc::clone(&gn.id);
         if let Err(error) = self.commit(ix, &output.outputs, &output.writes) {
             return self.on_error(ix, error, elapsed_ms);
         }
@@ -621,7 +621,7 @@ impl Frame {
         let role = self.run.graph.node(ix).map(|n| n.role);
         let reason = PauseReason {
             frame: self.id.clone(),
-            node_id: Some(node_id.clone()),
+            node_id: Some(String::from(&*node_id)),
             kind: request.kind,
             data: request.data,
         };
@@ -640,7 +640,7 @@ impl Frame {
     fn on_error(&mut self, ix: NodeIx, error: NodeError, elapsed_ms: u64) -> Option<FrameOutcome> {
         let graph = self.run.graph.clone();
         let gn = graph.node(ix)?;
-        let node_id = String::from(&*gn.id);
+        let node_id = Arc::clone(&gn.id);
         let mut outputs = IndexMap::new();
         let handled = !matches!(gn.policy.on_error, ErrorStrategy::Fail);
         if let ErrorStrategy::DefaultValue { values } = &gn.policy.on_error {

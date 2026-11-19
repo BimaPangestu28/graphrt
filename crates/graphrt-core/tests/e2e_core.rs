@@ -53,7 +53,7 @@ fn skipped(events: &[Event]) -> Vec<String> {
     events
         .iter()
         .filter_map(|e| match e {
-            Event::NodeSkipped { node_id, .. } => Some(node_id.clone()),
+            Event::NodeSkipped { node_id, .. } => Some(node_id.to_string()),
             _ => None,
         })
         .collect()
@@ -193,7 +193,7 @@ async fn iteration_preserves_input_order_sequential_and_parallel() {
         let item_frames: Vec<String> = events
             .iter()
             .filter_map(|e| match e {
-                Event::NodeSucceeded { node_id, frame, .. } if node_id == "call" => Some(frame.to_string()),
+                Event::NodeSucceeded { node_id, frame, .. } if node_id.as_ref() == "call" => Some(frame.to_string()),
                 _ => None,
             })
             .collect();
@@ -570,7 +570,7 @@ async fn abort_cancels_in_flight_tool_calls() {
     let started = Instant::now();
     let mut last = None;
     while let Some(event) = stream.next().await {
-        if matches!(&event, Event::NodeStarted { node_id, .. } if node_id == "wait") {
+        if matches!(&event, Event::NodeStarted { node_id, .. } if node_id.as_ref() == "wait") {
             handle.abort("user cancelled");
         }
         last = Some(event);

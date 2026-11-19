@@ -61,8 +61,8 @@ pub enum Event {
     },
     NodeStarted {
         frame: FrameId,
-        node_id: String,
-        exec_id: String,
+        node_id: std::sync::Arc<str>,
+        exec_id: std::sync::Arc<str>,
         kind: String,
         title: String,
         attempt: u32,
@@ -70,31 +70,31 @@ pub enum Event {
     /// Incremental output, e.g. LLM tokens for output `field`.
     NodeChunk {
         frame: FrameId,
-        node_id: String,
-        exec_id: String,
+        node_id: std::sync::Arc<str>,
+        exec_id: std::sync::Arc<str>,
         field: String,
         chunk: String,
     },
     /// Structured progress emitted by a node (agent steps, tool calls, iteration progress...).
     NodeProgress {
         frame: FrameId,
-        node_id: String,
-        exec_id: String,
+        node_id: std::sync::Arc<str>,
+        exec_id: std::sync::Arc<str>,
         name: String,
         data: Value,
     },
     NodeRetry {
         frame: FrameId,
-        node_id: String,
-        exec_id: String,
+        node_id: std::sync::Arc<str>,
+        exec_id: std::sync::Arc<str>,
         attempt: u32,
         error: String,
         delay_ms: u64,
     },
     NodeSucceeded {
         frame: FrameId,
-        node_id: String,
-        exec_id: String,
+        node_id: std::sync::Arc<str>,
+        exec_id: std::sync::Arc<str>,
         outputs: IndexMap<String, Value>,
         /// Selected branch handle for branch nodes.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -108,8 +108,8 @@ pub enum Event {
     /// A node failed. `handled` is true when its error strategy kept the run going.
     NodeFailed {
         frame: FrameId,
-        node_id: String,
-        exec_id: String,
+        node_id: std::sync::Arc<str>,
+        exec_id: std::sync::Arc<str>,
         error: String,
         error_type: String,
         handled: bool,
@@ -120,18 +120,18 @@ pub enum Event {
     /// The node will not run because every incoming path was skipped.
     NodeSkipped {
         frame: FrameId,
-        node_id: String,
+        node_id: std::sync::Arc<str>,
     },
     NodePaused {
         frame: FrameId,
-        node_id: String,
-        exec_id: String,
+        node_id: std::sync::Arc<str>,
+        exec_id: std::sync::Arc<str>,
         reason: PauseReason,
     },
     /// A node wrote a variable outside its own outputs (assigner, conversation variable...).
     VariableUpdated {
         frame: FrameId,
-        node_id: String,
+        node_id: std::sync::Arc<str>,
         selector: Selector,
         value: Value,
     },

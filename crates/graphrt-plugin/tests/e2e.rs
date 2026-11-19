@@ -75,7 +75,7 @@ fn chunks(events: &[Event], node: &str) -> String {
     events
         .iter()
         .filter_map(|e| match e {
-            Event::NodeChunk { node_id, chunk, .. } if node_id == node => Some(chunk.as_str()),
+            Event::NodeChunk { node_id, chunk, .. } if node_id.as_ref() == node => Some(chunk.as_str()),
             _ => None,
         })
         .collect()
@@ -120,7 +120,7 @@ async fn python_example_streams_and_branches() {
     let events = collect(&e, RunInput::new().input("review", "I love it, great and fast!")).await;
     assert_eq!(outputs(&events)["answer"], "Thanks! positive 1.0");
     assert_eq!(chunks(&events, "mood"), "love great fast ");
-    assert!(events.iter().any(|e| matches!(e, Event::NodeSkipped { node_id, .. } if node_id == "sad")));
+    assert!(events.iter().any(|e| matches!(e, Event::NodeSkipped { node_id, .. } if node_id.as_ref() == "sad")));
 
     // The catalog shows the plugin node with its source.
     let d = setup.registry.descriptor("sentiment.analyze").unwrap();
@@ -149,7 +149,7 @@ async fn config_is_rendered_and_events_flow() {
     let echoed = events
         .iter()
         .find_map(|e| match e {
-            Event::NodeSucceeded { node_id, outputs, .. } if node_id == "p" => {
+            Event::NodeSucceeded { node_id, outputs, .. } if node_id.as_ref() == "p" => {
                 Some(serde_json::to_value(outputs).unwrap())
             }
             _ => None,
@@ -264,7 +264,7 @@ async fn secrets_are_masked_unless_permitted() {
     let echoed = events
         .iter()
         .find_map(|e| match e {
-            Event::NodeSucceeded { node_id, outputs, .. } if node_id == "p" => {
+            Event::NodeSucceeded { node_id, outputs, .. } if node_id.as_ref() == "p" => {
                 Some(serde_json::to_value(outputs).unwrap())
             }
             _ => None,
