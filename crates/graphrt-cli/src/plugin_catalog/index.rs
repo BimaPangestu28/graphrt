@@ -64,12 +64,19 @@ pub struct CatalogEntry {
 impl CatalogEntry {
     /// The status label (trimmed, lowercase), or `unknown` when the catalog does not carry one.
     pub fn status_label(&self) -> String {
-        normalized_label(self.status.as_deref()).unwrap_or_else(|| "unknown".to_owned())
+        normalized_label(self.status.as_deref()).map_or_else(|| "unknown".to_owned(), |label| printable(&label))
     }
 
     /// The ToS risk label (trimmed, lowercase), or `unknown` when the catalog does not carry one.
     pub fn tos_risk_label(&self) -> String {
-        normalized_label(self.tos_risk.as_deref()).unwrap_or_else(|| "unknown".to_owned())
+        normalized_label(self.tos_risk.as_deref()).map_or_else(|| "unknown".to_owned(), |label| printable(&label))
+    }
+
+    /// A valid plugin name and a release version. Other entries are skipped by
+    /// selection and search, so names and versions printed from the index are
+    /// always plain text.
+    pub fn is_well_formed(&self) -> bool {
+        graphrt_plugin::is_valid_name(&self.name) && is_release_version(&self.version)
     }
 
     /// Whether installing needs an explicit confirmation (`--yes`); see
@@ -93,26 +100,32 @@ impl CatalogEntry {
             None => reasons.push("this catalog entry has no status label".to_owned()),
             Some("stable" | "beta") => {}
             Some("experimental") => reasons.push("status experimental".to_owned()),
-            Some(other) => reasons.push(format!("unrecognised status `{other}`")),
+            Some(other) => reasons.push(format!("unrecognised status `{}`", printable(other))),
         }
         match tos_risk.as_deref() {
             None => reasons.push("this catalog entry has no ToS risk label".to_owned()),
             Some("none" | "low" | "medium") => {}
             Some("high") => reasons.push("ToS risk high".to_owned()),
-            Some(other) => reasons.push(format!("unrecognised ToS risk `{other}`")),
+            Some(other) => reasons.push(format!("unrecognised ToS risk `{}`", printable(other))),
         }
         reasons
     }
 
     /// The first line of the description, shortened to `max_chars` characters.
     pub fn one_line_description(&self, max_chars: usize) -> String {
-        let first_line = self.description.lines().next().unwrap_or_default().trim();
+        let first_line = printable(self.description.lines().next().unwrap_or_default().trim());
         if first_line.chars().count() <= max_chars {
-            return first_line.to_owned();
+            return first_line;
         }
         let shortened: String = first_line.chars().take(max_chars.saturating_sub(3)).collect();
         format!("{}...", shortened.trim_end())
     }
+}
+
+/// `text` with every control character (C0, DEL, C1, so ESC and BEL too)
+/// replaced by `?`, so index strings cannot drive the terminal when printed.
+pub fn printable(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { '?' } else { c }).collect()
 }
 
 /// A label trimmed and lowercased; `None` when missing or blank.
@@ -126,7 +139,7 @@ fn normalized_label(label: Option<&str>) -> Option<String> {
 /// A message for invalid JSON, a missing required field or an unsupported `schema`.
 pub fn parse_index(index_bytes: &[u8]) -> Result<CatalogIndex, String> {
     let index: CatalogIndex =
-        serde_json::from_slice(index_bytes).map_err(|error| format!("invalid catalog index: {error}"))?;
+        serde_json::from_slice(index_bytes).map_err(|error| printable(&format!("invalid catalog index: {error}")))?;
     if index.schema != SUPPORTED_SCHEMA {
         return Err(format!(
             "catalog index schema {} is not supported (this graphrt reads schema {SUPPORTED_SCHEMA}); upgrade graphrt",
@@ -273,7 +286,8 @@ impl std::fmt::Display for SelectionError {
 /// # Errors
 /// [`SelectionError`] when the name or the requested version is not listed.
 pub fn select_entry<'a>(index: &'a CatalogIndex, spec: &PluginSpec) -> Result<&'a CatalogEntry, SelectionError> {
-    let mut candidates: Vec<&CatalogEntry> = index.plugins.iter().filter(|entry| entry.name == spec.name).collect();
+    let mut candidates: Vec<&CatalogEntry> =
+        index.plugins.iter().filter(|entry| entry.is_well_formed() && entry.name == spec.name).collect();
     candidates.sort_by(|left, right| compare_versions(&left.version, &right.version));
     let Some(latest) = candidates.last().copied() else {
         return Err(SelectionError::UnknownName(spec.name.clone()));
@@ -293,7 +307,7 @@ pub fn select_entry<'a>(index: &'a CatalogIndex, spec: &PluginSpec) -> Result<&'
 pub fn search_entries<'a>(index: &'a CatalogIndex, query: Option<&str>) -> Vec<&'a CatalogEntry> {
     let needle = query.map(str::to_lowercase).unwrap_or_default();
     let mut latest_by_name: std::collections::BTreeMap<&str, &CatalogEntry> = std::collections::BTreeMap::new();
-    for entry in &index.plugins {
+    for entry in index.plugins.iter().filter(|entry| entry.is_well_formed()) {
         let matches = entry.name.to_lowercase().contains(&needle) || entry.description.to_lowercase().contains(&needle);
         if !matches {
             continue;
@@ -395,6 +409,22 @@ mod tests {
         }
         assert_eq!(labelled(Some(" Experimental "), Some("HIGH")).status_label(), "experimental");
         assert_eq!(labelled(Some(" Experimental "), Some("HIGH")).tos_risk_label(), "high");
+    }
+
+    #[test]
+    fn replaces_control_characters() {
+        assert_eq!(printable("a\u{1b}]52;c;x\u{7}b\u{9b}c\u{7f}d\te\nf"), "a?]52;c;x?b?c?d?e?f");
+        assert_eq!(printable("plain text, ünïcödé"), "plain text, ünïcödé");
+    }
+
+    #[test]
+    fn selection_and_search_skip_malformed_entries() {
+        let index =
+            index_of(vec![entry("demo", "1.0.0"), entry("demo", "9.0.0\u{1b}[2J"), entry("Evil\u{1b}", "1.0.0")]);
+        let latest = select_entry(&index, &PluginSpec { name: "demo".into(), version: None }).unwrap();
+        assert_eq!(latest.version, "1.0.0");
+        let names: Vec<&str> = search_entries(&index, None).iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["demo"]);
     }
 
     #[test]

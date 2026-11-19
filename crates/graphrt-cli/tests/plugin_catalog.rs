@@ -382,7 +382,8 @@ fn unlabelled_or_unrecognised_labels_need_yes() {
     let mut fine = FixturePlugin::valid("fine", "1.0.0");
     fine.status = Some(" Stable ");
     fine.tos_risk = Some("Medium");
-    let index = write_catalog(&home.join("catalog"), &[unlabelled, no_risk_label, capitalised, padded, deprecated, fine]);
+    let index =
+        write_catalog(&home.join("catalog"), &[unlabelled, no_risk_label, capitalised, padded, deprecated, fine]);
 
     let expectations = [
         ("bare", "this catalog entry has no status/ToS label"),
@@ -405,6 +406,64 @@ fn unlabelled_or_unrecognised_labels_need_yes() {
     let output = install(&home, "bare", &index, &["--yes"]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(stdout(&output).contains("bare 1.0.0: status unknown, ToS risk unknown"), "{}", stdout(&output));
+}
+
+/// Rewrite the entries of a written `index.json` in place.
+fn edit_index(index_path: &Path, edit: impl Fn(&mut serde_json::Value)) {
+    let mut index: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(index_path).unwrap()).unwrap();
+    for entry in index["plugins"].as_array_mut().unwrap() {
+        edit(entry);
+    }
+    std::fs::write(index_path, index.to_string()).unwrap();
+}
+
+/// OSC 52 would set the terminal clipboard; CSI 2J clears the screen; U+009B is a C1 CSI.
+const TERMINAL_ESCAPES: &str = "\u{1b}]52;c;SGVsbG8=\u{7}\u{1b}[2J\u{9b}31m\u{7f}";
+
+fn assert_no_control_characters(label: &str, text: &str) {
+    let control: Vec<char> = text.chars().filter(|c| c.is_control() && *c != '\n').collect();
+    assert!(control.is_empty(), "{label} prints control characters {control:?}: {text:?}");
+}
+
+#[test]
+fn index_strings_are_printed_without_control_characters() {
+    let home = scratch("escapes");
+    let mut hostile = FixturePlugin::valid("demo", "1.0.0");
+    hostile.status = Some("experimental");
+    let index = write_catalog(&home.join("catalog"), &[hostile, FixturePlugin::valid("other", "1.0.0")]);
+    edit_index(&index, |entry| {
+        entry["description"] = format!("Nice {TERMINAL_ESCAPES} plugin").into();
+        entry["status_reason"] = format!("reason {TERMINAL_ESCAPES}").into();
+        entry["warning"] = format!("warning {TERMINAL_ESCAPES}").into();
+        if entry["name"] == "other" {
+            entry["status"] = format!("beta{TERMINAL_ESCAPES}").into();
+            entry["tos_risk"] = format!("low{TERMINAL_ESCAPES}").into();
+        }
+    });
+    let mut index_value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&index).unwrap()).unwrap();
+    let mut invalid_name = index_value["plugins"][0].clone();
+    invalid_name["name"] = format!("evil{TERMINAL_ESCAPES}").into();
+    let mut invalid_version = index_value["plugins"][0].clone();
+    invalid_version["version"] = format!("9.9.9{TERMINAL_ESCAPES}").into();
+    index_value["plugins"].as_array_mut().unwrap().extend([invalid_name, invalid_version]);
+    std::fs::write(&index, index_value.to_string()).unwrap();
+
+    let search = graphrt(&home, &["plugin", "search", "--index", index.to_str().unwrap()]);
+    assert!(search.status.success(), "{}", stderr(&search));
+    assert_no_control_characters("search", &stdout(&search));
+    assert!(!stdout(&search).contains("evil"), "entries with invalid names are skipped: {}", stdout(&search));
+    assert!(!stdout(&search).contains("9.9.9"), "entries with invalid versions are skipped: {}", stdout(&search));
+    assert!(stdout(&search).contains("Nice ?]52;c;SGVsbG8=??[2J?31m? plugin"), "{}", stdout(&search));
+
+    for name in ["demo", "other", "demo@9.9.9"] {
+        let output = install(&home, name, &index, &[]);
+        assert_eq!(output.status.code(), Some(2), "{name}: {}", stderr(&output));
+        assert_no_control_characters(&format!("{name} stdout"), &stdout(&output));
+        assert_no_control_characters(&format!("{name} stderr"), &stderr(&output));
+    }
+    let other = install(&home, "other", &index, &[]);
+    assert!(stderr(&other).contains("unrecognised status `beta?]52;c;"), "{}", stderr(&other));
+    assert!(stdout(&install(&home, "demo", &index, &[])).contains("reason ?]52;c;"));
 }
 
 #[test]
