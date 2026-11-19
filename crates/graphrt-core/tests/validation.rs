@@ -1,4 +1,6 @@
 //! Whole-document validation: every error collected, with paths, positions and suggestions.
+// The documents below are YAML, which needs the `yaml` feature.
+#![cfg(feature = "yaml")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use graphrt_core::validate::{Diagnostic, Severity, validate_text};

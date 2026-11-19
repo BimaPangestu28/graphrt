@@ -457,7 +457,10 @@ async fn max_concurrency_one_runs_branches_one_at_a_time() {
     let engine = Engine::new(g).with_limits(Limits { max_concurrency: 1, ..Limits::default() });
     let t0 = std::time::Instant::now();
     let events = collect(&engine, RunInput::new()).await;
-    assert!(t0.elapsed() >= Duration::from_millis(70), "branches must not overlap");
+    // Without the `tokio` feature the clock does not sleep, so only the order can be checked.
+    if cfg!(feature = "tokio") {
+        assert!(t0.elapsed() >= Duration::from_millis(70), "branches must not overlap");
+    }
     assert_eq!(outputs(&events).get("mab"), Some(&Value::from("MAB")));
     let order = started(&events);
     assert_eq!(order.len(), 5, "{order:?}");
