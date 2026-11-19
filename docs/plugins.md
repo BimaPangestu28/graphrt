@@ -421,7 +421,9 @@ How a name is resolved and installed:
    It may be an `https://` URL, a `file://` URL or a local path; plain
    `http://` is refused because the index carries the checksums. Catalogs with
    a `schema` other than 1 are refused (upgrade graphrt).
-3. Without a version, the highest version by semver precedence is picked.
+3. Without a version, the highest version by semver precedence is picked,
+   skipping prereleases (`1.1.0-rc.1`) unless the plugin has nothing else;
+   ask for a prerelease with `name@1.1.0-rc.1`.
    Entries with an invalid plugin name or a non-semver version are skipped,
    and every index string graphrt prints (descriptions, labels, reasons,
    warnings, URLs) has its control characters replaced by `?`, so a catalog
