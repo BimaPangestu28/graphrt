@@ -541,6 +541,14 @@
           "type": "integer",
           "minimum": 1,
           "default": 32000
+        },
+        "keep_tool_images": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "default": 3
         }
       },
       "required": [
