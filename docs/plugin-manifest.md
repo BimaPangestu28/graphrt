@@ -238,9 +238,13 @@ YAML manifests can instead start with a comment, which the parser ignores:
 
 ## Compatibility policy
 
-`protocol_version` versions both the manifest format and the JSON-RPC
-protocol. A host loads only manifests whose `protocol_version` it speaks, and
-refuses a plugin whose `initialize` reply reports a different version.
+`protocol_version` is a single number covering the manifest format and the
+JSON-RPC protocol together: a change to either is versioned by it. A host
+loads only manifests whose `protocol_version` it speaks, and refuses a plugin
+whose `initialize` reply reports a different version.
+
+This section describes goals, not guarantees, until graphrt 1.0; from 1.0 on
+it becomes a guarantee.
 
 **Not breaking** (no `protocol_version` bump; ships in a graphrt minor release
 and is listed in the changelog with the first version that understands it):
@@ -266,9 +270,10 @@ older hosts should leave new fields out.
 How a bump happens: the new version and its differences are documented here
 and in a new schema file (`plugin-manifest-v2.schema.json`; this file then
 stays frozen at version 1). The release that introduces version 2 is called
-out under **Changed** in the changelog. For at least one minor release the
-host keeps loading version-1 manifests next to version-2 ones, warning about
-the old version, before version 1 support is removed.
+out under **Changed** in the changelog. Before 1.0, a `protocol_version` bump
+aims to keep the previous version supported for at least two minor releases
+(loaded next to the new one, with a deprecation warning); after 1.0 this
+becomes a guarantee.
 
 ## Changes
 

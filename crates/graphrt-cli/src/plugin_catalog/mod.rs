@@ -13,7 +13,7 @@
 //!    local), capped in size and time, and checks its sha256 against the index;
 //! 5. extracts it into a scratch directory, refusing unsafe entries;
 //! 6. installs the extracted `<name>/` directory exactly like a local directory
-//!    install (manifest validation, checksums, atomic replace).
+//!    install (manifest validation, checksums, staged copy, remove-then-rename).
 
 #[cfg(feature = "plugins")]
 mod archive;

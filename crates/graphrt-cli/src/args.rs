@@ -269,8 +269,9 @@ pub enum PluginCommand {
         /// path [default: $GRAPHRT_PLUGIN_INDEX, else the graphrt-plugins catalog release].
         #[arg(long, value_name = "URL|PATH")]
         index: Option<String>,
-        /// Install catalog plugins labelled experimental or with a high ToS risk
-        /// (graphrt has no interactive prompt).
+        /// Install a catalog plugin that is not labelled stable/beta with a
+        /// none/low/medium ToS risk: experimental, high-risk, unrecognised or
+        /// unlabelled (graphrt has no interactive prompt).
         #[arg(long, short = 'y')]
         yes: bool,
     },

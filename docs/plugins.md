@@ -441,15 +441,33 @@ How a name is resolved and installed:
    the catalog declares it, never more than 256 MiB. A `file://` tarball URL is
    accepted only when the index itself is local (mirrors and tests).
 6. Its sha256 must equal the catalog's `sha256`; a mismatch is refused.
-7. It is extracted into a scratch directory. Only regular files and
+7. It is extracted into a scratch directory under the system temporary
+   directory (`$TMPDIR`, else `/tmp`), so up to 1 GiB may be written there
+   while installing; the directory is removed afterwards. Only regular files and
    directories are accepted: absolute paths, `..`, `:` and reserved Windows
    device names (`CON`, `NUL`, `COM1`...), symlinks and hard links, device
    files, FIFOs and duplicate paths are refused, as are archives over
    1 GiB of contents or 100,000 entries. Files keep only their executable bit.
 8. The tarball's top-level `<name>/` directory, whose manifest must name the
    same plugin and version, is installed exactly like `graphrt plugin install
-   <dir>`: manifest validation, `checksums` verification, atomic replace, and
-   a load check.
+   <dir>`: manifest validation, `checksums` verification, a copy into a
+   staging directory next to the target, removal of the previous install and a
+   rename of the staging copy into place, then a load check. This replace is
+   not atomic: if it is interrupted between the removal and the rename, the
+   plugin is left uninstalled (run the install again).
+
+**Trust model.** Installing by name trusts HTTPS and the integrity of the
+GitHub account and releases that publish the catalog. The `catalog` release
+tag is mutable (it is updated in place on every publish), so trust is
+re-established on every install: graphrt keeps no record of what an earlier
+index said. The sha256 in the index guards against corruption in transit and
+against a tarball that does not match what was uploaded with the index; it
+does not protect against a compromised repository or account, which can
+change the index and the tarball together. Catalog entries and tarballs are
+not signed yet; signing (for example with minisign, checked against a key
+shipped with graphrt) is future work. Until then, prefer `--index` pointing at
+a mirror you control, or install from a reviewed directory or git revision,
+when that matters.
 
 To test a catalog before publishing it, pack it locally and point `--index` at
 the result (rewrite `tarball_url` to `file://` paths first, since the packed
