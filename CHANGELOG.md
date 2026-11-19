@@ -25,11 +25,19 @@ releases may contain breaking changes; they are called out under **Changed**.
 - Python subprocess runner: the working directory is created fresh and
   owner-only (`0700`) instead of adopting an existing directory at the
   predictable temp path.
+- Engine: node error messages are scrubbed of every secret the run has seen
+  (`type: secret` env variables, secret-typed inputs, re-supplied resume
+  secrets, secret outputs) before they reach `node_failed` / `node_retry` /
+  `run_failed` events, `error_message` outputs of handled errors, the run store
+  and OTel spans. Previously an error that echoed a key (a provider body such
+  as "Incorrect API key provided: sk-...", an HTTP error snippet from an echo
+  endpoint, an exception in code) was recorded verbatim. New public helpers in
+  `graphrt_core::redact`.
 - Dependencies: `rusqlite` 0.40 -> 0.41 (bundled SQLite 3.54), fixing
   RUSTSEC-2026-0459 / CVE-2026-119375 (uninitialized page-cache memory read
   through a crafted database and `-wal` pair) in `graphrt-rag`'s `SqliteStore`.
   `graphrt-rag` now needs Rust 1.89. `paste` (unmaintained, build-time only, via
-  candle) is acknowledged in `deny.toml`. Also in 0.2.0.
+  candle) is acknowledged in `deny.toml`.
 
 ## [0.2.0] - 2026-11-19
 

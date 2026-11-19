@@ -16,6 +16,7 @@ use crate::dsl::VariableDecl;
 use crate::event::{Event, PauseReason, Usage};
 use crate::node::EventSink;
 use crate::pool::{CONVERSATION, ENV, SYS, Selector, VariablePool};
+use crate::redact::SecretSet;
 use crate::snapshot::{SNAPSHOT_FORMAT, Snapshot};
 use crate::value::Value;
 
@@ -81,6 +82,11 @@ pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Contr
         };
     let resumed = resume_snapshot.is_some();
 
+    // Secrets known up front; nodes add the ones they produce (see `Frame::commit`).
+    let secret_values = SecretSet::new();
+    let initial = env.iter().map(|(_, v)| v).chain(secrets.iter().map(|(_, v)| v)).chain(input.inputs.values());
+    initial.for_each(|value| secret_values.observe(value));
+
     let shared = Arc::new(RunShared {
         graph: engine.graph.clone(),
         services: engine.services.clone(),
@@ -94,6 +100,7 @@ pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Contr
         env: env.clone(),
         secrets,
         resume_inputs,
+        secret_values,
     });
 
     sink(Event::RunStarted { run_id: run_id.clone(), resumed });

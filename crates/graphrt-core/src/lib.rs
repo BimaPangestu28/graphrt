@@ -22,6 +22,7 @@ pub mod graph;
 pub mod node;
 pub mod nodes;
 pub mod pool;
+pub mod redact;
 pub mod response;
 pub mod snapshot;
 pub mod store;
