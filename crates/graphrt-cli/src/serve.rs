@@ -725,7 +725,7 @@ async fn run_events(
     if query.stream == Some(false) {
         let mut all = stored;
         if let Some((_, sub)) = subscription {
-            all.extend(sub.backlog.iter().map(event_to_stored));
+            all.extend(sub.backlog.iter().map(|event| event_to_stored(event)));
         }
         return Json(all).into_response();
     }
@@ -742,7 +742,7 @@ async fn run_events(
 
 /// Events from a broadcast receiver until the terminal event.
 fn live_events(
-    rx: tokio::sync::broadcast::Receiver<Event>,
+    rx: tokio::sync::broadcast::Receiver<live::SharedEvent>,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + 'static {
     futures::stream::unfold((rx, false), |(mut rx, finished)| async move {
         if finished {
