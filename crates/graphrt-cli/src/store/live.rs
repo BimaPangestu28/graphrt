@@ -12,7 +12,10 @@ use tokio::sync::{broadcast, watch};
 
 /// Events kept in memory per active run for late subscribers.
 const FEED_CAP: usize = 10_000;
-/// Broadcast buffer per run; slower listeners skip ahead (and are told so).
+/// Broadcast buffer per run; slower listeners skip ahead (and are told so). The
+/// channel is created by the first subscriber: most runs (blocking and async
+/// requests) never have one, and allocating it for every run cost about a third
+/// of the server's CPU time.
 const CHANNEL_CAP: usize = 4_096;
 /// Stored events are written in batches of this size (and at every terminal event).
 const FLUSH_EVERY: usize = 32;
@@ -21,7 +24,8 @@ const FLUSH_EVERY: usize = 32;
 struct Feed {
     events: Vec<Event>,
     dropped: bool,
-    tx: broadcast::Sender<Event>,
+    /// Created on the first [`ActiveRun::subscribe`].
+    tx: Option<broadcast::Sender<Event>>,
     terminal: Option<Event>,
     answer: String,
 }
@@ -66,11 +70,14 @@ impl ActiveRun {
 
     /// Backlog plus a live receiver, taken atomically so no event is missed or repeated.
     pub fn subscribe(&self) -> Subscription {
-        let feed = self.feed();
+        let mut feed = self.feed();
+        // Created under the feed lock the driver also sends under, so the backlog
+        // and the live receiver never miss or repeat an event.
+        let live = feed.tx.get_or_insert_with(|| broadcast::channel(CHANNEL_CAP).0).subscribe();
         Subscription {
             backlog: feed.events.clone(),
             backlog_truncated: feed.dropped,
-            live: feed.tx.subscribe(),
+            live,
             done: feed.terminal.is_some(),
         }
     }
@@ -102,13 +109,12 @@ pub fn spawn(
     on_finish: OnFinish,
     tracer: crate::otel::RunTracer,
 ) -> Arc<ActiveRun> {
-    let (tx, _) = broadcast::channel(CHANNEL_CAP);
     let (done_tx, _) = watch::channel(false);
     let active = Arc::new(ActiveRun {
         run_id: record.run_id.clone(),
         handle: run.handle(),
         stored_before: record.event_count,
-        feed: Mutex::new(Feed { events: Vec::new(), dropped: false, tx, terminal: None, answer: String::new() }),
+        feed: Mutex::new(Feed { events: Vec::new(), dropped: false, tx: None, terminal: None, answer: String::new() }),
         done_tx,
     });
     tokio::spawn(drive(run, assembler, record, store, Arc::clone(&active), on_finish, tracer));
@@ -139,7 +145,9 @@ async fn drive(
                 feed.dropped = true;
             }
             // No receivers is fine: the run is recorded either way.
-            let _receivers = feed.tx.send(event.clone());
+            if let Some(tx) = &feed.tx {
+                let _receivers = tx.send(event.clone());
+            }
             if terminal {
                 feed.terminal = Some(event.clone());
                 feed.answer = assembler.text_so_far().to_owned();

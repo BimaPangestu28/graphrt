@@ -797,9 +797,7 @@ async fn execute(
             state.untrack(id);
         }
     });
-    // Subscribe before the driver starts so a streaming caller sees every event.
     let active = live::spawn(run, assembler, record, Arc::clone(&state.store), on_finish, tracer);
-    let subscription = active.subscribe();
     state.track(Arc::clone(&active));
     match delivery {
         Delivery::Detached => (
@@ -813,6 +811,8 @@ async fn execute(
         )
             .into_response(),
         Delivery::Stream => {
+            // The subscription's backlog covers events emitted before subscribing.
+            let subscription = active.subscribe();
             let guard = AbortOnDrop(active);
             Sse::new(sse_stream(subscription, stream_assembler, guard)).keep_alive(KeepAlive::default()).into_response()
         }
