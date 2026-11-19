@@ -7,6 +7,66 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- Workflow format v1 is frozen, with a JSON Schema (draft 2020-12):
+  `schema/workflow-v1.schema.json`, one `oneOf` branch per node kind keyed on
+  `type`, built from the node catalog. `graphrt schema` prints the schema for
+  the node kinds in the running build, including plugins; the examples carry a
+  `# yaml-language-server: $schema=...` header. Editor setup (VS Code YAML,
+  JetBrains) and the stability promise are in `docs/workflow-format.md`.
+- Validation reports every problem at once: `graphrt validate` and `run` show
+  rustc-style errors with `file:line:column`, a source snippet, the document
+  path (`graph.nodes[1].template`) and "did you mean" suggestions for field
+  names, node types, node ids in edges, parents and selectors, and edge
+  handles. `graphrt validate --format json` prints a machine-readable report.
+  Library: `graphrt_core::validate::validate_text`, `Diagnostic`,
+  `source_map::SourceMap`, `doc_schema::workflow_schema`,
+  `Registry::descriptor_ref`, `Node::branch_handles`, `ConfigError::field`.
+- `x-` keys (document, `graph`, nodes, edges) are free for tools and ignored.
+
+### Fixed
+- `http-request` `timeout: {connect, read, write}` in a document was silently
+  dropped (the loader treated `timeout` as a node policy key), so documents'
+  HTTP timeouts never applied.
+
+### Changed (Breaking)
+- **Unknown fields are errors in v1 documents**: at the document, `graph`,
+  node, edge, `retry`, `on_error` and variable-declaration level, and in node
+  configs whose catalog schema is closed (`additionalProperties: false`; all
+  built-in kinds, as `catalog::schema::object` now produces). Plugin configs
+  with open schemas are unaffected; `schema::open_object` builds one.
+  Required config fields from the catalog schema are enforced (for example a
+  `template-transform` without `template`). The import layout (top-level
+  `workflow`/`app`, `data`-wrapped nodes) stays lenient.
+  *Migration:* run `graphrt validate` and fix what it reports; move tool
+  metadata to `x-` keys.
+- **`version`** must be `"1"` (or `1`) or absent. *Migration:* set
+  `version: "1"`.
+- **Edge handles are checked**: an edge must use a handle the source node can
+  select (`source` for non-branch nodes; case ids and `false` for `if-else`;
+  class ids; action ids; a plugin's fixed handles). Non-branch nodes used to
+  follow edges with any handle. `fail-branch` edges on nodes without that
+  strategy are a warning (never taken). *Migration:* use `source` or the
+  node's handle.
+- **Reserved names**: top-level `imports`, `inputs`, `outputs`, `triggers`,
+  `metadata`, `requires`, `subgraphs`; node-level `disabled`, `cache`,
+  `metadata` (plugin configs cannot use them either).
+- **`human-input`**: the request expiry is `expire_after_ms` (pause data still
+  reports `timeout_ms`). A config `timeout_ms` was always taken as the node's
+  per-attempt timeout and never reached the node. *Migration:* rename it.
+- **Loop variables** are `{name, type, input_type, value}`; `label`,
+  `var_type` and `value_type` (which meant the input source, unlike every
+  other `value_type`) still work as deprecated aliases.
+- Deprecated, still accepted with a warning: `environment_variables`,
+  `conversation_variables`, declaration `value_type`, node `parentId` /
+  `container_id` / `iteration_id` / `loop_id`, `error_strategy` /
+  `default_value`, `retry_config`, edge `sourceHandle` / `source_handle`.
+- API: `NodeDoc` has a `strict` field; `ConfigError` has a `field` field;
+  `DocumentError::Field`; `GraphError::{MissingNode, MissingParent,
+  UnknownReference}` carry a `suggestion`, new `GraphError::{InvalidField,
+  UnknownHandle}`. `graphrt validate` takes `--format`; `CliError` has
+  `preformatted`.
+
 ### Performance
 - Engine: fewer allocations and less work per node execution. Node task
   futures are stored unboxed and are less than half their former size (584 ->
