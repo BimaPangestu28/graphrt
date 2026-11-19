@@ -369,7 +369,7 @@ fn check_node(doc: &NodeDoc, path: &DocPath, registry: &Registry, out: &mut Vec<
             Diagnostic::error("unknown-node-type", path.key("type"), format!("unknown node type `{}`", doc.kind))
                 .with_node(&doc.id)
                 .with_suggestion(suggest(&doc.kind, kinds))
-                .with_help("node types come from built-in features and plugins; `graphrt nodes` lists this build's"),
+                .with_help("node types come from built-in features and plugins"),
         );
         return None;
     }
@@ -734,6 +734,8 @@ fn locate_reference(config: &serde_json::Map<String, serde_json::Value>, namespa
                     && items.iter().all(serde_json::Value::is_string)
                     && items.len() >= 2;
                 if is_selector {
+                    // Point at the namespace part, the one that is wrong.
+                    path.push(PathSegment::Index(0));
                     return true;
                 }
                 for (ix, item) in items.iter().enumerate() {
@@ -793,7 +795,7 @@ mod tests {
         let config = serde_json::json!({"variables": [{"variable": "x", "value_selector": ["strat", "x"]}], "t": "{{#llm.text#}}"});
         let config = config.as_object().cloned().unwrap_or_default();
         let path = locate_reference(&config, "strat").unwrap_or_default();
-        assert_eq!(join_segments(&DocPath::root(), &path).to_string(), "variables[0].value_selector");
+        assert_eq!(join_segments(&DocPath::root(), &path).to_string(), "variables[0].value_selector[0]");
         let path = locate_reference(&config, "llm").unwrap_or_default();
         assert_eq!(join_segments(&DocPath::root(), &path).to_string(), "t");
     }

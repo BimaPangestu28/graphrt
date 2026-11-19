@@ -75,7 +75,7 @@ fn collects_every_error() {
     let kind = found.iter().find(|d| d.code == "unknown-node-type").unwrap();
     assert_eq!(kind.suggestion.as_deref(), Some("end"));
     let reference = found.iter().find(|d| d.code == "unknown-reference").unwrap();
-    assert_eq!(reference.path.to_string(), "graph.nodes[1].variables[0].value_selector");
+    assert_eq!(reference.path.to_string(), "graph.nodes[1].variables[0].value_selector[0]");
     assert_eq!(reference.suggestion.as_deref(), Some("start"));
     // Sorted by position.
     let lines: Vec<u32> = found.iter().filter_map(|d| d.span.map(|s| s.line)).collect();
