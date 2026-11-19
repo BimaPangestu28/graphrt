@@ -98,6 +98,12 @@ impl Node for IfElseNode {
     fn inputs(&self) -> Vec<Selector> {
         self.cases.iter().flat_map(|c| c.conditions.iter().flat_map(Condition::selectors)).collect()
     }
+
+    fn branch_handles(&self) -> Option<Vec<String>> {
+        let mut handles: Vec<String> = self.cases.iter().map(|c| c.case_id.clone()).collect();
+        handles.push(ELSE_HANDLE.to_owned());
+        Some(handles)
+    }
 }
 
 #[cfg(test)]

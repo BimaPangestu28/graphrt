@@ -464,7 +464,10 @@ async fn wedged_plugin_is_killed_and_restarted() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn undeclared_branch_handle_is_an_error() {
     let setup = load(&[fixture("testkit")]);
-    let events = collect(&engine(&setup, single_node("testkit.badbranch", json!({}))), RunInput::new()).await;
+    // The edge must use a declared handle: graph building rejects undeclared ones.
+    let mut doc = single_node("testkit.badbranch", json!({}));
+    doc["graph"]["edges"][1]["handle"] = json!("yes");
+    let events = collect(&engine(&setup, doc), RunInput::new()).await;
     assert_eq!(error_type(&events), "plugin_protocol");
 }
 

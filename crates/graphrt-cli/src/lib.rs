@@ -4,6 +4,7 @@
 pub mod args;
 pub mod bundle_cmd;
 pub mod catalog;
+pub mod diagnostics;
 pub mod error;
 pub mod extensions;
 pub mod files;
@@ -81,7 +82,8 @@ pub fn enabled_features() -> Vec<&'static str> {
 /// Execute a parsed command and return the process exit code.
 pub fn execute(cli: Cli) -> Result<u8, CliError> {
     match cli.command {
-        Command::Validate(arg) => inspect::validate(&arg.workflow, &arg.plugins.options()),
+        Command::Validate(arg) => inspect::validate(&arg.workflow, arg.format, &arg.plugins.options()),
+        Command::Schema(args) => catalog::schema(&args),
         Command::Inspect(arg) => inspect::inspect(&arg.workflow, &arg.plugins.options()),
         #[cfg(any(feature = "plugins", feature = "wasm"))]
         Command::Plugin(args) => plugin::plugin(args),

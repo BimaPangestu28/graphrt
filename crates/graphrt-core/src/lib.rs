@@ -14,6 +14,7 @@
 
 pub mod catalog;
 pub mod condition;
+pub mod doc_schema;
 pub mod dsl;
 pub mod engine;
 pub mod event;
@@ -25,10 +26,12 @@ pub mod pool;
 pub mod redact;
 pub mod response;
 pub mod snapshot;
+pub mod source_map;
 pub mod store;
 pub mod template;
 pub mod tool;
 pub mod tool_node;
+pub mod validate;
 pub mod value;
 
 pub use dsl::Workflow;

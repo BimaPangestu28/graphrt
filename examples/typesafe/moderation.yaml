@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
 # Comment moderation with one System One request: three typed questions answered
 # in parallel, then routing on the `action` choice (or human review when unsure).
 #

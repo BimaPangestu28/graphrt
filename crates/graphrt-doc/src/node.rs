@@ -241,6 +241,7 @@ pub fn descriptor() -> NodeDescriptor {
         )
         .schema(serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "required": ["variable_selector"],
             "properties": {
                 "variable_selector": {

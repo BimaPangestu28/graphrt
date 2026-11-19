@@ -258,6 +258,7 @@ pub fn descriptor() -> NodeDescriptor {
         .source("graphrt-rag")
         .schema(serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "required": ["query_variable_selector", "dataset_ids"],
             "properties": {
                 "query_variable_selector": {

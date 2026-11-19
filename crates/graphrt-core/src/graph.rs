@@ -78,10 +78,10 @@ pub enum GraphError {
     DuplicateNode(String),
     #[error("duplicate edge id `{0}`")]
     DuplicateEdge(String),
-    #[error("edge `{edge}` references unknown node `{node}`")]
-    MissingNode { edge: String, node: String },
-    #[error("node `{node}` references unknown parent `{parent}`")]
-    MissingParent { node: String, parent: String },
+    #[error("edge `{edge}` references unknown node `{node}`{}", did_you_mean(.suggestion))]
+    MissingNode { edge: String, node: String, suggestion: Option<String> },
+    #[error("node `{node}` references unknown parent `{parent}`{}", did_you_mean(.suggestion))]
+    MissingParent { node: String, parent: String, suggestion: Option<String> },
     #[error("node `{0}` has a parent that is not a container node")]
     ParentNotContainer(String),
     #[error("container nesting cycle at node `{0}`")]
@@ -100,14 +100,26 @@ pub enum GraphError {
     Unserializable(String),
     #[error("invalid node id `{id}`: {reason}")]
     InvalidNodeId { id: String, reason: String },
-    #[error("node `{node}` references `{selector}`, but no node or variable namespace `{namespace}` exists")]
-    UnknownReference { node: String, selector: String, namespace: String },
+    #[error(
+        "node `{node}` references `{selector}`, but no node or variable namespace `{namespace}` exists{}",
+        did_you_mean(.suggestion)
+    )]
+    UnknownReference { node: String, selector: String, namespace: String, suggestion: Option<String> },
+    /// A config field the node kind's catalog schema does not allow, or a
+    /// required one that is missing (strict nodes only).
+    #[error("node `{node}`: {message}")]
+    InvalidField { node: String, path: String, message: String },
+    /// An edge whose handle the source node never selects.
+    #[error("edge `{edge}`: {message}")]
+    UnknownHandle { edge: String, message: String },
 }
 
-/// Namespaces that are not node ids.
-const RESERVED_NAMESPACES: &[&str] = &[crate::pool::SYS, crate::pool::ENV, crate::pool::CONVERSATION];
+use crate::validate::did_you_mean;
 
-fn validate_node_id(id: &str) -> Result<(), GraphError> {
+/// Namespaces that are not node ids.
+pub(crate) const RESERVED_NAMESPACES: &[&str] = &[crate::pool::SYS, crate::pool::ENV, crate::pool::CONVERSATION];
+
+pub(crate) fn validate_node_id(id: &str) -> Result<(), GraphError> {
     let reason = if id.is_empty() {
         Some("must not be empty")
     } else if RESERVED_NAMESPACES.contains(&id) {
@@ -170,14 +182,17 @@ impl Graph {
         let mut nodes = Vec::with_capacity(docs.len());
         for doc in docs {
             let parent = match &doc.parent {
-                Some(p) => Some(
-                    *index
-                        .get(p.as_str())
-                        .ok_or_else(|| GraphError::MissingParent { node: doc.id.clone(), parent: p.clone() })?,
-                ),
+                Some(p) => Some(*index.get(p.as_str()).ok_or_else(|| GraphError::MissingParent {
+                    node: doc.id.clone(),
+                    parent: p.clone(),
+                    suggestion: crate::validate::suggest(p, docs.iter().map(|d| d.id.as_str())),
+                })?),
                 None => None,
             };
             let node = registry.build(doc)?;
+            if doc.strict {
+                check_fields(doc, registry)?;
+            }
             nodes.push(GraphNode {
                 id: Arc::from(doc.id.as_str()),
                 kind: Arc::from(doc.kind.as_str()),
@@ -209,6 +224,7 @@ impl Graph {
 
         // Edges.
         let mut edges = Vec::with_capacity(workflow.graph.edges.len());
+        let mut dead_edges = Vec::new();
         let mut edge_ids = HashSet::new();
         let mut outgoing = vec![Vec::new(); nodes.len()];
         let mut incoming = vec![Vec::new(); nodes.len()];
@@ -218,10 +234,11 @@ impl Graph {
                 return Err(GraphError::DuplicateEdge(id.to_string()));
             }
             let lookup = |n: &str| {
-                index
-                    .get(n)
-                    .copied()
-                    .ok_or_else(|| GraphError::MissingNode { edge: id.to_string(), node: n.to_owned() })
+                index.get(n).copied().ok_or_else(|| GraphError::MissingNode {
+                    edge: id.to_string(),
+                    node: n.to_owned(),
+                    suggestion: crate::validate::suggest(n, docs.iter().map(|d| d.id.as_str())),
+                })
             };
             let source = lookup(&e.source)?;
             let target = lookup(&e.target)?;
@@ -233,13 +250,25 @@ impl Graph {
                     target: e.target.clone(),
                 });
             }
+            let handle = e.handle.as_deref().filter(|h| !h.is_empty()).unwrap_or(SOURCE_HANDLE);
+            if let Some(n) = nodes.get(source) {
+                let descriptor = registry.descriptor_ref(&n.doc.kind);
+                if let Some(message) = crate::validate::dead_fail_branch(&n.doc, handle) {
+                    dead_edges.push(message);
+                }
+                if let Some(allowed) = crate::validate::allowed_handles(n.node.as_ref(), descriptor) {
+                    if !allowed.iter().any(|h| h == handle) {
+                        let mut message = crate::validate::handle_message(&n.doc, handle, &allowed);
+                        message.push_str(&did_you_mean(&crate::validate::suggest(
+                            handle,
+                            allowed.iter().map(String::as_str),
+                        )));
+                        return Err(GraphError::UnknownHandle { edge: id.to_string(), message });
+                    }
+                }
+            }
             let ex = edges.len();
-            edges.push(GraphEdge {
-                id,
-                source,
-                target,
-                handle: Arc::from(e.handle.as_deref().filter(|h| !h.is_empty()).unwrap_or(SOURCE_HANDLE)),
-            });
+            edges.push(GraphEdge { id, source, target, handle: Arc::from(handle) });
             if let Some(o) = outgoing.get_mut(source) {
                 o.push(ex);
             }
@@ -260,7 +289,7 @@ impl Graph {
             }
         }
 
-        let mut warnings = Vec::new();
+        let mut warnings = dead_edges;
         let mut scopes = HashMap::new();
         for (owner, scope_nodes) in members {
             let scope_name =
@@ -398,10 +427,12 @@ fn validate_references(
                 continue;
             }
             let Some(&target) = index.get(namespace) else {
+                let candidates = nodes.iter().map(|n| &*n.id).chain(RESERVED_NAMESPACES.iter().copied());
                 return Err(GraphError::UnknownReference {
                     node: n.id.to_string(),
                     selector: selector.to_string(),
                     namespace: namespace.to_owned(),
+                    suggestion: crate::validate::suggest(namespace, candidates),
                 });
             };
             if !is_visible(nodes, ix, target) {
@@ -413,6 +444,21 @@ fn validate_references(
         }
     }
     Ok(())
+}
+
+/// Reject config fields the kind's catalog schema does not allow (closed
+/// schemas only) and missing required ones.
+fn check_fields(doc: &NodeDoc, registry: &Registry) -> Result<(), GraphError> {
+    let Some(descriptor) = registry.descriptor_ref(&doc.kind) else { return Ok(()) };
+    let base = crate::source_map::DocPath::root();
+    match crate::validate::config_diagnostics(doc, descriptor, &base).into_iter().find(|d| d.is_error()) {
+        None => Ok(()),
+        Some(d) => Err(GraphError::InvalidField {
+            node: doc.id.clone(),
+            path: d.path.to_string(),
+            message: format!("{}{}", d.message, did_you_mean(&d.suggestion)),
+        }),
+    }
 }
 
 /// Whether node `from` can read the outputs of node `target`.

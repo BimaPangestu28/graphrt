@@ -4,7 +4,7 @@ use std::io::Write;
 
 use graphrt_core::catalog::{Handles, NodeDescriptor};
 
-use crate::args::NodesArgs;
+use crate::args::{NodesArgs, SchemaArgs};
 use crate::error::{CliError, EXIT_OK};
 use crate::extensions::Extensions;
 use crate::setup;
@@ -12,6 +12,28 @@ use crate::setup;
 /// Descriptors of every built-in node kind compiled into this binary, sorted by kind.
 pub fn catalog() -> Vec<NodeDescriptor> {
     setup::builtin_registry().descriptors()
+}
+
+/// The workflow document schema for the built-in node kinds (no plugins): the
+/// content of `schema/workflow-v1.schema.json` for the default build.
+pub fn builtin_schema() -> serde_json::Value {
+    graphrt_core::doc_schema::workflow_schema(&catalog())
+}
+
+/// Pretty JSON text of a schema, with a trailing newline.
+pub fn schema_text(schema: &serde_json::Value) -> Result<String, CliError> {
+    let mut text = serde_json::to_string_pretty(schema).map_err(|e| CliError::failed(e.to_string()))?;
+    text.push('\n');
+    Ok(text)
+}
+
+/// Execute `graphrt schema`.
+pub fn schema(args: &SchemaArgs) -> Result<u8, CliError> {
+    let extensions = Extensions::load(&args.plugins.options())?;
+    let schema = graphrt_core::doc_schema::workflow_schema(&extensions.registry.descriptors());
+    let text = schema_text(&schema)?;
+    std::io::stdout().lock().write_all(text.as_bytes()).map_err(|e| CliError::failed(e.to_string()))?;
+    Ok(EXIT_OK)
 }
 
 /// Execute `graphrt nodes`.

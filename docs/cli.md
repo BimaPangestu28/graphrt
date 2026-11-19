@@ -2,7 +2,8 @@
 
 ```
 graphrt run <workflow>       Run a workflow and stream its output
-graphrt validate <workflow>  Parse and validate without running
+graphrt validate <workflow>  Parse and validate without running (every error, with positions)
+graphrt schema               JSON Schema of workflow documents for this build's node kinds
 graphrt inspect <workflow>   Show nodes, inputs, env variables and missing node kinds
 graphrt nodes [--json] [--kind K]  The node catalog: built-ins plus plugins (with config JSON Schemas)
 graphrt serve <file|dir>     HTTP + SSE API
@@ -133,6 +134,65 @@ with its `type` as the event name (`run_started`, `node_started`,
 `{"node_id": "answer", "text": "...", "is_final": false}`.
 
 Closing the connection cancels the run.
+
+## `graphrt validate`
+
+Checks a workflow without running it and reports every problem at once, not
+just the first. `graphrt run` performs the same checks before running.
+
+```
+error[unknown-field]: unknown field `templat` for node type `template-transform`
+  --> hello.yaml:16:7
+   |
+16 |       templat: "Hello, {{ name }}"
+   |       ^^^^^^^ did you mean `template`?
+   |
+   = at: graph.nodes[1].templat
+```
+
+Each finding has a code (`unknown-field`, `missing-field`, `unknown-node`,
+`unknown-node-type`, `unknown-reference`, `unknown-handle`, `deprecated`, ...),
+the document path, the position and, when a known name is close, a
+suggestion. Warnings (deprecated spellings, unreachable nodes, dead edges) do
+not fail validation.
+
+`--format json` prints one report on stdout, for editors and builder apps:
+
+```json
+{
+  "file": "hello.yaml",
+  "valid": false,
+  "errors": 1,
+  "warnings": 0,
+  "diagnostics": [
+    {
+      "severity": "error",
+      "code": "unknown-field",
+      "message": "unknown field `templat` for node type `template-transform`",
+      "path": "graph.nodes[1].templat",
+      "line": 16,
+      "column": 7,
+      "length": 7,
+      "node": "greet",
+      "suggestion": "template"
+    }
+  ]
+}
+```
+
+`line`, `column` (1-based, in characters) and `length` are absent when the
+position is unknown; `nodes` and `edges` counts are added when the document
+is valid. The exit code is 2 when there are errors.
+
+## `graphrt schema`
+
+Prints the JSON Schema (draft 2020-12) of workflow documents for the node
+kinds in this binary, including plugins found in the plugin search paths
+(`--plugins`, `--no-default-plugins`). The repository ships the schema of the
+default build as `schema/workflow-v1.schema.json`
+(`graphrt schema --no-default-plugins`); point your editor at a generated
+file to get completion for your plugins' node kinds too. See
+[editor setup](workflow-format.md#editor-setup).
 
 ## `graphrt nodes`
 

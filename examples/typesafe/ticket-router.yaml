@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
 # Ticket routing with a confidence cascade:
 #   1. Jev (TypeSafe System One) classifies the ticket in ~100 ms for a fraction of a cent.
 #   2. When Jev is not confident enough, the ticket goes to a chat-model classifier instead.

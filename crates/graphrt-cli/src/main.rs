@@ -20,7 +20,11 @@ fn main() -> ExitCode {
     match result {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            eprintln!("error: {error}");
+            if error.preformatted {
+                eprint!("{error}");
+            } else {
+                eprintln!("error: {error}");
+            }
             error.exit_code()
         }
     }

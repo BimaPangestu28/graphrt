@@ -201,10 +201,34 @@ pub mod schema {
     /// Draft used by every config schema.
     pub const DRAFT: &str = "https://json-schema.org/draft/2020-12/schema";
 
-    /// Top-level config schema with `properties` and `required`. Additional
-    /// properties are allowed because documents may carry builder-only metadata.
+    /// Top-level config schema with `properties` and `required`. The schema is
+    /// closed (`additionalProperties: false`): workflow validation reports any
+    /// other key as an unknown field. Builder metadata belongs in `x-` keys,
+    /// which are stripped before configs are checked. Use [`open_object`] for
+    /// configs that legitimately take arbitrary keys.
     pub fn object(properties: Value, required: &[&str]) -> Value {
+        json!({
+            "$schema": DRAFT,
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": false
+        })
+    }
+
+    /// Like [`object`], but other keys are allowed and not reported.
+    pub fn open_object(properties: Value, required: &[&str]) -> Value {
         json!({ "$schema": DRAFT, "type": "object", "properties": properties, "required": required })
+    }
+
+    /// A deprecated alias of `replacement`, accepted with a warning.
+    pub fn deprecated_alias(schema: Value, replacement: &str) -> Value {
+        let mut schema = schema;
+        if let Value::Object(map) = &mut schema {
+            map.insert("deprecated".into(), Value::Bool(true));
+            map.insert("description".into(), Value::String(format!("Deprecated alias of `{replacement}`")));
+        }
+        schema
     }
 
     /// Nested object schema (no `$schema` key).
@@ -299,11 +323,20 @@ pub mod schema {
     pub fn variable_bindings() -> Value {
         json!({
             "type": "array",
-            "items": nested(
+            "items": closed(nested(
                 json!({ "variable": { "type": "string", "minLength": 1 }, "value_selector": selector() }),
                 &["variable", "value_selector"]
-            )
+            ))
         })
+    }
+
+    /// `schema` with `additionalProperties: false`.
+    pub fn closed(schema: Value) -> Value {
+        let mut schema = schema;
+        if let Value::Object(map) = &mut schema {
+            map.insert("additionalProperties".into(), Value::Bool(false));
+        }
+        schema
     }
 
     /// Model reference used by model-backed nodes.

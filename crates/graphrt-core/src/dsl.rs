@@ -2,7 +2,9 @@
 //!
 //! A document is plain data (JSON or YAML). It is turned into an executable
 //! [`crate::graph::Graph`] by [`crate::graph::Graph::build`] using a
-//! [`crate::node::Registry`].
+//! [`crate::node::Registry`]. The format is frozen as version `1`; see
+//! `docs/workflow-format.md` for the stability promise and
+//! `schema/workflow-v1.schema.json` for the JSON Schema.
 //!
 //! ```yaml
 //! version: "1"
@@ -26,14 +28,22 @@
 //!     - { source: greet, target: end }
 //! ```
 //!
-//! For interoperability the loader also accepts the common "node with a `data`
-//! object" layout (`{id, parentId, data: {type, title, ...}}`), camelCase edge
-//! handles (`sourceHandle`) and documents wrapped in a top-level `workflow` key.
+//! v1 documents are strict: unknown fields are errors (keys starting with
+//! `x-` are free for tools and ignored). For interoperability the loader also
+//! accepts an *import layout*, checked leniently: nodes in the "node with a
+//! `data` object" shape (`{id, parentId, data: {type, title, ...}}`), camelCase
+//! edge handles (`sourceHandle`) and documents wrapped in a top-level
+//! `workflow` key.
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+use crate::source_map::DocPath;
+use crate::validate::{Diagnostic, suggest};
 use crate::value::{Value, ValueType};
+
+/// The document format version this build reads and writes.
+pub const FORMAT_VERSION: &str = "1";
 
 /// Error raised while decoding a workflow document.
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +57,9 @@ pub enum DocumentError {
     Yaml(String),
     #[error("invalid node `{id}`: {message}")]
     Node { id: String, message: String },
+    /// A problem outside any node, at a document path such as `graph.edges[0].source`.
+    #[error("{path}: {message}")]
+    Field { path: String, message: String },
 }
 
 /// A complete workflow document.
@@ -102,6 +115,10 @@ pub struct NodeDoc {
     pub policy: NodePolicy,
     /// Remaining node-specific configuration.
     pub config: serde_json::Map<String, serde_json::Value>,
+    /// Whether unknown config fields are errors (judged by the node kind's
+    /// catalog schema). True for v1 documents and programmatic nodes; false for
+    /// nodes read from the import layout, which carry foreign builder fields.
+    pub strict: bool,
 }
 
 impl NodeDoc {
@@ -111,7 +128,15 @@ impl NodeDoc {
             serde_json::Value::Object(map) => map,
             _ => serde_json::Map::new(),
         };
-        Self { id: id.into(), kind: kind.into(), title: None, parent: None, policy: NodePolicy::default(), config }
+        Self {
+            id: id.into(),
+            kind: kind.into(),
+            title: None,
+            parent: None,
+            policy: NodePolicy::default(),
+            config,
+            strict: true,
+        }
     }
 
     /// Set the owning container.
@@ -128,14 +153,27 @@ impl NodeDoc {
 
     /// Deserialize `config` into a node-specific config struct.
     pub fn parse_config<T: serde::de::DeserializeOwned>(&self) -> Result<T, DocumentError> {
-        serde_json::from_value(serde_json::Value::Object(self.config.clone()))
-            .map_err(|e| DocumentError::Node { id: self.id.clone(), message: e.to_string() })
+        parse_config_at(&self.config)
+            .map_err(|(path, e)| DocumentError::Node { id: self.id.clone(), message: with_field(&path, &e) })
     }
 
     /// Human-readable label.
     pub fn label(&self) -> &str {
         self.title.as_deref().unwrap_or(&self.id)
     }
+}
+
+/// Deserialize a config map, reporting the path of the offending field
+/// (`variables[0].value_selector`, or `.` for the config itself).
+pub(crate) fn parse_config_at<T: serde::de::DeserializeOwned>(
+    config: &serde_json::Map<String, serde_json::Value>,
+) -> Result<T, (String, serde_json::Error)> {
+    let value = serde_json::Value::Object(config.clone());
+    serde_path_to_error::deserialize(value).map_err(|e| (e.path().to_string(), e.into_inner()))
+}
+
+fn with_field(path: &str, error: &serde_json::Error) -> String {
+    if path == "." { error.to_string() } else { format!("{path}: {error}") }
 }
 
 /// Failure handling, retries and timeouts for one node.
@@ -256,45 +294,281 @@ impl Workflow {
         }
     }
 
-    /// Build from an already-decoded JSON value.
+    /// Build from an already-decoded JSON value. Fails with the first error;
+    /// [`crate::validate::validate_text`] reports all of them.
     pub fn from_value(raw: serde_json::Value) -> Result<Self, DocumentError> {
-        let mut root = match raw {
-            serde_json::Value::Object(m) => m,
-            _ => return Err(node_err("<document>", "document must be an object")),
-        };
-        // Documents may nest everything under `workflow`.
-        if let Some(serde_json::Value::Object(inner)) = root.remove("workflow") {
-            for (k, v) in inner {
-                root.entry(k).or_insert(v);
+        let decoded = decode(raw);
+        match decoded.diagnostics.into_iter().find(Diagnostic::is_error) {
+            None => Ok(decoded.workflow),
+            Some(d) => {
+                let message = match &d.suggestion {
+                    Some(s) => format!("{}; did you mean `{s}`?", d.message),
+                    None => d.message,
+                };
+                Err(match d.node {
+                    Some(id) => DocumentError::Node { id, message },
+                    None => DocumentError::Field { path: d.path.to_string(), message },
+                })
             }
         }
-        let app = root.get("app").and_then(|a| a.as_object());
-        let name = str_field(&root, "name").or_else(|| app.and_then(|a| str_field(a, "name")));
-        let description = str_field(&root, "description").or_else(|| app.and_then(|a| str_field(a, "description")));
-        let version = str_field(&root, "version").unwrap_or_else(|| "1".to_owned());
+    }
+}
 
-        let env = decls(root.remove("env").or_else(|| root.remove("environment_variables")))?;
-        let conversation = decls(root.remove("conversation").or_else(|| root.remove("conversation_variables")))?;
+/// A decoded document plus where each node and edge came from and every
+/// finding made while decoding.
+pub(crate) struct Decoded {
+    pub workflow: Workflow,
+    /// Source path of each node in `workflow.graph.nodes`.
+    pub node_paths: Vec<DocPath>,
+    /// Source path of each edge in `workflow.graph.edges`.
+    pub edge_paths: Vec<DocPath>,
+    pub diagnostics: Vec<Diagnostic>,
+}
 
-        let graph = match root.remove("graph") {
-            Some(serde_json::Value::Object(g)) => g,
-            _ => return Err(node_err("<document>", "missing `graph` object")),
-        };
-        let nodes = match graph.get("nodes") {
-            Some(serde_json::Value::Array(items)) => items.clone(),
-            _ => Vec::new(),
-        };
-        let edges = match graph.get("edges") {
-            Some(e) => serde_json::from_value::<Vec<EdgeDoc>>(e.clone())?,
-            None => Vec::new(),
-        };
-        let mut docs = Vec::with_capacity(nodes.len());
-        for raw in nodes {
-            if let Some(doc) = NodeDoc::from_raw(raw)? {
-                docs.push(doc);
+/// Which keys an object may have.
+struct KeyRules<'a> {
+    what: &'a str,
+    known: &'a [&'a str],
+    /// `(old, new)`: accepted with a warning.
+    deprecated: &'a [(&'a str, &'a str)],
+    /// Reserved for future versions of the format.
+    reserved: &'a [&'a str],
+}
+
+const TOP_LEVEL: KeyRules<'static> = KeyRules {
+    what: "the document",
+    known: &["version", "name", "description", "env", "conversation", "graph"],
+    deprecated: &[("environment_variables", "env"), ("conversation_variables", "conversation")],
+    reserved: &["imports", "inputs", "outputs", "triggers", "metadata", "requires", "subgraphs"],
+};
+
+const GRAPH_KEYS: KeyRules<'static> =
+    KeyRules { what: "`graph`", known: &["nodes", "edges"], deprecated: &[], reserved: &[] };
+
+/// Node-level keys other than `id`/`type`/`title` and the node config.
+const NODE_KEYS: KeyRules<'static> = KeyRules {
+    what: "a node",
+    known: &[],
+    deprecated: &[
+        ("parentId", "parent"),
+        ("container_id", "parent"),
+        ("iteration_id", "parent"),
+        ("loop_id", "parent"),
+        ("error_strategy", "on_error"),
+        ("default_value", "on_error"),
+        ("retry_config", "retry"),
+    ],
+    reserved: &["disabled", "cache", "metadata"],
+};
+
+/// Fields every node has, whatever its type.
+pub const COMMON_NODE_FIELDS: &[&str] = &["id", "type", "title", "parent", "retry", "timeout_ms", "on_error"];
+
+/// Node fields reserved for future versions; node configs may not use them.
+pub const RESERVED_NODE_FIELDS: &[&str] = NODE_KEYS.reserved;
+
+const EDGE_KEYS: KeyRules<'static> = KeyRules {
+    what: "an edge",
+    known: &["id", "source", "target", "handle"],
+    deprecated: &[("sourceHandle", "handle"), ("source_handle", "handle")],
+    reserved: &[],
+};
+
+const DECL_KEYS: KeyRules<'static> = KeyRules {
+    what: "a variable declaration",
+    known: &["name", "type", "value", "description"],
+    deprecated: &[("value_type", "type")],
+    reserved: &[],
+};
+
+const RETRY_KEYS: KeyRules<'static> =
+    KeyRules { what: "`retry`", known: &["max_retries", "interval_ms", "backoff"], deprecated: &[], reserved: &[] };
+
+const ON_ERROR_KEYS: KeyRules<'static> =
+    KeyRules { what: "`on_error`", known: &["strategy", "values"], deprecated: &[], reserved: &[] };
+
+const STRATEGIES: &[&str] = &["fail", "fail-branch", "default-value"];
+
+/// Keys written by visual builders. Ignored (new tools should use `x-` keys).
+const BUILDER_KEYS: &[&str] = &[
+    "desc",
+    "selected",
+    "position",
+    "positionAbsolute",
+    "width",
+    "height",
+    "sourcePosition",
+    "targetPosition",
+    "zIndex",
+    "isInIteration",
+    "isInLoop",
+];
+
+/// Whether `key` is an extension key (`x-...`), free for tools and ignored.
+pub fn is_extension_key(key: &str) -> bool {
+    key.starts_with("x-")
+}
+
+/// Check the keys of a strict object. With `unknown_is_error` false only
+/// deprecated and reserved keys are reported (for objects that mix fixed
+/// fields with open config).
+fn check_keys(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    path: &DocPath,
+    rules: &KeyRules<'_>,
+    unknown_is_error: bool,
+    out: &mut Vec<Diagnostic>,
+) {
+    for key in obj.keys() {
+        let key_path = path.key(key);
+        if is_extension_key(key) || rules.known.contains(&key.as_str()) {
+            continue;
+        }
+        if let Some((_, new)) = rules.deprecated.iter().find(|(old, _)| old == key) {
+            out.push(
+                Diagnostic::warning("deprecated", key_path, format!("`{key}` in {} is deprecated", rules.what))
+                    .at_key()
+                    .with_suggestion(Some((*new).to_owned())),
+            );
+        } else if rules.reserved.contains(&key.as_str()) {
+            out.push(
+                Diagnostic::error(
+                    "reserved-field",
+                    key_path,
+                    format!("`{key}` in {} is reserved for a future version of the format", rules.what),
+                )
+                .at_key()
+                .with_help("keys starting with `x-` are free for tools and ignored"),
+            );
+        } else if unknown_is_error {
+            out.push(
+                Diagnostic::error("unknown-field", key_path, format!("unknown field `{key}` in {}", rules.what))
+                    .at_key()
+                    .with_suggestion(suggest(key, rules.known.iter().copied()))
+                    .with_help(format!("expected one of: {}", rules.known.join(", "))),
+            );
+        }
+    }
+}
+
+/// Decode a raw document, collecting every finding instead of stopping at the first.
+pub(crate) fn decode(raw: serde_json::Value) -> Decoded {
+    let mut out = Vec::new();
+    let mut decoded = Decoded {
+        workflow: Workflow { version: FORMAT_VERSION.to_owned(), ..Workflow::default() },
+        node_paths: Vec::new(),
+        edge_paths: Vec::new(),
+        diagnostics: Vec::new(),
+    };
+    let serde_json::Value::Object(mut root) = raw else {
+        out.push(Diagnostic::error("invalid-value", DocPath::root(), "a workflow document must be an object"));
+        decoded.diagnostics = out;
+        return decoded;
+    };
+    // Import layout: everything nested under `workflow`, app metadata under `app`.
+    let import = matches!(root.get("workflow"), Some(serde_json::Value::Object(_))) || root.contains_key("app");
+    let strict = !import;
+    let mut inner_keys = std::collections::HashSet::new();
+    if let Some(serde_json::Value::Object(inner)) = root.remove("workflow") {
+        for (k, v) in inner {
+            if !root.contains_key(&k) {
+                inner_keys.insert(k.clone());
+                root.insert(k, v);
             }
         }
-        Ok(Self { version, name, description, env, conversation, graph: GraphDoc { nodes: docs, edges } })
+    }
+    let at = |key: &str| {
+        if inner_keys.contains(key) { DocPath::root().key("workflow").key(key) } else { DocPath::root().key(key) }
+    };
+    if strict {
+        check_keys(&root, &DocPath::root(), &TOP_LEVEL, true, &mut out);
+    }
+
+    let wf = &mut decoded.workflow;
+    if strict {
+        wf.version = check_version(root.get("version"), &at("version"), &mut out);
+    } else if let Some(v) = str_field(&root, "version") {
+        wf.version = v;
+    }
+    let app = root.get("app").and_then(|a| a.as_object());
+    wf.name =
+        text_field(&root, "name", &at("name"), strict, &mut out).or_else(|| app.and_then(|a| str_field(a, "name")));
+    wf.description = text_field(&root, "description", &at("description"), strict, &mut out)
+        .or_else(|| app.and_then(|a| str_field(a, "description")));
+
+    for (field, legacy) in [("env", "environment_variables"), ("conversation", "conversation_variables")] {
+        let (key, raw) = match root.remove(field) {
+            Some(v) => (field, Some(v)),
+            None => (legacy, root.remove(legacy)),
+        };
+        let decls = decode_decls(raw, &at(key), strict, &mut out);
+        if field == "env" {
+            wf.env = decls;
+        } else {
+            wf.conversation = decls;
+        }
+    }
+
+    let graph_path = at("graph");
+    let graph = match root.remove("graph") {
+        Some(serde_json::Value::Object(g)) => g,
+        Some(_) => {
+            out.push(Diagnostic::error(
+                "invalid-value",
+                graph_path,
+                "`graph` must be an object with `nodes` and `edges`",
+            ));
+            decoded.diagnostics = out;
+            return decoded;
+        }
+        None => {
+            out.push(
+                Diagnostic::error("missing-field", DocPath::root(), "missing `graph`")
+                    .with_help("a workflow needs `graph: {nodes: [...], edges: [...]}`"),
+            );
+            decoded.diagnostics = out;
+            return decoded;
+        }
+    };
+    if strict {
+        check_keys(&graph, &graph_path, &GRAPH_KEYS, true, &mut out);
+    }
+    for (i, raw) in list_field(&graph, "nodes", &graph_path, &mut out).into_iter().enumerate() {
+        let path = graph_path.key("nodes").index(i);
+        if let Some(doc) = NodeDoc::decode(raw, &path, strict, &mut out) {
+            wf.graph.nodes.push(doc);
+            decoded.node_paths.push(path);
+        }
+    }
+    for (i, raw) in list_field(&graph, "edges", &graph_path, &mut out).into_iter().enumerate() {
+        let path = graph_path.key("edges").index(i);
+        if let Some(edge) = decode_edge(raw, &path, strict, &mut out) {
+            wf.graph.edges.push(edge);
+            decoded.edge_paths.push(path);
+        }
+    }
+    decoded.diagnostics = out;
+    decoded
+}
+
+/// `version` of a v1 document: absent (defaults to `"1"`), `"1"` or `1`.
+fn check_version(raw: Option<&serde_json::Value>, path: &DocPath, out: &mut Vec<Diagnostic>) -> String {
+    match raw {
+        None => FORMAT_VERSION.to_owned(),
+        Some(serde_json::Value::String(s)) if s == FORMAT_VERSION => s.clone(),
+        Some(serde_json::Value::Number(n)) if n.as_u64() == Some(1) => FORMAT_VERSION.to_owned(),
+        Some(other) => {
+            let shown = other.as_str().map_or_else(|| other.to_string(), str::to_owned);
+            out.push(
+                Diagnostic::error(
+                    "unsupported-version",
+                    path.clone(),
+                    format!("unsupported document version `{shown}`; this build reads version \"{FORMAT_VERSION}\""),
+                )
+                .with_help("newer documents need a newer graphrt"),
+            );
+            shown
+        }
     }
 }
 
@@ -302,32 +576,168 @@ fn str_field(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Opt
     map.get(key).and_then(|v| v.as_str()).map(str::to_owned)
 }
 
-fn node_err(id: &str, message: &str) -> DocumentError {
-    DocumentError::Node { id: id.to_owned(), message: message.to_owned() }
+/// An optional string field; a non-string is an error in strict documents.
+fn text_field(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    path: &DocPath,
+    strict: bool,
+    out: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    match map.get(key) {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(_) => {
+            if strict {
+                out.push(Diagnostic::error("invalid-value", path.clone(), format!("`{key}` must be a string")));
+            }
+            None
+        }
+    }
 }
 
-fn decls(raw: Option<serde_json::Value>) -> Result<Vec<VariableDecl>, DocumentError> {
-    match raw {
-        None | Some(serde_json::Value::Null) => Ok(Vec::new()),
-        Some(v) => Ok(serde_json::from_value(v)?),
+/// The items of an optional array field.
+fn list_field(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    parent: &DocPath,
+    out: &mut Vec<Diagnostic>,
+) -> Vec<serde_json::Value> {
+    match map.get(key) {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(serde_json::Value::Array(items)) => items.clone(),
+        Some(_) => {
+            out.push(Diagnostic::error("invalid-value", parent.key(key), format!("`{key}` must be a list")));
+            Vec::new()
+        }
+    }
+}
+
+fn decode_decls(
+    raw: Option<serde_json::Value>,
+    path: &DocPath,
+    strict: bool,
+    out: &mut Vec<Diagnostic>,
+) -> Vec<VariableDecl> {
+    let items = match raw {
+        None | Some(serde_json::Value::Null) => return Vec::new(),
+        Some(serde_json::Value::Array(items)) => items,
+        Some(_) => {
+            out.push(Diagnostic::error("invalid-value", path.clone(), "variable declarations must be a list"));
+            return Vec::new();
+        }
+    };
+    let mut decls: Vec<VariableDecl> = Vec::with_capacity(items.len());
+    for (i, item) in items.into_iter().enumerate() {
+        let item_path = path.index(i);
+        if strict {
+            if let serde_json::Value::Object(obj) = &item {
+                check_keys(obj, &item_path, &DECL_KEYS, true, out);
+            }
+        }
+        match serde_json::from_value::<VariableDecl>(item) {
+            Ok(decl) => {
+                if decls.iter().any(|d| d.name == decl.name) {
+                    out.push(Diagnostic::error(
+                        "duplicate-variable",
+                        item_path.key("name"),
+                        format!("variable `{}` is declared twice", decl.name),
+                    ));
+                }
+                decls.push(decl);
+            }
+            Err(e) => {
+                out.push(Diagnostic::error("invalid-value", item_path, format!("invalid variable declaration: {e}")))
+            }
+        }
+    }
+    decls
+}
+
+fn decode_edge(raw: serde_json::Value, path: &DocPath, strict: bool, out: &mut Vec<Diagnostic>) -> Option<EdgeDoc> {
+    let serde_json::Value::Object(mut obj) = raw else {
+        out.push(Diagnostic::error("invalid-value", path.clone(), "an edge must be an object `{source, target}`"));
+        return None;
+    };
+    if strict {
+        check_keys(&obj, path, &EDGE_KEYS, true, out);
+    }
+    obj.retain(|k, _| !is_extension_key(k));
+    let mut ok = true;
+    for end in ["source", "target"] {
+        match obj.get(end) {
+            Some(serde_json::Value::String(s)) if !s.is_empty() => {}
+            Some(_) => {
+                out.push(Diagnostic::error("invalid-value", path.key(end), format!("edge `{end}` must be a node id")));
+                ok = false;
+            }
+            None => {
+                out.push(Diagnostic::error("missing-field", path.clone(), format!("edge is missing `{end}`")));
+                ok = false;
+            }
+        }
+    }
+    if !ok {
+        return None;
+    }
+    match serde_json::from_value::<EdgeDoc>(serde_json::Value::Object(obj)) {
+        Ok(edge) => Some(edge),
+        Err(e) => {
+            out.push(Diagnostic::error("invalid-value", path.clone(), format!("invalid edge: {e}")));
+            None
+        }
     }
 }
 
 /// Keys handled by [`NodeDoc`] itself and therefore removed from `config`.
-const POLICY_KEYS: &[&str] =
-    &["on_error", "error_strategy", "default_value", "retry", "retry_config", "timeout_ms", "timeout"];
+const POLICY_KEYS: &[&str] = &["on_error", "error_strategy", "default_value", "retry", "retry_config", "timeout_ms"];
 
 impl NodeDoc {
     /// Normalize a raw node object. Returns `Ok(None)` for annotation-only nodes (notes).
     pub fn from_raw(raw: serde_json::Value) -> Result<Option<Self>, DocumentError> {
+        let mut out = Vec::new();
+        let doc = Self::decode(raw, &DocPath::root(), true, &mut out);
+        match out.into_iter().find(Diagnostic::is_error) {
+            Some(d) => Err(DocumentError::Node {
+                id: d.node.unwrap_or_else(|| "<node>".to_owned()),
+                message: match d.suggestion {
+                    Some(s) => format!("{}; did you mean `{s}`?", d.message),
+                    None => d.message,
+                },
+            }),
+            None => Ok(doc),
+        }
+    }
+
+    /// Decode one node at `path`, collecting findings. `None` for notes and for
+    /// nodes too broken to keep (no usable `id` or `type`).
+    fn decode(raw: serde_json::Value, path: &DocPath, strict_doc: bool, out: &mut Vec<Diagnostic>) -> Option<Self> {
         let serde_json::Value::Object(mut obj) = raw else {
-            return Err(node_err("<node>", "node must be an object"));
+            out.push(Diagnostic::error("invalid-value", path.clone(), "a node must be an object `{id, type, ...}`"));
+            return None;
         };
         let id = match obj.remove("id") {
             Some(serde_json::Value::String(s)) if !s.is_empty() => s,
-            _ => return Err(node_err("<node>", "node `id` must be a non-empty string")),
+            Some(_) => {
+                out.push(Diagnostic::error("invalid-value", path.key("id"), "node `id` must be a non-empty string"));
+                return None;
+            }
+            None => {
+                out.push(Diagnostic::error("missing-field", path.clone(), "node is missing `id`"));
+                return None;
+            }
         };
-        let mut parent = obj.remove("parentId").or_else(|| obj.remove("parent")).and_then(as_string);
+        let wrapped = matches!(obj.get("data"), Some(serde_json::Value::Object(_)));
+        let strict = strict_doc && !wrapped;
+        if strict {
+            let before = out.len();
+            check_keys(&obj, path, &NODE_KEYS, false, out);
+            for d in out.iter_mut().skip(before) {
+                d.node = Some(id.clone());
+            }
+        }
+        let legacy_parent = obj.remove("parentId").and_then(as_string);
+        let mut parent = obj.remove("parent").and_then(as_string).or(legacy_parent);
         // Flatten the `data` wrapper layout.
         if let Some(serde_json::Value::Object(data)) = obj.remove("data") {
             for (k, v) in data {
@@ -342,29 +752,40 @@ impl NodeDoc {
         }
         let kind = match obj.remove("type") {
             Some(serde_json::Value::String(s)) if !s.is_empty() => s,
-            _ => return Err(node_err(&id, "node `type` must be a non-empty string")),
+            Some(_) => {
+                out.push(
+                    Diagnostic::error("invalid-value", path.key("type"), "node `type` must be a non-empty string")
+                        .with_node(&id),
+                );
+                return None;
+            }
+            None => {
+                out.push(Diagnostic::error("missing-field", path.clone(), "node is missing `type`").with_node(&id));
+                return None;
+            }
         };
         if kind == "custom-note" || kind == "note" {
-            return Ok(None);
+            return None;
         }
-        let title = obj.remove("title").and_then(as_string);
-        let policy = extract_policy(&id, &mut obj)?;
-        for k in [
-            "desc",
-            "selected",
-            "position",
-            "positionAbsolute",
-            "width",
-            "height",
-            "sourcePosition",
-            "targetPosition",
-            "zIndex",
-            "isInIteration",
-            "isInLoop",
-        ] {
-            obj.remove(k);
+        let title = match obj.remove("title") {
+            Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s),
+            None | Some(serde_json::Value::Null | serde_json::Value::String(_)) => None,
+            Some(_) => {
+                if strict {
+                    out.push(
+                        Diagnostic::error("invalid-value", path.key("title"), "node `title` must be a string")
+                            .with_node(&id),
+                    );
+                }
+                None
+            }
+        };
+        let policy = extract_policy(&id, &mut obj, path, strict, out);
+        for k in BUILDER_KEYS {
+            obj.remove(*k);
         }
-        Ok(Some(Self { id, kind, title, parent, policy, config: obj }))
+        obj.retain(|k, _| !is_extension_key(k));
+        Some(Self { id, kind, title, parent, policy, config: obj, strict })
     }
 }
 
@@ -375,13 +796,38 @@ fn as_string(v: serde_json::Value) -> Option<String> {
     }
 }
 
-fn extract_policy(id: &str, obj: &mut serde_json::Map<String, serde_json::Value>) -> Result<NodePolicy, DocumentError> {
+fn extract_policy(
+    id: &str,
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    path: &DocPath,
+    strict: bool,
+    out: &mut Vec<Diagnostic>,
+) -> NodePolicy {
     let mut policy = NodePolicy::default();
-    let bad =
-        |what: &str, e: serde_json::Error| DocumentError::Node { id: id.to_owned(), message: format!("{what}: {e}") };
+    let mut push = |d: Diagnostic| out.push(d.with_node(id));
 
     if let Some(v) = obj.remove("on_error") {
-        policy.on_error = serde_json::from_value(v).map_err(|e| bad("on_error", e))?;
+        let at = path.key("on_error");
+        if let serde_json::Value::Object(map) = &v {
+            if strict {
+                let mut found = Vec::new();
+                check_keys(map, &at, &ON_ERROR_KEYS, true, &mut found);
+                found.into_iter().for_each(&mut push);
+            }
+        }
+        let strategy = v.get("strategy").and_then(serde_json::Value::as_str).map(str::to_owned);
+        match (&strategy, serde_json::from_value::<ErrorStrategy>(v)) {
+            (_, Ok(s)) => policy.on_error = s,
+            (Some(name), Err(_)) if !STRATEGIES.contains(&name.as_str()) => push(
+                Diagnostic::error("invalid-value", at.key("strategy"), format!("unknown `on_error` strategy `{name}`"))
+                    .with_suggestion(suggest(name, STRATEGIES.iter().copied()))
+                    .with_help("expected `fail`, `fail-branch` or `default-value`"),
+            ),
+            (_, Err(e)) => push(
+                Diagnostic::error("invalid-value", at, format!("invalid `on_error`: {e}"))
+                    .with_help("expected `{strategy: fail | fail-branch | default-value, values: {...}}`"),
+            ),
+        }
     } else if let Some(serde_json::Value::String(strategy)) = obj.remove("error_strategy") {
         policy.on_error = match strategy.as_str() {
             "fail-branch" => ErrorStrategy::FailBranch,
@@ -406,19 +852,33 @@ fn extract_policy(id: &str, obj: &mut serde_json::Map<String, serde_json::Value>
                 ErrorStrategy::DefaultValue { values }
             }
             other => {
-                return Err(DocumentError::Node {
-                    id: id.to_owned(),
-                    message: format!(
-                        "unknown error_strategy `{other}` (expected `fail`, `fail-branch` or `default-value`)"
-                    ),
-                });
+                push(
+                    Diagnostic::error(
+                        "invalid-value",
+                        path.key("error_strategy"),
+                        format!("unknown error_strategy `{other}` (expected `fail`, `fail-branch` or `default-value`)"),
+                    )
+                    .with_suggestion(suggest(other, STRATEGIES.iter().copied())),
+                );
+                ErrorStrategy::Fail
             }
         };
     }
     obj.remove("default_value");
 
     if let Some(v) = obj.remove("retry") {
-        policy.retry = serde_json::from_value(v).map_err(|e| bad("retry", e))?;
+        let at = path.key("retry");
+        if let serde_json::Value::Object(map) = &v {
+            if strict {
+                let mut found = Vec::new();
+                check_keys(map, &at, &RETRY_KEYS, true, &mut found);
+                found.into_iter().for_each(&mut push);
+            }
+        }
+        match serde_json::from_value(v) {
+            Ok(retry) => policy.retry = retry,
+            Err(e) => push(Diagnostic::error("invalid-value", at, format!("invalid `retry`: {e}"))),
+        }
     } else if let Some(serde_json::Value::Object(cfg)) = obj.remove("retry_config") {
         let enabled = cfg.get("retry_enabled").and_then(serde_json::Value::as_bool).unwrap_or(false);
         if enabled {
@@ -434,18 +894,17 @@ fn extract_policy(id: &str, obj: &mut serde_json::Map<String, serde_json::Value>
         None | Some(serde_json::Value::Null) => {}
         Some(v) => match v.as_u64() {
             Some(ms) => policy.timeout_ms = Some(ms),
-            None => {
-                return Err(DocumentError::Node {
-                    id: id.to_owned(),
-                    message: format!("timeout_ms must be a non-negative integer number of milliseconds, got {v}"),
-                });
-            }
+            None => push(Diagnostic::error(
+                "invalid-value",
+                path.key("timeout_ms"),
+                format!("timeout_ms must be a non-negative integer number of milliseconds, got {v}"),
+            )),
         },
     }
     for k in POLICY_KEYS {
         obj.remove(*k);
     }
-    Ok(policy)
+    policy
 }
 
 /// Default values may arrive as JSON-encoded strings for non-string types.

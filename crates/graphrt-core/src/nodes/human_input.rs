@@ -36,9 +36,11 @@ pub struct HumanInputConfig {
     pub inputs: Vec<Field>,
     #[serde(default)]
     pub actions: Vec<Action>,
-    /// How long the host should wait before expiring the request.
+    /// How long the host should wait before expiring the request; reported to
+    /// the host as `timeout_ms` in the pause data. (A node-level `timeout_ms` is
+    /// the per-attempt timeout every node has, so it cannot be used for this.)
     #[serde(default)]
-    pub timeout_ms: Option<u64>,
+    pub expire_after_ms: Option<u64>,
 }
 
 /// Form definition.
@@ -100,7 +102,7 @@ impl HumanInputNode {
                 return Err(ConfigError::new(doc, format!("action ids must be unique and non-empty (`{}`)", a.id)));
             }
         }
-        Ok(Self { prompt: config.prompt, fields, actions, timeout_ms: config.timeout_ms })
+        Ok(Self { prompt: config.prompt, fields, actions, timeout_ms: config.expire_after_ms })
     }
 
     fn pause(&self, ctx: &NodeContext) -> PauseRequest {
@@ -189,6 +191,10 @@ impl Node for HumanInputNode {
         }
         out
     }
+
+    fn branch_handles(&self) -> Option<Vec<String>> {
+        Some(self.actions.iter().map(|a| a.id.clone()).collect())
+    }
 }
 
 #[cfg(test)]
@@ -215,7 +221,7 @@ mod tests {
             "prompt": "Review: {{#llm.text#}}",
             "form": {"fields": [{"name": "comment", "required": true, "default": "{{#llm.text#}}"}]},
             "actions": [{"id": "approve", "title": "Approve"}, {"id": "reject"}],
-            "timeout_ms": 60000
+            "expire_after_ms": 60000
         })
     }
 

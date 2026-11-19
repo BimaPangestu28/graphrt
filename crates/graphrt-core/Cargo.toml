@@ -27,6 +27,7 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 indexmap.workspace = true
+serde_path_to_error = "0.1"
 minijinja = { workspace = true, optional = true }
 serde-saphyr = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }

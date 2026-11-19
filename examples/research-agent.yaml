@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
 # A tool-using agent backed by MCP servers (see examples/mcp.json).
 # Needs a model key (OPENAI_API_KEY) and Node.js for the MCP servers.
 #   graphrt run examples/research-agent.yaml --mcp examples/mcp.json \

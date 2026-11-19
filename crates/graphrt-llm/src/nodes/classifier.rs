@@ -411,6 +411,10 @@ impl Node for ClassifierNode {
         Box::pin(self.execute(ctx))
     }
 
+    fn branch_handles(&self) -> Option<Vec<String>> {
+        Some(self.config.classes.iter().map(|c| c.id.clone()).collect())
+    }
+
     fn inputs(&self) -> Vec<Selector> {
         let cfg = &self.config;
         let mut out = vec![cfg.query_variable_selector.clone()];

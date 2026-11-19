@@ -16,8 +16,11 @@ pub struct Cli {
 pub enum Command {
     /// Run a workflow and stream its output.
     Run(Box<RunArgs>),
-    /// Parse and validate a workflow without running it.
-    Validate(WorkflowArg),
+    /// Parse and validate a workflow without running it, reporting every problem.
+    Validate(ValidateArgs),
+    /// Print the JSON Schema of workflow documents for the node kinds in this
+    /// build (including plugins). Point editors at it for completion and checks.
+    Schema(SchemaArgs),
     /// Show nodes, inputs, env variables and build compatibility of a workflow.
     Inspect(WorkflowArg),
     /// List the node kinds available in this build (the node catalog).
@@ -198,6 +201,25 @@ pub enum KbCommand {
 pub struct WorkflowArg {
     /// Workflow document (.yaml, .yml or .json).
     pub workflow: PathBuf,
+    #[command(flatten)]
+    pub plugins: PluginArgs,
+}
+
+/// Options of `graphrt validate`.
+#[derive(Debug, Args)]
+pub struct ValidateArgs {
+    /// Workflow document (.yaml, .yml or .json).
+    pub workflow: PathBuf,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = crate::diagnostics::DiagnosticFormat::Text)]
+    pub format: crate::diagnostics::DiagnosticFormat,
+    #[command(flatten)]
+    pub plugins: PluginArgs,
+}
+
+/// Options of `graphrt schema`.
+#[derive(Debug, Args)]
+pub struct SchemaArgs {
     #[command(flatten)]
     pub plugins: PluginArgs,
 }

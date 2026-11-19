@@ -3,6 +3,11 @@
 A workflow is a JSON or YAML document. YAML is parsed with YAML 1.2 boolean
 rules: only `true` / `false` are booleans, so `yes`, `no`, `y`, `n` stay strings.
 
+This page describes **format version 1**, which is frozen (see
+[Stability](#stability)). Its JSON Schema is
+[`schema/workflow-v1.schema.json`](../schema/workflow-v1.schema.json); see
+[editor setup](#editor-setup).
+
 ```yaml
 version: "1"                 # document format version
 name: my-workflow            # optional
@@ -17,10 +22,56 @@ graph:
   edges: [ ... ]
 ```
 
+`version` may be omitted (it means `"1"`); any other value is rejected, so a
+document written for a newer format fails clearly instead of half-working.
+
+### Strictness
+
+v1 documents are strict: an unknown key anywhere (document, `graph`, node,
+edge, `retry`, `on_error`, variable declarations, node config) is an error,
+reported with a "did you mean" suggestion. Node configs are checked against
+the node kind's catalog schema (`graphrt nodes --kind <kind> --json`). A
+plugin node whose config schema does not set `additionalProperties: false`
+accepts any config key.
+
+Keys starting with `x-` are free for tools (editor state, node positions,
+comments) at every level that has fixed keys: the document, `graph`, nodes and
+edges. The runtime ignores them; they are not part of the run fingerprint and
+are not kept when graphrt re-serializes a document. The builder keys `desc`,
+`selected`, `position`, `positionAbsolute`, `width`, `height`,
+`sourcePosition`, `targetPosition`, `zIndex`, `isInIteration` and `isInLoop`
+are ignored on nodes too; new tools should use `x-` keys.
+
+### Import layout
+
 The loader also accepts nodes in the `{id, parentId, data: {type, title, ...}}`
 layout, camelCase `sourceHandle` on edges, and documents nested under a
 top-level `workflow` key (with `environment_variables` /
-`conversation_variables`).
+`conversation_variables`). Documents with a top-level `workflow` or `app` key,
+and nodes wrapped in `data`, are read leniently: unknown keys are ignored, so
+documents exported by other tools load unchanged. The JSON Schema describes
+the strict layout only.
+
+### Deprecated spellings
+
+Accepted, with a warning from `graphrt validate`:
+
+| Deprecated | Use |
+| --- | --- |
+| `environment_variables`, `conversation_variables` | `env`, `conversation` |
+| `value_type` in `env` / `conversation` declarations | `type` |
+| node `parentId`, `container_id`, `iteration_id`, `loop_id` | `parent` |
+| node `error_strategy`, `default_value` | `on_error` |
+| node `retry_config` | `retry` |
+| edge `sourceHandle`, `source_handle` | `handle` |
+| loop variable `label`, `var_type`, `value_type` | `name`, `type`, `input_type` |
+
+### Reserved names
+
+These keys are reserved for future versions and rejected today: top-level
+`imports`, `inputs`, `outputs`, `triggers`, `metadata`, `requires`,
+`subgraphs`; node-level `disabled`, `cache`, `metadata` (node configs,
+including plugin configs, cannot use them).
 
 ## Value types
 
@@ -58,6 +109,8 @@ Every node has:
 | `timeout_ms` | Per-attempt timeout |
 | `on_error` | `{strategy: fail}` (default), `{strategy: fail-branch}`, or `{strategy: default-value, values: {...}}` |
 
+Node configs cannot use these field names or the [reserved names](#reserved-names).
+
 With `fail-branch`, failures follow edges whose `handle` is `fail-branch`;
 outputs are `error_message` and `error_type`. With `default-value`, the node
 outputs `values` plus `error_message` / `error_type` and continues normally.
@@ -73,6 +126,12 @@ outputs `values` plus `error_message` / `error_type` and continues normally.
 A node runs once all incoming edges are resolved and at least one was taken.
 Branch nodes take only the edges matching their selected handle; other paths
 are skipped.
+
+A `handle` must be one the source node can select: `source` for non-branch
+nodes, the case ids plus `false` for `if-else`, class ids for
+`question-classifier`, action ids for `human-input`, the declared handles of
+plugin nodes. `fail-branch` is always accepted; on a node without
+`on_error: {strategy: fail-branch}` such an edge is never taken (a warning).
 
 ---
 
@@ -201,8 +260,8 @@ Output `output`: one result per item, in input order.
   type: loop
   loop_count: 5
   loop_variables:
-    - { label: draft, var_type: string, value_type: constant, value: "" }
-    - { label: source, var_type: string, value_type: variable, value: [start, text] }
+    - { name: draft, type: string, input_type: constant, value: "" }
+    - { name: source, type: string, input_type: variable, value: [start, text] }
   break_conditions:
     - { variable_selector: [refine, draft], comparison_operator: contains, value: DONE }
   logical_operator: and
@@ -223,6 +282,7 @@ form:
 actions:
   - { id: approve, title: Approve }
   - { id: reject, title: Reject }
+expire_after_ms: 86400000      # optional; reported to the host as `timeout_ms`
 ```
 
 Pauses the run with kind `human_input`. Resume with
@@ -391,3 +451,81 @@ handles, config JSON Schema). Run `graphrt nodes --kind <kind> --json` or
 Descriptors list the handles a node selects itself; the `fail-branch` handle
 comes from the node policy (`on_error: {strategy: fail-branch}`), is available
 on every node kind and is therefore not listed.
+
+## Editor setup
+
+The schema gives completion, hover docs and inline errors for every node kind
+and config field.
+
+**VS Code** with the [YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)
+(Red Hat): put this line at the top of a workflow file:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+```
+
+or map files to the schema in `.vscode/settings.json`:
+
+```json
+{
+  "yaml.schemas": {
+    "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json": ["workflows/**/*.yaml"]
+  },
+  "json.schemas": [
+    { "fileMatch": ["workflows/**/*.json"], "url": "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json" }
+  ]
+}
+```
+
+**JetBrains IDEs** (IntelliJ IDEA, PyCharm, RustRover, ...): the
+`# yaml-language-server: $schema=...` comment is honoured as well. To map a
+directory instead, open *Settings → Languages & Frameworks → Schemas and DTDs
+→ JSON Schema Mappings*, add a mapping with the schema URL above (or a local
+file), *Schema version: JSON Schema version 2020-12*, and add your workflow
+files or a glob such as `workflows/*.yaml`.
+
+**Plugins.** The published schema covers the built-in node kinds of the
+default build. For plugin node kinds, generate a schema for your setup and
+point the editor at the file:
+
+```sh
+graphrt schema --plugins ./plugins > .graphrt/workflow.schema.json
+```
+
+`graphrt validate` performs the same checks and more (node ids in edges and
+selectors, handles, required inputs), so run it in CI even with editor
+support.
+
+## Stability
+
+Format version 1 is frozen. Within v1:
+
+**Frozen** (a v1 document that is valid today stays valid and means the same
+thing in every later release that reads v1):
+
+- the document structure: `version`, `name`, `description`, `env`,
+  `conversation`, `graph.nodes`, `graph.edges`;
+- the common node fields `id`, `type`, `title`, `parent`, `retry`,
+  `timeout_ms`, `on_error` and their semantics, edge fields `id`, `source`,
+  `target`, `handle`, and the `source` / `fail-branch` handles;
+- selector and template syntax (`[node, output, ...]`, `"node.output"`,
+  `{{#node.output#}}`), the `sys`, `env` and `conversation` namespaces, value
+  type names;
+- built-in node types, their config fields and output names as documented on
+  this page; deprecated spellings keep working within v1;
+- the `x-` extension prefix and the reserved names.
+
+**May still change** within v1, without a new format version:
+
+- additions: new optional fields, new node types, new outputs, new enum values
+  (comparison operators, body types...), new `sys` variables. Old documents
+  stay valid; a document using an addition needs a graphrt that knows it;
+- error messages, diagnostic codes' wording and the set of warnings;
+- the behaviour of documents that are invalid today (they may become valid
+  through additions, never the other way round);
+- the import layout, which follows the tools it imports from;
+- plugin node configs, which are owned by their plugins.
+
+Removing or renaming a field, changing what a field means, or making a valid
+document invalid needs format version `"2"`; graphrt will then keep reading v1
+documents for at least one minor release.

@@ -88,16 +88,30 @@ impl NodeError {
 
 /// Error raised when a node's configuration is invalid (at graph build time).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("node `{node_id}` ({kind}): {message}")]
+#[error("node `{node_id}` ({kind}): {}{message}", field_prefix(.field))]
 pub struct ConfigError {
     pub node_id: String,
     pub kind: String,
     pub message: String,
+    /// Config field the error is about, as a path below the node such as
+    /// `variables[0].value_selector`, when known.
+    pub field: Option<String>,
+}
+
+fn field_prefix(field: &Option<String>) -> String {
+    field.as_ref().map(|f| format!("{f}: ")).unwrap_or_default()
 }
 
 impl ConfigError {
     pub fn new(doc: &NodeDoc, message: impl Into<String>) -> Self {
-        Self { node_id: doc.id.clone(), kind: doc.kind.clone(), message: message.into() }
+        Self { node_id: doc.id.clone(), kind: doc.kind.clone(), message: message.into(), field: None }
+    }
+
+    /// Attach the config field the error is about.
+    #[must_use]
+    pub fn at_field(mut self, field: impl Into<String>) -> Self {
+        self.field = Some(field.into());
+        self
     }
 }
 
@@ -199,6 +213,15 @@ pub trait Node: Send + Sync + fmt::Debug {
     /// placeholders inside templates.
     fn inputs(&self) -> Vec<Selector> {
         Vec::new()
+    }
+
+    /// Every handle a [`NodeRole::Branch`] node may select, when known from its
+    /// configuration (if-else case ids, classifier class ids...). Graph building
+    /// rejects edges with other handles. `None` (the default) falls back to the
+    /// kind's catalog descriptor: `Fixed` handles are checked, `Dynamic` ones are
+    /// not, and non-branch nodes have the single handle `source`.
+    fn branch_handles(&self) -> Option<Vec<String>> {
+        None
     }
 }
 
@@ -648,6 +671,16 @@ impl Registry {
         Some(descriptor)
     }
 
+    /// Borrowed descriptor of a kind registered with one (`None` for unknown
+    /// kinds and kinds registered without a descriptor). Builds a lazy
+    /// descriptor on first use.
+    pub fn descriptor_ref(&self, kind: &str) -> Option<&crate::catalog::NodeDescriptor> {
+        match self.descriptors.get(kind)? {
+            DescriptorSlot::Ready(descriptor) => Some(descriptor),
+            DescriptorSlot::Lazy(slot) => Some(slot.built.get_or_init(slot.build)),
+        }
+    }
+
     /// Catalog of every registered kind, sorted by kind.
     pub fn descriptors(&self) -> Vec<crate::catalog::NodeDescriptor> {
         let mut kinds: Vec<&String> = self.factories.keys().collect();
@@ -673,15 +706,21 @@ impl Registry {
 
     /// Build a node from its document.
     pub fn build(&self, doc: &NodeDoc) -> Result<Arc<dyn Node>, ConfigError> {
-        let factory = self
-            .factories
-            .get(&doc.kind)
-            .ok_or_else(|| ConfigError::new(doc, format!("unknown node type `{}`", doc.kind)))?;
+        let factory = self.factories.get(&doc.kind).ok_or_else(|| {
+            let suggestion = crate::validate::suggest(&doc.kind, self.kinds());
+            ConfigError::new(
+                doc,
+                format!("unknown node type `{}`{}", doc.kind, crate::validate::did_you_mean(&suggestion)),
+            )
+        })?;
         factory(doc)
     }
 }
 
 /// Helper for factories: parse the node config into `T`, mapping errors to [`ConfigError`].
 pub fn parse_config<T: serde::de::DeserializeOwned>(doc: &NodeDoc) -> Result<T, ConfigError> {
-    doc.parse_config::<T>().map_err(|e| ConfigError::new(doc, e.to_string()))
+    crate::dsl::parse_config_at(&doc.config).map_err(|(path, e)| {
+        let error = ConfigError::new(doc, e.to_string());
+        if path == "." { error } else { error.at_field(path) }
+    })
 }
