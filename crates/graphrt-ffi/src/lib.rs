@@ -564,13 +564,15 @@ impl WorkflowHandle {
         };
         tokio.spawn(async move {
             let mut terminal: Option<Event> = None;
+            let mut chunks = Vec::new();
             while let Some(event) = stream.next().await {
                 if let Ok(json) = serde_json::to_string(&event) {
                     notify(|| listener.on_event(json));
                 }
-                for chunk in assembler.push(&event) {
+                assembler.push_into(&event, &mut chunks);
+                for chunk in chunks.drain(..) {
                     if !chunk.text.is_empty() {
-                        notify(|| listener.on_answer_chunk(chunk.text.clone()));
+                        notify(|| listener.on_answer_chunk(chunk.text));
                     }
                 }
                 if event.is_terminal() {
@@ -579,7 +581,7 @@ impl WorkflowHandle {
             }
             for chunk in assembler.finish() {
                 if !chunk.text.is_empty() {
-                    notify(|| listener.on_answer_chunk(chunk.text.clone()));
+                    notify(|| listener.on_answer_chunk(chunk.text));
                 }
             }
             let result = result_json(terminal.as_ref(), assembler.text_so_far());

@@ -861,10 +861,12 @@ fn sse_stream(
         let terminal = event.is_terminal();
         Some((event, (events, terminal)))
     });
+    let mut chunks = Vec::new();
     events.flat_map(move |event| {
         let _keep_alive = &guard;
         let mut out = Vec::new();
-        for chunk in assembler.push(&event) {
+        assembler.push_into(&event, &mut chunks);
+        for chunk in chunks.drain(..) {
             let data = serde_json::json!({ "node_id": chunk.node_id, "text": chunk.text, "is_final": chunk.is_final });
             out.push(Ok(SseEvent::default().event("response").data(data.to_string())));
         }

@@ -127,7 +127,7 @@ fn streams_llm_tokens_through_single_answer() {
     assert_eq!(texts(&a.push(&chunk("llm", "lo"))), "lo");
     let out = a.push(&ok("llm", &[("text", Value::from("Hello"))]));
     assert_eq!(texts(&out), "!");
-    assert!(out.last().is_some_and(|c| c.is_final && c.node_id == "ans"));
+    assert!(out.last().is_some_and(|c| c.is_final && c.node_id.as_ref() == "ans"));
     a.push(&started("ans"));
     a.push(&ok("ans", &[]));
     assert!(a.push(&run_done()).is_empty());

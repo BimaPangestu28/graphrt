@@ -132,9 +132,12 @@ async fn drive(
 ) {
     let run_id = record.run_id.clone();
     let mut pending: Vec<StoredEvent> = Vec::new();
+    // Only the assembled text is kept (`text_so_far`); the chunks themselves are dropped.
+    let mut chunks = Vec::new();
     while let Some(event) = run.next().await {
         tracer.on_event(&event);
-        assembler.push(&event);
+        assembler.push_into(&event, &mut chunks);
+        chunks.clear();
         let terminal = event.is_terminal();
         pending.push(event_to_stored(&event));
         {
