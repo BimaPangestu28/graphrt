@@ -19,6 +19,11 @@ releases may contain breaking changes; they are called out under **Changed**.
   `--yes`. A directory with the same name in the current directory still wins.
 - `graphrt plugin search [query]`: catalog plugins with their latest version,
   status and a one-line description.
+- `docs/plugin-manifest.md`: a versioned specification of the plugin manifest
+  (every field with its type, default and constraints, the validation rules
+  and a compatibility policy for `protocol_version`), and a JSON Schema for
+  manifests, `docs/schemas/plugin-manifest.schema.json`, tested against the
+  example, fixture and scaffolded manifests and against the parser itself.
 
 ### Performance
 - Engine: fewer allocations and less work per node execution. Node task
