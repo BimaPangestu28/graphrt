@@ -467,6 +467,31 @@ async fn max_concurrency_one_runs_branches_one_at_a_time() {
 }
 
 #[tokio::test]
+async fn wide_fan_out_of_instant_nodes_commits_every_branch() {
+    // Instant branches finish in batches that are committed together before
+    // the next ones start; every output must still reach the join.
+    let width = 40;
+    let mut nodes = vec![node("start", "src", json!({}))];
+    let mut edges = Vec::new();
+    let mut joined = String::new();
+    for i in 0..width {
+        let id = format!("b{i}");
+        nodes.push(node(&id, "echo", json!({"template": format!("{i},")})));
+        edges.push(edge("start", &id));
+        edges.push(edge(&id, "join"));
+        joined.push_str(&format!("{{{{#{id}.out#}}}}"));
+    }
+    nodes.push(node("join", "end", json!({"name": "all", "value": joined})));
+    let engine = Engine::new(build(nodes, edges)).with_limits(Limits { max_concurrency: 8, ..Limits::default() });
+    let events = collect(&engine, RunInput::new()).await;
+    let expected: String = (0..width).map(|i| format!("{i},")).collect();
+    assert_eq!(outputs(&events).get("all"), Some(&Value::from(expected)));
+    let order = started(&events);
+    assert_eq!(order.len(), width + 2, "{order:?}");
+    assert_eq!(order.last().map(String::as_str), Some("join"));
+}
+
+#[tokio::test]
 async fn branch_skip_propagation_with_mixed_join() {
     // start -> if -(yes)-> y ; if -(no)-> n -> n2 ; y -> join ; n2 -> join
     let g = build(
@@ -1155,4 +1180,45 @@ fn runs_without_any_async_runtime() {
     let rt = tokio::runtime::Builder::new_current_thread().build().expect("runtime");
     let ev = rt.block_on(engine.run_to_end(RunInput::new().input("n", 7)));
     assert!(matches!(ev, Event::RunSucceeded { outputs, .. } if outputs.get("n") == Some(&Value::Int(7))));
+}
+
+/// A timer-less clock that counts its readings.
+#[derive(Debug, Default)]
+struct CountingClock {
+    reads: AtomicU32,
+}
+
+impl graphrt_core::node::Clock for CountingClock {
+    fn now_ms(&self) -> u64 {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        1_700_000_000_000
+    }
+    fn sleep(&self, _duration: Duration) -> BoxFuture<'static, ()> {
+        Box::pin(futures::future::ready(()))
+    }
+    fn supports_timers(&self) -> bool {
+        false
+    }
+}
+
+#[tokio::test]
+async fn a_chain_reads_the_clock_about_once_per_node() {
+    let len = 50;
+    let mut nodes = vec![node("start", "src", json!({}))];
+    let mut edges = Vec::new();
+    let mut prev = "start".to_owned();
+    for i in 0..len {
+        let id = format!("n{i}");
+        nodes.push(node(&id, "echo", json!({"template": "x"})));
+        edges.push(edge(&prev, &id));
+        prev = id;
+    }
+    let clock = Arc::new(CountingClock::default());
+    let engine = Engine::new(build(nodes, edges)).with_clock(clock.clone());
+    let events = collect(&engine, RunInput::new()).await;
+    assert!(matches!(events.last(), Some(Event::RunSucceeded { .. })));
+    let reads = clock.reads.load(Ordering::Relaxed);
+    // One reading per node (its completion, reused for the next start) plus a
+    // few per run; two per node would be over 100.
+    assert!(reads <= len + 10, "{reads} clock reads for {len} nodes");
 }

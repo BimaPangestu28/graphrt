@@ -62,7 +62,7 @@ impl Node for AggregatorNode {
                     }
                 }
                 _ => {
-                    out.outputs.insert("output".into(), first_non_null(&self.config.variables, &ctx.pool));
+                    out.outputs.insert("output", first_non_null(&self.config.variables, &ctx.pool));
                 }
             }
             Ok(out.into())

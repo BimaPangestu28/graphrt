@@ -203,7 +203,7 @@ mod tests {
         node.run(NodeContext::for_test("start", pool)).await
     }
 
-    fn outputs(r: NodeResult) -> indexmap::IndexMap<String, Value> {
+    fn outputs(r: NodeResult) -> crate::Variables {
         match r.unwrap() {
             NodeOutcome::Completed(o) => o.outputs,
             other => panic!("{other:?}"),

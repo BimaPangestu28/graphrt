@@ -93,7 +93,7 @@ fn ok_branch(id: &str, outputs: &[(&str, Value)], branch: Option<&str>) -> Event
         frame: Arc::from(""),
         node_id: id.into(),
         exec_id: format!("{id}-x").into(),
-        outputs: outputs.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect::<IndexMap<_, _>>(),
+        outputs: outputs.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect(),
         branch: branch.map(str::to_owned),
         usage: None,
         metadata: IndexMap::new(),
@@ -298,7 +298,7 @@ fn handled(id: &str, outputs: &[(&str, Value)]) -> Event {
         error: "boom".into(),
         error_type: "model".into(),
         handled: true,
-        outputs: outputs.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect::<IndexMap<_, _>>(),
+        outputs: outputs.iter().map(|(k, v)| ((*k).to_owned(), v.clone())).collect(),
         elapsed_ms: 1,
     }
 }

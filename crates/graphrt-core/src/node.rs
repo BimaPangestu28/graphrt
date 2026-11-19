@@ -21,6 +21,7 @@ use crate::event::{Event, FrameId, PauseReason, Usage};
 use crate::pool::{Selector, VariablePool};
 use crate::snapshot::FrameSnapshot;
 use crate::value::Value;
+use crate::variables::{VarName, Variables};
 
 /// How the scheduler treats a node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,8 +119,10 @@ impl ConfigError {
 /// Successful node result.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NodeOutput {
-    /// Outputs stored under the node's namespace (`<node_id>.<key>`).
-    pub outputs: IndexMap<String, Value>,
+    /// Outputs stored under the node's namespace (`<node_id>.<key>`). The
+    /// engine stores this map as the namespace and emits it in
+    /// [`Event::NodeSucceeded`] without copying it.
+    pub outputs: Variables,
     /// Selected handle for branch nodes.
     pub branch: Option<String>,
     /// Writes to other namespaces (conversation variables, loop variables, ...), applied in order.
@@ -134,7 +137,8 @@ impl NodeOutput {
         Self::default()
     }
 
-    pub fn with(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+    /// Add an output. A string-literal name costs no allocation.
+    pub fn with(mut self, key: impl Into<VarName>, value: impl Into<Value>) -> Self {
         self.outputs.insert(key.into(), value.into());
         self
     }

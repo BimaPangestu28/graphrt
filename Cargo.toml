@@ -45,6 +45,7 @@ thiserror = "2"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 indexmap = { version = "2", features = ["serde"] }
+smallvec = "1.13"
 minijinja = { version = "3", default-features = false, features = ["builtins", "serde", "json", "fuel", "macros", "multi_template"] }
 serde-saphyr = "2"
 tokio = { version = "1", default-features = false }

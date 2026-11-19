@@ -273,7 +273,7 @@ impl LoopNode {
         for (label, value) in state.vars {
             out.outputs.insert(label, value);
         }
-        out.outputs.insert("loop_round".into(), Value::Int(i64::try_from(state.round).unwrap_or(i64::MAX)));
+        out.outputs.insert("loop_round", Value::Int(i64::try_from(state.round).unwrap_or(i64::MAX)));
         out.writes = state.writes;
         if !state.usage.is_zero() {
             out.usage = Some(state.usage);
@@ -384,7 +384,7 @@ mod tests {
                "loop_variables": [{"label": "count", "var_type": "number", "value_type": "variable", "value": ["n", "start"]}]})
     }
 
-    fn outputs(r: NodeResult) -> IndexMap<String, Value> {
+    fn outputs(r: NodeResult) -> crate::Variables {
         match r.unwrap() {
             NodeOutcome::Completed(o) => o.outputs,
             other => panic!("{other:?}"),
