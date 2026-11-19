@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::dsl::{NodeDoc, NodePolicy, Workflow};
 use crate::node::{ConfigError, Node, NodeRole, Registry};
@@ -136,6 +136,9 @@ pub struct Graph {
     warnings: Vec<String>,
     fingerprint: String,
     workflow: Workflow,
+    /// Per node: the output names of its first committed output, shared by
+    /// every later commit (see [`Graph::output_keys`]).
+    output_keys: Vec<OnceLock<Box<[Arc<str>]>>>,
 }
 
 impl fmt::Debug for Graph {
@@ -280,7 +283,8 @@ impl Graph {
         validate_references(&nodes, &index, &mut warnings)?;
 
         let fingerprint = fingerprint(&workflow)?;
-        Ok(Self { nodes, edges, index, outgoing, incoming, scopes, warnings, fingerprint, workflow })
+        let output_keys = nodes.iter().map(|_| OnceLock::new()).collect();
+        Ok(Self { nodes, edges, index, outgoing, incoming, scopes, warnings, fingerprint, workflow, output_keys })
     }
 
     /// Parse (JSON or YAML) and build in one step.
@@ -295,6 +299,19 @@ impl Graph {
 
     pub fn edges(&self) -> &[GraphEdge] {
         &self.edges
+    }
+
+    /// Shared names for the outputs node `ix` commits to the variable pool.
+    ///
+    /// A node almost always produces the same output names on every run, so the
+    /// names of its first output are kept and later commits reuse them (a
+    /// reference-count bump) instead of allocating one `Arc<str>` per output
+    /// per execution. Names not in the cache are still allocated by the caller.
+    pub(crate) fn output_keys<'a, I>(&self, ix: NodeIx, first: impl FnOnce() -> I) -> &[Arc<str>]
+    where
+        I: Iterator<Item = &'a str>,
+    {
+        self.output_keys.get(ix).map_or(&[], |keys| keys.get_or_init(|| first().map(Arc::from).collect()))
     }
 
     pub fn node(&self, ix: NodeIx) -> Option<&GraphNode> {

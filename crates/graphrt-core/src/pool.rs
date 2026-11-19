@@ -257,12 +257,19 @@ impl Table {
     }
 }
 
-fn insert_outputs(namespace: &mut Namespace, outputs: &IndexMap<String, Value>) {
+fn insert_outputs(namespace: &mut Namespace, outputs: &IndexMap<String, Value>, known_keys: &[Arc<str>]) {
     let ns = Arc::make_mut(namespace);
     ns.reserve(outputs.len());
-    for (k, v) in outputs {
-        ns.insert(Arc::from(k.as_str()), v.clone());
+    for (position, (k, v)) in outputs.iter().enumerate() {
+        ns.insert(shared_key(k, position, known_keys), v.clone());
     }
+}
+
+/// `name` as an `Arc<str>`: a clone of the matching `known` entry (looked up at
+/// `position` first, where it usually is), else a new allocation.
+fn shared_key(name: &str, position: usize, known: &[Arc<str>]) -> Arc<str> {
+    let at_position = known.get(position).filter(|key| key.as_ref() == name);
+    at_position.or_else(|| known.iter().find(|key| key.as_ref() == name)).map_or_else(|| Arc::from(name), Arc::clone)
 }
 
 /// Variable storage for one execution frame.
@@ -338,13 +345,19 @@ impl VariablePool {
 
     /// Bulk-insert a node's outputs.
     pub fn set_outputs(&mut self, namespace: &str, outputs: &IndexMap<String, Value>) {
-        insert_outputs(self.namespaces.entry(namespace), outputs);
+        insert_outputs(self.namespaces.entry(namespace), outputs, &[]);
     }
 
     /// [`VariablePool::set_outputs`] for a namespace the caller already holds as
     /// an `Arc<str>` (the engine's node ids), which avoids copying the name.
-    pub(crate) fn set_outputs_shared(&mut self, namespace: &Arc<str>, outputs: &IndexMap<String, Value>) {
-        insert_outputs(self.namespaces.entry_shared(namespace), outputs);
+    /// Output names found in `known_keys` share that allocation.
+    pub(crate) fn set_outputs_shared(
+        &mut self,
+        namespace: &Arc<str>,
+        outputs: &IndexMap<String, Value>,
+        known_keys: &[Arc<str>],
+    ) {
+        insert_outputs(self.namespaces.entry_shared(namespace), outputs, known_keys);
     }
 
     /// All variables in a namespace.
@@ -473,6 +486,18 @@ mod tests {
         // Ids differing only past the first 8-byte word, or by a trailing byte.
         assert_ne!(hash("longer_node_id_a"), hash("longer_node_id_b"));
         assert_ne!(hash("abcdefgh"), hash("abcdefgh\0"));
+    }
+
+    #[test]
+    fn shared_key_reuses_known_names() {
+        let known: Vec<Arc<str>> = vec![Arc::from("text"), Arc::from("usage")];
+        // Same position, other position, unknown.
+        assert!(Arc::ptr_eq(&shared_key("text", 0, &known), &known[0]));
+        assert!(Arc::ptr_eq(&shared_key("text", 1, &known), &known[0]));
+        let fresh = shared_key("other", 0, &known);
+        assert_eq!(fresh.as_ref(), "other");
+        assert!(!known.iter().any(|k| Arc::ptr_eq(k, &fresh)));
+        assert_eq!(shared_key("x", 5, &[]).as_ref(), "x");
     }
 
     #[test]

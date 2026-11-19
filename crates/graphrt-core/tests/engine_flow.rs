@@ -392,6 +392,24 @@ async fn linear_flow_passes_values() {
 }
 
 #[tokio::test]
+async fn outputs_with_changing_names_across_runs_are_stored() {
+    // The engine reuses a node's first output names on later commits; a run
+    // whose node emits other (or reordered) names must still store them all.
+    let g = build(
+        vec![
+            node("start", "src", json!({})),
+            node("end", "end", json!({"name": "seen", "value": "{{#start.a#}}{{#start.b#}}{{#start.c#}}"})),
+        ],
+        vec![edge("start", "end")],
+    );
+    let engine = Engine::new(g);
+    let first = collect(&engine, RunInput::new().input("a", "1").input("b", "2")).await;
+    assert_eq!(outputs(&first).get("seen"), Some(&Value::from("12")));
+    let second = collect(&engine, RunInput::new().input("c", "3").input("b", "2").input("a", "1")).await;
+    assert_eq!(outputs(&second).get("seen"), Some(&Value::from("123")));
+}
+
+#[tokio::test]
 async fn inputs_do_not_shadow_sys() {
     let g = build(
         vec![node("start", "src", json!({})), node("end", "end", json!({"name": "q", "value": "{{#sys.query#}}"}))],

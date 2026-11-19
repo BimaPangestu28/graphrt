@@ -770,7 +770,8 @@ impl Frame {
         if writes.is_empty() {
             // Nothing can fail: skip the undo log (one selector and one value
             // lookup per output), which most nodes would never use.
-            self.pool.set_outputs_shared(&node_id, outputs);
+            let known_keys = self.run.graph.output_keys(ix, || outputs.keys().map(String::as_str));
+            self.pool.set_outputs_shared(&node_id, outputs, known_keys);
             return Ok(());
         }
         // Apply in place (cloning the pool here would force a copy-on-write copy on
@@ -781,7 +782,8 @@ impl Frame {
             let previous = self.pool.get(&root);
             undo.push((root, previous));
         }
-        self.pool.set_outputs_shared(&node_id, outputs);
+        let known_keys = self.run.graph.output_keys(ix, || outputs.keys().map(String::as_str));
+        self.pool.set_outputs_shared(&node_id, outputs, known_keys);
         for (selector, value) in writes {
             let root = selector.root();
             let previous = self.pool.get(&root);
