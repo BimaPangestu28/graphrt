@@ -1517,9 +1517,11 @@ dependencies = [
  "indexmap",
  "jsonschema",
  "mimalloc",
+ "reqwest",
  "serde",
  "serde-saphyr",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
  "tower",
 ]

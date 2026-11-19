@@ -7,6 +7,23 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- `graphrt serve --webhooks <file>`: webhook triggers. `POST /v1/hooks/{hook}`
+  starts an async run of the hook's workflow from any JSON body and answers
+  `202` with the run id. Bodies map to inputs by JSON Pointer and header
+  (`inputs`, `headers`) or pass whole (`body_input`, default `body`).
+  Optional HMAC-SHA256 signature checks in the GitHub, Stripe, Slack, generic
+  or graphrt formats, compared in constant time, with a replay window for the
+  timestamped ones; secrets from the environment, `--env-file` or a file.
+  An idempotency key header (default `Idempotency-Key`) maps redeliveries to
+  the first run, durably with `--store`. Deliveries share `--max-body-bytes`.
+  `GET /v1/hooks` lists the hooks. See docs/serving.md.
+- Webhook completion callbacks (`callback`): a signed
+  (`X-Graphrt-Signature: t=..,v1=..`) JSON result POSTed when the run
+  succeeds, fails, aborts or pauses, through the HTTP egress policy (private
+  networks refused unless `--allow-private-network`, no redirects), retried
+  with exponential backoff on network errors, `408`, `429` and `5xx`.
+
 ### Performance
 - Engine: fewer allocations and less work per node execution. Node task
   futures are stored unboxed and are less than half their former size (584 ->

@@ -13,6 +13,8 @@
 //! | DELETE | `/v1/runs/{run_id}` | – | `204`; `409` while the run executes |
 //! | GET | `/v1/nodes` | – | node catalog (descriptors with config JSON Schemas) |
 //! | POST | `/v1/validate` | workflow document, or `{document: "<yaml/json text>"}` | `{valid, errors, warnings}` |
+//! | GET | `/v1/hooks` | – | webhooks configured with `--webhooks` |
+//! | POST | `/v1/hooks/{hook}` | any JSON (signature-checked when configured) | `202` + run id; see [`crate::webhooks`] |
 //!
 //! SSE events use the engine event `type` as the event name and its JSON as
 //! data, plus `response` events carrying the ordered answer text
@@ -80,6 +82,8 @@ pub struct AppState {
     /// The knowledge base behind `/v1/knowledge`, when served with `--knowledge`.
     #[cfg(feature = "rag")]
     knowledge: Option<crate::knowledge_api::KnowledgeService>,
+    /// Webhook triggers under `/v1/hooks` (`--webhooks`).
+    webhooks: crate::webhooks::Webhooks,
 }
 
 impl AppState {
@@ -95,7 +99,37 @@ impl AppState {
             telemetry: None,
             #[cfg(feature = "rag")]
             knowledge: None,
+            webhooks: crate::webhooks::Webhooks::default(),
         }
+    }
+
+    /// Serve these webhooks under `/v1/hooks`.
+    ///
+    /// @throws CliError (usage) - When a hook names a workflow that is not served.
+    pub fn with_webhooks(mut self, webhooks: crate::webhooks::Webhooks) -> Result<Self, CliError> {
+        if let Some(hook) = webhooks.hooks().find(|hook| !self.workflows.contains_key(&hook.workflow)) {
+            return Err(CliError::usage(format!(
+                "webhook `{}` names workflow `{}`, which is not served",
+                hook.id, hook.workflow
+            )));
+        }
+        self.webhooks = webhooks;
+        Ok(self)
+    }
+
+    pub(crate) fn webhooks(&self) -> &crate::webhooks::Webhooks {
+        &self.webhooks
+    }
+
+    /// Whether `headers` carry the API key (always true when none is set).
+    pub(crate) fn authorized(&self, headers: &axum::http::HeaderMap) -> bool {
+        let Some(expected) = &self.api_key else { return true };
+        let provided = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .unwrap_or_default();
+        constant_time_eq(provided.as_bytes(), expected.as_bytes())
     }
 
     /// Serve this knowledge base under `/v1/knowledge`.
@@ -278,10 +312,15 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     };
     #[cfg(not(feature = "rag"))]
     let _ = max_upload_bytes;
-    let api = api.layer(middleware::from_fn_with_state(state.clone(), require_auth));
+    let api = api
+        .route("/v1/hooks", get(crate::webhooks::list_hooks))
+        .layer(middleware::from_fn_with_state(state.clone(), require_auth));
+    // Webhook deliveries authenticate themselves (signature, else the bearer key).
+    let hooks = Router::new().route("/v1/hooks/{hook}", post(crate::webhooks::receive));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .merge(api)
+        .merge(hooks)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state)
 }
@@ -297,11 +336,16 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let limits = setup::limits(args.services.timeout_ms, args.services.max_steps);
     let telemetry = crate::otel::Telemetry::from_args(&args.services, &options.all_vars())?;
     let store = crate::store::open(args.store.as_ref(), args.max_runs)?;
+    let webhooks = match &args.webhooks {
+        Some(path) => crate::webhooks::Webhooks::load(path, &options.all_vars(), options.allow_private_network)?,
+        None => crate::webhooks::Webhooks::default(),
+    };
     let state = Arc::new(
         build_state(&files, &options, limits, api_key.clone())
             .await?
             .with_store(store)
-            .with_telemetry(telemetry.clone()),
+            .with_telemetry(telemetry.clone())
+            .with_webhooks(webhooks)?,
     );
     let interrupted = state.recover().await?;
     if interrupted > 0 {
@@ -318,6 +362,12 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     eprintln!("graphrt serving {} workflow(s) on http://{}", state.workflows.len(), args.addr);
     for name in state.workflows.keys() {
         eprintln!("  POST /v1/workflows/{name}/runs");
+    }
+    for hook in state.webhooks().hooks() {
+        eprintln!("  POST /v1/hooks/{} -> {}", hook.id, hook.workflow);
+        if !hook.is_signed() && api_key.is_none() {
+            eprintln!("warning: webhook `{}` has no `signature` and no API key is set; anyone can trigger it", hook.id);
+        }
     }
     #[cfg(feature = "rag")]
     if state.knowledge().is_some() {
@@ -347,16 +397,7 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
 }
 
 async fn require_auth(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
-    let Some(expected) = &state.api_key else {
-        return next.run(request).await;
-    };
-    let provided = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .unwrap_or_default();
-    if constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+    if state.authorized(request.headers()) {
         next.run(request).await
     } else {
         error_response(StatusCode::UNAUTHORIZED, "missing or invalid bearer token")
@@ -364,7 +405,7 @@ async fn require_auth(State(state): State<Arc<AppState>>, request: Request, next
 }
 
 /// Compare without early exit so response timing does not reveal the key prefix.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     let mut diff = a.len() ^ b.len();
     for i in 0..a.len().max(b.len()) {
         let x = a.get(i).copied().unwrap_or(0);
@@ -782,32 +823,11 @@ async fn execute(
     delivery: Delivery,
     traceparent: Option<String>,
 ) -> Response {
-    let tracer = crate::otel::tracer_for(state.telemetry.as_ref(), engine.graph(), traceparent.as_deref());
-    // One assembler records the answer in the store; a second one, fed from the same
-    // events, produces `response` SSE events for a streaming caller.
-    let new_assembler = || {
-        let mut assembler = ResponseAssembler::new(engine.graph());
-        if let Some(resume) = &input.resume {
-            // Nodes that finished before the pause will not re-run; seed their values.
-            assembler = assembler.resume_from(&resume.snapshot.root);
-        }
-        for (k, v) in &input.sys {
-            assembler = assembler.with_value(&Selector::of("sys", k), v.clone());
-        }
-        assembler
-    };
-    let assembler = new_assembler();
-    let stream_assembler = new_assembler();
+    // The launched run's assembler records the answer in the store; a second one,
+    // fed from the same events, produces `response` SSE events for a streaming caller.
+    let stream_assembler = new_assembler(engine, &input);
     let run_id = record.run_id.clone();
-    let run = engine.run(input);
-    let weak = Arc::downgrade(state);
-    let on_finish: live::OnFinish = Box::new(move |id| {
-        if let Some(state) = weak.upgrade() {
-            state.untrack(id);
-        }
-    });
-    let active = live::spawn(run, assembler, record, Arc::clone(&state.store), on_finish, tracer);
-    state.track(Arc::clone(&active));
+    let active = launch(state, engine, record, input, traceparent.as_deref());
     match delivery {
         Delivery::Detached => (
             StatusCode::ACCEPTED,
@@ -832,6 +852,85 @@ async fn execute(
             result_json(&run_id, outcome)
         }
     }
+}
+
+fn new_assembler(engine: &Engine, input: &RunInput) -> ResponseAssembler {
+    let mut assembler = ResponseAssembler::new(engine.graph());
+    if let Some(resume) = &input.resume {
+        // Nodes that finished before the pause will not re-run; seed their values.
+        assembler = assembler.resume_from(&resume.snapshot.root);
+    }
+    for (k, v) in &input.sys {
+        assembler = assembler.with_value(&Selector::of("sys", k), v.clone());
+    }
+    assembler
+}
+
+/// Start driving a run in the background and track it as active.
+fn launch(
+    state: &Arc<AppState>,
+    engine: &Engine,
+    record: RunRecord,
+    input: RunInput,
+    traceparent: Option<&str>,
+) -> Arc<ActiveRun> {
+    let tracer = crate::otel::tracer_for(state.telemetry.as_ref(), engine.graph(), traceparent);
+    let assembler = new_assembler(engine, &input);
+    let run = engine.run(input);
+    let weak = Arc::downgrade(state);
+    let on_finish: live::OnFinish = Box::new(move |id| {
+        if let Some(state) = weak.upgrade() {
+            state.untrack(id);
+        }
+    });
+    let active = live::spawn(run, assembler, record, Arc::clone(&state.store), on_finish, tracer);
+    state.track(Arc::clone(&active));
+    active
+}
+
+/// Result of [`launch_detached`].
+#[derive(Debug)]
+pub(crate) enum Launch {
+    /// A new run is executing.
+    Started(Arc<ActiveRun>),
+    /// A run with this id already exists (an idempotent redelivery).
+    Duplicate { run_id: String, status: String },
+}
+
+/// Start a background run of workflow `name` with these inputs, for callers other
+/// than the run API (webhooks). With `run_id`, an existing run of that id is
+/// reported as [`Launch::Duplicate`] instead of starting another.
+///
+/// @throws Response - 404 for an unknown workflow, or the store's error response.
+pub(crate) async fn launch_detached(
+    state: &Arc<AppState>,
+    name: &str,
+    run_id: Option<String>,
+    inputs: IndexMap<String, Value>,
+    traceparent: Option<String>,
+) -> Result<Launch, Response> {
+    let Some(workflow) = state.workflows.get(name) else {
+        return Err(error_response(StatusCode::NOT_FOUND, &format!("unknown workflow `{name}`")));
+    };
+    let run_id = run_id.unwrap_or_else(|| state.new_run_id());
+    let record = RunRecord::running(&run_id, name, workflow.engine.graph().fingerprint(), now_ms());
+    match state.store.create(record.clone()).await {
+        Ok(()) => {}
+        // `create` is atomic, so concurrent redeliveries start one run between them.
+        Err(StoreError::Conflict(_)) => {
+            let status = match state.store.get(&run_id).await {
+                Ok(Some(existing)) => crate::store::status_name(existing.status),
+                Ok(None) | Err(_) => "unknown".to_owned(),
+            };
+            return Ok(Launch::Duplicate { run_id, status });
+        }
+        Err(e) => return Err(store_error(&e)),
+    }
+    let mut input = RunInput::new();
+    input.run_id = Some(run_id);
+    input.inputs = inputs;
+    input.env = workflow.env.clone();
+    Ok(Launch::Started(launch(state, &workflow.engine, record, input, traceparent.as_deref())))
 }
 
 fn sse_stream(

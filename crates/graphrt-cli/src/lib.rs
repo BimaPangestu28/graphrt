@@ -7,6 +7,8 @@ pub mod catalog;
 pub mod error;
 pub mod extensions;
 pub mod files;
+#[cfg(feature = "serve")]
+pub mod hex;
 pub mod inspect;
 #[cfg(feature = "rag")]
 pub mod kb;
@@ -23,6 +25,8 @@ pub mod setup;
 pub mod store;
 #[cfg(feature = "wasm")]
 pub mod wasm_loader;
+#[cfg(feature = "serve")]
+pub mod webhooks;
 
 use args::{Cli, Command};
 use error::{CliError, EXIT_OK};

@@ -117,6 +117,132 @@ of a pause succeeds: a concurrent or repeated resume gets `409 Conflict`.
 `stream` and `async` work as for new runs. Clients that keep snapshots
 themselves may still send `snapshot` in the body.
 
+## Webhooks
+
+`graphrt serve <dir> --webhooks webhooks.yaml` lets GitHub, Stripe, Slack or
+any sender of JSON webhooks start runs directly, without glue code:
+
+```yaml
+hooks:
+  # POST /v1/hooks/github-push
+  github-push:
+    workflow: triage                       # a served workflow
+    inputs:                                # input name -> JSON Pointer into the body
+      repo: /repository/full_name
+      ref: /ref
+    headers:                               # input name -> request header
+      event: X-GitHub-Event
+    signature: { scheme: github, secret_env: GITHUB_WEBHOOK_SECRET }
+    idempotency_header: X-GitHub-Delivery
+    callback:                              # optional: POST the result when the run ends
+      url: https://ci.example.com/graphrt-done
+      secret_env: CALLBACK_SECRET
+
+  # POST /v1/hooks/stripe: the whole body becomes the input `body`
+  stripe:
+    workflow: billing-event
+    signature: { scheme: stripe, secret_file: /run/secrets/stripe_whsec }
+```
+
+`POST /v1/hooks/{hook}` answers `202 {run_id, status, duplicate, run, events}`;
+follow the run with `GET /v1/runs/{id}` and `/events` as for any async run.
+`GET /v1/hooks` lists the configured hooks (no secrets).
+
+The mapping lives in the serve-side file rather than in the workflow: the
+workflow stays a portable function of its declared inputs, and the
+sender-specific wiring (payload shapes, secrets, callback URLs) stays with the
+deployment.
+
+| Hook field | Meaning |
+| --- | --- |
+| `workflow` | Served workflow to run (checked at startup). |
+| `inputs` | Input name -> [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901) (`/a/b/0`, `""` for the whole body). A pointer that does not resolve leaves the input unset: the start node applies its default or fails the run for a required input. |
+| `headers` | Input name -> request header; its value is passed as a string. |
+| `body_input` | Pass the whole body as this input. Defaults to `body` when `inputs` is empty. |
+| `signature` | `{scheme, secret_env \| secret_file, header?, prefix?, tolerance_secs?}`, see below. |
+| `idempotency_header` | Header carrying the delivery's idempotency key. Default `Idempotency-Key`. |
+| `callback` | `{url, secret_env \| secret_file, on?, max_attempts?, backoff_ms?, timeout_ms?}`, see below. |
+
+Secrets come from `secret_env` (the server's environment or `--env-file`) or
+`secret_file` (e.g. a mounted container secret; a trailing newline is
+ignored). A hook whose secret is missing fails startup.
+
+### Signatures
+
+| `scheme` | Sender | Checked |
+| --- | --- | --- |
+| `hmac-sha256` (default) | generic | `<header>: <prefix><hex HMAC-SHA256(body)>`; `header` defaults to `X-Signature-256`, `prefix` to `sha256=`. |
+| `github` | GitHub | `X-Hub-Signature-256: sha256=<hex>` |
+| `stripe` | Stripe | `Stripe-Signature: t=<unix>,v1=<hex HMAC("<t>.<body>")>` (any `v1` may match) |
+| `slack` | Slack | `X-Slack-Signature: v0=<hex HMAC("v0:<ts>:<body>")>` with `X-Slack-Request-Timestamp` |
+| `graphrt` | another graphrt server's callbacks | `X-Graphrt-Signature: t=<unix>,v1=<hex HMAC("<t>.<body>")>` |
+
+The MAC is computed over the raw body and compared in constant time. The
+timestamped schemes reject deliveries more than `tolerance_secs` (default 300)
+away from the server clock, which bounds replays. A failed check answers `401`.
+
+A hook **without** `signature` requires the server's bearer API key like the
+rest of the API; a signed hook does not (the signature authenticates the
+sender). The server warns at startup about unsigned hooks when no API key is
+set.
+
+### Idempotency
+
+When a delivery carries the idempotency header (1–256 visible ASCII
+characters), the run id is derived from the hook and the key. A redelivery with
+the same key answers `202` with the first run's id, its current `status` and
+`duplicate: true`, and starts nothing; concurrent redeliveries start exactly one
+run. Because the run store is the dedupe record, this holds across restarts
+with `--store`, for as long as the run is kept (`--store-ttl-days`,
+`--max-runs`, `DELETE /v1/runs/{id}`). The key is not compared with the body:
+a different body under a used key also returns the first run.
+
+### Limits and errors
+
+Deliveries share `--max-body-bytes` (default 2 MiB) with the rest of the API:
+larger bodies answer `413`. The body must be JSON (`400` otherwise); unknown
+hooks answer `404`.
+
+### Completion callbacks
+
+With `callback`, the server POSTs the result when the run started by the
+delivery ends:
+
+```json
+{ "type": "run.succeeded", "status": "succeeded", "run_id": "hook-…", "workflow": "triage",
+  "hook": "github-push", "run": "/v1/runs/hook-…", "outputs": { "…": "…" }, "answer": "…",
+  "usage": { "…": "…" }, "elapsed_ms": 812 }
+```
+
+`status` is `succeeded` (with `outputs`, `answer`), `failed` (`error`,
+`error_type`), `aborted` (`reason`) or `paused` (`reasons`; resume with
+`POST /v1/runs/{id}/resume`). `on: [failed, aborted]` limits which statuses are
+sent (default: all four). Callbacks cover the execution started by the
+delivery; a later resume of a paused run does not send another one.
+
+Each request carries:
+
+| Header | Value |
+| --- | --- |
+| `X-Graphrt-Signature` | `t=<unix>,v1=<hex HMAC-SHA256("<t>.<body>")>` under the callback secret |
+| `X-Graphrt-Event` | `run.<status>` |
+| `X-Graphrt-Delivery`, `Idempotency-Key` | `<run_id>.<status>`, the same for every retry |
+| `X-Graphrt-Attempt` | `1`, `2`, … |
+
+To verify: split the header at `,`, recompute the HMAC of `"<t>.<raw body>"`,
+compare in constant time, and reject old timestamps. A graphrt server can
+receive another's callbacks with a hook using `scheme: graphrt`.
+
+Callbacks go through the same egress policy as `http-request` nodes: private,
+loopback, link-local and metadata addresses are refused (a literal address at
+startup, a resolved one at delivery) unless the server runs with
+`--allow-private-network`, and redirects are not followed. Network errors,
+timeouts, `408`, `429` and `5xx` are retried with exponential backoff
+(`backoff_ms`, default 1000, doubling, at most 5 minutes apart) up to
+`max_attempts` (default 5, at most 20) requests in total; other responses are
+final. Each request times out after `timeout_ms` (default 10000). Callbacks are
+held in memory: a restart drops pending retries.
+
 ## Knowledge base API
 
 When the server is started with `--knowledge <config>`, the knowledge base the

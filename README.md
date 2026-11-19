@@ -287,7 +287,7 @@ Custom nodes, services, model providers and native tools are covered in
 | Code | QuickJS with memory, stack and time limits, no filesystem, network, timers or modules. |
 | MCP | stdio servers start with an empty environment plus an explicit allow-list; every call has a timeout; tools can be allow-listed. |
 | Plugins | Process plugins start lazily with an empty environment plus the variables their manifest lists, optional `checksums` verified before every start, per-request timeouts and message size caps; secrets are masked unless the manifest asks for them. WebAssembly plugins run in an interpreter with fuel and memory limits and no system imports. A plugin can never replace a built-in or another plugin's node kind. |
-| Server | Optional bearer auth (constant-time comparison), request body limit, env values cannot be set by requests. |
+| Server | Optional bearer auth (constant-time comparison), request body limit, env values cannot be set by requests. Webhooks verify HMAC-SHA256 signatures in constant time with a replay window; completion callbacks are signed and go through the egress policy. |
 | Limits | Step budget, run duration, per-node timeouts, container depth, iteration/loop caps. |
 
 ## Binary size

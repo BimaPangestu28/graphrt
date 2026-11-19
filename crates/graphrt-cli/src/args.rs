@@ -417,6 +417,11 @@ pub struct ServeArgs {
     /// on small devices: a finished run takes roughly 10-20 KiB.
     #[arg(long, value_name = "N", default_value_t = crate::store::DEFAULT_MAX_RUNS)]
     pub max_runs: usize,
+    /// Webhook triggers file (YAML or JSON): `POST /v1/hooks/{hook}` starts a run from a
+    /// JSON delivery, with optional signature checks, idempotency keys and completion
+    /// callbacks. See docs/serving.md.
+    #[arg(long, value_name = "FILE")]
+    pub webhooks: Option<PathBuf>,
     #[command(flatten)]
     pub services: ServiceArgs,
 }

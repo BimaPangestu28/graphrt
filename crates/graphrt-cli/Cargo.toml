@@ -26,7 +26,7 @@ default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", 
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
-http = ["dep:graphrt-http"]
+http = ["dep:graphrt-http", "dep:reqwest"]
 # code node (embedded JavaScript).
 code = ["dep:graphrt-code"]
 # Python code nodes via a local subprocess, enabled per run with `--allow-python-subprocess`.
@@ -51,8 +51,9 @@ otel = ["dep:graphrt-otel"]
 # mimalloc as the global allocator. Much faster than musl's allocator, which the
 # static release binaries and the container image would otherwise use.
 mimalloc = ["dep:mimalloc"]
-# `graphrt serve`: HTTP + SSE API.
-serve = ["dep:axum", "tokio/rt-multi-thread", "tokio/net", "tokio/sync"]
+# `graphrt serve`: HTTP + SSE API, webhook triggers (`--webhooks`). Completion
+# callbacks of webhooks additionally need `http` (they go through its egress policy).
+serve = ["dep:axum", "dep:sha2", "tokio/rt-multi-thread", "tokio/net", "tokio/sync"]
 
 [dependencies]
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }
@@ -74,6 +75,8 @@ serde.workspace = true
 serde_json.workspace = true
 indexmap.workspace = true
 serde-saphyr.workspace = true
+reqwest = { workspace = true, optional = true }
+sha2 = { version = "0.11", optional = true, default-features = false }
 axum ={ version = "0.8", optional = true, default-features = false, features = ["http1", "json", "query", "tokio"] }
 
 [dev-dependencies]
