@@ -14,6 +14,7 @@ ignore = [
     { id = "RUSTSEC-2026-0374", reason = "basic-toml via uniffi_bindgen (graphrt-ffi build tooling only)" },
     { id = "RUSTSEC-2026-0543", reason = "chrono via rmcp/schemars (graphrt-mcp); no maintained drop-in yet" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser via lopdf/pdf-extract (graphrt-doc `pdf` feature)" },
+    { id = "RUSTSEC-2024-0436", reason = "paste (proc-macro, build time only) via gemm/candle (graphrt-rag `local-embed` feature)" },
 ]
 
 [licenses]
