@@ -5,6 +5,21 @@ Python and other languages through [UniFFI](https://mozilla.github.io/uniffi-rs/
 0.32. Workflows built on a platform run inside the app itself, offline-capable
 except for the model / API calls they make.
 
+## Sample apps
+
+Two minimal apps run the offline [`hello`](../examples/hello.yaml) workflow
+on the device, with a name field, a **Run** button and a **Stream events**
+button. Each comes with a script that builds the native library:
+
+| App | Build script | Native artifact |
+| --- | --- | --- |
+| [Android (Kotlin, Views)](../examples/mobile/android/README.md) | `examples/mobile/android/scripts/build-rust.sh` | `libgraphrt_ffi.so`, arm64-v8a 8.5 MB / x86_64 10.2 MB |
+| [iOS (SwiftUI)](../examples/mobile/ios/README.md) | `examples/mobile/ios/scripts/build-xcframework.sh` | `GraphrtFFI.xcframework`; the Release device app binary is 13.7 MB |
+
+Both build graphrt with `--no-default-features` (engine, templates, LLM and
+HTTP nodes; no JavaScript, MCP, document or RAG nodes) and the `min-size`
+profile. Start from them when embedding graphrt in your own app.
+
 ## What runs on mobile
 
 Everything in the embedded build avoids spawning processes (forbidden on iOS):
@@ -43,6 +58,11 @@ EventListener (you implement)
   onAnswerChunk(text)         // ordered answer text, streamed
   onFinish(resultJson)        // once: {"status":"succeeded"|"failed"|"aborted"|"paused", "answer", ...}
 ```
+
+Errors are `GraphrtException` subclasses in Kotlin and `GraphrtError` cases in
+Swift. Each carries the error text in a field, called `detail` in Kotlin (where
+`message` would clash with `Throwable.message`) and `message` in Swift and
+Python.
 
 A paused result (`"status": "paused"`, e.g. human approval) carries a
 `snapshot`; store it and pass it to `resume` later, even after an app restart.
@@ -194,7 +214,8 @@ val run = workflow.run("{}", """{"query": "What is a DAG?"}""", ChatListener { c
 Gradle: copy `bindings/kotlin/uniffi/graphrt_ffi/graphrt_ffi.kt` into your
 module, put the `.so` files under `src/main/jniLibs/<abi>/`, and add
 `implementation("net.java.dev.jna:jna:5.17.0@aar")` (UniFFI's Kotlin bindings
-use JNA).
+use JNA). [`examples/mobile/android`](../examples/mobile/android/) shows
+the whole setup.
 
 ## iOS (SwiftUI)
 
@@ -233,6 +254,7 @@ final class Listener: EventListener {
 
 Add `bindings/swift/graphrt_ffi.swift` to the app target and link the
 XCFramework built below (it contains `graphrt_ffiFFI.h` and the module map).
+[`examples/mobile/ios`](../examples/mobile/ios/) shows the whole setup.
 
 ## Building
 
@@ -275,15 +297,21 @@ latter being `graphrt_ffiFFI.modulemap` renamed.)
 ### Regenerating bindings
 
 Bindings are generated from an unstripped library (the `release` and
-`min-size` profiles strip the UniFFI metadata), so use a debug build:
+`min-size` profiles strip the UniFFI metadata), so use a debug build. The
+library is `libgraphrt_ffi.so` on Linux and `libgraphrt_ffi.dylib` on macOS:
 
 ```sh
 cargo build -p graphrt-ffi
+lib=target/debug/libgraphrt_ffi.so   # macOS: target/debug/libgraphrt_ffi.dylib
 for lang in kotlin swift python; do
   cargo run -p graphrt-ffi --features bindgen-cli --bin uniffi-bindgen -- \
-    generate --library target/debug/libgraphrt_ffi.so --language $lang --out-dir bindings/$lang
+    generate --library $lib --language $lang --out-dir bindings/$lang
 done
 ```
+
+The generator reads `crates/graphrt-ffi/uniffi.toml` (Kotlin renames).
+Features do not change the exported API, so a `--no-default-features` build
+produces the same bindings.
 
 ### CI (GitHub Actions)
 
@@ -337,10 +365,15 @@ jobs:
   `CredentialProvider` supplying the key for an LLM call to a local server.
 - Credentials (`crates/graphrt-ffi/tests/credentials.rs`): host keys used per
   request, 401 -> `invalidate` -> one retry, caching, failing / panicking
-  callbacks, config without any provider key. Kotlin / Swift snippets above are
-  checked against the generated bindings' signatures but not compiled.
-- Android: all three ABIs compile and link with NDK r28c; not yet run on a
-  device or emulator.
-- iOS: pure-Rust crates (`graphrt-core`, `graphrt-wasm`, `graphrt-doc`,
-  `graphrt-rag`, `graphrt-llm` without HTTP) type-check for `aarch64-apple-ios`;
-  the full library needs a macOS build (see CI snippet).
+  callbacks, config without any provider key. The Kotlin / Swift snippets above
+  are checked against the generated bindings' signatures but not compiled.
+- Android: all three ABIs compile and link with NDK r28c. The
+  [sample app](../examples/mobile/android/) (`--no-default-features`, NDK 28.2)
+  ran the hello workflow on an API 36 arm64-v8a emulator, covering
+  `waitJson` and streamed events. The x86_64 library is built but has not
+  been run, and no physical device has been tested.
+- iOS: the [sample app](../examples/mobile/ios/) (`--no-default-features`)
+  ran the hello workflow on an iOS 26.5 simulator (arm64), covering `waitJson`
+  and streamed events. The device slice (`aarch64-apple-ios`) links into an
+  unsigned Release build but has not been run on hardware. The default
+  feature set (`mobile-js`, `doc`, `rag`) has not been built for iOS yet.

@@ -1,0 +1,22 @@
+# Built by scripts/build-rust.sh and scripts/build-xcframework.sh
+android/app/src/main/jniLibs/
+ios/build/
+*.so
+*.a
+*.xcframework/
+
+# Gradle / Android Studio
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/.kotlin/
+*.apk
+*.aab
+
+# Xcode
+ios/DerivedData/
+ios/GraphrtSample.xcodeproj/project.xcworkspace/
+ios/GraphrtSample.xcodeproj/xcuserdata/
+*.ipa

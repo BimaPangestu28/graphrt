@@ -3413,10 +3413,10 @@ sealed class GraphrtException: kotlin.Exception() {
      */
     class InvalidConfig(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : GraphrtException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     /**
@@ -3424,10 +3424,10 @@ sealed class GraphrtException: kotlin.Exception() {
      */
     class InvalidWorkflow(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : GraphrtException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     /**
@@ -3435,10 +3435,10 @@ sealed class GraphrtException: kotlin.Exception() {
      */
     class InvalidInput(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : GraphrtException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     /**
@@ -3446,10 +3446,10 @@ sealed class GraphrtException: kotlin.Exception() {
      */
     class Plugin(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : GraphrtException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
     /**
@@ -3457,10 +3457,10 @@ sealed class GraphrtException: kotlin.Exception() {
      */
     class Runtime(
         
-        val `message`: kotlin.String
+        val `detail`: kotlin.String
         ) : GraphrtException() {
         override val message
-            get() = "message=${ `message` }"
+            get() = "detail=${ `detail` }"
     }
     
 
@@ -3506,27 +3506,27 @@ public object FfiConverterTypeGraphrtError : FfiConverterRustBuffer<GraphrtExcep
             is GraphrtException.InvalidConfig -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is GraphrtException.InvalidWorkflow -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is GraphrtException.InvalidInput -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is GraphrtException.Plugin -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
             is GraphrtException.Runtime -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
-                + FfiConverterString.allocationSize(value.`message`)
+                + FfiConverterString.allocationSize(value.`detail`)
             )
         }
     }
@@ -3535,27 +3535,27 @@ public object FfiConverterTypeGraphrtError : FfiConverterRustBuffer<GraphrtExcep
         when(value) {
             is GraphrtException.InvalidConfig -> {
                 buf.putInt(1)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is GraphrtException.InvalidWorkflow -> {
                 buf.putInt(2)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is GraphrtException.InvalidInput -> {
                 buf.putInt(3)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is GraphrtException.Plugin -> {
                 buf.putInt(4)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
             is GraphrtException.Runtime -> {
                 buf.putInt(5)
-                FfiConverterString.write(value.`message`, buf)
+                FfiConverterString.write(value.`detail`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
