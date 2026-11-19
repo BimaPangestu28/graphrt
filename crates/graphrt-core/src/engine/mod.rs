@@ -91,12 +91,14 @@ mod frame;
 mod ids;
 mod root;
 
+use std::collections::VecDeque;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 
-use futures::channel::mpsc;
 use futures::future::BoxFuture;
+use futures::task::AtomicWaker;
 use futures::{FutureExt, Stream, StreamExt};
 use indexmap::IndexMap;
 
@@ -262,15 +264,12 @@ impl Engine {
     /// spawned), so it works on any executor. The final item is always a terminal
     /// event (`RunSucceeded`, `RunFailed`, `RunAborted` or `RunPaused`).
     pub fn run(&self, input: RunInput) -> RunStream {
-        let (tx, rx) = mpsc::unbounded::<Event>();
+        let queue = Arc::new(EventQueue::default());
         let control = Arc::new(Control::default());
-        let sink: EventSink = Arc::new(move |event| {
-            // The receiver only disappears when the consumer dropped the stream,
-            // in which case the run is being torn down anyway.
-            let _ = tx.unbounded_send(event);
-        });
+        let sink_queue = Arc::clone(&queue);
+        let sink: EventSink = Arc::new(move |event| sink_queue.push(event));
         let driver = root::run_root(self.clone(), input, control.clone(), sink).boxed();
-        RunStream { driver: Some(driver), rx, finished: false, handle: RunHandle { control } }
+        RunStream { driver: Some(driver), queue, finished: false, handle: RunHandle { control } }
     }
 
     /// Run to completion and return the terminal event, discarding the others.
@@ -289,12 +288,46 @@ impl Engine {
     }
 }
 
+/// Events waiting for the stream's consumer.
+///
+/// Most events are produced while [`RunStream::poll_next`] polls the driver, on
+/// the consumer's own task; nodes may also emit from tasks of their own (e.g. a
+/// plugin's reader), which the waker covers. A `VecDeque` reuses its buffer, so
+/// unlike a channel no allocation is made per event.
+#[derive(Default)]
+struct EventQueue {
+    events: Mutex<VecDeque<Event>>,
+    waker: AtomicWaker,
+    /// Set when the stream is dropped: later events are discarded, not queued.
+    closed: AtomicBool,
+}
+
+impl EventQueue {
+    fn push(&self, event: Event) {
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
+        self.events.lock().unwrap_or_else(PoisonError::into_inner).push_back(event);
+        self.waker.wake();
+    }
+
+    fn pop(&self) -> Option<Event> {
+        self.events.lock().unwrap_or_else(PoisonError::into_inner).pop_front()
+    }
+}
+
 /// Stream of run events. `Send + 'static`. Dropping it cancels the run.
 pub struct RunStream {
     driver: Option<BoxFuture<'static, ()>>,
-    rx: mpsc::UnboundedReceiver<Event>,
+    queue: Arc<EventQueue>,
     finished: bool,
     handle: RunHandle,
+}
+
+impl Drop for RunStream {
+    fn drop(&mut self) {
+        self.queue.closed.store(true, Ordering::Release);
+    }
 }
 
 impl std::fmt::Debug for RunStream {
@@ -322,26 +355,32 @@ impl Stream for RunStream {
                 self.driver = None;
             }
         }
-        match self.rx.poll_next_unpin(cx) {
-            Poll::Ready(Some(event)) => {
+        let event = match self.queue.pop() {
+            Some(event) => Some(event),
+            None if self.driver.is_none() => None,
+            None => {
+                // Only register when about to sleep (registering on every poll makes
+                // events pushed by this very task wake it again), then look once more
+                // so an event pushed from another task in between is not missed.
+                self.queue.waker.register(cx.waker());
+                match self.queue.pop() {
+                    Some(event) => Some(event),
+                    None => return Poll::Pending,
+                }
+            }
+        };
+        match event {
+            Some(event) => {
                 if event.is_terminal() {
                     self.finished = true;
                 }
                 Poll::Ready(Some(event))
             }
-            Poll::Ready(None) => {
+            None => {
+                // Every event is sent synchronously, so a finished driver with an
+                // empty queue means the run is over.
                 self.finished = true;
                 Poll::Ready(None)
-            }
-            Poll::Pending => {
-                if self.driver.is_none() {
-                    // Every event is sent synchronously, so a finished driver with an
-                    // empty queue means the run is over.
-                    self.finished = true;
-                    Poll::Ready(None)
-                } else {
-                    Poll::Pending
-                }
             }
         }
     }
