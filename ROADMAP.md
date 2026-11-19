@@ -43,11 +43,9 @@ Models come from API providers; the runtime itself needs no server.
 
 ## Next
 
-- Windows release binaries and release automation per tag (CI).
-- Homebrew tap.
+- Windows binaries tested on Windows, and release automation per tag (CI).
 - Mobile builds verified in CI (Android emulator, iOS simulator) and on devices.
 - Live provider test matrix in CI (OpenAI, Anthropic, Gemini, Bedrock, TypeSafe) behind secrets.
-- Faster validation of very large workflows (cold start of 1,000-node documents).
 
 ## Later
 

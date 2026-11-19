@@ -7,7 +7,26 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-20
+
+Loading large workflows is fast again. 0.3.0's strict validation built every
+node and checked every node config twice, and re-parsed the document for source
+positions even when it was clean: `graphrt run` / `validate` on a 1,000-node
+workflow took ~54 ms instead of 0.2.0's ~14 ms. No behaviour changes; errors
+are reported exactly as in 0.3.0.
+
+### Performance
+- Validation compiles a clean document from the nodes it already built and
+  checked, instead of building and checking them again in `Graph::build`.
+- Source positions are computed only when there is something to report.
+- `Graph::fingerprint` is computed on first use and cached: only snapshots, run
+  records and traces need it. Values are unchanged.
+- `graphrt run` on a 1,000-node chain (macOS arm64, `min-size` build): 0.3.0
+  55 ms, 0.3.1 16 ms, 0.2.0 15 ms.
+
 ### Added
+- The iOS sample app is verified on a physical iPhone (iOS 18.3); its README
+  has the device build, install and launch steps.
 - Plugin SDKs 0.2.0 on PyPI and npm (`graphrt-plugin`): tool handlers can
   return images (`tool_images`), as shipped in graphrt 0.3.0.
 
@@ -649,7 +668,8 @@ laptop, a server, a container, the edge or a phone.
   credentials, plugins, WebAssembly runtime, document extraction and retrieval,
   with regression tests for every finding.
 
-[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/BimaPangestu28/graphrt/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.1.0...v0.2.0
