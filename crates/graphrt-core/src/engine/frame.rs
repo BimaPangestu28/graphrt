@@ -21,7 +21,7 @@ use indexmap::IndexMap;
 use super::Limits;
 use super::control::{Control, Stop};
 use super::ids::new_id_arc;
-use crate::dsl::ErrorStrategy;
+use crate::dsl::{ErrorStrategy, RetryPolicy};
 use crate::event::{Event, FrameId, PauseReason, Usage};
 use crate::graph::{EdgeIx, FAIL_BRANCH, Graph, NodeIx};
 use crate::node::{
@@ -367,7 +367,7 @@ impl Frame {
     /// Run the frame to completion, failure, pause or stop.
     pub(crate) async fn run(mut self) -> FrameOutcome {
         let control = self.run.control.clone();
-        let mut running: FuturesUnordered<BoxFuture<'static, TaskDone>> = FuturesUnordered::new();
+        let mut running = FuturesUnordered::new();
         loop {
             if control.is_stopped() {
                 return FrameOutcome::Stopped;
@@ -475,11 +475,20 @@ impl Frame {
     }
 
     /// Start a node: emit `NodeStarted` and build its task future.
-    fn start(&mut self, ix: NodeIx) -> BoxFuture<'static, TaskDone> {
+    ///
+    /// The future is returned unboxed: [`FuturesUnordered`] already stores each
+    /// future in its own task allocation, so boxing it first would cost a
+    /// second allocation per node execution.
+    fn start(&mut self, ix: NodeIx) -> impl Future<Output = TaskDone> + Send + 'static {
         let run = self.run.clone();
         let Some(gn) = run.graph.node(ix) else {
             let error = NodeError::fatal("graph", "unknown node index");
-            return Box::pin(futures::future::ready(TaskDone { ix, attempt: 1, result: Err(error), elapsed_ms: 0 }));
+            return Either::Left(futures::future::ready(TaskDone {
+                ix,
+                attempt: 1,
+                result: Err(error),
+                elapsed_ms: 0,
+            }));
         };
         // The execution id is minted in `mark_ready`; read the clock only if not.
         let rt = self.nodes.entry(ix).or_insert_with(|| NodeRt {
@@ -514,12 +523,14 @@ impl Frame {
         };
         let node: Arc<dyn Node> = gn.node.clone();
         let node_id: Arc<str> = gn.id.clone();
-        let policy = gn.policy.clone();
-        let timeout_ms = policy.timeout_ms.or(run.limits.default_node_timeout_ms);
+        // Only the retry policy is needed while running; cloning the whole policy
+        // would also copy (and allocate for) `default-value` error outputs.
+        let retry = gn.policy.retry.clone();
+        let timeout_ms = gn.policy.timeout_ms.or(run.limits.default_node_timeout_ms);
         let pool = self.pool.clone();
         let frame = self.id.clone();
 
-        Box::pin(async move {
+        Either::Right(async move {
             let started = run.now_ms();
             let mut attempt: u32 = 1;
             loop {
@@ -545,32 +556,28 @@ impl Frame {
                 .with_subgraph(subgraph.clone())
                 .with_deadline(deadline_ms);
                 let result = run_attempt(node.as_ref(), ctx, timeout_ms, run.clock.as_ref()).await;
-                match result {
-                    Err(error)
-                        if error.retryable && attempt <= policy.retry.max_retries && !run.control.is_stopped() =>
-                    {
-                        let delay_ms = policy
-                            .retry
-                            .delay_ms(attempt)
-                            .max(error.retry_after_ms.unwrap_or(0))
-                            .min(MAX_RETRY_DELAY_MS);
-                        attempt = attempt.saturating_add(1);
-                        run.emit(Event::NodeRetry {
-                            frame: frame.clone(),
-                            node_id: Arc::clone(&node_id),
-                            exec_id: Arc::clone(&exec_id),
-                            attempt,
-                            error: error.to_string(),
-                            delay_ms,
-                        });
-                        if delay_ms > 0 {
-                            run.clock.sleep(Duration::from_millis(delay_ms)).await;
-                        }
-                    }
+                let error = match result {
+                    Err(error) if error.retryable && attempt <= retry.max_retries && !run.control.is_stopped() => error,
                     result => {
                         let elapsed_ms = run.now_ms().saturating_sub(started);
                         return TaskDone { ix, attempt, result, elapsed_ms };
                     }
+                };
+                // Report the error before waiting, so neither it nor the result it
+                // came from is kept in the task across the retry delay.
+                let delay_ms = retry_delay_ms(&retry, attempt, &error);
+                attempt = attempt.saturating_add(1);
+                run.emit(Event::NodeRetry {
+                    frame: frame.clone(),
+                    node_id: Arc::clone(&node_id),
+                    exec_id: Arc::clone(&exec_id),
+                    attempt,
+                    error: error.to_string(),
+                    delay_ms,
+                });
+                drop(error);
+                if delay_ms > 0 {
+                    run.clock.sleep(Duration::from_millis(delay_ms)).await;
                 }
             }
         })
@@ -888,33 +895,48 @@ fn merge_response(frame_outputs: &mut IndexMap<String, Value>, outputs: &IndexMa
     }
 }
 
+/// Delay before retrying after failed attempt number `attempt`: the larger of
+/// the policy delay and the error's `retry_after_ms`, capped.
+fn retry_delay_ms(retry: &RetryPolicy, attempt: u32, error: &NodeError) -> u64 {
+    retry.delay_ms(attempt).max(error.retry_after_ms.unwrap_or(0)).min(MAX_RETRY_DELAY_MS)
+}
+
 /// Run one attempt with an optional timeout, converting panics into node errors.
-async fn run_attempt(node: &dyn Node, ctx: NodeContext, timeout_ms: Option<u64>, clock: &dyn Clock) -> NodeResult {
-    let fut = AssertUnwindSafe(node.run(ctx)).catch_unwind();
-    let guarded = async {
-        match fut.await {
-            Ok(result) => result,
-            Err(panic) => {
-                let message = panic
-                    .downcast_ref::<&str>()
-                    .map(|s| (*s).to_owned())
-                    .or_else(|| panic.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "node panicked".to_owned());
-                Err(NodeError::fatal("panic", message))
-            }
-        }
+///
+/// The node's future and the timer are created before the returned future is
+/// first polled, so it holds only those two (not the [`NodeContext`]): this
+/// future lives inside every node task, and a smaller task is cheaper to build
+/// and move.
+fn run_attempt<'a>(
+    node: &'a dyn Node,
+    ctx: NodeContext,
+    timeout_ms: Option<u64>,
+    clock: &dyn Clock,
+) -> impl Future<Output = NodeResult> + Send + 'a {
+    let guarded = AssertUnwindSafe(node.run(ctx)).catch_unwind().map(|outcome| outcome.unwrap_or_else(panic_error));
+    let timer = match timeout_ms {
+        Some(ms) if clock.supports_timers() => Some((ms, clock.sleep(Duration::from_millis(ms)))),
+        _ => None,
     };
-    match timeout_ms {
-        Some(ms) if clock.supports_timers() => {
-            let sleep = clock.sleep(Duration::from_millis(ms));
-            futures::pin_mut!(guarded);
-            match futures::future::select(guarded, sleep).await {
-                Either::Left((result, _)) => result,
-                Either::Right(((), _)) => Err(NodeError::timeout(Duration::from_millis(ms))),
-            }
+    async move {
+        let Some((ms, sleep)) = timer else {
+            return guarded.await;
+        };
+        match futures::future::select(guarded, sleep).await {
+            Either::Left((result, _)) => result,
+            Either::Right(((), _)) => Err(NodeError::timeout(Duration::from_millis(ms))),
         }
-        _ => guarded.await,
     }
+}
+
+/// The node error for a panic payload caught while polling a node.
+fn panic_error(panic: Box<dyn std::any::Any + Send>) -> NodeResult {
+    let message = panic
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "node panicked".to_owned());
+    Err(NodeError::fatal("panic", message))
 }
 
 /// [`Subgraph`] implementation handed to container nodes.
