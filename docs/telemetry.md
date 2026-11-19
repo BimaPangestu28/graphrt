@@ -104,8 +104,9 @@ cargo build -p graphrt-cli --profile min-size --no-default-features --features l
 ```
 
 In that build the `graphrt telemetry` command does not exist and no
-telemetry code is compiled in. Adding `telemetry` to it costs about 20 KiB
-(see the changelog for the measurement); it needs the `http` feature.
+telemetry code is compiled in. Adding `telemetry` to that build costs about
+49 KiB (5,883,760 -> 5,933,712 bytes with `--profile min-size` on macOS
+arm64); it needs the `http` feature, whose HTTP client it reuses.
 
 ## The collector
 
