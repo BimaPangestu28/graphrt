@@ -141,7 +141,7 @@ async fn llm_streams_tokens_and_reports_usage() {
     let chunks: Vec<String> = events
         .iter()
         .filter_map(|e| match e {
-            Event::NodeChunk { node_id, field, chunk, .. } if node_id.as_ref() == "llm" && field == "text" => {
+            Event::NodeChunk { node_id, field, chunk, .. } if node_id.as_ref() == "llm" && field.as_ref() == "text" => {
                 Some(chunk.clone())
             }
             _ => None,

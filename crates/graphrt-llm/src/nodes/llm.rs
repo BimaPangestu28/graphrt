@@ -22,10 +22,10 @@ use serde_json::Value as Json;
 
 use super::common::{
     ContextConfig, FinishCheck, MemoryConfig, ModelConfig, PromptTemplate, StreamMode, VisionConfig, build_messages,
-    check_finish, extract_json_where, invoke, model_for, split_think_tags, usage_value,
+    check_finish, extract_json_where, finish_reason_value, invoke, model_for, split_think_tags, usage_value,
 };
 use super::schema;
-use crate::types::ResponseFormat;
+use crate::types::{ChatResponse, ResponseFormat};
 
 /// How `<think>` tags inside the answer are treated.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -89,6 +89,9 @@ impl LlmConfig {
 pub struct LlmNode {
     config: LlmConfig,
     schema: Option<Json>,
+    /// `model` and `provider` metadata, built once instead of per run.
+    model_name: Value,
+    provider: Value,
 }
 
 impl LlmNode {
@@ -98,7 +101,9 @@ impl LlmNode {
             return Err(ConfigError::new(doc, "prompt_template must contain at least one message"));
         }
         let schema = config.output_schema();
-        Ok(Self { config, schema })
+        let model_name = Value::from(config.model.name.as_str());
+        let provider = Value::from(config.model.provider.as_str());
+        Ok(Self { config, schema, model_name, provider })
     }
 
     async fn execute(&self, ctx: NodeContext) -> NodeResult {
@@ -126,30 +131,28 @@ impl LlmNode {
         };
         let response = invoke(&ctx, model.as_ref(), request, mode).await?;
         let finish = check_finish(&response)?;
+        let finish_reason = finish_reason_value(response.finish_reason.as_ref());
+        let ChatResponse { text: answer, reasoning: model_reasoning, usage, warnings, .. } = response;
 
         let (text, mut reasoning) = match cfg.reasoning_format {
-            ReasoningFormat::Tagged => (response.text.clone(), String::new()),
-            ReasoningFormat::Separated => split_think_tags(&response.text),
+            ReasoningFormat::Tagged => (answer, String::new()),
+            ReasoningFormat::Separated => split_think_tags(&answer),
         };
-        if !response.reasoning.is_empty() {
-            reasoning = if reasoning.is_empty() {
-                response.reasoning.clone()
-            } else {
-                format!("{}\n{reasoning}", response.reasoning)
-            };
+        if !model_reasoning.is_empty() {
+            reasoning = if reasoning.is_empty() { model_reasoning } else { format!("{model_reasoning}\n{reasoning}") };
         }
 
         let mut output = NodeOutput::new()
             .with("text", text.as_str())
-            .with("usage", usage_value(&response.usage))
-            .with("finish_reason", response.finish_reason.as_ref().map(|r| r.as_str()).unwrap_or_default())
-            .usage(response.usage)
-            .meta("model", cfg.model.name.as_str())
-            .meta("provider", cfg.model.provider.as_str());
+            .with("usage", usage_value(&usage))
+            .with("finish_reason", finish_reason)
+            .usage(usage)
+            .meta("model", self.model_name.clone())
+            .meta("provider", self.provider.clone());
         if !reasoning.is_empty() {
             output = output.with("reasoning", reasoning);
         }
-        let mut warnings: Vec<Value> = response.warnings.iter().map(|w| Value::from(w.as_str())).collect();
+        let mut warnings: Vec<Value> = warnings.into_iter().map(Value::from).collect();
         if let FinishCheck::Unknown(reason) = &finish {
             warnings.push(Value::from(format!("unrecognized finish reason `{reason}`")));
         }
@@ -280,7 +283,7 @@ mod tests {
             .unwrap()
             .iter()
             .filter_map(|e| match e {
-                Event::NodeChunk { field, chunk, .. } => Some((field.clone(), chunk.clone())),
+                Event::NodeChunk { field, chunk, .. } => Some((field.to_string(), chunk.clone())),
                 _ => None,
             })
             .collect();
@@ -332,7 +335,7 @@ mod tests {
         let mut reasoning = String::new();
         for e in events.lock().unwrap().iter() {
             if let Event::NodeChunk { field, chunk, .. } = e {
-                match field.as_str() {
+                match field.as_ref() {
                     "text" => streamed.push_str(chunk),
                     _ => reasoning.push_str(chunk),
                 }

@@ -861,7 +861,7 @@ async fn run_events(
     if query.stream == Some(false) {
         let mut all = stored;
         if let Some((_, sub)) = subscription {
-            all.extend(sub.backlog.iter().map(event_to_stored));
+            all.extend(sub.backlog.iter().map(|event| event_to_stored(event)));
         }
         return Json(all).into_response();
     }
@@ -878,7 +878,7 @@ async fn run_events(
 
 /// Events from a broadcast receiver until the terminal event.
 fn live_events(
-    rx: tokio::sync::broadcast::Receiver<Event>,
+    rx: tokio::sync::broadcast::Receiver<live::SharedEvent>,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + 'static {
     futures::stream::unfold((rx, false), |(mut rx, finished)| async move {
         if finished {
@@ -1061,10 +1061,12 @@ fn sse_stream(
         let terminal = event.is_terminal();
         Some((event, (events, terminal)))
     });
+    let mut chunks = Vec::new();
     events.flat_map(move |event| {
         let _keep_alive = &guard;
         let mut out = Vec::new();
-        for chunk in assembler.push(&event) {
+        assembler.push_into(&event, &mut chunks);
+        for chunk in chunks.drain(..) {
             let data = serde_json::json!({ "node_id": chunk.node_id, "text": chunk.text, "is_final": chunk.is_final });
             out.push(Ok(SseEvent::default().event("response").data(data.to_string())));
         }

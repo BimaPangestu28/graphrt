@@ -537,12 +537,30 @@ impl NodeContext {
     }
 
     /// Stream an incremental chunk for output `field`.
+    ///
+    /// Allocates the field name for every chunk; nodes that stream many chunks
+    /// should keep the name in an `Arc<str>` and use [`NodeContext::chunk_shared`].
     pub fn chunk(&self, field: &str, chunk: impl Into<String>) {
+        self.chunk_shared(&Arc::from(field), chunk);
+    }
+
+    /// Stream an incremental chunk for output `field`, sharing the field name
+    /// (no allocation besides the chunk text itself).
+    ///
+    /// ```
+    /// # use std::sync::Arc;
+    /// # let ctx = graphrt_core::NodeContext::for_test("n", graphrt_core::VariablePool::new());
+    /// let field: Arc<str> = Arc::from("text");
+    /// for token in ["Hel", "lo"] {
+    ///     ctx.chunk_shared(&field, token);
+    /// }
+    /// ```
+    pub fn chunk_shared(&self, field: &Arc<str>, chunk: impl Into<String>) {
         (self.sink)(Event::NodeChunk {
             frame: self.frame.clone(),
             node_id: Arc::clone(&self.node_id),
             exec_id: Arc::clone(&self.exec_id),
-            field: field.to_owned(),
+            field: Arc::clone(field),
             chunk: chunk.into(),
         });
     }

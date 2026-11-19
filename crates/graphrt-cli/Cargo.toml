@@ -49,7 +49,11 @@ mcp = ["dep:graphrt-mcp"]
 # OpenTelemetry traces and metrics over OTLP/HTTP (`--otel`, `--otel-stdout`).
 otel = ["dep:graphrt-otel"]
 # mimalloc as the global allocator. Much faster than musl's allocator, which the
-# static release binaries and the container image would otherwise use.
+# static release binaries and the container image would otherwise use, and than
+# the macOS one (about 40% fewer instructions per instant LLM run). Off by
+# default for small devices: the static musl `serve` build idles at ~12 MiB RSS
+# with it instead of ~4.4 MiB and is OOM-killed in a 16 MiB container under
+# load; it also adds ~140 KiB to the binary.
 mimalloc = ["dep:mimalloc"]
 # `graphrt serve`: HTTP + SSE API, webhook triggers (`--webhooks`). Completion
 # callbacks of webhooks additionally need `http` (they go through its egress policy).

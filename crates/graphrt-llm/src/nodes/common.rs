@@ -1,6 +1,6 @@
 //! Configuration and prompt assembly shared by the model-calling nodes.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use graphrt_core::event::Usage;
 use graphrt_core::template::{Part, Template};
@@ -168,10 +168,10 @@ impl Default for PromptTemplate {
 }
 
 impl PromptTemplate {
-    pub fn messages(&self) -> Vec<&PromptMessage> {
+    pub fn messages(&self) -> &[PromptMessage] {
         match self {
-            PromptTemplate::Chat(m) => m.iter().collect(),
-            PromptTemplate::Completion(m) => vec![m],
+            PromptTemplate::Chat(m) => m,
+            PromptTemplate::Completion(m) => std::slice::from_ref(m),
         }
     }
 
@@ -403,11 +403,12 @@ pub fn render_with_context(template: &Template, pool: &VariablePool, context: Op
                     out.push_str(t);
                 }
             }
-            Part::Var(sel) => {
-                if let Some(v) = pool.get(sel) {
-                    out.push_str(&v.to_text());
-                }
-            }
+            Part::Var(sel) => match pool.get(sel) {
+                // Strings (the common case) are copied once, straight into the prompt.
+                Some(Value::String(s)) => out.push_str(&s),
+                Some(v) => out.push_str(&v.to_text()),
+                None => {}
+            },
         }
     }
     out
@@ -422,17 +423,20 @@ pub fn build_messages(
     memory: Option<&MemoryConfig>,
     images: Vec<ContentPart>,
 ) -> Result<Vec<Message>, NodeError> {
-    let rendered: Vec<Message> = template
-        .messages()
-        .into_iter()
-        .map(|m| Message { role: m.role, ..Message::user(render_with_context(&m.text, pool, context)) })
-        .collect();
-    let split = rendered.iter().take_while(|m| m.role == Role::System).count();
-    let mut messages: Vec<Message> = rendered.iter().take(split).cloned().collect();
-    if let Some(mem) = memory {
-        messages.extend(mem.history(pool)?);
-    }
-    messages.extend(rendered.into_iter().skip(split));
+    let prompts = template.messages();
+    let render =
+        |m: &PromptMessage| Message { role: m.role, ..Message::user(render_with_context(&m.text, pool, context)) };
+    let split = prompts.iter().take_while(|m| m.role == Role::System).count();
+    let (system, rest) = prompts.split_at(split);
+    let history = match memory {
+        Some(mem) => mem.history(pool)?,
+        None => Vec::new(),
+    };
+    // Room for the memory query and an images-only message.
+    let mut messages = Vec::with_capacity(prompts.len() + history.len() + 2);
+    messages.extend(system.iter().map(render));
+    messages.extend(history);
+    messages.extend(rest.iter().map(render));
     // The current query is appended after the history unless the prompt template already
     // contains it (a message referencing `sys.query`); otherwise it would be sent twice.
     // An explicit `query_prompt_template` is always appended.
@@ -487,19 +491,19 @@ pub async fn invoke(
     let mut splitter = ThinkSplitter::default();
     let response = collect(stream, |delta| match (mode, delta) {
         (StreamMode::Off, _) => {}
-        (StreamMode::Raw, ChatDelta::Text(t)) if !t.is_empty() => ctx.chunk("text", t.clone()),
+        (StreamMode::Raw, ChatDelta::Text(t)) if !t.is_empty() => ctx.chunk_shared(StreamField::Text.shared(), t),
         (StreamMode::SeparateThink, ChatDelta::Text(t)) => {
-            for (field, piece) in splitter.push(t) {
-                ctx.chunk(field.as_str(), piece);
+            for (field, piece) in splitter.push(&t) {
+                ctx.chunk_shared(field.shared(), piece);
             }
         }
-        (_, ChatDelta::Reasoning(t)) if !t.is_empty() => ctx.chunk("reasoning", t.clone()),
+        (_, ChatDelta::Reasoning(t)) if !t.is_empty() => ctx.chunk_shared(StreamField::Reasoning.shared(), t),
         _ => {}
     })
     .await?;
     if mode == StreamMode::SeparateThink {
         for (field, piece) in splitter.finish() {
-            ctx.chunk(field.as_str(), piece);
+            ctx.chunk_shared(field.shared(), piece);
         }
     }
     Ok(response)
@@ -543,11 +547,23 @@ pub enum StreamField {
     Reasoning,
 }
 
+static TEXT_FIELD: LazyLock<Arc<str>> = LazyLock::new(|| Arc::from("text"));
+static REASONING_FIELD: LazyLock<Arc<str>> = LazyLock::new(|| Arc::from("reasoning"));
+
 impl StreamField {
     pub fn as_str(self) -> &'static str {
         match self {
             StreamField::Text => "text",
             StreamField::Reasoning => "reasoning",
+        }
+    }
+
+    /// The field name as a shared string for [`NodeContext::chunk_shared`]:
+    /// one allocation per process instead of one per chunk.
+    pub fn shared(self) -> &'static Arc<str> {
+        match self {
+            StreamField::Text => &TEXT_FIELD,
+            StreamField::Reasoning => &REASONING_FIELD,
         }
     }
 }
@@ -624,13 +640,32 @@ fn longest_tag_prefix_suffix(text: &str, tag: &str) -> usize {
     (1..tag.len()).rev().find(|&n| tag.get(..n).is_some_and(|prefix| text.ends_with(prefix))).unwrap_or(0)
 }
 
-/// Usage as an output object.
+/// The `finish_reason` output: the reason's wire name, or `""` when none was
+/// reported. The standard reasons share one allocation per process.
+pub fn finish_reason_value(reason: Option<&FinishReason>) -> Value {
+    static STANDARD: LazyLock<[Value; 5]> =
+        LazyLock::new(|| ["", "stop", "length", "tool_calls", "content_filter"].map(Value::from));
+    let slot = match reason {
+        None => 0,
+        Some(FinishReason::Stop) => 1,
+        Some(FinishReason::Length) => 2,
+        Some(FinishReason::ToolCalls) => 3,
+        Some(FinishReason::ContentFilter) => 4,
+        Some(other) => return Value::from(other.as_str()),
+    };
+    STANDARD.get(slot).cloned().unwrap_or_default()
+}
+
+/// The `usage` output object.
 pub fn usage_value(usage: &Usage) -> Value {
-    Value::from_json(serde_json::json!({
-        "prompt_tokens": usage.prompt_tokens,
-        "completion_tokens": usage.completion_tokens,
-        "total_tokens": usage.total_tokens,
-    }))
+    // Built directly rather than through `serde_json::json!`, which allocated a
+    // second map (and its keys) only to convert it.
+    let count = |n: u64| i64::try_from(n).map_or_else(|_| Value::Float(n as f64), Value::Int);
+    let mut map = graphrt_core::value::Map::with_capacity(3);
+    map.insert("prompt_tokens".to_owned(), count(usage.prompt_tokens));
+    map.insert("completion_tokens".to_owned(), count(usage.completion_tokens));
+    map.insert("total_tokens".to_owned(), count(usage.total_tokens));
+    Value::Object(Arc::new(map))
 }
 
 /// Remove `<think>...</think>` sections, returning `(answer, reasoning)`.

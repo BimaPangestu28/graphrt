@@ -152,7 +152,10 @@ Rules for nodes:
 - Use `NodeError::fatal` for errors a retry cannot fix and `NodeError::new` for
   transient ones; the engine only retries retryable errors.
 - Stream partial output with `ctx.chunk(field, text)`; report structured
-  progress with `ctx.progress(name, data)`.
+  progress with `ctx.progress(name, data)`. A node that streams many chunks
+  can keep the field name in an `Arc<str>` and call
+  `ctx.chunk_shared(&field, text)` to avoid allocating it per chunk
+  (`Event::NodeChunk::field` is an `Arc<str>`).
 - Return `NodeOutcome::Paused(PauseRequest { .. })` to wait for the host; you
   receive your saved `state` and the host input in `ctx.resume`.
 - Override `role()` for branch (`NodeRole::Branch`, set `NodeOutput::branch`),

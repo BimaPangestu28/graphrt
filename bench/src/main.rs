@@ -12,12 +12,22 @@
 //! graphrt-bench allocs          # allocations per run / per node of the engine shapes
 //! graphrt-bench mem-paused N    # peak RSS holding N paused runs (+ snapshot size)
 //! graphrt-bench mem-inflight N  # peak RSS with N runs in flight (50 ms model)
+//! graphrt-bench llm-ab [ROUNDS] # instant-LLM throughput, CPU µs and latency per run (A/B runs)
+//! graphrt-bench llm-runs N C [stream]  # N instant-LLM runs, C in flight (0: sequential), for `time -l`
 //! ```
+//!
+//! `GRAPHRT_BENCH_WORKERS=<n>` sets the worker threads of the multi-thread
+//! runtime (default: one per CPU). `GRAPHRT_BENCH_SPAWN=steady` makes
+//! `llm-runs` keep C runs in flight from inside the runtime instead of
+//! spawning batches of C from outside it. Build with `--features mimalloc` to count
+//! allocations on top of mimalloc instead of the system allocator.
 //!
 //! All model calls use an in-process mock: numbers measure the runtime, not any
 //! model provider.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+#[cfg(not(feature = "mimalloc"))]
+use std::alloc::System;
+use std::alloc::{GlobalAlloc, Layout};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -49,7 +59,12 @@ static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 static COUNTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-// SAFETY: forwards every call to the system allocator unchanged; only counts bytes.
+#[cfg(feature = "mimalloc")]
+static INNER: mimalloc::MiMalloc = mimalloc::MiMalloc;
+#[cfg(not(feature = "mimalloc"))]
+static INNER: System = System;
+
+// SAFETY: forwards every call to the inner allocator unchanged; only counts bytes.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if COUNTING.load(Ordering::Relaxed) {
@@ -57,7 +72,7 @@ unsafe impl GlobalAlloc for Counting {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
         }
         // SAFETY: same contract as the caller's.
-        unsafe { System.alloc(layout) }
+        unsafe { INNER.alloc(layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if COUNTING.load(Ordering::Relaxed) {
@@ -65,11 +80,11 @@ unsafe impl GlobalAlloc for Counting {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
         }
         // SAFETY: same contract as the caller's.
-        unsafe { System.realloc(ptr, layout, new_size) }
+        unsafe { INNER.realloc(ptr, layout, new_size) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         // SAFETY: same contract as the caller's.
-        unsafe { System.dealloc(ptr, layout) }
+        unsafe { INNER.dealloc(ptr, layout) }
     }
 }
 
@@ -365,9 +380,150 @@ fn section_engine() -> Json {
     Json::Object(out)
 }
 
+/// Worker threads for multi-thread sections (`GRAPHRT_BENCH_WORKERS`, default one per CPU).
+fn worker_threads() -> usize {
+    std::env::var("GRAPHRT_BENCH_WORKERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1))
+}
+
+fn multi_thread_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread().worker_threads(worker_threads()).enable_all().build().expect("runtime")
+}
+
+/// User + system CPU time of this process.
+fn cpu_time() -> Duration {
+    // SAFETY: `getrusage` only writes into the zeroed struct we pass.
+    let usage = unsafe {
+        let mut usage: libc::rusage = std::mem::zeroed();
+        libc::getrusage(libc::RUSAGE_SELF, &mut usage);
+        usage
+    };
+    let tv = |t: libc::timeval| Duration::from_secs(t.tv_sec as u64) + Duration::from_micros(t.tv_usec as u64);
+    tv(usage.ru_utime) + tv(usage.ru_stime)
+}
+
+/// Instant-model LLM runs for A/B comparisons: runs/s and CPU µs per run at
+/// 1, 100 and 1,000 runs in flight, plus sequential latency per run on a
+/// current-thread runtime. `rounds` batches per level (default 100).
+fn section_llm_ab(rounds: usize) -> Json {
+    let rt = multi_thread_runtime();
+    let e = Arc::new(engine(llm_graph(), services(0, 10)));
+    let mut rows = Vec::new();
+    for concurrency in [1usize, 100, 1000] {
+        for _ in 0..3 {
+            rt.block_on(e.run_to_end(RunInput::new().sys("query", "hi")));
+        }
+        let rounds = if concurrency == 1 { rounds * 50 } else { rounds * 1000 / concurrency };
+        let cpu0 = cpu_time();
+        let t = Instant::now();
+        for _ in 0..rounds {
+            rt.block_on(async {
+                let handles: Vec<_> = (0..concurrency)
+                    .map(|_| {
+                        let e = Arc::clone(&e);
+                        tokio::spawn(async move { e.run_to_end(RunInput::new().sys("query", "hi")).await })
+                    })
+                    .collect();
+                for h in handles {
+                    let end = h.await.expect("join");
+                    assert!(matches!(end, Event::RunSucceeded { .. }), "{end:?}");
+                }
+            });
+        }
+        let elapsed = t.elapsed();
+        let cpu = cpu_time() - cpu0;
+        let runs = (concurrency * rounds) as f64;
+        rows.push(json!({"concurrent_runs": concurrency, "runs_per_sec": runs / elapsed.as_secs_f64(),
+                         "cpu_us_per_run": us(cpu) / runs}));
+    }
+    drop(rt);
+    let st = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+    let iters = rounds * 200;
+    let lat = latency(&st, &e, iters, 3, &|| RunInput::new().sys("query", "hi"));
+    json!({"worker_threads": worker_threads(), "allocator": if cfg!(feature = "mimalloc") { "mimalloc" } else { "system" },
+           "rows": rows, "sequential_p50_us": lat["p50_ms"].as_f64().unwrap_or(0.0) * 1000.0})
+}
+
+/// One instant-model LLM run; with `stream`, every event goes through a
+/// `ResponseAssembler` (like a streaming client) instead of being discarded.
+async fn llm_run(e: &Engine, stream: bool) {
+    if !stream {
+        let end = e.run_to_end(RunInput::new().sys("query", "hi")).await;
+        assert!(matches!(end, Event::RunSucceeded { .. }), "{end:?}");
+        return;
+    }
+    let mut assembler = ResponseAssembler::new(e.graph());
+    let mut events = e.run(RunInput::new().sys("query", "hi"));
+    let mut chunks = 0;
+    while let Some(event) = events.next().await {
+        chunks += assembler.push(&event).len();
+    }
+    assert!(chunks > 0, "no answer chunks");
+}
+
+/// `n` instant-model LLM runs, `concurrency` at a time on the multi-thread
+/// runtime (0: one after another on a current-thread runtime). Meant to be run
+/// under `/usr/bin/time -l` and differenced against `n = 0`, so per-run
+/// instructions and cycles can be compared on a busy machine.
+fn section_llm_runs(n: usize, concurrency: usize, stream: bool) -> Json {
+    let e = Arc::new(engine(llm_graph(), services(0, 10)));
+    let t = Instant::now();
+    let cpu0 = cpu_time();
+    if concurrency == 0 {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        for _ in 0..n {
+            rt.block_on(llm_run(&e, stream));
+        }
+    } else if std::env::var("GRAPHRT_BENCH_SPAWN").as_deref() == Ok("steady") {
+        // Keep `concurrency` runs in flight, spawned from a worker (local queues,
+        // no batch boundaries): closer to a server than batches spawned from outside.
+        let rt = multi_thread_runtime();
+        rt.block_on(async {
+            let e = Arc::clone(&e);
+            tokio::spawn(async move {
+                let mut set = tokio::task::JoinSet::new();
+                for i in 0..n {
+                    if set.len() >= concurrency {
+                        set.join_next().await;
+                    }
+                    let e = Arc::clone(&e);
+                    std::hint::black_box(i);
+                    set.spawn(async move { llm_run(&e, stream).await });
+                }
+                while set.join_next().await.is_some() {}
+            })
+            .await
+            .expect("join");
+        });
+    } else {
+        let rt = multi_thread_runtime();
+        let mut left = n;
+        while left > 0 {
+            let batch = left.min(concurrency);
+            left -= batch;
+            rt.block_on(async {
+                let handles: Vec<_> = (0..batch)
+                    .map(|_| {
+                        let e = Arc::clone(&e);
+                        tokio::spawn(async move { llm_run(&e, stream).await })
+                    })
+                    .collect();
+                for h in handles {
+                    h.await.expect("join");
+                }
+            });
+        }
+    }
+    let runs = n.max(1) as f64;
+    json!({"runs": n, "concurrency": concurrency, "stream": stream, "wall_us_per_run": us(t.elapsed()) / runs,
+           "cpu_us_per_run": us(cpu_time() - cpu0) / runs})
+}
+
 fn section_concurrency() -> Json {
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("runtime");
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let rt = multi_thread_runtime();
+    let threads = worker_threads();
     let mut rows = Vec::new();
     for delay_ms in [0u64, 50] {
         let e = Arc::new(engine(llm_graph(), services(delay_ms, 10)));
@@ -627,6 +783,12 @@ fn main() {
         "allocs" => section_allocs(),
         "mem-paused" => section_mem_paused(n),
         "mem-inflight" => section_mem_inflight(n),
+        "llm-ab" => section_llm_ab(args.get(2).and_then(|v| v.parse().ok()).unwrap_or(100)),
+        "llm-runs" => section_llm_runs(
+            n,
+            args.get(3).and_then(|v| v.parse().ok()).unwrap_or(0),
+            args.get(4).is_some_and(|v| v == "stream"),
+        ),
         other => {
             eprintln!("unknown section `{other}`; see the module docs");
             std::process::exit(2);

@@ -109,10 +109,12 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
     let snapshot_path = args.snapshot_out.clone().unwrap_or_else(|| default_snapshot_path(&args.workflow));
     let mut printer = Printer::new(args.output);
     let mut code = EXIT_FAILED;
+    let mut chunks = Vec::new();
     while let Some(event) = stream.next().await {
         tracer.on_event(&event);
         if args.output == OutputMode::Text {
-            for chunk in assembler.push(&event) {
+            assembler.push_into(&event, &mut chunks);
+            for chunk in chunks.drain(..) {
                 printer.text(&chunk.text)?;
             }
         }

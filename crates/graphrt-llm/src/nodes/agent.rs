@@ -49,7 +49,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
 use super::common::{
-    FinishCheck, MemoryConfig, ModelConfig, StreamMode, VisionConfig, check_finish, invoke, model_for, usage_value,
+    FinishCheck, MemoryConfig, ModelConfig, StreamField, StreamMode, VisionConfig, check_finish, invoke, model_for,
+    usage_value,
 };
 use crate::types::{ContentPart, FinishReason, Message, Role, ToolCall, ToolChoice};
 
@@ -381,7 +382,7 @@ impl AgentNode {
 
             if !can_call_tools || response.tool_calls.is_empty() {
                 if can_call_tools && !response.text.is_empty() {
-                    ctx.chunk("text", response.text.clone());
+                    ctx.chunk_shared(StreamField::Text.shared(), response.text.clone());
                 }
                 let stop = if response.finish_reason == Some(FinishReason::Length) {
                     StopReason::Length
@@ -963,7 +964,7 @@ mod tests {
         let streamed: String = events
             .iter()
             .filter_map(|e| match e {
-                Event::NodeChunk { field, chunk, .. } if field == "text" => Some(chunk.clone()),
+                Event::NodeChunk { field, chunk, .. } if field.as_ref() == "text" => Some(chunk.clone()),
                 _ => None,
             })
             .collect();

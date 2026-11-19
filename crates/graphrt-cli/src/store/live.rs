@@ -15,18 +15,24 @@ const FEED_CAP: usize = 10_000;
 /// Broadcast buffer per run; slower listeners skip ahead (and are told so). The
 /// channel is created by the first subscriber: most runs (blocking and async
 /// requests) never have one, and allocating it for every run cost about a third
-/// of the server's CPU time.
+/// of the server's CPU time. Slots hold an `Arc<Event>` (8 bytes, not a
+/// ~256-byte event), so a streaming run's channel is a few tens of KiB instead
+/// of over a MiB.
 const CHANNEL_CAP: usize = 4_096;
+
+/// An event shared by the feed, the broadcast channel and its listeners
+/// (one allocation per event instead of a deep copy per holder).
+pub type SharedEvent = Arc<Event>;
 /// Stored events are written in batches of this size (and at every terminal event).
 const FLUSH_EVERY: usize = 32;
 
 #[derive(Debug)]
 struct Feed {
-    events: Vec<Event>,
+    events: Vec<SharedEvent>,
     dropped: bool,
     /// Created on the first [`ActiveRun::subscribe`].
-    tx: Option<broadcast::Sender<Event>>,
-    terminal: Option<Event>,
+    tx: Option<broadcast::Sender<SharedEvent>>,
+    terminal: Option<SharedEvent>,
     answer: String,
 }
 
@@ -45,10 +51,10 @@ pub struct ActiveRun {
 #[derive(Debug)]
 pub struct Subscription {
     /// Events emitted before subscribing (this execution only).
-    pub backlog: Vec<Event>,
+    pub backlog: Vec<SharedEvent>,
     /// Whether the backlog is incomplete because the in-memory cap was reached.
     pub backlog_truncated: bool,
-    pub live: broadcast::Receiver<Event>,
+    pub live: broadcast::Receiver<SharedEvent>,
     pub done: bool,
 }
 
@@ -89,7 +95,7 @@ impl ActiveRun {
         // the driver is gone, in which case the feed holds whatever it reached.
         let _finished = done.wait_for(|d| *d).await;
         let feed = self.feed();
-        Outcome { terminal: feed.terminal.clone(), answer: feed.answer.clone() }
+        Outcome { terminal: feed.terminal.as_deref().cloned(), answer: feed.answer.clone() }
     }
 
     pub fn is_done(&self) -> bool {
@@ -132,24 +138,28 @@ async fn drive(
 ) {
     let run_id = record.run_id.clone();
     let mut pending: Vec<StoredEvent> = Vec::new();
+    // Only the assembled text is kept (`text_so_far`); the chunks themselves are dropped.
+    let mut chunks = Vec::new();
     while let Some(event) = run.next().await {
         tracer.on_event(&event);
-        assembler.push(&event);
+        assembler.push_into(&event, &mut chunks);
+        chunks.clear();
         let terminal = event.is_terminal();
         pending.push(event_to_stored(&event));
+        let event = Arc::new(event);
         {
             let mut feed = active.feed();
             if feed.events.len() < FEED_CAP {
-                feed.events.push(event.clone());
+                feed.events.push(Arc::clone(&event));
             } else {
                 feed.dropped = true;
             }
             // No receivers is fine: the run is recorded either way.
             if let Some(tx) = &feed.tx {
-                let _receivers = tx.send(event.clone());
+                let _receivers = tx.send(Arc::clone(&event));
             }
             if terminal {
-                feed.terminal = Some(event.clone());
+                feed.terminal = Some(Arc::clone(&event));
                 feed.answer = assembler.text_so_far().to_owned();
             }
         }
