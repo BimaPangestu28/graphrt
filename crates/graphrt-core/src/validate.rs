@@ -214,11 +214,15 @@ pub fn validate_text(text: &str, registry: &Registry) -> Validation {
         Ok(raw) => raw,
         Err(diagnostic) => return Validation { diagnostics: vec![*diagnostic], graph: None },
     };
-    let map = SourceMap::from_text(text);
     let mut validation = validate_value(raw, registry);
-    for d in &mut validation.diagnostics {
-        if d.span.is_none() {
-            d.span = map.locate(&d.path, d.at_key);
+    // Positions are only needed to report findings; a clean document skips the
+    // second, span-tracking parse.
+    if validation.diagnostics.iter().any(|d| d.span.is_none()) {
+        let map = SourceMap::from_text(text);
+        for d in &mut validation.diagnostics {
+            if d.span.is_none() {
+                d.span = map.locate(&d.path, d.at_key);
+            }
         }
     }
     // Document order; findings without a position keep their relative order at the end.
@@ -231,12 +235,17 @@ pub fn validate_value(raw: serde_json::Value, registry: &Registry) -> Validation
     let decoded = crate::dsl::decode(raw);
     let mut diagnostics = decoded.diagnostics;
     let paths = Paths { nodes: decoded.node_paths, edges: decoded.edge_paths };
-    check_graph(&decoded.workflow, &paths, registry, &mut diagnostics);
+    let built = check_graph(&decoded.workflow, &paths, registry, &mut diagnostics);
     if diagnostics.iter().any(Diagnostic::is_error) {
         return Validation { diagnostics, graph: None };
     }
     let ids: Vec<String> = decoded.workflow.graph.nodes.iter().map(|n| n.id.clone()).collect();
-    match Graph::build(decoded.workflow, registry) {
+    let checked: Option<Vec<Arc<dyn Node>>> = built.into_iter().collect();
+    let graph = match checked {
+        Some(nodes) => Graph::build_checked(decoded.workflow, registry, nodes),
+        None => Graph::build(decoded.workflow, registry),
+    };
+    match graph {
         Ok(graph) => {
             for warning in graph.warnings() {
                 let path = backticked(warning)
@@ -328,7 +337,15 @@ impl Paths {
 }
 
 /// Graph-level checks over every decoded node and edge.
-fn check_graph(workflow: &crate::Workflow, paths: &Paths, registry: &Registry, out: &mut Vec<Diagnostic>) {
+/// Check the whole document, collecting every finding in `out`. Returns the node
+/// built for each document node (`None` where it could not be built), so a clean
+/// document can be compiled without building its nodes again.
+fn check_graph(
+    workflow: &crate::Workflow,
+    paths: &Paths,
+    registry: &Registry,
+    out: &mut Vec<Diagnostic>,
+) -> Vec<Option<Arc<dyn Node>>> {
     let nodes = &workflow.graph.nodes;
     let ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
     let mut index: HashMap<&str, usize> = HashMap::with_capacity(nodes.len());
@@ -358,6 +375,7 @@ fn check_graph(workflow: &crate::Workflow, paths: &Paths, registry: &Registry, o
     check_parents(nodes, &index, &built, paths, out);
     check_edges(workflow, &index, &ids, &built, paths, registry, out);
     check_references(nodes, &index, &ids, &built, paths, out);
+    built
 }
 
 /// Type, fields and configuration of one node. Returns the built node.

@@ -37,6 +37,21 @@ fn valid_document_has_no_findings_and_builds() {
     assert!(v.graph.is_some());
 }
 
+/// The validator compiles a clean document from the nodes it already built; the
+/// result must be the same graph `Graph::build` produces, fingerprint included.
+#[test]
+fn validated_graph_matches_a_direct_build() {
+    let registry = Registry::with_builtins();
+    let validated = validate_text(GOOD, &registry).graph.expect("valid document builds");
+    let direct = Graph::build(Workflow::parse(GOOD).unwrap(), &registry).unwrap();
+    assert_eq!(validated.fingerprint(), direct.fingerprint());
+    assert_eq!(validated.fingerprint().len(), 16);
+    let ids = |g: &Graph| g.nodes().iter().map(|n| (n.id.to_string(), n.kind.to_string())).collect::<Vec<_>>();
+    assert_eq!(ids(&validated), ids(&direct));
+    assert_eq!(validated.edges().len(), direct.edges().len());
+    assert_eq!(validated.warnings(), direct.warnings());
+}
+
 #[test]
 fn misspelled_config_field_is_reported_with_position_and_suggestion() {
     let text = GOOD.replace("      template: \"Hello", "      templat: \"Hello");

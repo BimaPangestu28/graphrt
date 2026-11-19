@@ -146,7 +146,9 @@ pub struct Graph {
     incoming: Vec<Vec<EdgeIx>>,
     scopes: HashMap<Option<NodeIx>, Scope>,
     warnings: Vec<String>,
-    fingerprint: String,
+    /// Computed on first use: only snapshots, run records and traces need it, and
+    /// hashing the canonical document is a large share of loading big workflows.
+    fingerprint: std::sync::OnceLock<String>,
     workflow: Workflow,
 }
 
@@ -155,7 +157,7 @@ impl fmt::Debug for Graph {
         f.debug_struct("Graph")
             .field("nodes", &self.nodes.len())
             .field("edges", &self.edges.len())
-            .field("fingerprint", &self.fingerprint)
+            .field("fingerprint", &self.fingerprint.get())
             .finish()
     }
 }
@@ -163,7 +165,30 @@ impl fmt::Debug for Graph {
 impl Graph {
     /// Build and validate a graph from a workflow document.
     pub fn build(workflow: Workflow, registry: &Registry) -> Result<Self, GraphError> {
+        Self::build_inner(workflow, registry, None)
+    }
+
+    /// [`Graph::build`] for a document the validator already checked: `checked`
+    /// holds the node built from each document node, in order, after its fields
+    /// were checked against the catalog. Reusing them avoids constructing every
+    /// node and walking every config schema twice, which made loading large
+    /// workflows several times slower.
+    pub(crate) fn build_checked(
+        workflow: Workflow,
+        registry: &Registry,
+        checked: Vec<Arc<dyn Node>>,
+    ) -> Result<Self, GraphError> {
+        Self::build_inner(workflow, registry, Some(checked))
+    }
+
+    fn build_inner(
+        workflow: Workflow,
+        registry: &Registry,
+        checked: Option<Vec<Arc<dyn Node>>>,
+    ) -> Result<Self, GraphError> {
         let docs = &workflow.graph.nodes;
+        // Only a complete set of pre-built nodes can stand in for building them here.
+        let mut checked = checked.filter(|nodes| nodes.len() == docs.len()).map(Vec::into_iter);
         if docs.is_empty() {
             return Err(GraphError::Empty);
         }
@@ -186,10 +211,16 @@ impl Graph {
                 })?),
                 None => None,
             };
-            let node = registry.build(doc)?;
-            if doc.strict {
-                check_fields(doc, registry)?;
-            }
+            let node = match checked.as_mut().and_then(Iterator::next) {
+                Some(node) => node,
+                None => {
+                    let node = registry.build(doc)?;
+                    if doc.strict {
+                        check_fields(doc, registry)?;
+                    }
+                    node
+                }
+            };
             nodes.push(GraphNode {
                 id: Arc::from(doc.id.as_str()),
                 kind: Arc::from(doc.kind.as_str()),
@@ -308,7 +339,7 @@ impl Graph {
 
         validate_references(&nodes, &index, &mut warnings)?;
 
-        let fingerprint = fingerprint(&workflow)?;
+        let fingerprint = std::sync::OnceLock::new();
         Ok(Self { nodes, edges, index, outgoing, incoming, scopes, warnings, fingerprint, workflow })
     }
 
@@ -379,8 +410,14 @@ impl Graph {
     }
 
     /// Stable fingerprint of the source document, used to validate snapshots.
+    ///
+    /// Computed on first call and cached. A workflow document always serializes
+    /// (string keys only); should that ever fail, the fingerprint is derived from
+    /// the error text instead, which still never matches a real document's.
     pub fn fingerprint(&self) -> &str {
-        &self.fingerprint
+        self.fingerprint.get_or_init(|| {
+            fingerprint(&self.workflow).unwrap_or_else(|error| fnv_hex(format!("unserializable: {error}").as_bytes()))
+        })
     }
 
     /// The source document.
@@ -551,20 +588,32 @@ fn reachable_from(entry: NodeIx, outgoing: &[Vec<EdgeIx>], edges: &[GraphEdge]) 
 /// FNV-1a over the canonical JSON of the graph section (stable across processes,
 /// unlike `DefaultHasher`).
 fn fingerprint(workflow: &Workflow) -> Result<String, GraphError> {
-    struct Fnv(u64);
-    impl Hasher for Fnv {
-        fn finish(&self) -> u64 {
-            self.0
-        }
-        fn write(&mut self, bytes: &[u8]) {
-            for b in bytes {
-                self.0 ^= u64::from(*b);
-                self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
-            }
-        }
-    }
-    let mut h = Fnv(0xcbf2_9ce4_8422_2325);
     let text = workflow.canonical_graph_json().map_err(|e| GraphError::Unserializable(e.to_string()))?;
+    let mut h = Fnv(FNV_OFFSET);
     text.hash(&mut h);
     Ok(format!("{:016x}", h.finish()))
+}
+
+/// FNV-1a of raw bytes, as hex.
+fn fnv_hex(bytes: &[u8]) -> String {
+    let mut h = Fnv(FNV_OFFSET);
+    h.write(bytes);
+    format!("{:016x}", h.finish())
+}
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// 64-bit FNV-1a.
+struct Fnv(u64);
+
+impl Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 ^= u64::from(*b);
+            self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
 }
