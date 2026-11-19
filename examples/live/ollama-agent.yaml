@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
 # Tool-using agent on a local Ollama model, with tools from an MCP server.
 #   ollama pull qwen2.5:14b
 #   OLLAMA_HOST=http://localhost:11434 graphrt run examples/live/ollama-agent.yaml \

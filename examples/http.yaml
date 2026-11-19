@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
 # Calls a public JSON API (needs network access).
 #   graphrt run examples/http.yaml --input user:=1
 version: "1"

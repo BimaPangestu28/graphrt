@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
 # Fully offline: human-in-the-loop approval.
 #   graphrt run examples/approval.yaml --input amount:=1200 --input reason="New laptop"
 #   # -> exits with code 3 and writes examples/approval.snapshot.json

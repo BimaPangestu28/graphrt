@@ -1,0 +1,5629 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json",
+  "title": "graphrt workflow document (format version 1)",
+  "description": "A graphrt workflow. Keys starting with `x-` are free for tools and ignored by the runtime.",
+  "type": "object",
+  "required": [
+    "graph"
+  ],
+  "properties": {
+    "version": {
+      "description": "Document format version. Omitted means \"1\".",
+      "enum": [
+        "1",
+        1
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "env": {
+      "description": "Environment variables, read as {{#env.NAME#}}",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/variable"
+      }
+    },
+    "conversation": {
+      "description": "Conversation variables, read as {{#conversation.NAME#}}",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/variable"
+      }
+    },
+    "environment_variables": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/variable"
+      },
+      "deprecated": true,
+      "description": "Deprecated alias of `env`"
+    },
+    "conversation_variables": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/variable"
+      },
+      "deprecated": true,
+      "description": "Deprecated alias of `conversation`"
+    },
+    "graph": {
+      "type": "object",
+      "required": [
+        "nodes"
+      ],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/edge"
+          }
+        }
+      },
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "patternProperties": {
+    "^x-": {
+      "description": "Extension data for tools; ignored by the runtime"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "selector": {
+      "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 2
+        },
+        {
+          "type": "string",
+          "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+        }
+      ]
+    },
+    "variable": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "any",
+            "none",
+            "string",
+            "secret",
+            "number",
+            "integer",
+            "float",
+            "boolean",
+            "object",
+            "file",
+            "array[any]",
+            "array[string]",
+            "array[number]",
+            "array[boolean]",
+            "array[object]",
+            "array[file]",
+            "array",
+            "file-list",
+            "json",
+            "text-input",
+            "paragraph",
+            "select",
+            "checkbox"
+          ]
+        },
+        "value": {
+          "description": "Default value; omit to have the host supply it"
+        },
+        "description": {
+          "type": "string"
+        },
+        "value_type": {
+          "type": "string",
+          "enum": [
+            "any",
+            "none",
+            "string",
+            "secret",
+            "number",
+            "integer",
+            "float",
+            "boolean",
+            "object",
+            "file",
+            "array[any]",
+            "array[string]",
+            "array[number]",
+            "array[boolean]",
+            "array[object]",
+            "array[file]",
+            "array",
+            "file-list",
+            "json",
+            "text-input",
+            "paragraph",
+            "select",
+            "checkbox"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `type`"
+        }
+      },
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "retry": {
+      "description": "Retries of retryable errors; applies to every node kind",
+      "type": "object",
+      "properties": {
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "interval_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Delay before the first retry"
+        },
+        "backoff": {
+          "type": "number",
+          "minimum": 1,
+          "default": 1,
+          "description": "Delay multiplier per retry"
+        }
+      },
+      "additionalProperties": false
+    },
+    "on_error": {
+      "description": "What happens when the node fails after its retries",
+      "type": "object",
+      "required": [
+        "strategy"
+      ],
+      "properties": {
+        "strategy": {
+          "enum": [
+            "fail",
+            "fail-branch",
+            "default-value"
+          ]
+        },
+        "values": {
+          "type": "object",
+          "description": "Outputs used with `default-value`"
+        }
+      },
+      "additionalProperties": false
+    },
+    "edge": {
+      "type": "object",
+      "required": [
+        "source",
+        "target"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Source node id"
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target node id"
+        },
+        "handle": {
+          "type": "string",
+          "default": "source",
+          "description": "Branch of the source node: `source`, `fail-branch`, or a branch node's handle (case id, class id, action id...)"
+        },
+        "sourceHandle": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `handle`"
+        },
+        "source_handle": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `handle`"
+        }
+      },
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:agent": {
+      "title": "Agent",
+      "description": "Tool-calling agent loop: the model calls tools (native, MCP or plugin) until it answers or `max_iterations` is reached. Tool calls can run in parallel and selected tools can require human approval (the run pauses). Streams the final answer as `text`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "agent"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "model": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "chat",
+                "completion"
+              ]
+            },
+            "completion_params": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "provider",
+            "name"
+          ]
+        },
+        "instruction": {
+          "type": "string",
+          "description": "System prompt"
+        },
+        "query": {
+          "type": "string",
+          "description": "User turn (default `{{#sys.query#}}`)"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "`provider/tool` or `provider/*`"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "name"
+                ]
+              }
+            ]
+          }
+        },
+        "max_iterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 10
+        },
+        "max_tool_calls_per_turn": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "parallel_tool_calls": {
+          "type": "boolean",
+          "default": true
+        },
+        "memory": {
+          "type": "object",
+          "properties": {
+            "window": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "size": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": []
+            },
+            "variable_selector": {
+              "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 2
+                },
+                {
+                  "type": "string",
+                  "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                }
+              ]
+            },
+            "query_prompt_template": {
+              "type": "string",
+              "description": "Template for the current user turn"
+            }
+          },
+          "required": []
+        },
+        "vision": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "variable_selector": {
+              "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 2
+                },
+                {
+                  "type": "string",
+                  "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                }
+              ]
+            },
+            "detail": {
+              "type": "string",
+              "enum": [
+                "low",
+                "high",
+                "auto"
+              ]
+            },
+            "configs": {
+              "type": "object",
+              "properties": {
+                "variable_selector": {
+                  "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 2
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                    }
+                  ]
+                },
+                "detail": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "high",
+                    "auto"
+                  ]
+                }
+              },
+              "required": []
+            }
+          },
+          "required": []
+        },
+        "require_approval": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_tool_output_chars": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 32000
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "model"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:answer": {
+      "title": "Answer",
+      "description": "Renders a reply template. Referenced streaming outputs are relayed to the user in order.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "answer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "answer": {
+          "type": "string",
+          "description": "Reply template with {{#node.var#}} placeholders"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "answer"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:assigner": {
+      "title": "Variable Assigner",
+      "description": "Writes conversation, loop or other variables. All items are validated before any write is committed; writes to `sys` and `env` are rejected.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "assigner"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variable_selector": {
+                "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                "oneOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 2
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                  }
+                ]
+              },
+              "input_type": {
+                "type": "string",
+                "enum": [
+                  "variable",
+                  "constant"
+                ],
+                "default": "constant"
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "over-write",
+                  "overwrite",
+                  "clear",
+                  "set",
+                  "append",
+                  "extend",
+                  "remove-first",
+                  "remove-last",
+                  "+=",
+                  "-=",
+                  "*=",
+                  "/="
+                ]
+              },
+              "value": {
+                "description": "Constant value, or a selector when input_type is `variable`"
+              }
+            },
+            "required": [
+              "variable_selector",
+              "operation"
+            ]
+          }
+        },
+        "assigned_variable_selector": {
+          "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2
+            },
+            {
+              "type": "string",
+              "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+            }
+          ]
+        },
+        "input_variable_selector": {
+          "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2
+            },
+            {
+              "type": "string",
+              "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+            }
+          ]
+        },
+        "write_mode": {
+          "type": "string",
+          "enum": [
+            "over-write",
+            "overwrite",
+            "clear",
+            "set",
+            "append",
+            "extend",
+            "remove-first",
+            "remove-last",
+            "+=",
+            "-=",
+            "*=",
+            "/="
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:code": {
+      "title": "Code",
+      "description": "Runs `main(args)` over bound variables. JavaScript runs in an embedded QuickJS engine with no I/O and memory/time limits; other languages (python3) need a sandbox service. Declared outputs are type-checked; without declarations every returned key becomes an output.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "code"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "code_language": {
+          "type": "string",
+          "enum": [
+            "javascript",
+            "js",
+            "nodejs",
+            "node",
+            "python3",
+            "python",
+            "py"
+          ],
+          "default": "javascript"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "variables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variable": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value_selector": {
+                "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                "oneOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 2
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "variable",
+              "value_selector"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "any",
+                  "none",
+                  "string",
+                  "secret",
+                  "number",
+                  "integer",
+                  "float",
+                  "boolean",
+                  "object",
+                  "file",
+                  "array[any]",
+                  "array[string]",
+                  "array[number]",
+                  "array[boolean]",
+                  "array[object]",
+                  "array[file]",
+                  "array",
+                  "file-list",
+                  "json",
+                  "text-input",
+                  "paragraph",
+                  "select",
+                  "checkbox"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "time_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Wall-clock budget (ms)"
+            },
+            "memory_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Heap limit"
+            },
+            "stack_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Stack limit"
+            },
+            "max_output_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Result size limit"
+            },
+            "max_depth": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Result nesting limit"
+            }
+          },
+          "required": []
+        },
+        "sandbox": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "remote"
+          ],
+          "default": "auto"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "code"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:document-extractor": {
+      "title": "Document Extractor",
+      "description": "Extracts text from PDF, Word, PowerPoint, Excel/ODS, EPUB, HTML, e-mail, subtitle, CSV and plain-text files.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "document-extractor"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "variable_selector": {
+          "description": "Selector of a file or a list of files.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2
+        },
+        "max_bytes": {
+          "description": "Per-file size limit in bytes (cannot exceed the host limit).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "output_format": {
+          "description": "`markdown` renders tables and headings as Markdown.",
+          "type": "string",
+          "enum": [
+            "text",
+            "markdown"
+          ],
+          "default": "text"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "variable_selector"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:end": {
+      "title": "End",
+      "description": "Collects selected values as the run outputs.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "end"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variable": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value_selector": {
+                "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                "oneOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 2
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                  }
+                ]
+              },
+              "value_type": {
+                "type": "string",
+                "enum": [
+                  "any",
+                  "none",
+                  "string",
+                  "secret",
+                  "number",
+                  "integer",
+                  "float",
+                  "boolean",
+                  "object",
+                  "file",
+                  "array[any]",
+                  "array[string]",
+                  "array[number]",
+                  "array[boolean]",
+                  "array[object]",
+                  "array[file]",
+                  "array",
+                  "file-list",
+                  "json",
+                  "text-input",
+                  "paragraph",
+                  "select",
+                  "checkbox"
+                ]
+              }
+            },
+            "required": [
+              "variable",
+              "value_selector"
+            ]
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:http-request": {
+      "title": "HTTP Request",
+      "description": "Sends an HTTP request through the egress policy (private networks blocked by default, redirects re-checked, credentials stripped on cross-origin redirects). Non-2xx responses fail the node unless `fail_on_error_status` is false.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "http-request"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "method": {
+          "type": "string",
+          "default": "get",
+          "description": "HTTP method (case-insensitive)"
+        },
+        "url": {
+          "type": "string",
+          "description": "Request URL"
+        },
+        "headers": {
+          "description": "`k: v` lines, a list of {key, value}, or a map; keys and values are templates",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "description": "Name"
+                  },
+                  "value": {
+                    "type": "string",
+                    "description": "Value"
+                  }
+                },
+                "required": [
+                  "key"
+                ]
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "params": {
+          "description": "`k: v` lines, a list of {key, value}, or a map; keys and values are templates",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "description": "Name"
+                  },
+                  "value": {
+                    "type": "string",
+                    "description": "Value"
+                  }
+                },
+                "required": [
+                  "key"
+                ]
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "authorization": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "no-auth",
+                "api-key"
+              ],
+              "default": "no-auth"
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "bearer",
+                    "basic",
+                    "custom"
+                  ],
+                  "default": "bearer"
+                },
+                "api_key": {
+                  "type": "string",
+                  "description": "Credential; usually {{#env.NAME#}}"
+                },
+                "header": {
+                  "type": "string",
+                  "description": "Header name for `custom`"
+                }
+              },
+              "required": []
+            }
+          },
+          "required": []
+        },
+        "body": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "none",
+                "json",
+                "raw-text",
+                "form-data",
+                "x-www-form-urlencoded",
+                "binary"
+              ],
+              "default": "none"
+            },
+            "data": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string",
+                        "description": "Field name"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "text",
+                          "file"
+                        ]
+                      },
+                      "value": {
+                        "type": "string",
+                        "description": "Field value"
+                      },
+                      "file": {
+                        "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                        "oneOf": [
+                          {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "minItems": 2
+                          },
+                          {
+                            "type": "string",
+                            "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                          }
+                        ]
+                      }
+                    },
+                    "required": []
+                  }
+                }
+              ]
+            }
+          },
+          "required": []
+        },
+        "timeout": {
+          "type": "object",
+          "properties": {
+            "connect": {
+              "type": "number",
+              "minimum": 0
+            },
+            "read": {
+              "type": "number",
+              "minimum": 0
+            },
+            "write": {
+              "type": "number",
+              "minimum": 0
+            },
+            "max_connect_timeout": {
+              "type": "number",
+              "minimum": 0
+            },
+            "max_read_timeout": {
+              "type": "number",
+              "minimum": 0
+            },
+            "max_write_timeout": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": []
+        },
+        "ssl_verify": {
+          "type": "boolean",
+          "default": true
+        },
+        "fail_on_error_status": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_response_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retry_non_idempotent": {
+          "type": "boolean",
+          "default": false
+        },
+        "parse_json": {
+          "type": "string",
+          "enum": [
+            "lenient",
+            "strict"
+          ],
+          "default": "lenient"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "url"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:human-input": {
+      "title": "Human Input",
+      "description": "Pauses the run with a rendered form. Resume with `{action, values}`; the action id selects the outgoing edge and the values become outputs.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "human-input"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Message shown to the reviewer"
+        },
+        "content": {
+          "type": "string",
+          "description": "Alias of `prompt`"
+        },
+        "form": {
+          "type": "object",
+          "properties": {
+            "fields": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "variable": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "default": "text"
+                  },
+                  "required": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "default": {}
+                },
+                "required": []
+              }
+            }
+          },
+          "required": []
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "variable": {
+                "type": "string",
+                "minLength": 1
+              },
+              "label": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "default": "text"
+              },
+              "required": {
+                "type": "boolean",
+                "default": false
+              },
+              "default": {}
+            },
+            "required": []
+          }
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "description": "Defaults to a single `submit` action"
+        },
+        "expire_after_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How long the host should wait for a response (reported as `timeout_ms` in the pause data)"
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:if-else": {
+      "title": "If / Else",
+      "description": "Takes the edge of the first case whose conditions hold, or the `false` edge. Legacy single-case configs (top-level `conditions`) use case id `true`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "if-else"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "case_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "logical_operator": {
+                "type": "string",
+                "enum": [
+                  "and",
+                  "or"
+                ],
+                "default": "and"
+              },
+              "conditions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "variable_selector": {
+                      "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                      "oneOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 2
+                        },
+                        {
+                          "type": "string",
+                          "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                        }
+                      ]
+                    },
+                    "comparison_operator": {
+                      "type": "string",
+                      "enum": [
+                        "contains",
+                        "not contains",
+                        "start with",
+                        "starts with",
+                        "start_with",
+                        "starts_with",
+                        "end with",
+                        "ends with",
+                        "end_with",
+                        "ends_with",
+                        "is",
+                        "is not",
+                        "is_not",
+                        "empty",
+                        "not empty",
+                        "not_empty",
+                        "in",
+                        "not in",
+                        "not_in",
+                        "all of",
+                        "all_of",
+                        "=",
+                        "==",
+                        "eq",
+                        "≠",
+                        "!=",
+                        "ne",
+                        ">",
+                        "gt",
+                        "<",
+                        "lt",
+                        "≥",
+                        ">=",
+                        "ge",
+                        "≤",
+                        "<=",
+                        "le",
+                        "null",
+                        "is null",
+                        "not null",
+                        "is not null",
+                        "not_null",
+                        "exists",
+                        "not exists",
+                        "not_exists"
+                      ]
+                    },
+                    "value": {
+                      "description": "Right-hand side; strings may contain placeholders"
+                    },
+                    "sub_variable_condition": {
+                      "type": "object",
+                      "properties": {
+                        "logical_operator": {
+                          "type": "string",
+                          "enum": [
+                            "and",
+                            "or"
+                          ],
+                          "default": "and"
+                        },
+                        "conditions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "string"
+                              },
+                              "comparison_operator": {
+                                "type": "string",
+                                "enum": [
+                                  "contains",
+                                  "not contains",
+                                  "start with",
+                                  "starts with",
+                                  "start_with",
+                                  "starts_with",
+                                  "end with",
+                                  "ends with",
+                                  "end_with",
+                                  "ends_with",
+                                  "is",
+                                  "is not",
+                                  "is_not",
+                                  "empty",
+                                  "not empty",
+                                  "not_empty",
+                                  "in",
+                                  "not in",
+                                  "not_in",
+                                  "all of",
+                                  "all_of",
+                                  "=",
+                                  "==",
+                                  "eq",
+                                  "≠",
+                                  "!=",
+                                  "ne",
+                                  ">",
+                                  "gt",
+                                  "<",
+                                  "lt",
+                                  "≥",
+                                  ">=",
+                                  "ge",
+                                  "≤",
+                                  "<=",
+                                  "le",
+                                  "null",
+                                  "is null",
+                                  "not null",
+                                  "is not null",
+                                  "not_null",
+                                  "exists",
+                                  "not exists",
+                                  "not_exists"
+                                ]
+                              },
+                              "value": {}
+                            },
+                            "required": [
+                              "comparison_operator"
+                            ]
+                          }
+                        }
+                      },
+                      "required": []
+                    }
+                  },
+                  "required": [
+                    "variable_selector",
+                    "comparison_operator"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "case_id"
+            ]
+          }
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variable_selector": {
+                "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                "oneOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 2
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                  }
+                ]
+              },
+              "comparison_operator": {
+                "type": "string",
+                "enum": [
+                  "contains",
+                  "not contains",
+                  "start with",
+                  "starts with",
+                  "start_with",
+                  "starts_with",
+                  "end with",
+                  "ends with",
+                  "end_with",
+                  "ends_with",
+                  "is",
+                  "is not",
+                  "is_not",
+                  "empty",
+                  "not empty",
+                  "not_empty",
+                  "in",
+                  "not in",
+                  "not_in",
+                  "all of",
+                  "all_of",
+                  "=",
+                  "==",
+                  "eq",
+                  "≠",
+                  "!=",
+                  "ne",
+                  ">",
+                  "gt",
+                  "<",
+                  "lt",
+                  "≥",
+                  ">=",
+                  "ge",
+                  "≤",
+                  "<=",
+                  "le",
+                  "null",
+                  "is null",
+                  "not null",
+                  "is not null",
+                  "not_null",
+                  "exists",
+                  "not exists",
+                  "not_exists"
+                ]
+              },
+              "value": {
+                "description": "Right-hand side; strings may contain placeholders"
+              },
+              "sub_variable_condition": {
+                "type": "object",
+                "properties": {
+                  "logical_operator": {
+                    "type": "string",
+                    "enum": [
+                      "and",
+                      "or"
+                    ],
+                    "default": "and"
+                  },
+                  "conditions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "comparison_operator": {
+                          "type": "string",
+                          "enum": [
+                            "contains",
+                            "not contains",
+                            "start with",
+                            "starts with",
+                            "start_with",
+                            "starts_with",
+                            "end with",
+                            "ends with",
+                            "end_with",
+                            "ends_with",
+                            "is",
+                            "is not",
+                            "is_not",
+                            "empty",
+                            "not empty",
+                            "not_empty",
+                            "in",
+                            "not in",
+                            "not_in",
+                            "all of",
+                            "all_of",
+                            "=",
+                            "==",
+                            "eq",
+                            "≠",
+                            "!=",
+                            "ne",
+                            ">",
+                            "gt",
+                            "<",
+                            "lt",
+                            "≥",
+                            ">=",
+                            "ge",
+                            "≤",
+                            "<=",
+                            "le",
+                            "null",
+                            "is null",
+                            "not null",
+                            "is not null",
+                            "not_null",
+                            "exists",
+                            "not exists",
+                            "not_exists"
+                          ]
+                        },
+                        "value": {}
+                      },
+                      "required": [
+                        "comparison_operator"
+                      ]
+                    }
+                  }
+                },
+                "required": []
+              }
+            },
+            "required": [
+              "variable_selector",
+              "comparison_operator"
+            ]
+          }
+        },
+        "logical_operator": {
+          "type": "string",
+          "enum": [
+            "and",
+            "or"
+          ],
+          "default": "and"
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:iteration": {
+      "title": "Iteration",
+      "description": "Runs its body once per array item (`<id>.item`, `<id>.index`), sequentially or with bounded parallelism. Output order always matches input order.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "iteration"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "iterator_selector": {
+          "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2
+            },
+            {
+              "type": "string",
+              "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+            }
+          ]
+        },
+        "output_selector": {
+          "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2
+            },
+            {
+              "type": "string",
+              "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+            }
+          ]
+        },
+        "is_parallel": {
+          "type": "boolean",
+          "default": false
+        },
+        "parallel_nums": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 10
+        },
+        "error_handle_mode": {
+          "type": "string",
+          "enum": [
+            "terminated",
+            "continue-on-error",
+            "remove-abnormal-output"
+          ],
+          "default": "terminated"
+        },
+        "flatten_output": {
+          "type": "boolean",
+          "default": true
+        },
+        "start_node_id": {
+          "type": "string",
+          "description": "Ignored; the body entry is detected"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "iterator_selector"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:iteration-start": {
+      "title": "Iteration Start",
+      "description": "Entry marker of an iteration body.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "iteration-start"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:knowledge-retrieval": {
+      "title": "Knowledge Retrieval",
+      "description": "Search knowledge datasets (vector, keyword or hybrid, with optional reranking) and return matching chunks.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "knowledge-retrieval"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "query_variable_selector": {
+          "description": "Variable holding the search query, e.g. [\"sys\", \"query\"].",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 2
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "dataset_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "retrieval_mode": {
+          "type": "string",
+          "enum": [
+            "single",
+            "multiple"
+          ],
+          "default": "multiple"
+        },
+        "multiple_retrieval_config": {
+          "type": "object",
+          "properties": {
+            "top_k": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 4
+            },
+            "score_threshold": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "reranking_enable": {
+              "type": "boolean",
+              "default": false
+            },
+            "reranking_mode": {
+              "type": "string",
+              "enum": [
+                "reranking_model",
+                "weighted_score"
+              ]
+            },
+            "weights": {
+              "type": "object",
+              "description": "Hybrid weights: {vector, keyword} or {vector_setting: {vector_weight}, keyword_setting: {keyword_weight}}."
+            }
+          }
+        },
+        "metadata_filtering_mode": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "manual"
+          ]
+        },
+        "metadata_filtering_conditions": {
+          "type": "object",
+          "properties": {
+            "logical_operator": {
+              "type": "string",
+              "enum": [
+                "and",
+                "or"
+              ]
+            },
+            "conditions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "comparison_operator"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "comparison_operator": {
+                    "type": "string"
+                  },
+                  "value": {}
+                }
+              }
+            }
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "query_variable_selector",
+        "dataset_ids"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:list-operator": {
+      "title": "List Operator",
+      "description": "Filters, sorts, extracts and limits the items of an array.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "list-operator"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "variable": {
+          "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2
+            },
+            {
+              "type": "string",
+              "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+            }
+          ]
+        },
+        "filter_by": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "conditions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "comparison_operator": {
+                    "type": "string",
+                    "enum": [
+                      "contains",
+                      "not contains",
+                      "start with",
+                      "starts with",
+                      "start_with",
+                      "starts_with",
+                      "end with",
+                      "ends with",
+                      "end_with",
+                      "ends_with",
+                      "is",
+                      "is not",
+                      "is_not",
+                      "empty",
+                      "not empty",
+                      "not_empty",
+                      "in",
+                      "not in",
+                      "not_in",
+                      "all of",
+                      "all_of",
+                      "=",
+                      "==",
+                      "eq",
+                      "≠",
+                      "!=",
+                      "ne",
+                      ">",
+                      "gt",
+                      "<",
+                      "lt",
+                      "≥",
+                      ">=",
+                      "ge",
+                      "≤",
+                      "<=",
+                      "le",
+                      "null",
+                      "is null",
+                      "not null",
+                      "is not null",
+                      "not_null",
+                      "exists",
+                      "not exists",
+                      "not_exists"
+                    ]
+                  },
+                  "value": {}
+                },
+                "required": [
+                  "comparison_operator"
+                ]
+              }
+            }
+          },
+          "required": []
+        },
+        "extract_by": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "serial": {
+              "description": "1-based index (number, string or template)"
+            }
+          },
+          "required": []
+        },
+        "order_by": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "key": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          },
+          "required": []
+        },
+        "limit": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "size": {
+              "type": "integer"
+            }
+          },
+          "required": []
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "variable"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:llm": {
+      "title": "LLM",
+      "description": "Calls a chat model with a prompt template, optional retrieved context, image inputs, conversation memory and structured (JSON Schema) output. Streams `text` and `reasoning`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "llm"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "model": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "chat",
+                "completion"
+              ]
+            },
+            "completion_params": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "provider",
+            "name"
+          ]
+        },
+        "prompt_template": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "system",
+                      "user",
+                      "assistant"
+                    ],
+                    "default": "user"
+                  },
+                  "text": {
+                    "type": "string",
+                    "description": "Message template; `{{#context#}}` inserts the retrieved context"
+                  }
+                },
+                "required": []
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "system",
+                    "user",
+                    "assistant"
+                  ],
+                  "default": "user"
+                },
+                "text": {
+                  "type": "string",
+                  "description": "Message template; `{{#context#}}` inserts the retrieved context"
+                }
+              },
+              "required": []
+            }
+          ]
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "variable_selector": {
+              "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 2
+                },
+                {
+                  "type": "string",
+                  "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                }
+              ]
+            }
+          },
+          "required": []
+        },
+        "vision": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "variable_selector": {
+              "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 2
+                },
+                {
+                  "type": "string",
+                  "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                }
+              ]
+            },
+            "detail": {
+              "type": "string",
+              "enum": [
+                "low",
+                "high",
+                "auto"
+              ]
+            },
+            "configs": {
+              "type": "object",
+              "properties": {
+                "variable_selector": {
+                  "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 2
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                    }
+                  ]
+                },
+                "detail": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "high",
+                    "auto"
+                  ]
+                }
+              },
+              "required": []
+            }
+          },
+          "required": []
+        },
+        "memory": {
+          "type": "object",
+          "properties": {
+            "window": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "size": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": []
+            },
+            "variable_selector": {
+              "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 2
+                },
+                {
+                  "type": "string",
+                  "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                }
+              ]
+            },
+            "query_prompt_template": {
+              "type": "string",
+              "description": "Template for the current user turn"
+            }
+          },
+          "required": []
+        },
+        "structured_output": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "schema": {
+              "type": "object"
+            }
+          },
+          "required": []
+        },
+        "structured_output_enabled": {
+          "type": "boolean"
+        },
+        "structured_output_switch_on": {
+          "type": "boolean"
+        },
+        "reasoning_format": {
+          "type": "string",
+          "enum": [
+            "tagged",
+            "separated"
+          ],
+          "default": "tagged"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "model"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:loop": {
+      "title": "Loop",
+      "description": "Runs its body repeatedly until a break condition holds, a `loop-end` node runs, or `loop_count` rounds complete. Outputs the loop variables and `loop_round`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "loop"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "loop_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "default": 1
+        },
+        "break_conditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variable_selector": {
+                "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                "oneOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 2
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                  }
+                ]
+              },
+              "comparison_operator": {
+                "type": "string",
+                "enum": [
+                  "contains",
+                  "not contains",
+                  "start with",
+                  "starts with",
+                  "start_with",
+                  "starts_with",
+                  "end with",
+                  "ends with",
+                  "end_with",
+                  "ends_with",
+                  "is",
+                  "is not",
+                  "is_not",
+                  "empty",
+                  "not empty",
+                  "not_empty",
+                  "in",
+                  "not in",
+                  "not_in",
+                  "all of",
+                  "all_of",
+                  "=",
+                  "==",
+                  "eq",
+                  "≠",
+                  "!=",
+                  "ne",
+                  ">",
+                  "gt",
+                  "<",
+                  "lt",
+                  "≥",
+                  ">=",
+                  "ge",
+                  "≤",
+                  "<=",
+                  "le",
+                  "null",
+                  "is null",
+                  "not null",
+                  "is not null",
+                  "not_null",
+                  "exists",
+                  "not exists",
+                  "not_exists"
+                ]
+              },
+              "value": {
+                "description": "Right-hand side; strings may contain placeholders"
+              },
+              "sub_variable_condition": {
+                "type": "object",
+                "properties": {
+                  "logical_operator": {
+                    "type": "string",
+                    "enum": [
+                      "and",
+                      "or"
+                    ],
+                    "default": "and"
+                  },
+                  "conditions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string"
+                        },
+                        "comparison_operator": {
+                          "type": "string",
+                          "enum": [
+                            "contains",
+                            "not contains",
+                            "start with",
+                            "starts with",
+                            "start_with",
+                            "starts_with",
+                            "end with",
+                            "ends with",
+                            "end_with",
+                            "ends_with",
+                            "is",
+                            "is not",
+                            "is_not",
+                            "empty",
+                            "not empty",
+                            "not_empty",
+                            "in",
+                            "not in",
+                            "not_in",
+                            "all of",
+                            "all_of",
+                            "=",
+                            "==",
+                            "eq",
+                            "≠",
+                            "!=",
+                            "ne",
+                            ">",
+                            "gt",
+                            "<",
+                            "lt",
+                            "≥",
+                            ">=",
+                            "ge",
+                            "≤",
+                            "<=",
+                            "le",
+                            "null",
+                            "is null",
+                            "not null",
+                            "is not null",
+                            "not_null",
+                            "exists",
+                            "not exists",
+                            "not_exists"
+                          ]
+                        },
+                        "value": {}
+                      },
+                      "required": [
+                        "comparison_operator"
+                      ]
+                    }
+                  }
+                },
+                "required": []
+              }
+            },
+            "required": [
+              "variable_selector",
+              "comparison_operator"
+            ]
+          }
+        },
+        "logical_operator": {
+          "type": "string",
+          "enum": [
+            "and",
+            "or"
+          ],
+          "default": "and"
+        },
+        "loop_variables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "any",
+                  "none",
+                  "string",
+                  "secret",
+                  "number",
+                  "integer",
+                  "float",
+                  "boolean",
+                  "object",
+                  "file",
+                  "array[any]",
+                  "array[string]",
+                  "array[number]",
+                  "array[boolean]",
+                  "array[object]",
+                  "array[file]",
+                  "array",
+                  "file-list",
+                  "json",
+                  "text-input",
+                  "paragraph",
+                  "select",
+                  "checkbox"
+                ]
+              },
+              "input_type": {
+                "type": "string",
+                "enum": [
+                  "constant",
+                  "variable"
+                ],
+                "default": "constant"
+              },
+              "value": {
+                "description": "A literal (input_type `constant`) or a selector (`variable`)"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "deprecated": true,
+                "description": "Deprecated alias of `name`"
+              },
+              "var_type": {
+                "type": "string",
+                "enum": [
+                  "any",
+                  "none",
+                  "string",
+                  "secret",
+                  "number",
+                  "integer",
+                  "float",
+                  "boolean",
+                  "object",
+                  "file",
+                  "array[any]",
+                  "array[string]",
+                  "array[number]",
+                  "array[boolean]",
+                  "array[object]",
+                  "array[file]",
+                  "array",
+                  "file-list",
+                  "json",
+                  "text-input",
+                  "paragraph",
+                  "select",
+                  "checkbox"
+                ],
+                "deprecated": true,
+                "description": "Deprecated alias of `type`"
+              },
+              "value_type": {
+                "type": "string",
+                "enum": [
+                  "constant",
+                  "variable"
+                ],
+                "default": "constant",
+                "deprecated": true,
+                "description": "Deprecated alias of `input_type`"
+              }
+            },
+            "required": []
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:loop-end": {
+      "title": "Loop Break",
+      "description": "Breaks the enclosing loop after the current round.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "loop-end"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:loop-start": {
+      "title": "Loop Start",
+      "description": "Entry marker of a loop body.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "loop-start"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:parameter-extractor": {
+      "title": "Parameter Extractor",
+      "description": "Extracts typed parameters from text using function calling or a JSON prompt. Outputs each parameter plus `__is_success` / `__reason`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "parameter-extractor"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "model": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "chat",
+                "completion"
+              ]
+            },
+            "completion_params": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "provider",
+            "name"
+          ]
+        },
+        "query": {
+          "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2
+            },
+            {
+              "type": "string",
+              "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+            }
+          ]
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "bool",
+                  "object",
+                  "select",
+                  "array[string]",
+                  "array[number]",
+                  "array[boolean]",
+                  "array[object]"
+                ]
+              },
+              "description": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean",
+                "default": false
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "name",
+              "type"
+            ]
+          },
+          "minItems": 1
+        },
+        "instruction": {
+          "type": "string",
+          "description": "Extra extraction instructions"
+        },
+        "reasoning_mode": {
+          "type": "string",
+          "enum": [
+            "function_call",
+            "prompt"
+          ],
+          "default": "function_call"
+        },
+        "memory": {
+          "type": "object",
+          "properties": {
+            "window": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "size": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": []
+            },
+            "variable_selector": {
+              "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 2
+                },
+                {
+                  "type": "string",
+                  "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                }
+              ]
+            },
+            "query_prompt_template": {
+              "type": "string",
+              "description": "Template for the current user turn"
+            }
+          },
+          "required": []
+        },
+        "vision": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "variable_selector": {
+              "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 2
+                },
+                {
+                  "type": "string",
+                  "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                }
+              ]
+            },
+            "detail": {
+              "type": "string",
+              "enum": [
+                "low",
+                "high",
+                "auto"
+              ]
+            },
+            "configs": {
+              "type": "object",
+              "properties": {
+                "variable_selector": {
+                  "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 2
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                    }
+                  ]
+                },
+                "detail": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "high",
+                    "auto"
+                  ]
+                }
+              },
+              "required": []
+            }
+          },
+          "required": []
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "model",
+        "query",
+        "parameters"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:question-classifier": {
+      "title": "Question Classifier",
+      "description": "Asks a model to pick one of the configured classes and takes the edge whose handle is the class id. An unrecognized answer fails the node unless `fallback_class` is set. With `model.provider: typesafe` the decision comes from TypeSafe's System One API (Jev), with calibrated probabilities, confidence thresholds and an optional companion yes/no check.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "question-classifier"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "model": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "chat",
+                "completion"
+              ]
+            },
+            "completion_params": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "provider",
+            "name"
+          ]
+        },
+        "query_variable_selector": {
+          "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2
+            },
+            {
+              "type": "string",
+              "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+            }
+          ]
+        },
+        "query": {
+          "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2
+            },
+            {
+              "type": "string",
+              "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+            }
+          ]
+        },
+        "classes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "label": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string",
+                "description": "When the class applies (used by the typesafe engine)"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "minItems": 1
+        },
+        "instruction": {
+          "type": "string",
+          "description": "Extra classification instructions"
+        },
+        "memory": {
+          "type": "object",
+          "properties": {
+            "window": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "size": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": []
+            },
+            "variable_selector": {
+              "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 2
+                },
+                {
+                  "type": "string",
+                  "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                }
+              ]
+            },
+            "query_prompt_template": {
+              "type": "string",
+              "description": "Template for the current user turn"
+            }
+          },
+          "required": []
+        },
+        "vision": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "variable_selector": {
+              "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+              "oneOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 2
+                },
+                {
+                  "type": "string",
+                  "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                }
+              ]
+            },
+            "detail": {
+              "type": "string",
+              "enum": [
+                "low",
+                "high",
+                "auto"
+              ]
+            },
+            "configs": {
+              "type": "object",
+              "properties": {
+                "variable_selector": {
+                  "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                  "oneOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 2
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                    }
+                  ]
+                },
+                "detail": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "high",
+                    "auto"
+                  ]
+                }
+              },
+              "required": []
+            }
+          },
+          "required": []
+        },
+        "fallback_class": {
+          "type": "string"
+        },
+        "engine": {
+          "type": "string",
+          "enum": [
+            "chat",
+            "typesafe"
+          ],
+          "default": "chat"
+        },
+        "min_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "typesafe engine: minimum decision confidence"
+        },
+        "min_probability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "typesafe engine: minimum probability of the chosen class"
+        },
+        "companion_noul": {
+          "type": "boolean",
+          "default": false,
+          "description": "typesafe engine: also ask whether any class fits"
+        },
+        "companion_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "typesafe engine: minimum probability that some class fits"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "model",
+        "classes"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:start": {
+      "title": "Start",
+      "description": "Entry point. Validates and coerces run inputs and exposes them as outputs.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "start"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "variables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variable": {
+                "type": "string",
+                "minLength": 1
+              },
+              "label": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "any",
+                  "none",
+                  "string",
+                  "secret",
+                  "number",
+                  "integer",
+                  "float",
+                  "boolean",
+                  "object",
+                  "file",
+                  "array[any]",
+                  "array[string]",
+                  "array[number]",
+                  "array[boolean]",
+                  "array[object]",
+                  "array[file]",
+                  "array",
+                  "file-list",
+                  "json",
+                  "text-input",
+                  "paragraph",
+                  "select",
+                  "checkbox"
+                ]
+              },
+              "required": {
+                "type": "boolean",
+                "default": false
+              },
+              "default": {},
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "max_length": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "variable"
+            ]
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:system-one": {
+      "title": "System One (Jev)",
+      "description": "Asks TypeSafe's System One API typed questions (choice, score, yes/no, box) about a state in one fast request and returns calibrated probabilities and confidence. With `route_by`, branches on a choice question's option (or `low_confidence` below the thresholds).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "system-one"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "model": {
+          "description": "Model name or alias (default jev-latest)",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "chat",
+                    "completion"
+                  ]
+                },
+                "completion_params": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "provider",
+                "name"
+              ]
+            }
+          ]
+        },
+        "state": {
+          "description": "Text template, or structured JSON whose strings are templates"
+        },
+        "state_selector": {
+          "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2
+            },
+            {
+              "type": "string",
+              "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+            }
+          ]
+        },
+        "images": {
+          "type": "object",
+          "additionalProperties": {
+            "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+            "oneOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 2
+              },
+              {
+                "type": "string",
+                "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+              }
+            ]
+          },
+          "description": "Image file variables, referenced from state by name"
+        },
+        "questions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "choice",
+                  "score",
+                  "noul",
+                  "box"
+                ]
+              },
+              "instructions": {
+                "description": "Text template, or structured JSON whose strings are templates"
+              },
+              "criteria": {
+                "description": "choice: {option: description} or [option, ...]; score: ordered levels; noul: {true, false}",
+                "type": [
+                  "object",
+                  "array"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "minProperties": 1
+        },
+        "route_by": {
+          "type": "string",
+          "description": "Choice question to branch on"
+        },
+        "min_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Below it, take the `low_confidence` handle"
+        },
+        "min_probability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Below it, take the `low_confidence` handle"
+        },
+        "long_context": {
+          "type": "boolean",
+          "default": false
+        },
+        "allow_missing": {
+          "type": "boolean",
+          "default": false,
+          "description": "Placeholders for missing variables become null instead of failing"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "questions"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:template-transform": {
+      "title": "Template",
+      "description": "Renders a sandboxed Jinja2 template (fuel and output-size limited) from bound variables.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "template-transform"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "template": {
+          "type": "string",
+          "description": "Jinja2 template"
+        },
+        "variables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variable": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value_selector": {
+                "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                "oneOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 2
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "variable",
+              "value_selector"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "template"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:tool": {
+      "title": "Tool",
+      "description": "Calls one tool from a registered tool provider (native tools, MCP servers, plugins). Arguments: `tool_parameters` (mixed template / variable / constant) override `arguments` (strings are templates) which override `tool_configurations` (constants).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "tool"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "provider_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tool_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tool_parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "const": "mixed"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "const": "variable"
+                  },
+                  "value": {
+                    "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                    "oneOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "minItems": 2
+                      },
+                      {
+                        "type": "string",
+                        "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "const": "constant"
+                  },
+                  "value": {}
+                },
+                "required": [
+                  "type"
+                ]
+              }
+            ]
+          }
+        },
+        "tool_configurations": {
+          "type": "object"
+        },
+        "arguments": {
+          "type": "object"
+        },
+        "ignore_tool_errors": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "tool_name"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:variable-aggregator": {
+      "title": "Variable Aggregator",
+      "description": "Outputs the first non-null value among the listed selectors (typically one per branch). With groups enabled, outputs one `{output}` object per group.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "variable-aggregator"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "variables": {
+          "type": "array",
+          "items": {
+            "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+            "oneOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 2
+              },
+              {
+                "type": "string",
+                "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+              }
+            ]
+          }
+        },
+        "advanced_settings": {
+          "type": "object",
+          "properties": {
+            "group_enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "group_name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "variables": {
+                    "type": "array",
+                    "items": {
+                      "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                      "oneOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 2
+                        },
+                        {
+                          "type": "string",
+                          "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "group_name"
+                ]
+              }
+            }
+          },
+          "required": []
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node:variable-assigner": {
+      "title": "Variable Assigner",
+      "description": "Assigner for configs with `items` / `assigned_variable_selector`; variable aggregator for configs with `variables`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node id; also the namespace of the node's outputs",
+          "pattern": "^[^.\\s]+$",
+          "not": {
+            "enum": [
+              "sys",
+              "env",
+              "conversation"
+            ]
+          }
+        },
+        "type": {
+          "const": "variable-assigner"
+        },
+        "title": {
+          "type": "string"
+        },
+        "parent": {
+          "type": "string",
+          "description": "Owning iteration / loop node for nodes in a container body"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt timeout"
+        },
+        "on_error": {
+          "$ref": "#/$defs/on_error"
+        },
+        "parentId": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "container_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "iteration_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "loop_id": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Deprecated alias of `parent`"
+        },
+        "error_strategy": {
+          "enum": [
+            "none",
+            "fail",
+            "fail-branch",
+            "default-value"
+          ],
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "default_value": {
+          "deprecated": true,
+          "description": "Deprecated alias of `on_error`"
+        },
+        "retry_config": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Deprecated alias of `retry`"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "variable_selector": {
+                "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                "oneOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 2
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                  }
+                ]
+              },
+              "input_type": {
+                "type": "string",
+                "enum": [
+                  "variable",
+                  "constant"
+                ],
+                "default": "constant"
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "over-write",
+                  "overwrite",
+                  "clear",
+                  "set",
+                  "append",
+                  "extend",
+                  "remove-first",
+                  "remove-last",
+                  "+=",
+                  "-=",
+                  "*=",
+                  "/="
+                ]
+              },
+              "value": {
+                "description": "Constant value, or a selector when input_type is `variable`"
+              }
+            },
+            "required": [
+              "variable_selector",
+              "operation"
+            ]
+          }
+        },
+        "assigned_variable_selector": {
+          "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2
+            },
+            {
+              "type": "string",
+              "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+            }
+          ]
+        },
+        "input_variable_selector": {
+          "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 2
+            },
+            {
+              "type": "string",
+              "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+            }
+          ]
+        },
+        "write_mode": {
+          "type": "string",
+          "enum": [
+            "over-write",
+            "overwrite",
+            "clear",
+            "set",
+            "append",
+            "extend",
+            "remove-first",
+            "remove-last",
+            "+=",
+            "-=",
+            "*=",
+            "/="
+          ]
+        },
+        "variables": {
+          "type": "array",
+          "items": {
+            "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+            "oneOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 2
+              },
+              {
+                "type": "string",
+                "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+              }
+            ]
+          }
+        },
+        "advanced_settings": {
+          "type": "object",
+          "properties": {
+            "group_enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "group_name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "variables": {
+                    "type": "array",
+                    "items": {
+                      "description": "Variable selector: [namespace, name, path...] or \"namespace.name\"",
+                      "oneOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 2
+                        },
+                        {
+                          "type": "string",
+                          "pattern": "^[^.\\s]+(\\.[^.\\s]+)+$"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "group_name"
+                ]
+              }
+            }
+          },
+          "required": []
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "patternProperties": {
+        "^x-": {
+          "description": "Extension data for tools; ignored by the runtime"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node": {
+      "description": "A node; `type` selects the node kind and its config fields",
+      "type": "object",
+      "required": [
+        "id",
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "agent",
+            "answer",
+            "assigner",
+            "code",
+            "document-extractor",
+            "end",
+            "http-request",
+            "human-input",
+            "if-else",
+            "iteration",
+            "iteration-start",
+            "knowledge-retrieval",
+            "list-operator",
+            "llm",
+            "loop",
+            "loop-end",
+            "loop-start",
+            "parameter-extractor",
+            "question-classifier",
+            "start",
+            "system-one",
+            "template-transform",
+            "tool",
+            "variable-aggregator",
+            "variable-assigner"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/node:agent"
+        },
+        {
+          "$ref": "#/$defs/node:answer"
+        },
+        {
+          "$ref": "#/$defs/node:assigner"
+        },
+        {
+          "$ref": "#/$defs/node:code"
+        },
+        {
+          "$ref": "#/$defs/node:document-extractor"
+        },
+        {
+          "$ref": "#/$defs/node:end"
+        },
+        {
+          "$ref": "#/$defs/node:http-request"
+        },
+        {
+          "$ref": "#/$defs/node:human-input"
+        },
+        {
+          "$ref": "#/$defs/node:if-else"
+        },
+        {
+          "$ref": "#/$defs/node:iteration"
+        },
+        {
+          "$ref": "#/$defs/node:iteration-start"
+        },
+        {
+          "$ref": "#/$defs/node:knowledge-retrieval"
+        },
+        {
+          "$ref": "#/$defs/node:list-operator"
+        },
+        {
+          "$ref": "#/$defs/node:llm"
+        },
+        {
+          "$ref": "#/$defs/node:loop"
+        },
+        {
+          "$ref": "#/$defs/node:loop-end"
+        },
+        {
+          "$ref": "#/$defs/node:loop-start"
+        },
+        {
+          "$ref": "#/$defs/node:parameter-extractor"
+        },
+        {
+          "$ref": "#/$defs/node:question-classifier"
+        },
+        {
+          "$ref": "#/$defs/node:start"
+        },
+        {
+          "$ref": "#/$defs/node:system-one"
+        },
+        {
+          "$ref": "#/$defs/node:template-transform"
+        },
+        {
+          "$ref": "#/$defs/node:tool"
+        },
+        {
+          "$ref": "#/$defs/node:variable-aggregator"
+        },
+        {
+          "$ref": "#/$defs/node:variable-assigner"
+        }
+      ]
+    }
+  }
+}
