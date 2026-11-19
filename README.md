@@ -42,7 +42,7 @@ start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
 ## Why graphrt
 
 - **Small.** Core-only binary ≈ 3 MB, everything included ≈ 12–14 MB, a trimmed server build ≈ 6 MB that runs in 16 MiB of RAM. No Python, no Node, no database.
-- **Fast.** Under 1 µs of scheduling per node, ~10 µs from a model's first token to your stream, ~6.5 ms for `graphrt run` from process start to exit, ~20k requests/s per core from `graphrt serve` (see [Performance](#performance)). One task per run polls node futures concurrently; nothing is spawned per node, and variable pools are reference-counted, so loops and parallel iterations don't deep-copy state.
+- **Fast.** About 0.4 µs of scheduling per node, ~6 µs from a model's first token to your stream, a few milliseconds for `graphrt run` from process start to exit, and well over 10k requests/s per core from `graphrt serve` (see [Performance](#performance)). One task per run polls node futures concurrently; nothing is spawned per node, and variable pools are reference-counted, so loops and parallel iterations don't deep-copy state.
 - **Portable.** The core is executor-agnostic (bring your own clock) and compiles to `wasm32-unknown-unknown`.
 - **Agent-native.** First-class `agent` node with a tool-calling loop, parallel tool calls, MCP servers, human approval of tool calls, retries with backoff, per-node timeouts and step/time budgets.
 - **Durable.** Pause anywhere (human input, tool approval, API call), get a JSON snapshot, resume later — even inside loops and iterations.
@@ -54,6 +54,9 @@ start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
 # Linux / macOS: prebuilt static binary (verifies SHA256SUMS)
 curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/install.sh | sh
 
+# Homebrew (macOS, Linux)
+brew install bimapangestu28/graphrt/graphrt
+
 # with Rust (1.89+)
 cargo install graphrt-cli            # installs the `graphrt` binary
 
@@ -61,7 +64,8 @@ cargo install graphrt-cli            # installs the `graphrt` binary
 docker run --rm -p 8080:8080 -v "$PWD/flows:/workflows" ghcr.io/bimapangestu28/graphrt
 ```
 
-macOS and Linux archives are on the [releases page](https://github.com/BimaPangestu28/graphrt/releases); the Windows archive follows.
+macOS and Linux archives are on the [releases page](https://github.com/BimaPangestu28/graphrt/releases),
+plus an experimental Windows x86_64 archive (cross-compiled; not yet tested on Windows, reports welcome).
 Libraries are on crates.io: `graphrt-core` (runtime) plus integration crates such as
 `graphrt-llm`, `graphrt-http`, `graphrt-rag`.
 
@@ -334,23 +338,24 @@ Every feature is optional: build only what a deployment needs.
 
 Runtime overhead only: every model call goes to an in-process mock, so these
 numbers exclude providers and the network. Apple M-series laptop (11 cores),
-`bench/run.sh`; raw data in [bench/results](bench/results) (`2026-11-18-Bima-Pangestu`
-for 0.1.0's engine, `2026-11-19-Bima-Pangestu` for 0.2.0).
+`bench/run.sh`; raw data in [bench/results](bench/results) (`2026-11-19-Bima-Pangestu`
+for 0.2.0, `2026-11-19-Bima-Pangestu-0.3.0` for 0.3.0). The server and CLI rows
+compare the two release binaries side by side in one session (static musl,
+Linux arm64 container, 1 CPU, median of 3 rounds); absolute numbers move with
+machine load, the ratio is what to read.
 [docs/benchmarks.md](docs/benchmarks.md) has the methodology and Linux x86_64 numbers.
 
-| What | 0.1.0 | 0.2.0 |
+| What | 0.2.0 | 0.3.0 |
 | --- | --- | --- |
-| Scheduling per node, 1,000-node chain | 1.55 µs | **0.80 µs** |
-| Scheduling per node, 1,000-way fan-out / fan-in | 2.31 µs | **1.04 µs** |
-| Template node, per node (100-node chain) | 2.42 µs | **1.39 µs** |
-| First streamed chunk, engine overhead | 14.5 µs | **9.7 µs** |
-| `graphrt run hello.yaml`, start to exit (static musl, Linux arm64) | 10.1 ms | **6.5 ms** |
-| `graphrt serve`, synchronous runs, 1 CPU (static musl, Linux arm64) | 2,875 req/s | **20,613 req/s** |
-| `graphrt serve`, streaming (SSE) runs, 1 CPU | 382 req/s | **3,392 req/s** |
-
-1,000 concurrent instant runs reach ~205k runs/s on this machine. That is not
-comparable with 0.1.0's 63k: the 0.1.0 harness counted allocations with a
-global atomic that capped the concurrency benchmark (fixed in 0.2.0).
+| Scheduling per node, 1,000-node chain | 0.80 µs | **0.35 µs** |
+| Scheduling per node, 1,000-way fan-out / fan-in | 1.04 µs | **0.47 µs** |
+| Template node, per node (100-node chain) | 1.39 µs | **0.80 µs** |
+| Allocations per node, noop chain | 12.2 | **4.1** |
+| First streamed chunk, engine overhead | 9.7 µs | **5.8 µs** |
+| 1,000 concurrent instant runs | 205k runs/s | **289k runs/s** |
+| `graphrt run hello.yaml`, start to exit | 7.5 ms | **7.3 ms** |
+| `graphrt serve`, synchronous runs, 1 CPU | 13,837 req/s | **15,540 req/s** |
+| `graphrt serve`, streaming (SSE) runs, 1 CPU | 2,996 req/s | **7,639 req/s** |
 
 On small devices (Linux arm64, cgroup limits), the 6.3 MiB server build serves
 a 3-node workflow at ~600 requests/s on a quarter of a core with ~3.4 MiB of

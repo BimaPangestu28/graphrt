@@ -7,6 +7,15 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-19
+
+Workflow format v1 frozen with a JSON Schema and located, collected validation
+errors; webhook triggers; opt-in anonymous telemetry; a security review with
+fixes (most also shipped as 0.2.1); Android and iOS sample apps; a
+comparison against LangGraph; and another round of engine, LLM-path and server
+speedups. Contains breaking changes to the workflow format and the Rust API
+(see **Changed (Breaking)**).
+
 ### Added
 - `graphrt serve --webhooks <file>`: webhook triggers. `POST /v1/hooks/{hook}`
   starts an async run of the hook's workflow from any JSON body and answers
@@ -52,6 +61,18 @@ releases may contain breaking changes; they are called out under **Changed**.
   `source_map::SourceMap`, `doc_schema::workflow_schema`,
   `Registry::descriptor_ref`, `Node::branch_handles`, `ConfigError::field`.
 - `x-` keys (document, `graph`, nodes, edges) are free for tools and ignored.
+- Tools can return images that the `agent` node shows to the model, enabling
+  vision loops such as computer use (screenshot, then click by coordinates).
+  `ToolOutput` gains `images` (`ToolImage::Base64 {media_type, data_base64}` or
+  `ToolImage::Url`), checked against `check_images` (4 per result, 5 MiB each,
+  png/jpeg/webp/gif, https URLs). Anthropic, Gemini 3+ and Bedrock Claude/Nova
+  receive them inside the tool result; OpenAI-compatible servers and other
+  models get them in a user message right after the tool results. New agent
+  option `keep_tool_images` (default 3, `null` for all) keeps only the latest N image-bearing results.
+  Plugin protocol: `tool.call` results accept `images`, and `initialize`
+  announces `features: ["tool_images"]`; the Python, TypeScript and Rust SDKs
+  send images only to hosts that announce it. MCP image blocks are forwarded
+  too. See `docs/tool-images.md`.
 
 ### Changed (Breaking)
 - **Unknown fields are errors in v1 documents**: at the document, `graph`,
@@ -153,7 +174,7 @@ releases may contain breaking changes; they are called out under **Changed**.
   blocking pool) crashed the process too. Limits now have floors (1 MiB heap,
   64 KiB stack) and a 16 MiB stack ceiling, and JavaScript runs on a dedicated
   thread sized from the stack limit, so deep recursion is always a catchable
-  `RangeError`. Also in 0.2.0.
+  `RangeError`. Also fixed in 0.2.1.
 - `code` node (JavaScript): error messages thrown by scripts are truncated to
   8 KiB, so a script cannot push megabytes into events and run records; an
   operator time limit too large for the clock no longer panics; a long chain of
@@ -168,21 +189,21 @@ releases may contain breaking changes; they are called out under **Changed**.
   and OTel spans. Previously an error that echoed a key (a provider body such
   as "Incorrect API key provided: sk-...", an HTTP error snippet from an echo
   endpoint, an exception in code) was recorded verbatim. New public helpers in
-  `graphrt_core::redact`. Also in 0.2.0.
+  `graphrt_core::redact`. Also fixed in 0.2.1.
 - LLM providers: error bodies of failed provider requests are scrubbed of the
   credentials the request carried (`Authorization`, `x-api-key`,
   `x-goog-api-key`, `api-key` headers, `key` query parameters) before they
   become error messages. OpenAI-compatible gateways and self-hosted servers
-  often echo the full key. Also in 0.2.0.
+  often echo the full key. Also fixed in 0.2.1.
 - `code` node: returned strings containing a secret input (`key`, or
   `"Bearer " + key`) are re-tagged as secrets, so they are masked in
   `node_succeeded` events, SSE, run records and snapshots while staying usable
   downstream; captured Python stdout is scrubbed. Previously they were stored
-  in plaintext. Also in 0.2.0.
+  in plaintext. Also fixed in 0.2.1.
 - HTTP egress policy: also blocks the IPv4-translated form `::ffff:0:a.b.c.d`
   (judged by the embedded IPv4 address), the local-use NAT64 prefix
   `64:ff9b:1::/48`, Teredo `2001::/32` and the Azure WireServer address
-  `168.63.129.16`. Also in 0.2.0.
+  `168.63.129.16`. Also fixed in 0.2.1.
 - OTel HTTP exporter: redirects are no longer followed, so vendor key headers
   cannot follow a redirect to another host.
 - Bundles: `graphrt run/serve --bundle` extracted configs to a fixed,
@@ -190,14 +211,14 @@ releases may contain breaking changes; they are called out under **Changed**.
   another local user could pre-create it and plant symlinks or swap
   `providers.json` (e.g. pointing `base_url` at their server). Each invocation
   now extracts into a new owner-only (`0700`) directory. Signatures are checked
-  with strict Ed25519 verification. Also in 0.2.0.
+  with strict Ed25519 verification. Also fixed in 0.2.1.
 - Plugins: `limits.max_message_bytes` is capped at 256 MiB; WebAssembly
   plugins get at most 4 tables of 100,000 elements (was 8 x 1,000,000), which
   lived outside the `memory_bytes` budget.
 - `graphrt serve`: new `--max-active-runs` (default 256, `0` = unlimited)
   caps runs executing at once; further starts and resumes get `429`.
   Previously `"async": true` requests could start unlimited parallel runs
-  (`--max-runs` only bounds kept records). Also in 0.2.0.
+  (`--max-runs` only bounds kept records). Also fixed in 0.2.1.
 - `graphrt serve` without an API key on a loopback address now accepts only
   loopback `Host` names (`localhost`, `127.0.0.1`, `[::1]`), blocking DNS
   rebinding from web pages; a non-loopback address without a key prints an
@@ -213,7 +234,7 @@ releases may contain breaking changes; they are called out under **Changed**.
   RUSTSEC-2026-0459 / CVE-2026-119375 (uninitialized page-cache memory read
   through a crafted database and `-wal` pair) in `graphrt-rag`'s `SqliteStore`.
   `graphrt-rag` now needs Rust 1.89. `paste` (unmaintained, build-time only, via
-  candle) is acknowledged in `deny.toml`. Also in 0.2.0.
+  candle) is acknowledged in `deny.toml`. Also fixed in 0.2.1.
 
 ### Performance
 - Engine, second round (shared outputs map, batched commits, one clock read
@@ -288,6 +309,105 @@ releases may contain breaking changes; they are called out under **Changed**.
   OOM-killed before (15.1 MiB peak even with `--max-runs 100`); it now peaks at
   13.8 MiB (7.0 MiB with `--max-runs 100`), streaming 2.2k -> 3.6k req/s.
 
+## [0.2.1] - 2026-11-19
+
+Security patch release for 0.2.0: sandbox limits that could be switched off,
+secret plaintext in error messages and code outputs, more SSRF address forms,
+unbounded concurrent runs and DNS rebinding in `graphrt serve`, predictable
+temp directories, and a SQLite CVE. No breaking API changes; upgrading is
+recommended for every 0.2.0 user.
+
+Upgrade notes:
+- **MSRV:** `graphrt-rag` now needs **Rust 1.89** (was 1.85), because the
+  patched SQLite is only in `rusqlite` 0.41, which declares Rust 1.89. No
+  `rusqlite` 0.40.x or `libsqlite3-sys` 0.38.x release carries the fix (the
+  advisory lists `libsqlite3-sys >= 0.39.0` as patched, and that needs Rust
+  1.88). `graphrt-ffi` enables `graphrt-rag` (with `sqlite`) through its
+  default `rag` feature, so a default `graphrt-ffi` build needs Rust 1.89 too.
+  `graphrt-cli` already needed 1.89; the other crates keep their MSRV.
+- `graphrt serve` refuses new and resumed runs with `429 Too Many Requests`
+  while 256 runs execute (`--max-active-runs`, `0` = unlimited).
+- `graphrt serve` without an API key on a loopback address answers `403` to
+  requests whose `Host` is not a loopback name. If you put a reverse proxy in
+  front of such a server, set an API key or have the proxy forward a
+  loopback `Host`.
+- Plugin manifests asking for `limits.max_message_bytes` above 256 MiB are
+  rejected.
+
+### Security
+- `code` node (JavaScript): a workflow could switch off the sandbox's memory
+  and stack limits by asking for `limits.memory_bytes: 0` or
+  `limits.stack_bytes: 0` (QuickJS reads zero as "unlimited"), and unbounded
+  recursion then overflowed the native stack and aborted the whole process
+  (for example `graphrt serve`). An operator stack ceiling above 16 MiB had the
+  same effect, and one above the executor's thread stack (2 MiB on tokio's
+  blocking pool) crashed the process too. Limits now have floors (1 MiB heap,
+  64 KiB stack) and a 16 MiB stack ceiling, and JavaScript runs on a dedicated
+  thread sized from the stack limit, so deep recursion is always a catchable
+  `RangeError`. The `graphrt-code` `tokio` feature no longer changes behaviour
+  and is kept for compatibility.
+- `code` node (JavaScript): error messages thrown by scripts are truncated to
+  8 KiB, so a script cannot push megabytes into events and run records; an
+  operator time limit too large for the clock no longer panics; a long chain of
+  promise jobs is bounded by the time limit between jobs as well.
+- Python subprocess runner: the working directory is created fresh and
+  owner-only (`0700`) instead of adopting an existing directory at the
+  predictable temp path.
+- Engine: node error messages are scrubbed of every secret the run has seen
+  (`type: secret` env variables, secret-typed inputs, re-supplied resume
+  secrets, secret outputs) before they reach `node_failed` / `node_retry` /
+  `run_failed` events, `error_message` outputs of handled errors, the run store
+  and OTel spans. Previously an error that echoed a key (a provider body such
+  as "Incorrect API key provided: sk-...", an HTTP error snippet from an echo
+  endpoint, an exception in code) was recorded verbatim. New public helpers in
+  `graphrt_core::redact` (`redact_secrets`, `SecretSet`, `MIN_SCRUB_LEN`).
+- LLM providers: error bodies of failed provider requests are scrubbed of the
+  credentials the request carried (`Authorization`, `x-api-key`,
+  `x-goog-api-key`, `api-key` headers, `key` query parameters) before they
+  become error messages. OpenAI-compatible gateways and self-hosted servers
+  often echo the full key.
+- `code` node: returned strings containing a secret input (`key`, or
+  `"Bearer " + key`) are re-tagged as secrets, so they are masked in
+  `node_succeeded` events, SSE, run records and snapshots while staying usable
+  downstream; captured Python stdout is scrubbed. Previously they were stored
+  in plaintext.
+- HTTP egress policy: also blocks the IPv4-translated form `::ffff:0:a.b.c.d`
+  (judged by the embedded IPv4 address), the local-use NAT64 prefix
+  `64:ff9b:1::/48`, Teredo `2001::/32` and the Azure WireServer address
+  `168.63.129.16`.
+- OTel HTTP exporter: redirects are no longer followed, so vendor key headers
+  cannot follow a redirect to another host.
+- Bundles: `graphrt run/serve --bundle` extracted configs to a fixed,
+  predictable directory in the shared temp dir and reused it if it existed, so
+  another local user could pre-create it and plant symlinks or swap
+  `providers.json` (e.g. pointing `base_url` at their server). Each invocation
+  now extracts into a new owner-only (`0700`) directory. Signatures are checked
+  with strict Ed25519 verification.
+- Plugins: `limits.max_message_bytes` is capped at 256 MiB; WebAssembly
+  plugins get at most 4 tables of 100,000 elements (was 8 x 1,000,000), which
+  lived outside the `memory_bytes` budget.
+- `graphrt serve`: new `--max-active-runs` (default 256, `0` = unlimited)
+  caps runs executing at once; further starts and resumes get `429`.
+  Previously `"async": true` requests could start unlimited parallel runs
+  (`--max-runs` only bounds kept records). `AppState::with_max_active_runs`
+  sets it for embedders (default unlimited there).
+- `graphrt serve` without an API key on a loopback address now accepts only
+  loopback `Host` names (`localhost`, `127.0.0.1`, `[::1]`), blocking DNS
+  rebinding from web pages; a non-loopback address without a key prints an
+  explicit warning. Run store I/O errors no longer return server file paths to
+  clients, and `top_k` on `/v1/knowledge/retrieve` is capped at 100.
+- `Debug` output of `OtelConfig` (OTLP headers) and the MCP `StdioConfig`
+  (`env`) / `HttpConfig` (headers, bearer token) shows names only, never values.
+- Dependencies: `rusqlite` 0.40 -> 0.41 (bundled SQLite 3.54.1), fixing
+  RUSTSEC-2026-0459 / CVE-2026-119375 (uninitialized page-cache memory read
+  through a crafted database and `-wal` pair) in `graphrt-rag`'s `SqliteStore`.
+  This raises `graphrt-rag`'s MSRV to Rust 1.89 (see the upgrade notes).
+  `paste` (unmaintained, build-time only, via candle) is acknowledged in
+  `deny.toml`.
+- Docs: new [docs/security.md](docs/security.md) (sandbox limits, egress
+  policy, masking guarantees and their limits, deployment knobs); SECURITY.md
+  now has a threat model, explicit scope and supported versions.
+
 ## [0.2.0] - 2026-11-19
 
 Knowledge bases you can manage from an app, in-process embeddings, small-device
@@ -328,18 +448,6 @@ serving, and a much faster engine and server. Contains breaking API changes
   `DocumentSummary`, `KnowledgeBase::{list_documents, document_chunks,
   delete_document, is_managed}`, `RagError::Unsupported`; `IngestReport` is
   serializable.
-- Tools can return images that the `agent` node shows to the model, enabling
-  vision loops such as computer use (screenshot, then click by coordinates).
-  `ToolOutput` gains `images` (`ToolImage::Base64 {media_type, data_base64}` or
-  `ToolImage::Url`), checked against `check_images` (4 per result, 5 MiB each,
-  png/jpeg/webp/gif, https URLs). Anthropic, Gemini 3+ and Bedrock Claude/Nova
-  receive them inside the tool result; OpenAI-compatible servers and other
-  models get them in a user message right after the tool results. New agent
-  option `keep_tool_images` (default 3, `null` for all) keeps only the latest N image-bearing results.
-  Plugin protocol: `tool.call` results accept `images`, and `initialize`
-  announces `features: ["tool_images"]`; the Python, TypeScript and Rust SDKs
-  send images only to hosts that announce it. MCP image blocks are forwarded
-  too. See `docs/tool-images.md`.
 - `graphrt-rag`: `LocalEmbedder` (feature `local-embed`), sentence embeddings
   computed in-process with candle on the CPU: no embedding server, API key or
   network once the model is cached. BERT-family models from Hugging Face
@@ -520,6 +628,8 @@ laptop, a server, a container, the edge or a phone.
   credentials, plugins, WebAssembly runtime, document extraction and retrieval,
   with regression tests for every finding.
 
-[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/BimaPangestu28/graphrt/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/BimaPangestu28/graphrt/releases/tag/v0.1.0

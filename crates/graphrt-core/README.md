@@ -7,7 +7,7 @@ agentic AI workflows on servers, containers, the edge and phones.
 
 ```toml
 [dependencies]
-graphrt-core = "0.2"
+graphrt-core = "0.3"
 ```
 
 - Documentation: <https://docs.rs/graphrt-core>
