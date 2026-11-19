@@ -5,21 +5,33 @@ use std::path::Path;
 
 use graphrt_core::{Graph, Registry, Workflow};
 
-use crate::error::{CliError, EXIT_OK};
+use crate::diagnostics::{self, DiagnosticFormat};
+use crate::error::{CliError, EXIT_INVALID, EXIT_OK};
 use crate::extensions::{Extensions, PluginOptions};
 use crate::setup;
 
-/// Parse and compile a workflow, printing warnings. Errors exit with code 2.
-pub fn validate(path: &Path, plugins: &PluginOptions) -> Result<u8, CliError> {
+/// Parse and compile a workflow, reporting every error and warning. Errors exit with code 2.
+pub fn validate(path: &Path, format: DiagnosticFormat, plugins: &PluginOptions) -> Result<u8, CliError> {
     let extensions = Extensions::load(plugins)?;
-    let graph = setup::load_graph(path, &extensions.registry)?;
-    for warning in graph.warnings() {
-        eprintln!("warning: {warning}");
-    }
+    let (text, validation) = diagnostics::validate_file(path, &extensions.registry)?;
+    let file = path.display().to_string();
     let mut out = std::io::stdout().lock();
-    writeln!(out, "{}: ok ({} nodes, {} edges)", path.display(), graph.nodes().len(), graph.edges().len())
-        .map_err(|e| CliError::failed(e.to_string()))?;
-    Ok(EXIT_OK)
+    let io = |e: std::io::Error| CliError::failed(e.to_string());
+    if format == DiagnosticFormat::Json {
+        let report = diagnostics::to_json(&file, &validation);
+        let text = serde_json::to_string_pretty(&report).map_err(|e| CliError::failed(e.to_string()))?;
+        writeln!(out, "{text}").map_err(io)?;
+        return Ok(if validation.has_errors() { EXIT_INVALID } else { EXIT_OK });
+    }
+    let report = diagnostics::render_text(&file, &text, &validation.diagnostics);
+    match &validation.graph {
+        Some(graph) => {
+            eprint!("{report}");
+            writeln!(out, "{file}: ok ({} nodes, {} edges)", graph.nodes().len(), graph.edges().len()).map_err(io)?;
+            Ok(EXIT_OK)
+        }
+        None => Err(CliError::invalid_report(report)),
+    }
 }
 
 /// Describe a workflow: nodes, scopes, inputs, env variables and missing node kinds.

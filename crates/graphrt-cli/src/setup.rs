@@ -111,14 +111,25 @@ pub fn load_graph(path: &Path, registry: &Registry) -> Result<Arc<Graph>, CliErr
 }
 
 /// Parse and compile a workflow, optionally overriding every node's model (`provider/name`).
+///
+/// Every problem in the document is reported at once, rendered with source
+/// snippets; warnings are printed to stderr.
 pub fn load_graph_with(path: &Path, model_override: Option<&str>, registry: &Registry) -> Result<Arc<Graph>, CliError> {
-    let mut workflow = read_workflow(path)?;
-    if let Some(raw) = model_override {
-        let (provider, name) = parse_model_override(raw)?;
-        apply_model_override(&mut workflow, &provider, &name);
+    let (text, validation) = crate::diagnostics::validate_file(path, registry)?;
+    let file = path.display().to_string();
+    let report = crate::diagnostics::render_text(&file, &text, &validation.diagnostics);
+    let Some(graph) = validation.graph else {
+        return Err(CliError::invalid_report(report));
+    };
+    if !report.is_empty() {
+        eprint!("{report}");
     }
+    let Some(raw) = model_override else { return Ok(Arc::new(graph)) };
+    let (provider, name) = parse_model_override(raw)?;
+    let mut workflow = graph.workflow().clone();
+    apply_model_override(&mut workflow, &provider, &name);
     let graph = Graph::build(workflow, registry)
-        .map_err(|e| CliError::invalid(crate::extensions::explain_unknown_kind(format!("{}: {e}", path.display()))))?;
+        .map_err(|e| CliError::invalid(crate::extensions::explain_unknown_kind(format!("{file}: {e}"))))?;
     Ok(Arc::new(graph))
 }
 

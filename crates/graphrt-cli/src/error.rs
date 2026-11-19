@@ -19,22 +19,30 @@ pub const EXIT_ABORTED: u8 = 4;
 pub struct CliError {
     pub code: u8,
     pub message: String,
+    /// The message is a complete report (e.g. rendered diagnostics) and is
+    /// printed as is, without the `error: ` prefix.
+    pub preformatted: bool,
 }
 
 impl CliError {
     /// Bad command-line usage or unreadable input files.
     pub fn usage(message: impl Into<String>) -> Self {
-        Self { code: EXIT_INVALID, message: message.into() }
+        Self { code: EXIT_INVALID, message: message.into(), preformatted: false }
     }
 
     /// The workflow document is invalid.
     pub fn invalid(message: impl Into<String>) -> Self {
-        Self { code: EXIT_INVALID, message: message.into() }
+        Self { code: EXIT_INVALID, message: message.into(), preformatted: false }
+    }
+
+    /// The workflow document is invalid; `report` is the full rendered diagnostics.
+    pub fn invalid_report(report: impl Into<String>) -> Self {
+        Self { code: EXIT_INVALID, message: report.into(), preformatted: true }
     }
 
     /// A runtime failure (I/O while running, server errors...).
     pub fn failed(message: impl Into<String>) -> Self {
-        Self { code: EXIT_FAILED, message: message.into() }
+        Self { code: EXIT_FAILED, message: message.into(), preformatted: false }
     }
 
     pub fn exit_code(&self) -> ExitCode {
