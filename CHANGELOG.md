@@ -7,6 +7,12 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-19
+
+Knowledge bases you can manage from an app, in-process embeddings, small-device
+serving, and a much faster engine and server. Contains breaking API changes
+(see **Changed**).
+
 ### Fixed
 - `graphrt serve` without `--store` kept every run (record and events) in memory
   forever: under a 32 MiB limit the server was OOM-killed after ~1,800 runs. The
@@ -72,6 +78,14 @@ releases may contain breaking changes; they are called out under **Changed**.
   compare with `node_id.as_ref() == "llm"` instead of `node_id == "llm"`, use
   `node_id.to_string()` where a `String` is needed, and `.into()` when building
   an event from a `String`.
+- **Breaking** (`graphrt-core`): `GraphNode::{kind, title}` and the `kind` and
+  `title` of `Event::NodeStarted` are `Arc<str>` (shared, not copied per
+  execution). Serialized events are unchanged.
+- **Breaking** (`graphrt-core`): run stores keep events as serialized JSON:
+  `RunStore::append_events` / `events` take and return `Vec<StoredEvent>`
+  (`Box<serde_json::value::RawValue>`), built with `event_to_stored`;
+  `stored_event_type` reads an event's type. The stored text is identical to
+  what `event_to_json` produced, so `GET /v1/runs/{id}/events` is unchanged.
 - **Breaking** (`graphrt-http`): `HttpClient::client` and
   `HttpClient::manual_redirect_client` return `Result<&reqwest::Client, ClientError>`;
   the four underlying clients are built on first use. `ClientError` is `Clone`.
@@ -105,6 +119,23 @@ releases may contain breaking changes; they are called out under **Changed**.
   writes variables. Against 0.1.0 on the same machine: 0.87 µs per node on a
   1,000-node chain (was 1.55), 1.18 µs on a 1,000-way fan-out (2.31), 98k
   instant runs/s (63k); raw data in `bench/results/2026-11-1{8,9}-*`.
+- `graphrt serve`: a run's 4,096-slot broadcast channel is created only when
+  something subscribes to its events (it took ~30% of server CPU), and
+  accepted connections set `TCP_NODELAY` (streamed responses no longer wait
+  ~40 ms for a delayed ACK on Linux). Static musl, Linux arm64, 1 CPU:
+  synchronous runs 2,875 -> 20,613 req/s, streaming 382 -> 3,392 req/s, async
+  4,232 -> 20,499 req/s; macOS native synchronous 26k -> 46k req/s.
+- Engine: fewer allocations per node execution (ids built on the stack,
+  shared `Arc<str>` kind/title, outputs no longer copied into the pool), run
+  events queued in a reusable buffer with an atomic waker instead of an mpsc
+  channel, and stored events kept as JSON text (297 ns and 2.6 allocations per
+  event, was 485 ns and 14.3). Per-node scheduling another 7-15% lower
+  (0.73 µs on a 1,000-node chain).
+- `bench/run.sh`: the harness's global allocation counter is enabled only in
+  the sections that read it; it had capped the concurrency section at ~60-80k
+  runs/s. With it gated the same machine measures ~300k runs/s for the llm
+  graph and ~390k for a no-LLM graph at 11 workers (a measurement fix, not a
+  runtime speed-up).
 
 ## [0.1.0] - 2026-11-18
 
@@ -187,5 +218,6 @@ laptop, a server, a container, the edge or a phone.
   credentials, plugins, WebAssembly runtime, document extraction and retrieval,
   with regression tests for every finding.
 
-[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/BimaPangestu28/graphrt/releases/tag/v0.1.0

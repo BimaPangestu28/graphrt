@@ -5,85 +5,85 @@
     "memory_gib": null,
     "os": "Darwin 25.6.0",
     "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
-    "git_commit": "bfbe877"
+    "git_commit": "1daba78"
   },
   "engine": {
     "chain_noop_10": {
       "iterations": 2000,
       "nodes": 12,
-      "p50_ms": 0.019583,
-      "p95_ms": 0.030292,
-      "p50_us_per_node": 1.6319166666666665
+      "p50_ms": 0.012334000000000001,
+      "p95_ms": 0.025415999999999998,
+      "p50_us_per_node": 1.0278333333333334
     },
     "chain_template_10": {
       "iterations": 2000,
       "nodes": 12,
-      "p50_ms": 0.020625,
-      "p95_ms": 0.025833000000000002,
-      "p50_us_per_node": 1.71875
+      "p50_ms": 0.017625000000000002,
+      "p95_ms": 0.021958,
+      "p50_us_per_node": 1.46875
     },
     "chain_noop_100": {
       "iterations": 500,
       "nodes": 102,
-      "p50_ms": 0.087875,
-      "p95_ms": 0.09275,
-      "p50_us_per_node": 0.8615196078431373
+      "p50_ms": 0.080125,
+      "p95_ms": 0.085833,
+      "p50_us_per_node": 0.7855392156862745
     },
     "chain_template_100": {
       "iterations": 500,
       "nodes": 102,
-      "p50_ms": 0.14754199999999998,
-      "p95_ms": 0.149333,
-      "p50_us_per_node": 1.4464901960784313
+      "p50_ms": 0.142042,
+      "p95_ms": 0.162042,
+      "p50_us_per_node": 1.3925686274509803
     },
     "chain_noop_1000": {
       "iterations": 50,
       "nodes": 1002,
-      "p50_ms": 0.875667,
-      "p95_ms": 0.8915000000000001,
-      "p50_us_per_node": 0.8739191616766467
+      "p50_ms": 0.806084,
+      "p95_ms": 0.857042,
+      "p50_us_per_node": 0.8044750499001996
     },
     "chain_template_1000": {
       "iterations": 50,
       "nodes": 1002,
-      "p50_ms": 1.657459,
-      "p95_ms": 1.746,
-      "p50_us_per_node": 1.6541506986027945
+      "p50_ms": 1.7407499999999998,
+      "p95_ms": 2.11575,
+      "p50_us_per_node": 1.7372754491017963
     },
     "fan_out_in_100": {
       "iterations": 300,
       "nodes": 103,
-      "p50_ms": 0.09933399999999999,
-      "p95_ms": 0.104459,
-      "p50_us_per_node": 0.9644077669902912
+      "p50_ms": 0.087209,
+      "p95_ms": 0.203834,
+      "p50_us_per_node": 0.8466893203883495
     },
     "fan_out_in_1000": {
       "iterations": 30,
       "nodes": 1003,
-      "p50_ms": 1.18475,
-      "p95_ms": 1.2173749999999999,
-      "p50_us_per_node": 1.1812063808574278
+      "p50_ms": 1.038584,
+      "p95_ms": 1.131958,
+      "p50_us_per_node": 1.0354775672981058
     },
     "branches_100": {
       "iterations": 300,
       "nodes": 602,
-      "p50_ms": 0.450917,
-      "p95_ms": 0.465333,
-      "p50_us_per_node": 0.7490315614617941
+      "p50_ms": 0.46254100000000004,
+      "p95_ms": 0.894375,
+      "p50_us_per_node": 0.7683405315614618
     },
     "parallel_iteration_1000": {
       "iterations": 30,
       "nodes": 2003,
-      "p50_ms": 2.9679580000000003,
-      "p95_ms": 3.0822499999999997,
-      "p50_us_per_node": 1.4817563654518222
+      "p50_ms": 3.053,
+      "p95_ms": 6.98075,
+      "p50_us_per_node": 1.5242136794807788
     },
     "loop10_x_iteration10": {
       "iterations": 200,
       "nodes": 223,
-      "p50_ms": 0.303167,
-      "p95_ms": 0.31591600000000003,
-      "p50_us_per_node": 1.359493273542601
+      "p50_ms": 0.297667,
+      "p95_ms": 0.334458,
+      "p50_us_per_node": 1.3348295964125558
     }
   },
   "concurrency": {
@@ -93,85 +93,85 @@
       {
         "model_delay_ms": 0,
         "concurrent_runs": 1,
-        "runs_per_sec": 53015.24188204109,
+        "runs_per_sec": 49230.769230769234,
         "ideal_runs_per_sec": null,
-        "batch_ms": 0.018862499999999997
+        "batch_ms": 0.0203125
       },
       {
         "model_delay_ms": 0,
         "concurrent_runs": 10,
-        "runs_per_sec": 98930.31595869659,
+        "runs_per_sec": 131759.50990732695,
         "ideal_runs_per_sec": null,
-        "batch_ms": 0.10108124999999998
+        "batch_ms": 0.07589585
       },
       {
         "model_delay_ms": 0,
         "concurrent_runs": 100,
-        "runs_per_sec": 95210.89212605922,
+        "runs_per_sec": 210418.33795815308,
         "ideal_runs_per_sec": null,
-        "batch_ms": 1.0503
+        "batch_ms": 0.47524375
       },
       {
         "model_delay_ms": 0,
         "concurrent_runs": 1000,
-        "runs_per_sec": 98257.48505624017,
+        "runs_per_sec": 205140.2147727787,
         "ideal_runs_per_sec": null,
-        "batch_ms": 10.177341700000001
+        "batch_ms": 4.8747146
       },
       {
         "model_delay_ms": 50,
         "concurrent_runs": 1,
-        "runs_per_sec": 17.550244243239085,
+        "runs_per_sec": 18.783957873843807,
         "ideal_runs_per_sec": 20.0,
-        "batch_ms": 56.979264
+        "batch_ms": 53.23691666666667
       },
       {
         "model_delay_ms": 50,
         "concurrent_runs": 10,
-        "runs_per_sec": 176.28091411948776,
+        "runs_per_sec": 190.64363368748502,
         "ideal_runs_per_sec": 200.0,
-        "batch_ms": 56.72763866666666
+        "batch_ms": 52.453889000000004
       },
       {
         "model_delay_ms": 50,
         "concurrent_runs": 100,
-        "runs_per_sec": 1772.1637415735609,
+        "runs_per_sec": 1862.5003874000806,
         "ideal_runs_per_sec": 2000.0,
-        "batch_ms": 56.42819433333333
+        "batch_ms": 53.691264
       },
       {
         "model_delay_ms": 50,
         "concurrent_runs": 1000,
-        "runs_per_sec": 14998.88130843761,
+        "runs_per_sec": 18045.718792469284,
         "ideal_runs_per_sec": 20000.0,
-        "batch_ms": 66.671639
+        "batch_ms": 55.414805666666666
       },
       {
         "model_delay_ms": 50,
         "concurrent_runs": 10000,
-        "runs_per_sec": 83378.62228488564,
+        "runs_per_sec": 109246.36985328654,
         "ideal_runs_per_sec": 200000.0,
-        "batch_ms": 119.93481933333334
+        "batch_ms": 91.53622233333333
       }
     ]
   },
   "streaming": {
     "iterations": 2000,
-    "direct_model_first_delta_p50_us": 2.166,
-    "engine_assembler_first_chunk_p50_us": 11.666,
-    "engine_assembler_first_chunk_p95_us": 12.167,
-    "overhead_p50_us": 9.5
+    "direct_model_first_delta_p50_us": 2.375,
+    "engine_assembler_first_chunk_p50_us": 12.041,
+    "engine_assembler_first_chunk_p95_us": 29.709,
+    "overhead_p50_us": 9.666
   },
   "startup": {
-    "registry_build_us": 3.292,
+    "registry_build_us": 4.584,
     "parse_build_small_yaml_3_nodes": {
-      "p50_ms": 0.038125,
-      "p95_ms": 0.039125,
+      "p50_ms": 0.038666,
+      "p95_ms": 0.045333,
       "bytes": 432
     },
     "parse_build_large_json_1002_nodes": {
-      "p50_ms": 5.202667,
-      "p95_ms": 5.590999999999999,
+      "p50_ms": 5.56775,
+      "p95_ms": 6.762583,
       "bytes": 163790
     }
   },
@@ -179,7 +179,7 @@
     "pool": "100 namespaces x 10 string variables",
     "bytes_allocated_per_clone": 8,
     "bytes_allocated_by_first_write_after_clone": 1504,
-    "clone_ns": 3.93208
+    "clone_ns": 4.10334
   },
   "memory": [
     {
@@ -193,7 +193,7 @@
       "model_delay_ms": 200,
       "baseline_rss_kib": 0,
       "peak_rss_kib": 0,
-      "wall_ms": 202.318458
+      "wall_ms": 202.421417
     },
     {
       "paused_runs": 100,
@@ -206,7 +206,7 @@
       "model_delay_ms": 200,
       "baseline_rss_kib": 0,
       "peak_rss_kib": 0,
-      "wall_ms": 202.800958
+      "wall_ms": 202.425917
     },
     {
       "paused_runs": 1000,
@@ -219,7 +219,7 @@
       "model_delay_ms": 200,
       "baseline_rss_kib": 0,
       "peak_rss_kib": 0,
-      "wall_ms": 213.02495900000002
+      "wall_ms": 206.53975
     },
     {
       "paused_runs": 10000,
@@ -232,7 +232,7 @@
       "model_delay_ms": 200,
       "baseline_rss_kib": 0,
       "peak_rss_kib": 0,
-      "wall_ms": 288.427667
+      "wall_ms": 232.239542
     }
   ],
   "sizes": []

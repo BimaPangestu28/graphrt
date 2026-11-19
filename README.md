@@ -42,7 +42,7 @@ start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
 ## Why graphrt
 
 - **Small.** Core-only binary ≈ 3 MB, everything included ≈ 12–14 MB, a trimmed server build ≈ 6 MB that runs in 16 MiB of RAM. No Python, no Node, no database.
-- **Fast.** About 1 µs of scheduling per node, ~10 µs from a model's first token to your stream, ~6.5 ms for `graphrt run` from process start to exit (see [Performance](#performance)). One task per run polls node futures concurrently; nothing is spawned per node, and variable pools are reference-counted, so loops and parallel iterations don't deep-copy state.
+- **Fast.** Under 1 µs of scheduling per node, ~10 µs from a model's first token to your stream, ~6.5 ms for `graphrt run` from process start to exit, ~20k requests/s per core from `graphrt serve` (see [Performance](#performance)). One task per run polls node futures concurrently; nothing is spawned per node, and variable pools are reference-counted, so loops and parallel iterations don't deep-copy state.
 - **Portable.** The core is executor-agnostic (bring your own clock) and compiles to `wasm32-unknown-unknown`.
 - **Agent-native.** First-class `agent` node with a tool-calling loop, parallel tool calls, MCP servers, human approval of tool calls, retries with backoff, per-node timeouts and step/time budgets.
 - **Durable.** Pause anywhere (human input, tool approval, API call), get a JSON snapshot, resume later — even inside loops and iterations.
@@ -190,7 +190,7 @@ the command line.
   (Cohere, Jina, Voyage), score thresholds, metadata filters, and
   **parent-child chunking** (search small chunks, answer with their section).
 - **Management API** for knowledge base UIs: `graphrt serve --knowledge`
-  exposes `/v1/knowledge` to list datasets and documents, upload files (PDF,
+  exposes `/v1/knowledge` to create and delete datasets, list documents, upload files (PDF,
   Office, Markdown...), inspect chunks, enable or disable and delete documents,
   and test retrieval — on the same knowledge base the workflows use. See
   [docs/serving.md](docs/serving.md#knowledge-base-api).
@@ -204,7 +204,8 @@ datasets:
 ```
 
 In-process embeddings, the SQLite store, parent-child chunking and the
-management API are on `main` and ship in 0.2.
+management API (including creating and deleting datasets) are available since
+0.2.0.
 
 ## Plugins: write a node in 20 lines
 
@@ -300,7 +301,7 @@ Measured with `cargo build -p graphrt-cli --profile min-size` (opt-level `z`, LT
 | + `plugins`, `wasm` | 9.7 MiB |
 | default (+ `doc`, `rag`) | 12.2 MiB |
 
-In-process embedding models (`local-embed`, on by default after 0.1.0) add
+In-process embedding models (`local-embed`, on by default since 0.2.0) add
 about 2.1 MiB (measured on macOS arm64: 10.3 MiB → 12.4 MiB);
 models themselves are downloaded on first use, not bundled. A server build for
 small devices, `--no-default-features --features llm,http,wasm,serve`, is
@@ -313,17 +314,22 @@ Every feature is optional: build only what a deployment needs.
 Runtime overhead only: every model call goes to an in-process mock, so these
 numbers exclude providers and the network. Apple M-series laptop (11 cores),
 `bench/run.sh`; raw data in [bench/results](bench/results) (`2026-11-18-Bima-Pangestu`
-for 0.1.0's engine, `2026-11-19-Bima-Pangestu` for `main`).
+for 0.1.0's engine, `2026-11-19-Bima-Pangestu` for 0.2.0).
 [docs/benchmarks.md](docs/benchmarks.md) has the methodology and Linux x86_64 numbers.
 
-| What | 0.1.0 | `main` |
+| What | 0.1.0 | 0.2.0 |
 | --- | --- | --- |
-| Scheduling per node, 1,000-node chain | 1.55 µs | **0.87 µs** |
-| Scheduling per node, 1,000-way fan-out / fan-in | 2.31 µs | **1.18 µs** |
-| Template node, per node (100-node chain) | 2.42 µs | **1.45 µs** |
-| 1,000 concurrent runs, instant model | 63k runs/s | **98k runs/s** |
-| First streamed chunk, engine overhead | 14.5 µs | **9.5 µs** |
+| Scheduling per node, 1,000-node chain | 1.55 µs | **0.80 µs** |
+| Scheduling per node, 1,000-way fan-out / fan-in | 2.31 µs | **1.04 µs** |
+| Template node, per node (100-node chain) | 2.42 µs | **1.39 µs** |
+| First streamed chunk, engine overhead | 14.5 µs | **9.7 µs** |
 | `graphrt run hello.yaml`, start to exit (static musl, Linux arm64) | 10.1 ms | **6.5 ms** |
+| `graphrt serve`, synchronous runs, 1 CPU (static musl, Linux arm64) | 2,875 req/s | **20,613 req/s** |
+| `graphrt serve`, streaming (SSE) runs, 1 CPU | 382 req/s | **3,392 req/s** |
+
+1,000 concurrent instant runs reach ~205k runs/s on this machine. That is not
+comparable with 0.1.0's 63k: the 0.1.0 harness counted allocations with a
+global atomic that capped the concurrency benchmark (fixed in 0.2.0).
 
 On small devices (Linux arm64, cgroup limits), the 6.3 MiB server build serves
 a 3-node workflow at ~600 requests/s on a quarter of a core with ~3.4 MiB of
