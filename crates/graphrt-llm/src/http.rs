@@ -189,7 +189,12 @@ pub(crate) async fn send_request(
     request: reqwest::RequestBuilder,
     classify: impl FnOnce(u16, &str, Option<u64>) -> LlmError,
 ) -> Result<reqwest::Response, LlmError> {
-    let response = request.send().await.map_err(network_error)?;
+    let (client, request) = request.build_split();
+    let request = request.map_err(network_error)?;
+    // Error bodies of proxies, gateways and self-hosted servers sometimes echo the
+    // credential they were sent; keep the values to scrub them from error messages.
+    let credentials = request_credentials(&request);
+    let response = client.execute(request).await.map_err(network_error)?;
     let status = response.status();
     if status.is_redirection() {
         return Err(LlmError::BadRequest(format!(
@@ -201,9 +206,35 @@ pub(crate) async fn send_request(
     if !status.is_success() {
         let retry = retry_after_ms(response.headers());
         let body = read_error_body(response).await;
+        let body = graphrt_core::redact::redact_secrets(&body, &credentials);
         return Err(classify(status.as_u16(), &body, retry));
     }
     Ok(response)
+}
+
+/// Header names that carry provider credentials.
+const CREDENTIAL_HEADERS: [&str; 5] =
+    ["authorization", "x-api-key", "x-goog-api-key", "api-key", "x-amz-security-token"];
+
+/// Credential values sent with `request`: credential headers (also without an auth
+/// scheme such as `Bearer `) and `key` / `api_key` query parameters.
+fn request_credentials(request: &reqwest::Request) -> Vec<String> {
+    let mut values = Vec::new();
+    for name in CREDENTIAL_HEADERS {
+        for value in request.headers().get_all(name) {
+            let Ok(text) = value.to_str() else { continue };
+            values.push(text.to_owned());
+            if let Some((_scheme, token)) = text.split_once(' ') {
+                values.push(token.trim().to_owned());
+            }
+        }
+    }
+    for (name, value) in request.url().query_pairs() {
+        if matches!(name.as_ref(), "key" | "api_key" | "api-key" | "access_token") {
+            values.push(value.into_owned());
+        }
+    }
+    values
 }
 
 /// Body of a successful response as a stream of byte chunks.
@@ -295,6 +326,46 @@ pub(crate) fn sse_stream<D: SseDecoder>(response: reqwest::Response, decoder: D)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credentials_are_collected_from_headers_and_query() {
+        let client = build_client(Duration::from_secs(5)).unwrap();
+        let request = client
+            .post("https://api.example.com/v1/chat?key=goog-key-123&alt=sse")
+            .bearer_auth("sk-proj-abcdef")
+            .header("x-api-key", "ant-key-456")
+            .build()
+            .unwrap();
+        let values = request_credentials(&request);
+        for expected in ["Bearer sk-proj-abcdef", "sk-proj-abcdef", "ant-key-456", "goog-key-123"] {
+            assert!(values.iter().any(|v| v == expected), "{expected} missing from {values:?}");
+        }
+        assert!(!values.iter().any(|v| v == "sse"));
+    }
+
+    #[tokio::test]
+    async fn error_bodies_echoing_the_key_are_scrubbed() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf).await;
+            let body = r#"{"error":{"message":"Incorrect API key provided: sk-proj-abcdef. Header was Bearer sk-proj-abcdef"}}"#;
+            let reply = format!(
+                "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(reply.as_bytes()).await;
+        });
+        let client = build_client(Duration::from_secs(5)).unwrap();
+        let request = client.post(format!("http://{addr}/v1/chat/completions")).bearer_auth("sk-proj-abcdef");
+        let error = send_request(request, LlmError::from_status).await.unwrap_err();
+        let text = error.to_string();
+        assert!(!text.contains("sk-proj-abcdef"), "{text}");
+        assert!(text.contains("******"), "{text}");
+    }
 
     #[test]
     fn retry_after_parsing() {
