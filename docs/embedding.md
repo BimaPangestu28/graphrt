@@ -149,6 +149,10 @@ Rules for nodes:
 
 - Read inputs from `ctx.pool` (an immutable snapshot). Return outputs and
   writes in `NodeOutput`; never mutate shared state.
+- `NodeOutput::outputs` is a `graphrt_core::Variables` map. The engine stores
+  it as the node's pool namespace and emits it in `NodeSucceeded` without
+  copying, so build it once, with `.with("name", value)` or `outputs.insert`.
+  String-literal names cost no allocation.
 - Use `NodeError::fatal` for errors a retry cannot fix and `NodeError::new` for
   transient ones; the engine only retries retryable errors.
 - Stream partial output with `ctx.chunk(field, text)`; report structured

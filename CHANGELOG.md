@@ -31,6 +31,20 @@ releases may contain breaking changes; they are called out under **Changed**.
   keeps the order of the remaining entries (like `IndexMap::shift_remove`).
 
 ### Performance
+- Engine, second round (shared outputs map, batched commits, one clock read
+  per node, faster ids, direct template variables). Benchmark harness, Apple
+  M3 Pro, against the first round below (p50, median of 21 alternating runs on
+  a shared machine): 1,000-node chain 0.63 -> 0.40 µs per node, 1,000-way
+  fan-out 0.99 -> 0.52 µs, 100-way fan-out 0.79 -> 0.46 µs, template chain
+  1.35 -> 1.00 µs, branches 0.60 -> 0.44 µs, parallel iteration 1.25 -> 1.03
+  µs, loop x iteration 1.20 -> 1.00 µs; allocations per node 9.1 -> 4.1 (noop
+  chain), 10.9 -> 5.4 (fan-out), 16.7 -> 11.0 (template chain). Concurrent
+  instant LLM runs (median of 15): 239k -> 282k runs/s at 1,000 in flight,
+  206k -> 230k at 100; runs bound by a 50 ms model are unchanged.
+- Engine: a node's outputs become its pool namespace and its `NodeSucceeded`
+  payload without being copied (see **Changed (Breaking)**), string-literal
+  output names no longer allocate, and namespace lookups scan a few entries
+  instead of hashing with SipHash.
 - Engine: nodes that have already finished are committed together before new
   nodes start. In a wide fan-out every commit used to copy the namespace table
   and a shard because a freshly started sibling held a snapshot of it; a batch
@@ -49,7 +63,8 @@ releases may contain breaking changes; they are called out under **Changed**.
   264 bytes); a node that runs alone (chains, fan-ins) is polled without a
   `FuturesUnordered` task; the clock is read once per node start instead of
   twice; pool namespace lookups use a keyed FxHash-style hasher instead of
-  SipHash; output names are shared across commits through a per-node cache;
+  SipHash; output names are shared across commits through a per-node cache
+  (since replaced by `Variables`, whose literal names never allocate);
   the root pool's shards are sized from the graph. `template-transform`
   resolves its variables when the template reads them instead of building and
   converting a map per render. Benchmark harness, Apple M3 Pro, same machine
