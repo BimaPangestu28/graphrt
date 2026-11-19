@@ -14,6 +14,7 @@
 
 pub mod catalog;
 pub mod condition;
+pub mod doc_schema;
 pub mod dsl;
 pub mod engine;
 pub mod event;
