@@ -1,0 +1,12 @@
+# Binding generator configuration, read by `uniffi-bindgen generate --library`.
+
+# Kotlin exceptions extend Throwable, whose `message` property collides with a
+# variant field of the same name: the generated GraphrtException did not compile.
+# Kotlin alone gets the field as `detail`; Throwable.message still carries the text.
+# Swift and Python keep `message`.
+[bindings.kotlin.rename]
+"GraphrtError.InvalidConfig.message" = "detail"
+"GraphrtError.InvalidWorkflow.message" = "detail"
+"GraphrtError.InvalidInput.message" = "detail"
+"GraphrtError.Plugin.message" = "detail"
+"GraphrtError.Runtime.message" = "detail"

@@ -38,7 +38,8 @@ doc = ["dep:graphrt-doc"]
 # knowledge-retrieval node (memory / SQLite / Qdrant / HTTP retrievers; SQLite is compiled from C).
 rag = ["dep:graphrt-rag"]
 # Enables the `uniffi-bindgen` binary used to generate Kotlin / Swift bindings.
-bindgen-cli = ["uniffi/cli"]
+# `cargo-metadata` lets the generator find this crate's uniffi.toml.
+bindgen-cli = ["uniffi/cli", "uniffi/cargo-metadata"]
 
 [dependencies]
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }

@@ -136,6 +136,12 @@ releases may contain breaking changes; they are called out under **Changed**.
 - `http-request` `timeout: {connect, read, write}` in a document was silently
   dropped (the loader treated `timeout` as a node policy key), so documents'
   HTTP timeouts never applied.
+- The generated Kotlin bindings (`bindings/kotlin`) did not compile: every
+  `GraphrtException` variant declared a `message` field that clashes with
+  `Throwable.message`. Kotlin now names the field `detail`
+  (`crates/graphrt-ffi/uniffi.toml`); `Throwable.message` still carries the
+  text, and Swift and Python are unchanged. The `bindgen-cli` feature now
+  enables UniFFI's `cargo-metadata` so the generator reads that file.
 
 ### Security
 - `code` node (JavaScript): a workflow could switch off the sandbox's memory
