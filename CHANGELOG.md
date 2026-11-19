@@ -7,6 +7,24 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Performance
+- Engine: fewer allocations and less work per node execution. Node task
+  futures are stored unboxed and are less than half their former size (584 ->
+  264 bytes); a node that runs alone (chains, fan-ins) is polled without a
+  `FuturesUnordered` task; the clock is read once per node start instead of
+  twice; pool namespace lookups use a keyed FxHash-style hasher instead of
+  SipHash; output names are shared across commits through a per-node cache;
+  the root pool's shards are sized from the graph. `template-transform`
+  resolves its variables when the template reads them instead of building and
+  converting a map per render. Benchmark harness, Apple M3 Pro, same machine
+  before and after (p50, median of 11 runs): 1,000-node chain 0.74 -> 0.56 µs
+  per node, 1,000-way fan-out 0.93 -> 0.86 µs, template node 1.38 -> 1.06 µs;
+  allocations per node 12.2 -> 9.1 (noop chain), 13.1 -> 10.9 (fan-out),
+  23.8 -> 16.7 (template chain). Concurrent instant LLM runs are unchanged
+  (~285k runs/s at 11 workers): their cost is outside the per-node path.
+- `bench/run.sh` records allocations per run and per node (`graphrt-bench
+  allocs`).
+
 ## [0.2.0] - 2026-11-19
 
 Knowledge bases you can manage from an app, in-process embeddings, small-device
