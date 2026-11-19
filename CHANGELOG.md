@@ -72,7 +72,7 @@ serving, and a much faster engine and server. Contains breaking API changes
   png/jpeg/webp/gif, https URLs). Anthropic, Gemini 3+ and Bedrock Claude/Nova
   receive them inside the tool result; OpenAI-compatible servers and other
   models get them in a user message right after the tool results. New agent
-  option `keep_tool_images` keeps only the latest N image-bearing results.
+  option `keep_tool_images` (default 3, `null` for all) keeps only the latest N image-bearing results.
   Plugin protocol: `tool.call` results accept `images`, and `initialize`
   announces `features: ["tool_images"]`; the Python, TypeScript and Rust SDKs
   send images only to hosts that announce it. MCP image blocks are forwarded

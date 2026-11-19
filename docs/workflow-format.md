@@ -276,7 +276,7 @@ max_tool_calls_per_turn: 8
 parallel_tool_calls: true
 require_approval: [mcp:github/create_issue]   # or ["*"]
 memory: { window: { enabled: true, size: 20 } }
-keep_tool_images: 3   # optional: images of only the last 3 image-bearing tool results
+keep_tool_images: 3   # optional (default 3): images of only the last 3 image-bearing tool results; null keeps all
 ```
 
 Runs a tool-calling loop until the model answers without tools (the last

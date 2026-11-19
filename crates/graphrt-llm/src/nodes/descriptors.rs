@@ -236,7 +236,7 @@ pub(crate) fn agent() -> NodeDescriptor {
                 "vision": vision(),
                 "require_approval": { "type": "array", "items": { "type": "string" } },
                 "max_tool_output_chars": { "type": "integer", "minimum": 1, "default": 32000 },
-                "keep_tool_images": { "type": "integer", "minimum": 0 }
+                "keep_tool_images": { "type": ["integer", "null"], "minimum": 0, "default": 3 }
             }),
             &["model"],
         ))
