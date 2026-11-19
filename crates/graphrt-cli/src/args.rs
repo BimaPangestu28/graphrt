@@ -408,6 +408,11 @@ pub struct ServeArgs {
     /// Delete stored runs (except running ones) not updated for this many days.
     #[arg(long, value_name = "DAYS")]
     pub store_ttl_days: Option<u64>,
+    /// In-memory store only: keep at most this many runs; the oldest finished runs are
+    /// dropped first, running and paused runs are always kept (0 = unlimited). Lower it
+    /// on small devices: a finished run takes roughly 10-20 KiB.
+    #[arg(long, value_name = "N", default_value_t = crate::store::DEFAULT_MAX_RUNS)]
+    pub max_runs: usize,
     #[command(flatten)]
     pub services: ServiceArgs,
 }

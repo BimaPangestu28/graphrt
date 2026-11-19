@@ -12,6 +12,10 @@ use graphrt_core::store::{
 
 /// Default per-run event cap.
 pub const DEFAULT_MAX_EVENTS: usize = 5_000;
+/// Default cap on runs kept in memory (`graphrt serve --max-runs`). A finished
+/// run with its events takes roughly 10-20 KiB, so the default stays around
+/// 10-20 MiB however long the server runs.
+pub const DEFAULT_MAX_RUNS: usize = 1_000;
 /// Largest page returned by `list`.
 pub const MAX_PAGE: usize = 500;
 
@@ -27,6 +31,8 @@ struct Entry {
 pub struct MemoryStore {
     runs: Mutex<HashMap<String, Entry>>,
     max_events: usize,
+    /// 0 = unlimited.
+    max_runs: usize,
 }
 
 impl Default for MemoryStore {
@@ -37,7 +43,15 @@ impl Default for MemoryStore {
 
 impl MemoryStore {
     pub fn new() -> Self {
-        Self { runs: Mutex::new(HashMap::new()), max_events: DEFAULT_MAX_EVENTS }
+        Self { runs: Mutex::new(HashMap::new()), max_events: DEFAULT_MAX_EVENTS, max_runs: DEFAULT_MAX_RUNS }
+    }
+
+    /// Keep at most `max` runs (0 = unlimited). When a new run would exceed it,
+    /// the oldest finished runs are dropped; running and paused runs are always
+    /// kept, so they can finish or be resumed.
+    pub fn max_runs(mut self, max: usize) -> Self {
+        self.max_runs = max;
+        self
     }
 
     /// Keep at most `max` events per run.
@@ -53,6 +67,24 @@ impl MemoryStore {
     }
 }
 
+/// Drop the oldest finished runs once `runs` exceeds `max_runs`, down to 90 %
+/// of the cap so the sort is not repeated on every new run.
+fn evict_finished(runs: &mut HashMap<String, Entry>, max_runs: usize) {
+    if max_runs == 0 || runs.len() <= max_runs {
+        return;
+    }
+    let target = max_runs - max_runs / 10;
+    let mut finished: Vec<(u64, String)> = runs
+        .iter()
+        .filter_map(|(id, e)| e.record.as_ref().filter(|r| r.status.is_terminal()).map(|r| (r.updated_ms, id.clone())))
+        .collect();
+    finished.sort_unstable();
+    let excess = runs.len().saturating_sub(target);
+    for (_, id) in finished.into_iter().take(excess) {
+        runs.remove(&id);
+    }
+}
+
 fn existing<'m>(runs: &'m mut HashMap<String, Entry>, run_id: &str) -> StoreResult<&'m mut Entry> {
     runs.get_mut(run_id).filter(|e| e.record.is_some()).ok_or_else(|| StoreError::NotFound(run_id.to_owned()))
 }
@@ -65,6 +97,7 @@ impl RunStore for MemoryStore {
                 return Err(StoreError::Conflict(format!("run `{}` already exists", record.run_id)));
             }
             runs.insert(record.run_id.clone(), Entry { record: Some(record), ..Entry::default() });
+            evict_finished(&mut runs, self.max_runs);
             Ok(())
         });
         Box::pin(ready(result))
@@ -212,6 +245,38 @@ mod tests {
     use futures::executor::block_on;
 
     use super::*;
+
+    #[test]
+    fn oldest_finished_runs_are_evicted_and_active_runs_kept() {
+        let store = MemoryStore::new().max_runs(10);
+        let mut paused = RunRecord::running("paused", "wf", "fp", 0);
+        paused.status = RunStatus::Paused;
+        block_on(store.create(paused)).unwrap();
+        block_on(store.create(RunRecord::running("running", "wf", "fp", 0))).unwrap();
+        for i in 1..=20u64 {
+            let mut done = RunRecord::running(format!("done{i:02}"), "wf", "fp", i);
+            done.status = RunStatus::Succeeded;
+            done.updated_ms = i;
+            block_on(store.create(done)).unwrap();
+            assert!(store.lock().len() <= 10, "cap exceeded after {i} runs");
+        }
+        let kept = block_on(store.list(RunFilter::default())).unwrap().runs;
+        let ids: Vec<&str> = kept.iter().map(|r| r.run_id.as_str()).collect();
+        assert!(ids.contains(&"paused") && ids.contains(&"running"), "{ids:?}");
+        assert!(ids.contains(&"done20"), "newest finished run kept: {ids:?}");
+        assert!(!ids.contains(&"done01"), "oldest finished run evicted: {ids:?}");
+    }
+
+    #[test]
+    fn zero_max_runs_means_unlimited() {
+        let store = MemoryStore::new().max_runs(0);
+        for i in 0..50u64 {
+            let mut done = RunRecord::running(format!("r{i}"), "wf", "fp", i);
+            done.status = RunStatus::Succeeded;
+            block_on(store.create(done)).unwrap();
+        }
+        assert_eq!(store.lock().len(), 50);
+    }
 
     #[test]
     fn claim_is_exclusive_and_events_are_capped() {
