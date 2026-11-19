@@ -36,6 +36,10 @@ may also itself be a plugin directory.
 
 ## Manifest
 
+The full, versioned reference (every field, type, default and constraint, plus
+the compatibility policy) is [Plugin manifest specification](plugin-manifest.md),
+with a JSON Schema in [`schemas/plugin-manifest.schema.json`](schemas/plugin-manifest.schema.json).
+
 ```json
 {
   "name": "acme",
