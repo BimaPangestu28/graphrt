@@ -168,6 +168,7 @@ impl Message {
 
 /// Text of a tool message for providers whose tool results are text-only:
 /// the message text plus a note saying how many images follow.
+#[cfg(feature = "openai")]
 pub(crate) fn tool_text_with_image_note(m: &Message) -> String {
     let text = m.text();
     let count = m.images().count();
@@ -183,6 +184,7 @@ pub(crate) fn tool_text_with_image_note(m: &Message) -> String {
 }
 
 /// Text introducing the images of one tool result in the fallback user turn.
+#[cfg(any(feature = "openai", feature = "gemini", feature = "bedrock"))]
 pub(crate) fn tool_images_intro(name: Option<&str>, call_id: &str) -> String {
     match name {
         Some(name) => format!("Images returned by tool `{name}` (call {call_id}):"),
@@ -547,6 +549,7 @@ mod tests {
         assert_eq!(req.temperature, Some(0.1));
     }
 
+    #[cfg(feature = "openai")]
     #[test]
     fn tool_messages_with_images() {
         let m = Message::tool_with_images("c1", "shot", ["data:image/png;base64,AAAA".to_owned()]);
