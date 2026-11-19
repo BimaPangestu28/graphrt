@@ -17,7 +17,9 @@
 //! ```
 //!
 //! `GRAPHRT_BENCH_WORKERS=<n>` sets the worker threads of the multi-thread
-//! runtime (default: one per CPU). Build with `--features mimalloc` to count
+//! runtime (default: one per CPU). `GRAPHRT_BENCH_SPAWN=steady` makes
+//! `llm-runs` keep C runs in flight from inside the runtime instead of
+//! spawning batches of C from outside it. Build with `--features mimalloc` to count
 //! allocations on top of mimalloc instead of the system allocator.
 //!
 //! All model calls use an in-process mock: numbers measure the runtime, not any
@@ -474,6 +476,27 @@ fn section_llm_runs(n: usize, concurrency: usize, stream: bool) -> Json {
         for _ in 0..n {
             rt.block_on(llm_run(&e, stream));
         }
+    } else if std::env::var("GRAPHRT_BENCH_SPAWN").as_deref() == Ok("steady") {
+        // Keep `concurrency` runs in flight, spawned from a worker (local queues,
+        // no batch boundaries): closer to a server than batches spawned from outside.
+        let rt = multi_thread_runtime();
+        rt.block_on(async {
+            let e = Arc::clone(&e);
+            tokio::spawn(async move {
+                let mut set = tokio::task::JoinSet::new();
+                for i in 0..n {
+                    if set.len() >= concurrency {
+                        set.join_next().await;
+                    }
+                    let e = Arc::clone(&e);
+                    std::hint::black_box(i);
+                    set.spawn(async move { llm_run(&e, stream).await });
+                }
+                while set.join_next().await.is_some() {}
+            })
+            .await
+            .expect("join");
+        });
     } else {
         let rt = multi_thread_runtime();
         let mut left = n;
