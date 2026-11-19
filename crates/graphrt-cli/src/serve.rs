@@ -324,6 +324,13 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     if api_key.is_none() {
         eprintln!("warning: no API key set (${}); the API is unauthenticated", args.api_key_env);
     }
+    // Without TCP_NODELAY, the second and later small writes of a streamed (SSE)
+    // response wait for the client's delayed ACK: about 40 ms per run on Linux.
+    let listener = axum::serve::ListenerExt::tap_io(listener, |tcp: &mut tokio::net::TcpStream| {
+        if let Err(e) = tcp.set_nodelay(true) {
+            eprintln!("warning: cannot set TCP_NODELAY: {e}");
+        }
+    });
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
