@@ -423,6 +423,32 @@ async fn parallel_fan_out_runs_concurrently_and_joins() {
 }
 
 #[tokio::test]
+async fn max_concurrency_one_runs_branches_one_at_a_time() {
+    // Lone nodes (start, mid, join) and queued branch nodes take different
+    // scheduling paths; every node must still run exactly once, in order.
+    let g = build(
+        vec![
+            node("start", "src", json!({})),
+            node("mid", "echo", json!({"template": "M", "delay_ms": 10})),
+            node("a", "echo", json!({"template": "A", "delay_ms": 30})),
+            node("b", "echo", json!({"template": "B", "delay_ms": 30})),
+            node("join", "end", json!({"name": "mab", "value": "{{#mid.out#}}{{#a.out#}}{{#b.out#}}"})),
+        ],
+        vec![edge("start", "mid"), edge("mid", "a"), edge("mid", "b"), edge("a", "join"), edge("b", "join")],
+    );
+    let engine = Engine::new(g).with_limits(Limits { max_concurrency: 1, ..Limits::default() });
+    let t0 = std::time::Instant::now();
+    let events = collect(&engine, RunInput::new()).await;
+    assert!(t0.elapsed() >= Duration::from_millis(70), "branches must not overlap");
+    assert_eq!(outputs(&events).get("mab"), Some(&Value::from("MAB")));
+    let order = started(&events);
+    assert_eq!(order.len(), 5, "{order:?}");
+    assert_eq!(order[..2], ["start", "mid"]);
+    assert!(order[2..4].contains(&"a".to_owned()) && order[2..4].contains(&"b".to_owned()), "{order:?}");
+    assert_eq!(order[4], "join");
+}
+
+#[tokio::test]
 async fn branch_skip_propagation_with_mixed_join() {
     // start -> if -(yes)-> y ; if -(no)-> n -> n2 ; y -> join ; n2 -> join
     let g = build(

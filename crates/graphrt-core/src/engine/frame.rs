@@ -2,7 +2,8 @@
 //!
 //! A frame owns its variable pool and per-node / per-edge state; the graph is
 //! shared and immutable. Node futures run concurrently in a
-//! [`FuturesUnordered`]; the frame loop is the only place where state changes,
+//! [`FuturesUnordered`] (a node running alone is polled directly, without the
+//! task allocation that costs); the frame loop is the only place where state changes,
 //! so no locking is needed. Container nodes receive a [`ScopeRunner`] that runs
 //! their body as a nested frame with the same machinery.
 
@@ -371,6 +372,9 @@ impl Frame {
     pub(crate) async fn run(mut self) -> FrameOutcome {
         let control = self.run.control.clone();
         let mut running = FuturesUnordered::new();
+        // A node that runs alone (the common case in chains) is polled from
+        // this slot instead of `running`, which would allocate a task for it.
+        let mut solo = std::pin::pin!(None);
         loop {
             if control.is_stopped() {
                 return FrameOutcome::Stopped;
@@ -381,15 +385,21 @@ impl Frame {
             }
             // Schedule ready nodes.
             if !control.pause_requested() {
-                while running.len() < self.run.limits.max_concurrency.max(1) {
+                let max_concurrency = self.run.limits.max_concurrency.max(1);
+                while running.len() + usize::from(solo.is_some()) < max_concurrency {
                     let Some(ix) = self.ready.pop_front() else { break };
-                    running.push(self.start(ix));
+                    let task = self.start(ix);
+                    if solo.is_none() && running.is_empty() && self.ready.is_empty() {
+                        solo.set(Some(task));
+                    } else {
+                        running.push(task);
+                    }
                 }
             }
-            if running.is_empty() {
+            if running.is_empty() && solo.is_none() {
                 return self.finish();
             }
-            let next = running.next();
+            let next = futures::future::poll_fn(|cx| poll_tasks(cx, solo.as_mut(), &mut running));
             let changed = control.changed(seen);
             futures::pin_mut!(changed);
             match futures::future::select(next, changed).await {
@@ -879,6 +889,26 @@ impl Frame {
                 }
             }
         }
+    }
+}
+
+/// Poll the solo task, then the task set, for the next finished node. `None`
+/// means nothing is running.
+fn poll_tasks<F: Future<Output = TaskDone>>(
+    cx: &mut std::task::Context<'_>,
+    mut solo: std::pin::Pin<&mut Option<F>>,
+    running: &mut FuturesUnordered<F>,
+) -> std::task::Poll<Option<TaskDone>> {
+    use std::task::Poll;
+    if let Some(task) = solo.as_mut().as_pin_mut() {
+        if let Poll::Ready(done) = task.poll(cx) {
+            solo.set(None);
+            return Poll::Ready(Some(done));
+        }
+    }
+    match running.poll_next_unpin(cx) {
+        Poll::Ready(None) if solo.is_some() => Poll::Pending,
+        other => other,
     }
 }
 
