@@ -13,10 +13,41 @@ Models come from API providers; the runtime itself needs no server.
 - Run persistence for `graphrt serve` (resume by run id, async runs, restart-safe).
 - Reproducible benchmarks (`bench/`, see docs/benchmarks.md).
 
+## Done in 0.2
+
+- Knowledge bases managed at runtime (`/v1/knowledge`): datasets, documents,
+  chunking (including parent-child), enable/disable, local SQLite store and
+  in-process embeddings.
+- Small-device serving: bounded in-memory run store (`--max-runs`) and a trimmed
+  server build that runs in 16 MiB of RAM.
+- Engine and server roughly 2x / 5-9x faster than 0.1.
+
+## Done in 0.3
+
+- Workflow format v1 frozen, with a published JSON Schema
+  ([schema/workflow-v1.schema.json](schema/workflow-v1.schema.json)), `graphrt schema`
+  and editor autocomplete.
+- Validation reports every error at once with file:line:column, the field path and
+  "did you mean" suggestions (`graphrt validate --format json` for tools).
+- Webhook triggers for `graphrt serve` (signatures, idempotency, signed completion
+  callbacks).
+- Opt-in anonymous usage telemetry (off by default) and a self-hostable collector.
+- Security review and hardening (JS sandbox limits, secret scrubbing in errors,
+  egress policy, serve admission and DNS-rebinding protection); see
+  [docs/security.md](docs/security.md).
+- Android and iOS sample apps on the Kotlin and Swift bindings
+  ([examples/mobile](examples/mobile)).
+- Reproducible comparison against LangGraph and LangChain LCEL
+  ([bench/compare](bench/compare)).
+- Engine, LLM path and server another 20-45% faster, with fewer allocations per node.
+
 ## Next
 
-- Verified mobile builds (Android emulator / device CI, iOS XCFramework on macOS CI).
+- Windows release binaries and release automation per tag (CI).
+- Homebrew tap.
+- Mobile builds verified in CI (Android emulator, iOS simulator) and on devices.
 - Live provider test matrix in CI (OpenAI, Anthropic, Gemini, Bedrock, TypeSafe) behind secrets.
+- Faster validation of very large workflows (cold start of 1,000-node documents).
 
 ## Later
 
