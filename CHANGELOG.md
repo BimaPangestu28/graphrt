@@ -7,6 +7,25 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Security
+- `code` node (JavaScript): a workflow could switch off the sandbox's memory
+  and stack limits by asking for `limits.memory_bytes: 0` or
+  `limits.stack_bytes: 0` (QuickJS reads zero as "unlimited"), and unbounded
+  recursion then overflowed the native stack and aborted the whole process
+  (for example `graphrt serve`). An operator stack ceiling above 16 MiB had the
+  same effect, and one above the executor's thread stack (2 MiB on tokio's
+  blocking pool) crashed the process too. Limits now have floors (1 MiB heap,
+  64 KiB stack) and a 16 MiB stack ceiling, and JavaScript runs on a dedicated
+  thread sized from the stack limit, so deep recursion is always a catchable
+  `RangeError`.
+- `code` node (JavaScript): error messages thrown by scripts are truncated to
+  8 KiB, so a script cannot push megabytes into events and run records; an
+  operator time limit too large for the clock no longer panics; a long chain of
+  promise jobs is bounded by the time limit between jobs as well.
+- Python subprocess runner: the working directory is created fresh and
+  owner-only (`0700`) instead of adopting an existing directory at the
+  predictable temp path.
+
 ## [0.2.0] - 2026-11-19
 
 Knowledge bases you can manage from an app, in-process embeddings, small-device

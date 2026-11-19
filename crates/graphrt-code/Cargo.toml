@@ -16,7 +16,8 @@ repository.workspace = true
 default = ["js", "tokio"]
 # Embedded JavaScript via QuickJS.
 js = ["dep:rquickjs"]
-# Run the JS engine on tokio's blocking pool when a tokio runtime is present.
+# No longer changes behaviour: JavaScript always runs on a dedicated, stack-sized thread.
+# Kept so existing `features = ["tokio"]` declarations keep compiling.
 tokio = ["dep:tokio", "tokio/rt"]
 # HTTP client for a remote sandbox service (e.g. for Python).
 remote = ["dep:graphrt-http", "dep:reqwest"]

@@ -80,20 +80,59 @@ var __graphrt_done = false;
 })();
 "#;
 
+/// Smallest heap the engine is given. QuickJS reads a memory limit of `0` as
+/// "unlimited", so a request for less (including zero) is raised to this floor.
+const MIN_MEMORY_BYTES: usize = 1024 * 1024;
+
+/// Bounds of the engine's stack limit. QuickJS reads a stack limit of `0` as "no
+/// check", so a request for less is raised to the floor. rquickjs turns any limit
+/// above 16 MiB into `0` (no check), so larger requests are lowered to that ceiling.
+const MIN_STACK_BYTES: usize = 64 * 1024;
+const MAX_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+/// Native stack reserved on the engine thread beyond the engine's own stack limit,
+/// for the Rust and C frames below and between QuickJS's stack checks.
+const THREAD_STACK_HEADROOM: usize = 2 * 1024 * 1024;
+
+/// Longest error message kept from the script; longer messages are truncated so a
+/// script cannot push megabytes into events and run records through an exception.
+const MAX_ERROR_MESSAGE_BYTES: usize = 8 * 1024;
+
+/// Heap limit actually applied to the engine (see [`MIN_MEMORY_BYTES`]).
+fn engine_memory_bytes(limits: &CodeLimits) -> usize {
+    limits.memory_bytes.max(MIN_MEMORY_BYTES)
+}
+
+/// Stack limit actually applied to the engine (see [`MIN_STACK_BYTES`]).
+fn engine_stack_bytes(limits: &CodeLimits) -> usize {
+    limits.stack_bytes.clamp(MIN_STACK_BYTES, MAX_STACK_BYTES)
+}
+
+/// Stack size of the dedicated thread [`run`] must be called on: the engine's stack
+/// limit plus headroom, so the engine reports a `RangeError` before the thread overflows.
+pub(crate) fn thread_stack_bytes(limits: &CodeLimits) -> usize {
+    engine_stack_bytes(limits).saturating_add(THREAD_STACK_HEADROOM)
+}
+
 /// Run `main(JSON.parse(input))` from `code` and return its JSON result.
+///
+/// Must run on a thread created with at least [`thread_stack_bytes`] of stack: the
+/// engine's stack check is relative to the thread it runs on.
 pub(crate) fn run(code: &str, input: &str, limits: &CodeLimits) -> Result<serde_json::Value, NodeError> {
     let runtime = Runtime::new().map_err(|e| NodeError::new("sandbox", format!("cannot start JS runtime: {e}")))?;
-    runtime.set_memory_limit(limits.memory_bytes);
-    runtime.set_max_stack_size(limits.stack_bytes);
+    runtime.set_memory_limit(engine_memory_bytes(limits));
+    runtime.set_max_stack_size(engine_stack_bytes(limits));
 
     let budget = Duration::from_millis(limits.time_ms);
-    let deadline = Instant::now() + budget;
+    // A budget too large to represent as an instant is effectively unlimited.
+    let deadline = Instant::now().checked_add(budget);
+    let past_deadline = move || deadline.is_some_and(|deadline| Instant::now() >= deadline);
     // The interrupt handler records that it fired, so errors are classified by what the
     // engine actually did rather than by the clock at classification time.
     let interrupted = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&interrupted);
     runtime.set_interrupt_handler(Some(Box::new(move || {
-        let stop = Instant::now() >= deadline;
+        let stop = past_deadline();
         if stop {
             flag.store(true, Ordering::Relaxed);
         }
@@ -113,7 +152,7 @@ pub(crate) fn run(code: &str, input: &str, limits: &CodeLimits) -> Result<serde_
                 format!("code exceeded its memory limit of {} bytes", limits.memory_bytes),
             )
         } else {
-            NodeError::fatal("code_error", message)
+            NodeError::fatal("code_error", truncate_message(message, MAX_ERROR_MESSAGE_BYTES))
         }
     };
 
@@ -132,6 +171,11 @@ pub(crate) fn run(code: &str, input: &str, limits: &CodeLimits) -> Result<serde_
 
     // Phase 2: drive the promise chain to completion.
     loop {
+        // Each job is interruptible on its own; this also bounds a long chain of short jobs.
+        if past_deadline() {
+            interrupted.store(true, Ordering::Relaxed);
+            return Err(classify(String::new()));
+        }
         match runtime.execute_pending_job() {
             Ok(true) => continue,
             Ok(false) => break,
@@ -166,6 +210,21 @@ pub(crate) fn run(code: &str, input: &str, limits: &CodeLimits) -> Result<serde_
         ));
     }
     serde_json::from_str(&text).map_err(|e| NodeError::fatal("invalid_output", format!("invalid result JSON: {e}")))
+}
+
+/// Cut `message` to at most `max` bytes (on a character boundary), noting the cut.
+fn truncate_message(mut message: String, max: usize) -> String {
+    if message.len() <= max {
+        return message;
+    }
+    let mut end = max;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    let original = message.len();
+    message.truncate(end);
+    message.push_str(&format!("... [truncated, {original} bytes]"));
+    message
 }
 
 /// Whether a message is QuickJS's own out-of-memory error (not user text that merely
