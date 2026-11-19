@@ -75,6 +75,9 @@ pub struct AppState {
     extensions: Extensions,
     /// OpenTelemetry export, when enabled.
     telemetry: Option<Arc<crate::otel::Telemetry>>,
+    /// The knowledge base behind `/v1/knowledge`, when served with `--knowledge`.
+    #[cfg(feature = "rag")]
+    knowledge: Option<crate::knowledge_api::KnowledgeService>,
 }
 
 impl AppState {
@@ -88,7 +91,21 @@ impl AppState {
             next_id: AtomicU64::new(1),
             extensions: Extensions::builtin(),
             telemetry: None,
+            #[cfg(feature = "rag")]
+            knowledge: None,
         }
+    }
+
+    /// Serve this knowledge base under `/v1/knowledge`.
+    #[cfg(feature = "rag")]
+    pub fn with_knowledge(mut self, knowledge: Option<graphrt_rag::KnowledgeBase>) -> Self {
+        self.knowledge = knowledge.map(crate::knowledge_api::KnowledgeService::new);
+        self
+    }
+
+    #[cfg(feature = "rag")]
+    pub(crate) fn knowledge(&self) -> Option<&crate::knowledge_api::KnowledgeService> {
+        self.knowledge.as_ref()
     }
 
     /// Trace every run with this telemetry.
@@ -207,15 +224,28 @@ pub async fn build_state(
             .with_limits(limits.clone());
         workflows.insert(name.clone(), ServedWorkflow { engine, env });
     }
-    Ok(AppState::new(workflows, api_key).with_extensions(extensions))
+    let state = AppState::new(workflows, api_key).with_extensions(extensions);
+    // The same knowledge base the workflows use, so documents added over the API
+    // are searchable by running workflows right away.
+    #[cfg(feature = "rag")]
+    let state = state.with_knowledge(services.get::<graphrt_rag::KnowledgeBase>().cloned());
+    Ok(state)
 }
 
 fn is_mcp_config(path: &Path) -> bool {
     std::fs::read_to_string(path).map(|t| t.contains("\"mcpServers\"")).unwrap_or(false)
 }
 
+/// Default upload limit for knowledge base files (`--max-upload-bytes`).
+pub const DEFAULT_MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
+
 /// The HTTP router.
 pub fn router(state: Arc<AppState>, max_body_bytes: usize) -> Router {
+    router_with_uploads(state, max_body_bytes, DEFAULT_MAX_UPLOAD_BYTES)
+}
+
+/// The HTTP router, with a separate body limit for knowledge base file uploads.
+pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_upload_bytes: usize) -> Router {
     let api = Router::new()
         .route("/v1/workflows", get(list_workflows))
         .route("/v1/workflows/{name}/runs", post(start_run))
@@ -225,8 +255,25 @@ pub fn router(state: Arc<AppState>, max_body_bytes: usize) -> Router {
         .route("/v1/runs/{run_id}/abort", post(abort_run))
         .route("/v1/runs/{run_id}/resume", post(resume_run))
         .route("/v1/nodes", get(list_nodes))
-        .route("/v1/validate", post(validate_workflow))
-        .layer(middleware::from_fn_with_state(state.clone(), require_auth));
+        .route("/v1/validate", post(validate_workflow));
+    #[cfg(feature = "rag")]
+    let api = {
+        use crate::knowledge_api as k;
+        api.route("/v1/knowledge/datasets", get(k::list_datasets))
+            .route("/v1/knowledge/datasets/{dataset}/documents", get(k::list_documents).post(k::put_text_document))
+            .route(
+                "/v1/knowledge/datasets/{dataset}/documents/{document}",
+                get(k::get_document).merge(delete(k::delete_document)),
+            )
+            .route(
+                "/v1/knowledge/datasets/{dataset}/documents/{document}/file",
+                axum::routing::put(k::put_file_document).layer(DefaultBodyLimit::max(max_upload_bytes)),
+            )
+            .route("/v1/knowledge/retrieve", post(k::retrieve))
+    };
+    #[cfg(not(feature = "rag"))]
+    let _ = max_upload_bytes;
+    let api = api.layer(middleware::from_fn_with_state(state.clone(), require_auth));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .merge(api)
@@ -258,7 +305,7 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     if let Some(days) = args.store_ttl_days.filter(|d| *d > 0) {
         spawn_retention(Arc::clone(state.store()), days);
     }
-    let app = router(state.clone(), args.max_body_bytes);
+    let app = router_with_uploads(state.clone(), args.max_body_bytes, args.max_upload_bytes);
 
     let listener = tokio::net::TcpListener::bind(&args.addr)
         .await
@@ -266,6 +313,10 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     eprintln!("graphrt serving {} workflow(s) on http://{}", state.workflows.len(), args.addr);
     for name in state.workflows.keys() {
         eprintln!("  POST /v1/workflows/{name}/runs");
+    }
+    #[cfg(feature = "rag")]
+    if state.knowledge().is_some() {
+        eprintln!("  knowledge base API under /v1/knowledge (uploads up to {} bytes)", args.max_upload_bytes);
     }
     if api_key.is_none() {
         eprintln!("warning: no API key set (${}); the API is unauthenticated", args.api_key_env);
@@ -311,7 +362,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-fn error_response(status: StatusCode, message: &str) -> Response {
+pub(crate) fn error_response(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
 

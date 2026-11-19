@@ -10,6 +10,8 @@ pub mod files;
 pub mod inspect;
 #[cfg(feature = "rag")]
 pub mod kb;
+#[cfg(all(feature = "serve", feature = "rag"))]
+pub mod knowledge_api;
 pub mod otel;
 #[cfg(any(feature = "plugins", feature = "wasm"))]
 pub mod plugin;

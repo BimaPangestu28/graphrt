@@ -15,6 +15,15 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ### Added
 - `graphrt serve --max-runs <n>`; see docs/serving.md for small-device numbers.
+- Knowledge base API in `graphrt serve` (with `--knowledge`): list datasets and
+  documents (paged), add or replace documents from text or uploaded files
+  (`--max-upload-bytes`, default 16 MiB), inspect a document's chunks, delete
+  documents, and test retrieval, all on the knowledge base the workflows use.
+  Ingestion runs one request at a time to keep small devices responsive.
+- `graphrt-rag`: `VectorStore::list_documents` (memory and SQLite stores),
+  `DocumentSummary`, `KnowledgeBase::{list_documents, document_chunks,
+  delete_document, is_managed}`, `RagError::Unsupported`; `IngestReport` is
+  serializable.
 - `graphrt-rag`: `LocalEmbedder` (feature `local-embed`), sentence embeddings
   computed in-process with candle on the CPU: no embedding server, API key or
   network once the model is cached. BERT-family models from Hugging Face

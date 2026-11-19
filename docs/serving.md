@@ -117,6 +117,36 @@ of a pause succeeds: a concurrent or repeated resume gets `409 Conflict`.
 `stream` and `async` work as for new runs. Clients that keep snapshots
 themselves may still send `snapshot` in the body.
 
+## Knowledge base API
+
+When the server is started with `--knowledge <config>`, the knowledge base the
+workflows' `knowledge-retrieval` nodes use is also exposed under
+`/v1/knowledge`, behind the same API key. Documents added here are searchable by
+running workflows immediately. It is meant as the backend of a knowledge base
+UI (datasets, documents, chunks, retrieval testing).
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /v1/knowledge/datasets` | `{datasets: [{id, name, description, managed}]}`. `managed` is false for datasets served by an external retriever (read-only). |
+| `GET /v1/knowledge/datasets/{dataset}/documents?limit=&after=` | Documents ordered by id: `{documents: [{document_id, title, chunks, characters, metadata}], next}`. Pass `next` as `after` for the following page; `next` is null at the end. `limit` defaults to 50, at most 500. |
+| `POST /v1/knowledge/datasets/{dataset}/documents` | Add or replace a document from text: `{document_id, text, title?, metadata?}`. |
+| `PUT /v1/knowledge/datasets/{dataset}/documents/{document}/file?name=&title=` | Add or replace a document from a raw file body (PDF, Office, HTML, Markdown, EPUB, CSV, e-mail, ...). `name` (e.g. `report.pdf`) and `Content-Type` select the format. Limited by `--max-upload-bytes` (default 16 MiB). |
+| `GET /v1/knowledge/datasets/{dataset}/documents/{document}` | The document's chunks in order: `{document_id, chunks: [{id, title, text, characters, metadata}]}` (vectors are never sent). |
+| `DELETE /v1/knowledge/datasets/{dataset}/documents/{document}` | `{deleted_chunks}`; 404 when the document does not exist. |
+| `POST /v1/knowledge/retrieve` | Retrieval testing: `{query, datasets, top_k?, score_threshold?, filter?, weights?, rerank?}` returns `{hits, elapsed_ms}`, exactly as the node would retrieve. |
+
+Adding a document with an existing id replaces it: unchanged chunks keep their
+vectors (nothing is re-embedded), changed ones are embedded, and chunks the new
+version no longer contains are removed. The response reports
+`{document_id, report: {stored, skipped, removed}}`.
+
+To stay light on small devices, ingestion (text extraction and embedding) runs
+one request at a time (others wait their turn), and file extraction runs off
+the request workers. Errors are JSON `{error}` with a matching status (400
+invalid input, 404 unknown dataset or document, 409 operation not supported by
+the dataset, 413 upload too large, 502 provider failure) and an
+`x-graphrt-error-kind` header.
+
 ## Tenancy
 
 The API is single-tenant: anyone holding the server's API key can see and
