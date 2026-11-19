@@ -360,8 +360,9 @@ struct PartialCall {
     arguments: String,
 }
 
-/// Collect a delta stream. `on_delta` sees every delta as it arrives (used for
-/// streaming chunks to the run's event stream).
+/// Collect a delta stream. `on_delta` receives every delta as it arrives, by
+/// value, after it has been added to the response (used for streaming chunks to
+/// the run's event stream): a text delta can become a chunk without copying.
 ///
 /// Tool-call fragments are grouped by their `index`, so interleaved parallel
 /// calls are assembled correctly. A call that has an id or arguments but never
@@ -370,30 +371,51 @@ struct PartialCall {
 /// Detecting a truncated stream is the transport's job: the built-in providers
 /// fail with a retryable [`LlmError::Network`] when the connection closes
 /// before the provider's end-of-stream marker.
-pub async fn collect(mut stream: ChatStream, mut on_delta: impl FnMut(&ChatDelta)) -> Result<ChatResponse, LlmError> {
+///
+/// ```
+/// # use graphrt_llm::{ChatDelta, ChatStream, collect};
+/// # let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+/// # runtime.block_on(async {
+/// let stream: ChatStream =
+///     Box::pin(futures::stream::iter(["Hel", "lo"].map(|t| Ok(ChatDelta::Text(t.into())))));
+/// let mut chunks = Vec::new();
+/// let response = collect(stream, |delta| {
+///     if let ChatDelta::Text(text) = delta {
+///         chunks.push(text); // moved, not copied
+///     }
+/// })
+/// .await?;
+/// assert_eq!((response.text.as_str(), chunks.len()), ("Hello", 2));
+/// # Ok::<(), graphrt_llm::LlmError>(())
+/// # })?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub async fn collect(mut stream: ChatStream, mut on_delta: impl FnMut(ChatDelta)) -> Result<ChatResponse, LlmError> {
     let mut response = ChatResponse::default();
     let mut calls: BTreeMap<usize, PartialCall> = BTreeMap::new();
     while let Some(delta) = stream.next().await {
         let delta = delta?;
-        on_delta(&delta);
-        match delta {
-            ChatDelta::Text(t) => response.text.push_str(&t),
-            ChatDelta::Reasoning(t) => response.reasoning.push_str(&t),
+        // Text is copied into the response and the delta handed on; the rare
+        // non-text deltas are cloned instead.
+        match &delta {
+            ChatDelta::Text(t) => response.text.push_str(t),
+            ChatDelta::Reasoning(t) => response.reasoning.push_str(t),
             ChatDelta::ToolCall { index, id, name, arguments } => {
-                let call = calls.entry(index).or_default();
-                if let Some(id) = id.filter(|s| !s.is_empty()) {
-                    call.id = Some(id);
+                let call = calls.entry(*index).or_default();
+                if let Some(id) = id.as_ref().filter(|s| !s.is_empty()) {
+                    call.id = Some(id.clone());
                 }
-                if let Some(name) = name.filter(|s| !s.is_empty()) {
-                    call.name = name;
+                if let Some(name) = name.as_ref().filter(|s| !s.is_empty()) {
+                    call.name.clone_from(name);
                 }
-                call.arguments.push_str(&arguments);
+                call.arguments.push_str(arguments);
             }
-            ChatDelta::Usage(u) => response.usage = u,
-            ChatDelta::Finish(r) => response.finish_reason = Some(r),
-            ChatDelta::ProviderState(s) => response.provider_state = Some(s),
-            ChatDelta::Warning(w) => response.warnings.push(w),
+            ChatDelta::Usage(u) => response.usage = *u,
+            ChatDelta::Finish(r) => response.finish_reason = Some(r.clone()),
+            ChatDelta::ProviderState(s) => response.provider_state = Some(s.clone()),
+            ChatDelta::Warning(w) => response.warnings.push(w.clone()),
         }
+        on_delta(delta);
     }
     let mut tool_calls = Vec::with_capacity(calls.len());
     for (index, call) in calls {

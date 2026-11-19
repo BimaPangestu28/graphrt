@@ -487,15 +487,13 @@ pub async fn invoke(
     let mut splitter = ThinkSplitter::default();
     let response = collect(stream, |delta| match (mode, delta) {
         (StreamMode::Off, _) => {}
-        (StreamMode::Raw, ChatDelta::Text(t)) if !t.is_empty() => {
-            ctx.chunk_shared(StreamField::Text.shared(), t.clone())
-        }
+        (StreamMode::Raw, ChatDelta::Text(t)) if !t.is_empty() => ctx.chunk_shared(StreamField::Text.shared(), t),
         (StreamMode::SeparateThink, ChatDelta::Text(t)) => {
-            for (field, piece) in splitter.push(t) {
+            for (field, piece) in splitter.push(&t) {
                 ctx.chunk_shared(field.shared(), piece);
             }
         }
-        (_, ChatDelta::Reasoning(t)) if !t.is_empty() => ctx.chunk_shared(StreamField::Reasoning.shared(), t.clone()),
+        (_, ChatDelta::Reasoning(t)) if !t.is_empty() => ctx.chunk_shared(StreamField::Reasoning.shared(), t),
         _ => {}
     })
     .await?;
