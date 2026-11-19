@@ -30,6 +30,7 @@ use crate::node::{
     Resume, Services, Subgraph, SubgraphRequest, SubgraphResult, merge_writes,
 };
 use crate::pool::{ENV, SYS, Selector, VariablePool};
+use crate::redact::SecretSet;
 use crate::snapshot::{EdgeStatus, FrameSnapshot, NodeSnapshot, NodeStatus};
 use crate::value::Value;
 
@@ -56,6 +57,8 @@ pub(crate) struct RunShared {
     pub(crate) secrets: Vec<(Selector, Value)>,
     /// Host input for paused nodes, keyed by `"<frame>/<node_id>"` or plain node id.
     pub(crate) resume_inputs: IndexMap<String, Value>,
+    /// Plaintext of every secret seen in this run, scrubbed from node error messages.
+    pub(crate) secret_values: SecretSet,
 }
 
 impl std::fmt::Debug for RunShared {
@@ -65,6 +68,14 @@ impl std::fmt::Debug for RunShared {
 }
 
 impl RunShared {
+    /// `error` with every secret this run has seen masked in its message: nodes that
+    /// use a secret's plaintext can get it echoed back (e.g. in a provider error body),
+    /// and the message goes to events, retries, outputs and run records.
+    pub(crate) fn scrub_error(&self, mut error: NodeError) -> NodeError {
+        self.secret_values.scrub_in_place(&mut error.message);
+        error
+    }
+
     pub(crate) fn emit(&self, event: Event) {
         (self.sink)(event);
     }
@@ -573,7 +584,9 @@ impl Frame {
                 // The result and the error stay inside this block, so the task
                 // does not reserve room for them while it waits for a retry.
                 let delay_ms = {
-                    let result = run_attempt(node.as_ref(), ctx, timeout_ms, run.clock.as_ref()).await;
+                    let result = run_attempt(node.as_ref(), ctx, timeout_ms, run.clock.as_ref())
+                        .await
+                        .map_err(|error| run.scrub_error(error));
                     let error = match result {
                         Err(error) if error.retryable && attempt <= retry.max_retries && !run.control.is_stopped() => {
                             error
@@ -765,6 +778,13 @@ impl Frame {
         writes: &[(Selector, Value)],
     ) -> Result<(), NodeError> {
         let node_id = self.node_id(ix);
+        // Learn secrets produced by nodes (e.g. secret-typed start inputs) so later
+        // error messages that echo them are scrubbed. A variant check per value.
+        for value in outputs.values().chain(writes.iter().map(|(_, value)| value)) {
+            if matches!(value, Value::Secret(_)) {
+                self.run.secret_values.observe(value);
+            }
+        }
         for (selector, _) in writes {
             let namespace = selector.namespace();
             if namespace == SYS || namespace == ENV {
