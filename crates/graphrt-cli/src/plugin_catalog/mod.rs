@@ -52,7 +52,7 @@ mod installer {
 
     use super::archive::{ExtractLimits, extract_tar_gz};
     use super::fetch::{FetchLimits, Location, fetch_bytes, parse_index_location, parse_tarball_location};
-    use super::index::{CatalogEntry, CatalogIndex, PluginSpec, parse_index, search_entries, select_entry};
+    use super::index::{CatalogEntry, CatalogIndex, PluginSpec, parse_index, printable, search_entries, select_entry};
     use crate::error::CliError;
 
     /// The index lists every plugin with its node schemas: a few MiB at most.
@@ -142,10 +142,10 @@ mod installer {
         )
         .map_err(write_error)?;
         if let Some(reason) = entry.status_reason.as_deref().filter(|reason| !reason.trim().is_empty()) {
-            writeln!(out, "  {}", reason.trim()).map_err(write_error)?;
+            writeln!(out, "  {}", printable(reason.trim())).map_err(write_error)?;
         }
         if let Some(warning) = entry.warning.as_deref().filter(|warning| !warning.trim().is_empty()) {
-            eprintln!("warning: {}: {}", entry.name, warning.trim());
+            eprintln!("warning: {}: {}", entry.name, printable(warning.trim()));
         }
         Ok(())
     }
@@ -193,8 +193,10 @@ mod installer {
         let actual: String = Sha256::digest(tarball).iter().map(|byte| format!("{byte:02x}")).collect();
         if expected.len() != 64 || !actual.eq_ignore_ascii_case(expected) {
             return Err(CliError::failed(format!(
-                "{} {}: sha256 mismatch: the catalog lists `{expected}`, the download is `{actual}`; refusing to install",
-                entry.name, entry.version
+                "{} {}: sha256 mismatch: the catalog lists `{}`, the download is `{actual}`; refusing to install",
+                entry.name,
+                entry.version,
+                printable(expected)
             )));
         }
         Ok(())
@@ -212,7 +214,10 @@ mod installer {
         if staged.manifest.name != entry.name || staged.manifest.version != entry.version {
             return Err(CliError::failed(format!(
                 "{} {}: the tarball holds `{}` {} instead",
-                entry.name, entry.version, staged.manifest.name, staged.manifest.version
+                entry.name,
+                entry.version,
+                staged.manifest.name,
+                printable(&staged.manifest.version)
             )));
         }
         Ok(plugin_dir)

@@ -25,8 +25,8 @@ impl Location {
 impl std::fmt::Display for Location {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Https(url) => formatter.write_str(url),
-            Self::File(path) => write!(formatter, "{}", path.display()),
+            Self::Https(url) => formatter.write_str(&super::index::printable(url)),
+            Self::File(path) => formatter.write_str(&super::index::printable(&path.display().to_string())),
         }
     }
 }
@@ -49,7 +49,12 @@ pub fn parse_index_location(text: &str) -> Result<Location, String> {
 ///
 /// # Errors
 /// A message for every other URL, including plain paths and `http://`.
+/// The URL comes from the index, so it is made printable in errors.
 pub fn parse_tarball_location(url: &str, index_location: &Location) -> Result<Location, String> {
+    classify_tarball_url(url, index_location).map_err(|error| super::index::printable(&error))
+}
+
+fn classify_tarball_url(url: &str, index_location: &Location) -> Result<Location, String> {
     match parse_url(url)? {
         Some(Location::Https(url)) => Ok(Location::Https(url)),
         Some(Location::File(path)) if index_location.is_local() => Ok(Location::File(path)),
@@ -189,6 +194,8 @@ mod tests {
         assert!(parse_tarball_location("file:///etc/passwd", &remote_index).unwrap_err().contains("not local"));
         assert!(parse_tarball_location("http://x.example/a.tar.gz", &local_index).is_err());
         assert!(parse_tarball_location("/tmp/a.tar.gz", &local_index).is_err());
+        let hostile = parse_tarball_location("http://x.example/\u{1b}]52;c;x\u{7}", &local_index).unwrap_err();
+        assert!(!hostile.chars().any(char::is_control), "{hostile:?}");
     }
 
     #[test]
