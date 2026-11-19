@@ -19,6 +19,13 @@ cargo test --workspace --all-features
 cargo test -p graphrt-core --no-default-features
 ```
 
+Or run every CI job at once (fmt, clippy, test, MSRV, core without default
+features, wasm32 and the min-size build) against your committed `HEAD`:
+
+```sh
+scripts/ci-local.sh            # --skip <job> to leave one out, e.g. --skip size
+```
+
 ## Code guidelines
 
 - No `unwrap()`, `expect()`, `panic!()` or unchecked indexing outside tests
