@@ -20,7 +20,7 @@ use indexmap::IndexMap;
 
 use super::Limits;
 use super::control::{Control, Stop};
-use super::ids::new_id;
+use super::ids::new_id_arc;
 use crate::dsl::ErrorStrategy;
 use crate::event::{Event, FrameId, PauseReason, Usage};
 use crate::graph::{EdgeIx, FAIL_BRANCH, Graph, NodeIx};
@@ -352,7 +352,7 @@ impl Frame {
         let now = self.run.now_ms();
         let rt = self.nodes.entry(ix).or_insert_with(|| NodeRt {
             state: State::Ready,
-            exec_id: Arc::from(new_id(now)),
+            exec_id: new_id_arc(now),
             attempt: 0,
             resume_state: None,
         });
@@ -481,10 +481,10 @@ impl Frame {
             let error = NodeError::fatal("graph", "unknown node index");
             return Box::pin(futures::future::ready(TaskDone { ix, attempt: 1, result: Err(error), elapsed_ms: 0 }));
         };
-        let now = run.now_ms();
+        // The execution id is minted in `mark_ready`; read the clock only if not.
         let rt = self.nodes.entry(ix).or_insert_with(|| NodeRt {
             state: State::Ready,
-            exec_id: Arc::from(new_id(now)),
+            exec_id: new_id_arc(run.now_ms()),
             attempt: 0,
             resume_state: None,
         });
@@ -634,7 +634,7 @@ impl Frame {
         if gn.role == NodeRole::Response {
             merge_response(&mut self.outputs, &output.outputs);
         }
-        if gn.kind == LOOP_END_KIND {
+        if &*gn.kind == LOOP_END_KIND {
             self.broke = true;
         }
         self.set_state(ix, State::Succeeded);
@@ -751,7 +751,7 @@ impl Frame {
         if writes.is_empty() {
             // Nothing can fail: skip the undo log (one selector and one value
             // lookup per output), which most nodes would never use.
-            self.pool.set_outputs(&node_id, outputs);
+            self.pool.set_outputs_shared(&node_id, outputs);
             return Ok(());
         }
         // Apply in place (cloning the pool here would force a copy-on-write copy on
@@ -762,7 +762,7 @@ impl Frame {
             let previous = self.pool.get(&root);
             undo.push((root, previous));
         }
-        self.pool.set_outputs(&node_id, outputs);
+        self.pool.set_outputs_shared(&node_id, outputs);
         for (selector, value) in writes {
             let root = selector.root();
             let previous = self.pool.get(&root);
@@ -797,14 +797,13 @@ impl Frame {
     /// propagate readiness and skips downstream.
     fn traverse(&mut self, ix: NodeIx, take: impl Fn(&str) -> bool) {
         let graph = self.run.graph.clone();
-        let mut targets = Vec::new();
         for &ex in graph.outgoing(ix) {
             let Some(edge) = graph.edge(ex) else { continue };
             let status = if take(&edge.handle) { EdgeStatus::Taken } else { EdgeStatus::Skipped };
             self.resolve_edge(ex, edge.target, status);
-            targets.push(edge.target);
         }
-        self.resolve_targets(targets);
+        // Last edge first, as the stack-based resolution always did.
+        self.resolve_targets(graph.outgoing(ix).iter().rev().filter_map(|&ex| graph.edge(ex)).map(|e| e.target));
     }
 
     /// Record an edge's status, keeping the target's incoming tally current.
@@ -838,9 +837,13 @@ impl Frame {
 
     /// Worklist propagation: a node becomes ready once every incoming edge is
     /// resolved and at least one is taken; it is skipped when all are skipped.
-    fn resolve_targets(&mut self, mut work: Vec<NodeIx>) {
+    fn resolve_targets(&mut self, targets: impl Iterator<Item = NodeIx>) {
         let graph = self.run.graph.clone();
-        while let Some(target) = work.pop() {
+        // Targets reached by skip propagation are resolved before the remaining
+        // initial ones (a stack); the stack only allocates when a node is skipped.
+        let mut work: Vec<NodeIx> = Vec::new();
+        let mut targets = targets;
+        while let Some(target) = work.pop().or_else(|| targets.next()) {
             if self.nodes.contains_key(&target) {
                 continue; // already decided
             }
@@ -857,7 +860,7 @@ impl Frame {
             let now = self.run.now_ms();
             self.nodes.insert(
                 target,
-                NodeRt { state: State::Skipped, exec_id: Arc::from(new_id(now)), attempt: 0, resume_state: None },
+                NodeRt { state: State::Skipped, exec_id: new_id_arc(now), attempt: 0, resume_state: None },
             );
             self.run.emit(Event::NodeSkipped { frame: self.id.clone(), node_id: self.node_id(target) });
             for &ex in graph.outgoing(target) {

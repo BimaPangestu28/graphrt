@@ -39,6 +39,57 @@ pub(crate) fn new_id(now_ms: u64) -> String {
     id
 }
 
+/// [`new_id`] directly as an `Arc<str>`: written into a stack buffer, so minting
+/// an execution id costs one allocation instead of two.
+pub(crate) fn new_id_arc(now_ms: u64) -> std::sync::Arc<str> {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mixed = seed() ^ n.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    let mut buf = HexBuf::default();
+    buf.hex(now_ms, 11);
+    buf.byte(b'-');
+    buf.hex(mixed & 0xffff_ffff, 8);
+    buf.byte(b'-');
+    buf.hex(n, 1);
+    std::sync::Arc::from(buf.as_str())
+}
+
+/// Fixed-size ASCII buffer for ids (11 + 1 + 8 + 1 + 16 hex digits at most).
+struct HexBuf {
+    bytes: [u8; 48],
+    len: usize,
+}
+
+impl Default for HexBuf {
+    fn default() -> Self {
+        Self { bytes: [0; 48], len: 0 }
+    }
+}
+
+impl HexBuf {
+    fn byte(&mut self, b: u8) {
+        if let Some(slot) = self.bytes.get_mut(self.len) {
+            *slot = b;
+            self.len += 1;
+        }
+    }
+
+    fn hex(&mut self, value: u64, min_width: usize) {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let digits = (64 - value.leading_zeros()).div_ceil(4).max(1) as usize;
+        for _ in digits..min_width {
+            self.byte(b'0');
+        }
+        for i in (0..digits).rev() {
+            let nibble = (value >> (i * 4)) & 0xf;
+            self.byte(DIGITS.get(nibble as usize).copied().unwrap_or(b'0'));
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        self.bytes.get(..self.len).and_then(|b| std::str::from_utf8(b).ok()).unwrap_or_default()
+    }
+}
+
 /// Append `value` in lowercase hex, left-padded with zeros to `min_width` digits.
 fn push_hex(out: &mut String, value: u64, min_width: usize) {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -63,6 +114,17 @@ mod tests {
                 assert_eq!(out, format!("{value:0width$x}"), "value {value:#x}, width {width}");
             }
         }
+    }
+
+    #[test]
+    fn arc_ids_have_the_string_id_format() {
+        let id = super::new_id_arc(0x1_2345);
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(parts.len(), 3, "{id}");
+        assert_eq!(parts[0], "00000012345");
+        assert_eq!(parts[1].len(), 8);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'), "{id}");
+        assert_ne!(super::new_id_arc(1), super::new_id_arc(1));
     }
 
     #[test]

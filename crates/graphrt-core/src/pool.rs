@@ -180,6 +180,15 @@ impl Table {
         shard.entry(key).or_default()
     }
 
+    /// Like [`Table::entry`], but a new namespace takes `namespace` as its key
+    /// (a reference-count bump) instead of allocating a copy.
+    fn entry_shared(&mut self, namespace: &Arc<str>) -> &mut Namespace {
+        let shard = self.shard_mut(namespace);
+        let key =
+            shard.get_key_value(namespace.as_ref()).map_or_else(|| Arc::clone(namespace), |(key, _)| Arc::clone(key));
+        shard.entry(key).or_default()
+    }
+
     fn remove(&mut self, namespace: &str) {
         if self.get(namespace).is_some() {
             self.shard_mut(namespace).remove(namespace);
@@ -188,6 +197,14 @@ impl Table {
 
     fn iter(&self) -> impl Iterator<Item = (&Arc<str>, &Namespace)> {
         self.shards.iter().flat_map(|shards| shards.iter().flatten()).flat_map(|shard| shard.iter())
+    }
+}
+
+fn insert_outputs(namespace: &mut Namespace, outputs: &IndexMap<String, Value>) {
+    let ns = Arc::make_mut(namespace);
+    ns.reserve(outputs.len());
+    for (k, v) in outputs {
+        ns.insert(Arc::from(k.as_str()), v.clone());
     }
 }
 
@@ -264,11 +281,13 @@ impl VariablePool {
 
     /// Bulk-insert a node's outputs.
     pub fn set_outputs(&mut self, namespace: &str, outputs: &IndexMap<String, Value>) {
-        let ns = Arc::make_mut(self.namespaces.entry(namespace));
-        ns.reserve(outputs.len());
-        for (k, v) in outputs {
-            ns.insert(Arc::from(k.as_str()), v.clone());
-        }
+        insert_outputs(self.namespaces.entry(namespace), outputs);
+    }
+
+    /// [`VariablePool::set_outputs`] for a namespace the caller already holds as
+    /// an `Arc<str>` (the engine's node ids), which avoids copying the name.
+    pub(crate) fn set_outputs_shared(&mut self, namespace: &Arc<str>, outputs: &IndexMap<String, Value>) {
+        insert_outputs(self.namespaces.entry_shared(namespace), outputs);
     }
 
     /// All variables in a namespace.
