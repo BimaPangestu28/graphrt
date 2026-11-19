@@ -57,7 +57,7 @@ PY
 echo "==> scaling regression check (per-node cost 100 vs 1,000 nodes)"
 cargo test --quiet --release -p graphrt-core --test engine_scaling -- --ignored
 
-for section in engine concurrency streaming startup pool; do
+for section in engine allocs concurrency streaming startup pool; do
   echo "==> $section"
   "$BENCH" "$section" > "$WORK/$section.json"
 done
@@ -119,6 +119,7 @@ lines = lambda name: [json.loads(l) for l in open(os.path.join(work, name)) if l
 result = {
     "machine": load("machine.json"),
     "engine": load("engine.json"),
+    "allocs": load("allocs.json"),
     "concurrency": load("concurrency.json"),
     "streaming": load("streaming.json"),
     "startup": load("startup.json"),
@@ -137,6 +138,10 @@ md = [f"# graphrt benchmarks — {os.path.basename(base)}", "",
       "| Graph | Nodes | p50 ms | p95 ms | µs / node (p50) |", "|---|---:|---:|---:|---:|"]
 for name, r in result["engine"].items():
     md.append(f"| {name} | {r['nodes']} | {r['p50_ms']:.3f} | {r['p95_ms']:.3f} | {r['p50_us_per_node']:.2f} |")
+md += ["", "## Allocations (sequential runs, counted by the harness allocator)", "",
+       "| Graph | Nodes | Allocations / run | Bytes / run | Allocations / node |", "|---|---:|---:|---:|---:|"]
+for name, r in result["allocs"].items():
+    md.append(f"| {name} | {r['nodes']} | {r['allocs_per_run']} | {r['bytes_per_run']} | {r['allocs_per_node']:.1f} |")
 md += ["", "## Concurrent runs (multi-thread runtime, mock model, 10 streamed chunks)", "",
        "| Model delay | Concurrent runs | Runs / s | Ideal runs / s |", "|---:|---:|---:|---:|"]
 for r in result["concurrency"]["rows"]:
