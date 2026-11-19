@@ -25,6 +25,11 @@ releases may contain breaking changes; they are called out under **Changed**.
 - Python subprocess runner: the working directory is created fresh and
   owner-only (`0700`) instead of adopting an existing directory at the
   predictable temp path.
+- Dependencies: `rusqlite` 0.40 -> 0.41 (bundled SQLite 3.54), fixing
+  RUSTSEC-2026-0459 / CVE-2026-119375 (uninitialized page-cache memory read
+  through a crafted database and `-wal` pair) in `graphrt-rag`'s `SqliteStore`.
+  `graphrt-rag` now needs Rust 1.89. `paste` (unmaintained, build-time only, via
+  candle) is acknowledged in `deny.toml`. Also in 0.2.0.
 
 ### Performance
 - Engine: fewer allocations and less work per node execution. Node task
