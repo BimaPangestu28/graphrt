@@ -58,6 +58,16 @@ releases may contain breaking changes; they are called out under **Changed**.
 - Plugins: `limits.max_message_bytes` is capped at 256 MiB; WebAssembly
   plugins get at most 4 tables of 100,000 elements (was 8 x 1,000,000), which
   lived outside the `memory_bytes` budget.
+- `graphrt serve`: new `--max-active-runs` (default 256, `0` = unlimited)
+  caps runs executing at once; further starts and resumes get `429`.
+  Previously `"async": true` requests could start unlimited parallel runs
+  (`--max-runs` only bounds kept records). Also in 0.2.0.
+- `graphrt serve` without an API key on a loopback address now accepts only
+  loopback `Host` names (`localhost`, `127.0.0.1`, `[::1]`), blocking DNS
+  rebinding from web pages; a non-loopback address without a key prints an
+  explicit warning. Run store I/O errors no longer return server file paths to
+  clients, and `top_k` on `/v1/knowledge/retrieve` is capped at 100. Also in
+  0.2.0.
 - Dependencies: `rusqlite` 0.40 -> 0.41 (bundled SQLite 3.54), fixing
   RUSTSEC-2026-0459 / CVE-2026-119375 (uninitialized page-cache memory read
   through a crafted database and `-wal` pair) in `graphrt-rag`'s `SqliteStore`.

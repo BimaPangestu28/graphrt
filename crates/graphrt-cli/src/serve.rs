@@ -70,6 +70,8 @@ pub struct ServedWorkflow {
 pub struct AppState {
     workflows: IndexMap<String, ServedWorkflow>,
     runs: Mutex<HashMap<String, Arc<ActiveRun>>>,
+    /// Cap on `runs` (executing runs); `0` = unlimited.
+    max_active_runs: usize,
     store: Arc<dyn RunStore>,
     api_key: Option<String>,
     next_id: AtomicU64,
@@ -88,6 +90,7 @@ impl AppState {
         Self {
             workflows,
             runs: Mutex::new(HashMap::new()),
+            max_active_runs: 0,
             store: Arc::new(MemoryStore::new()),
             api_key,
             next_id: AtomicU64::new(1),
@@ -121,6 +124,29 @@ impl AppState {
     pub fn with_extensions(mut self, extensions: Extensions) -> Self {
         self.extensions = extensions;
         self
+    }
+
+    /// Refuse new or resumed runs with `429` while `max` runs execute (`0` = unlimited).
+    pub fn with_max_active_runs(mut self, max: usize) -> Self {
+        self.max_active_runs = max;
+        self
+    }
+
+    /// `429` when the server already executes `max_active_runs` runs. Checked before a
+    /// run is created, so a refused request leaves no record behind. The check and the
+    /// later insert are not atomic: concurrent requests can overshoot by a few runs.
+    fn refuse_if_busy(&self) -> Option<Response> {
+        if self.max_active_runs == 0 {
+            return None;
+        }
+        let active = self.runs.lock().map(|runs| runs.len()).unwrap_or(usize::MAX);
+        if active < self.max_active_runs {
+            return None;
+        }
+        Some(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            &format!("the server is already executing {} runs; retry later", self.max_active_runs),
+        ))
     }
 
     /// Record runs in this store (default: in memory).
@@ -242,6 +268,9 @@ fn is_mcp_config(path: &Path) -> bool {
 /// Default upload limit for knowledge base files (`--max-upload-bytes`).
 pub const DEFAULT_MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
 
+/// Default cap on runs executing at once (`--max-active-runs`).
+pub const DEFAULT_MAX_ACTIVE_RUNS: usize = 256;
+
 /// The HTTP router.
 pub fn router(state: Arc<AppState>, max_body_bytes: usize) -> Router {
     router_with_uploads(state, max_body_bytes, DEFAULT_MAX_UPLOAD_BYTES)
@@ -301,7 +330,8 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         build_state(&files, &options, limits, api_key.clone())
             .await?
             .with_store(store)
-            .with_telemetry(telemetry.clone()),
+            .with_telemetry(telemetry.clone())
+            .with_max_active_runs(args.max_active_runs),
     );
     let interrupted = state.recover().await?;
     if interrupted > 0 {
@@ -315,6 +345,12 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let listener = tokio::net::TcpListener::bind(&args.addr)
         .await
         .map_err(|e| CliError::usage(format!("cannot listen on {}: {e}", args.addr)))?;
+    let loopback = listener.local_addr().map(|a| a.ip().is_loopback()).unwrap_or(false);
+    // Without an API key, a loopback server is reachable from any web page through DNS
+    // rebinding (the page's own host name resolving to 127.0.0.1). Such requests carry
+    // that foreign host name, so only local `Host` values are accepted.
+    let app =
+        if api_key.is_none() && loopback { app.layer(axum::middleware::from_fn(require_local_host)) } else { app };
     eprintln!("graphrt serving {} workflow(s) on http://{}", state.workflows.len(), args.addr);
     for name in state.workflows.keys() {
         eprintln!("  POST /v1/workflows/{name}/runs");
@@ -325,6 +361,13 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     }
     if api_key.is_none() {
         eprintln!("warning: no API key set (${}); the API is unauthenticated", args.api_key_env);
+        if !loopback {
+            eprintln!(
+                "warning: listening on a non-loopback address without an API key: anyone who can reach {} \
+                 can start runs with this server's credentials. Set ${} or bind 127.0.0.1",
+                args.addr, args.api_key_env
+            );
+        }
     }
     // Without TCP_NODELAY, the second and later small writes of a streamed (SSE)
     // response wait for the client's delayed ACK: about 40 ms per run on Linux.
@@ -344,6 +387,45 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         telemetry.shutdown().await;
     }
     Ok(EXIT_OK)
+}
+
+/// Reject requests whose `Host` is not a loopback name (DNS rebinding protection for
+/// an unauthenticated loopback server).
+async fn require_local_host(request: Request, next: Next) -> Response {
+    let host = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+        .or_else(|| request.uri().authority().map(|a| a.as_str().to_owned()));
+    if host.as_deref().is_some_and(is_local_host) {
+        next.run(request).await
+    } else {
+        error_response(
+            StatusCode::FORBIDDEN,
+            "requests to an unauthenticated server must use a loopback host name (localhost, 127.0.0.1, [::1]); \
+             set an API key to serve other host names",
+        )
+    }
+}
+
+/// Whether a `Host` header value names this machine (`localhost`, `*.localhost`,
+/// `127.x.y.z`, `[::1]`), with or without a port.
+fn is_local_host(host: &str) -> bool {
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        // `[::1]` or `[::1]:8080`
+        match rest.split_once(']') {
+            Some((inside, port)) if port.is_empty() || port.starts_with(':') => inside,
+            _ => return false,
+        }
+    } else {
+        host.rsplit_once(':').map_or(host, |(name, _port)| name)
+    };
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    if name == "localhost" || name.ends_with(".localhost") {
+        return true;
+    }
+    name.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 async fn require_auth(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
@@ -506,7 +588,11 @@ fn store_error(e: &StoreError) -> Response {
         StoreError::NotFound(_) => StatusCode::NOT_FOUND,
         StoreError::Conflict(_) => StatusCode::CONFLICT,
         StoreError::InvalidId(_) => StatusCode::BAD_REQUEST,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => {
+            // I/O and corruption errors name server paths: log them, answer generically.
+            eprintln!("run store error: {e}");
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run store error (details in the server log)");
+        }
     };
     error_response(status, &e.to_string())
 }
@@ -520,6 +606,9 @@ async fn start_run(
     let Some(workflow) = state.workflows.get(&name) else {
         return error_response(StatusCode::NOT_FOUND, &format!("unknown workflow `{name}`"));
     };
+    if let Some(busy) = state.refuse_if_busy() {
+        return busy;
+    }
     let run_id = state.new_run_id();
     let record = RunRecord::running(&run_id, &name, workflow.engine.graph().fingerprint(), now_ms());
     if let Err(e) = state.store.create(record.clone()).await {
@@ -548,6 +637,9 @@ async fn resume_run(
 ) -> Response {
     if state.active(&run_id).is_some() {
         return error_response(StatusCode::CONFLICT, "run is already executing");
+    }
+    if let Some(busy) = state.refuse_if_busy() {
+        return busy;
     }
     let (record, snapshot) = match body.snapshot {
         // Resume from the server's own records.
@@ -929,7 +1021,28 @@ fn spawn_retention(store: Arc<dyn RunStore>, days: u64) {
 
 #[cfg(test)]
 mod tests {
-    use super::constant_time_eq;
+    use super::{constant_time_eq, is_local_host};
+
+    #[test]
+    fn local_host_names() {
+        for host in ["localhost", "localhost:8080", "LOCALHOST.", "app.localhost:3000", "127.0.0.1", "127.0.0.1:8080"] {
+            assert!(is_local_host(host), "{host}");
+        }
+        for host in ["[::1]", "[::1]:8080", "127.1.2.3:80"] {
+            assert!(is_local_host(host), "{host}");
+        }
+        for host in [
+            "evil.example",
+            "evil.example:8080",
+            "localhost.evil.example",
+            "127.0.0.1.nip.io",
+            "[::1]x",
+            "10.0.0.1:8080",
+            "",
+        ] {
+            assert!(!is_local_host(host), "{host}");
+        }
+    }
 
     #[test]
     fn constant_time_comparison() {

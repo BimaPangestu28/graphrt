@@ -417,6 +417,10 @@ pub struct ServeArgs {
     /// on small devices: a finished run takes roughly 10-20 KiB.
     #[arg(long, value_name = "N", default_value_t = crate::store::DEFAULT_MAX_RUNS)]
     pub max_runs: usize,
+    /// Maximum number of runs executing at the same time (started or resumed); further
+    /// requests get `429 Too Many Requests` (0 = unlimited). Paused runs do not count.
+    #[arg(long, value_name = "N", default_value_t = crate::serve::DEFAULT_MAX_ACTIVE_RUNS)]
+    pub max_active_runs: usize,
     #[command(flatten)]
     pub services: ServiceArgs,
 }
