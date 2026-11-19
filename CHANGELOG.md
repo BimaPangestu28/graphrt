@@ -7,6 +7,28 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Changed
+- **Breaking** (`graphrt-core`): `Event::NodeChunk::field` is an `Arc<str>`
+  instead of a `String`, so a streamed chunk no longer allocates its field
+  name. Serialized events are unchanged. New `NodeContext::chunk_shared(&field,
+  text)` streams under a name the node keeps in an `Arc<str>`;
+  `NodeContext::chunk(&str, text)` keeps its signature (and allocates the name
+  per chunk). Migrating: compare with `field.as_ref() == "text"`, use
+  `field.to_string()` where a `String` is needed, and `.into()` when building
+  the event.
+- **Breaking** (`graphrt-core`): `ResponseChunk::node_id` is an `Arc<str>`
+  instead of a `String` (shared with the graph instead of copied per chunk).
+  Migrating as for `NodeChunk::field`. New `ResponseAssembler::push_into(&event,
+  &mut out)` appends to a caller-owned buffer; `push` is unchanged.
+- **Breaking** (`graphrt-llm`): `collect`'s callback receives each `ChatDelta`
+  by value (`FnMut(ChatDelta)`, was `FnMut(&ChatDelta)`), after the delta was
+  added to the response, so streamed text can be moved into a chunk instead of
+  copied. Closures that ignore the delta (`|_| {}`) compile unchanged; others
+  match on the owned delta instead of a reference.
+- **Breaking** (`graphrt-llm`): `nodes::common::PromptTemplate::messages`
+  returns `&[PromptMessage]` instead of `Vec<&PromptMessage>`. New helpers
+  `nodes::common::finish_reason_value` and `StreamField::shared`.
+
 ### Performance
 - Engine: fewer allocations and less work per node execution. Node task
   futures are stored unboxed and are less than half their former size (584 ->
@@ -24,6 +46,33 @@ releases may contain breaking changes; they are called out under **Changed**.
   (~285k runs/s at 11 workers): their cost is outside the per-node path.
 - `bench/run.sh` records allocations per run and per node (`graphrt-bench
   allocs`).
+- LLM path: fewer allocations and copies per model call and per streamed
+  chunk. Chunks share their field name and move the provider's text instead
+  of copying it; the `llm` node renders its prompt into one pre-sized message
+  list, builds `usage` directly, moves the answer out of the response and
+  builds its metadata once per node. Instant mock model, 10 chunks, Apple M3
+  Pro (11 cores), against 7444368: 133 -> 103 allocations per run;
+  -13% instructions per run (sequential and with 1,000 runs in flight);
+  sequential latency 6.5 -> 5.8 µs. Throughput of runs whose events are
+  discarded (`run_to_end`) is unchanged at 11 workers (~265k runs/s at 100 in
+  flight, ~290k at 1,000): with the macOS system allocator it is bound by the
+  allocator and by the efficiency cores, not by this work.
+- `ResponseAssembler`: no allocation per chunk on the streaming path (stream
+  buffers looked up by `&str`, template parts borrowed, only referenced
+  outputs copied), and `push_into` lets consumers reuse one chunk buffer.
+  Instant LLM run consumed through the assembler: 253 -> 161 allocations, -25%
+  instructions, time to first answer chunk 11.1 -> 9.2 µs, concurrent runs
+  +24% (161k -> 200k runs/s at 100 in flight, 171k -> 214k at 1,000).
+- `graphrt serve`: live events are shared as `Arc<Event>` between the run
+  feed, the broadcast channel and SSE listeners instead of deep-copied, and a
+  streaming run's 4,096-slot channel holds 8-byte slots instead of ~256-byte
+  events (it was over 1 MiB per streaming request). LLM workflow against a
+  local instant OpenAI-compatible endpoint, 50 connections, macOS: synchronous
+  32.7k -> 35.8k req/s, streaming 16.3k -> 21.8k req/s, server RSS after 40k
+  requests 120 -> 39 MiB. Static musl build in a 16 MiB, 1-CPU container
+  with 8 streaming clients and the default `--max-runs`: the server was
+  OOM-killed before (15.1 MiB peak even with `--max-runs 100`); it now peaks at
+  13.8 MiB (7.0 MiB with `--max-runs 100`), streaming 2.2k -> 3.6k req/s.
 
 ## [0.2.0] - 2026-11-19
 
