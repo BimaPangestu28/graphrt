@@ -68,8 +68,7 @@ impl Object for TemplateVars {
         // A repeated name binds its last declaration, as a map built in order would.
         let variable = self.variables.iter().rev().find(|v| v.variable == key)?;
         let value = self.pool.get(&variable.value_selector).unwrap_or(Value::Null);
-        // Through `Serialize`, which masks secrets.
-        Some(minijinja::Value::from(minijinja::value::Serde(&value)))
+        Some(to_template_value(value))
     }
 
     fn enumerate(self: &Arc<Self>) -> Enumerator {
@@ -80,6 +79,20 @@ impl Object for TemplateVars {
             }
         }
         Enumerator::Values(names.into_iter().map(minijinja::Value::from).collect())
+    }
+}
+
+/// Convert a pool value for the template. Scalars and strings convert
+/// directly (a string shares its `Arc<str>` instead of being copied); everything
+/// else goes through `Serialize`, which masks secrets.
+fn to_template_value(value: Value) -> minijinja::Value {
+    match value {
+        Value::Null => minijinja::Value::from(()),
+        Value::Bool(b) => minijinja::Value::from(b),
+        Value::Int(i) => minijinja::Value::from(i),
+        Value::Float(f) => minijinja::Value::from(f),
+        Value::String(s) => minijinja::Value::from(s),
+        other => minijinja::Value::from(minijinja::value::Serde(&other)),
     }
 }
 

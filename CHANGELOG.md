@@ -41,6 +41,9 @@ releases may contain breaking changes; they are called out under **Changed**.
   one reading.
 - Engine: execution ids are written as characters into a reused per-thread
   buffer, which drops the UTF-8 validation pass each id needed (same format).
+- `template-transform`: string, number, boolean and null variables are handed
+  to the template directly (a string shares its allocation) instead of
+  through serde; other values still go through serde, which masks secrets.
 - Engine: fewer allocations and less work per node execution. Node task
   futures are stored unboxed and are less than half their former size (584 ->
   264 bytes); a node that runs alone (chains, fan-ins) is polled without a
