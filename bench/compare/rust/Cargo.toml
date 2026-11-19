@@ -1,0 +1,29 @@
+[package]
+name = "graphrt-compare"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Fake OpenAI server and in-process graphrt driver for the graphrt vs Python comparison (not part of the workspace)."
+
+# Standalone: keep this crate out of the main workspace.
+[workspace]
+
+[[bin]]
+name = "fakeoai"
+path = "src/bin/fakeoai.rs"
+
+[[bin]]
+name = "graphrt-driver"
+path = "src/bin/graphrt_driver.rs"
+
+[dependencies]
+# Same engine and OpenAI provider the CLI ships (`graphrt run` uses these crates).
+graphrt-core = { path = "../../../crates/graphrt-core", features = ["yaml", "jinja", "tokio"] }
+graphrt-llm = { path = "../../../crates/graphrt-llm", default-features = false, features = ["openai"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "time", "sync"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

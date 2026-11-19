@@ -1,0 +1,28 @@
+# 3-node chain with one model call: start -> llm -> end.
+# Counterpart of `llm3` in python/graphs.py. The model is the fake
+# OpenAI-compatible server (OPENAI_BASE_URL=http://127.0.0.1:9911/v1), which
+# streams 10 text deltas.
+version: "1"
+name: llm3
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: x, type: text-input, required: true }
+
+    - id: llm
+      type: llm
+      model: { provider: openai, name: gpt-4o-mini }
+      prompt_template:
+        - { role: system, text: "You are a concise assistant." }
+        - { role: user, text: "{{#start.x#}}" }
+
+    - id: end
+      type: end
+      outputs:
+        - { variable: answer, value_selector: [llm, text] }
+
+  edges:
+    - { source: start, target: llm }
+    - { source: llm, target: end }

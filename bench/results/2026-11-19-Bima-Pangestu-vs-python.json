@@ -1,0 +1,837 @@
+{
+  "machine": {
+    "cpu": "Apple M3 Pro",
+    "logical_cpus": 11,
+    "memory_gib": 18.0,
+    "os": "Darwin 25.6.0 arm64",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "graphrt": "graphrt 0.2.0",
+    "git_commit": "90d4db0",
+    "python_packages": {
+      "python": "3.11.11",
+      "langgraph": "1.2.23",
+      "langchain-core": "1.8.3",
+      "langchain-openai": "1.8.3",
+      "openai": "3.55.1",
+      "httpx": "0.28.1",
+      "pydantic": "2.14.3"
+    }
+  },
+  "cold": {
+    "rows": [
+      {
+        "shape": "llm3",
+        "side": "graphrt",
+        "time": {
+          "runs": 30,
+          "median_ms": 5.284271,
+          "p25_ms": 5.1875100000000005,
+          "p75_ms": 5.603874749999999,
+          "min_ms": 5.091,
+          "max_ms": 7.2027920000000005,
+          "stddev_ms": 0.5459241484597851
+        },
+        "rss": {
+          "median_kib": 12976.0,
+          "min_kib": 12944.0,
+          "max_kib": 13072.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "llm3",
+        "side": "langgraph",
+        "time": {
+          "runs": 30,
+          "median_ms": 727.8656455,
+          "p25_ms": 705.6611875000001,
+          "p75_ms": 758.2375212500001,
+          "min_ms": 666.5650840000001,
+          "max_ms": 964.0706250000001,
+          "stddev_ms": 68.61910698713412
+        },
+        "rss": {
+          "median_kib": 103728.0,
+          "min_kib": 103568.0,
+          "max_kib": 103760.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "llm3",
+        "side": "lcel",
+        "time": {
+          "runs": 30,
+          "median_ms": 618.7207915000001,
+          "p25_ms": 614.1351770000001,
+          "p75_ms": 623.5238542500001,
+          "min_ms": 606.5354590000001,
+          "max_ms": 696.7220420000001,
+          "stddev_ms": 19.206514841714462
+        },
+        "rss": {
+          "median_kib": 96320.0,
+          "min_kib": 96240.0,
+          "max_kib": 96400.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "chain-1000",
+        "side": "graphrt",
+        "time": {
+          "runs": 30,
+          "median_ms": 51.69262500000001,
+          "p25_ms": 51.487885750000004,
+          "p75_ms": 51.77365600000001,
+          "min_ms": 51.288417,
+          "max_ms": 53.327125,
+          "stddev_ms": 0.36165834036807887
+        },
+        "rss": {
+          "median_kib": 24448.0,
+          "min_kib": 24416.0,
+          "max_kib": 24544.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "chain-1000",
+        "side": "langgraph",
+        "time": {
+          "runs": 30,
+          "median_ms": 734.317,
+          "p25_ms": 686.071042,
+          "p75_ms": 769.5226250000001,
+          "min_ms": 672.5625420000001,
+          "max_ms": 1230.762334,
+          "stddev_ms": 129.2233071296492
+        },
+        "rss": {
+          "median_kib": 80576.0,
+          "min_kib": 80512.0,
+          "max_kib": 80752.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "chain-1000",
+        "side": "lcel",
+        "time": {
+          "runs": 30,
+          "median_ms": 551.6906250000001,
+          "p25_ms": 539.3546765000001,
+          "p75_ms": 619.16880225,
+          "min_ms": 498.039667,
+          "max_ms": 1016.238709,
+          "stddev_ms": 158.65996002933383
+        },
+        "rss": {
+          "median_kib": 65904.0,
+          "min_kib": 65856.0,
+          "max_kib": 66032.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "baseline",
+        "side": "python -c pass",
+        "time": {
+          "runs": 30,
+          "median_ms": 10.1007295,
+          "p25_ms": 9.89296925,
+          "p75_ms": 10.458645750000002,
+          "min_ms": 9.538625,
+          "max_ms": 10.810500000000001,
+          "stddev_ms": 0.3261191004192186
+        },
+        "rss": {
+          "median_kib": 11776.0,
+          "min_kib": 11760.0,
+          "max_kib": 11808.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "baseline",
+        "side": "import langgraph + langchain_openai",
+        "time": {
+          "runs": 30,
+          "median_ms": 640.7690210000001,
+          "p25_ms": 614.2380310000001,
+          "p75_ms": 692.7839170000001,
+          "min_ms": 592.7882079999999,
+          "max_ms": 2055.4330410000002,
+          "stddev_ms": 270.22172697905273
+        },
+        "rss": {
+          "median_kib": 96560.0,
+          "min_kib": 96224.0,
+          "max_kib": 96608.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "baseline",
+        "side": "graphrt version",
+        "time": {
+          "runs": 30,
+          "median_ms": 3.4297295000000005,
+          "p25_ms": 3.39022975,
+          "p75_ms": 3.4666355000000006,
+          "min_ms": 3.3509580000000003,
+          "max_ms": 3.5955830000000004,
+          "stddev_ms": 0.06612905103601702
+        },
+        "rss": {
+          "median_kib": 8496.0,
+          "min_kib": 8496.0,
+          "max_kib": 8512.0,
+          "runs": 5
+        }
+      }
+    ],
+    "hyperfine_runs": 30,
+    "warmup": 3
+  },
+  "seq": {
+    "rows": [
+      {
+        "shape": "llm3",
+        "side": "graphrt",
+        "runs": 2000,
+        "median_ms": 0.06916699999999999,
+        "p25_ms": 0.065375,
+        "p75_ms": 0.072708,
+        "min_ms": 0.059167,
+        "max_ms": 0.136959
+      },
+      {
+        "shape": "llm3",
+        "side": "langgraph",
+        "runs": 300,
+        "median_ms": 3.085541997279506,
+        "p25_ms": 3.0627910018665716,
+        "p75_ms": 3.180416999384761,
+        "min_ms": 3.0215000006137416,
+        "max_ms": 27.398375001212116
+      },
+      {
+        "shape": "llm3",
+        "side": "lcel",
+        "runs": 300,
+        "median_ms": 2.9849590064259246,
+        "p25_ms": 2.907457994297147,
+        "p75_ms": 3.1203750040731393,
+        "min_ms": 2.7565830023377202,
+        "max_ms": 25.22954199957894
+      },
+      {
+        "shape": "chain-10",
+        "side": "graphrt",
+        "runs": 5000,
+        "median_ms": 0.007042,
+        "p25_ms": 0.006958,
+        "p75_ms": 0.007291,
+        "min_ms": 0.0067079999999999996,
+        "max_ms": 0.015958
+      },
+      {
+        "shape": "chain-10",
+        "side": "langgraph",
+        "runs": 500,
+        "median_ms": 1.8346249999012798,
+        "p25_ms": 1.8283329991390929,
+        "p75_ms": 1.8481670049368404,
+        "min_ms": 1.8087919961544685,
+        "max_ms": 2.257749998534564
+      },
+      {
+        "shape": "chain-10",
+        "side": "langgraph-sync",
+        "runs": 500,
+        "median_ms": 0.9656250040279701,
+        "p25_ms": 0.9625829989090562,
+        "p75_ms": 0.9796669983188622,
+        "min_ms": 0.9505420021014288,
+        "max_ms": 1.2048339995089918
+      },
+      {
+        "shape": "chain-10",
+        "side": "lcel",
+        "runs": 500,
+        "median_ms": 1.8625410011736676,
+        "p25_ms": 1.8547079962445423,
+        "p75_ms": 1.873958004580345,
+        "min_ms": 1.8288749997736886,
+        "max_ms": 2.1000000051571988
+      },
+      {
+        "shape": "chain-1000",
+        "side": "graphrt",
+        "runs": 500,
+        "median_ms": 0.37637499999999996,
+        "p25_ms": 0.375334,
+        "p75_ms": 0.38125000000000003,
+        "min_ms": 0.37220800000000004,
+        "max_ms": 0.436292
+      },
+      {
+        "shape": "chain-1000",
+        "side": "langgraph",
+        "runs": 30,
+        "median_ms": 214.72829199774424,
+        "p25_ms": 213.69625000079395,
+        "p75_ms": 219.5157499954803,
+        "min_ms": 213.15716700337362,
+        "max_ms": 238.1079169936129
+      },
+      {
+        "shape": "chain-1000",
+        "side": "langgraph-sync",
+        "runs": 30,
+        "median_ms": 135.27533299929928,
+        "p25_ms": 134.67687500087777,
+        "p75_ms": 138.04974999948172,
+        "min_ms": 133.9581249994808,
+        "max_ms": 154.25270800187718
+      },
+      {
+        "shape": "chain-1000",
+        "side": "lcel",
+        "runs": 30,
+        "median_ms": 179.70975000207545,
+        "p25_ms": 179.37933299981523,
+        "p75_ms": 181.77075000130571,
+        "min_ms": 179.05133300519083,
+        "max_ms": 184.50808399938978
+      },
+      {
+        "shape": "fanout-10",
+        "side": "graphrt",
+        "runs": 5000,
+        "median_ms": 0.008459,
+        "p25_ms": 0.008375,
+        "p75_ms": 0.008667,
+        "min_ms": 0.008083,
+        "max_ms": 0.013125000000000001
+      },
+      {
+        "shape": "fanout-10",
+        "side": "langgraph",
+        "runs": 500,
+        "median_ms": 1.1864580010296777,
+        "p25_ms": 1.1824169996543787,
+        "p75_ms": 1.1984579978161491,
+        "min_ms": 1.1731669947039336,
+        "max_ms": 13.0916670022998
+      },
+      {
+        "shape": "fanout-10",
+        "side": "langgraph-sync",
+        "runs": 500,
+        "median_ms": 1.260624994756654,
+        "p25_ms": 1.213416995597072,
+        "p75_ms": 1.2961250031366944,
+        "min_ms": 1.1445830023149028,
+        "max_ms": 13.391291999141686
+      },
+      {
+        "shape": "fanout-10",
+        "side": "lcel",
+        "runs": 500,
+        "median_ms": 1.3420839968603104,
+        "p25_ms": 1.3371250024647452,
+        "p75_ms": 1.3472909995471127,
+        "min_ms": 1.3234159996500239,
+        "max_ms": 10.379542000009678
+      },
+      {
+        "shape": "fanout-1000",
+        "side": "graphrt",
+        "runs": 500,
+        "median_ms": 0.508333,
+        "p25_ms": 0.506417,
+        "p75_ms": 0.511625,
+        "min_ms": 0.501209,
+        "max_ms": 0.591333
+      },
+      {
+        "shape": "fanout-1000",
+        "side": "langgraph",
+        "runs": 30,
+        "median_ms": 106.23312499956228,
+        "p25_ms": 103.93283300072653,
+        "p75_ms": 108.04920900409343,
+        "min_ms": 102.15604099357734,
+        "max_ms": 124.76320800487883
+      },
+      {
+        "shape": "fanout-1000",
+        "side": "langgraph-sync",
+        "runs": 30,
+        "median_ms": 111.844041995937,
+        "p25_ms": 87.90683299594093,
+        "p75_ms": 117.27374999463791,
+        "min_ms": 82.4099160017795,
+        "max_ms": 163.15629100427032
+      },
+      {
+        "shape": "fanout-1000",
+        "side": "lcel",
+        "runs": 30,
+        "median_ms": 98.08683300070697,
+        "p25_ms": 96.47987499920418,
+        "p75_ms": 102.40450000128476,
+        "min_ms": 94.22608400200261,
+        "max_ms": 113.0816250006319
+      }
+    ]
+  },
+  "conc": {
+    "rows": [
+      {
+        "delay_ms": 50,
+        "side": "graphrt (all cores)",
+        "concurrency": 1,
+        "total_runs": 40,
+        "runs_per_sec_median": 18.6635037788563,
+        "runs_per_sec_min": 18.64101342469724,
+        "runs_per_sec_max": 18.686942879222737,
+        "peak_rss_kib": 10512.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "graphrt (1 worker thread)",
+        "concurrency": 1,
+        "total_runs": 40,
+        "runs_per_sec_median": 18.723557728736488,
+        "runs_per_sec_min": 18.71470377917939,
+        "runs_per_sec_max": 18.748419203599322,
+        "peak_rss_kib": 10272.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "langgraph",
+        "concurrency": 1,
+        "total_runs": 40,
+        "runs_per_sec_median": 15.248837925321372,
+        "runs_per_sec_min": 14.995404611373099,
+        "runs_per_sec_max": 15.875049863749311,
+        "peak_rss_kib": 103584.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "lcel",
+        "concurrency": 1,
+        "total_runs": 40,
+        "runs_per_sec_median": 15.614979879616495,
+        "runs_per_sec_min": 15.545413252962128,
+        "runs_per_sec_max": 15.820323573304305,
+        "peak_rss_kib": 96384.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "graphrt (all cores)",
+        "concurrency": 10,
+        "total_runs": 400,
+        "runs_per_sec_median": 186.4199982851038,
+        "runs_per_sec_min": 186.2584636235849,
+        "runs_per_sec_max": 186.4588349877185,
+        "peak_rss_kib": 13056.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "graphrt (1 worker thread)",
+        "concurrency": 10,
+        "total_runs": 400,
+        "runs_per_sec_median": 187.57928882749096,
+        "runs_per_sec_min": 186.5686217464619,
+        "runs_per_sec_max": 188.04054685028558,
+        "peak_rss_kib": 10928.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "langgraph",
+        "concurrency": 10,
+        "total_runs": 400,
+        "runs_per_sec_median": 150.5256237185053,
+        "runs_per_sec_min": 150.4787740454834,
+        "runs_per_sec_max": 157.25733767643317,
+        "peak_rss_kib": 105408.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "lcel",
+        "concurrency": 10,
+        "total_runs": 400,
+        "runs_per_sec_median": 149.16398710873082,
+        "runs_per_sec_min": 143.54206494459964,
+        "runs_per_sec_max": 156.00619717144997,
+        "peak_rss_kib": 97664.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "graphrt (all cores)",
+        "concurrency": 100,
+        "total_runs": 2000,
+        "runs_per_sec_median": 1820.6608133938735,
+        "runs_per_sec_min": 1818.1999307589465,
+        "runs_per_sec_max": 1842.8129668657234,
+        "peak_rss_kib": 19760.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "graphrt (1 worker thread)",
+        "concurrency": 100,
+        "total_runs": 2000,
+        "runs_per_sec_median": 1836.519605011611,
+        "runs_per_sec_min": 1834.597573784703,
+        "runs_per_sec_max": 1843.919016872756,
+        "peak_rss_kib": 18384.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "langgraph",
+        "concurrency": 100,
+        "total_runs": 2000,
+        "runs_per_sec_median": 307.8814771770393,
+        "runs_per_sec_min": 295.09767328874227,
+        "runs_per_sec_max": 314.6417949666451,
+        "peak_rss_kib": 116928.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "lcel",
+        "concurrency": 100,
+        "total_runs": 2000,
+        "runs_per_sec_median": 337.75819793480184,
+        "runs_per_sec_min": 336.85439036387453,
+        "runs_per_sec_max": 343.75268737791697,
+        "peak_rss_kib": 106288.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "graphrt (all cores)",
+        "concurrency": 1000,
+        "total_runs": 5000,
+        "runs_per_sec_median": 17248.24637251613,
+        "runs_per_sec_min": 16770.131389786904,
+        "runs_per_sec_max": 17344.717462322973,
+        "peak_rss_kib": 83392.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "graphrt (1 worker thread)",
+        "concurrency": 1000,
+        "total_runs": 5000,
+        "runs_per_sec_median": 16498.20171416118,
+        "runs_per_sec_min": 16417.157772534087,
+        "runs_per_sec_max": 16551.338320527422,
+        "peak_rss_kib": 77760.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "langgraph",
+        "concurrency": 1000,
+        "total_runs": 5000,
+        "runs_per_sec_median": 212.50213830280254,
+        "runs_per_sec_min": 206.47817886847736,
+        "runs_per_sec_max": 214.10180160584486,
+        "peak_rss_kib": 228176.0
+      },
+      {
+        "delay_ms": 50,
+        "side": "lcel",
+        "concurrency": 1000,
+        "total_runs": 5000,
+        "runs_per_sec_median": 238.50749641747245,
+        "runs_per_sec_min": 237.5187005610157,
+        "runs_per_sec_max": 242.8933165250457,
+        "peak_rss_kib": 189168.0
+      },
+      {
+        "delay_ms": 0,
+        "side": "graphrt (all cores)",
+        "concurrency": 100,
+        "total_runs": 30000,
+        "runs_per_sec_median": 74461.3419981515,
+        "runs_per_sec_min": 73976.6030498704,
+        "runs_per_sec_max": 77717.23748898196,
+        "peak_rss_kib": 20048.0
+      },
+      {
+        "delay_ms": 0,
+        "side": "graphrt (1 worker thread)",
+        "concurrency": 100,
+        "total_runs": 30000,
+        "runs_per_sec_median": 24202.87494543855,
+        "runs_per_sec_min": 20663.420950177988,
+        "runs_per_sec_max": 24392.742671200467,
+        "peak_rss_kib": 16976.0
+      },
+      {
+        "delay_ms": 0,
+        "side": "langgraph",
+        "concurrency": 100,
+        "total_runs": 3000,
+        "runs_per_sec_median": 281.2500505372475,
+        "runs_per_sec_min": 159.6967135833848,
+        "runs_per_sec_max": 293.32690817042794,
+        "peak_rss_kib": 119408.0
+      },
+      {
+        "delay_ms": 0,
+        "side": "lcel",
+        "concurrency": 100,
+        "total_runs": 3000,
+        "runs_per_sec_median": 289.0155219412304,
+        "runs_per_sec_min": 278.5948259020862,
+        "runs_per_sec_max": 317.25058517986577,
+        "peak_rss_kib": 106304.0
+      }
+    ]
+  },
+  "footprint": {
+    "binaries": {
+      "default": 13644464,
+      "llm-only": 4532944
+    },
+    "venv_kib": 111376.0,
+    "site_packages_kib": 111296.0,
+    "site_packages_without_pip_kib": 90624.0,
+    "distributions": 43,
+    "distribution_names": [
+      "PyYAML",
+      "annotated-types",
+      "anyio",
+      "certifi",
+      "charset-normalizer",
+      "distro",
+      "h11",
+      "httpcore",
+      "httpcore2",
+      "httpx",
+      "httpx2",
+      "idna",
+      "jiter",
+      "jsonpatch",
+      "jsonpointer",
+      "langchain-core",
+      "langchain-openai",
+      "langchain-protocol",
+      "langgraph",
+      "langgraph-checkpoint",
+      "langgraph-prebuilt",
+      "langgraph-sdk",
+      "langsmith",
+      "openai",
+      "orjson",
+      "ormsgpack",
+      "packaging",
+      "pydantic",
+      "pydantic_core",
+      "regex",
+      "requests",
+      "requests-toolbelt",
+      "sniffio",
+      "tenacity",
+      "tiktoken",
+      "truststore",
+      "typing-inspection",
+      "typing_extensions",
+      "urllib3",
+      "uuid_utils",
+      "websockets",
+      "xxhash",
+      "zstandard"
+    ],
+    "python": "Python 3.11.11"
+  },
+  "linux": {
+    "rows": [
+      {
+        "shape": "llm3",
+        "side": "graphrt",
+        "time": {
+          "runs": 30,
+          "median_ms": 6.519875000000001,
+          "p25_ms": 5.7468537500000005,
+          "p75_ms": 10.288781,
+          "min_ms": 5.175459,
+          "max_ms": 11.664792,
+          "stddev_ms": 2.3468537236780724
+        },
+        "rss": {
+          "median_kib": 9012.0,
+          "min_kib": 9008.0,
+          "max_kib": 9012.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "llm3",
+        "side": "langgraph",
+        "time": {
+          "runs": 30,
+          "median_ms": 803.215271,
+          "p25_ms": 689.1573235000001,
+          "p75_ms": 913.3538440000001,
+          "min_ms": 638.1235,
+          "max_ms": 1186.976584,
+          "stddev_ms": 147.54755697668998
+        },
+        "rss": {
+          "median_kib": 98756.0,
+          "min_kib": 98748.0,
+          "max_kib": 98760.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "llm3",
+        "side": "lcel",
+        "time": {
+          "runs": 30,
+          "median_ms": 534.082521,
+          "p25_ms": 526.93168725,
+          "p75_ms": 553.6545520000001,
+          "min_ms": 513.8837500000001,
+          "max_ms": 621.620209,
+          "stddev_ms": 28.61163434227377
+        },
+        "rss": {
+          "median_kib": 91652.0,
+          "min_kib": 91508.0,
+          "max_kib": 91660.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "chain-1000",
+        "side": "graphrt",
+        "time": {
+          "runs": 30,
+          "median_ms": 99.6055005,
+          "p25_ms": 82.73367725,
+          "p75_ms": 107.37862550000001,
+          "min_ms": 69.90575,
+          "max_ms": 155.246834,
+          "stddev_ms": 17.049934347233307
+        },
+        "rss": {
+          "median_kib": 16264.0,
+          "min_kib": 16260.0,
+          "max_kib": 16360.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "chain-1000",
+        "side": "langgraph",
+        "time": {
+          "runs": 30,
+          "median_ms": 1221.1361255,
+          "p25_ms": 1135.6359067500002,
+          "p75_ms": 1291.970938,
+          "min_ms": 835.2966260000001,
+          "max_ms": 1605.453126,
+          "stddev_ms": 144.68453577298556
+        },
+        "rss": {
+          "median_kib": 76056.0,
+          "min_kib": 76048.0,
+          "max_kib": 76060.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "chain-1000",
+        "side": "lcel",
+        "time": {
+          "runs": 30,
+          "median_ms": 381.416021,
+          "p25_ms": 357.77378150000004,
+          "p75_ms": 411.28932275000005,
+          "min_ms": 347.025917,
+          "max_ms": 577.297667,
+          "stddev_ms": 54.12869925540578
+        },
+        "rss": {
+          "median_kib": 61260.0,
+          "min_kib": 61256.0,
+          "max_kib": 61308.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "baseline",
+        "side": "python -c pass",
+        "time": {
+          "runs": 30,
+          "median_ms": 5.869021,
+          "p25_ms": 5.617541500000001,
+          "p75_ms": 8.38741625,
+          "min_ms": 5.472625,
+          "max_ms": 14.155625000000002,
+          "stddev_ms": 2.369933456688423
+        },
+        "rss": {
+          "median_kib": 7104.0,
+          "min_kib": 7084.0,
+          "max_kib": 7104.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "baseline",
+        "side": "import langgraph + langchain_openai",
+        "time": {
+          "runs": 30,
+          "median_ms": 546.41475,
+          "p25_ms": 535.3253227499999,
+          "p75_ms": 552.60746925,
+          "min_ms": 517.7631670000001,
+          "max_ms": 596.7480840000001,
+          "stddev_ms": 17.269630195796836
+        },
+        "rss": {
+          "median_kib": 92396.0,
+          "min_kib": 92336.0,
+          "max_kib": 92404.0,
+          "runs": 5
+        }
+      },
+      {
+        "shape": "baseline",
+        "side": "graphrt version",
+        "time": {
+          "runs": 30,
+          "median_ms": 0.34729200000000005,
+          "p25_ms": 0.33100050000000003,
+          "p75_ms": 0.37042725,
+          "min_ms": 0.3105,
+          "max_ms": 0.46425000000000005,
+          "stddev_ms": 0.03840738785343437
+        },
+        "rss": {
+          "median_kib": 4152.0,
+          "min_kib": 4152.0,
+          "max_kib": 4152.0,
+          "runs": 5
+        }
+      }
+    ],
+    "hyperfine_runs": 30,
+    "warmup": 3,
+    "environment": {
+      "os": "Linux 6.10.14-linuxkit aarch64",
+      "python": "3.11.18",
+      "cpus_visible": 11
+    }
+  },
+  "docker_sizes": {
+    "graphrt (distroless static)": 17603074,
+    "python:3.11-slim + requirements.txt": 257088177
+  }
+}

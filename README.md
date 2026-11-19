@@ -357,6 +357,14 @@ a 3-node workflow at ~600 requests/s on a quarter of a core with ~3.4 MiB of
 steady memory, and stays up under a 16 MiB limit at a tenth of a core
 ([details](docs/serving.md#small-devices)).
 
+Against LangGraph 1.2 (CPython 3.11, async, tracing off) on the same laptop,
+both calling one local fake OpenAI server: a 3-node LLM workflow cold-starts in
+5 ms vs 728 ms with 13 vs 101 MiB peak RSS, orchestration costs ~0.4 µs vs
+~100–200 µs per node, and with 50 ms model latency 1,000 concurrent runs reach
+~17k vs ~210 runs/s. With one run in flight against a slow model the stacks are
+within ~20% of each other, since model latency dominates
+([methodology and caveats](docs/benchmarks.md#graphrt-vs-python-agent-stacks)).
+
 ## Architecture
 
 ```
