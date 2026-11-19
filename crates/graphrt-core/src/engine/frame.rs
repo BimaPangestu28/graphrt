@@ -20,7 +20,7 @@ use indexmap::IndexMap;
 
 use super::Limits;
 use super::control::{Control, Stop};
-use super::ids::new_id_arc;
+use super::ids::{new_id, new_id_arc};
 use crate::dsl::{ErrorStrategy, RetryPolicy};
 use crate::event::{Event, FrameId, PauseReason, Usage};
 use crate::graph::{EdgeIx, FAIL_BRANCH, Graph, NodeIx};
@@ -138,7 +138,9 @@ enum State {
 #[derive(Debug)]
 struct NodeRt {
     state: State,
-    exec_id: Arc<str>,
+    /// Minted when the node starts, is skipped or is snapshotted, whichever
+    /// comes first, so a node costs one clock read for its id and its start time.
+    exec_id: Option<Arc<str>>,
     attempt: u32,
     /// Saved state of a node that paused itself (kept while paused, handed back on resume).
     resume_state: Option<serde_json::Value>,
@@ -274,7 +276,9 @@ impl Frame {
             } else {
                 None
             };
-            frame.nodes.insert(ix, NodeRt { state, exec_id: Arc::from(ns.exec_id), attempt: ns.attempt, resume_state });
+            frame
+                .nodes
+                .insert(ix, NodeRt { state, exec_id: Some(Arc::from(ns.exec_id)), attempt: ns.attempt, resume_state });
         }
         let edge_index: HashMap<&str, EdgeIx> =
             graph.edges().iter().enumerate().map(|(ex, e)| (e.id.as_ref(), ex)).collect();
@@ -349,10 +353,9 @@ impl Frame {
     }
 
     fn mark_ready(&mut self, ix: NodeIx) {
-        let now = self.run.now_ms();
         let rt = self.nodes.entry(ix).or_insert_with(|| NodeRt {
             state: State::Ready,
-            exec_id: new_id_arc(now),
+            exec_id: None,
             attempt: 0,
             resume_state: None,
         });
@@ -449,7 +452,7 @@ impl Frame {
                 String::from(&*self.node_id(ix)),
                 NodeSnapshot {
                     status,
-                    exec_id: String::from(&*rt.exec_id),
+                    exec_id: rt.exec_id.as_deref().map_or_else(|| new_id(self.run.now_ms()), String::from),
                     attempt: rt.attempt,
                     resume_state: rt.resume_state.clone(),
                 },
@@ -490,15 +493,15 @@ impl Frame {
                 elapsed_ms: 0,
             }));
         };
-        // The execution id is minted in `mark_ready`; read the clock only if not.
+        let started = run.now_ms();
         let rt = self.nodes.entry(ix).or_insert_with(|| NodeRt {
             state: State::Ready,
-            exec_id: new_id_arc(run.now_ms()),
+            exec_id: None,
             attempt: 0,
             resume_state: None,
         });
         rt.state = State::Running;
-        let exec_id = rt.exec_id.clone();
+        let exec_id = Arc::clone(rt.exec_id.get_or_insert_with(|| new_id_arc(started)));
         let resume =
             rt.resume_state.take().map(|state| Resume { state, input: run.resume_input(&self.id, gn.id.as_ref()) });
 
@@ -531,7 +534,6 @@ impl Frame {
         let frame = self.id.clone();
 
         Either::Right(async move {
-            let started = run.now_ms();
             let mut attempt: u32 = 1;
             loop {
                 if !run.take_step() {
@@ -616,7 +618,7 @@ impl Frame {
     }
 
     fn exec_id(&self, ix: NodeIx) -> Arc<str> {
-        self.nodes.get(&ix).map_or_else(|| Arc::from(""), |n| Arc::clone(&n.exec_id))
+        self.nodes.get(&ix).and_then(|n| n.exec_id.clone()).unwrap_or_else(|| Arc::from(""))
     }
 
     fn set_state(&mut self, ix: NodeIx, state: State) {
@@ -867,7 +869,7 @@ impl Frame {
             let now = self.run.now_ms();
             self.nodes.insert(
                 target,
-                NodeRt { state: State::Skipped, exec_id: new_id_arc(now), attempt: 0, resume_state: None },
+                NodeRt { state: State::Skipped, exec_id: Some(new_id_arc(now)), attempt: 0, resume_state: None },
             );
             self.run.emit(Event::NodeSkipped { frame: self.id.clone(), node_id: self.node_id(target) });
             for &ex in graph.outgoing(target) {
