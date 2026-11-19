@@ -110,10 +110,10 @@ fn install_from_source(request: &InstallSource<'_>, root: &Path) -> Result<graph
                 "`--subdir` only applies to git sources; pass the plugin directory itself instead",
             ));
         }
-        if request.index.is_some() {
+        if let Err(flag_error) = reject_catalog_flags(request) {
             return Err(CliError::usage(format!(
-                "`{source}` is a local directory, so `--index` does not apply (`--index` only applies to catalog \
-                 plugin names); run the command from another directory to install `{source}` from the catalog"
+                "`{source}` is a local directory, so {flag_error}; run the command from another directory to \
+                 install `{source}` from the catalog"
             )));
         }
         return graphrt_plugin::install_from_dir(local, root).map_err(|e| CliError::failed(e.to_string()));
@@ -125,7 +125,7 @@ fn install_from_source(request: &InstallSource<'_>, root: &Path) -> Result<graph
         return install_catalog(spec, request, root);
     }
     if is_git_url(source) {
-        reject_index_flag(request)?;
+        reject_catalog_flags(request).map_err(CliError::usage)?;
         return install_git(request, root);
     }
     Err(CliError::usage(format!(
@@ -133,11 +133,16 @@ fn install_from_source(request: &InstallSource<'_>, root: &Path) -> Result<graph
     )))
 }
 
-fn reject_index_flag(request: &InstallSource<'_>) -> Result<(), CliError> {
-    match request.index {
-        Some(_) => Err(CliError::usage("`--index` only applies to catalog plugin names")),
-        None => Ok(()),
+/// `--index` and `--yes` only mean something for catalog names, so they are
+/// refused elsewhere rather than silently ignored.
+fn reject_catalog_flags(request: &InstallSource<'_>) -> Result<(), String> {
+    if request.index.is_some() {
+        return Err("`--index` only applies to catalog plugin names".to_owned());
     }
+    if request.assume_yes {
+        return Err("`--yes` only applies to catalog plugin names".to_owned());
+    }
+    Ok(())
 }
 
 /// Check that the installed copy actually loads before reporting success.
@@ -184,10 +189,9 @@ fn install_catalog(
 #[cfg(not(feature = "plugins"))]
 fn install_catalog(
     _spec: crate::plugin_catalog::index::PluginSpec,
-    request: &InstallSource<'_>,
+    _request: &InstallSource<'_>,
     _root: &Path,
 ) -> Result<graphrt_plugin::LoadedManifest, CliError> {
-    let _confirmation_is_catalog_only = request.assume_yes;
     Err(CliError::usage("installing from the plugin catalog requires a build with the `plugins` feature"))
 }
 
