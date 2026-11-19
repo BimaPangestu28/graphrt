@@ -49,6 +49,15 @@ releases may contain breaking changes; they are called out under **Changed**.
   `168.63.129.16`. Also in 0.2.0.
 - OTel HTTP exporter: redirects are no longer followed, so vendor key headers
   cannot follow a redirect to another host.
+- Bundles: `graphrt run/serve --bundle` extracted configs to a fixed,
+  predictable directory in the shared temp dir and reused it if it existed, so
+  another local user could pre-create it and plant symlinks or swap
+  `providers.json` (e.g. pointing `base_url` at their server). Each invocation
+  now extracts into a new owner-only (`0700`) directory. Signatures are checked
+  with strict Ed25519 verification. Also in 0.2.0.
+- Plugins: `limits.max_message_bytes` is capped at 256 MiB; WebAssembly
+  plugins get at most 4 tables of 100,000 elements (was 8 x 1,000,000), which
+  lived outside the `memory_bytes` budget.
 - Dependencies: `rusqlite` 0.40 -> 0.41 (bundled SQLite 3.54), fixing
   RUSTSEC-2026-0459 / CVE-2026-119375 (uninitialized page-cache memory read
   through a crafted database and `-wal` pair) in `graphrt-rag`'s `SqliteStore`.

@@ -21,6 +21,9 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 60_000;
 pub const DEFAULT_MAX_CONCURRENCY: usize = 16;
 /// Default maximum protocol message size.
 pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+/// Largest protocol message size a manifest may ask for: the host buffers a whole
+/// message in memory, so the cap must not be lifted without bound.
+pub const MAX_MESSAGE_BYTES_CEILING: usize = 256 * 1024 * 1024;
 
 /// A parsed and validated plugin manifest.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -353,6 +356,9 @@ impl PluginManifest {
         if self.limits.max_message_bytes < 1024 {
             return bad("limits.max_message_bytes must be at least 1024".into());
         }
+        if self.limits.max_message_bytes > MAX_MESSAGE_BYTES_CEILING {
+            return bad(format!("limits.max_message_bytes must be at most {MAX_MESSAGE_BYTES_CEILING}"));
+        }
         let prefix = format!("{}.", self.name);
         let mut seen = std::collections::HashSet::new();
         for node in &self.nodes {
@@ -521,6 +527,15 @@ mod tests {
         assert_eq!(m.runtime.name(), "process");
         assert_eq!(m.limits.max_concurrency, DEFAULT_MAX_CONCURRENCY);
         assert_eq!(m.nodes[0].kind, "acme.x");
+    }
+
+    #[test]
+    fn message_size_limit_has_a_ceiling() {
+        let mut v = base();
+        v["limits"] = serde_json::json!({"max_message_bytes": u64::MAX});
+        assert!(PluginManifest::from_json(&v.to_string()).is_err());
+        v["limits"] = serde_json::json!({"max_message_bytes": MAX_MESSAGE_BYTES_CEILING});
+        assert!(PluginManifest::from_json(&v.to_string()).is_ok());
     }
 
     #[test]
