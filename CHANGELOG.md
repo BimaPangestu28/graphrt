@@ -7,6 +7,19 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- `graphrt plugin install <name>[@version]` installs a plugin from the
+  graphrt-plugins catalog (`index.json` of its `catalog` release, or
+  `--index <url|path>` / `$GRAPHRT_PLUGIN_INDEX`): the latest version or the
+  exact one, downloaded over https only with a timeout and a size cap, checked
+  against the catalog's sha256, extracted with absolute paths, `..`, symlinks,
+  hard links and device files refused, then installed like a local directory
+  (manifest validation and checksums included). The plugin's `status` and
+  `tos_risk` are printed; `experimental` and ToS risk `high` plugins need
+  `--yes`. A directory with the same name in the current directory still wins.
+- `graphrt plugin search [query]`: catalog plugins with their latest version,
+  status and a one-line description.
+
 ### Performance
 - Engine: fewer allocations and less work per node execution. Node task
   futures are stored unboxed and are less than half their former size (584 ->

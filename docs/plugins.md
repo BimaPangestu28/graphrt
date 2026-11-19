@@ -346,6 +346,9 @@ async fn main() -> std::io::Result<()> {
 
 ```sh
 graphrt run workflow.yaml --plugins ./my-plugins     # try plugins in place
+graphrt plugin search weather                        # browse the plugin catalog
+graphrt plugin install open-meteo                    # install from the catalog (latest version)
+graphrt plugin install open-meteo@0.1.0              # ...or an exact version
 graphrt plugin install ./acme                        # copy into ~/.graphrt/plugins
 graphrt plugin install https://github.com/acme/graphrt-acme --rev v1.2.0
 graphrt plugin install https://github.com/acme/plugins --rev v1.2.0 --subdir acme   # monorepo
@@ -377,6 +380,71 @@ components and symlinks along the path are rejected. Only that directory is
 copied into the install directory, after the usual manifest, name and checksum
 checks. From Rust, the same is `graphrt_plugin::install_from_git_subdir`.
 
+### Installing from the plugin catalog
+
+[graphrt-plugins](https://github.com/BimaPangestu28/graphrt-plugins) publishes
+a catalog: its `catalog` release carries `index.json` (every published plugin
+with its version, tarball URL, sha256, size, status and ToS risk) and
+`SHA256SUMS`, and each plugin is released as `<name>-<version>.tar.gz`.
+`graphrt plugin install <name>` and `<name>@<version>` install from it:
+
+```sh
+$ graphrt plugin search
+NAME                      VERSION     STATUS        DESCRIPTION
+open-meteo                0.1.0       stable        Open-Meteo weather (no API key): forecasts with current, hourly and d...
+whatsapp-web              0.1.0       experimental  Your personal WhatsApp through WhatsApp Web in a headless browser: re...
+
+$ graphrt plugin install open-meteo
+open-meteo 0.1.0: status stable, ToS risk none
+  Public no-auth API; the example read a real Jakarta forecast live (PR #27, rechecked 2026-11-19).
+installed open-meteo 0.1.0 into ~/.graphrt/plugins/open-meteo (open-meteo.api_request, open-meteo.get_forecast, open-meteo.search_locations)
+
+$ graphrt plugin install whatsapp-web
+whatsapp-web 0.1.0: status experimental, ToS risk high
+  Unofficial WhatsApp Web automation of a personal account; only get_status ran live, no real send.
+warning: whatsapp-web: automating a personal WhatsApp account breaks WhatsApp's Terms of Service. ...
+error: `whatsapp-web` 0.1.0 is labelled status experimental and ToS risk high; re-run with `--yes` to install it anyway (there is no interactive prompt)
+```
+
+How a name is resolved and installed:
+
+1. The source is a catalog name when it is not an existing directory and has
+   the form `name` or `name@MAJOR.MINOR.PATCH[-pre]` (plugin names are
+   `[a-z0-9_-]{1,64}`). A directory of the same name in the current directory
+   wins; write `./name` to make a local install explicit.
+2. The index is read from `--index <url|path>`, else `$GRAPHRT_PLUGIN_INDEX`,
+   else `https://github.com/BimaPangestu28/graphrt-plugins/releases/download/catalog/index.json`.
+   It may be an `https://` URL, a `file://` URL or a local path; plain
+   `http://` is refused because the index carries the checksums. Catalogs with
+   a `schema` other than 1 are refused (upgrade graphrt).
+3. Without a version, the highest version by semver precedence is picked.
+4. The plugin's `status` and `tos_risk` are printed (`unknown` when the catalog
+   predates the labels), plus the README warning when there is one. Plugins
+   labelled `experimental` or with ToS risk `high` are installed only with
+   `--yes`; graphrt has no interactive prompt.
+5. The tarball is downloaded over `https://` only (redirects included, at most
+   five), with a 300 s timeout and a size cap: the entry's `size_bytes` when
+   the catalog declares it, never more than 256 MiB. A `file://` tarball URL is
+   accepted only when the index itself is local (mirrors and tests).
+6. Its sha256 must equal the catalog's `sha256`; a mismatch is refused.
+7. It is extracted into a scratch directory. Only regular files and
+   directories are accepted: absolute paths, `..`, symlinks and hard links,
+   device files, FIFOs and duplicate paths are refused, as are archives over
+   1 GiB of contents or 100,000 entries. Files keep only their executable bit.
+8. The tarball's top-level `<name>/` directory, whose manifest must name the
+   same plugin and version, is installed exactly like `graphrt plugin install
+   <dir>`: manifest validation, `checksums` verification, atomic replace, and
+   a load check.
+
+To test a catalog before publishing it, pack it locally and point `--index` at
+the result (rewrite `tarball_url` to `file://` paths first, since the packed
+index points at release URLs):
+
+```sh
+node scripts/pack-plugins.mjs open-meteo --out /tmp/catalog   # in graphrt-plugins
+graphrt plugin install open-meteo --index /tmp/catalog/index.json
+```
+
 A `.wasm` module placed directly in a plugin search path is loaded as a plugin
 on its own (it describes itself; see [WebAssembly plugins](wasm-plugins.md)).
 
@@ -394,7 +462,8 @@ A plugin is just a directory, so any git repository works:
    and pin them with `checksums` in the manifest; `graphrt plugin install`
    verifies them before copying, and the host verifies them before every start.
 4. Tag releases; users install with `graphrt plugin install <git-url> --rev <tag>`
-   (plus `--subdir <dir>` for a plugin in a monorepo).
+   (plus `--subdir <dir>` for a plugin in a monorepo). Plugins published to the
+   graphrt-plugins catalog install by name (`graphrt plugin install <name>`).
 
 ## Host API
 

@@ -7,7 +7,7 @@ graphrt inspect <workflow>   Show nodes, inputs, env variables and missing node 
 graphrt nodes [--json] [--kind K]  The node catalog: built-ins plus plugins (with config JSON Schemas)
 graphrt serve <file|dir>     HTTP + SSE API
 graphrt kb ingest|query      Fill and query a knowledge base
-graphrt plugin list|install|remove|info|new   Manage plugins
+graphrt plugin list|install|search|remove|info|new   Manage plugins
 graphrt version              Version and enabled features
 ```
 
@@ -155,7 +155,9 @@ one broken plugin never blocks unrelated workflows.
 | Command | Description |
 | --- | --- |
 | `graphrt plugin list [--json]` | Every plugin found: name, version, runtime, node kinds, tools, and load errors. |
-| `graphrt plugin install <dir\|git-url> [--rev R] [--dir D]` | Copy a plugin into `~/.graphrt/plugins/<name>` (or `D`), verify its checksums and check that it loads. Git sources (`https://…`, `git@…`, `*.git`) are cloned with the `git` executable; `--rev` picks a branch or tag. |
+| `graphrt plugin install <dir\|git-url> [--rev R] [--subdir P] [--dir D]` | Copy a plugin into `~/.graphrt/plugins/<name>` (or `D`), verify its checksums and check that it loads. Git sources (`https://…`, `git@…`, `*.git`) are cloned with the `git` executable; `--rev` picks a branch or tag. |
+| `graphrt plugin install <name>[@version] [--index I] [--yes] [--dir D]` | Install from the plugin catalog: the latest version, or the exact one. The tarball is downloaded over https, checked against the catalog's sha256, extracted safely and installed like a directory. Experimental and high-ToS-risk plugins need `--yes`. |
+| `graphrt plugin search [query] [--index I]` | Catalog plugins whose name or description contains `query`: name, latest version, status and a one-line description. |
 | `graphrt plugin remove <name> [--dir D]` | Delete an installed plugin. |
 | `graphrt plugin info <name> [--json]` | Manifest summary and node descriptors. |
 | `graphrt plugin new <name> --lang python\|typescript\|rust [--dir D]` | Scaffold a working plugin (manifest, code, vendored SDK, `example.yaml`). |
@@ -169,3 +171,30 @@ graphrt nodes --kind acme.greet
 
 Workflows that use a kind no loaded plugin provides fail validation with a hint
 pointing at `graphrt plugin install` and `--plugins`.
+
+### The plugin catalog
+
+`graphrt plugin install <name>` and `graphrt plugin search` read the
+[graphrt-plugins](https://github.com/BimaPangestu28/graphrt-plugins) catalog
+(`index.json` of its `catalog` release). A source that is not an existing
+directory and looks like `name` or `name@1.2.3` is a catalog name.
+
+| Option | Description |
+| --- | --- |
+| `--index URL\|PATH` | Catalog index: an `https://` URL, a `file://` URL or a local path. Overrides `$GRAPHRT_PLUGIN_INDEX`; the default is the graphrt-plugins `catalog` release. Plain `http://` is refused. |
+| `--yes`, `-y` | Install a plugin labelled `experimental` or with ToS risk `high`. Without it such installs stop with exit code 2 (graphrt has no interactive prompt). |
+
+```sh
+graphrt plugin search weather
+graphrt plugin install open-meteo           # latest version
+graphrt plugin install open-meteo@0.1.0     # exact version
+graphrt plugin install whatsapp-web --yes   # experimental, ToS risk high
+GRAPHRT_PLUGIN_INDEX=/srv/mirror/index.json graphrt plugin install open-meteo
+```
+
+The plugin's status and ToS risk are printed before anything is downloaded.
+Downloads are https-only with a timeout and a size cap, the tarball must match
+the catalog's sha256, and extraction refuses absolute paths, `..`, links and
+device files. See [Installing from the plugin catalog](plugins.md#installing-from-the-plugin-catalog).
+Unknown names and versions are usage errors (exit code 2); download, checksum
+and extraction failures exit with 1.
