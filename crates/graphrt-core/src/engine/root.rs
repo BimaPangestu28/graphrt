@@ -105,7 +105,8 @@ pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Contr
             f
         }),
         None => {
-            let mut pool = VariablePool::new();
+            // Node namespaces plus `env`, `conversation` and `sys`.
+            let mut pool = VariablePool::with_namespace_capacity(engine.graph.nodes().len() + 3);
             for (name, value) in &env {
                 pool.insert(ENV, name, value.clone());
             }

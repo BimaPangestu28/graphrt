@@ -200,6 +200,8 @@ const SHARDS: usize = 32;
 #[derive(Clone, Default)]
 struct Table {
     shards: Option<Arc<[Shard; SHARDS]>>,
+    /// Initial capacity of a shard map when it is created.
+    shard_capacity: usize,
 }
 
 /// Shard index of a namespace (FNV-1a: stable and fast for short ids).
@@ -221,8 +223,11 @@ impl Table {
     /// Mutable shard holding `namespace`, allocating or copying shared structure as needed.
     #[allow(clippy::indexing_slicing)] // shard_of() < SHARDS by construction
     fn shard_mut(&mut self, namespace: &str) -> &mut ShardMap {
+        let capacity = self.shard_capacity;
         let shards = Arc::make_mut(self.shards.get_or_insert_with(Default::default));
-        Arc::make_mut(shards[shard_of(namespace)].get_or_insert_with(Default::default))
+        let shard = shards[shard_of(namespace)]
+            .get_or_insert_with(|| Arc::new(HashMap::with_capacity_and_hasher(capacity, Default::default())));
+        Arc::make_mut(shard)
     }
 
     fn get(&self, namespace: &str) -> Option<&Namespace> {
@@ -291,6 +296,14 @@ impl fmt::Debug for VariablePool {
 impl VariablePool {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty pool sized for about `namespaces` namespaces (the engine passes
+    /// the graph's node count), so filling it does not keep regrowing its maps.
+    pub(crate) fn with_namespace_capacity(namespaces: usize) -> Self {
+        // Shards fill unevenly; a quarter of headroom avoids most regrowth.
+        let shard_capacity = (namespaces + namespaces / 4) / SHARDS;
+        Self { namespaces: Table { shards: None, shard_capacity } }
     }
 
     /// Resolve a selector, descending into nested values. Missing values return `None`.
@@ -498,6 +511,17 @@ mod tests {
         assert_eq!(fresh.as_ref(), "other");
         assert!(!known.iter().any(|k| Arc::ptr_eq(k, &fresh)));
         assert_eq!(shared_key("x", 5, &[]).as_ref(), "x");
+    }
+
+    #[test]
+    fn presized_pool_behaves_like_a_new_one() {
+        let mut p = VariablePool::with_namespace_capacity(1_000);
+        p.insert("n", "x", Value::Int(1));
+        let mut q = p.clone();
+        q.insert("n", "x", Value::Int(2));
+        assert_eq!(p.get(&sel("n.x")), Some(Value::Int(1)));
+        assert_eq!(q.get(&sel("n.x")), Some(Value::Int(2)));
+        assert!(VariablePool::with_namespace_capacity(0).get(&sel("n.x")).is_none());
     }
 
     #[test]
