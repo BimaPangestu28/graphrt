@@ -98,6 +98,9 @@ impl OtlpHttpExporter {
         let client = reqwest::Client::builder()
             .timeout(settings.timeout)
             .no_proxy()
+            // Vendor key headers (`x-honeycomb-team`, `api-key`...) are not stripped by
+            // reqwest on cross-host redirects; point the endpoint at the final URL instead.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| ExportError::Client(e.without_url().to_string()))?;
         let (tx, rx) = mpsc::channel(settings.queue_capacity.max(1));

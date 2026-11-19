@@ -142,6 +142,7 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         || (a == 203 && b == 0 && c == 113)    // 203.0.113.0/24 TEST-NET-3
         || (a == 198 && (b == 18 || b == 19))  // 198.18/15 benchmarking
         || (a == 192 && b == 88 && c == 99)    // 6to4 relay anycast
+        || ip == Ipv4Addr::new(168, 63, 129, 16) // Azure WireServer (platform agent endpoint)
         || ip.is_multicast()                   // 224/4
         || a >= 240; // 240/4 reserved, incl. 255.255.255.255 broadcast
     !blocked
@@ -162,12 +163,15 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
         || (first & 0xffc0) == 0xfec0             // fec0::/10 site local (deprecated)
         || first == 0x2001 && segments.get(1) == Some(&0x0db8) // 2001:db8::/32 documentation
         || first == 0x0100 && segments.get(1..4) == Some(&[0, 0, 0]) // 100::/64 discard
+        || first == 0x0064 && segments.get(1..3) == Some(&[0xff9b, 0x0001]) // 64:ff9b:1::/48 local-use NAT64
+        || first == 0x2001 && segments.get(1) == Some(&0) // 2001::/32 Teredo (tunnels to arbitrary IPv4)
         || segments.get(..6) == Some(&[0, 0, 0, 0, 0, 0]); // ::/96 deprecated IPv4-compatible
     !blocked
 }
 
 /// IPv4 address carried inside an IPv6 address: IPv4-mapped (`::ffff:a.b.c.d`),
-/// NAT64 (`64:ff9b::/96`), 6to4 (`2002::/16`) and IPv4-compatible (`::a.b.c.d`).
+/// IPv4-translated (`::ffff:0:a.b.c.d`), NAT64 (`64:ff9b::/96`), 6to4 (`2002::/16`)
+/// and IPv4-compatible (`::a.b.c.d`).
 fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
     if let Some(v4) = ip.to_ipv4_mapped() {
         return Some(v4);
@@ -180,6 +184,7 @@ fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
     };
     match s {
         [0x0064, 0xff9b, 0, 0, 0, 0, hi, lo] => Some(from_pair(hi, lo)),
+        [0, 0, 0, 0, 0xffff, 0, hi, lo] => Some(from_pair(hi, lo)),
         [0x2002, hi, lo, ..] => Some(from_pair(hi, lo)),
         [0, 0, 0, 0, 0, 0, hi, lo] if (hi, lo) != (0, 0) && (hi, lo) != (0, 1) => Some(from_pair(hi, lo)),
         _ => None,
@@ -222,6 +227,11 @@ mod tests {
             "::",
             "::1",
             "::ffff:127.0.0.1",
+            "::ffff:0:7f00:1",
+            "::ffff:0:a9fe:a9fe",
+            "64:ff9b:1::a00:1",
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+            "168.63.129.16",
             "::ffff:10.0.0.1",
             "::ffff:169.254.169.254",
             "::127.0.0.1",

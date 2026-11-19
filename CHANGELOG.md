@@ -43,6 +43,12 @@ releases may contain breaking changes; they are called out under **Changed**.
   `node_succeeded` events, SSE, run records and snapshots while staying usable
   downstream; captured Python stdout is scrubbed. Previously they were stored
   in plaintext. Also in 0.2.0.
+- HTTP egress policy: also blocks the IPv4-translated form `::ffff:0:a.b.c.d`
+  (judged by the embedded IPv4 address), the local-use NAT64 prefix
+  `64:ff9b:1::/48`, Teredo `2001::/32` and the Azure WireServer address
+  `168.63.129.16`. Also in 0.2.0.
+- OTel HTTP exporter: redirects are no longer followed, so vendor key headers
+  cannot follow a redirect to another host.
 - Dependencies: `rusqlite` 0.40 -> 0.41 (bundled SQLite 3.54), fixing
   RUSTSEC-2026-0459 / CVE-2026-119375 (uninitialized page-cache memory read
   through a crafted database and `-wal` pair) in `graphrt-rag`'s `SqliteStore`.
