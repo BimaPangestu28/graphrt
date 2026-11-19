@@ -37,17 +37,22 @@ use graphrt_llm::{LlmError, ModelRegistry};
 use serde_json::{Value as Json, json};
 
 // ---------------------------------------------------------------------------
-// Allocation counter (used by the `pool` section only).
+// Allocation counter (used by the `pool` section only). It is off unless a
+// section turns it on: counting every allocation on one shared atomic makes all
+// cores contend on a single cache line and would distort the concurrency numbers.
 // ---------------------------------------------------------------------------
 
 struct Counting;
 
 static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+static COUNTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // SAFETY: forwards every call to the system allocator unchanged; only counts bytes.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed);
+        if COUNTING.load(Ordering::Relaxed) {
+            ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed);
+        }
         // SAFETY: same contract as the caller's.
         unsafe { System.alloc(layout) }
     }
@@ -467,6 +472,7 @@ graph:
 }
 
 fn section_pool() -> Json {
+    COUNTING.store(true, Ordering::Relaxed);
     let mut pool = VariablePool::new();
     for n in 0..100 {
         for v in 0..10 {
