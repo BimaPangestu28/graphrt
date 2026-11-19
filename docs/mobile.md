@@ -374,6 +374,6 @@ jobs:
   been run, and no physical device has been tested.
 - iOS: the [sample app](../examples/mobile/ios/) (`--no-default-features`)
   ran the hello workflow on an iOS 26.5 simulator (arm64), covering `waitJson`
-  and streamed events. The device slice (`aarch64-apple-ios`) links into an
-  unsigned Release build but has not been run on hardware. The default
-  feature set (`mobile-js`, `doc`, `rag`) has not been built for iOS yet.
+  and streamed events, and on a physical iPhone 14 Pro Max (iOS 18.3, arm64,
+  signed Debug build installed with `devicectl`). The default feature set
+  (`mobile-js`, `doc`, `rag`) has not been built for iOS yet.

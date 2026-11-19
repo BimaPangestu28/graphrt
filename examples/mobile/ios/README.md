@@ -66,6 +66,27 @@ xcrun simctl launch --console-pty booted dev.graphrt.sample -name Grace -autorun
 xcrun simctl io booted screenshot graphrt-sample.png
 ```
 
+## Run on an iPhone
+
+With the device connected and unlocked (Developer Mode on), build the device
+slice and a signed app, then install and launch it:
+
+```sh
+GRAPHRT_TARGETS=aarch64-apple-ios examples/mobile/ios/scripts/build-xcframework.sh
+cd examples/mobile/ios
+xcodebuild -project GraphrtSample.xcodeproj -scheme GraphrtSample -configuration Debug \
+  -destination 'id=<device id>' -derivedDataPath build/DerivedData \
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=<your team id> build
+xcrun devicectl list devices                          # the device id
+xcrun devicectl device install app --device <device id> \
+  build/DerivedData/Build/Products/Debug-iphoneos/GraphrtSample.app
+xcrun devicectl device process launch --device <device id> --console \
+  dev.graphrt.sample -- -name Grace -autorun YES
+```
+
+The `--` keeps `devicectl` from reading the app's arguments as its own. This
+was verified on an iPhone 14 Pro Max with iOS 18.3.
+
 The launch arguments are optional and become `UserDefaults` values:
 `-name Grace` fills in the name, and `-autorun YES` presses both buttons once
 the workflow has loaded.
@@ -75,7 +96,7 @@ the workflow has loaded.
 On screen, under the buttons:
 
 ```text
-graphrt 0.3.0 loaded workflow 'hello'
+graphrt 0.3.1 loaded workflow 'hello'
 Result
 status: succeeded
 greeting: Hello, Grace.
