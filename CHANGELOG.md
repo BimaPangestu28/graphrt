@@ -7,6 +7,10 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- Plugin SDKs 0.2.0 on PyPI and npm (`graphrt-plugin`): tool handlers can
+  return images (`tool_images`), as shipped in graphrt 0.3.0.
+
 ## [0.3.0] - 2026-11-19
 
 Workflow format v1 frozen with a JSON Schema and located, collected validation

@@ -1,6 +1,6 @@
 {
   "name": "graphrt-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "SDK for writing graphrt plugins in JavaScript / TypeScript (no dependencies)",
   "license": "Apache-2.0",
   "type": "module",
