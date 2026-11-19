@@ -30,6 +30,13 @@ releases may contain breaking changes; they are called out under **Changed**.
   rebuilt from its children (nothing extra stored). `ChunkerConfig` gains
   `parent_max_chars` and `TextChunk` gains `parent` (**breaking** for struct
   literals); children carry `parent_index` metadata.
+- Knowledge base datasets can be created and deleted at runtime:
+  `GET /v1/knowledge/resources`, `POST /v1/knowledge/datasets` and
+  `DELETE /v1/knowledge/datasets/{dataset}`, backed by
+  `KnowledgeBase::{create_dataset, remove_dataset, dataset_details,
+  resource_names, runtime_datasets}`. New datasets name a store, embedder and
+  reranker declared in the knowledge config; they are saved next to it
+  (`kb.datasets.json`) and recreated on start by `serve`, `run` and `kb`.
 - `graphrt-rag`: `VectorStore::list_documents` (memory and SQLite stores),
   `DocumentSummary`, `KnowledgeBase::{list_documents, document_chunks,
   delete_document, is_managed}`, `RagError::Unsupported`; `IngestReport` is
@@ -54,6 +61,10 @@ releases may contain breaking changes; they are called out under **Changed**.
 - `graphrt-cli`: optional `mimalloc` feature to replace the global allocator.
 
 ### Changed
+- **Breaking** (`graphrt-rag`): clones of a `KnowledgeBase` share their
+  datasets (so datasets created through one clone are visible to all);
+  `KnowledgeBase::datasets` returns `Vec<DatasetInfo>` and `chunking` returns
+  an owned `ChunkerConfig`.
 - **Breaking** (`graphrt-core`): the `node_id` and `exec_id` fields of every
   `Event` variant are `Arc<str>` instead of `String`, so the engine shares the
   ids it already holds instead of allocating two strings per event (every

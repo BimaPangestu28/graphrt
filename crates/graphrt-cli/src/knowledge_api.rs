@@ -13,12 +13,14 @@ use axum::Json;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use std::path::PathBuf;
+
 use graphrt_rag::{
-    DEFAULT_DOCUMENT_PAGE, Document, HybridWeights, IngestReport, KnowledgeBase, Metadata, MetadataFilter, RagError,
-    RetrievalRequest,
+    DEFAULT_DOCUMENT_PAGE, DatasetSpec, Document, HybridWeights, IngestReport, KnowledgeBase, Metadata, MetadataFilter,
+    RagError, RetrievalRequest,
 };
 use serde::Deserialize;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::serve::{AppState, error_response};
 
@@ -28,11 +30,23 @@ pub struct KnowledgeService {
     kb: KnowledgeBase,
     /// One ingestion at a time: extraction and embedding are the heavy part.
     ingest: Semaphore,
+    /// The knowledge config; runtime datasets are saved next to it.
+    config: Option<PathBuf>,
+    /// Serializes dataset creation and removal with saving them.
+    admin: Mutex<()>,
 }
 
 impl KnowledgeService {
-    pub fn new(kb: KnowledgeBase) -> Self {
-        Self { kb, ingest: Semaphore::new(1) }
+    pub fn new(kb: KnowledgeBase, config: Option<PathBuf>) -> Self {
+        Self { kb, ingest: Semaphore::new(1), config, admin: Mutex::new(()) }
+    }
+
+    /// Save the runtime datasets next to the config (no-op without a config path).
+    fn persist(&self) -> Result<(), String> {
+        match &self.config {
+            Some(path) => crate::setup::save_runtime_datasets(path, &self.kb).map_err(|e| e.to_string()),
+            None => Ok(()),
+        }
     }
 }
 
@@ -63,18 +77,49 @@ fn rag_error(error: &RagError) -> Response {
 /// `GET /v1/knowledge/datasets`
 pub async fn list_datasets(State(state): State<Arc<AppState>>) -> Response {
     let Some(knowledge) = state.knowledge() else { return not_served() };
-    let datasets: Vec<serde_json::Value> = knowledge
-        .kb
-        .datasets()
-        .map(|d| {
-            serde_json::json!({
-                "id": d.id, "name": d.name, "description": d.description,
-                "managed": knowledge.kb.is_managed(&d.id),
-                "chunking": knowledge.kb.is_managed(&d.id).then(|| knowledge.kb.chunking(&d.id)).flatten(),
-            })
-        })
-        .collect();
-    Json(serde_json::json!({ "datasets": datasets })).into_response()
+    Json(serde_json::json!({ "datasets": knowledge.kb.dataset_details() })).into_response()
+}
+
+/// `GET /v1/knowledge/resources`: stores, embedders and rerankers new datasets can use.
+pub async fn list_resources(State(state): State<Arc<AppState>>) -> Response {
+    let Some(knowledge) = state.knowledge() else { return not_served() };
+    Json(knowledge.kb.resource_names()).into_response()
+}
+
+/// `POST /v1/knowledge/datasets`: create a dataset from the config's named resources.
+pub async fn create_dataset(State(state): State<Arc<AppState>>, Json(spec): Json<DatasetSpec>) -> Response {
+    let Some(knowledge) = state.knowledge() else { return not_served() };
+    let _admin = knowledge.admin.lock().await;
+    let id = spec.id.clone();
+    match knowledge.kb.create_dataset(spec) {
+        Ok(details) => {
+            if let Err(message) = knowledge.persist() {
+                // Keep memory and disk in agreement: undo the creation.
+                let _undo = knowledge.kb.remove_dataset(&id).await;
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, &message);
+            }
+            (StatusCode::CREATED, Json(details)).into_response()
+        }
+        Err(e) => rag_error(&e),
+    }
+}
+
+/// `DELETE /v1/knowledge/datasets/{dataset}`: delete a runtime dataset and its documents.
+pub async fn delete_dataset(State(state): State<Arc<AppState>>, UrlPath(dataset): UrlPath<String>) -> Response {
+    let Some(knowledge) = state.knowledge() else { return not_served() };
+    let _admin = knowledge.admin.lock().await;
+    // Wait for a running ingestion so it cannot write into a dataset being removed.
+    let _turn = match knowledge.ingest.acquire().await {
+        Ok(permit) => permit,
+        Err(_) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "server is shutting down"),
+    };
+    match knowledge.kb.remove_dataset(&dataset).await {
+        Ok(removed) => match knowledge.persist() {
+            Ok(()) => Json(serde_json::json!({ "dataset": dataset, "deleted_chunks": removed })).into_response(),
+            Err(message) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &message),
+        },
+        Err(e) => rag_error(&e),
+    }
 }
 
 #[derive(Debug, Deserialize)]

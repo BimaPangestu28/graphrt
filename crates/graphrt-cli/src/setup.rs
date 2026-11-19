@@ -212,17 +212,7 @@ pub async fn services(
     if let Some(path) = &options.knowledge {
         #[cfg(feature = "rag")]
         {
-            let text = std::fs::read_to_string(path)
-                .map_err(|e| CliError::usage(format!("cannot read knowledge config `{}`: {e}", path.display())))?;
-            let value = parse_structured(&text, &format!("knowledge config `{}`", path.display()))?;
-            let config = graphrt_rag::KnowledgeConfig::from_json(&value.to_string())
-                .map_err(|e| CliError::usage(format!("knowledge config `{}`: {e}", path.display())))?;
-            let vars = options.all_vars();
-            let lookup = |name: &str| vars.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
-            let kb = config
-                .build_with_env(&lookup)
-                .map_err(|e| CliError::usage(format!("knowledge config `{}`: {e}", path.display())))?;
-            services.insert(kb);
+            services.insert(load_knowledge(path, &options.all_vars())?);
         }
         #[cfg(not(feature = "rag"))]
         {
@@ -351,6 +341,60 @@ pub fn parse_assignment(raw: &str) -> Result<(String, Value), CliError> {
         return Ok((key.to_owned(), Value::from_json(json)));
     }
     Ok((key.to_owned(), Value::from(value)))
+}
+
+/// File next to a knowledge config holding the datasets created at runtime
+/// (`kb.yaml` -> `kb.datasets.json`), so they survive restarts without the
+/// operator's config file being rewritten.
+#[cfg(feature = "rag")]
+pub fn runtime_datasets_path(config: &Path) -> std::path::PathBuf {
+    let stem = config.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "knowledge".into());
+    config.with_file_name(format!("{stem}.datasets.json"))
+}
+
+/// Build the knowledge base declared by `path`, plus the runtime datasets saved
+/// next to it. A saved dataset that no longer fits the config (its store or
+/// embedder was removed) is skipped with a warning instead of failing startup.
+#[cfg(feature = "rag")]
+pub fn load_knowledge(path: &Path, vars: &[(String, String)]) -> Result<graphrt_rag::KnowledgeBase, CliError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| CliError::usage(format!("cannot read knowledge config `{}`: {e}", path.display())))?;
+    let value = parse_structured(&text, &format!("knowledge config `{}`", path.display()))?;
+    let config = graphrt_rag::KnowledgeConfig::from_json(&value.to_string())
+        .map_err(|e| CliError::usage(format!("knowledge config `{}`: {e}", path.display())))?;
+    let lookup = |name: &str| vars.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
+    let kb = config
+        .build_with_env(&lookup)
+        .map_err(|e| CliError::usage(format!("knowledge config `{}`: {e}", path.display())))?;
+    let saved = runtime_datasets_path(path);
+    if saved.is_file() {
+        let text = std::fs::read_to_string(&saved)
+            .map_err(|e| CliError::usage(format!("cannot read `{}`: {e}", saved.display())))?;
+        let specs: Vec<graphrt_rag::DatasetSpec> =
+            serde_json::from_str(&text).map_err(|e| CliError::usage(format!("invalid `{}`: {e}", saved.display())))?;
+        for spec in specs {
+            let id = spec.id.clone();
+            if let Err(e) = kb.create_dataset(spec) {
+                eprintln!("warning: runtime dataset `{id}` from {} skipped: {e}", saved.display());
+            }
+        }
+    }
+    Ok(kb)
+}
+
+/// Persist the knowledge base's runtime datasets next to its config
+/// (temp file + rename, so a crash leaves the old or the new list).
+#[cfg(feature = "rag")]
+pub fn save_runtime_datasets(config: &Path, kb: &graphrt_rag::KnowledgeBase) -> Result<(), CliError> {
+    let path = runtime_datasets_path(config);
+    let text = serde_json::to_vec_pretty(&kb.runtime_datasets()).map_err(|e| CliError::failed(e.to_string()))?;
+    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let io = |p: &Path, e: std::io::Error| CliError::failed(format!("cannot write `{}`: {e}", p.display()));
+    std::fs::write(&temp, text).map_err(|e| io(&temp, e))?;
+    std::fs::rename(&temp, &path).map_err(|e| {
+        let _cleanup = std::fs::remove_file(&temp);
+        io(&path, e)
+    })
 }
 
 #[cfg(test)]

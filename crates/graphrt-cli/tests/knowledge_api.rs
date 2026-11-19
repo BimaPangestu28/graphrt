@@ -92,6 +92,8 @@ async fn documents_can_be_added_listed_inspected_searched_and_deleted() {
         .collect();
     assert_eq!(managed, [("handbook".to_owned(), true), ("remote".to_owned(), false)]);
     assert_eq!(body["datasets"][0]["chunking"]["max_chars"], 1000, "managed datasets report their chunking");
+    assert_eq!(body["datasets"][0]["store"], "local");
+    assert_eq!(body["datasets"][0]["runtime"], false);
     assert_eq!(body["datasets"][1]["chunking"], Value::Null);
 
     let leave = json!({ "document_id": "leave", "title": "Leave policy",
@@ -201,4 +203,55 @@ async fn without_a_knowledge_base_the_endpoints_say_so() {
     let (status, body) = send(&app, get("/v1/knowledge/datasets")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(body["error"].as_str().unwrap().contains("--knowledge"), "{body}");
+}
+
+#[tokio::test]
+async fn datasets_can_be_created_and_deleted_and_survive_restarts() {
+    let fixture = Fixture::new("datasets");
+    let app = router(state(&fixture, true).await, 1 << 20);
+
+    let (status, body) = send(&app, get("/v1/knowledge/resources")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["stores"], json!(["local"]));
+    assert_eq!(body["embedders"], json!(["e"]));
+
+    let spec = json!({ "id": "notes", "name": "Notes", "store": "local", "embedder": "e",
+                       "chunking": { "max_chars": 300, "parent_max_chars": 900 } });
+    let (status, body) = send(&app, json_request("POST", "/v1/knowledge/datasets", &spec)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["runtime"], true);
+    assert_eq!(body["chunking"]["parent_max_chars"], 900);
+
+    let doc = json!({ "document_id": "n1", "text": "Runtime datasets are searchable right away." });
+    let (status, _) = send(&app, json_request("POST", "/v1/knowledge/datasets/notes/documents", &doc)).await;
+    assert_eq!(status, StatusCode::OK);
+    let query = json!({ "query": "runtime datasets searchable", "datasets": ["notes"] });
+    let (_, body) = send(&app, json_request("POST", "/v1/knowledge/retrieve", &query)).await;
+    assert_eq!(body["hits"][0]["document_id"], "n1");
+
+    let saved = fixture.path().join("knowledge.datasets.json");
+    let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&saved).unwrap()).unwrap();
+    assert_eq!(on_disk[0]["id"], "notes");
+
+    // A restart rebuilds the dataset from the saved list.
+    let restarted = router(state(&fixture, true).await, 1 << 20);
+    let (_, body) = send(&restarted, get("/v1/knowledge/datasets")).await;
+    let ids: Vec<&str> = body["datasets"].as_array().unwrap().iter().map(|d| d["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["handbook", "remote", "notes"]);
+
+    let (status, body) = send(&app, json_request("POST", "/v1/knowledge/datasets", &spec)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "duplicate id: {body}");
+    let bad = json!({ "id": "a/b", "store": "local", "embedder": "e" });
+    let (status, _) = send(&app, json_request("POST", "/v1/knowledge/datasets", &bad)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = send(&app, Request::delete("/v1/knowledge/datasets/handbook").body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "config datasets are not deletable over the API");
+
+    let (status, body) = send(&app, Request::delete("/v1/knowledge/datasets/notes").body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["deleted_chunks"], 1);
+    let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&saved).unwrap()).unwrap();
+    assert_eq!(on_disk, json!([]));
+    let (status, _) = send(&app, get("/v1/knowledge/datasets/notes/documents")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

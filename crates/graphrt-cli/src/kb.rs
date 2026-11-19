@@ -10,11 +10,6 @@ use crate::setup;
 
 /// Execute a `graphrt kb` subcommand.
 pub async fn kb(args: KbArgs) -> Result<u8, CliError> {
-    let text = std::fs::read_to_string(&args.knowledge)
-        .map_err(|e| CliError::usage(format!("cannot read knowledge config `{}`: {e}", args.knowledge.display())))?;
-    let value = setup::parse_structured(&text, "knowledge config")?;
-    let config = graphrt_rag::KnowledgeConfig::from_json(&value.to_string())
-        .map_err(|e| CliError::usage(format!("knowledge config: {e}")))?;
     let env_file = match &args.env_file {
         Some(path) => setup::parse_env_file(
             &std::fs::read_to_string(path)
@@ -23,9 +18,7 @@ pub async fn kb(args: KbArgs) -> Result<u8, CliError> {
         None => Vec::new(),
     };
     let options = setup::ServiceOptions { env_file, ..Default::default() };
-    let vars = options.all_vars();
-    let lookup = |name: &str| vars.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
-    let kb = config.build_with_env(&lookup).map_err(|e| CliError::usage(format!("knowledge config: {e}")))?;
+    let kb = setup::load_knowledge(&args.knowledge, &options.all_vars())?;
     let mut out = std::io::stdout().lock();
     let io = |e: std::io::Error| CliError::failed(e.to_string());
 

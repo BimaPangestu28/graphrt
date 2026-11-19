@@ -98,8 +98,9 @@ impl AppState {
 
     /// Serve this knowledge base under `/v1/knowledge`.
     #[cfg(feature = "rag")]
-    pub fn with_knowledge(mut self, knowledge: Option<graphrt_rag::KnowledgeBase>) -> Self {
-        self.knowledge = knowledge.map(crate::knowledge_api::KnowledgeService::new);
+    /// `config` is the knowledge config path; datasets created over the API are saved next to it.
+    pub fn with_knowledge(mut self, knowledge: Option<graphrt_rag::KnowledgeBase>, config: Option<PathBuf>) -> Self {
+        self.knowledge = knowledge.map(|kb| crate::knowledge_api::KnowledgeService::new(kb, config));
         self
     }
 
@@ -228,7 +229,7 @@ pub async fn build_state(
     // The same knowledge base the workflows use, so documents added over the API
     // are searchable by running workflows right away.
     #[cfg(feature = "rag")]
-    let state = state.with_knowledge(services.get::<graphrt_rag::KnowledgeBase>().cloned());
+    let state = state.with_knowledge(services.get::<graphrt_rag::KnowledgeBase>().cloned(), options.knowledge.clone());
     Ok(state)
 }
 
@@ -259,7 +260,9 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     #[cfg(feature = "rag")]
     let api = {
         use crate::knowledge_api as k;
-        api.route("/v1/knowledge/datasets", get(k::list_datasets))
+        api.route("/v1/knowledge/datasets", get(k::list_datasets).post(k::create_dataset))
+            .route("/v1/knowledge/datasets/{dataset}", delete(k::delete_dataset))
+            .route("/v1/knowledge/resources", get(k::list_resources))
             .route("/v1/knowledge/datasets/{dataset}/documents", get(k::list_documents).post(k::put_text_document))
             .route(
                 "/v1/knowledge/datasets/{dataset}/documents/{document}",

@@ -127,7 +127,10 @@ UI (datasets, documents, chunks, retrieval testing).
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /v1/knowledge/datasets` | `{datasets: [{id, name, description, managed, chunking}]}`. `managed` is false for datasets served by an external retriever (read-only); `chunking` is the dataset's `{max_chars, overlap, markdown, parent_max_chars}`. |
+| `GET /v1/knowledge/datasets` | `{datasets: [{id, name, description, managed, runtime, store, embedder, chunking}]}`. `managed` is false for datasets served by an external retriever (read-only); `runtime` is true for datasets created over the API; `chunking` is `{max_chars, overlap, markdown, parent_max_chars}`. |
+| `GET /v1/knowledge/resources` | `{stores, embedders, rerankers}`: the names declared in the knowledge config that new datasets can use. |
+| `POST /v1/knowledge/datasets` | Create a dataset: `{id, name?, description?, store, embedder, reranker?, chunking?}` naming resources from the config (201). Ids are 1–64 ASCII letters, digits, `-`, `_` or `.`. |
+| `DELETE /v1/knowledge/datasets/{dataset}` | Delete a dataset created over the API together with its documents: `{dataset, deleted_chunks}`. Datasets declared in the config answer 409 (edit the config instead). |
 | `GET /v1/knowledge/datasets/{dataset}/documents?limit=&after=` | Documents ordered by id: `{documents: [{document_id, title, chunks, characters, enabled, metadata}], next}`. Pass `next` as `after` for the following page; `next` is null at the end. `limit` defaults to 50, at most 500. |
 | `POST /v1/knowledge/datasets/{dataset}/documents` | Add or replace a document from text: `{document_id, text, title?, metadata?}`. |
 | `PUT /v1/knowledge/datasets/{dataset}/documents/{document}/file?name=&title=` | Add or replace a document from a raw file body (PDF, Office, HTML, Markdown, EPUB, CSV, e-mail, ...). `name` (e.g. `report.pdf`) and `Content-Type` select the format. Limited by `--max-upload-bytes` (default 16 MiB). |
@@ -148,6 +151,13 @@ datasets:
   - { id: handbook, store: local, embedder: local,
       chunking: { max_chars: 400, parent_max_chars: 1600 } }
 ```
+
+Datasets created over the API pick their store, embedder and reranker from the
+names the knowledge config declares, so credentials and endpoints stay in the
+operator's config. They are saved next to it (`kb.yaml` -> `kb.datasets.json`,
+written atomically) and recreated on the next start by every command that
+loads the knowledge config (`serve`, `run`, `kb`). Running workflows see a new
+dataset immediately.
 
 Adding a document with an existing id replaces it: unchanged chunks keep their
 vectors (nothing is re-embedded), changed ones are embedded, and chunks the new
