@@ -1,0 +1,18 @@
+// Copy to wrangler.jsonc and fill in your D1 database id
+// (`wrangler d1 create graphrt-telemetry` prints it). No account id is needed
+// here: wrangler uses the account you are logged in to (or CLOUDFLARE_ACCOUNT_ID).
+{
+  "name": "graphrt-telemetry",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  // Keep Workers Logs off: invocation logs would record request metadata.
+  "observability": { "enabled": false },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "graphrt-telemetry",
+      "database_id": "<your-d1-database-id>"
+    }
+  ]
+}

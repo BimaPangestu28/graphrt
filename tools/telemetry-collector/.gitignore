@@ -1,0 +1,5 @@
+# Account-specific config (copy of wrangler.example.jsonc) and local state.
+wrangler.jsonc
+wrangler.toml
+.wrangler/
+node_modules/

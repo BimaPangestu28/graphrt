@@ -33,6 +33,10 @@ releases may contain breaking changes; they are called out under **Changed**.
   requests, aggregated in `telemetry.json` in the user config directory.
   `graphrt telemetry status` prints exactly what would be sent. Not in the
   embedded or FFI libraries. See docs/telemetry.md.
+- `tools/telemetry-collector/`: a Cloudflare Worker + D1 collector for those
+  reports (strict payload validation, no IP addresses stored, schema, wrangler
+  config template, weekly-active-installs and daily-runs queries). Not
+  deployed.
 
 ### Performance
 - Engine: fewer allocations and less work per node execution. Node task
