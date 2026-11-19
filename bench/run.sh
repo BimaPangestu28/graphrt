@@ -79,7 +79,7 @@ if [ "$SIZES" = 1 ]; then
     # shellcheck disable=SC2086
     cargo build --quiet -p graphrt-cli --profile min-size $features
     cp "$CLI_DIR/min-size/graphrt" "$WORK/graphrt-$label"
-    bytes="$(stat -c %s "$WORK/graphrt-$label")"
+    bytes="$(wc -c < "$WORK/graphrt-$label" | tr -d " ")"
     echo "{\"build\": \"$label\", \"bytes\": $bytes}" >> "$WORK/sizes.jsonl"
   done
 
