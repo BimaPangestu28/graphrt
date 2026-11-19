@@ -640,7 +640,6 @@ fn longest_tag_prefix_suffix(text: &str, tag: &str) -> usize {
     (1..tag.len()).rev().find(|&n| tag.get(..n).is_some_and(|prefix| text.ends_with(prefix))).unwrap_or(0)
 }
 
-/// Usage as an output object.
 /// The `finish_reason` output: the reason's wire name, or `""` when none was
 /// reported. The standard reasons share one allocation per process.
 pub fn finish_reason_value(reason: Option<&FinishReason>) -> Value {
