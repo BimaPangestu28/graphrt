@@ -133,8 +133,9 @@ struct FixturePlugin {
     name: &'static str,
     version: &'static str,
     tarball: Vec<u8>,
-    status: &'static str,
-    tos_risk: &'static str,
+    /// `None` writes `null`, like a catalog published before the labels existed.
+    status: Option<&'static str>,
+    tos_risk: Option<&'static str>,
     /// Overrides the tarball's real sha256 in the index.
     sha256_override: Option<String>,
     /// Overrides the tarball's real size in the index.
@@ -153,8 +154,8 @@ impl FixturePlugin {
             name,
             version,
             tarball: build_tar_gz(entries),
-            status: "beta",
-            tos_risk: "low",
+            status: Some("beta"),
+            tos_risk: Some("low"),
             sha256_override: None,
             size_override: None,
             url_override: None,
@@ -182,7 +183,7 @@ fn write_catalog(catalog_dir: &Path, plugins: &[FixturePlugin]) -> PathBuf {
                 "node": ">=20",
                 "warning": null,
                 "status": plugin.status,
-                "status_reason": format!("{} fixture", plugin.status),
+                "status_reason": format!("{} fixture", plugin.status.unwrap_or("unlabelled")),
                 "tos_risk": plugin.tos_risk,
                 "operations_count": 1,
                 "nodes": [],
@@ -343,9 +344,9 @@ fn tarball_larger_than_the_catalog_says_is_refused() {
 fn experimental_or_high_risk_plugins_need_yes() {
     let home = scratch("experimental");
     let mut experimental = FixturePlugin::valid("demo", "1.0.0");
-    experimental.status = "experimental";
+    experimental.status = Some("experimental");
     let mut risky = FixturePlugin::valid("risky", "1.0.0");
-    risky.tos_risk = "high";
+    risky.tos_risk = Some("high");
     let index = write_catalog(&home.join("catalog"), &[experimental, risky]);
 
     for name in ["demo", "risky"] {
@@ -362,6 +363,48 @@ fn experimental_or_high_risk_plugins_need_yes() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(stdout(&output).contains("demo 1.0.0: status experimental, ToS risk low"), "{}", stdout(&output));
     assert!(stdout(&output).contains("installed demo 1.0.0"), "{}", stdout(&output));
+}
+
+#[test]
+fn unlabelled_or_unrecognised_labels_need_yes() {
+    let home = scratch("unlabelled");
+    let mut unlabelled = FixturePlugin::valid("bare", "1.0.0");
+    unlabelled.status = None;
+    unlabelled.tos_risk = None;
+    let mut no_risk_label = FixturePlugin::valid("halfway", "1.0.0");
+    no_risk_label.tos_risk = None;
+    let mut capitalised = FixturePlugin::valid("shouty", "1.0.0");
+    capitalised.status = Some("Experimental");
+    let mut padded = FixturePlugin::valid("padded", "1.0.0");
+    padded.tos_risk = Some(" HIGH");
+    let mut deprecated = FixturePlugin::valid("old", "1.0.0");
+    deprecated.status = Some("deprecated");
+    let mut fine = FixturePlugin::valid("fine", "1.0.0");
+    fine.status = Some(" Stable ");
+    fine.tos_risk = Some("Medium");
+    let index = write_catalog(&home.join("catalog"), &[unlabelled, no_risk_label, capitalised, padded, deprecated, fine]);
+
+    let expectations = [
+        ("bare", "this catalog entry has no status/ToS label"),
+        ("halfway", "this catalog entry has no ToS risk label"),
+        ("shouty", "status experimental"),
+        ("padded", "ToS risk high"),
+        ("old", "unrecognised status `deprecated`"),
+    ];
+    for (name, reason) in expectations {
+        let output = install(&home, name, &index, &[]);
+        assert_eq!(output.status.code(), Some(2), "{name}: {}", stderr(&output));
+        assert!(stderr(&output).contains(reason), "{name}: {}", stderr(&output));
+        assert!(stderr(&output).contains("re-run with `--yes`"), "{name}: {}", stderr(&output));
+    }
+    assert_eq!(installed_files(&home), 0);
+
+    let output = install(&home, "fine", &index, &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("fine 1.0.0: status stable, ToS risk medium"), "{}", stdout(&output));
+    let output = install(&home, "bare", &index, &["--yes"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("bare 1.0.0: status unknown, ToS risk unknown"), "{}", stdout(&output));
 }
 
 #[test]
@@ -408,7 +451,7 @@ fn a_local_directory_named_like_a_plugin_wins_over_the_catalog() {
 fn search_lists_catalog_entries() {
     let home = scratch("search");
     let mut experimental = FixturePlugin::valid("weather", "0.3.0");
-    experimental.status = "experimental";
+    experimental.status = Some("experimental");
     let index = write_catalog(
         &home.join("catalog"),
         &[FixturePlugin::valid("demo", "0.1.0"), FixturePlugin::valid("demo", "0.2.0"), experimental],

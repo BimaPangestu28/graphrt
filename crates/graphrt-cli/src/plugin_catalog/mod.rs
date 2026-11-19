@@ -152,21 +152,15 @@ mod installer {
 
     /// graphrt has no interactive prompt, so the confirmation is always `--yes`.
     fn require_confirmation(entry: &CatalogEntry, assume_yes: bool) -> Result<(), CliError> {
-        if assume_yes || !entry.needs_confirmation() {
+        let reasons = entry.confirmation_reasons();
+        if assume_yes || reasons.is_empty() {
             return Ok(());
         }
-        let mut labels = Vec::new();
-        if entry.status.as_deref() == Some("experimental") {
-            labels.push("status experimental".to_owned());
-        }
-        if entry.tos_risk.as_deref() == Some("high") {
-            labels.push("ToS risk high".to_owned());
-        }
         Err(CliError::usage(format!(
-            "`{}` {} is labelled {}; re-run with `--yes` to install it anyway (there is no interactive prompt)",
+            "`{}` {} needs confirmation: {}; re-run with `--yes` to install it anyway (there is no interactive prompt)",
             entry.name,
             entry.version,
-            labels.join(" and ")
+            reasons.join("; ")
         )))
     }
 

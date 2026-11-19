@@ -422,10 +422,14 @@ How a name is resolved and installed:
    `http://` is refused because the index carries the checksums. Catalogs with
    a `schema` other than 1 are refused (upgrade graphrt).
 3. Without a version, the highest version by semver precedence is picked.
-4. The plugin's `status` and `tos_risk` are printed (`unknown` when the catalog
-   predates the labels), plus the README warning when there is one. Plugins
-   labelled `experimental` or with ToS risk `high` are installed only with
-   `--yes`; graphrt has no interactive prompt.
+4. The plugin's `status` and `tos_risk` are printed (trimmed and lowercased;
+   `unknown` when the catalog predates the labels), plus the README warning
+   when there is one. The gate fails closed: only status `stable` or `beta`
+   with ToS risk `none`, `low` or `medium` installs without `--yes`. Everything
+   else needs `--yes`: `experimental`, ToS risk `high`, a label this graphrt
+   does not recognise, and an entry with no labels at all ("this catalog entry
+   has no status/ToS label", which is every entry of catalogs published before
+   the labels existed). graphrt has no interactive prompt.
 5. The tarball is downloaded over `https://` only (redirects included, at most
    five), with a 300 s timeout and a size cap: the entry's `size_bytes` when
    the catalog declares it, never more than 256 MiB. A `file://` tarball URL is

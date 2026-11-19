@@ -62,20 +62,46 @@ pub struct CatalogEntry {
 }
 
 impl CatalogEntry {
-    /// The status label, or `unknown` when the catalog does not carry one.
-    pub fn status_label(&self) -> &str {
-        self.status.as_deref().unwrap_or("unknown")
+    /// The status label (trimmed, lowercase), or `unknown` when the catalog does not carry one.
+    pub fn status_label(&self) -> String {
+        normalized_label(self.status.as_deref()).unwrap_or_else(|| "unknown".to_owned())
     }
 
-    /// The ToS risk label, or `unknown` when the catalog does not carry one.
-    pub fn tos_risk_label(&self) -> &str {
-        self.tos_risk.as_deref().unwrap_or("unknown")
+    /// The ToS risk label (trimmed, lowercase), or `unknown` when the catalog does not carry one.
+    pub fn tos_risk_label(&self) -> String {
+        normalized_label(self.tos_risk.as_deref()).unwrap_or_else(|| "unknown".to_owned())
     }
 
-    /// Experimental plugins and plugins with a high ToS risk are installed only
-    /// after an explicit confirmation (`--yes`).
+    /// Whether installing needs an explicit confirmation (`--yes`); see
+    /// [`CatalogEntry::confirmation_reasons`].
     pub fn needs_confirmation(&self) -> bool {
-        self.status.as_deref() == Some("experimental") || self.tos_risk.as_deref() == Some("high")
+        !self.confirmation_reasons().is_empty()
+    }
+
+    /// Why installing needs `--yes`, empty when it does not. The gate fails
+    /// closed: only status `stable` or `beta` with ToS risk `none`, `low` or
+    /// `medium` passes. Missing labels, `experimental`, ToS risk `high` and
+    /// any value this graphrt does not recognise all need confirmation.
+    pub fn confirmation_reasons(&self) -> Vec<String> {
+        let status = normalized_label(self.status.as_deref());
+        let tos_risk = normalized_label(self.tos_risk.as_deref());
+        if status.is_none() && tos_risk.is_none() {
+            return vec!["this catalog entry has no status/ToS label".to_owned()];
+        }
+        let mut reasons = Vec::new();
+        match status.as_deref() {
+            None => reasons.push("this catalog entry has no status label".to_owned()),
+            Some("stable" | "beta") => {}
+            Some("experimental") => reasons.push("status experimental".to_owned()),
+            Some(other) => reasons.push(format!("unrecognised status `{other}`")),
+        }
+        match tos_risk.as_deref() {
+            None => reasons.push("this catalog entry has no ToS risk label".to_owned()),
+            Some("none" | "low" | "medium") => {}
+            Some("high") => reasons.push("ToS risk high".to_owned()),
+            Some(other) => reasons.push(format!("unrecognised ToS risk `{other}`")),
+        }
+        reasons
     }
 
     /// The first line of the description, shortened to `max_chars` characters.
@@ -87,6 +113,11 @@ impl CatalogEntry {
         let shortened: String = first_line.chars().take(max_chars.saturating_sub(3)).collect();
         format!("{}...", shortened.trim_end())
     }
+}
+
+/// A label trimmed and lowercased; `None` when missing or blank.
+fn normalized_label(label: Option<&str>) -> Option<String> {
+    label.map(|text| text.trim().to_lowercase()).filter(|text| !text.is_empty())
 }
 
 /// Parse `index.json` bytes.
@@ -312,7 +343,8 @@ mod tests {
         let index = parse_index(text.as_bytes()).unwrap();
         assert_eq!(index.plugins[0].status_label(), "unknown");
         assert_eq!(index.plugins[0].tos_risk_label(), "unknown");
-        assert!(!index.plugins[0].needs_confirmation());
+        // Fails closed: an entry without labels needs `--yes`.
+        assert_eq!(index.plugins[0].confirmation_reasons(), ["this catalog entry has no status/ToS label"]);
     }
 
     #[test]
@@ -334,6 +366,35 @@ mod tests {
         assert!(experimental.needs_confirmation());
         assert!(risky.needs_confirmation());
         assert!(!medium.needs_confirmation());
+    }
+
+    fn labelled(status: Option<&str>, tos_risk: Option<&str>) -> CatalogEntry {
+        CatalogEntry { status: status.map(Into::into), tos_risk: tos_risk.map(Into::into), ..entry("a", "1.0.0") }
+    }
+
+    #[test]
+    fn only_known_safe_labels_pass_without_confirmation() {
+        for status in ["stable", "beta", " Stable ", "BETA"] {
+            for tos_risk in ["none", "low", "medium", "Low", " MEDIUM "] {
+                let entry = labelled(Some(status), Some(tos_risk));
+                assert!(!entry.needs_confirmation(), "{status:?} / {tos_risk:?}");
+            }
+        }
+        let cases: [(Option<&str>, Option<&str>, &[&str]); 8] = [
+            (Some("Experimental"), Some("low"), &["status experimental"]),
+            (Some("beta"), Some(" HIGH"), &["ToS risk high"]),
+            (Some("deprecated"), Some("low"), &["unrecognised status `deprecated`"]),
+            (Some("beta"), Some("extreme"), &["unrecognised ToS risk `extreme`"]),
+            (None, None, &["this catalog entry has no status/ToS label"]),
+            (None, Some("low"), &["this catalog entry has no status label"]),
+            (Some("  "), Some("low"), &["this catalog entry has no status label"]),
+            (Some("experimental"), Some("high"), &["status experimental", "ToS risk high"]),
+        ];
+        for (status, tos_risk, expected) in cases {
+            assert_eq!(labelled(status, tos_risk).confirmation_reasons(), expected, "{status:?} / {tos_risk:?}");
+        }
+        assert_eq!(labelled(Some(" Experimental "), Some("HIGH")).status_label(), "experimental");
+        assert_eq!(labelled(Some(" Experimental "), Some("HIGH")).tos_risk_label(), "high");
     }
 
     #[test]

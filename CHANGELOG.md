@@ -15,8 +15,9 @@ releases may contain breaking changes; they are called out under **Changed**.
   against the catalog's sha256, extracted with absolute paths, `..`, symlinks,
   hard links and device files refused, then installed like a local directory
   (manifest validation and checksums included). The plugin's `status` and
-  `tos_risk` are printed; `experimental` and ToS risk `high` plugins need
-  `--yes`. A directory with the same name in the current directory still wins.
+  `tos_risk` are printed; anything but status `stable`/`beta` with ToS risk
+  `none`/`low`/`medium` needs `--yes`, including unlabelled entries and
+  unrecognised labels. A directory with the same name in the current directory still wins.
 - `graphrt plugin search [query]`: catalog plugins with their latest version,
   status and a one-line description.
 - `docs/plugin-manifest.md`: a versioned specification of the plugin manifest
