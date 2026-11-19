@@ -38,6 +38,11 @@ releases may contain breaking changes; they are called out under **Changed**.
   `x-goog-api-key`, `api-key` headers, `key` query parameters) before they
   become error messages. OpenAI-compatible gateways and self-hosted servers
   often echo the full key.
+- `code` node: returned strings containing a secret input (`key`, or
+  `"Bearer " + key`) are re-tagged as secrets, so they are masked in
+  `node_succeeded` events, SSE, run records and snapshots while staying usable
+  downstream; captured Python stdout is scrubbed. Previously they were stored
+  in plaintext.
 - Dependencies: `rusqlite` 0.40 -> 0.41 (bundled SQLite 3.54), fixing
   RUSTSEC-2026-0459 / CVE-2026-119375 (uninitialized page-cache memory read
   through a crafted database and `-wal` pair) in `graphrt-rag`'s `SqliteStore`.

@@ -21,8 +21,10 @@
 //! ```
 //!
 //! Inputs are passed with secrets **revealed**: code nodes frequently need API
-//! keys from `env.*`. Treat the sandbox as a trusted sink and do not echo
-//! secrets into outputs.
+//! keys from `env.*`. Returned strings that contain one of those secrets (alone or
+//! inside a larger string) become secrets again, so they are masked in events and
+//! records; captured stdout is scrubbed the same way. A script can still leak a
+//! transformed secret (reversed, encoded), so do not give untrusted code keys.
 
 use std::fmt;
 use std::sync::Arc;
@@ -251,6 +253,18 @@ impl CodeNode {
         (serde_json::Value::Object(args), missing)
     }
 
+    /// Plaintext of the secrets passed to the code (revealed in its inputs).
+    fn input_secrets(&self, ctx: &NodeContext) -> Vec<Arc<str>> {
+        let mut secrets = Vec::new();
+        for var in &self.variables {
+            if let Some(value) = ctx.get(&var.value_selector) {
+                collect_secrets(&value, &mut secrets);
+            }
+        }
+        secrets.retain(|s| s.len() >= graphrt_core::redact::MIN_SCRUB_LEN);
+        secrets
+    }
+
     async fn execute(&self, ctx: &NodeContext, inputs: serde_json::Value) -> Result<SandboxRun, NodeError> {
         let limits = self.effective_limits(ctx);
         let use_remote = self.sandbox == SandboxChoice::Remote || !embedded_supports(&self.language);
@@ -313,9 +327,12 @@ impl Node for CodeNode {
         Box::pin(async move {
             let limits = self.effective_limits(&ctx);
             let (inputs, missing) = self.build_inputs(&ctx);
+            let secrets = self.input_secrets(&ctx);
             let run = self.execute(&ctx, inputs).await?;
             let mut output = self.convert_outputs(run.result, &limits)?;
+            output.outputs = output.outputs.into_iter().map(|(k, v)| (k, retag_secrets(v, &secrets))).collect();
             if let Some(stdout) = run.stdout.filter(|s| !s.is_empty()) {
+                let stdout = graphrt_core::redact::redact_secrets(&stdout, &secrets).into_owned();
                 output = output.meta("stdout", stdout);
             }
             if !run.notes.is_empty() {
@@ -369,6 +386,36 @@ async fn run_embedded(
     _limits: CodeLimits,
 ) -> Result<serde_json::Value, NodeError> {
     Err(NodeError::fatal("unsupported", "embedded JavaScript is disabled (feature `js`)"))
+}
+
+fn collect_secrets(value: &Value, out: &mut Vec<Arc<str>>) {
+    match value {
+        Value::Secret(plaintext) => out.push(Arc::clone(plaintext)),
+        Value::Array(items) => items.iter().for_each(|item| collect_secrets(item, out)),
+        Value::Object(map) => map.values().for_each(|item| collect_secrets(item, out)),
+        _ => {}
+    }
+}
+
+/// Code receives secrets revealed and can return them, alone or inside a larger
+/// string (`"Bearer " + key`). Such strings become secrets again, so they stay
+/// usable by downstream nodes but are masked in events, run records and snapshots.
+fn retag_secrets(value: Value, secrets: &[Arc<str>]) -> Value {
+    if secrets.is_empty() {
+        return value;
+    }
+    match value {
+        Value::String(text) if secrets.iter().any(|s| text.contains(s.as_ref())) => {
+            Value::Secret(Arc::from(text.as_ref()))
+        }
+        Value::Array(items) => Value::array(items.iter().cloned().map(|item| retag_secrets(item, secrets))),
+        Value::Object(map) => {
+            let map: graphrt_core::value::Map =
+                map.iter().map(|(k, v)| (k.clone(), retag_secrets(v.clone(), secrets))).collect();
+            Value::Object(Arc::new(map))
+        }
+        other => other,
+    }
 }
 
 fn json_depth(value: &serde_json::Value) -> usize {
@@ -504,6 +551,22 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(out.outputs.get("len"), Some(&Value::Int(7)));
+    }
+
+    #[tokio::test]
+    async fn returned_secrets_are_masked_again() {
+        let out = run(serde_json::json!({
+            "code": "function main({key}) { return { raw: key, header: 'Bearer ' + key, nested: { list: [key, 'plain'] }, n: 1 }; }",
+            "variables": vars(),
+        }))
+        .await
+        .unwrap();
+        assert_eq!(out.outputs.get("raw"), Some(&Value::Secret(Arc::from("sk-live"))));
+        assert_eq!(out.outputs.get("header"), Some(&Value::Secret(Arc::from("Bearer sk-live"))));
+        assert_eq!(out.outputs.get("n"), Some(&Value::Int(1)));
+        let shown = serde_json::to_string(&out.outputs).unwrap();
+        assert!(!shown.contains("sk-live"), "{shown}");
+        assert!(shown.contains("\"plain\""), "{shown}");
     }
 
     #[tokio::test]
