@@ -6,14 +6,17 @@
 //! it safe:
 //!
 //! - absolute paths, `..` components, backslashes and NUL bytes;
+//! - `:` (Windows alternate data streams) and reserved Windows device names
+//!   (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, any extension);
 //! - symlinks and hard links (wherever they point), device files and FIFOs;
 //! - duplicate paths (a later entry may not overwrite an earlier one);
 //! - more than [`ExtractLimits::max_total_bytes`] of file contents or
 //!   [`ExtractLimits::max_entries`] entries (zip bombs);
 //! - headers with a bad checksum, base-256 sizes or truncated contents.
 //!
-//! Supported headers: ustar (with `prefix`), PAX `path` records and GNU long
-//! names (`L`). PAX global headers (`g`) are skipped.
+//! Supported headers: POSIX ustar (with `prefix`), PAX `path` records (parsed
+//! by their declared length) and GNU long names (`L`). PAX global headers
+//! (`g`) are skipped. Multi-member gzip streams are read to the end.
 
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -37,7 +40,8 @@ pub struct ExtractLimits {
 /// A message naming the offending entry for every refusal listed in the module
 /// documentation, and for I/O failures. The caller removes `destination`.
 pub fn extract_tar_gz(archive: &[u8], destination: &Path, limits: ExtractLimits) -> Result<(), String> {
-    let decoder = flate2::read::GzDecoder::new(archive);
+    // Multi-member gzip (concatenated streams) is valid gzip: read every member.
+    let decoder = flate2::read::MultiGzDecoder::new(archive);
     let mut reader = TarReader { input: decoder, limits, entry_count: 0, content_bytes: 0 };
     while let Some(entry) = reader.next_entry()? {
         write_entry(&mut reader, &entry, destination)?;
@@ -78,7 +82,7 @@ impl<R: Read> TarReader<R> {
             let size = parse_size(&header)?;
             let type_flag = header.get(156).copied().unwrap_or(0);
             match type_flag {
-                b'x' => long_path = parse_pax_path(&self.read_metadata(size)?).or(long_path),
+                b'x' => long_path = parse_pax_path(&self.read_metadata(size)?)?.or(long_path),
                 b'L' => long_path = Some(nul_terminated(&self.read_metadata(size)?)),
                 b'g' => {
                     self.read_metadata(size)?;
@@ -206,7 +210,12 @@ pub fn safe_relative_path(path: &str) -> Result<PathBuf, String> {
     let mut relative = PathBuf::new();
     for component in Path::new(path).components() {
         match component {
-            Component::Normal(part) => relative.push(part),
+            Component::Normal(part) => {
+                if let Some(reason) = windows_name_problem(&part.to_string_lossy()) {
+                    return refuse(reason);
+                }
+                relative.push(part);
+            }
             Component::CurDir => {}
             Component::ParentDir => return refuse("`..` is not allowed"),
             Component::RootDir | Component::Prefix(_) => return refuse("absolute paths are not allowed"),
@@ -230,7 +239,8 @@ fn nul_terminated(bytes: &[u8]) -> String {
 /// `prefix/name` for ustar headers, `name` otherwise.
 fn header_path(header: &[u8; BLOCK_SIZE]) -> String {
     let name = nul_terminated(header_field(header, 0, 100));
-    let is_ustar = header_field(header, 257, 5) == b"ustar";
+    // POSIX ustar only: GNU headers (`ustar  \0`) use these bytes for other fields.
+    let is_ustar = header_field(header, 257, 6) == b"ustar\0";
     let prefix = if is_ustar { nul_terminated(header_field(header, 345, 155)) } else { String::new() };
     if prefix.is_empty() { name } else { format!("{prefix}/{name}") }
 }
@@ -271,13 +281,43 @@ fn verify_header_checksum(header: &[u8; BLOCK_SIZE]) -> Result<(), String> {
     Ok(())
 }
 
-/// The `path` value of a PAX extended header (`<length> path=<value>\n` records).
-fn parse_pax_path(record_bytes: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(record_bytes);
-    text.lines().find_map(|line| {
-        let (_length, key_value) = line.split_once(' ')?;
-        key_value.strip_prefix("path=").map(str::to_owned)
-    })
+/// Why a path segment is unsafe on Windows: an alternate data stream (`:`)
+/// or a reserved device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`,
+/// `LPT1`-`LPT9`, with or without an extension, in any case).
+fn windows_name_problem(segment: &str) -> Option<&'static str> {
+    if segment.contains(':') {
+        return Some("`:` (Windows alternate data streams) is not allowed");
+    }
+    let stem = segment.split('.').next().unwrap_or_default().trim_end().to_ascii_lowercase();
+    let is_numbered_device = |prefix: &str| {
+        stem.strip_prefix(prefix).is_some_and(|digit| digit.len() == 1 && matches!(digit.as_bytes(), [b'1'..=b'9']))
+    };
+    let reserved = matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
+        || is_numbered_device("com")
+        || is_numbered_device("lpt");
+    reserved.then_some("reserved Windows device names are not allowed")
+}
+
+/// The `path` value of a PAX extended header. Records are `<length> <key>=<value>\n`
+/// where `<length>` counts the whole record, so values may contain newlines.
+fn parse_pax_path(records: &[u8]) -> Result<Option<String>, String> {
+    let malformed = || "malformed PAX extended header".to_owned();
+    let mut rest = records;
+    let mut path = None;
+    while !rest.is_empty() {
+        let space = rest.iter().position(|&byte| byte == b' ').ok_or_else(malformed)?;
+        let length_text = std::str::from_utf8(rest.get(..space).unwrap_or_default()).map_err(|_| malformed())?;
+        let length: usize = length_text.parse().map_err(|_| malformed())?;
+        let record = rest.get(..length).filter(|record| record.len() > space + 1).ok_or_else(malformed)?;
+        let body = record.get(space + 1..).and_then(|body| body.strip_suffix(b"\n")).ok_or_else(malformed)?;
+        let equals = body.iter().position(|&byte| byte == b'=').ok_or_else(malformed)?;
+        if body.get(..equals) == Some(b"path".as_slice()) {
+            let value = body.get(equals + 1..).unwrap_or_default();
+            path = Some(String::from_utf8(value.to_vec()).map_err(|_| malformed())?);
+        }
+        rest = rest.get(length..).unwrap_or_default();
+    }
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -352,12 +392,12 @@ mod tests {
     #[test]
     fn applies_pax_and_gnu_long_names() {
         let long_name = format!("demo/{}/file.txt", "d".repeat(120));
-        let pax_record = format!("{} path={long_name}\n", long_name.len() + 7);
+        let long_path_record = pax_record("path", &long_name);
         let gnu_name = format!("demo/{}/gnu.txt", "g".repeat(120));
         let (destination, result) = extract(
             "long-names",
             &[
-                ("pax", b'x', pax_record.as_bytes()),
+                ("pax", b'x', long_path_record.as_bytes()),
                 ("ignored-name", b'0', b"pax"),
                 ("././@LongLink", b'L', format!("{gnu_name}\0").as_bytes()),
                 ("ignored-too", b'0', b"gnu"),
@@ -368,6 +408,69 @@ mod tests {
         assert_eq!(std::fs::read_to_string(destination.join(&long_name)).unwrap(), "pax");
         assert_eq!(std::fs::read_to_string(destination.join(&gnu_name)).unwrap(), "gnu");
         assert!(!destination.join("ignored-name").exists());
+    }
+
+    /// One PAX record, `<length> <key>=<value>\n`, where length counts itself.
+    fn pax_record(key: &str, value: &str) -> String {
+        let body = format!(" {key}={value}\n");
+        let mut length = body.len() + 1;
+        while length.to_string().len() + body.len() != length {
+            length += 1;
+        }
+        format!("{length}{body}")
+    }
+
+    #[test]
+    fn parses_pax_records_by_declared_length() {
+        // A value holding a newline and a fake `path=` record must not be split by lines.
+        let records = format!("{}{}", pax_record("comment", "x\n13 path=fake\n"), pax_record("path", "demo/real.txt"));
+        let (destination, result) =
+            extract("pax-length", &[("pax", b'x', records.as_bytes()), ("ignored", b'0', b"real")], LIMITS);
+        result.unwrap();
+        assert_eq!(std::fs::read_to_string(destination.join("demo/real.txt")).unwrap(), "real");
+        assert!(!destination.join("fake").exists());
+        let (_, malformed) = extract("pax-bad", &[("pax", b'x', b"99 path=short\n"), ("x", b'0', b"")], LIMITS);
+        assert!(malformed.unwrap_err().contains("PAX"));
+    }
+
+    #[test]
+    fn reads_the_prefix_only_for_posix_ustar_headers() {
+        let mut gnu_header = header("file.txt", b'0', 0, 0o644);
+        gnu_header[257..265].copy_from_slice(b"ustar  \0");
+        gnu_header[345..351].copy_from_slice(b"prefix");
+        gnu_header[148..156].copy_from_slice(b"        ");
+        let checksum: u32 = gnu_header.iter().map(|&byte| u32::from(byte)).sum();
+        gnu_header[148..156].copy_from_slice(format!("{checksum:06o}\0 ").as_bytes());
+        let mut bytes = gnu_header.to_vec();
+        bytes.extend_from_slice(&[0u8; 2 * BLOCK_SIZE]);
+        let destination = scratch("gnu-magic");
+        extract_tar_gz(&gzip(&bytes), &destination, LIMITS).unwrap();
+        assert!(destination.join("file.txt").is_file());
+        assert!(!destination.join("prefix").exists());
+    }
+
+    #[test]
+    fn reads_multi_member_gzip() {
+        let first = tar(&[("demo/a.txt", b'0', b"one")]);
+        let first_without_end = &first[..first.len() - 2 * BLOCK_SIZE];
+        let mut archive = gzip(first_without_end);
+        archive.extend(gzip(&tar(&[("demo/b.txt", b'0', b"two")])));
+        let destination = scratch("multi-member");
+        extract_tar_gz(&archive, &destination, LIMITS).unwrap();
+        assert_eq!(std::fs::read_to_string(destination.join("demo/b.txt")).unwrap(), "two");
+    }
+
+    #[test]
+    fn refuses_windows_streams_and_reserved_names() {
+        for path in
+            ["demo/file.txt:stream", "demo/CON", "demo/nul.txt", "demo/Com1.log", "lpt9", "demo/aux/x", "PRN.tar.gz"]
+        {
+            let message = safe_relative_path(path).unwrap_err();
+            assert!(message.contains("Windows"), "{path}: {message}");
+        }
+        for path in ["demo/console.txt", "demo/com10", "demo/lpt0", "demo/nul_file", "demo/auxiliary.mjs"] {
+            assert!(safe_relative_path(path).is_ok(), "{path}");
+        }
     }
 
     #[test]

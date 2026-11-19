@@ -440,8 +440,9 @@ How a name is resolved and installed:
    accepted only when the index itself is local (mirrors and tests).
 6. Its sha256 must equal the catalog's `sha256`; a mismatch is refused.
 7. It is extracted into a scratch directory. Only regular files and
-   directories are accepted: absolute paths, `..`, symlinks and hard links,
-   device files, FIFOs and duplicate paths are refused, as are archives over
+   directories are accepted: absolute paths, `..`, `:` and reserved Windows
+   device names (`CON`, `NUL`, `COM1`...), symlinks and hard links, device
+   files, FIFOs and duplicate paths are refused, as are archives over
    1 GiB of contents or 100,000 entries. Files keep only their executable bit.
 8. The tarball's top-level `<name>/` directory, whose manifest must name the
    same plugin and version, is installed exactly like `graphrt plugin install
