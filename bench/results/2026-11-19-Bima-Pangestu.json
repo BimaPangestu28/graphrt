@@ -1,0 +1,239 @@
+{
+  "machine": {
+    "cpu": "arm",
+    "logical_cpus": 11,
+    "memory_gib": null,
+    "os": "Darwin 25.6.0",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "git_commit": "bfbe877"
+  },
+  "engine": {
+    "chain_noop_10": {
+      "iterations": 2000,
+      "nodes": 12,
+      "p50_ms": 0.019583,
+      "p95_ms": 0.030292,
+      "p50_us_per_node": 1.6319166666666665
+    },
+    "chain_template_10": {
+      "iterations": 2000,
+      "nodes": 12,
+      "p50_ms": 0.020625,
+      "p95_ms": 0.025833000000000002,
+      "p50_us_per_node": 1.71875
+    },
+    "chain_noop_100": {
+      "iterations": 500,
+      "nodes": 102,
+      "p50_ms": 0.087875,
+      "p95_ms": 0.09275,
+      "p50_us_per_node": 0.8615196078431373
+    },
+    "chain_template_100": {
+      "iterations": 500,
+      "nodes": 102,
+      "p50_ms": 0.14754199999999998,
+      "p95_ms": 0.149333,
+      "p50_us_per_node": 1.4464901960784313
+    },
+    "chain_noop_1000": {
+      "iterations": 50,
+      "nodes": 1002,
+      "p50_ms": 0.875667,
+      "p95_ms": 0.8915000000000001,
+      "p50_us_per_node": 0.8739191616766467
+    },
+    "chain_template_1000": {
+      "iterations": 50,
+      "nodes": 1002,
+      "p50_ms": 1.657459,
+      "p95_ms": 1.746,
+      "p50_us_per_node": 1.6541506986027945
+    },
+    "fan_out_in_100": {
+      "iterations": 300,
+      "nodes": 103,
+      "p50_ms": 0.09933399999999999,
+      "p95_ms": 0.104459,
+      "p50_us_per_node": 0.9644077669902912
+    },
+    "fan_out_in_1000": {
+      "iterations": 30,
+      "nodes": 1003,
+      "p50_ms": 1.18475,
+      "p95_ms": 1.2173749999999999,
+      "p50_us_per_node": 1.1812063808574278
+    },
+    "branches_100": {
+      "iterations": 300,
+      "nodes": 602,
+      "p50_ms": 0.450917,
+      "p95_ms": 0.465333,
+      "p50_us_per_node": 0.7490315614617941
+    },
+    "parallel_iteration_1000": {
+      "iterations": 30,
+      "nodes": 2003,
+      "p50_ms": 2.9679580000000003,
+      "p95_ms": 3.0822499999999997,
+      "p50_us_per_node": 1.4817563654518222
+    },
+    "loop10_x_iteration10": {
+      "iterations": 200,
+      "nodes": 223,
+      "p50_ms": 0.303167,
+      "p95_ms": 0.31591600000000003,
+      "p50_us_per_node": 1.359493273542601
+    }
+  },
+  "concurrency": {
+    "worker_threads": 11,
+    "graph": "start -> llm (10 streamed chunks) -> answer",
+    "rows": [
+      {
+        "model_delay_ms": 0,
+        "concurrent_runs": 1,
+        "runs_per_sec": 53015.24188204109,
+        "ideal_runs_per_sec": null,
+        "batch_ms": 0.018862499999999997
+      },
+      {
+        "model_delay_ms": 0,
+        "concurrent_runs": 10,
+        "runs_per_sec": 98930.31595869659,
+        "ideal_runs_per_sec": null,
+        "batch_ms": 0.10108124999999998
+      },
+      {
+        "model_delay_ms": 0,
+        "concurrent_runs": 100,
+        "runs_per_sec": 95210.89212605922,
+        "ideal_runs_per_sec": null,
+        "batch_ms": 1.0503
+      },
+      {
+        "model_delay_ms": 0,
+        "concurrent_runs": 1000,
+        "runs_per_sec": 98257.48505624017,
+        "ideal_runs_per_sec": null,
+        "batch_ms": 10.177341700000001
+      },
+      {
+        "model_delay_ms": 50,
+        "concurrent_runs": 1,
+        "runs_per_sec": 17.550244243239085,
+        "ideal_runs_per_sec": 20.0,
+        "batch_ms": 56.979264
+      },
+      {
+        "model_delay_ms": 50,
+        "concurrent_runs": 10,
+        "runs_per_sec": 176.28091411948776,
+        "ideal_runs_per_sec": 200.0,
+        "batch_ms": 56.72763866666666
+      },
+      {
+        "model_delay_ms": 50,
+        "concurrent_runs": 100,
+        "runs_per_sec": 1772.1637415735609,
+        "ideal_runs_per_sec": 2000.0,
+        "batch_ms": 56.42819433333333
+      },
+      {
+        "model_delay_ms": 50,
+        "concurrent_runs": 1000,
+        "runs_per_sec": 14998.88130843761,
+        "ideal_runs_per_sec": 20000.0,
+        "batch_ms": 66.671639
+      },
+      {
+        "model_delay_ms": 50,
+        "concurrent_runs": 10000,
+        "runs_per_sec": 83378.62228488564,
+        "ideal_runs_per_sec": 200000.0,
+        "batch_ms": 119.93481933333334
+      }
+    ]
+  },
+  "streaming": {
+    "iterations": 2000,
+    "direct_model_first_delta_p50_us": 2.166,
+    "engine_assembler_first_chunk_p50_us": 11.666,
+    "engine_assembler_first_chunk_p95_us": 12.167,
+    "overhead_p50_us": 9.5
+  },
+  "startup": {
+    "registry_build_us": 3.292,
+    "parse_build_small_yaml_3_nodes": {
+      "p50_ms": 0.038125,
+      "p95_ms": 0.039125,
+      "bytes": 432
+    },
+    "parse_build_large_json_1002_nodes": {
+      "p50_ms": 5.202667,
+      "p95_ms": 5.590999999999999,
+      "bytes": 163790
+    }
+  },
+  "pool": {
+    "pool": "100 namespaces x 10 string variables",
+    "bytes_allocated_per_clone": 8,
+    "bytes_allocated_by_first_write_after_clone": 1504,
+    "clone_ns": 3.93208
+  },
+  "memory": [
+    {
+      "paused_runs": 1,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "snapshot_json_bytes_avg": 576
+    },
+    {
+      "inflight_runs": 1,
+      "model_delay_ms": 200,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "wall_ms": 202.318458
+    },
+    {
+      "paused_runs": 100,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "snapshot_json_bytes_avg": 581
+    },
+    {
+      "inflight_runs": 100,
+      "model_delay_ms": 200,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "wall_ms": 202.800958
+    },
+    {
+      "paused_runs": 1000,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "snapshot_json_bytes_avg": 585
+    },
+    {
+      "inflight_runs": 1000,
+      "model_delay_ms": 200,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "wall_ms": 213.02495900000002
+    },
+    {
+      "paused_runs": 10000,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "snapshot_json_bytes_avg": 590
+    },
+    {
+      "inflight_runs": 10000,
+      "model_delay_ms": 200,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "wall_ms": 288.427667
+    }
+  ],
+  "sizes": []
+}

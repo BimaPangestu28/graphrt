@@ -148,11 +148,14 @@ md += ["", "## Streaming", "",
        f"(p95 {s['engine_assembler_first_chunk_p95_us']:.1f} µs); raw mock stream first delta: {s['direct_model_first_delta_p50_us']:.1f} µs; "
        f"overhead ≈ {s['overhead_p50_us']:.1f} µs.", "",
        "## Memory", "", "| Scenario | Runs | Peak RSS MiB | Snapshot bytes (avg) |", "|---|---:|---:|---:|"]
+def rss(r):
+    # Peak RSS comes from /proc/self/status (VmHWM), which only Linux has.
+    return f"{r['peak_rss_kib']/1024:.1f}" if r.get("peak_rss_kib") else "n/a (Linux only)"
 for r in result["memory"]:
     if "paused_runs" in r:
-        md.append(f"| paused (snapshots held) | {r['paused_runs']} | {r['peak_rss_kib']/1024:.1f} | {r['snapshot_json_bytes_avg']} |")
+        md.append(f"| paused (snapshots held) | {r['paused_runs']} | {rss(r)} | {r['snapshot_json_bytes_avg']} |")
     else:
-        md.append(f"| in flight (200 ms model) | {r['inflight_runs']} | {r['peak_rss_kib']/1024:.1f} | - |")
+        md.append(f"| in flight (200 ms model) | {r['inflight_runs']} | {rss(r)} | - |")
 p = result["pool"]
 st = result["startup"]
 md += ["", f"Variable pool clone ({p['pool']}): {p['bytes_allocated_per_clone']} bytes allocated, {p['clone_ns']:.1f} ns; "

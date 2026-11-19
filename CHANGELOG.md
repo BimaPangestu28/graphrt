@@ -89,6 +89,11 @@ releases may contain breaking changes; they are called out under **Changed**.
   94k runs/s (+49% over 0.1.0 in total), 1.06 µs per noop node and a 10.2 µs
   streaming overhead. The response assembler and the OpenTelemetry tracer key
   their maps by the shared ids too.
+- Cheaper per-frame bookkeeping: index-keyed maps use a multiplicative hasher
+  and are sized up front, and the scope's id set is built only when a node
+  writes variables. Against 0.1.0 on the same machine: 0.87 µs per node on a
+  1,000-node chain (was 1.55), 1.18 µs on a 1,000-way fan-out (2.31), 98k
+  instant runs/s (63k); raw data in `bench/results/2026-11-1{8,9}-*`.
 
 ## [0.1.0] - 2026-11-18
 

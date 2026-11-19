@@ -1,0 +1,239 @@
+{
+  "machine": {
+    "cpu": "arm",
+    "logical_cpus": 11,
+    "memory_gib": null,
+    "os": "Darwin 25.6.0",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "git_commit": "f9f9623"
+  },
+  "engine": {
+    "chain_noop_10": {
+      "iterations": 2000,
+      "nodes": 12,
+      "p50_ms": 0.020958,
+      "p95_ms": 0.024334,
+      "p50_us_per_node": 1.7465000000000002
+    },
+    "chain_template_10": {
+      "iterations": 2000,
+      "nodes": 12,
+      "p50_ms": 0.029583,
+      "p95_ms": 0.031958,
+      "p50_us_per_node": 2.46525
+    },
+    "chain_noop_100": {
+      "iterations": 500,
+      "nodes": 102,
+      "p50_ms": 0.15100000000000002,
+      "p95_ms": 0.162542,
+      "p50_us_per_node": 1.4803921568627452
+    },
+    "chain_template_100": {
+      "iterations": 500,
+      "nodes": 102,
+      "p50_ms": 0.24691699999999997,
+      "p95_ms": 0.275416,
+      "p50_us_per_node": 2.420754901960784
+    },
+    "chain_noop_1000": {
+      "iterations": 50,
+      "nodes": 1002,
+      "p50_ms": 1.5565,
+      "p95_ms": 1.79275,
+      "p50_us_per_node": 1.5533932135728543
+    },
+    "chain_template_1000": {
+      "iterations": 50,
+      "nodes": 1002,
+      "p50_ms": 2.662167,
+      "p95_ms": 2.890584,
+      "p50_us_per_node": 2.6568532934131737
+    },
+    "fan_out_in_100": {
+      "iterations": 300,
+      "nodes": 103,
+      "p50_ms": 0.17041699999999999,
+      "p95_ms": 0.186125,
+      "p50_us_per_node": 1.6545339805825243
+    },
+    "fan_out_in_1000": {
+      "iterations": 30,
+      "nodes": 1003,
+      "p50_ms": 2.3162909999999997,
+      "p95_ms": 5.703833,
+      "p50_us_per_node": 2.3093629112662013
+    },
+    "branches_100": {
+      "iterations": 300,
+      "nodes": 602,
+      "p50_ms": 0.7479579999999999,
+      "p95_ms": 0.8793749999999999,
+      "p50_us_per_node": 1.2424551495016611
+    },
+    "parallel_iteration_1000": {
+      "iterations": 30,
+      "nodes": 2003,
+      "p50_ms": 4.15925,
+      "p95_ms": 4.334542,
+      "p50_us_per_node": 2.076510234648028
+    },
+    "loop10_x_iteration10": {
+      "iterations": 200,
+      "nodes": 223,
+      "p50_ms": 0.4455,
+      "p95_ms": 0.552417,
+      "p50_us_per_node": 1.9977578475336324
+    }
+  },
+  "concurrency": {
+    "worker_threads": 11,
+    "graph": "start -> llm (10 streamed chunks) -> answer",
+    "rows": [
+      {
+        "model_delay_ms": 0,
+        "concurrent_runs": 1,
+        "runs_per_sec": 42903.07979758327,
+        "ideal_runs_per_sec": null,
+        "batch_ms": 0.02330835
+      },
+      {
+        "model_delay_ms": 0,
+        "concurrent_runs": 10,
+        "runs_per_sec": 53659.468427841966,
+        "ideal_runs_per_sec": null,
+        "batch_ms": 0.1863604
+      },
+      {
+        "model_delay_ms": 0,
+        "concurrent_runs": 100,
+        "runs_per_sec": 64091.35222434486,
+        "ideal_runs_per_sec": null,
+        "batch_ms": 1.5602729
+      },
+      {
+        "model_delay_ms": 0,
+        "concurrent_runs": 1000,
+        "runs_per_sec": 63232.00091135019,
+        "ideal_runs_per_sec": null,
+        "batch_ms": 15.8147771
+      },
+      {
+        "model_delay_ms": 50,
+        "concurrent_runs": 1,
+        "runs_per_sec": 17.79300511063148,
+        "ideal_runs_per_sec": 20.0,
+        "batch_ms": 56.201861
+      },
+      {
+        "model_delay_ms": 50,
+        "concurrent_runs": 10,
+        "runs_per_sec": 180.83359767689106,
+        "ideal_runs_per_sec": 200.0,
+        "batch_ms": 55.29945833333333
+      },
+      {
+        "model_delay_ms": 50,
+        "concurrent_runs": 100,
+        "runs_per_sec": 1787.7112762623947,
+        "ideal_runs_per_sec": 2000.0,
+        "batch_ms": 55.93744433333333
+      },
+      {
+        "model_delay_ms": 50,
+        "concurrent_runs": 1000,
+        "runs_per_sec": 15136.789272557442,
+        "ideal_runs_per_sec": 20000.0,
+        "batch_ms": 66.06420833333334
+      },
+      {
+        "model_delay_ms": 50,
+        "concurrent_runs": 10000,
+        "runs_per_sec": 63545.60654943385,
+        "ideal_runs_per_sec": 200000.0,
+        "batch_ms": 157.36729166666666
+      }
+    ]
+  },
+  "streaming": {
+    "iterations": 2000,
+    "direct_model_first_delta_p50_us": 2.25,
+    "engine_assembler_first_chunk_p50_us": 16.709,
+    "engine_assembler_first_chunk_p95_us": 20.166999999999998,
+    "overhead_p50_us": 14.459
+  },
+  "startup": {
+    "registry_build_us": 530.625,
+    "parse_build_small_yaml_3_nodes": {
+      "p50_ms": 0.039584,
+      "p95_ms": 0.063292,
+      "bytes": 432
+    },
+    "parse_build_large_json_1002_nodes": {
+      "p50_ms": 6.074166,
+      "p95_ms": 13.387375,
+      "bytes": 163790
+    }
+  },
+  "pool": {
+    "pool": "100 namespaces x 10 string variables",
+    "bytes_allocated_per_clone": 8,
+    "bytes_allocated_by_first_write_after_clone": 1528,
+    "clone_ns": 4.8125
+  },
+  "memory": [
+    {
+      "paused_runs": 1,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "snapshot_json_bytes_avg": 576
+    },
+    {
+      "inflight_runs": 1,
+      "model_delay_ms": 200,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "wall_ms": 202.78375000000003
+    },
+    {
+      "paused_runs": 100,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "snapshot_json_bytes_avg": 581
+    },
+    {
+      "inflight_runs": 100,
+      "model_delay_ms": 200,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "wall_ms": 202.893084
+    },
+    {
+      "paused_runs": 1000,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "snapshot_json_bytes_avg": 585
+    },
+    {
+      "inflight_runs": 1000,
+      "model_delay_ms": 200,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "wall_ms": 210.867542
+    },
+    {
+      "paused_runs": 10000,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "snapshot_json_bytes_avg": 590
+    },
+    {
+      "inflight_runs": 10000,
+      "model_delay_ms": 200,
+      "baseline_rss_kib": 0,
+      "peak_rss_kib": 0,
+      "wall_ms": 299.55462500000004
+    }
+  ],
+  "sizes": []
+}

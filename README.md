@@ -20,7 +20,8 @@ or embedded in your own Rust program.
 | Where | How |
 | --- | --- |
 | Laptop / server | `graphrt run flow.yaml` or `graphrt serve flows/` (single static binary) |
-| Container | ~24 MB distroless image — see [docs/deploy.md](docs/deploy.md) |
+| Container | ~17 MB distroless image (linux/amd64, linux/arm64) — see [docs/deploy.md](docs/deploy.md) |
+| Small devices / IoT | A 6 MiB build serves workflows in a 16 MiB memory limit on a tenth of a core — see [docs/serving.md](docs/serving.md#small-devices) |
 | Phone | Embed `graphrt-ffi` in an Android or iOS app — see [docs/mobile.md](docs/mobile.md) |
 | Browser / edge | The core compiles to WebAssembly |
 | Your Rust app | `graphrt-core` as a library — see [docs/embedding.md](docs/embedding.md) |
@@ -40,8 +41,8 @@ start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
 
 ## Why graphrt
 
-- **Small.** Core-only binary ≈ 3 MB, everything included ≈ 12 MB. No Python, no Node, no database.
-- **Fast.** One task per run polls node futures concurrently; nothing is spawned per node. Variable pools are reference-counted, so loops and parallel iterations don't deep-copy state.
+- **Small.** Core-only binary ≈ 3 MB, everything included ≈ 12–14 MB, a trimmed server build ≈ 6 MB that runs in 16 MiB of RAM. No Python, no Node, no database.
+- **Fast.** About 1 µs of scheduling per node, ~10 µs from a model's first token to your stream, ~6.5 ms for `graphrt run` from process start to exit (see [Performance](#performance)). One task per run polls node futures concurrently; nothing is spawned per node, and variable pools are reference-counted, so loops and parallel iterations don't deep-copy state.
 - **Portable.** The core is executor-agnostic (bring your own clock) and compiles to `wasm32-unknown-unknown`.
 - **Agent-native.** First-class `agent` node with a tool-calling loop, parallel tool calls, MCP servers, human approval of tool calls, retries with backoff, per-node timeouts and step/time budgets.
 - **Durable.** Pause anywhere (human input, tool approval, API call), get a JSON snapshot, resume later — even inside loops and iterations.
@@ -160,6 +161,8 @@ Values are referenced as `{{#node.output.path#}}`. The full format is in
 | `parameter-extractor` | Extract typed parameters from text | llm |
 | `http-request` | HTTP with SSRF-safe egress, auth, JSON/form/multipart bodies | http |
 | `code` | JavaScript in QuickJS with memory/time limits; Python via a sandbox service or a local subprocess (trusted code) | code |
+| `document-extractor` | Text from PDF, Office, spreadsheets, HTML, EPUB, CSV, e-mail and subtitles | doc |
+| `knowledge-retrieval` | Search one or more knowledge bases (vector, keyword or hybrid, rerank, metadata filters) | rag |
 
 Every kind publishes a catalog descriptor with a config JSON Schema
 (`graphrt nodes`, `GET /v1/nodes`), so visual builders can render palettes and
@@ -170,6 +173,38 @@ Groq, OpenRouter, DeepSeek…) and Anthropic, configured from the environment or
 providers file (`--providers`); `--model ollama/qwen2.5:14b` points every model
 node at another model. Tools: native Rust closures and
 MCP servers (stdio and streamable HTTP).
+
+## Knowledge bases
+
+`knowledge-retrieval` searches datasets described in a knowledge config
+(`--knowledge kb.yaml`), and `graphrt kb ingest|query` fills and tests them from
+the command line.
+
+- **Stores**: in memory (optionally a JSON file), a single **SQLite** file
+  (incremental writes, shared by several processes), or Qdrant.
+- **Embeddings**: computed **in-process** on the CPU (BERT-family models such as
+  `all-MiniLM-L6-v2` or the multilingual `multilingual-e5-small`, downloaded
+  once, then offline — no server or API key), Ollama, or any OpenAI-compatible
+  API.
+- **Retrieval**: vector, BM25 keyword or weighted hybrid search, rerankers
+  (Cohere, Jina, Voyage), score thresholds, metadata filters, and
+  **parent-child chunking** (search small chunks, answer with their section).
+- **Management API** for knowledge base UIs: `graphrt serve --knowledge`
+  exposes `/v1/knowledge` to list datasets and documents, upload files (PDF,
+  Office, Markdown...), inspect chunks, enable or disable and delete documents,
+  and test retrieval — on the same knowledge base the workflows use. See
+  [docs/serving.md](docs/serving.md#knowledge-base-api).
+
+```yaml
+embedders: { local: { type: local } }                  # in-process, offline after first use
+stores:    { local: { type: sqlite, path: kb.db } }
+datasets:
+  - { id: handbook, store: local, embedder: local,
+      chunking: { max_chars: 400, parent_max_chars: 1600 } }
+```
+
+In-process embeddings, the SQLite store, parent-child chunking and the
+management API are on `main` and ship in 0.2.
 
 ## Plugins: write a node in 20 lines
 
@@ -267,20 +302,50 @@ Measured with `cargo build -p graphrt-cli --profile min-size` (opt-level `z`, LT
 
 In-process embedding models (`local-embed`, on by default after 0.1.0) add
 about 2.1 MiB (measured on macOS arm64: 10.3 MiB → 12.4 MiB);
-models themselves are downloaded on first use, not bundled.
+models themselves are downloaded on first use, not bundled. A server build for
+small devices, `--no-default-features --features llm,http,wasm,serve`, is
+6.3 MiB as a static aarch64 musl binary (6.2 MiB for 32-bit ARMv7).
 
 Every feature is optional: build only what a deployment needs.
+
+## Performance
+
+Runtime overhead only: every model call goes to an in-process mock, so these
+numbers exclude providers and the network. Apple M-series laptop (11 cores),
+`bench/run.sh`; raw data in [bench/results](bench/results) (`2026-11-18-Bima-Pangestu`
+for 0.1.0's engine, `2026-11-19-Bima-Pangestu` for `main`).
+[docs/benchmarks.md](docs/benchmarks.md) has the methodology and Linux x86_64 numbers.
+
+| What | 0.1.0 | `main` |
+| --- | --- | --- |
+| Scheduling per node, 1,000-node chain | 1.55 µs | **0.87 µs** |
+| Scheduling per node, 1,000-way fan-out / fan-in | 2.31 µs | **1.18 µs** |
+| Template node, per node (100-node chain) | 2.42 µs | **1.45 µs** |
+| 1,000 concurrent runs, instant model | 63k runs/s | **98k runs/s** |
+| First streamed chunk, engine overhead | 14.5 µs | **9.5 µs** |
+| `graphrt run hello.yaml`, start to exit (static musl, Linux arm64) | 10.1 ms | **6.5 ms** |
+
+On small devices (Linux arm64, cgroup limits), the 6.3 MiB server build serves
+a 3-node workflow at ~600 requests/s on a quarter of a core with ~3.4 MiB of
+steady memory, and stays up under a 16 MiB limit at a tenth of a core
+([details](docs/serving.md#small-devices)).
 
 ## Architecture
 
 ```
-graphrt-core   graph model, variable pool, templates, conditions, engine, events,
-               snapshots, built-in control nodes, tool contract (wasm-friendly)
-graphrt-llm    chat model abstraction, OpenAI-compatible + Anthropic, llm/agent nodes
-graphrt-http   http-request node and egress policy
-graphrt-code   code node (QuickJS) and remote sandbox hook
-graphrt-mcp    MCP tool provider
-graphrt-cli    `graphrt` binary: run, validate, inspect, serve
+graphrt-core    graph model, variable pool, templates, conditions, engine, events,
+                snapshots, built-in control nodes, tool contract (wasm-friendly)
+graphrt-llm     chat model abstraction, OpenAI-compatible, Anthropic, Gemini, Bedrock,
+                llm / agent / classifier / extractor nodes
+graphrt-http    http-request node and egress policy
+graphrt-code    code node (QuickJS) and remote sandbox hook
+graphrt-mcp     MCP tool provider
+graphrt-doc     document-extractor node (PDF, Office, HTML, EPUB, e-mail...)
+graphrt-rag     knowledge-retrieval node, stores, embedders, ingestion
+graphrt-plugin  process / HTTP plugin host; graphrt-wasm: sandboxed WebAssembly plugins
+graphrt-bundle  portable .grt bundles; graphrt-otel: OpenTelemetry export
+graphrt-ffi     Kotlin / Swift bindings for Android and iOS
+graphrt-cli     `graphrt` binary: run, validate, inspect, serve, kb, plugin, bundle
 ```
 
 Read [docs/architecture.md](docs/architecture.md) for the scheduling rules,
