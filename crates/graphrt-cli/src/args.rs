@@ -291,15 +291,18 @@ pub enum PluginCommand {
         #[command(flatten)]
         plugins: PluginArgs,
     },
-    /// Install a plugin from a local directory or a git URL.
+    /// Install a plugin from a local directory, a git URL or the plugin catalog.
     ///
     /// Examples:
+    ///   graphrt plugin install open-meteo
+    ///   graphrt plugin install open-meteo@0.1.0
     ///   graphrt plugin install ./acme
     ///   graphrt plugin install https://github.com/acme/graphrt-acme --rev v1.2.0
     ///   graphrt plugin install https://github.com/acme/plugins --rev v1.2.0 --subdir acme
     #[command(verbatim_doc_comment)]
     Install {
-        /// Plugin directory, or a git URL (`https://...`, `git@...`, `*.git`).
+        /// Plugin directory, git URL (`https://...`, `git@...`, `*.git`), or a
+        /// catalog plugin name (`name` or `name@version`).
         source: String,
         /// Branch or tag to check out (git sources).
         #[arg(long, value_name = "REV")]
@@ -312,6 +315,29 @@ pub enum PluginCommand {
         /// Install into this directory instead of `~/.graphrt/plugins`.
         #[arg(long, value_name = "DIR")]
         dir: Option<PathBuf>,
+        /// Catalog index for plugin names: an https:// URL, a file:// URL or a
+        /// path [default: $GRAPHRT_PLUGIN_INDEX, else the graphrt-plugins catalog release].
+        #[arg(long, value_name = "URL|PATH")]
+        index: Option<String>,
+        /// Install a catalog plugin that is not labelled stable/beta with a
+        /// none/low/medium ToS risk: experimental, high-risk, unrecognised or
+        /// unlabelled (graphrt has no interactive prompt).
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Search the plugin catalog: name, version, status and description.
+    ///
+    /// Examples:
+    ///   graphrt plugin search
+    ///   graphrt plugin search weather
+    #[command(verbatim_doc_comment)]
+    Search {
+        /// Case-insensitive text to find in plugin names and descriptions.
+        query: Option<String>,
+        /// Catalog index: an https:// URL, a file:// URL or a path
+        /// [default: $GRAPHRT_PLUGIN_INDEX, else the graphrt-plugins catalog release].
+        #[arg(long, value_name = "URL|PATH")]
+        index: Option<String>,
     },
     /// Remove an installed plugin.
     Remove {

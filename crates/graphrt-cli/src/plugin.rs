@@ -1,4 +1,4 @@
-//! `graphrt plugin`: list, install, remove, inspect and scaffold plugins.
+//! `graphrt plugin`: list, install, search, remove, inspect and scaffold plugins.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -11,9 +11,17 @@ use crate::extensions::{Extensions, PluginOptions, PluginSummary};
 pub fn plugin(args: PluginCmdArgs) -> Result<u8, CliError> {
     match args.command {
         PluginCommand::List { json, plugins } => list(&plugins.options(), json),
-        PluginCommand::Install { source, rev, subdir, dir } => {
-            install(&InstallSource { source: &source, rev: rev.as_deref(), subdir: subdir.as_deref() }, dir)
+        PluginCommand::Install { source, rev, subdir, dir, index, yes } => {
+            let request = InstallSource {
+                source: &source,
+                rev: rev.as_deref(),
+                subdir: subdir.as_deref(),
+                index: index.as_deref(),
+                assume_yes: yes,
+            };
+            install(&request, dir)
         }
+        PluginCommand::Search { query, index } => search(query.as_deref(), index.as_deref()),
         PluginCommand::Remove { name, dir } => remove(&name, dir),
         PluginCommand::Info { name, json, plugins } => info(&name, &plugins.options(), json),
         PluginCommand::New { name, lang, dir } => scaffold(&name, lang, dir),
@@ -77,13 +85,23 @@ struct InstallSource<'a> {
     source: &'a str,
     rev: Option<&'a str>,
     subdir: Option<&'a str>,
+    /// `--index` (catalog names only).
+    index: Option<&'a str>,
+    /// `--yes` (catalog names only).
+    assume_yes: bool,
 }
 
 fn install(request: &InstallSource<'_>, dir: Option<PathBuf>) -> Result<u8, CliError> {
     let root = install_root(dir)?;
+    let installed = install_from_source(request, &root)?;
+    report_installed(&installed)
+}
+
+/// A local directory first, then a catalog name (`name`, `name@version`), then a git URL.
+fn install_from_source(request: &InstallSource<'_>, root: &Path) -> Result<graphrt_plugin::LoadedManifest, CliError> {
     let source = request.source;
     let local = Path::new(source);
-    let installed = if local.is_dir() {
+    if local.is_dir() {
         if request.rev.is_some() {
             return Err(CliError::usage("`--rev` only applies to git sources"));
         }
@@ -92,13 +110,43 @@ fn install(request: &InstallSource<'_>, dir: Option<PathBuf>) -> Result<u8, CliE
                 "`--subdir` only applies to git sources; pass the plugin directory itself instead",
             ));
         }
-        graphrt_plugin::install_from_dir(local, &root).map_err(|e| CliError::failed(e.to_string()))?
-    } else if is_git_url(source) {
-        install_git(request, &root)?
-    } else {
-        return Err(CliError::usage(format!("`{source}` is neither a plugin directory nor a git URL")));
-    };
-    // Make sure the installed copy actually loads before reporting success.
+        if let Err(flag_error) = reject_catalog_flags(request) {
+            return Err(CliError::usage(format!(
+                "`{source}` is a local directory, so {flag_error}; run the command from another directory to \
+                 install `{source}` from the catalog"
+            )));
+        }
+        return graphrt_plugin::install_from_dir(local, root).map_err(|e| CliError::failed(e.to_string()));
+    }
+    if let Some(spec) = crate::plugin_catalog::index::parse_plugin_spec(source) {
+        if request.rev.is_some() || request.subdir.is_some() {
+            return Err(CliError::usage("`--rev` and `--subdir` only apply to git sources, not catalog plugin names"));
+        }
+        return install_catalog(spec, request, root);
+    }
+    if is_git_url(source) {
+        reject_catalog_flags(request).map_err(CliError::usage)?;
+        return install_git(request, root);
+    }
+    Err(CliError::usage(format!(
+        "`{source}` is neither a plugin directory, a git URL nor a catalog plugin name (`name` or `name@version`)"
+    )))
+}
+
+/// `--index` and `--yes` only mean something for catalog names, so they are
+/// refused elsewhere rather than silently ignored.
+fn reject_catalog_flags(request: &InstallSource<'_>) -> Result<(), String> {
+    if request.index.is_some() {
+        return Err("`--index` only applies to catalog plugin names".to_owned());
+    }
+    if request.assume_yes {
+        return Err("`--yes` only applies to catalog plugin names".to_owned());
+    }
+    Ok(())
+}
+
+/// Check that the installed copy actually loads before reporting success.
+fn report_installed(installed: &graphrt_plugin::LoadedManifest) -> Result<u8, CliError> {
     let options = PluginOptions { dirs: vec![installed.dir.clone()], no_default: true, ..PluginOptions::default() };
     let extensions = Extensions::load(&options)?;
     let summary = extensions.plugins.iter().find(|p| p.name == installed.manifest.name);
@@ -125,6 +173,37 @@ fn install(request: &InstallSource<'_>, dir: Option<PathBuf>) -> Result<u8, CliE
         }
     }
     Ok(EXIT_OK)
+}
+
+#[cfg(feature = "plugins")]
+fn install_catalog(
+    spec: crate::plugin_catalog::index::PluginSpec,
+    request: &InstallSource<'_>,
+    root: &Path,
+) -> Result<graphrt_plugin::LoadedManifest, CliError> {
+    let catalog_request =
+        crate::plugin_catalog::CatalogInstall { spec, index: request.index, assume_yes: request.assume_yes };
+    crate::plugin_catalog::install_from_catalog(&catalog_request, root, &mut std::io::stdout().lock())
+}
+
+#[cfg(not(feature = "plugins"))]
+fn install_catalog(
+    _spec: crate::plugin_catalog::index::PluginSpec,
+    _request: &InstallSource<'_>,
+    _root: &Path,
+) -> Result<graphrt_plugin::LoadedManifest, CliError> {
+    Err(CliError::usage("installing from the plugin catalog requires a build with the `plugins` feature"))
+}
+
+#[cfg(feature = "plugins")]
+fn search(query: Option<&str>, index: Option<&str>) -> Result<u8, CliError> {
+    crate::plugin_catalog::search_catalog(query, index, &mut std::io::stdout().lock())?;
+    Ok(EXIT_OK)
+}
+
+#[cfg(not(feature = "plugins"))]
+fn search(_query: Option<&str>, _index: Option<&str>) -> Result<u8, CliError> {
+    Err(CliError::usage("searching the plugin catalog requires a build with the `plugins` feature"))
 }
 
 #[cfg(feature = "plugins")]

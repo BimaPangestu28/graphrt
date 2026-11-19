@@ -10,11 +10,11 @@ releases may contain breaking changes; they are called out under **Changed**.
 ## [0.3.0] - 2026-11-19
 
 Workflow format v1 frozen with a JSON Schema and located, collected validation
-errors; webhook triggers; opt-in anonymous telemetry; a security review with
-fixes (most also shipped as 0.2.1); Android and iOS sample apps; a
-comparison against LangGraph; and another round of engine, LLM-path and server
-speedups. Contains breaking changes to the workflow format and the Rust API
-(see **Changed (Breaking)**).
+errors; webhook triggers; opt-in anonymous telemetry; plugins installable by
+name from the plugin catalog; a security review with fixes (most also shipped
+as 0.2.1); Android and iOS sample apps; a comparison against LangGraph; and
+another round of engine, LLM-path and server speedups. Contains breaking
+changes to the workflow format and the Rust API (see **Changed (Breaking)**).
 
 ### Added
 - `graphrt serve --webhooks <file>`: webhook triggers. `POST /v1/hooks/{hook}`
@@ -73,6 +73,23 @@ speedups. Contains breaking changes to the workflow format and the Rust API
   announces `features: ["tool_images"]`; the Python, TypeScript and Rust SDKs
   send images only to hosts that announce it. MCP image blocks are forwarded
   too. See `docs/tool-images.md`.
+- `graphrt plugin install <name>[@version]` installs a plugin from the
+  graphrt-plugins catalog (`index.json` of its `catalog` release, or
+  `--index <url|path>` / `$GRAPHRT_PLUGIN_INDEX`): the latest version or the
+  exact one, downloaded over https only with a timeout and a size cap, checked
+  against the catalog's sha256, extracted with absolute paths, `..`, symlinks,
+  hard links and device files refused, then installed like a local directory
+  (manifest validation and checksums included). The plugin's `status` and
+  `tos_risk` are printed; anything but status `stable`/`beta` with ToS risk
+  `none`/`low`/`medium` needs `--yes`, including unlabelled entries and
+  unrecognised labels. A directory with the same name in the current directory still wins.
+- `graphrt plugin search [query]`: catalog plugins with their latest version,
+  status and a one-line description.
+- `docs/plugin-manifest.md`: a versioned specification of the plugin manifest
+  (every field with its type, default and constraints, the validation rules
+  and a compatibility policy for `protocol_version`), and a JSON Schema for
+  manifests, `docs/schemas/plugin-manifest.schema.json`, tested against the
+  example, fixture and scaffolded manifests and against the parser itself.
 
 ### Changed (Breaking)
 - **Unknown fields are errors in v1 documents**: at the document, `graph`,

@@ -239,13 +239,15 @@ if __name__ == "__main__":
 graphrt plugin new acme --lang python        # or typescript, rust
 graphrt run acme/example.yaml --plugins acme --input who=World
 graphrt plugin install ./acme                # or a git URL; lands in ~/.graphrt/plugins
+graphrt plugin install open-meteo            # or a name from the plugin catalog (`graphrt plugin search`)
 graphrt nodes                                # plugin kinds show up next to built-ins
 ```
 
 Plugin nodes stream, branch, pause for approval, report errors with retry hints,
 and expose tools to `agent` nodes. WebAssembly plugins run sandboxed in-process
 (fuel and memory limits, no system access) — drop a `.wasm` file into a plugin
-directory. See [docs/plugins.md](docs/plugins.md),
+directory. See [docs/plugins.md](docs/plugins.md), the
+[manifest specification](docs/plugin-manifest.md),
 [docs/wasm-plugins.md](docs/wasm-plugins.md) and
 [`plugins/examples`](plugins/examples).
 
