@@ -512,6 +512,28 @@ fn catalog_flags_only_apply_to_catalog_names() {
 }
 
 #[test]
+fn yes_is_rejected_for_directory_and_git_sources() {
+    let home = scratch("yes-flag");
+    let install_dir = home.join("installed");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/examples/python-sentiment");
+    let git_url = "https://example.invalid/acme/graphrt-acme.git";
+    for source in [example.to_str().unwrap(), git_url] {
+        let output = graphrt(&home, &["plugin", "install", source, "--yes", "--dir", install_dir.to_str().unwrap()]);
+        assert_eq!(output.status.code(), Some(2), "{source}: {}", stderr(&output));
+        assert!(
+            stderr(&output).contains("`--yes` only applies to catalog plugin names"),
+            "{source}: {}",
+            stderr(&output)
+        );
+    }
+    assert_eq!(installed_files(&home), 0);
+    // Without `--yes` the same directory installs.
+    let output =
+        graphrt(&home, &["plugin", "install", example.to_str().unwrap(), "--dir", install_dir.to_str().unwrap()]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
+#[test]
 fn a_local_directory_named_like_a_plugin_wins_over_the_catalog() {
     let home = scratch("name-clash");
     let index = write_catalog(&home.join("catalog"), &[FixturePlugin::valid("demo", "1.0.0")]);

@@ -184,6 +184,9 @@ directory and looks like `name` or `name@1.2.3` is a catalog name.
 | `--index URL\|PATH` | Catalog index: an `https://` URL, a `file://` URL or a local path. Overrides `$GRAPHRT_PLUGIN_INDEX`; the default is the graphrt-plugins `catalog` release. Plain `http://` is refused. |
 | `--yes`, `-y` | Install a plugin that is not labelled status `stable`/`beta` with ToS risk `none`/`low`/`medium`: `experimental`, ToS risk `high`, an unrecognised label, or no label at all. Without it such installs stop with exit code 2 (graphrt has no interactive prompt). |
 
+`--index` and `--yes` only apply to catalog names: with a directory or git
+source they are usage errors (exit code 2) rather than silently ignored.
+
 ```sh
 graphrt plugin search weather
 graphrt plugin install open-meteo           # latest version
