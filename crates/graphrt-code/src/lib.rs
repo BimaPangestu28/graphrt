@@ -345,20 +345,21 @@ async fn run_embedded(
 ) -> Result<serde_json::Value, NodeError> {
     let input_text = serde_json::to_string(&inputs)
         .map_err(|e| NodeError::fatal("invalid_input", format!("cannot encode inputs: {e}")))?;
-    let job = move || js::run(&code, &input_text, &limits);
 
-    // QuickJS is synchronous. Inside a tokio runtime, run it on the blocking pool so the
-    // executor thread stays free; elsewhere run inline (bounded by the time limit).
-    #[cfg(feature = "tokio")]
-    {
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            return handle
-                .spawn_blocking(job)
-                .await
-                .map_err(|e| NodeError::new("sandbox", format!("code execution task failed: {e}")))?;
-        }
-    }
-    job()
+    // QuickJS is synchronous and checks its stack limit against the thread it runs on.
+    // A dedicated thread sized from the limit keeps the executor free and guarantees
+    // the engine raises a catchable `RangeError` before the native stack overflows
+    // (which would abort the whole process), whatever the caller's thread stack is.
+    let (sender, receiver) = futures::channel::oneshot::channel();
+    std::thread::Builder::new()
+        .name("graphrt-js".to_owned())
+        .stack_size(js::thread_stack_bytes(&limits))
+        .spawn(move || {
+            // The receiver is gone only if the node was cancelled; nothing to report then.
+            let _ = sender.send(js::run(&code, &input_text, &limits));
+        })
+        .map_err(|e| NodeError::new("sandbox", format!("cannot start the code execution thread: {e}")))?;
+    receiver.await.map_err(|_| NodeError::new("sandbox", "code execution thread stopped without a result"))?
 }
 
 #[cfg(not(feature = "js"))]
