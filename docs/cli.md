@@ -108,16 +108,18 @@ records them from an `upstream` provider. See
 
 Runs a workflow against the test cases of an eval file (Promptfoo-shaped
 `tests` / `assert`, plus an optional JSONL dataset), prints a line per test as
-it finishes and a summary, and exits with 5 when the pass rate is below the
-file's `gate.pass_rate`. The workflow is compiled once and the tests run
+it finishes and a summary, and exits with 5 when the gate fails (pass rate,
+pass^k, calibration thresholds or regressions against `--baseline`). The workflow is compiled once and the tests run
 in-process, `-j` at a time.
 
 | Flag | Description |
 | --- | --- |
 | `-j, --concurrency N` | Tests running at the same time (default 4). |
 | `--filter PATTERN` | Only tests whose id or a tag matches (`*` wildcards). Repeatable. |
-| `--repeat N` | Run every test N times. |
-| `-o, --output FILE` | JSON results (`schema_version: 1`). |
+| `--trials N` (alias `--repeat`) | Run every test N times; report pass@k and pass^k per test. |
+| `-o, --output FILE` | JSON results (`schema_version: 2`); also the input of a later `--baseline`. |
+| `--baseline FILE` | Compare with earlier results; a regression beyond the tolerances fails the gate. |
+| `--judge-model PROVIDER/NAME` | Override the model of the judge workflows (`--model` never applies to judges). |
 | `--junit FILE` | JUnit XML. |
 | `--pass-rate RATE` | Override the gate. |
 | `--fail-exit-code CODE` | Exit code of a failed gate (default 5). |

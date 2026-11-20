@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "key": "48affe8ebf9e2fbb726bf1b6ef207d5d",
+  "request": {
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "You are an answer relevance judge. Decide one thing only: does the\nANSWER address the QUESTION that was asked? Do not judge whether the\nanswer is true; an evasive, off-topic or generic answer fails.\n- pass: the answer responds to what the question asks.\n- fail: the answer is about something else, or avoids the question.\n- unknown: the question itself is unintelligible.\nFirst write your reasoning in one sentence, then the verdict.\n",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      },
+      {
+        "content": [
+          {
+            "text": "QUESTION:\nHow many days do I have to request a refund?\n\nANSWER:\nYou can request a refund within 30 days of delivery.\n",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o-mini",
+    "response_format": {
+      "name": "structured_output",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "reasoning": {
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "pass",
+              "fail",
+              "unknown"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "reasoning",
+          "verdict"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "json_schema"
+    },
+    "temperature": 0.0
+  },
+  "response": [
+    {
+      "text": "{\"reasoning\": \"The answer addresses "
+    },
+    {
+      "text": "the question about days, "
+    },
+    {
+      "text": "refund, request.\", \"verdict\": \"pass\"}"
+    },
+    {
+      "finish": "stop"
+    },
+    {
+      "usage": {
+        "prompt_tokens": 190,
+        "completion_tokens": 24,
+        "total_tokens": 214
+      }
+    }
+  ]
+}

@@ -8,8 +8,13 @@
 //!   [`EngineTarget`] around one compiled graph), concurrently, and scores it.
 //! - [`assertion`]: deterministic output checks, latency and token budgets,
 //!   agent trajectory checks and retrieval metrics, behind the [`Assertion`]
-//!   trait so other crates can add types (e.g. an LLM judge).
-//! - [`EvalReport`]: the summary, the gate verdict, and JSON / JUnit output.
+//!   trait so other crates can add types.
+//! - [`judge`]: LLM judges written as graphrt workflows (`type: judge`),
+//!   compiled once through a [`judge::JudgeLoader`] and versioned by fingerprint.
+//! - [`stats`]: unbiased pass@k / pass^k over trials, and judge agreement
+//!   (TPR, TNR, Cohen's kappa) for [`calibration`] suites.
+//! - [`EvalReport`]: the summary, the gate verdict, the [`baseline`]
+//!   comparison, and JSON / JUnit output.
 //!
 //! The harness is not part of the engine: it only consumes the run's event
 //! stream, so runs evaluated here behave exactly like production runs.
@@ -28,18 +33,23 @@
 //! ```
 
 pub mod assertion;
+pub mod baseline;
+pub mod calibration;
 pub mod capture;
 pub mod config;
 pub mod error;
 mod glob;
+pub mod judge;
 pub mod path;
 pub mod report;
 pub mod runner;
 pub mod schema;
+pub mod stats;
 
 pub use assertion::{Assertion, AssertionContext, AssertionRegistry, AssertionResult, Outcome};
 pub use capture::{RetrievalHit, RunCapture, RunStatus, ToolCallRecord};
-pub use config::{AssertionSpec, EvalSuite, Gate, TestCase};
+pub use config::{AssertionSpec, Calibration, EvalSuite, Gate, TestCase, Tolerance};
 pub use error::EvalError;
+pub use judge::{JudgeLoader, Verdict};
 pub use report::{EvalReport, Summary, TestResult, TestStatus};
 pub use runner::{EngineTarget, Runner, RunnerOptions, Target};

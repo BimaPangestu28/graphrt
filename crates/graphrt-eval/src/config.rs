@@ -17,6 +17,10 @@
 //!       - { type: equals, value: "Hello, Ada." }
 //! gate: { pass_rate: 1.0 }
 //! ```
+//!
+//! With `calibration:` the workflow under test is a judge and each test's
+//! `expected` is a human label (`pass` / `fail`): the report adds agreement,
+//! TPR, TNR and Cohen's kappa.
 
 use std::path::{Path, PathBuf};
 
@@ -46,6 +50,8 @@ pub struct EvalSuite {
     /// Every test case: inline tests first, then dataset rows, with `defaultTest` merged in.
     pub cases: Vec<TestCase>,
     pub gate: Gate,
+    /// Judge calibration mode (the workflow is a judge, `expected` are labels).
+    pub calibration: Option<Calibration>,
 }
 
 /// The CI gate.
@@ -53,19 +59,96 @@ pub struct EvalSuite {
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct Gate {
-    /// Minimum fraction of passing tests (0..=1). Default 1.0: every test must pass.
+    /// Minimum fraction of passing test runs (0..=1, every trial counts).
+    /// Default 1.0: every test must pass.
     #[serde(default = "one")]
     pub pass_rate: f64,
+    /// Minimum mean pass^k over the test cases (with `--trials`).
+    #[serde(default)]
+    pub pass_hat_k: Option<f64>,
+    /// `k` of pass@k and pass^k (default: the number of trials).
+    #[serde(default)]
+    pub k: Option<u32>,
+    /// Tolerances when comparing against `--baseline`.
+    #[serde(default)]
+    pub baseline: Tolerance,
 }
 
 impl Default for Gate {
     fn default() -> Self {
-        Self { pass_rate: 1.0 }
+        Self { pass_rate: 1.0, pass_hat_k: None, k: None, baseline: Tolerance::default() }
+    }
+}
+
+/// How far results may fall below the baseline before it is a regression.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct Tolerance {
+    /// Largest allowed drop of a metric's mean score (default 0.05: LLM metrics are noisy).
+    #[serde(default = "five_percent")]
+    pub tolerance: f64,
+    /// Largest allowed drop of a test's pass rate across its trials (default 0:
+    /// a test that passed and now fails is a regression).
+    #[serde(default)]
+    pub test_tolerance: f64,
+    /// Per-metric tolerances, overriding `tolerance`.
+    #[serde(default)]
+    pub metrics: IndexMap<String, f64>,
+}
+
+impl Default for Tolerance {
+    fn default() -> Self {
+        Self { tolerance: 0.05, test_tolerance: 0.0, metrics: IndexMap::new() }
+    }
+}
+
+impl Tolerance {
+    /// The tolerance of `metric`.
+    pub fn of(&self, metric: &str) -> f64 {
+        self.metrics.get(metric).copied().unwrap_or(self.tolerance)
+    }
+}
+
+/// Judge calibration settings (`calibration:` in the eval file).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct Calibration {
+    /// `unknown` verdicts: `exclude` (default: counted apart, outside the
+    /// confusion matrix) or `fail` (counted as the judge saying fail).
+    #[serde(default = "exclude")]
+    pub unknown: crate::judge::UnknownPolicy,
+    /// Score at which a judge that returns only a `score` says pass (default 0.5).
+    #[serde(default)]
+    pub threshold: Option<f64>,
+    /// Gate: minimum Cohen's kappa.
+    #[serde(default)]
+    pub min_kappa: Option<f64>,
+    /// Gate: minimum true positive rate.
+    #[serde(default)]
+    pub min_tpr: Option<f64>,
+    /// Gate: minimum true negative rate.
+    #[serde(default)]
+    pub min_tnr: Option<f64>,
+}
+
+impl Default for Calibration {
+    fn default() -> Self {
+        Self { unknown: exclude(), threshold: None, min_kappa: None, min_tpr: None, min_tnr: None }
     }
 }
 
 fn one() -> f64 {
     1.0
+}
+
+fn five_percent() -> f64 {
+    0.05
+}
+
+fn exclude() -> crate::judge::UnknownPolicy {
+    crate::judge::UnknownPolicy::Exclude
 }
 
 /// One assertion as written in the file.
@@ -195,6 +278,8 @@ struct RawFile {
     tests: Vec<RawTest>,
     #[serde(default)]
     gate: Gate,
+    #[serde(default)]
+    calibration: Option<Calibration>,
 }
 
 #[derive(Default, Deserialize)]
@@ -243,23 +328,22 @@ impl EvalSuite {
             tests.iter_mut().for_each(strip_extensions);
         }
         let raw: RawFile = serde_json::from_value(value).map_err(|e| EvalError::invalid(e.to_string()))?;
-        if !(0.0..=1.0).contains(&raw.gate.pass_rate) {
-            return Err(EvalError::invalid("`gate.pass_rate` must be between 0 and 1"));
-        }
+        validate_gate(&raw.gate, raw.calibration.as_ref())?;
         let resolve = |p: PathBuf| if p.is_relative() { base.join(p) } else { p };
         let default_test = raw.default_test.unwrap_or_default();
         if default_test.id.is_some() || default_test.expected.is_some() {
             return Err(EvalError::invalid("`defaultTest` cannot set `id` or `expected`"));
         }
         let mut cases = Vec::new();
+        let implicit = if raw.calibration.is_some() { "verdict" } else { "equals" };
         for (index, test) in raw.tests.into_iter().enumerate() {
             let id = test.id.clone().unwrap_or_else(|| format!("test-{}", index + 1));
-            cases.push(build_case(test, &default_test, id, "inline".into())?);
+            cases.push(build_case(test, &default_test, id, "inline".into(), implicit)?);
         }
         if let Some(dataset) = raw.dataset {
             let path = resolve(dataset);
             for row in read_dataset(&path)? {
-                cases.push(build_case(row.test, &default_test, row.id, row.source)?);
+                cases.push(build_case(row.test, &default_test, row.id, row.source, implicit)?);
             }
         }
         let mut seen = std::collections::HashSet::new();
@@ -278,11 +362,44 @@ impl EvalSuite {
             plugins: raw.plugins.into_iter().map(resolve).collect(),
             cases,
             gate: raw.gate,
+            calibration: raw.calibration,
         })
     }
 }
 
-fn build_case(test: RawTest, defaults: &RawTest, id: String, source: String) -> Result<TestCase, EvalError> {
+fn validate_gate(gate: &Gate, calibration: Option<&Calibration>) -> Result<(), EvalError> {
+    let fraction = |name: &str, value: Option<f64>| match value {
+        Some(v) if !(0.0..=1.0).contains(&v) => Err(EvalError::invalid(format!("`{name}` must be between 0 and 1"))),
+        _ => Ok(()),
+    };
+    fraction("gate.pass_rate", Some(gate.pass_rate))?;
+    fraction("gate.pass_hat_k", gate.pass_hat_k)?;
+    fraction("gate.baseline.tolerance", Some(gate.baseline.tolerance))?;
+    fraction("gate.baseline.test_tolerance", Some(gate.baseline.test_tolerance))?;
+    for (metric, tolerance) in &gate.baseline.metrics {
+        fraction(&format!("gate.baseline.metrics.{metric}"), Some(*tolerance))?;
+    }
+    if gate.k == Some(0) {
+        return Err(EvalError::invalid("`gate.k` must be at least 1"));
+    }
+    if let Some(c) = calibration {
+        fraction("calibration.threshold", c.threshold)?;
+        fraction("calibration.min_tpr", c.min_tpr)?;
+        fraction("calibration.min_tnr", c.min_tnr)?;
+        if c.min_kappa.is_some_and(|k| !(-1.0..=1.0).contains(&k)) {
+            return Err(EvalError::invalid("`calibration.min_kappa` must be between -1 and 1"));
+        }
+    }
+    Ok(())
+}
+
+fn build_case(
+    test: RawTest,
+    defaults: &RawTest,
+    id: String,
+    source: String,
+    implicit: &str,
+) -> Result<TestCase, EvalError> {
     let context = |e: EvalError| EvalError::invalid(format!("test `{id}`: {e}"));
     let mut vars = defaults.vars.clone();
     vars.extend(test.vars);
@@ -296,9 +413,10 @@ fn build_case(test: RawTest, defaults: &RawTest, id: String, source: String) -> 
         assertions.push(AssertionSpec::from_json(raw).map_err(context)?);
     }
     // Promptfoo's `__expected` convention: an expected value on a test without its
-    // own assertions means `equals` (after the `defaultTest` assertions).
+    // own assertions means `equals` (after the `defaultTest` assertions). In
+    // calibration suites the expected value is a label the judge's verdict must match.
     if !own_assertions && let Some(expected) = &test.expected {
-        assertions.push(AssertionSpec::new("equals", Some(expected.clone())));
+        assertions.push(AssertionSpec::new(implicit, Some(expected.clone())));
     }
     if assertions.is_empty() {
         return Err(EvalError::invalid(format!("test `{id}` has no assertions (and no `expected` value)")));

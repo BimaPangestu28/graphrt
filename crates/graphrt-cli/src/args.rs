@@ -490,12 +490,18 @@ pub struct EvalArgs {
     /// Only run tests whose id or a tag matches (`*` wildcards). Repeatable.
     #[arg(long, value_name = "PATTERN")]
     pub filter: Vec<String>,
-    /// Run every test this many times (each run is reported separately).
-    #[arg(long, value_name = "N", default_value_t = 1)]
-    pub repeat: u32,
-    /// Write the full results as JSON (schema in docs/evals.md).
+    /// Run every test N times (each trial is reported) and report pass@k / pass^k per test.
+    #[arg(long, visible_alias = "repeat", value_name = "N", default_value_t = 1)]
+    pub trials: u32,
+    /// Write the full results as JSON (schema in docs/evals.md); the file serves as a later `--baseline`.
     #[arg(short, long, value_name = "FILE")]
     pub output: Option<PathBuf>,
+    /// Compare with earlier `--output` results; a regression beyond `gate.baseline` tolerances fails the gate.
+    #[arg(long, value_name = "FILE")]
+    pub baseline: Option<PathBuf>,
+    /// Point every model node of the judge workflows at PROVIDER/NAME (`--model` never touches judges).
+    #[arg(long, value_name = "PROVIDER/NAME")]
+    pub judge_model: Option<String>,
     /// Write the results as JUnit XML (CI test reports).
     #[arg(long, value_name = "FILE")]
     pub junit: Option<PathBuf>,

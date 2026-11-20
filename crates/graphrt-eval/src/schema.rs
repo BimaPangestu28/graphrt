@@ -31,11 +31,18 @@ pub const BUILTIN_ASSERTIONS: &[(&str, &str)] = &[
     ("retrieval:recall-at-k", "Fraction of the `value` document ids in the top `k` knowledge-retrieval hits."),
     ("retrieval:precision-at-k", "Fraction of the top `k` hits that are relevant (`value` ids)."),
     ("retrieval:mrr", "Reciprocal rank of the first relevant hit in the top `k`."),
+    ("verdict", "The run is a judge whose verdict (or `score` >= `threshold`) equals the `value` label."),
 ];
+
+/// Assertion types a host registers (they need to compile workflows): the
+/// `graphrt eval` command provides them.
+pub const HOST_ASSERTIONS: &[(&str, &str)] =
+    &[("judge", "Run the `workflow` judge on the output and read its verdict or score.")];
 
 fn assertion_types() -> Vec<Json> {
     BUILTIN_ASSERTIONS
         .iter()
+        .chain(HOST_ASSERTIONS)
         .flat_map(|(kind, _)| [Json::String((*kind).to_owned()), Json::String(format!("not-{kind}"))])
         .collect()
 }
@@ -63,7 +70,31 @@ pub fn eval_file_schema() -> Json {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "pass_rate": { "type": "number", "minimum": 0, "maximum": 1, "default": 1, "description": "Minimum fraction of passing tests; below it `graphrt eval` exits with code 5." }
+                    "pass_rate": { "type": "number", "minimum": 0, "maximum": 1, "default": 1, "description": "Minimum fraction of passing test runs (every trial counts); below it `graphrt eval` exits with code 5." },
+                    "pass_hat_k": { "type": "number", "minimum": 0, "maximum": 1, "description": "Minimum mean pass^k over the test cases (all k trials pass); use with `--trials`." },
+                    "k": { "type": "integer", "minimum": 1, "description": "k of pass@k and pass^k (default: the number of trials)." },
+                    "baseline": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "description": "Tolerances against `--baseline`: any regression beyond them fails the gate.",
+                        "properties": {
+                            "tolerance": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.05, "description": "Largest allowed drop of a metric's mean score." },
+                            "test_tolerance": { "type": "number", "minimum": 0, "maximum": 1, "default": 0, "description": "Largest allowed drop of a test's pass rate across its trials." },
+                            "metrics": { "type": "object", "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }, "description": "Per-metric tolerances." }
+                        }
+                    }
+                }
+            },
+            "calibration": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Judge calibration: the workflow is a judge and each `expected` is a human label (pass / fail). Reports agreement, TPR, TNR and Cohen's kappa.",
+                "properties": {
+                    "unknown": { "enum": ["exclude", "fail"], "default": "exclude", "description": "`unknown` verdicts: left out of the confusion matrix, or counted as fail." },
+                    "threshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5, "description": "Score at which a score-only judge says pass." },
+                    "min_kappa": { "type": "number", "minimum": -1, "maximum": 1, "description": "Gate: minimum Cohen's kappa." },
+                    "min_tpr": { "type": "number", "minimum": 0, "maximum": 1, "description": "Gate: minimum true positive rate." },
+                    "min_tnr": { "type": "number", "minimum": 0, "maximum": 1, "description": "Gate: minimum true negative rate." }
                 }
             }
         },
@@ -113,7 +144,10 @@ pub fn eval_file_schema() -> Json {
                     "metric": { "type": "string", "description": "Name the score is aggregated under in the summary." },
                     "transform": { "type": "string", "description": "Path to the value under test, e.g. `output.field` or `outputs.text` (no JavaScript)." },
                     "k": { "type": "integer", "minimum": 1, "description": "retrieval:*: rank cut-off." },
-                    "node": { "type": "string", "description": "retrieval:*: only this knowledge-retrieval node." }
+                    "node": { "type": "string", "description": "retrieval:*: only this knowledge-retrieval node." },
+                    "workflow": { "type": "string", "description": "judge: the judge workflow file, relative to this eval file." },
+                    "inputs": { "type": "object", "description": "judge: extra start inputs of the judge (values may reference test variables)." },
+                    "unknown": { "enum": ["fail", "exclude"], "default": "fail", "description": "judge: an `unknown` verdict fails, or is reported without scoring or gating." }
                 }
             }
         }

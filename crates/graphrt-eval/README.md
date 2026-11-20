@@ -1,7 +1,9 @@
 # graphrt-eval
 
 Evaluation harness for graphrt workflows: Promptfoo-shaped eval files and JSONL datasets,
-deterministic, trajectory and retrieval assertions, a CI pass-rate gate, and JSON / JUnit reports.
+deterministic, trajectory and retrieval assertions, LLM judges written as graphrt workflows (with
+calibration against human labels), trials with pass@k / pass^k, baseline comparison with tolerances,
+a CI gate, and JSON / JUnit reports.
 It powers `graphrt eval` and works from `cargo test` in Rust applications that embed graphrt.
 
 Part of [graphrt](https://github.com/BimaPangestu28/graphrt) — **run your agent everywhere**: one small runtime for

@@ -1,6 +1,6 @@
 [package]
 name = "graphrt-eval"
-description = "Evaluation harness for graphrt workflows: datasets, deterministic, trajectory and retrieval assertions, CI gates, JSON and JUnit reports."
+description = "Evaluation harness for graphrt workflows: datasets, deterministic, trajectory, retrieval and LLM-judge assertions, trials, baselines, CI gates, JSON and JUnit reports."
 readme = "README.md"
 documentation = "https://docs.rs/graphrt-eval"
 homepage = "https://github.com/BimaPangestu28/graphrt"

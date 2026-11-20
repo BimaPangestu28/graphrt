@@ -14,6 +14,7 @@ mod perf;
 mod retrieval;
 mod text;
 mod trajectory;
+mod verdict;
 
 use std::fmt;
 use std::sync::Arc;
@@ -26,6 +27,7 @@ use serde_json::Value as Json;
 use crate::capture::RunCapture;
 use crate::config::{AssertionSpec, TestCase};
 use crate::error::EvalError;
+use crate::judge::JudgeRecord;
 use crate::path::JsonPath;
 
 /// What an assertion sees: the test case and the run it produced.
@@ -53,23 +55,40 @@ impl<'a> AssertionContext<'a> {
 
 /// The verdict of one assertion.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Outcome {
     pub pass: bool,
     /// In `0..=1`.
     pub score: f64,
     pub reason: String,
+    /// Leave the result out of the test score, the gate and the metric means
+    /// (a judge's `unknown` verdict with `unknown: exclude`).
+    pub excluded: bool,
+    /// What a judge workflow decided (judge assertions only).
+    pub judge: Option<Box<JudgeRecord>>,
 }
 
 impl Outcome {
     /// A binary verdict (score 1 or 0).
     pub fn check(pass: bool, reason: impl Into<String>) -> Self {
-        Self { pass, score: if pass { 1.0 } else { 0.0 }, reason: reason.into() }
+        Self::graded(pass, if pass { 1.0 } else { 0.0 }, reason)
     }
 
     /// A graded verdict; `score` is clamped to `0..=1` (NaN becomes 0).
     pub fn graded(pass: bool, score: f64, reason: impl Into<String>) -> Self {
         let score = if score.is_nan() { 0.0 } else { score.clamp(0.0, 1.0) };
-        Self { pass, score, reason: reason.into() }
+        Self { pass, score, reason: reason.into(), excluded: false, judge: None }
+    }
+
+    /// A result that is reported but neither scored nor gated.
+    pub fn excluded(reason: impl Into<String>) -> Self {
+        Self { excluded: true, ..Self::check(false, reason) }
+    }
+
+    /// Attach the judge's details.
+    pub fn with_judge(mut self, record: JudgeRecord) -> Self {
+        self.judge = Some(Box::new(record));
+        self
     }
 }
 
@@ -95,9 +114,38 @@ pub struct AssertionResult {
     pub score: f64,
     pub weight: f64,
     pub reason: String,
+    /// Reported only: not part of the test score, the gate or the metric means.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub excluded: bool,
+    /// The judge workflow (path and fingerprint) and its verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge: Option<Box<JudgeRecord>>,
+}
+
+fn is_false(flag: &bool) -> bool {
+    !*flag
 }
 
 impl AssertionResult {
+    /// A result with no judge record, not excluded.
+    pub fn new(kind: impl Into<String>, pass: bool, score: f64, weight: f64, reason: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            metric: None,
+            pass,
+            score,
+            weight,
+            reason: reason.into(),
+            excluded: false,
+            judge: None,
+        }
+    }
+
+    /// Whether this result counts towards the test verdict.
+    pub fn gates(&self) -> bool {
+        self.weight > 0.0 && !self.excluded
+    }
+
     /// The name the summary aggregates this result under: `metric`, else the type.
     pub fn metric_name(&self) -> &str {
         self.metric.as_deref().unwrap_or(&self.kind)
@@ -118,8 +166,10 @@ impl PreparedAssertion {
     /// Evaluate and wrap the outcome into a reported result.
     pub async fn run(&self, ctx: AssertionContext<'_>) -> AssertionResult {
         let mut outcome = self.inner.evaluate(ctx).await;
-        if self.negated {
-            outcome = Outcome::graded(!outcome.pass, 1.0 - outcome.score, format!("negated: {}", outcome.reason));
+        if self.negated && !outcome.excluded {
+            outcome.pass = !outcome.pass;
+            outcome.score = 1.0 - outcome.score;
+            outcome.reason = format!("negated: {}", outcome.reason);
         }
         AssertionResult {
             kind: self.kind.clone(),
@@ -128,6 +178,8 @@ impl PreparedAssertion {
             score: outcome.score,
             weight: self.weight,
             reason: outcome.reason,
+            excluded: outcome.excluded,
+            judge: outcome.judge,
         }
     }
 
@@ -161,13 +213,15 @@ impl AssertionRegistry {
         Self { factories: IndexMap::new() }
     }
 
-    /// The built-in deterministic, performance, trajectory and retrieval types.
+    /// The built-in deterministic, performance, trajectory, retrieval and
+    /// `verdict` types. `judge` needs a workflow loader: see [`crate::judge::register`].
     pub fn with_builtins() -> Self {
         let mut registry = Self::empty();
         text::register(&mut registry);
         perf::register(&mut registry);
         trajectory::register(&mut registry);
         retrieval::register(&mut registry);
+        verdict::register(&mut registry);
         registry
     }
 

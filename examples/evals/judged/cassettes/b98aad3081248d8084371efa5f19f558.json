@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "key": "b98aad3081248d8084371efa5f19f558",
+  "request": {
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "You are a goal success judge. Decide one thing only: did the\nassistant achieve the GOAL? Judge the outcome, using the TOOL CALLS\nas evidence of what was actually done; extra steps are fine.\n- pass: the goal is fully achieved.\n- fail: the goal is not achieved, or only partly.\n- unknown: the goal is too vague to check against the answer.\nFirst write your reasoning in one sentence, then the verdict.\n",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      },
+      {
+        "content": [
+          {
+            "text": "GOAL:\nThe customer learns when an express order arrives.\n\nTOOL CALLS:\n\n\nFINAL ANSWER:\nExpress shipping arrives the next business day when ordered before 14:00.\n",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o-mini",
+    "response_format": {
+      "name": "structured_output",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "reasoning": {
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "pass",
+              "fail",
+              "unknown"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "reasoning",
+          "verdict"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "json_schema"
+    },
+    "temperature": 0.0
+  },
+  "response": [
+    {
+      "text": "{\"reasoning\": \"The answer tells "
+    },
+    {
+      "text": "the customer an express "
+    },
+    {
+      "text": "order arrives the next "
+    },
+    {
+      "text": "business day.\", \"verdict\": \"pass\"}"
+    },
+    {
+      "finish": "stop"
+    },
+    {
+      "usage": {
+        "prompt_tokens": 194,
+        "completion_tokens": 32,
+        "total_tokens": 226
+      }
+    }
+  ]
+}

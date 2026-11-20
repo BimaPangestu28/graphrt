@@ -1,0 +1,57 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/eval-v1.schema.json
+# A RAG workflow graded by LLM judges that are themselves graphrt workflows
+# (examples/evals/judges). Fully offline: the answers and the judge verdicts
+# are replayed from the cassettes next to this file. Run from the repository
+# root (the knowledge store path is relative to the working directory):
+#   graphrt eval examples/evals/judged/judged.eval.yaml --trials 3
+# Re-record against a real model (overwrites the cassettes):
+#   GRAPHRT_REPLAY_MODE=record OPENAI_API_KEY=sk-... graphrt eval examples/evals/judged/judged.eval.yaml
+description: Policy answers are grounded, on topic, and decline off-topic requests.
+workflow: rag-answer.yaml
+knowledge: ../retrieval/knowledge.yaml
+providers: providers.replay.yaml      # serves the workflow's and the judges' `openai` calls
+
+defaultTest:
+  assert:
+    - { type: tokens, threshold: 2000, weight: 0, metric: token-budget }
+
+tests:
+  - id: refund-window
+    tags: [refund]
+    vars: { question: "How many days do I have to request a refund?" }
+    assert:
+      - { type: contains, value: "30 days" }
+      - &faithful { type: judge, workflow: ../judges/faithfulness.yaml, metric: faithfulness, inputs: { question: "{{question}}" } }
+      - &relevant { type: judge, workflow: ../judges/answer-relevance.yaml, metric: relevance, inputs: { question: "{{question}}" } }
+
+  - id: express-shipping
+    tags: [shipping]
+    vars: { question: "When does express shipping arrive?" }
+    assert:
+      - *faithful
+      - *relevant
+      - type: judge
+        workflow: ../judges/goal-success.yaml
+        metric: goal-success
+        inputs: { goal: "The customer learns when an express order arrives." }
+
+  - id: water-damage
+    tags: [warranty]
+    vars: { question: "Is water damage covered by the warranty?" }
+    assert:
+      - *faithful
+      - *relevant
+
+  - id: off-topic-is-declined
+    vars: { question: "What will the weather be like in Paris tomorrow?" }
+    assert:
+      - { type: judge, workflow: ../judges/refusal.yaml, metric: refusal, inputs: { question: "{{question}}" } }
+      # A refusal makes no claims: the faithfulness judge says `unknown`, which
+      # is reported but neither scored nor gated.
+      - { type: judge, workflow: ../judges/faithfulness.yaml, metric: faithfulness, unknown: exclude, inputs: { question: "{{question}}" } }
+
+gate:
+  pass_rate: 1.0
+  pass_hat_k: 1.0            # with --trials: every trial of every test passes
+  baseline:                  # with --baseline: judge metrics may wobble by 0.1
+    tolerance: 0.1

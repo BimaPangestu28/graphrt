@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "key": "9aa4fde23efaf3e4fe9ef252dfef0efe",
+  "request": {
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "You are a faithfulness judge. Decide one thing only: is every factual\nclaim in the ANSWER supported by the CONTEXT? Ignore style, tone and\nwhether the answer is complete or helpful.\n- pass: every claim can be verified from the context.\n- fail: at least one claim is missing from, or contradicts, the context.\n- unknown: the context is empty or unreadable, so you cannot tell.\nFirst write your reasoning (one or two sentences naming any unsupported\nclaim), then the verdict.\n",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      },
+      {
+        "content": [
+          {
+            "text": "QUESTION:\nHow long do I have to ask for a refund?\n\nCONTEXT:\nCustomers can request a refund within 30 days of delivery. Refunds go back to the original payment method within 5 business days. Opened software and gift cards cannot be refunded.\n\nANSWER:\nYou have 60 days after delivery to request a refund.\n",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o-mini",
+    "response_format": {
+      "name": "structured_output",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "reasoning": {
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "pass",
+              "fail",
+              "unknown"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "reasoning",
+          "verdict"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "json_schema"
+    },
+    "temperature": 0.0
+  },
+  "response": [
+    {
+      "text": "{\"reasoning\": \"The answer states "
+    },
+    {
+      "text": "60, which the context "
+    },
+    {
+      "text": "does not.\", \"verdict\": \"fail\"}"
+    },
+    {
+      "finish": "stop"
+    },
+    {
+      "usage": {
+        "prompt_tokens": 268,
+        "completion_tokens": 24,
+        "total_tokens": 292
+      }
+    }
+  ]
+}

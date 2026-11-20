@@ -56,7 +56,88 @@
           "minimum": 0,
           "maximum": 1,
           "default": 1,
-          "description": "Minimum fraction of passing tests; below it `graphrt eval` exits with code 5."
+          "description": "Minimum fraction of passing test runs (every trial counts); below it `graphrt eval` exits with code 5."
+        },
+        "pass_hat_k": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum mean pass^k over the test cases (all k trials pass); use with `--trials`."
+        },
+        "k": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "k of pass@k and pass^k (default: the number of trials)."
+        },
+        "baseline": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Tolerances against `--baseline`: any regression beyond them fails the gate.",
+          "properties": {
+            "tolerance": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.05,
+              "description": "Largest allowed drop of a metric's mean score."
+            },
+            "test_tolerance": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0,
+              "description": "Largest allowed drop of a test's pass rate across its trials."
+            },
+            "metrics": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "description": "Per-metric tolerances."
+            }
+          }
+        }
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Judge calibration: the workflow is a judge and each `expected` is a human label (pass / fail). Reports agreement, TPR, TNR and Cohen's kappa.",
+      "properties": {
+        "unknown": {
+          "enum": [
+            "exclude",
+            "fail"
+          ],
+          "default": "exclude",
+          "description": "`unknown` verdicts: left out of the confusion matrix, or counted as fail."
+        },
+        "threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5,
+          "description": "Score at which a score-only judge says pass."
+        },
+        "min_kappa": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "description": "Gate: minimum Cohen's kappa."
+        },
+        "min_tpr": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Gate: minimum true positive rate."
+        },
+        "min_tnr": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Gate: minimum true negative rate."
         }
       }
     }
@@ -194,7 +275,11 @@
                 "retrieval:precision-at-k",
                 "not-retrieval:precision-at-k",
                 "retrieval:mrr",
-                "not-retrieval:mrr"
+                "not-retrieval:mrr",
+                "verdict",
+                "not-verdict",
+                "judge",
+                "not-judge"
               ]
             },
             {
@@ -230,6 +315,22 @@
         "node": {
           "type": "string",
           "description": "retrieval:*: only this knowledge-retrieval node."
+        },
+        "workflow": {
+          "type": "string",
+          "description": "judge: the judge workflow file, relative to this eval file."
+        },
+        "inputs": {
+          "type": "object",
+          "description": "judge: extra start inputs of the judge (values may reference test variables)."
+        },
+        "unknown": {
+          "enum": [
+            "fail",
+            "exclude"
+          ],
+          "default": "fail",
+          "description": "judge: an `unknown` verdict fails, or is reported without scoring or gating."
         }
       }
     }
