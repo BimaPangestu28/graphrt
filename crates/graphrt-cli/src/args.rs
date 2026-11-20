@@ -429,6 +429,13 @@ pub struct ServiceArgs {
     /// Print OpenTelemetry spans as JSON lines on stderr (debugging).
     #[arg(long)]
     pub otel_stdout: bool,
+    /// Export to a vendor over OTLP with its endpoint, headers and resource attributes
+    /// filled from its own environment variables: langfuse, langsmith, braintrust, opik,
+    /// phoenix, mlflow (see docs/observability.md). Also `$GRAPHRT_OTEL_PRESET`.
+    /// Implies `--otel`.
+    #[cfg(feature = "otel")]
+    #[arg(long, value_name = "NAME")]
+    pub otel_preset: Option<String>,
     /// Require bundles (`.grt`) to be signed by this hex public key. Repeatable; also
     /// `$GRAPHRT_TRUSTED_KEYS` (comma-separated).
     #[arg(long = "trust-key", value_name = "HEX")]

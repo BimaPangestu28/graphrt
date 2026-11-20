@@ -7,7 +7,9 @@
 //! `chat`, `invoke_agent`, `execute_tool`, `retrieval`; names in [`semconv`]),
 //! and exporters ship them as OTLP/HTTP JSON. Evaluation scores become
 //! `evaluate {name}` spans with a `gen_ai.evaluation.result` event
-//! ([`evaluation`]).
+//! ([`evaluation`]), and [`preset`]s fill vendor endpoints and headers
+//! (Langfuse, LangSmith, Braintrust, Opik, Phoenix, MLflow) from their
+//! environment variables.
 //!
 //! ```no_run
 //! # async fn demo(graph: std::sync::Arc<graphrt_core::Graph>, mut run: graphrt_core::RunStream) {
@@ -39,6 +41,7 @@ pub mod exporter;
 pub mod http;
 pub mod metrics;
 pub mod otlp;
+pub mod preset;
 pub mod semconv;
 pub mod span;
 pub mod tracer;

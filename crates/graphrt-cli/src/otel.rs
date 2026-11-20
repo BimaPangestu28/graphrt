@@ -7,6 +7,10 @@
 //!
 //! Content capture follows `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`
 //! (`GRAPHRT_OTEL_CAPTURE_CONTENT=true` is an alias for `SPAN_ONLY`).
+//!
+//! `--otel-preset <vendor>` (or `$GRAPHRT_OTEL_PRESET`) fills the endpoint,
+//! headers and resource attributes of a vendor from its own environment
+//! variables (`graphrt_otel::preset`); credentials never go on the command line.
 
 use std::sync::Arc;
 
@@ -92,8 +96,7 @@ impl Telemetry {
     pub fn from_args(args: &ServiceArgs, vars: &[(String, String)]) -> Result<Option<Arc<Self>>, CliError> {
         #[cfg(feature = "otel")]
         {
-            let config = graphrt_otel::OtelConfig::from_vars(vars)
-                .map_err(|e| CliError::usage(format!("OpenTelemetry configuration: {e}")))?;
+            let config = otel_config(args, vars)?;
             if config.disabled {
                 return Ok(None);
             }
@@ -189,6 +192,22 @@ impl Telemetry {
             }
         }
     }
+}
+
+/// The exporter configuration of `vars`, with `--otel-preset` applied.
+#[cfg(feature = "otel")]
+pub fn otel_config(args: &ServiceArgs, vars: &[(String, String)]) -> Result<graphrt_otel::OtelConfig, CliError> {
+    let with_preset;
+    let vars = match &args.otel_preset {
+        Some(name) => {
+            let mut all = vars.to_vec();
+            all.push((graphrt_otel::preset::PRESET_ENV.to_owned(), name.clone()));
+            with_preset = all;
+            &with_preset
+        }
+        None => vars,
+    };
+    graphrt_otel::OtelConfig::from_vars(vars).map_err(|e| CliError::usage(format!("OpenTelemetry configuration: {e}")))
 }
 
 /// Convenience: a tracer from optional telemetry.

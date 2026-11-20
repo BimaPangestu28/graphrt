@@ -33,6 +33,11 @@ pub struct OtelConfig {
     /// `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`, or `SPAN_ONLY` for the older
     /// `GRAPHRT_OTEL_CAPTURE_CONTENT=true`. Off by default.
     pub capture: CaptureMode,
+    /// Push metrics to `metrics_endpoint` (off with a vendor preset: none of
+    /// them ingests OTLP metrics).
+    pub export_metrics: bool,
+    /// The vendor preset applied (`GRAPHRT_OTEL_PRESET`), see [`crate::preset`].
+    pub preset: Option<&'static str>,
 }
 
 /// Content capture policy (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`).
@@ -92,6 +97,8 @@ impl std::fmt::Debug for OtelConfig {
             .field("headers", &header_names)
             .field("resource", &self.resource)
             .field("capture", &self.capture)
+            .field("export_metrics", &self.export_metrics)
+            .field("preset", &self.preset)
             .finish()
     }
 }
@@ -106,6 +113,8 @@ impl Default for OtelConfig {
             headers: Vec::new(),
             resource: Resource::default(),
             capture: CaptureMode::NoContent,
+            export_metrics: true,
+            preset: None,
         }
     }
 }
@@ -122,7 +131,9 @@ impl OtelConfig {
     /// `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`,
     /// `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, `OTEL_SERVICE_NAME`,
     /// `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`, and
-    /// `GRAPHRT_OTEL_CAPTURE_CONTENT` (an older alias: `true` means `SPAN_ONLY`).
+    /// `GRAPHRT_OTEL_CAPTURE_CONTENT` (an older alias: `true` means `SPAN_ONLY`),
+    /// and `GRAPHRT_OTEL_PRESET` (a vendor [`crate::preset`]: its endpoint,
+    /// headers and resource attributes, under explicit `OTEL_*` values).
     pub fn from_vars(vars: &[(String, String)]) -> Result<Self, ConfigError> {
         let get = |k: &str| vars.iter().rev().find(|(n, v)| n == k && !v.trim().is_empty()).map(|(_, v)| v.trim());
         let mut cfg = Self { disabled: get("OTEL_SDK_DISABLED").is_some_and(is_true), ..Self::default() };
@@ -148,8 +159,27 @@ impl OtelConfig {
             }
         }
 
+        let preset = match get(crate::preset::PRESET_ENV) {
+            Some(name) => {
+                let preset = crate::preset::find(name)?;
+                Some((preset.name, preset.resolve(vars)?))
+            }
+            None => None,
+        };
+        if let Some((name, resolved)) = &preset {
+            cfg.preset = Some(*name);
+            cfg.endpoint_configured = true;
+            if get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").is_none() {
+                cfg.traces_endpoint.clone_from(&resolved.traces_endpoint);
+            }
+            cfg.export_metrics = get("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT").is_some();
+            cfg.headers.clone_from(&resolved.headers);
+        }
         if let Some(raw) = get("OTEL_EXPORTER_OTLP_HEADERS") {
-            cfg.headers = parse_pairs("OTEL_EXPORTER_OTLP_HEADERS", raw)?;
+            for (k, v) in parse_pairs("OTEL_EXPORTER_OTLP_HEADERS", raw)? {
+                cfg.headers.retain(|(name, _)| !name.eq_ignore_ascii_case(&k));
+                cfg.headers.push((k, v));
+            }
         }
         if let Some(raw) = get("OTEL_EXPORTER_OTLP_TRACES_HEADERS") {
             for (k, v) in parse_pairs("OTEL_EXPORTER_OTLP_TRACES_HEADERS", raw)? {
@@ -159,6 +189,9 @@ impl OtelConfig {
         }
 
         let mut resource = Resource::default();
+        for (k, v) in preset.iter().flat_map(|(_, resolved)| &resolved.resource) {
+            resource = resource.with(k, AttrValue::Str(v.clone()));
+        }
         if let Some(raw) = get("OTEL_RESOURCE_ATTRIBUTES") {
             for (k, v) in parse_pairs("OTEL_RESOURCE_ATTRIBUTES", raw)? {
                 resource = resource.with(&k, AttrValue::Str(v));
@@ -292,6 +325,41 @@ mod tests {
         assert_eq!(mode(&[("GRAPHRT_OTEL_CAPTURE_CONTENT", "1")]), CaptureMode::SpanOnly);
         assert!(CaptureMode::SpanAndEvent.on_span() && CaptureMode::SpanAndEvent.on_event());
         assert!(!CaptureMode::EventOnly.on_span() && !CaptureMode::NoContent.is_enabled());
+    }
+
+    #[test]
+    fn a_preset_fills_endpoint_headers_and_resource() {
+        let cfg = OtelConfig::from_vars(&vars(&[
+            ("GRAPHRT_OTEL_PRESET", "opik"),
+            ("OPIK_API_KEY", "op-key"),
+            ("OPIK_PROJECT_NAME", "agents"),
+            ("OTEL_EXPORTER_OTLP_HEADERS", "x-extra=1,authorization=override"),
+            ("OTEL_SERVICE_NAME", "svc"),
+        ]))
+        .unwrap();
+        assert_eq!(cfg.preset, Some("opik"));
+        assert!(cfg.endpoint_configured && !cfg.export_metrics);
+        assert_eq!(cfg.traces_endpoint, "https://www.comet.com/opik/api/v1/private/otel/v1/traces");
+        let header = |name: &str| cfg.headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str());
+        assert_eq!(header("authorization"), Some("override"), "explicit OTEL headers win");
+        assert_eq!(header("x-extra"), Some("1"));
+        assert_eq!(header("projectname"), Some("agents"));
+        let attrs = &cfg.resource.attributes;
+        assert!(attrs.contains(&("opik.project_name".into(), AttrValue::from("agents"))));
+        assert!(attrs.contains(&("service.name".into(), AttrValue::from("svc"))));
+
+        let cfg = OtelConfig::from_vars(&vars(&[
+            ("GRAPHRT_OTEL_PRESET", "mlflow"),
+            ("MLFLOW_EXPERIMENT_ID", "3"),
+            ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://collector:4318/v1/traces"),
+            ("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://collector:4318/v1/metrics"),
+        ]))
+        .unwrap();
+        assert_eq!(cfg.traces_endpoint, "http://collector:4318/v1/traces");
+        assert!(cfg.export_metrics);
+        assert!(OtelConfig::from_vars(&vars(&[("GRAPHRT_OTEL_PRESET", "mlflow")])).is_err());
+        assert!(OtelConfig::from_vars(&vars(&[("GRAPHRT_OTEL_PRESET", "nope")])).is_err());
+        assert!(OtelConfig::from_vars(&[]).unwrap().export_metrics);
     }
 
     #[test]

@@ -92,6 +92,7 @@ Pushed to `/v1/metrics` every 30 s and at shutdown (cumulative):
 | `graphrt.nodes` | counter | `graphrt.node.kind`, `graphrt.node.status` |
 | `graphrt.node.duration` | histogram (ms) | same |
 | `graphrt.tokens` | counter | `gen_ai.request.model`, `gen_ai.token.type` (`input` / `output`) |
+| `graphrt.eval.score` | histogram (`0..1`) | `gen_ai.evaluation.name`, `graphrt.workflow.name`, `graphrt.evaluation.source` (`online` / `human`) |
 
 ## Content capture (privacy)
 
@@ -150,6 +151,7 @@ let services = services.with(graphrt_core::node::CaptureContent);
 | `OTEL_SDK_DISABLED` | `true` disables all export |
 | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` | `NO_CONTENT` (default), `SPAN_ONLY`, `EVENT_ONLY` or `SPAN_AND_EVENT` (see Content capture) |
 | `GRAPHRT_OTEL_CAPTURE_CONTENT` | `true` is an alias for `SPAN_ONLY` |
+| `GRAPHRT_OTEL_PRESET` | A vendor preset (same as `--otel-preset`, see Vendor presets) |
 
 ## Distributed tracing
 
@@ -166,6 +168,38 @@ percent-encoded, so a space is `%20`). For LLM backends, also set
 `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=SPAN_ONLY` if they should see
 prompts and answers. Vendors that only accept protobuf (W&B Weave) need an
 OpenTelemetry Collector in between (see the end of this section).
+
+### Vendor presets
+
+`--otel-preset <name>` (or `GRAPHRT_OTEL_PRESET=<name>`; `run`, `serve` and
+`eval`) fills the traces endpoint, the auth and routing headers and the
+resource attributes a vendor needs from **that vendor's own environment
+variables**, so keys never go on a command line where `ps` shows them. It
+implies `--otel`, and turns the metrics push off (none of these backends
+ingests OTLP metrics) unless `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` is set.
+Explicit `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`
+values still win over the preset's, as an escape hatch.
+
+| Preset | Base URL (default) | Traces path | Required | Optional |
+| --- | --- | --- | --- | --- |
+| `langfuse` | `LANGFUSE_BASE_URL`, else `LANGFUSE_HOST` (`https://cloud.langfuse.com`) | `/api/public/otel/v1/traces` | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` (sent as `Authorization: Basic base64(pk:sk)`, plus `x-langfuse-ingestion-version: 4`) | – |
+| `langsmith` | `LANGSMITH_ENDPOINT` (`https://api.smith.langchain.com`) | `/otel/v1/traces` | `LANGSMITH_API_KEY` (`x-api-key`) | `LANGSMITH_PROJECT` (`Langsmith-Project`) |
+| `braintrust` | `BRAINTRUST_API_URL` (`https://api.braintrust.dev`) | `/otel/v1/traces` | `BRAINTRUST_API_KEY` (`Authorization: Bearer`), `BRAINTRUST_PARENT` (`x-bt-parent`: `project_name:<name>`, `project_id:<id>` or `experiment_id:<id>`) | – |
+| `opik` | `OPIK_URL_OVERRIDE` (`https://www.comet.com/opik/api`) | `/v1/private/otel/v1/traces` | – | `OPIK_API_KEY` (`Authorization`, no `Bearer`), `OPIK_WORKSPACE` (`Comet-Workspace`), `OPIK_PROJECT_NAME` (`projectName` and the `opik.project_name` resource attribute, so every span has it) |
+| `phoenix` | `PHOENIX_COLLECTOR_ENDPOINT` (`http://localhost:6006`) | `/v1/traces` | – | `PHOENIX_API_KEY` (`Authorization: Bearer`), `PHOENIX_PROJECT_NAME` (`openinference.project.name` resource attribute) |
+| `mlflow` | `MLFLOW_TRACKING_URI` (`http://localhost:5000`) | `/v1/traces` | `MLFLOW_EXPERIMENT_ID` (`x-mlflow-experiment-id`) | `MLFLOW_WORKSPACE` (`x-mlflow-workspace`), `MLFLOW_TRACKING_TOKEN` (`Authorization: Bearer`) |
+
+A base URL that already ends with the traces path is used as is. A missing
+required variable fails at startup and names it.
+
+```sh
+export LANGFUSE_PUBLIC_KEY=pk-lf-... LANGFUSE_SECRET_KEY=sk-lf-...
+export OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=SPAN_ONLY   # let evaluators see inputs and outputs
+graphrt serve flows/ --otel-preset langfuse
+```
+
+The sections below show what each preset sets, for configuring the same
+backends by hand or through a collector.
 
 **Langfuse v4** (HTTP only, no gRPC)
 
