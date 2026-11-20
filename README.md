@@ -232,9 +232,12 @@ management API (including creating and deleting datasets) are available since
 rate (exit code 5 when the gate fails). Eval files use Promptfoo's
 `tests` / `assert` shape; assertions cover answers, JSON outputs, latency and
 token budgets, the tools an agent called (and in what order, with which
-arguments), and retrieval recall / precision / MRR. Model responses can be
-replayed from recorded cassettes (`kind: replay` providers), so agent suites
-run offline, free and deterministically.
+arguments), retrieval recall / precision / MRR, and LLM judges that are
+themselves graphrt workflows (versioned by fingerprint, calibrated against
+human labels with TPR / TNR / Cohen's kappa). `--trials` reports pass@k and
+pass^k, and `--baseline` fails CI on regressions beyond a tolerance. Model
+responses can be replayed from recorded cassettes (`kind: replay` providers),
+so agent and judge suites run offline, free and deterministically.
 
 ```yaml
 # support.eval.yaml
@@ -245,12 +248,13 @@ tests:
     assert:
       - { type: icontains, value: refunded }
       - { type: trajectory:tool-sequence, value: [search_orders, refund_order] }
+      - { type: judge, workflow: judges/goal-success.yaml, inputs: { goal: "Order 456 is refunded." } }
       - { type: tokens, threshold: 4000, weight: 0 }   # reported, never fails the test
-gate: { pass_rate: 0.95 }
+gate: { pass_rate: 0.95, pass_hat_k: 0.8 }
 ```
 
 ```sh
-graphrt eval support.eval.yaml -j 8 --output results.json --junit junit.xml
+graphrt eval support.eval.yaml -j 8 --trials 3 --baseline main.json --output results.json --junit junit.xml
 ```
 
 The same harness is a library ([`graphrt-eval`](crates/graphrt-eval)) for

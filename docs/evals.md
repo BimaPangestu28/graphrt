@@ -18,12 +18,16 @@ graphrt eval: examples/evals/branching.eval.yaml (5 test case(s), workflow examp
 gate: PASSED
 ```
 
-What it is for: deterministic checks you can run on every commit, as the CI
-layer below LLM-judged metrics. Answers, structured outputs, latency and token
-budgets, the tools an agent called and in what order, and whether retrieval
-found the labelled documents. Model responses can be replayed from recorded
-cassettes (see [Replay](#replay-deterministic-model-responses)), so an agent
-suite runs offline, for free, with the same result every time.
+What it is for: deterministic checks you can run on every commit (answers,
+structured outputs, latency and token budgets, the tools an agent called and in
+what order, whether retrieval found the labelled documents), plus
+[LLM judges](#llm-judges-judges-are-workflows) written as ordinary graphrt
+workflows, [repeated trials](#trials-passk-and-passk) with pass@k / pass^k,
+[baseline comparison](#baselines-regressions-with-a-tolerance) with tolerances,
+and [judge calibration](#calibrating-a-judge) against human labels. Model
+responses can be replayed from recorded cassettes (see
+[Replay](#replay-deterministic-model-responses)), so agent and judge suites run
+offline, for free, with the same result every time.
 
 The workflow is loaded and compiled **once**; every test runs in-process on
 the same engine and host services, up to `-j` tests at a time. The harness only
@@ -66,6 +70,12 @@ tests:
 
 gate:
   pass_rate: 0.95                         # default 1.0
+  pass_hat_k: 0.8                         # optional, with --trials: mean pass^k
+  k: 3                                    # optional: k of pass@k / pass^k (default: --trials)
+  baseline:                               # with --baseline
+    tolerance: 0.05                       # max drop of a metric's mean score (default 0.05)
+    test_tolerance: 0                     # max drop of a test's pass rate (default 0)
+    metrics: { faithfulness: 0.1 }        # per-metric tolerances
 ```
 
 | Key | Meaning |
@@ -75,7 +85,10 @@ gate:
 | `dataset` | JSONL file: one `{id?, vars, expected?, tags?, metadata?, assert?, description?}` object per line. Blank lines and `//` lines are skipped. Rows without an `id` are named `<file stem>:<line>`. |
 | `defaultTest` | `vars` and `metadata` used as defaults, `tags` and `assert` prepended, `threshold` inherited. |
 | `tests[]` | Inline test cases (run before the dataset rows). |
-| `gate.pass_rate` | Minimum fraction of passing tests; below it the command exits with code 5. |
+| `gate.pass_rate` | Minimum fraction of passing test runs (every trial counts); below it the command exits with code 5. |
+| `gate.pass_hat_k`, `gate.k` | Minimum mean pass^k over the test cases, and its k. See [Trials](#trials-passk-and-passk). |
+| `gate.baseline` | Tolerances for `--baseline`. See [Baselines](#baselines-regressions-with-a-tolerance). |
+| `calibration` | Makes the suite a judge calibration. See [Calibrating a judge](#calibrating-a-judge). |
 
 Keys starting with `x-` are ignored at the file and test level; any other
 unknown key is an error, so typos do not silently disable checks.
@@ -183,8 +196,166 @@ Keys: `k` (default: every hit), `node` (only this retrieval node),
 ### Adding assertion types
 
 In Rust, implement [`Assertion`](../crates/graphrt-eval/src/assertion/mod.rs)
-(evaluation is async, so a type may call a model or run a judge workflow) and
+(evaluation is async, so a type may call a model or run a workflow) and
 register a factory on an `AssertionRegistry` passed to `Runner::with_registry`.
+
+## LLM judges: judges are workflows
+
+A judge is an ordinary graphrt workflow: a start node, usually one `llm` node
+with structured output, and an end node. The `judge` assertion runs it on what
+the test produced and reads its verdict:
+
+```yaml
+assert:
+  - type: judge
+    workflow: ../judges/faithfulness.yaml     # relative to the eval file
+    metric: faithfulness
+    inputs: { question: "{{question}}" }      # extra start inputs (templated)
+    unknown: exclude                          # fail (default) | exclude
+    threshold: 0.5                            # score-only judges pass at this score
+```
+
+Because the judge is a workflow it is versioned by its fingerprint (recorded
+with every result, so a changed prompt or model is visible), it can use any
+provider including `replay` cassettes, and it is calibrated like any other
+workflow ([below](#calibrating-a-judge)). Each judge file is compiled **once**
+and shared by every test; judges run inside their test, so they share the `-j`
+limit. They use the suite's providers, knowledge, MCP servers and plugins.
+
+**Input contract.** The judge's start node receives these inputs, by name; only
+the variables it declares are passed:
+
+| Input | Value |
+| --- | --- |
+| `output` | The value under test: the run output, or the `transform` path. |
+| `vars` | The test's vars (an object). |
+| `expected` | The test's `expected` value (absent when there is none). |
+| `contexts` | The text of every chunk the run's `knowledge-retrieval` nodes returned, in rank order (absent when there were none). |
+| `trajectory` | The agent tool calls: `[{node_id, id, name, provider, tool, arguments, is_error}]`. |
+| keys of `inputs` | Anything else, e.g. the question; these win over the names above. |
+
+Text inputs (`paragraph`, `text-input`, `string`, `select`) receive text:
+strings as is, a list of strings joined by blank lines (so `contexts` reads
+naturally in a prompt), anything else as indented JSON. `json`, `object` and
+array inputs receive the value itself.
+
+**Output contract.** The judge's outputs (or its single output when that is an
+object, such as an `llm` node's `structured_output`) carry:
+
+| Output | Meaning |
+| --- | --- |
+| `verdict` | `pass`, `fail` or `unknown` (also `yes` / `no`, `true` / `false`). Decides when present. |
+| `score` | A number in 0..1. Reported as the assertion score; alone, it passes at `threshold` (default 0.5). |
+| `reasoning` | Shown in the reason and the report (`reason` and `explanation` also work). |
+
+`unknown` is explicit: with `unknown: fail` (the default) it fails the
+assertion; with `unknown: exclude` the result is reported (`"excluded": true`,
+counted under `excluded` in the metric summary) but takes no part in the test
+score, the gate or the metric means. A test whose only results are excluded
+passes. A judge run that fails, or outputs neither a verdict nor a score, fails
+the assertion (the test is a failure, not an error).
+
+**Models.** `--model` rewrites the workflow under test only. `--judge-model
+PROVIDER/NAME` rewrites the judges (and the target of a calibration suite,
+which is a judge).
+
+**Reference judges** live in [`examples/evals/judges`](../examples/evals/judges):
+`faithfulness.yaml` (every claim supported by `contexts`), `answer-relevance.yaml`
+(the answer addresses `question`), `goal-success.yaml` (the `goal` input is
+achieved, `trajectory` as evidence) and `refusal.yaml` (the answer declines;
+use `not-judge` to catch over-refusal). Each is binary, judges one criterion,
+asks for the reasoning before the verdict, and has an `unknown` way out.
+`refusal.system-one.yaml` is the same judge on TypeSafe System One: the
+calibrated probability of `pass` becomes the score, and a low-confidence answer
+routes to an explicit `unknown`. Copy them and adapt the prompts to your domain;
+then calibrate.
+
+## Trials: pass@k and pass^k
+
+`--trials N` runs every test N times (each trial is a result, `id#1`,
+`id#2`...) and adds per-case statistics to the report and the summary. With
+`n` trials of which `c` passed, graphrt uses the unbiased estimators:
+
+| Statistic | Estimator | Meaning |
+| --- | --- | --- |
+| pass@k | `1 - C(n-c, k) / C(n, k)` | At least one of k trials passes (capability). Unbiased for `1 - (1-p)^k` (Chen et al. 2021). |
+| pass^k | `C(c, k) / C(n, k)` | All k trials pass (reliability, τ-bench). Unbiased for `p^k`: the chance that k trials drawn without replacement all passed. |
+
+`k` is `gate.k`, else N (clamped to `1..=n`). The summary reports the mean of
+each over the test cases; `gate.pass_hat_k` gates on the mean pass^k. A 75%
+per-trial pass rate is roughly 42% pass^3, so reliability gates are much
+stricter than pass rates. `gate.pass_rate` still counts every trial.
+
+```
+  test case                      passed  pass@3  pass^3
+  refund-window                    3/3    1.000   1.000
+pass@3 1.000, pass^3 1.000 over 4 case(s), up to 3 trial(s) each
+```
+
+## Baselines: regressions with a tolerance
+
+The `--output` file of one run is the baseline of the next:
+
+```sh
+graphrt eval evals/support.eval.yaml -o baseline.json          # on main
+graphrt eval evals/support.eval.yaml --baseline baseline.json  # on the branch
+```
+
+LLM metrics are noisy, so comparisons use tolerances (`gate.baseline`), not
+equality. A **metric** regresses when its mean score drops by more than its
+tolerance (`metrics.<name>`, else `tolerance`, default 0.05); a **test**
+regresses when its pass rate across its trials drops by more than
+`test_tolerance` (default 0: a test that passed and now fails). Any regression
+fails the gate. Improvements beyond the tolerance are reported too; tests or
+metrics on one side only are `new` / `missing`, never regressions. When a
+judge's fingerprint differs from the one in the baseline the summary says so,
+because its scores are no longer strictly comparable. Reports of schema
+versions 1 and 2 load as baselines.
+
+```
+baseline baseline.json: 1 regression(s), 0 improvement(s)
+  REGRESSED metric faithfulness                 0.925 -> 0.700 (tolerance 0.05)
+gate: FAILED (1 regression(s) vs the baseline)
+```
+
+## Calibrating a judge
+
+Calibration is just another eval: the workflow under test is the judge, each
+test's vars are the judge's inputs, and `expected` is the label a person gave
+(`pass` / `fail`). A `calibration:` block turns on the agreement report; tests
+without their own assertions then check `verdict: <expected>` instead of
+`equals`.
+
+```yaml
+workflow: ../judges/faithfulness.yaml
+dataset: labels.jsonl        # {id, vars: {question, output, contexts}, expected: pass|fail}
+calibration:
+  unknown: exclude           # exclude (default): counted apart | fail: counted as the judge saying fail
+  threshold: 0.5             # for score-only judges
+  min_kappa: 0.5             # gates (optional)
+  min_tpr: 0.8
+  min_tnr: 0.7
+gate: { pass_rate: 0 }       # disagreements are expected; gate on kappa instead
+```
+
+```
+calibration: 10 labelled, 9 judged, 1 unknown (excluded), 0 error(s)
+  agreement 0.778  TPR 0.800  TNR 0.750  kappa 0.550
+                 label pass  label fail
+  judge pass              4           1
+  judge fail              1           3
+```
+
+TPR is the share of good outputs the judge passes, TNR the share of bad ones
+it catches (often the weak side), and Cohen's kappa
+`(po - pe) / (1 - pe)` corrects the raw agreement `po` for the agreement `pe`
+expected by chance from the marginals: 80% agreement can be a kappa of 0.6.
+A metric with no examples of its class is undefined (`null`) and fails its
+gate. Judge runs that fail count as `errors`. Calibration rows pass the judge's
+inputs directly as vars, so give `contexts` as text. Collect 100-200 labels
+per failure mode, keep a held-out split, and re-run the calibration whenever
+the judge's fingerprint changes; `--judge-model` measures what a cheaper judge
+model costs in agreement.
 
 ## Running
 
@@ -196,8 +367,10 @@ graphrt eval <file.eval.yaml> [flags]
 | --- | --- |
 | `-j, --concurrency N` | Tests running at the same time (default 4). |
 | `--filter PATTERN` | Only tests whose id or a tag matches (`*` wildcards). Repeatable. |
-| `--repeat N` | Run every test N times; each run is a separate result (`id#1`, `id#2`...). |
-| `-o, --output FILE` | Write the JSON results. |
+| `--trials N` (alias `--repeat`) | Run every test N times; each trial is a separate result (`id#1`, `id#2`...) and the report adds pass@k / pass^k. |
+| `-o, --output FILE` | Write the JSON results (also the input of a later `--baseline`). |
+| `--baseline FILE` | Compare with earlier JSON results; regressions beyond `gate.baseline` fail the gate. |
+| `--judge-model PROVIDER/NAME` | Point every model node of the judge workflows at another model. |
 | `--junit FILE` | Write JUnit XML (one `<testcase>` per test; failures and run errors). |
 | `--pass-rate RATE` | Override `gate.pass_rate`. |
 | `--fail-exit-code CODE` | Exit code when the gate fails (default 5). |
@@ -205,18 +378,23 @@ graphrt eval <file.eval.yaml> [flags]
 | `--timeout-ms MS` | Per-test run timeout (a timed-out run is an error). |
 | `--providers`, `--knowledge`, `--mcp`, `--plugins`, `--model`, `--env-file`, ... | As for `graphrt run`; they win over the eval file. `--model` points every model node at another model, for A/B runs. |
 
-Exit codes: `0` the gate passed, `5` (or `--fail-exit-code`) the gate failed,
+Exit codes: `0` the gate passed, `5` (or `--fail-exit-code`) the gate failed
+(pass rate, pass^k, calibration thresholds or baseline regressions; the summary
+line `gate: FAILED (...)` lists each unmet condition),
 `2` invalid eval file, dataset, assertion or workflow, `1` other failures.
 Individual test failures never change the exit code on their own; only the gate does.
 
 ### JSON results
 
-`--output` writes one object; `schema_version` is `1`, and fields are only
-added within a version.
+`--output` writes one object; `schema_version` is `2`, and fields are only
+added within a version. Version 2 renamed each test's `repeat` to `trial` and
+added `cases`, `calibration`, `baseline`, `summary.trials`,
+`summary.judge_usage`, `gate.failures`, and `judge` / `excluded` on assertion
+results. Version 1 files still load as baselines.
 
 ```jsonc
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "graphrt_version": "0.3.2",
   "suite": "evals/support.eval.yaml",
   "description": "...",
@@ -227,13 +405,33 @@ added within a version.
     "duration_ms": 245,
     "usage": { "prompt_tokens": 1302, "completion_tokens": 126, "total_tokens": 1428 },
     "latency_ms": { "mean": 81.0, "p50": 3, "p95": 242, "max": 242 },
-    "metrics": { "recall@1": { "count": 4, "passed": 4, "mean_score": 1.0 } },
-    "gate": { "pass_rate": 0.95, "passed": false }
+    "judge_usage": { "prompt_tokens": 822, "completion_tokens": 84, "total_tokens": 906 },  // judges' tokens
+    "metrics": { "faithfulness": { "count": 3, "passed": 3, "mean_score": 1.0, "excluded": 1 } },
+    "trials": { "trials": 3, "k": 3, "pass_at_k": 1.0, "pass_hat_k": 0.667 },   // with --trials
+    "gate": { "pass_rate": 0.95, "pass_hat_k": 0.8, "passed": false,
+              "failures": ["pass rate 0.667 < 0.950", "pass^3 0.667 < 0.800"] }
+  },
+  "cases": [                              // with --trials: one entry per test case
+    { "id": "refund-on-request", "trials": 3, "passed": 2, "pass_rate": 0.667,
+      "pass_at_k": 1.0, "pass_hat_k": 0.0, "mean_score": 0.667 }
+  ],
+  "calibration": {                        // calibration suites
+    "labelled": 10, "judged": 9, "unknown": 1, "errors": 0, "unknown_policy": "exclude",
+    "confusion": { "tp": 4, "fp": 1, "tn": 3, "fn": 1 },
+    "agreement": 0.778, "tpr": 0.8, "tnr": 0.75, "kappa": 0.55
+  },
+  "baseline": {                           // with --baseline
+    "path": "baseline.json", "workflow_fingerprint": "600df109733a51e0",
+    "judges_changed": [], "regressions": 1, "improvements": 0,
+    "metrics": [ { "name": "faithfulness", "baseline": 0.925, "current": 0.7, "tolerance": 0.05,
+                   "change": "regressed" } ],           // regressed | improved | unchanged | new | missing
+    "tests": [ { "name": "refund-on-request", "baseline": 1.0, "current": 0.667, "tolerance": 0.0,
+                 "change": "regressed" } ]              // changed tests only
   },
   "tests": [
     {
       "id": "refund-on-request", "description": null, "source": "inline",  // or "<dataset>:<line>"
-      "tags": ["refund"], "repeat": 0,
+      "tags": ["refund"], "trial": 0,
       "status": "passed",                 // passed | failed | error
       "pass": true, "score": 1.0,
       "reason": null,                     // one-line explanation when not passed
@@ -250,12 +448,19 @@ added within a version.
         "tool_calls": [ { "node_id": "agent", "id": "call_2", "name": "search_orders",
                           "provider": "orders", "tool": "search_orders",
                           "arguments": { "order_id": "456" }, "is_error": false } ],
-        "retrieval": [ { "node_id": "retrieve", "id": "...", "document_id": "...", "score": 0.24 } ],
+        "retrieval": [ { "node_id": "retrieve", "id": "...", "document_id": "...", "score": 0.24,
+                         "content": "..." } ],
         "events": []                      // only with --include-events
       },
       "assertions": [
         { "type": "trajectory:tool-sequence", "metric": null, "pass": true, "score": 1.0,
-          "weight": 1.0, "reason": "called search_orders -> refund_order in order" }
+          "weight": 1.0, "reason": "called search_orders -> refund_order in order" },
+        { "type": "judge", "metric": "faithfulness", "pass": true, "score": 1.0, "weight": 1.0,
+          "reason": "judge: pass: every claim appears in the context",
+          "excluded": false,              // true: reported only (unknown with `unknown: exclude`)
+          "judge": { "workflow": "evals/judges/faithfulness.yaml", "fingerprint": "b97e80df555ecba9",
+                     "verdict": "pass", "score": null, "reasoning": "...", "run_id": "...",
+                     "latency_ms": 412, "usage": { "prompt_tokens": 274, "completion_tokens": 28, "total_tokens": 302 } } }
       ]
     }
   ]
@@ -314,6 +519,8 @@ do not record prompts that carry secrets.
 | `branching.eval.yaml` + `branching-cases.jsonl` | A JSONL dataset with `expected`, tags, `defaultTest` assertions. |
 | `agent/agent.eval.yaml` | An agent judged on answers and trajectory: model responses replayed from committed cassettes, tools from a local plugin (needs `python3`). The cassettes were recorded from a scripted OpenAI-compatible server; re-record against a real model with `GRAPHRT_REPLAY_MODE=record OPENAI_API_KEY=...`. |
 | `retrieval/retrieval.eval.yaml` | recall@1, MRR and precision@3 over a committed, hash-embedded knowledge store. |
+| `judged/judged.eval.yaml` | A RAG workflow graded by the reference judges (faithfulness, relevance, goal success, refusal), an `unknown` excluded, `gate.pass_hat_k`. The answers and the verdicts replay from cassettes recorded against a scripted OpenAI-compatible server. Try `--trials 3`. |
+| `calibration/faithfulness.eval.yaml` + `labels.jsonl` | Calibrating the faithfulness judge against ten human labels: agreement, TPR, TNR, kappa, confusion matrix, a `min_kappa` gate. |
 
 ## CI
 
@@ -408,4 +615,5 @@ The other way around: a Promptfoo test suite whose assertions are all
 deterministic types listed above runs under `graphrt eval` after adding
 `workflow:` and mapping its `vars` to the workflow's start inputs. JavaScript
 `transform`s are not supported; simple paths (`output.field`) are. Model-graded
-types (`llm-rubric`, `factuality`, ...) are reported as unknown assertion types.
+types (`llm-rubric`, `factuality`, ...) are reported as unknown assertion types;
+replace them with a `judge` workflow (see [LLM judges](#llm-judges-judges-are-workflows)).

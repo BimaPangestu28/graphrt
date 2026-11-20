@@ -76,12 +76,41 @@ keep the context and data an evaluator needs.
   (`retrieval:recall-at-k`, `precision-at-k`, `mrr`), each negatable with
   `not-` and weighted (`weight: 0` reports only). The workflow is compiled
   once and tests run in-process and concurrently (`-j`), with `--filter`,
-  `--repeat`, per-test `--timeout-ms`, `--output` JSON results and `--junit`
-  XML. A failed gate exits with the new exit code 5 (`--fail-exit-code`).
-  Feature `eval`, on by default; not in the small-device build. See
-  [docs/evals.md](docs/evals.md).
+  `--trials` (alias `--repeat`), per-test `--timeout-ms`, `--output` JSON
+  results (report `schema_version: 2`) and `--junit` XML. A failed gate exits
+  with the new exit code 5 (`--fail-exit-code`). Feature `eval`, on by
+  default; not in the small-device build. See [docs/evals.md](docs/evals.md).
+- LLM judges as graphrt workflows: `{type: judge, workflow: judges/x.yaml}`
+  runs the judge on the test's `output`, `vars`, `expected`, retrieved
+  `contexts` and tool `trajectory` (plus `inputs`), and reads `verdict:
+  pass|fail|unknown` or a 0..1 `score` with `reasoning`. `unknown: fail`
+  (default) or `exclude` (reported, not scored or gated). Each judge is
+  compiled once and runs inside its test under `-j`; its workflow fingerprint,
+  verdict, reasoning and tokens are recorded with the result
+  (`summary.judge_usage` totals them). `--judge-model PROVIDER/NAME` overrides
+  the judges' models; `--model` never does.
+- `examples/evals/judges`: reference judges for faithfulness, answer
+  relevance, goal success and refusal (binary, single criterion, with an
+  `unknown` option) and a System One refusal judge; `examples/evals/judged`
+  runs them offline on a RAG workflow from replay cassettes.
+- `--trials N`: per test case unbiased pass@k (`1 - C(n-c,k)/C(n,k)`) and
+  pass^k (`C(c,k)/C(n,k)`) in `cases` and `summary.trials`;
+  `gate: {pass_hat_k, k}` gates on the mean pass^k.
+- `--baseline results.json`: compare with an earlier `--output` file; metric
+  means and per-test pass rates regress only beyond `gate.baseline`
+  tolerances (`tolerance` 0.05, `test_tolerance` 0, per-metric `metrics`),
+  improvements and changed judge fingerprints are reported, and any regression
+  fails the gate.
+- Judge calibration: a suite with `calibration:` evaluates a judge workflow
+  against human labels in `expected` (new `verdict` assertion) and reports
+  agreement, TPR, TNR, Cohen's kappa and the confusion matrix, with
+  `min_kappa` / `min_tpr` / `min_tnr` gates (`examples/evals/calibration`).
+- `gate.failures` in the JSON results and `gate: FAILED (...)` on the
+  terminal name every unmet gate condition.
 - `graphrt-eval` crate: the same harness as a library, for `cargo test`, with
-  an `Assertion` trait and registry for custom assertion types.
+  an `Assertion` trait and registry for custom assertion types, a
+  `JudgeLoader` for `judge` assertions, and the `stats` (pass@k, pass^k,
+  agreement), `baseline` and `calibration` modules.
 - `kind: replay` providers: serve model responses from recorded cassettes
   (keyed by a hash of the normalized request, streamed delta by delta), record
   them from an `upstream` provider (`mode: record`), or both (`mode: auto`,
