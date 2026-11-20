@@ -1,5 +1,7 @@
 # Supabase chatbot (backend)
 
+Guide: [docs/chatbot-supabase.md](../../docs/chatbot-supabase.md) (architecture, flow, security model, setup, deploy).
+
 ## Overview
 
 A multi-user chatbot backend: a mobile or web app signs users in with
@@ -32,7 +34,7 @@ This folder is the backend only. The Flutter and React Native clients live in
 | [`supabase/tests/isolation.sql`](supabase/tests/isolation.sql) | User A cannot read or change user B's rows, through tables or functions; anon cannot call anything |
 | [`Dockerfile`](Dockerfile) | Small image: static graphrt + the plugin on distroless Node.js |
 | [`deploy/fly.toml`](deploy/fly.toml), [`.env.example`](.env.example) | Deployment config; every secret is an environment variable |
-| [`test/smoke.sh`](test/smoke.sh) | Offline end-to-end check with mock OpenAI and Supabase |
+| [`tests/`](tests/README.md) | Offline tests, one command (`tests/run.sh`): the smoke test with mock upstreams, and the end-to-end security test (real PostgREST + Postgres, a scripted hostile model) that user A cannot get user B's data and prompt injection cannot leave the allowlist or reveal the JWT |
 
 ## Features
 
@@ -106,11 +108,13 @@ curl -N http://127.0.0.1:8080/v1/workflows/agent/runs \
        "sys": {"history": [], "today": "2026-11-20"}}'
 ```
 
-Offline check of the whole chain (no keys needed; mock upstreams):
+Offline checks of the whole chain (no keys, no Supabase project; see
+[`tests/README.md`](tests/README.md)):
 
 ```sh
-examples/supabase-chatbot/test/smoke.sh "$(command -v graphrt)" ~/.graphrt/plugins/supabase
+examples/supabase-chatbot/tests/run.sh "$(command -v graphrt)" ~/.graphrt/plugins/supabase
 # ok: 401 without/forged token; streamed answer "Your display name is Ada." (first run 229 ms incl. plugin start, warm 5 ms, ...)
+# ok: security e2e (real PostgREST + Postgres 16.14): cross-user and injection runs leaked nothing (2 runs, 650 ms); canary leak detected
 ```
 
 ## Client contract
