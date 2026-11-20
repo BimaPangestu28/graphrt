@@ -22,7 +22,7 @@ or embedded in your own Rust program.
 | Laptop / server | `graphrt run flow.yaml` or `graphrt serve flows/` (single static binary) |
 | Container | ~17 MB distroless image (linux/amd64, linux/arm64) — see [docs/deploy.md](docs/deploy.md) |
 | Small devices / IoT | A 6 MiB build serves workflows in a 16 MiB memory limit on a tenth of a core — see [docs/serving.md](docs/serving.md#small-devices) |
-| Phone | Embed `graphrt-ffi` in an Android or iOS app — see [docs/mobile.md](docs/mobile.md) and the [sample apps](examples/mobile/) |
+| Phone | Embed `graphrt-ffi` in an Android or iOS app — see [docs/mobile.md](docs/mobile.md) and the [sample apps](examples/mobile/); or chat with a served agent from Flutter / React Native — see [docs/chatbot-supabase.md](docs/chatbot-supabase.md) |
 | Browser / edge | The core compiles to WebAssembly |
 | Your Rust app | `graphrt-core` as a library — see [docs/embedding.md](docs/embedding.md) |
 
@@ -119,11 +119,14 @@ curl -H "X-User-Authorization: Bearer $USER_JWT" -d '{"stream":true}' \
 With `--verify-jwt user_jwt` the server verifies that token itself (JWKS or
 HS256, `exp`, `iss`, `aud`), so the app needs no API key, and
 `--user-rate-limit` caps runs per user. A full Supabase chatbot backend (schema
-with RLS, agent, container, deploy notes) is in
-[examples/supabase-chatbot](examples/supabase-chatbot/).
+with RLS, agent, container, deploy notes, end-to-end security tests) is in
+[examples/supabase-chatbot](examples/supabase-chatbot/), with Flutter and React
+Native clients in [graphrt-examples](https://github.com/BimaPangestu28/graphrt-examples);
+the guide is [docs/chatbot-supabase.md](docs/chatbot-supabase.md).
 
 See [docs/serving.md](docs/serving.md#per-user-credentials-from-headers) and
-[docs/cli.md](docs/cli.md) for every command and flag.
+[docs/cli.md](docs/cli.md) for every command and flag, and the
+[docs index](docs/README.md) for everything else.
 
 ## A workflow
 

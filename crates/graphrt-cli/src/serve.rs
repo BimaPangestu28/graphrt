@@ -400,6 +400,11 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
         .route("/healthz", get(|| async { "ok" }))
         .merge(counted)
         .layer(DefaultBodyLimit::max(max_body_bytes))
+        // Outermost: early rejections leave the body unread; drain it so keep-alive clients can reuse the connection.
+        .layer(middleware::from_fn_with_state(
+            crate::body_drain::DrainLimit(max_body_bytes),
+            crate::body_drain::drain_unread_body,
+        ))
         .with_state(state)
 }
 

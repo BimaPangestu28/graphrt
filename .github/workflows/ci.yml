@@ -65,3 +65,26 @@ jobs:
         run: |
           ls -l target/min-size/graphrt
           echo "### graphrt binary: $(du -h target/min-size/graphrt | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+
+  chatbot-e2e:
+    name: chatbot security e2e (PostgREST + Postgres)
+    runs-on: ubuntu-24.04
+    env:
+      POSTGREST_VERSION: v16.6
+      # ubuntu-24.04 images ship PostgreSQL 16 (service stopped; the test starts its own cluster).
+      PG_BIN: /usr/lib/postgresql/16/bin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install PostgREST
+        run: |
+          curl -fsSL "https://github.com/PostgREST/postgrest/releases/download/${POSTGREST_VERSION}/postgrest-${POSTGREST_VERSION}-linux-static-x86-64.tar.xz" \
+            | sudo tar -xJ -C /usr/local/bin postgrest
+          postgrest --version
+      # The features of the chatbot container image.
+      - run: cargo build -p graphrt-cli --no-default-features --features llm,serve,jwt,plugins
+      - run: examples/supabase-chatbot/tests/run.sh target/debug/graphrt

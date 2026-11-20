@@ -61,7 +61,7 @@ otel = ["dep:graphrt-otel"]
 mimalloc = ["dep:mimalloc"]
 # `graphrt serve`: HTTP + SSE API, webhook triggers (`--webhooks`). Completion
 # callbacks of webhooks additionally need `http` (they go through its egress policy).
-serve = ["dep:axum", "dep:sha2", "tokio/rt-multi-thread", "tokio/net", "tokio/sync"]
+serve = ["dep:axum", "dep:http-body", "dep:sha2", "tokio/rt-multi-thread", "tokio/net", "tokio/sync"]
 # End-user JWT verification and per-user rate limits for `serve` (`--verify-jwt`,
 # `--user-rate-limit`): HS256 / ES256 / RS256 with `ring` and a JWKS fetched with
 # `reqwest`, both already linked for TLS, so it adds no new crates.
@@ -102,6 +102,8 @@ ring = { version = "0.17", optional = true, default-features = false, features =
 base64 = { version = "0.22", optional = true }
 thiserror = { workspace = true, optional = true }
 axum ={ version = "0.8", optional = true, default-features = false, features = ["http1", "json", "query", "tokio"] }
+# Already linked through axum/hyper; named for `Frame` in the body drain of `serve`.
+http-body = { version = "1", optional = true }
 
 [dev-dependencies]
 tower = { version = "0.5", default-features = false, features = ["util"] }
