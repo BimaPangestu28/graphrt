@@ -13,6 +13,9 @@
 //!   compiled once through a [`judge::JudgeLoader`] and versioned by fingerprint.
 //! - [`stats`]: unbiased pass@k / pass^k over trials, and judge agreement
 //!   (TPR, TNR, Cohen's kappa) for [`calibration`] suites.
+//! - [`online`]: evaluators that score a sample of production runs in
+//!   `graphrt serve` (no expected answers: judges, regexes, schemas, budgets,
+//!   trajectories), with deterministic per-run sampling and filters.
 //! - [`EvalReport`]: the summary, the gate verdict, the [`baseline`]
 //!   comparison, and JSON / JUnit output.
 //!
@@ -40,6 +43,7 @@ pub mod config;
 pub mod error;
 mod glob;
 pub mod judge;
+pub mod online;
 pub mod path;
 pub mod report;
 pub mod runner;
