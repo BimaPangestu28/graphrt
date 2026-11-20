@@ -39,7 +39,7 @@ use crate::dsl::NodeDoc;
 use crate::node::{ConfigError, Node, NodeContext, NodeError, NodeOutput, NodeResult, Registry, parse_config};
 use crate::pool::{Selector, VariablePool};
 use crate::template::Template;
-use crate::tool::{ToolError, ToolOutput, ToolRegistry, ToolRuntime, ToolSpec};
+use crate::tool::{ToolCallContext, ToolError, ToolOutput, ToolRegistry, ToolRuntime, ToolSpec};
 use crate::value::Value;
 
 /// Node kind handled by [`ToolNode`].
@@ -197,7 +197,12 @@ impl ToolNode {
             .clone();
         let (arguments, masked_args) = self.resolve_args(&ctx.pool);
         let missing = self.missing_variables(&ctx.pool);
-        let output = runtime.call(&self.tool, arguments).await.map_err(|e| NodeError::new("tool", e.to_string()))?;
+        // Arguments already carry rendered secrets here: the node config is written by the
+        // workflow author, not a model, so there is no separate context channel.
+        let output = runtime
+            .call(&self.tool, arguments, ToolCallContext::empty())
+            .await
+            .map_err(|e| NodeError::new("tool", e.to_string()))?;
         if output.is_error && !self.ignore_tool_errors {
             return Err(NodeError::fatal("tool_error", output.text));
         }
@@ -340,7 +345,14 @@ impl ToolRuntime for NativeTools {
         Box::pin(futures::future::ready(Ok(specs)))
     }
 
-    fn call<'a>(&'a self, name: &'a str, arguments: serde_json::Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+    /// Native handlers take only arguments; the context is not forwarded
+    /// (`accepts_secrets` stays `false`).
+    fn call<'a>(
+        &'a self,
+        name: &'a str,
+        arguments: serde_json::Value,
+        _context: &'a ToolCallContext,
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         let Some((spec, handler)) = self.tools.get(name) else {
             return Box::pin(futures::future::ready(Err(ToolError {
                 tool: name.to_owned(),
@@ -392,6 +404,7 @@ mod tests {
             &'a self,
             name: &'a str,
             arguments: serde_json::Value,
+            _context: &'a ToolCallContext,
         ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
             self.calls.lock().unwrap().push((name.to_owned(), arguments));
             let reply = self.reply.clone().unwrap_or_else(|| ToolOutput::text("{\"ok\":true}"));
@@ -534,12 +547,12 @@ mod tests {
         });
         assert_eq!(tools.len(), 1);
         assert_eq!(tools.list().await.unwrap()[0].name, "echo");
-        let out = tools.call("echo", serde_json::json!({"text": "hi"})).await.unwrap();
+        let out = tools.call("echo", serde_json::json!({"text": "hi"}), ToolCallContext::empty()).await.unwrap();
         assert_eq!(out.text, "HI");
-        let err = tools.call("echo", serde_json::json!({})).await.unwrap_err();
+        let err = tools.call("echo", serde_json::json!({}), ToolCallContext::empty()).await.unwrap_err();
         assert!(err.message.contains("text"));
-        assert!(tools.call("echo", serde_json::json!("str")).await.is_err());
-        assert!(tools.call("nope", serde_json::json!({})).await.is_err());
+        assert!(tools.call("echo", serde_json::json!("str"), ToolCallContext::empty()).await.is_err());
+        assert!(tools.call("nope", serde_json::json!({}), ToolCallContext::empty()).await.is_err());
     }
 
     #[tokio::test]

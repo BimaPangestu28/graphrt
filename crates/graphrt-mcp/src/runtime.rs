@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use graphrt_core::tool::{ToolError, ToolOutput, ToolRuntime, ToolSpec};
+use graphrt_core::tool::{ToolCallContext, ToolError, ToolOutput, ToolRuntime, ToolSpec};
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::RunningService;
 use rmcp::transport::IntoTransport;
@@ -221,7 +221,14 @@ impl ToolRuntime for McpToolRuntime {
         Box::pin(self.list_cached())
     }
 
-    fn call<'a>(&'a self, name: &'a str, arguments: serde_json::Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+    /// MCP has no per-call secret channel; the context is never forwarded
+    /// (`accepts_secrets` stays `false`, so callers never fill it).
+    fn call<'a>(
+        &'a self,
+        name: &'a str,
+        arguments: serde_json::Value,
+        _context: &'a ToolCallContext,
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         Box::pin(self.call_tool(name, arguments))
     }
 }

@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use graphrt_core::engine::{Engine, RunInput};
 use graphrt_core::node::{Services, TokioClock};
-use graphrt_core::tool::ToolRegistry;
+use graphrt_core::tool::{ToolCallContext, ToolRegistry};
 use graphrt_core::{Event, Graph, Registry, Workflow};
 use graphrt_plugin::{IoTransport, LoadedManifest, PluginHost, PluginManifest};
 use graphrt_plugin_sdk::{Plugin, RunResult, ToolResult};
@@ -164,7 +164,7 @@ async fn http_runtime_streams_ndjson() {
     let events = run(&registry, &tools, doc, RunInput::new().input("text", "abc")).await;
     assert_eq!(succeeded(&events)["out"], "cba");
     assert!(events.iter().any(|e| matches!(e, Event::NodeChunk { chunk, .. } if chunk == "rev:")));
-    let pong = tools.get("remote").unwrap().call("ping", json!({})).await.unwrap();
+    let pong = tools.get("remote").unwrap().call("ping", json!({}), ToolCallContext::empty()).await.unwrap();
     assert_eq!(pong.text, "pong");
 
     // Error bodies of non-2xx responses are kept, not discarded.
@@ -240,7 +240,7 @@ async fn rust_sdk_plugin_in_process() {
     let events = run(&registry, &tools, doc, RunInput::new().input("text", "one two three four")).await;
     assert_eq!(succeeded(&events)["answer"], "long: 4");
     assert!(events.iter().any(|e| matches!(e, Event::NodeProgress { name, .. } if name == "analyzing")));
-    let echoed = tools.get("stats").unwrap().call("echo", json!({"v": 7})).await.unwrap();
+    let echoed = tools.get("stats").unwrap().call("echo", json!({"v": 7}), ToolCallContext::empty()).await.unwrap();
     assert_eq!(echoed.text, "7");
 }
 
@@ -275,9 +275,69 @@ async fn plugin_tool_images_reach_the_host() {
     host.register(&mut registry, &mut tools).unwrap();
 
     let runtime = tools.get("screen").unwrap();
-    let shot = runtime.call("shot", json!({})).await.unwrap();
+    let shot = runtime.call("shot", json!({}), ToolCallContext::empty()).await.unwrap();
     assert_eq!(shot.text, "800x600");
     assert_eq!(shot.images, vec![graphrt_core::tool::ToolImage::png("aGVsbG8=")]);
-    let err = runtime.call("bad", json!({})).await.unwrap_err();
+    let err = runtime.call("bad", json!({}), ToolCallContext::empty()).await.unwrap_err();
     assert!(err.message.contains("invalid `images`") && err.message.contains("image/bmp"), "{err}");
+}
+
+/// An in-process plugin with tool `who` answering with the `user_jwt` of its context.
+fn context_host(secrets: bool, trusted: bool) -> ToolRegistry {
+    let (host_side, plugin_side) = tokio::io::duplex(1 << 20);
+    let (plugin_r, plugin_w) = tokio::io::split(plugin_side);
+    let plugin = Plugin::new("db")
+        .tool(json!({"name": "who", "description": "", "parameters": {}}), |call| async move {
+            Ok(ToolResult::text(call.context.secret("user_jwt").unwrap_or("anonymous")))
+        });
+    tokio::spawn(plugin.serve(plugin_r, plugin_w));
+    let (host_r, host_w) = tokio::io::split(host_side);
+    let transport = Arc::new(IoTransport::new(host_r, host_w, 1 << 20));
+    let manifest = PluginManifest::from_json(
+        &json!({
+            "name": "db",
+            "runtime": "process",
+            "command": "in-process",
+            "permissions": {"secrets": secrets},
+            "tools": [{"name": "who", "description": "", "parameters": {}}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut host = if trusted { PluginHost::new().trust("db") } else { PluginHost::new() };
+    host.add_with_transport(LoadedManifest { manifest, dir: PathBuf::from(".") }, transport).unwrap();
+    let mut registry = Registry::with_builtins();
+    let mut tools = ToolRegistry::new();
+    host.register(&mut registry, &mut tools).unwrap();
+    tools
+}
+
+fn jwt_context() -> ToolCallContext {
+    let mut context = ToolCallContext::default();
+    context.secrets.insert("user_jwt".into(), "eyJ-user-1".into());
+    context
+}
+
+#[tokio::test]
+async fn trusted_plugins_receive_the_tool_call_context() {
+    let tools = context_host(true, true);
+    let runtime = tools.get("db").unwrap();
+    assert!(runtime.accepts_secrets());
+    let out = runtime.call("who", json!({}), &jwt_context()).await.unwrap();
+    assert_eq!(out.text, "eyJ-user-1");
+    let out = runtime.call("who", json!({}), ToolCallContext::empty()).await.unwrap();
+    assert_eq!(out.text, "anonymous", "an empty context is not sent");
+}
+
+#[tokio::test]
+async fn untrusted_plugins_never_receive_the_tool_call_context() {
+    for (secrets, trusted) in [(true, false), (false, true)] {
+        let tools = context_host(secrets, trusted);
+        let runtime = tools.get("db").unwrap();
+        assert!(!runtime.accepts_secrets());
+        let err = runtime.call("who", json!({}), &jwt_context()).await.unwrap_err();
+        assert!(err.message.contains("permissions.secrets"), "{err}");
+        let out = runtime.call("who", json!({}), ToolCallContext::empty()).await.unwrap();
+        assert_eq!(out.text, "anonymous");
+    }
 }

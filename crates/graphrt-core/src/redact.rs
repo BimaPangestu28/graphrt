@@ -77,6 +77,19 @@ impl SecretSet {
         }
     }
 
+    /// Remember a plaintext secret that is not held in a typed [`Value::Secret`]
+    /// (e.g. a value a node rendered for a tool call context).
+    pub fn observe_plaintext(&self, plaintext: &str) {
+        if plaintext.len() < MIN_SCRUB_LEN {
+            return;
+        }
+        if let Ok(mut values) = self.values.lock()
+            && !values.iter().any(|known| known.as_ref() == plaintext)
+        {
+            values.push(Arc::from(plaintext));
+        }
+    }
+
     fn insert(&self, plaintext: &Arc<str>) {
         if plaintext.len() < MIN_SCRUB_LEN {
             return;
@@ -135,5 +148,9 @@ mod tests {
         set.observe(&Value::Secret(Arc::from("tok-1234")));
         assert_eq!(set.scrub("Bearer tok-1234 rejected; no"), "Bearer ****** rejected; no");
         assert!(!format!("{set:?}").contains("tok-1234"));
+        set.observe_plaintext("eyJ-user-jwt");
+        set.observe_plaintext("eyJ-user-jwt");
+        set.observe_plaintext("ab");
+        assert_eq!(set.scrub("jwt eyJ-user-jwt; ab"), "jwt ******; ab");
     }
 }

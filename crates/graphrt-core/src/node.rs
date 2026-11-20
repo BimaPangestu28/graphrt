@@ -19,6 +19,7 @@ use indexmap::IndexMap;
 use crate::dsl::NodeDoc;
 use crate::event::{Event, FrameId, PauseReason, Usage};
 use crate::pool::{Selector, VariablePool};
+use crate::redact::SecretSet;
 use crate::snapshot::FrameSnapshot;
 use crate::value::Value;
 use crate::variables::{VarName, Variables};
@@ -438,6 +439,8 @@ pub struct NodeContext {
     /// the node has an effective timeout. See [`NodeContext::remaining`].
     pub deadline_ms: Option<u64>,
     sink: EventSink,
+    /// The run's secret registry, when the engine provides one.
+    secret_values: Option<Arc<SecretSet>>,
 }
 
 impl fmt::Debug for NodeContext {
@@ -476,6 +479,7 @@ impl NodeContext {
             subgraph: None,
             deadline_ms: None,
             sink,
+            secret_values: None,
         }
     }
 
@@ -516,6 +520,20 @@ impl NodeContext {
     pub fn with_deadline(mut self, deadline_ms: Option<u64>) -> Self {
         self.deadline_ms = deadline_ms;
         self
+    }
+
+    /// Attach the run's secret registry (see [`NodeContext::observe_secret`]).
+    pub fn with_secret_values(mut self, secret_values: Arc<SecretSet>) -> Self {
+        self.secret_values = Some(secret_values);
+        self
+    }
+
+    /// Register plaintext this node handles as a secret, so the engine scrubs it
+    /// from every later node error message of the run. A no-op outside the engine.
+    pub fn observe_secret(&self, plaintext: &str) {
+        if let Some(secret_values) = &self.secret_values {
+            secret_values.observe_plaintext(plaintext);
+        }
     }
 
     /// Time left before the current attempt times out, if it has a deadline.

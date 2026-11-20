@@ -1,6 +1,7 @@
 //! Tool contract shared by the `tool` node, the `agent` node and tool
 //! providers (native Rust tools, MCP servers, HTTP tools...).
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -173,12 +174,68 @@ pub struct ToolError {
     pub message: String,
 }
 
+/// Per-call values a tool receives next to its arguments, without the model
+/// ever seeing them (e.g. the end user's JWT for a database tool).
+///
+/// The `agent` node fills it from its `tool_context` config, only for
+/// providers whose [`ToolRuntime::accepts_secrets`] is `true`. The values are
+/// plaintext: they are never written to events, outputs, snapshots or traces,
+/// and `Debug` shows only the names. The type deliberately does not implement
+/// `Serialize`, so it cannot end up in a recorded value by accident.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ToolCallContext {
+    /// Secret name → plaintext value.
+    pub secrets: BTreeMap<String, String>,
+}
+
+static EMPTY_TOOL_CALL_CONTEXT: ToolCallContext = ToolCallContext { secrets: BTreeMap::new() };
+
+impl ToolCallContext {
+    /// A shared empty context, for callers that have nothing to pass.
+    pub fn empty() -> &'static ToolCallContext {
+        &EMPTY_TOOL_CALL_CONTEXT
+    }
+
+    /// Whether there is nothing in the context.
+    pub fn is_empty(&self) -> bool {
+        self.secrets.is_empty()
+    }
+
+    /// The plaintext of secret `name`.
+    pub fn secret(&self, name: &str) -> Option<&str> {
+        self.secrets.get(name).map(String::as_str)
+    }
+}
+
+impl fmt::Debug for ToolCallContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolCallContext").field("secrets", &self.secrets.keys().collect::<Vec<_>>()).finish()
+    }
+}
+
 /// A source of tools.
 pub trait ToolRuntime: Send + Sync + fmt::Debug {
     /// Tools currently available.
     fn list(&self) -> BoxFuture<'_, Result<Vec<ToolSpec>, ToolError>>;
-    /// Invoke a tool with a JSON arguments object.
-    fn call<'a>(&'a self, name: &'a str, arguments: serde_json::Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>>;
+
+    /// Invoke a tool with a JSON arguments object and a per-call context.
+    ///
+    /// `context` is empty unless this runtime [accepts secrets](ToolRuntime::accepts_secrets)
+    /// and the caller configured some. Runtimes that cannot forward it ignore it.
+    fn call<'a>(
+        &'a self,
+        name: &'a str,
+        arguments: serde_json::Value,
+        context: &'a ToolCallContext,
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>>;
+
+    /// Whether this runtime may receive plaintext secrets in a [`ToolCallContext`].
+    ///
+    /// `false` by default. The plugin runtime returns `true` only for plugins that
+    /// request `permissions.secrets` and that the operator trusts.
+    fn accepts_secrets(&self) -> bool {
+        false
+    }
 }
 
 /// Service registered in [`crate::node::Services`]: named tool providers
@@ -216,6 +273,17 @@ impl ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn call_context_debug_hides_values() {
+        assert!(ToolCallContext::empty().is_empty());
+        let mut context = ToolCallContext::default();
+        context.secrets.insert("user_jwt".into(), "eyJ-secret-token".into());
+        assert_eq!(context.secret("user_jwt"), Some("eyJ-secret-token"));
+        assert_eq!(context.secret("other"), None);
+        let debug = format!("{context:?}");
+        assert!(debug.contains("user_jwt") && !debug.contains("eyJ-secret-token"), "{debug}");
+    }
 
     #[test]
     fn constructors_have_no_images() {

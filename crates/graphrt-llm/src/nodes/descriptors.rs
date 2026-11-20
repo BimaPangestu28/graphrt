@@ -238,7 +238,13 @@ pub(crate) fn agent() -> NodeDescriptor {
                 "require_approval": { "type": "array", "items": { "type": "string" } },
                 "max_tool_output_chars": { "type": "integer", "minimum": 1, "default": 32000 },
                 "keep_tool_images": { "type": ["integer", "null"], "minimum": 0, "default": 3 },
-                "stream_tool_turns": { "type": "boolean", "default": true }
+                "stream_tool_turns": { "type": "boolean", "default": true },
+                "tool_context": {
+                    "type": "object",
+                    "description": "Per provider, named values (templates) sent to its tools beside the arguments; \
+                                    never shown to the model or recorded. The provider must accept secrets.",
+                    "additionalProperties": { "type": "object", "additionalProperties": { "type": "string" } }
+                }
             }),
             &["model"],
         ))

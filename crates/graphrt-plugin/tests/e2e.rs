@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use graphrt_core::engine::{Engine, RunInput};
 use graphrt_core::node::{Services, TokioClock};
-use graphrt_core::tool::ToolRegistry;
+use graphrt_core::tool::{ToolCallContext, ToolRegistry};
 use graphrt_core::{Event, Graph, Registry, Value, Workflow};
 use graphrt_plugin::{LoadedManifest, PluginError, PluginHost, PluginManifest};
 use serde_json::json;
@@ -131,7 +131,7 @@ async fn python_example_streams_and_branches() {
     let runtime = setup.tools.get("sentiment").unwrap();
     let specs = runtime.list().await.unwrap();
     assert_eq!(specs[0].name, "score");
-    let out = runtime.call("score", json!({"text": "awful and slow"})).await.unwrap();
+    let out = runtime.call("score", json!({"text": "awful and slow"}), ToolCallContext::empty()).await.unwrap();
     assert_eq!(out.text, "-1.00");
     assert!(!out.is_error);
 }
@@ -357,7 +357,13 @@ async fn node_example_streams_and_pauses() {
     let events = collect(&e, RunInput::new().resume((**snapshot).clone(), inputs)).await;
     assert_eq!(outputs(&events)["answer"], "published: Hello Plugin World");
 
-    let shout = setup.tools.get("upper").unwrap().call("shout", json!({"text": "hey"})).await.unwrap();
+    let shout = setup
+        .tools
+        .get("upper")
+        .unwrap()
+        .call("shout", json!({"text": "hey"}), ToolCallContext::empty())
+        .await
+        .unwrap();
     assert_eq!(shout.text, "HEY");
 }
 

@@ -59,7 +59,7 @@ pub(crate) struct RunShared {
     /// Host input for paused nodes, keyed by `"<frame>/<node_id>"` or plain node id.
     pub(crate) resume_inputs: IndexMap<String, Value>,
     /// Plaintext of every secret seen in this run, scrubbed from node error messages.
-    pub(crate) secret_values: SecretSet,
+    pub(crate) secret_values: Arc<SecretSet>,
 }
 
 impl std::fmt::Debug for RunShared {
@@ -630,7 +630,8 @@ impl Frame {
                 )
                 .with_resume(resume.as_deref().cloned())
                 .with_subgraph(subgraph.clone())
-                .with_deadline(deadline_ms);
+                .with_deadline(deadline_ms)
+                .with_secret_values(Arc::clone(&run.secret_values));
                 // The result and the error stay inside this block, so the task
                 // does not reserve room for them while it waits for a retry.
                 let delay_ms = {

@@ -41,11 +41,19 @@
 //! `keep_tool_images` (default 3, `null` for all) bounds how many image-bearing
 //! results keep their images.
 //!
+//! `tool_context` sends per-run values (e.g. the end user's JWT) to the tools of
+//! a provider beside their arguments, as a [`ToolCallContext`]. The model never
+//! sees them, they are never recorded, and they are only rendered (with secrets
+//! exposed) for providers that [accept secrets](ToolRuntime::accepts_secrets);
+//! any other provider fails the node. The values are registered as run secrets
+//! and scrubbed from tool results and logged arguments.
+//!
 //! Progress events: `agent_step`, `agent_thought`, `tool_call`, `tool_result`,
 //! `tool_denied`. Outputs: `text`, `tool_calls`
 //! (`[{name, provider, tool, arguments, result, is_error, images}]`), `iterations`,
 //! `stopped_reason` (`completed`, `max_iterations` or `length`), `usage`.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -53,10 +61,12 @@ use futures::future::BoxFuture;
 use graphrt_core::dsl::NodeDoc;
 use graphrt_core::event::Usage;
 use graphrt_core::node::{ConfigError, NodeOutcome, NodeResult, PauseRequest, parse_config};
+use graphrt_core::redact::redact_secrets;
 use graphrt_core::template::Template;
-use graphrt_core::tool::{ToolImage, ToolOutput, ToolRegistry, ToolRuntime, ToolSpec, check_images};
+use graphrt_core::tool::{ToolCallContext, ToolImage, ToolOutput, ToolRegistry, ToolRuntime, ToolSpec, check_images};
 use graphrt_core::value::Value;
 use graphrt_core::{Node, NodeContext, NodeError, NodeOutput, Selector};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
@@ -160,6 +170,10 @@ pub struct AgentConfig {
     /// (see the module docs). Default `true`; `false` buffers those turns.
     #[serde(default = "default_true")]
     pub stream_tool_turns: bool,
+    /// Per provider, named values sent with every call to that provider's tools
+    /// (`{provider: {name: template}}`), outside the arguments. See the module docs.
+    #[serde(default)]
+    pub tool_context: IndexMap<String, IndexMap<String, Template>>,
 }
 
 /// A tool bound for one run.
@@ -171,6 +185,14 @@ struct BoundTool {
     name: String,
     runtime: Arc<dyn ToolRuntime>,
     spec: ToolSpec,
+    /// Rendered `tool_context` of the provider, shared by its tools.
+    context: Option<Arc<ToolCallContext>>,
+}
+
+impl BoundTool {
+    fn context(&self) -> &ToolCallContext {
+        self.context.as_deref().unwrap_or(ToolCallContext::empty())
+    }
 }
 
 /// One executed (or rejected) tool call.
@@ -248,6 +270,17 @@ impl AgentNode {
                     .ok_or_else(|| ConfigError::new(doc, format!("invalid tool reference {r:?}; use `provider/name`")))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        for (provider, values) in &config.tool_context {
+            if !refs.iter().any(|(p, _)| p == provider) {
+                return Err(ConfigError::new(
+                    doc,
+                    format!("tool_context provider `{provider}` is not used by any entry of `tools`"),
+                ));
+            }
+            if values.keys().any(String::is_empty) {
+                return Err(ConfigError::new(doc, format!("tool_context `{provider}` has an empty name")));
+            }
+        }
         Ok(Self { config, refs })
     }
 
@@ -293,10 +326,45 @@ impl AgentNode {
                         description: spec.description.clone(),
                         parameters: spec.parameters.clone(),
                     },
+                    context: None,
                 });
             }
         }
+        self.attach_tool_context(ctx, &mut bound)?;
         Ok(bound)
+    }
+
+    /// Render `tool_context` (secrets exposed) for each configured provider and
+    /// share it with that provider's bound tools. Fails when a provider does not
+    /// accept secrets: silently dropping the values would hide a misconfiguration.
+    fn attach_tool_context(&self, ctx: &NodeContext, bound: &mut [BoundTool]) -> Result<(), NodeError> {
+        for (provider, templates) in &self.config.tool_context {
+            let Some(first) = bound.iter().find(|b| &b.provider == provider) else { continue };
+            if !first.runtime.accepts_secrets() {
+                return Err(NodeError::fatal(
+                    "tool_context_denied",
+                    format!(
+                        "tool provider `{provider}` does not accept a tool context (a plugin needs \
+                         `permissions.secrets` and must be trusted, e.g. `--trust-plugin {provider}`)"
+                    ),
+                ));
+            }
+            let mut context = ToolCallContext::default();
+            for (name, template) in templates {
+                let value = template.render_exposed(&ctx.pool);
+                // A missing variable renders empty: leave the name out so the tool can refuse.
+                if value.is_empty() {
+                    continue;
+                }
+                ctx.observe_secret(&value);
+                context.secrets.insert(name.clone(), value);
+            }
+            let context = Arc::new(context);
+            for tool in bound.iter_mut().filter(|b| &b.provider == provider) {
+                tool.context = Some(Arc::clone(&context));
+            }
+        }
+        Ok(())
     }
 
     fn needs_approval(&self, tool: &BoundTool) -> bool {
@@ -371,7 +439,7 @@ impl AgentNode {
                 let undecided = self.apply_decisions(&ctx, &mut state, &tools, resume.input.as_ref()).await;
                 if !undecided.is_empty() {
                     state.pending = undecided;
-                    return self.pause(&state);
+                    return self.pause(&state, &tools);
                 }
                 state
             }
@@ -473,7 +541,7 @@ impl AgentNode {
             self.run_calls(&ctx, &mut state, &tools, free).await;
             if !gated.is_empty() {
                 state.pending = gated;
-                return self.pause(&state);
+                return self.pause(&state, &tools);
             }
         };
 
@@ -497,9 +565,12 @@ impl AgentNode {
             .into())
     }
 
-    fn pause(&self, state: &AgentState) -> NodeResult {
-        let calls: Vec<Json> =
-            state.pending.iter().map(|c| json!({"id": c.id, "name": c.name, "arguments": log_arguments(c)})).collect();
+    fn pause(&self, state: &AgentState, tools: &[BoundTool]) -> NodeResult {
+        let calls: Vec<Json> = state
+            .pending
+            .iter()
+            .map(|c| json!({"id": c.id, "name": c.name, "arguments": log_arguments(c, tools)}))
+            .collect();
         let saved = serde_json::to_value(state)
             .map_err(|e| NodeError::fatal("agent_state", format!("cannot save agent state: {e}")))?;
         Ok(NodeOutcome::Paused(PauseRequest {
@@ -528,7 +599,10 @@ impl AgentNode {
     /// Append a tool result to the conversation and the log.
     fn record(&self, state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, output: ToolOutput) {
         let bound = tools.iter().find(|t| t.exposed == call.name);
-        let mut text = truncate(&output.text, self.config.max_tool_output_chars);
+        // A tool may echo its context (e.g. an upstream error repeating the JWT): the
+        // model, the outputs and the progress events must never see it.
+        let scrubbed = bound.map_or(Cow::Borrowed(output.text.as_str()), |b| scrub_context(&output.text, b.context()));
+        let mut text = truncate(&scrubbed, self.config.max_tool_output_chars);
         let images = match check_images(&output.images) {
             Ok(()) => output.images,
             Err(e) => {
@@ -548,7 +622,7 @@ impl AgentNode {
             name: call.name.clone(),
             provider: bound.map(|b| b.provider.clone()).unwrap_or_default(),
             tool: bound.map(|b| b.name.clone()).unwrap_or_default(),
-            arguments: log_arguments(call),
+            arguments: log_arguments(call, tools),
             result: text,
             is_error: output.is_error,
             images: image_count,
@@ -562,7 +636,7 @@ impl AgentNode {
         for call in &calls {
             ctx.progress(
                 "tool_call",
-                Value::from_json(json!({"id": call.id, "name": call.name, "arguments": log_arguments(call)})),
+                Value::from_json(json!({"id": call.id, "name": call.name, "arguments": log_arguments(call, tools)})),
             );
         }
         let outputs: Vec<ToolOutput> = if self.config.parallel_tool_calls {
@@ -675,11 +749,41 @@ fn prune_tool_images(messages: &mut [Message], keep: usize) {
 }
 
 /// Arguments as shown in logs and approval requests: the parsed object, or the
-/// raw text when it is not valid JSON (so nothing is hidden from the reader).
-fn log_arguments(call: &ToolCall) -> Json {
-    match call.arguments_json() {
+/// raw text when it is not valid JSON (so nothing is hidden from the reader),
+/// with the tool's context values masked.
+fn log_arguments(call: &ToolCall, tools: &[BoundTool]) -> Json {
+    let mut arguments = match call.arguments_json() {
         Ok(map) => Json::Object(map),
         Err(_) => Json::String(call.arguments.clone()),
+    };
+    if let Some(tool) = tools.iter().find(|t| t.exposed == call.name)
+        && !tool.context().is_empty()
+    {
+        scrub_json(&mut arguments, tool.context());
+    }
+    arguments
+}
+
+/// `text` with every value of `context` masked. Borrows when there is nothing to mask.
+fn scrub_context<'a>(text: &'a str, context: &ToolCallContext) -> Cow<'a, str> {
+    if context.is_empty() {
+        return Cow::Borrowed(text);
+    }
+    let values: Vec<&str> = context.secrets.values().map(String::as_str).collect();
+    redact_secrets(text, &values)
+}
+
+/// Mask the values of `context` in every string of `value`.
+fn scrub_json(value: &mut Json, context: &ToolCallContext) {
+    match value {
+        Json::String(text) => {
+            if let Cow::Owned(scrubbed) = scrub_context(text, context) {
+                *text = scrubbed;
+            }
+        }
+        Json::Array(items) => items.iter_mut().for_each(|item| scrub_json(item, context)),
+        Json::Object(map) => map.values_mut().for_each(|item| scrub_json(item, context)),
+        _ => {}
     }
 }
 
@@ -691,7 +795,7 @@ async fn call_tool(tools: &[BoundTool], call: &ToolCall) -> ToolOutput {
         Ok(map) => Json::Object(map),
         Err(e) => return ToolOutput::error(format!("error: {e}")),
     };
-    match tool.runtime.call(&tool.name, arguments).await {
+    match tool.runtime.call(&tool.name, arguments, tool.context()).await {
         Ok(output) => output,
         Err(e) => ToolOutput::error(format!("error: {e}")),
     }
@@ -789,6 +893,7 @@ impl Node for AgentNode {
         }
         out.extend(cfg.vision.selectors());
         out.extend(cfg.model.selectors());
+        out.extend(cfg.tool_context.values().flat_map(IndexMap::values).flat_map(|t| t.selectors().cloned()));
         out
     }
 }
@@ -834,7 +939,12 @@ mod tests {
             })
         }
 
-        fn call<'a>(&'a self, name: &'a str, arguments: Json) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        fn call<'a>(
+            &'a self,
+            name: &'a str,
+            arguments: Json,
+            _context: &'a ToolCallContext,
+        ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
             self.calls.lock().unwrap().push(name.to_owned());
             Box::pin(async move {
                 match name {
@@ -859,7 +969,12 @@ mod tests {
             Box::pin(async move { Ok(vec![spec("screenshot"), spec("bad_image")]) })
         }
 
-        fn call<'a>(&'a self, name: &'a str, _arguments: Json) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        fn call<'a>(
+            &'a self,
+            name: &'a str,
+            _arguments: Json,
+            _context: &'a ToolCallContext,
+        ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
             Box::pin(async move {
                 Ok(match name {
                     "screenshot" => ToolOutput::text("800x600").with_image(ToolImage::png("aGVsbG8=")),
@@ -953,6 +1068,136 @@ mod tests {
             })
             .collect();
         assert_eq!(progress, ["agent_step", "tool_call", "tool_call", "tool_result", "tool_result", "agent_step"]);
+    }
+
+    const JWT: &str = "eyJhbGciOiJIUzI1NiJ9.user-token";
+
+    /// Tool `whoami {}` that echoes its context (as a careless upstream error would).
+    #[derive(Debug)]
+    struct VaultTools {
+        accepts: bool,
+        contexts: Mutex<Vec<ToolCallContext>>,
+    }
+
+    impl VaultTools {
+        fn new(accepts: bool) -> Arc<Self> {
+            Arc::new(Self { accepts, contexts: Mutex::default() })
+        }
+    }
+
+    impl ToolRuntime for VaultTools {
+        fn list(&self) -> BoxFuture<'_, Result<Vec<ToolSpec>, ToolError>> {
+            let spec = ToolSpec { name: "whoami".into(), description: "d".into(), parameters: json!({}) };
+            Box::pin(async move { Ok(vec![spec]) })
+        }
+
+        fn call<'a>(
+            &'a self,
+            _name: &'a str,
+            _arguments: Json,
+            context: &'a ToolCallContext,
+        ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+            self.contexts.lock().unwrap().push(context.clone());
+            let token = context.secret("user_jwt").unwrap_or("none").to_owned();
+            Box::pin(async move { Ok(ToolOutput::text(format!("rejected token {token}"))) })
+        }
+
+        fn accepts_secrets(&self) -> bool {
+            self.accepts
+        }
+    }
+
+    fn vault_ctx(s: &Setup, vault: &Arc<VaultTools>) -> NodeContext {
+        let mut registry = ToolRegistry::new();
+        registry.add("vault", Arc::clone(vault) as Arc<dyn ToolRuntime>);
+        let services = Services::new()
+            .with(ModelRegistry::new().with("openai", Arc::clone(&s.model) as Arc<dyn crate::ChatModel>))
+            .with(registry);
+        let mut pool = VariablePool::new();
+        pool.insert("sys", "query", Value::from("who am I?"));
+        pool.insert("start", "user_jwt", Value::Secret(Arc::from(JWT)));
+        let events = Arc::clone(&s.events);
+        NodeContext::for_test("agent", pool)
+            .with_services(Arc::new(services))
+            .with_sink(Arc::new(move |e| events.lock().unwrap().push(e)))
+    }
+
+    fn vault_agent(extra: Json) -> AgentNode {
+        let mut config = json!({
+            "model": {"provider": "openai", "name": "gpt"},
+            "tools": ["vault/whoami"],
+            "tool_context": {"vault": {"user_jwt": "{{#start.user_jwt#}}", "missing": "{{#start.nope#}}"}},
+        });
+        if let (Some(c), Json::Object(e)) = (config.as_object_mut(), extra) {
+            c.extend(e);
+        }
+        AgentNode::from_doc(&NodeDoc::new("agent", "agent", config)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn tool_context_reaches_the_tool_but_nothing_else() {
+        let s = setup(vec![
+            MockModel::tool_calls(&[("c1", "whoami", &format!(r#"{{"echo":"{JWT}"}}"#))]),
+            MockModel::text("done"),
+        ]);
+        let vault = VaultTools::new(true);
+        let secrets = Arc::new(graphrt_core::redact::SecretSet::new());
+        let ctx = vault_ctx(&s, &vault).with_secret_values(Arc::clone(&secrets));
+        let node = vault_agent(json!({}));
+        let out = completed(node.run(ctx).await);
+
+        let contexts = vault.contexts.lock().unwrap().clone();
+        assert_eq!(contexts.len(), 1);
+        assert_eq!(contexts[0].secret("user_jwt"), Some(JWT));
+        assert_eq!(contexts[0].secret("missing"), None, "empty renders are left out");
+
+        // Not in the model's history, the outputs or any event.
+        let requests = s.model.requests();
+        assert_eq!(requests[1].messages.last().unwrap().text(), "rejected token ******");
+        // (The model's own arguments stay in its history as it wrote them.)
+        let tool_messages: Vec<_> = requests[1].messages.iter().filter(|m| m.role == Role::Tool).collect();
+        assert!(!format!("{tool_messages:?}").contains(JWT));
+        assert!(!serde_json::to_string(&out.outputs).unwrap().contains(JWT));
+        let events = serde_json::to_string(&*s.events.lock().unwrap()).unwrap();
+        assert!(!events.contains(JWT), "{events}");
+        // Registered with the run so later node errors are scrubbed too.
+        assert_eq!(secrets.scrub(&format!("bad {JWT}")), "bad ******");
+        assert!(node.inputs().iter().any(|sel| sel.to_string() == "start.user_jwt"));
+    }
+
+    #[tokio::test]
+    async fn tool_context_is_sent_again_after_approval() {
+        let s = setup(vec![MockModel::tool_calls(&[("c1", "whoami", "{}")]), MockModel::text("done")]);
+        let vault = VaultTools::new(true);
+        let node = vault_agent(json!({"require_approval": ["*"]}));
+        let paused = match node.run(vault_ctx(&s, &vault)).await.unwrap() {
+            NodeOutcome::Paused(p) => p,
+            NodeOutcome::Completed(_) => panic!("expected a pause"),
+        };
+        assert!(!paused.state.to_string().contains(JWT), "the snapshot state never holds the context");
+        let resume = Resume { state: paused.state, input: Some(Value::Bool(true)) };
+        completed(node.run(vault_ctx(&s, &vault).with_resume(Some(resume))).await);
+        assert_eq!(vault.contexts.lock().unwrap()[0].secret("user_jwt"), Some(JWT));
+    }
+
+    #[tokio::test]
+    async fn tool_context_needs_a_provider_that_accepts_secrets() {
+        let s = setup(vec![MockModel::text("unused")]);
+        let vault = VaultTools::new(false);
+        let error = vault_agent(json!({})).run(vault_ctx(&s, &vault)).await.unwrap_err();
+        assert_eq!(error.kind, "tool_context_denied");
+        assert!(vault.contexts.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tool_context_providers_must_be_used() {
+        let config = json!({
+            "model": {"provider": "openai", "name": "gpt"},
+            "tools": ["math/add"],
+            "tool_context": {"vault": {"user_jwt": "x"}},
+        });
+        let error = AgentNode::from_doc(&NodeDoc::new("agent", "agent", config)).unwrap_err();
+        assert!(error.to_string().contains("`vault` is not used"), "{error}");
     }
 
     #[tokio::test]
