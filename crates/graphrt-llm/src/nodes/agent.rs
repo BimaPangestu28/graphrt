@@ -66,7 +66,6 @@ use graphrt_core::template::Template;
 use graphrt_core::tool::{ToolCallContext, ToolImage, ToolOutput, ToolRegistry, ToolRuntime, ToolSpec, check_images};
 use graphrt_core::value::Value;
 use graphrt_core::{Node, NodeContext, NodeError, NodeOutput, Selector};
-use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
@@ -172,8 +171,10 @@ pub struct AgentConfig {
     pub stream_tool_turns: bool,
     /// Per provider, named values sent with every call to that provider's tools
     /// (`{provider: {name: template}}`), outside the arguments. See the module docs.
+    /// Kept as raw JSON (parsed by [`AgentNode::from_doc`]) so no extra serde
+    /// code is generated for a rarely used field.
     #[serde(default)]
-    pub tool_context: IndexMap<String, IndexMap<String, Template>>,
+    pub tool_context: serde_json::Map<String, Json>,
 }
 
 /// A tool bound for one run.
@@ -254,6 +255,44 @@ impl StopReason {
 pub struct AgentNode {
     config: AgentConfig,
     refs: Vec<(String, String)>,
+    /// Parsed `tool_context`.
+    tool_context: Vec<ProviderContext>,
+}
+
+/// One provider's `tool_context`: provider name and `(name, template)` pairs.
+type ProviderContext = (String, Vec<(String, Template)>);
+
+/// Parse `tool_context`: every provider must appear in `tools`, every value
+/// must be a non-empty name mapped to a template string.
+fn parse_tool_context(
+    doc: &NodeDoc,
+    raw: &serde_json::Map<String, Json>,
+    refs: &[(String, String)],
+) -> Result<Vec<ProviderContext>, ConfigError> {
+    let mut parsed = Vec::with_capacity(raw.len());
+    for (provider, values) in raw {
+        if !refs.iter().any(|(p, _)| p == provider) {
+            return Err(ConfigError::new(
+                doc,
+                format!("tool_context provider `{provider}` is not used by any entry of `tools`"),
+            ));
+        }
+        let Json::Object(values) = values else {
+            return Err(ConfigError::new(doc, format!("tool_context `{provider}` must map names to templates")));
+        };
+        let mut templates = Vec::with_capacity(values.len());
+        for (name, value) in values {
+            let (false, Json::String(text)) = (name.is_empty(), value) else {
+                return Err(ConfigError::new(
+                    doc,
+                    format!("tool_context `{provider}.{name}` must be a non-empty name with a template string"),
+                ));
+            };
+            templates.push((name.clone(), Template::parse(text)));
+        }
+        parsed.push((provider.clone(), templates));
+    }
+    Ok(parsed)
 }
 
 impl AgentNode {
@@ -270,18 +309,8 @@ impl AgentNode {
                     .ok_or_else(|| ConfigError::new(doc, format!("invalid tool reference {r:?}; use `provider/name`")))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        for (provider, values) in &config.tool_context {
-            if !refs.iter().any(|(p, _)| p == provider) {
-                return Err(ConfigError::new(
-                    doc,
-                    format!("tool_context provider `{provider}` is not used by any entry of `tools`"),
-                ));
-            }
-            if values.keys().any(String::is_empty) {
-                return Err(ConfigError::new(doc, format!("tool_context `{provider}` has an empty name")));
-            }
-        }
-        Ok(Self { config, refs })
+        let tool_context = parse_tool_context(doc, &config.tool_context, &refs)?;
+        Ok(Self { config, refs, tool_context })
     }
 
     /// Resolve tool references against the registry, assigning unique exposed names.
@@ -338,7 +367,7 @@ impl AgentNode {
     /// share it with that provider's bound tools. Fails when a provider does not
     /// accept secrets: silently dropping the values would hide a misconfiguration.
     fn attach_tool_context(&self, ctx: &NodeContext, bound: &mut [BoundTool]) -> Result<(), NodeError> {
-        for (provider, templates) in &self.config.tool_context {
+        for (provider, templates) in &self.tool_context {
             let Some(first) = bound.iter().find(|b| &b.provider == provider) else { continue };
             if !first.runtime.accepts_secrets() {
                 return Err(NodeError::fatal(
@@ -893,7 +922,7 @@ impl Node for AgentNode {
         }
         out.extend(cfg.vision.selectors());
         out.extend(cfg.model.selectors());
-        out.extend(cfg.tool_context.values().flat_map(IndexMap::values).flat_map(|t| t.selectors().cloned()));
+        out.extend(self.tool_context.iter().flat_map(|(_, t)| t).flat_map(|(_, t)| t.selectors().cloned()));
         out
     }
 }
@@ -1198,6 +1227,11 @@ mod tests {
         });
         let error = AgentNode::from_doc(&NodeDoc::new("agent", "agent", config)).unwrap_err();
         assert!(error.to_string().contains("`vault` is not used"), "{error}");
+        for bad in [json!({"math": {"jwt": 1}}), json!({"math": {"": "x"}}), json!({"math": "x"})] {
+            let config =
+                json!({"model": {"provider": "openai", "name": "gpt"}, "tools": ["math/add"], "tool_context": bad});
+            assert!(AgentNode::from_doc(&NodeDoc::new("agent", "agent", config)).is_err());
+        }
     }
 
     #[tokio::test]

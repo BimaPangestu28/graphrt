@@ -320,7 +320,10 @@ impl ToolRuntime for PluginTools {
                 .map_err(|_| self.error(name, CallError::Crashed("closed".into())))?;
             let clock = graphrt_core::node::default_clock();
             let id = self.shared.transport.next_id();
-            let mut params = serde_json::json!({"request_id": id, "name": name, "arguments": arguments});
+            let mut params = serde_json::Map::with_capacity(4);
+            params.insert("request_id".into(), serde_json::Value::from(id.clone()));
+            params.insert("name".into(), serde_json::Value::from(name));
+            params.insert("arguments".into(), arguments);
             // `context` is only sent when there is something in it, and only to plugins
             // granted plaintext secrets: older plugins never see the new field.
             if !context.is_empty() {
@@ -334,9 +337,10 @@ impl ToolRuntime for PluginTools {
                         ),
                     });
                 }
-                params["context"] = serde_json::json!({"secrets": context.secrets});
+                params.insert("context".into(), serde_json::json!({"secrets": context.secrets}));
             }
-            let call = self.shared.transport.call(id, "tool.call", params, None, true, &clock);
+            let call =
+                self.shared.transport.call(id, "tool.call", serde_json::Value::Object(params), None, true, &clock);
             let result = with_timeout(&clock, self.shared.timeout, call).await;
             track(self.shared.transport.as_ref(), &result);
             let result = result.map_err(|e| self.error(name, e))?;
