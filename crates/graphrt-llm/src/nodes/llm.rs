@@ -22,7 +22,8 @@ use serde_json::Value as Json;
 
 use super::common::{
     ContextConfig, FinishCheck, MemoryConfig, ModelConfig, PromptTemplate, StreamMode, VisionConfig, build_messages,
-    check_finish, extract_json_where, finish_reason_value, invoke, model_for, split_think_tags, usage_value,
+    check_finish, extract_json_where, finish_reason_value, invoke, model_for, report_request_messages,
+    split_think_tags, usage_value,
 };
 use super::schema;
 use crate::types::{ChatResponse, ResponseFormat};
@@ -125,6 +126,9 @@ impl LlmNode {
         }
 
         let model = model_for(&ctx, &cfg.model)?;
+        if ctx.captures_content() {
+            report_request_messages(&ctx, &request.messages);
+        }
         let mode = match cfg.reasoning_format {
             ReasoningFormat::Tagged => StreamMode::Raw,
             ReasoningFormat::Separated => StreamMode::SeparateThink,
@@ -294,6 +298,41 @@ mod tests {
         assert_eq!(req.temperature, Some(0.2));
         assert_eq!(req.messages[0].role, Role::System);
         assert!(matches!(&req.messages[1].content[0], ContentPart::Text { text } if text == "hi there"));
+    }
+
+    #[tokio::test]
+    async fn rendered_messages_are_reported_only_when_the_host_captures_content() {
+        let node = LlmNode::from_doc(&doc(serde_json::json!({
+            "model": {"provider": "openai", "name": "gpt"},
+            "prompt_template": [{"role": "system", "text": "key {{#env.KEY#}}"}, {"role": "user", "text": "hi"}]
+        })))
+        .unwrap();
+        let mut pool = VariablePool::new();
+        pool.insert("env", "KEY", Value::Secret(Arc::from("sk-live-1")));
+        let requests = |events: &Arc<Mutex<Vec<Event>>>| -> Vec<Value> {
+            let events = events.lock().unwrap();
+            let found = events.iter().filter_map(|e| match e {
+                Event::NodeProgress { name, data, .. } if name == "model_request" => Some(data.clone()),
+                _ => None,
+            });
+            found.collect()
+        };
+
+        let model = Arc::new(MockModel::new(vec![MockModel::text("ok")]));
+        let (ctx, events) = ctx_with(Arc::clone(&model), pool.clone());
+        completed(node.run(ctx).await);
+        assert!(requests(&events).is_empty());
+
+        let model = Arc::new(MockModel::new(vec![MockModel::text("ok")]));
+        let (ctx, events) = ctx_with(model, pool);
+        let services = (*ctx.services).clone().with(graphrt_core::node::CaptureContent);
+        completed(node.run(ctx.with_services(Arc::new(services))).await);
+        let reported = requests(&events);
+        assert_eq!(reported.len(), 1);
+        let json = reported[0].to_json();
+        assert_eq!(json["messages"][0]["role"], "system");
+        assert_eq!(json["messages"][0]["content"][0]["text"], "key ******");
+        assert_eq!(json["messages"][1]["content"][0]["text"], "hi");
     }
 
     #[tokio::test]

@@ -15,6 +15,7 @@ graphrt serve examples/ --store ./runs --store-ttl-days 30
 | `--store <dir>` (or `$GRAPHRT_STORE`) | Durable directory store. Paused runs survive restarts. |
 | *(neither)* | In-memory store. Runs are lost when the server stops. |
 | `--store-ttl-days <n>` | Hourly cleanup of runs (any status except running) not updated for `n` days. |
+| `--store-inputs` | Keep each run's inputs (secrets masked) in its record; see [Run context and evaluation data](#run-context-and-evaluation-data). |
 | `--max-runs <n>` | In-memory store only: keep at most `n` runs (default 1000, `0` = unlimited). The oldest finished runs are dropped first; running and paused runs are always kept. |
 | `--max-active-runs <n>` | At most `n` runs execute at once (default 256, `0` = unlimited); further starts and resumes get `429 Too Many Requests`. Paused runs do not count. |
 
@@ -41,7 +42,8 @@ Directory layout:
 ```text
 runs/
   .lock                          OS lock held around every store operation
-  runs/<run_id>/record.json      status, outputs, answer, pause reasons, usage
+  runs/<run_id>/record.json      status, outputs, answer, pause reasons, usage, run context
+                                 (and inputs with --store-inputs)
   runs/<run_id>/events.jsonl     one event per line (capped at 5 000 per run)
   runs/<run_id>/snapshot.json    snapshot of a paused run
 ```
@@ -71,6 +73,9 @@ runs stay paused and can be resumed.
 | `stream: true` | Respond with server-sent events |
 | `async: true` | Respond `202 {run_id, run, events}` immediately; the run continues in the background |
 | *(neither)* | Wait and respond with the final JSON result |
+| `metadata` | Optional string map (at most 64 entries, keys up to 256 bytes, values up to 2 KB) |
+| `session_id`, `user_id` | Optional ids (1-256 bytes) |
+| `tags` | Optional list of strings (at most 32, each 1-256 bytes) |
 
 For synchronous calls (blocking or streaming), the run is aborted when the
 client disconnects before it finishes. Async runs are never tied to a
@@ -168,6 +173,33 @@ the answer never mixes a failed attempt with the retry (or with a
 `default-value`). A `node_retry` event means the chunks of the previous
 attempt are void. For a live answer from such a node, render `node_chunk`
 events and reset on `node_retry`, or drop the retry policy.
+
+### Run context and evaluation data
+
+`metadata`, `session_id`, `user_id` and `tags` describe who ran what, for
+filtering and later evaluation. They are stored on the run record (and kept
+when the run is resumed) and, with [OpenTelemetry](observability.md) on, stamped
+on every span of the run as `session.id`, `user.id`, `gen_ai.conversation.id`,
+`langfuse.session.id`, `langfuse.user.id`, `langfuse.trace.tags` and
+`langfuse.trace.metadata.<key>`. A request that exceeds the limits gets `400`.
+
+```sh
+curl -s localhost:8080/v1/workflows/support/runs -H 'content-type: application/json' -d '{
+  "inputs": {"question": "Where is my order?"},
+  "session_id": "chat-42", "user_id": "u-17", "tags": ["prod"], "metadata": {"tenant": "acme"}
+}'
+```
+
+Run records gain these fields, all omitted when empty:
+
+| Field | Meaning |
+| --- | --- |
+| `metadata`, `session_id`, `user_id`, `tags` | From the request |
+| `trace_id`, `span_id` | OpenTelemetry trace id and root (`invoke_workflow`) span id of the latest execution, when tracing is on; lets later evaluation scores join the same trace |
+| `inputs` | The run's inputs as the start node accepted them, with `secret`-typed inputs stored as `******`. Only with `graphrt serve --store-inputs` |
+
+`--store-inputs` is off by default because inputs often hold personal data;
+turn it on to build evaluation datasets from production runs.
 
 ## Following runs
 

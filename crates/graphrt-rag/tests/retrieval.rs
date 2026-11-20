@@ -80,6 +80,26 @@ async fn node_retrieves_through_engine() {
 }
 
 #[tokio::test]
+async fn query_is_reported_only_to_content_capturing_hosts() {
+    let graph = workflow(json!({"dataset_ids": ["handbook"]}));
+    let query_meta = |events: &[Event]| {
+        events.iter().find_map(|e| match e {
+            Event::NodeSucceeded { node_id, metadata, .. } if node_id.as_ref() == "kr" => {
+                Some(metadata.get("query").cloned())
+            }
+            _ => None,
+        })
+    };
+    let engine = Engine::new(graph.clone()).with_services(Services::new().with(knowledge_base().await));
+    let events: Vec<Event> = engine.run(RunInput::new().input("q", "laptop")).collect().await;
+    assert_eq!(query_meta(&events), Some(None));
+    let services = Services::new().with(knowledge_base().await).with(graphrt_core::node::CaptureContent);
+    let events: Vec<Event> =
+        Engine::new(graph).with_services(services).run(RunInput::new().input("q", "laptop")).collect().await;
+    assert_eq!(query_meta(&events), Some(Some(Value::from("laptop"))));
+}
+
+#[tokio::test]
 async fn hybrid_weights_and_metadata_filter() {
     let graph = workflow(json!({
         "dataset_ids": ["handbook"],

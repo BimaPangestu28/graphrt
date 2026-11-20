@@ -416,6 +416,24 @@ impl Services {
     }
 }
 
+/// Marker service: the host records message content (rendered prompts, tool
+/// results, retrieval queries), so nodes should also report it as progress.
+///
+/// Hosts register it only when content capture is on (for example
+/// `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=SPAN_ONLY`). Without it, nodes
+/// skip building that progress entirely, so capture costs nothing when off.
+/// Content progress carries the same masked values as node outputs (secret
+/// values serialize as `******`).
+///
+/// ```
+/// let services = graphrt_core::Services::new().with(graphrt_core::node::CaptureContent);
+/// let ctx = graphrt_core::NodeContext::for_test("n", graphrt_core::VariablePool::new())
+///     .with_services(std::sync::Arc::new(services));
+/// assert!(ctx.captures_content());
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CaptureContent;
+
 /// Callback receiving events from nodes.
 pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
 
@@ -596,6 +614,12 @@ impl NodeContext {
             name: name.to_owned(),
             data,
         });
+    }
+
+    /// Whether the host asked for content progress (see [`CaptureContent`]).
+    /// Check it before building content-bearing progress data.
+    pub fn captures_content(&self) -> bool {
+        self.services.get::<CaptureContent>().is_some()
     }
 
     /// Raw access to the event sink (used by container implementations).

@@ -677,13 +677,16 @@ impl AgentNode {
             }
             out
         };
+        let capture = ctx.captures_content();
         for (call, output) in calls.iter().zip(outputs) {
-            ctx.progress(
-                "tool_result",
-                Value::from_json(
-                    json!({"id": call.id, "name": call.name, "is_error": output.is_error, "images": output.images.len()}),
-                ),
-            );
+            let mut data =
+                json!({"id": call.id, "name": call.name, "is_error": output.is_error, "images": output.images.len()});
+            if capture && let Some(fields) = data.as_object_mut() {
+                // Same text the model and the `tool_calls` output see.
+                let result = truncate(&output.text, self.config.max_tool_output_chars);
+                fields.insert("result".to_owned(), Json::String(result));
+            }
+            ctx.progress("tool_result", Value::from_json(data));
             self.record(state, tools, call, output);
         }
     }
@@ -1232,6 +1235,29 @@ mod tests {
                 json!({"model": {"provider": "openai", "name": "gpt"}, "tools": ["math/add"], "tool_context": bad});
             assert!(AgentNode::from_doc(&NodeDoc::new("agent", "agent", config)).is_err());
         }
+    }
+
+    fn tool_results(s: &Setup) -> Vec<Value> {
+        let events = s.events.lock().unwrap();
+        let results = events.iter().filter_map(|e| match e {
+            Event::NodeProgress { name, data, .. } if name == "tool_result" => Some(data.clone()),
+            _ => None,
+        });
+        results.collect()
+    }
+
+    #[tokio::test]
+    async fn tool_results_carry_text_only_when_the_host_captures_content() {
+        let responses = || vec![MockModel::tool_calls(&[("c1", "add", r#"{"a":2,"b":3}"#)]), MockModel::text("5")];
+        let s = setup(responses());
+        completed(agent(json!({})).run(ctx(&s)).await);
+        assert_eq!(tool_results(&s)[0].get_path(&["result"]), None);
+
+        let s = setup(responses());
+        let base = ctx(&s);
+        let services = (*base.services).clone().with(graphrt_core::node::CaptureContent);
+        completed(agent(json!({})).run(base.with_services(Arc::new(services))).await);
+        assert_eq!(tool_results(&s)[0].get_path(&["result"]), Some(Value::from("5")));
     }
 
     #[tokio::test]

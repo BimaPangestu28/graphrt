@@ -160,6 +160,31 @@ async fn full_queue_drops_instead_of_blocking() {
     assert_eq!(exporter.exported(), 4);
 }
 
+#[tokio::test]
+async fn full_queue_never_drops_run_root_spans() {
+    let (endpoint, seen) = collector(vec![]).await;
+    let settings = ExportSettings { queue_capacity: 2, batch_size: 64, ..settings() };
+    let exporter = OtlpHttpExporter::start_with(&config(&endpoint), None, settings).unwrap();
+    // Current-thread runtime: the queue fills with child spans first.
+    for i in 0..4 {
+        exporter.export(span(&format!("child{i}")));
+    }
+    let mut root = span("invoke_workflow wf");
+    root.set(graphrt_otel::semconv::graphrt::RUN_STATUS, "succeeded");
+    exporter.export(root);
+    assert_eq!(exporter.dropped(), 2, "two children dropped, the root kept");
+    exporter.shutdown().await;
+    assert_eq!(exporter.exported(), 3);
+    let names: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .flat_map(|r| r.body["resourceSpans"][0]["scopeSpans"][0]["spans"].as_array().cloned().unwrap_or_default())
+        .map(|s| s["name"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(names.iter().any(|n| n == "invoke_workflow wf"), "{names:?}");
+}
+
 #[test]
 fn start_outside_tokio_is_an_error() {
     let err = OtlpHttpExporter::start(&OtelConfig::default(), None).unwrap_err();

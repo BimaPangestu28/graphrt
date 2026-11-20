@@ -79,6 +79,29 @@ pub struct RunRecord {
     /// Whether events were dropped because the store's per-run cap was reached.
     #[serde(default)]
     pub events_truncated: bool,
+    /// Run inputs as the start node accepted them, secrets masked. Only kept when
+    /// the host opts in (`graphrt serve --store-inputs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inputs: Option<IndexMap<String, Value>>,
+    /// OpenTelemetry trace id (32 hex digits) of the latest execution, when traced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    /// Span id (16 hex digits) of that execution's root `invoke_workflow` span, so
+    /// later spans (online evaluation scores) can join the same trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
+    /// Caller-supplied labels for filtering and evaluation (`RunRequest.metadata`).
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub metadata: IndexMap<String, String>,
+    /// Caller's session / conversation id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Caller's end-user id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    /// Caller-supplied tags.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 impl RunRecord {
@@ -104,6 +127,13 @@ impl RunRecord {
             usage: Usage::default(),
             event_count: 0,
             events_truncated: false,
+            inputs: None,
+            trace_id: None,
+            span_id: None,
+            metadata: IndexMap::new(),
+            session_id: None,
+            user_id: None,
+            tags: Vec::new(),
         }
     }
 

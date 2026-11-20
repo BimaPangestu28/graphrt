@@ -197,6 +197,8 @@ impl KnowledgeRetrievalNode {
                 return Err(NodeError::fatal("invalid_input", format!("unknown dataset `{id}`")));
             }
         }
+        // Content-capturing hosts (OpenTelemetry `retrieval` spans) also record the query.
+        let reported_query = ctx.captures_content().then(|| query.clone());
         let request = RetrievalRequest::new(query, self.datasets.clone())
             .top_k(self.top_k)
             .threshold(self.threshold)
@@ -211,11 +213,14 @@ impl KnowledgeRetrievalNode {
 
         let count = hits.len();
         let result = Value::array(hits.into_iter().map(hit_value));
-        Ok(NodeOutput::new()
+        let mut output = NodeOutput::new()
             .with("result", result)
             .meta("datasets", Value::array(self.datasets.iter().map(|d| Value::from(d.as_str()))))
-            .meta("hits", i64::try_from(count).unwrap_or(i64::MAX))
-            .into())
+            .meta("hits", i64::try_from(count).unwrap_or(i64::MAX));
+        if let Some(query) = reported_query {
+            output = output.meta("query", query);
+        }
+        Ok(output.into())
     }
 }
 

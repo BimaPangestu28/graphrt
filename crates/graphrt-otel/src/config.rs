@@ -29,8 +29,56 @@ pub struct OtelConfig {
     /// Extra request headers (e.g. vendor API keys). Values are secrets: never logged.
     pub headers: Vec<(String, String)>,
     pub resource: Resource,
-    /// Attach truncated node outputs to spans (`GRAPHRT_OTEL_CAPTURE_CONTENT=true`).
-    pub capture_content: bool,
+    /// What content (inputs, messages, outputs, tool arguments...) spans carry:
+    /// `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`, or `SPAN_ONLY` for the older
+    /// `GRAPHRT_OTEL_CAPTURE_CONTENT=true`. Off by default.
+    pub capture: CaptureMode,
+}
+
+/// Content capture policy (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`).
+///
+/// Content means run inputs and outputs, rendered model messages, tool
+/// arguments and results, and retrieval queries and documents. Secrets stay
+/// masked and each value is capped in size either way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CaptureMode {
+    /// No content (the default).
+    #[default]
+    NoContent,
+    /// Content as span attributes.
+    SpanOnly,
+    /// Content on a `gen_ai.client.inference.operation.details` span event.
+    EventOnly,
+    /// Both.
+    SpanAndEvent,
+}
+
+impl CaptureMode {
+    /// Parse the standard variable's value, case-insensitively. Unknown values
+    /// mean [`CaptureMode::NoContent`], as the conventions require.
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "SPAN_ONLY" => CaptureMode::SpanOnly,
+            "EVENT_ONLY" => CaptureMode::EventOnly,
+            "SPAN_AND_EVENT" => CaptureMode::SpanAndEvent,
+            _ => CaptureMode::NoContent,
+        }
+    }
+
+    /// Whether any content is captured.
+    pub fn is_enabled(self) -> bool {
+        self != CaptureMode::NoContent
+    }
+
+    /// Whether content goes into span attributes.
+    pub fn on_span(self) -> bool {
+        matches!(self, CaptureMode::SpanOnly | CaptureMode::SpanAndEvent)
+    }
+
+    /// Whether content goes into span events.
+    pub fn on_event(self) -> bool {
+        matches!(self, CaptureMode::EventOnly | CaptureMode::SpanAndEvent)
+    }
 }
 
 impl std::fmt::Debug for OtelConfig {
@@ -43,7 +91,7 @@ impl std::fmt::Debug for OtelConfig {
             .field("metrics_endpoint", &self.metrics_endpoint)
             .field("headers", &header_names)
             .field("resource", &self.resource)
-            .field("capture_content", &self.capture_content)
+            .field("capture", &self.capture)
             .finish()
     }
 }
@@ -57,7 +105,7 @@ impl Default for OtelConfig {
             metrics_endpoint: format!("{DEFAULT_ENDPOINT}/v1/metrics"),
             headers: Vec::new(),
             resource: Resource::default(),
-            capture_content: false,
+            capture: CaptureMode::NoContent,
         }
     }
 }
@@ -73,7 +121,8 @@ impl OtelConfig {
     /// `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`,
     /// `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`,
     /// `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, `OTEL_SERVICE_NAME`,
-    /// `OTEL_RESOURCE_ATTRIBUTES`, and `GRAPHRT_OTEL_CAPTURE_CONTENT`.
+    /// `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`, and
+    /// `GRAPHRT_OTEL_CAPTURE_CONTENT` (an older alias: `true` means `SPAN_ONLY`).
     pub fn from_vars(vars: &[(String, String)]) -> Result<Self, ConfigError> {
         let get = |k: &str| vars.iter().rev().find(|(n, v)| n == k && !v.trim().is_empty()).map(|(_, v)| v.trim());
         let mut cfg = Self { disabled: get("OTEL_SDK_DISABLED").is_some_and(is_true), ..Self::default() };
@@ -120,7 +169,11 @@ impl OtelConfig {
             resource = resource.with("service.name", name);
         }
         cfg.resource = resource;
-        cfg.capture_content = get("GRAPHRT_OTEL_CAPTURE_CONTENT").is_some_and(is_true);
+        cfg.capture = match get("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT") {
+            Some(mode) => CaptureMode::parse(mode),
+            None if get("GRAPHRT_OTEL_CAPTURE_CONTENT").is_some_and(is_true) => CaptureMode::SpanOnly,
+            None => CaptureMode::NoContent,
+        };
         Ok(cfg)
     }
 }
@@ -204,7 +257,8 @@ mod tests {
             ("GRAPHRT_OTEL_CAPTURE_CONTENT", "true"),
         ]))
         .unwrap();
-        assert!(cfg.endpoint_configured && cfg.capture_content);
+        assert!(cfg.endpoint_configured);
+        assert_eq!(cfg.capture, CaptureMode::SpanOnly);
         assert_eq!(cfg.traces_endpoint, "https://otel.example.com/v1/traces");
         assert_eq!(cfg.metrics_endpoint, "https://otel.example.com/v1/metrics");
         assert_eq!(cfg.headers, vec![("x-api-key".into(), "abc def".into()), ("x-team".into(), "core".into())]);
@@ -220,6 +274,24 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.traces_endpoint, "http://b:9999/custom");
         assert!(cfg.disabled);
+    }
+
+    #[test]
+    fn standard_capture_variable_wins_over_the_alias() {
+        let mode = |pairs: &[(&str, &str)]| OtelConfig::from_vars(&vars(pairs)).unwrap().capture;
+        assert_eq!(mode(&[]), CaptureMode::NoContent);
+        assert_eq!(mode(&[("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT", "event_only")]), CaptureMode::EventOnly);
+        assert_eq!(
+            mode(&[("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT", "SPAN_AND_EVENT")]),
+            CaptureMode::SpanAndEvent
+        );
+        assert_eq!(mode(&[("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT", "bogus")]), CaptureMode::NoContent);
+        let both =
+            [("GRAPHRT_OTEL_CAPTURE_CONTENT", "true"), ("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT", "NO_CONTENT")];
+        assert_eq!(mode(&both), CaptureMode::NoContent);
+        assert_eq!(mode(&[("GRAPHRT_OTEL_CAPTURE_CONTENT", "1")]), CaptureMode::SpanOnly);
+        assert!(CaptureMode::SpanAndEvent.on_span() && CaptureMode::SpanAndEvent.on_event());
+        assert!(!CaptureMode::EventOnly.on_span() && !CaptureMode::NoContent.is_enabled());
     }
 
     #[test]

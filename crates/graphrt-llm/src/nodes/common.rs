@@ -479,6 +479,30 @@ pub enum StreamMode {
     SeparateThink,
 }
 
+/// Progress carrying a model node's rendered request messages.
+pub const MODEL_REQUEST_PROGRESS: &str = "model_request";
+
+/// Report the rendered request `messages` as [`MODEL_REQUEST_PROGRESS`]
+/// (`{"messages": [...]}`), for hosts that record content (callers check
+/// [`NodeContext::captures_content`] first, so this costs nothing otherwise).
+/// Prompts were rendered with secrets masked; inline image payloads are
+/// reduced to their `data:<mime>;base64` prefix.
+pub fn report_request_messages(ctx: &NodeContext, messages: &[Message]) {
+    let mut json = serde_json::to_value(messages).unwrap_or(Json::Null);
+    for message in json.as_array_mut().into_iter().flatten() {
+        let parts = message.get_mut("content").and_then(Json::as_array_mut);
+        for part in parts.into_iter().flatten() {
+            if let Some(Json::String(url)) = part.get_mut("url")
+                && url.starts_with("data:")
+                && let Some((prefix, _payload)) = url.split_once(',')
+            {
+                *url = prefix.to_owned();
+            }
+        }
+    }
+    ctx.progress(MODEL_REQUEST_PROGRESS, Value::from_json(serde_json::json!({ "messages": json })));
+}
+
 /// Run a request, streaming chunks according to `mode`.
 pub async fn invoke(
     ctx: &NodeContext,

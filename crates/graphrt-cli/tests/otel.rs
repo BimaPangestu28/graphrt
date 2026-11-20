@@ -14,7 +14,13 @@ fn hello() -> PathBuf {
 
 fn graphrt() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_graphrt"));
-    for var in ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_SDK_DISABLED"] {
+    for var in [
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "OTEL_SDK_DISABLED",
+        "OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT",
+        "GRAPHRT_OTEL_CAPTURE_CONTENT",
+    ] {
         cmd.env_remove(var);
     }
     cmd.env("HOME", std::env::temp_dir()).env_remove("GRAPHRT_PLUGIN_PATH");
@@ -37,12 +43,43 @@ fn otel_stdout_prints_span_lines_on_stderr() {
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .filter(|v| v.get("spanId").is_some())
         .collect();
-    let root = spans.iter().find(|s| s["name"] == "workflow hello").expect("root span");
+    let root = spans.iter().find(|s| s["name"] == "invoke_workflow hello").expect("root span");
     assert_eq!(spans.len(), 4, "root + start/greet/end");
-    for span in spans.iter().filter(|s| s["name"] != "workflow hello") {
+    for span in spans.iter().filter(|s| s["name"] != "invoke_workflow hello") {
         assert_eq!(span["traceId"], root["traceId"]);
         assert_eq!(span["parentSpanId"], root["spanId"]);
     }
+}
+
+#[test]
+fn run_context_flags_and_content_capture_reach_the_spans() {
+    let out = graphrt()
+        .args(["run"])
+        .arg(hello())
+        .args(["--input", "name=Ada", "--otel-stdout", "--no-default-plugins"])
+        .args(["--session-id", "s-1", "--user-id", "u-1", "--tag", "nightly", "--metadata", "suite=smoke"])
+        .env("OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT", "SPAN_ONLY")
+        .output()
+        .expect("spawn graphrt");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let spans: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v.get("spanId").is_some())
+        .collect();
+    let attr = |span: &serde_json::Value, key: &str| {
+        span["attributes"].as_array().unwrap().iter().find(|a| a["key"] == key).map(|a| a["value"].clone())
+    };
+    assert!(!spans.is_empty());
+    for span in &spans {
+        assert_eq!(attr(span, "session.id"), Some(serde_json::json!({"stringValue": "s-1"})), "{span}");
+        assert_eq!(attr(span, "langfuse.trace.metadata.suite"), Some(serde_json::json!({"stringValue": "smoke"})));
+    }
+    let root = spans.iter().find(|s| s["name"] == "invoke_workflow hello").expect("root span");
+    let tags = attr(root, "langfuse.trace.tags").unwrap();
+    assert_eq!(tags["arrayValue"]["values"][0]["stringValue"], "nightly");
+    let input = attr(root, "langfuse.observation.input").unwrap();
+    assert!(input["stringValue"].as_str().unwrap().contains("Ada"), "{input}");
 }
 
 #[test]

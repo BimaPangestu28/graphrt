@@ -225,7 +225,8 @@ They honour standard proxy environment variables, except the OTel exporter and
 | Run budget | `--timeout-ms`, `--max-steps`, `Limits` | engine defaults |
 | Plugin trust | `--trust-plugin`, `GRAPHRT_TRUSTED_PLUGINS`, manifest `checksums` | untrusted |
 | Bundle signatures | `--trust-key`, `GRAPHRT_TRUSTED_KEYS` | unsigned accepted |
-| OTel content capture | `GRAPHRT_OTEL_CAPTURE_CONTENT` | off |
+| OTel content capture | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` (or `GRAPHRT_OTEL_CAPTURE_CONTENT=true`) | off |
+| Run inputs in run records | `graphrt serve --store-inputs` | off |
 
 Also:
 

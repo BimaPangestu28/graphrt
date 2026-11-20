@@ -48,6 +48,7 @@ pub fn service_options(args: &ServiceArgs) -> Result<ServiceOptions, CliError> {
         files_dir: args.files_dir.clone(),
         plugins: args.plugins.options(),
         trust_keys: args.trust_key.clone(),
+        capture_content: false,
     })
 }
 
@@ -78,6 +79,8 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
         return Err(CliError::usage("`--resume-input` requires `--resume <snapshot>`"));
     }
 
+    let telemetry = crate::otel::Telemetry::from_args(&args.services, &options.all_vars())?;
+    options.capture_content = crate::otel::captures_content(telemetry.as_ref());
     let services = setup::services(&options, extensions.tools.clone()).await?;
     let engine = Engine::new(graph.clone())
         .with_services(services)
@@ -93,8 +96,8 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
         assembler = assembler.with_value(&Selector::of("sys", k), v.clone());
     }
 
-    let telemetry = crate::otel::Telemetry::from_args(&args.services, &options.all_vars())?;
-    let mut tracer = crate::otel::tracer_for(telemetry.as_ref(), &graph, None);
+    let context = run_context(&args)?;
+    let mut tracer = crate::otel::tracer_for(telemetry.as_ref(), &graph, None, &context);
     let mut stream = engine.run(input);
     #[cfg(feature = "telemetry")]
     crate::telemetry::count_run();
@@ -128,6 +131,26 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
         telemetry.shutdown().await;
     }
     Ok(code)
+}
+
+/// `--session-id`, `--user-id`, `--tag` and `--metadata`.
+fn run_context(args: &RunArgs) -> Result<crate::otel::RunContext, CliError> {
+    let mut metadata = IndexMap::new();
+    for raw in &args.metadata {
+        let (key, value) = raw
+            .split_once('=')
+            .ok_or_else(|| CliError::usage(format!("expected `--metadata key=value`, got `{raw}`")))?;
+        if key.is_empty() {
+            return Err(CliError::usage(format!("missing key in `--metadata {raw}`")));
+        }
+        metadata.insert(key.to_owned(), value.to_owned());
+    }
+    Ok(crate::otel::RunContext {
+        session_id: args.session_id.clone(),
+        user_id: args.user_id.clone(),
+        tags: args.tags.clone(),
+        metadata,
+    })
 }
 
 fn collect_inputs(args: &RunArgs) -> Result<IndexMap<String, Value>, CliError> {

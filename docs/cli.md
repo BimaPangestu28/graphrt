@@ -43,6 +43,7 @@ Workflows can be YAML (`.yaml`, `.yml`) or JSON.
 | `--resume SNAPSHOT` | Resume a paused run. |
 | `--resume-input node=json` | Input for a paused node, e.g. `review={"action":"approve","values":{}}`. Repeatable. |
 | `--snapshot-out FILE` | Where to write the snapshot on pause (default `<workflow>.snapshot.json`). |
+| `--session-id ID`, `--user-id ID`, `--tag TAG`, `--metadata key=value` | Caller context stamped on every OpenTelemetry span of the run (`session.id`, `user.id`, `langfuse.*`); see [observability](observability.md#sessions-users-tags-and-metadata). `--tag` and `--metadata` repeat. |
 | `--plugins DIR` | Plugin directory: one plugin, a directory of plugins, or a `.wasm` module. Searched before `$GRAPHRT_PLUGIN_PATH` and `~/.graphrt/plugins`. Repeatable. Also accepted by `serve`, `validate`, `inspect`, `nodes` and `plugin list/info`. |
 | `--no-default-plugins` | Ignore `$GRAPHRT_PLUGIN_PATH` and `~/.graphrt/plugins`. |
 

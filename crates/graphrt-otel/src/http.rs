@@ -1,12 +1,14 @@
 //! OTLP/HTTP JSON exporter with batching, a bounded queue and retries.
 //!
 //! `export` never blocks: spans go into a bounded channel and are dropped (and
-//! counted) when it is full. A background tokio task batches spans by size and
+//! counted) when it is full, except a run's root span: that one goes to a
+//! separate buffer the worker drains, because several backends (LangSmith,
+//! Braintrust, Opik) hide or discard every span of a trace whose root is missing. A background tokio task batches spans by size and
 //! interval, POSTs them to `.../v1/traces`, retries 429/502/503/504 and network
 //! errors with backoff (honoring `Retry-After`), and periodically pushes metrics.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -67,11 +69,42 @@ enum Msg {
     Shutdown(oneshot::Sender<()>),
 }
 
+/// Root spans kept when the queue is full, at most this many at a time.
+const MAX_PRIORITY_SPANS: usize = 1024;
+
 #[derive(Debug, Default)]
 struct Counters {
     dropped: AtomicU64,
     exported: AtomicU64,
     failed: AtomicU64,
+    /// Run root spans that did not fit in the queue; drained by the worker.
+    priority: Mutex<Vec<Span>>,
+    /// `priority.len()`, readable without the lock.
+    priority_len: AtomicUsize,
+}
+
+impl Counters {
+    /// Keep a root span that did not fit in the queue. Returns false when the
+    /// priority buffer is full too.
+    fn keep_priority(&self, span: Span) -> bool {
+        let mut priority = self.priority.lock().unwrap_or_else(PoisonError::into_inner);
+        if priority.len() >= MAX_PRIORITY_SPANS {
+            return false;
+        }
+        priority.push(span);
+        self.priority_len.store(priority.len(), Ordering::Release);
+        true
+    }
+
+    /// Move kept root spans into `batch`.
+    fn take_priority(&self, batch: &mut Vec<Span>) {
+        if self.priority_len.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        let mut priority = self.priority.lock().unwrap_or_else(PoisonError::into_inner);
+        batch.append(&mut priority);
+        self.priority_len.store(0, Ordering::Release);
+    }
 }
 
 /// OTLP/HTTP JSON span (and metric) exporter.
@@ -119,7 +152,8 @@ impl OtlpHttpExporter {
         Ok(Self { tx, counters })
     }
 
-    /// Spans dropped because the queue was full or the exporter stopped.
+    /// Spans dropped because the queue was full or the exporter stopped. Run root
+    /// spans are only dropped once [`MAX_PRIORITY_SPANS`] of them wait at once.
     pub fn dropped(&self) -> u64 {
         self.counters.dropped.load(Ordering::Relaxed)
     }
@@ -145,7 +179,14 @@ impl OtlpHttpExporter {
 
 impl SpanExporter for OtlpHttpExporter {
     fn export(&self, span: Span) {
-        if self.tx.try_send(Msg::Span(Box::new(span))).is_err() {
+        let rejected = match self.tx.try_send(Msg::Span(Box::new(span))) {
+            Ok(()) => return,
+            Err(mpsc::error::TrySendError::Full(Msg::Span(span))) if span.is_run_root() => {
+                !self.counters.keep_priority(*span)
+            }
+            Err(_) => true,
+        };
+        if rejected {
             self.counters.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -187,11 +228,13 @@ impl Worker {
                 msg = rx.recv() => match msg {
                     Some(Msg::Span(span)) => {
                         batch.push(*span);
+                        self.counters.take_priority(&mut batch);
                         if batch.len() >= self.settings.batch_size {
                             self.send_spans(std::mem::take(&mut batch)).await;
                         }
                     }
                     Some(Msg::Flush(done)) => {
+                        self.counters.take_priority(&mut batch);
                         self.send_spans(std::mem::take(&mut batch)).await;
                         self.send_metrics().await;
                         let _receiver_gone = done.send(());
@@ -201,18 +244,21 @@ impl Worker {
                         while let Ok(Msg::Span(span)) = rx.try_recv() {
                             batch.push(*span);
                         }
+                        self.counters.take_priority(&mut batch);
                         self.send_spans(std::mem::take(&mut batch)).await;
                         self.send_metrics().await;
                         let _receiver_gone = done.send(());
                         return;
                     }
                     None => {
+                        self.counters.take_priority(&mut batch);
                         self.send_spans(std::mem::take(&mut batch)).await;
                         self.send_metrics().await;
                         return;
                     }
                 },
                 _ = flush_tick.tick() => {
+                    self.counters.take_priority(&mut batch);
                     if !batch.is_empty() {
                         self.send_spans(std::mem::take(&mut batch)).await;
                     }

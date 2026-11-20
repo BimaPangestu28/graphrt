@@ -4,10 +4,10 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use futures::StreamExt;
-use graphrt_core::Event;
 use graphrt_core::engine::{RunHandle, RunStream};
 use graphrt_core::response::ResponseAssembler;
 use graphrt_core::store::{RunRecord, RunStore, StoredEvent, event_to_stored, now_ms};
+use graphrt_core::{Event, Value};
 use tokio::sync::{broadcast, watch};
 
 /// Events kept in memory per active run for late subscribers.
@@ -103,6 +103,14 @@ impl ActiveRun {
     }
 }
 
+/// What the driver copies from a run's events into its record, besides status.
+#[derive(Debug, Default, Clone)]
+pub struct Capture {
+    /// Root start node: its validated outputs become `RunRecord::inputs`
+    /// (`--store-inputs`). `None` keeps inputs out of the record.
+    pub start_node: Option<Arc<str>>,
+}
+
 /// Called when an execution ends (to drop it from the active set).
 pub type OnFinish = Box<dyn FnOnce(&str) + Send>;
 
@@ -114,6 +122,7 @@ pub fn spawn(
     store: Arc<dyn RunStore>,
     on_finish: OnFinish,
     tracer: crate::otel::RunTracer,
+    capture: Capture,
 ) -> Arc<ActiveRun> {
     let (done_tx, _) = watch::channel(false);
     let active = Arc::new(ActiveRun {
@@ -123,8 +132,40 @@ pub fn spawn(
         feed: Mutex::new(Feed { events: Vec::new(), dropped: false, tx: None, terminal: None, answer: String::new() }),
         done_tx,
     });
-    tokio::spawn(drive(run, assembler, record, store, Arc::clone(&active), on_finish, tracer));
+    let recorder = Recorder { tracer, capture, ids_pending: true };
+    tokio::spawn(drive(run, assembler, record, store, Arc::clone(&active), on_finish, recorder));
     active
+}
+
+/// Feeds the tracer and copies trace ids and (opt-in) inputs into the record.
+#[derive(Debug)]
+struct Recorder {
+    tracer: crate::otel::RunTracer,
+    capture: Capture,
+    /// Trace ids not copied yet (only ever true while tracing).
+    ids_pending: bool,
+}
+
+impl Recorder {
+    fn on_event(&mut self, event: &Event, record: &mut RunRecord) {
+        self.tracer.on_event(event);
+        if self.ids_pending {
+            self.ids_pending = false;
+            if let Some((trace_id, span_id)) = self.tracer.ids() {
+                record.trace_id = Some(trace_id);
+                record.span_id = Some(span_id);
+            }
+        }
+        if let Some(start) = &self.capture.start_node
+            && let Event::NodeSucceeded { frame, node_id, outputs, .. } = event
+            && frame.is_empty()
+            && node_id == start
+        {
+            // Through JSON so secret values are stored as their mask, never in memory.
+            let inputs = outputs.iter().map(|(k, v)| (k.to_string(), Value::from_json(v.to_json()))).collect();
+            record.inputs = Some(inputs);
+        }
+    }
 }
 
 async fn drive(
@@ -134,14 +175,14 @@ async fn drive(
     store: Arc<dyn RunStore>,
     active: Arc<ActiveRun>,
     on_finish: OnFinish,
-    mut tracer: crate::otel::RunTracer,
+    mut recorder: Recorder,
 ) {
     let run_id = record.run_id.clone();
     let mut pending: Vec<StoredEvent> = Vec::new();
     // Only the assembled text is kept (`text_so_far`); the chunks themselves are dropped.
     let mut chunks = Vec::new();
     while let Some(event) = run.next().await {
-        tracer.on_event(&event);
+        recorder.on_event(&event, &mut record);
         assembler.push_into(&event, &mut chunks);
         chunks.clear();
         let terminal = event.is_terminal();
