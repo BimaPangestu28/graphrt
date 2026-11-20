@@ -135,11 +135,16 @@ async fn llm_node_streams_gemini_tokens() {
 
 #[tokio::test]
 async fn agent_tool_loop_over_gemini() {
-    let first = sse(&[json!({"candidates": [{"content": {"role": "model", "parts": [
-        {"functionCall": {"name": "add", "args": {"a": 2, "b": 3}}}
-    ]}, "finishReason": "STOP"}]})]);
-    let second = sse(&[json!({"candidates": [{"content": {"role": "model", "parts": [{"text": "The sum is 5."}]},
-        "finishReason": "STOP"}]})]);
+    let first = sse(&[
+        json!({"candidates": [{"content": {"role": "model", "parts": [{"text": "On it"}]}}]}),
+        json!({"candidates": [{"content": {"role": "model", "parts": [
+            {"functionCall": {"name": "add", "args": {"a": 2, "b": 3}}}
+        ]}, "finishReason": "STOP"}]}),
+    ]);
+    let second = sse(&[
+        json!({"candidates": [{"content": {"role": "model", "parts": [{"text": "The sum"}]}}]}),
+        json!({"candidates": [{"content": {"role": "model", "parts": [{"text": " is 5."}]}, "finishReason": "STOP"}]}),
+    ]);
     let (url, mut requests) = serve(vec![(200, "text/event-stream", first), (200, "text/event-stream", second)]).await;
 
     let calls = Arc::new(AtomicU32::new(0));
@@ -172,7 +177,16 @@ async fn agent_tool_loop_over_gemini() {
     let services = Services::new().with(ModelRegistry::new().with("gemini", model(&url))).with(registry);
     let events: Vec<Event> =
         Engine::new(g).with_services(services).run(RunInput::new().sys("query", "2+3?")).collect().await;
-    assert_eq!(outputs(&events).get("answer").map(Value::to_text).as_deref(), Some("The sum is 5."));
+    // Every turn streams per token; the preamble of the tool turn stays in the answer.
+    let chunks: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::NodeChunk { node_id, chunk, .. } if node_id.as_ref() == "agent" => Some(chunk.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(chunks, ["On it", "\n\n", "The sum", " is 5."]);
+    assert_eq!(outputs(&events).get("answer").map(Value::to_text).as_deref(), Some("On it\n\nThe sum is 5."));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     let first_body = body_of(&requests.recv().await.unwrap());
@@ -181,7 +195,8 @@ async fn agent_tool_loop_over_gemini() {
     let second_body = body_of(&requests.recv().await.unwrap());
     let contents = second_body["contents"].as_array().unwrap();
     let model_turn = contents.iter().find(|c| c["role"] == "model").unwrap();
-    assert_eq!(model_turn["parts"][0]["functionCall"]["name"], "add");
+    assert_eq!(model_turn["parts"][0]["text"], "On it");
+    assert_eq!(model_turn["parts"][1]["functionCall"]["name"], "add");
     let response = contents.last().unwrap();
     assert_eq!(response["parts"][0]["functionResponse"]["name"], "add");
     assert_eq!(response["parts"][0]["functionResponse"]["response"]["result"], 5);

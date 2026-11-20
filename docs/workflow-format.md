@@ -337,6 +337,7 @@ parallel_tool_calls: true
 require_approval: [mcp:github/create_issue]   # or ["*"]
 memory: { window: { enabled: true, size: 20 } }
 keep_tool_images: 3   # optional (default 3): images of only the last 3 image-bearing tool results; null keeps all
+stream_tool_turns: true   # optional (default true): stream every turn's text per token; false buffers turns that may call tools
 ```
 
 Runs a tool-calling loop until the model answers without tools (the last
@@ -345,6 +346,20 @@ allowed iteration runs without tools). Tools in `require_approval` pause the run
 `{"approvals": {"<call id>": true}}`. Tool results can include images, which
 the model sees (see [tool-images.md](tool-images.md)). Outputs `text`,
 `tool_calls`, `iterations`, `usage`.
+
+Streams `text` (and `reasoning`) token by token on every turn, including turns
+that may still call tools, so the answer reaches the client while it is
+generated. Tool-call arguments are never streamed as text, and once a turn
+starts a tool call the rest of its text is not streamed. Text a turn streams
+before calling tools (a preamble such as "Let me look that up.") stays in the
+answer: `text` is the preambles followed by the final answer, separated by a
+blank line (streamed as its own `"\n\n"` chunk), so the streamed text always
+equals the `text` output. Each tool-calling turn's full text is also reported
+as an `agent_thought` progress event (`streamed: true` when part of it was
+streamed). `stream_tool_turns: false` buffers tool-calling turns instead: only
+the final answer is streamed (as one chunk unless it was the forced last turn)
+and `text` is the final turn's text alone. See
+[serving.md](serving.md#streaming-sse) for the SSE format.
 
 ### `question-classifier` (branch)
 

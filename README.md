@@ -44,7 +44,7 @@ start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
 - **Small.** Core-only binary ≈ 3 MB, everything included ≈ 12–14 MB, a trimmed server build ≈ 6 MB that runs in 16 MiB of RAM. No Python, no Node, no database.
 - **Fast.** About 0.4 µs of scheduling per node, ~6 µs from a model's first token to your stream, a few milliseconds for `graphrt run` from process start to exit, and well over 10k requests/s per core from `graphrt serve` (see [Performance](#performance)). One task per run polls node futures concurrently; nothing is spawned per node, and variable pools are reference-counted, so loops and parallel iterations don't deep-copy state.
 - **Portable.** The core is executor-agnostic (bring your own clock) and compiles to `wasm32-unknown-unknown`.
-- **Agent-native.** First-class `agent` node with a tool-calling loop, parallel tool calls, MCP servers, human approval of tool calls, retries with backoff, per-node timeouts and step/time budgets.
+- **Agent-native.** First-class `agent` node with a tool-calling loop that streams its answer token by token, parallel tool calls, MCP servers, human approval of tool calls, retries with backoff, per-node timeouts and step/time budgets.
 - **Durable.** Pause anywhere (human input, tool approval, API call), get a JSON snapshot, resume later — even inside loops and iterations.
 - **Safe by default.** Secrets never leave the process in logs, events or snapshots. HTTP egress blocks private networks (SSRF). Templates run with fuel limits. Code runs in an interpreter with memory/time limits and no I/O.
 
@@ -101,6 +101,10 @@ curl -N -H 'Authorization: Bearer change-me' \
   -d '{"inputs":{"name":"Ada"},"stream":true}' \
   http://localhost:8080/v1/workflows/hello/runs
 ```
+
+Each run event is one SSE message; `response` events carry the ordered answer
+text token by token, from `llm` and `agent` nodes alike (see
+[docs/serving.md](docs/serving.md#streaming-sse)).
 
 Per-user credentials (a Supabase or OAuth JWT from a mobile app) can travel in
 their own header and reach the workflow as a masked secret input, while
@@ -171,7 +175,7 @@ Values are referenced as `{{#node.output.path#}}`. The full format is in
 | `human-input` | Pause for a form / decision, resume with the answer | core |
 | `tool` | Call a native or MCP tool | core |
 | `llm` | Chat completion with streaming, memory, vision, structured output | llm |
-| `agent` | Tool-calling loop with approvals and parallel tool calls | llm |
+| `agent` | Tool-calling loop with approvals and parallel tool calls; streams every turn per token | llm |
 | `question-classifier` | Route by LLM classification | llm |
 | `parameter-extractor` | Extract typed parameters from text | llm |
 | `http-request` | HTTP with SSRF-safe egress, auth, JSON/form/multipart bodies | http |

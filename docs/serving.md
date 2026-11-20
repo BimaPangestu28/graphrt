@@ -130,6 +130,45 @@ curl -N http://localhost:8080/v1/workflows/chat/runs \
 - Webhooks have their own `headers:` mapping (below); `--input-header` does not
   apply to them.
 
+## Streaming (SSE)
+
+With `stream: true` the response is `text/event-stream`: one SSE message per
+run event, named after the event's `type`, with the event JSON as `data`. The
+stream ends right after the terminal event (`run_succeeded`, `run_failed`,
+`run_aborted` or `run_paused`).
+
+```text
+event: node_chunk
+data: {"type":"node_chunk","frame":"","node_id":"agent","exec_id":"...","field":"text","chunk":"Your"}
+
+event: response
+data: {"node_id":"answer","text":"Your","is_final":false}
+```
+
+Two kinds of text arrive while a run executes:
+
+- `node_chunk`: raw tokens of a node's streaming output (`field` is `text` or
+  `reasoning`), one event per provider delta, as soon as it arrives.
+- `response`: the ordered text of each `answer` node (`{node_id, text,
+  is_final}`, no `type` field), sent just before the raw event that produced
+  it. `is_final: true` comes once per answer node, on an empty `text`, when its
+  template is fully rendered. A chat client usually only needs these.
+
+`llm` and `agent` nodes stream per token. An `agent` streams every turn,
+including turns that may still call tools; tool-call arguments never appear as
+text, and text written before a tool call stays part of the answer, separated
+from later text by a `"\n\n"` chunk (see
+[workflow-format.md](workflow-format.md#agent); `stream_tool_turns: false`
+streams only the final answer).
+
+**Retries and handled errors.** A node with `retry.max_retries > 0` or an
+`on_error` strategy other than `fail` still emits `node_chunk` per token for
+every attempt, but its `response` text is held back until the node finishes, so
+the answer never mixes a failed attempt with the retry (or with a
+`default-value`). A `node_retry` event means the chunks of the previous
+attempt are void. For a live answer from such a node, render `node_chunk`
+events and reset on `node_retry`, or drop the retry policy.
+
 ## Following runs
 
 | Request | Response |

@@ -7,10 +7,22 @@
 //! the history contains tool calls) but the model may not call them
 //! (`tool_choice: none`), so the run always ends with an answer.
 //!
-//! Streaming: only the final answer is streamed on field `text`, so the
-//! streamed text always equals the `text` output. Turns that may still call
-//! tools are buffered; text the model writes alongside tool calls is reported
-//! as an `agent_thought` progress event instead.
+//! Streaming: every turn streams its answer text on field `text` token by
+//! token (reasoning on `reasoning`), including turns that may still call
+//! tools, so the final answer reaches the client as it is generated.
+//! Tool-call fragments are never streamed as text. Once a turn produces its
+//! first tool-call fragment, the rest of that turn's text is no longer
+//! streamed. Text a turn streamed before its tool calls (a *preamble* such as
+//! "Let me look that up.") cannot be taken back, so it stays part of the
+//! answer: the `text` output is every streamed preamble followed by the final
+//! answer, separated by a blank line (streamed as its own `"\n\n"` chunk),
+//! and the streamed text always equals the `text` output. The full text of a
+//! turn that called tools is also reported as an `agent_thought` progress
+//! event (`streamed: true` when part of it was streamed).
+//!
+//! `stream_tool_turns: false` restores buffered tool turns: only the final
+//! answer is streamed (as one chunk when the turn could still have called
+//! tools) and preambles are reported only as `agent_thought`, never in `text`.
 //!
 //! Tool-call arguments that are not a JSON object are not executed; the model
 //! receives an error result explaining the problem so it can retry the call.
@@ -52,7 +64,13 @@ use super::common::{
     FinishCheck, MemoryConfig, ModelConfig, StreamField, StreamMode, VisionConfig, check_finish, invoke, model_for,
     usage_value,
 };
-use crate::types::{ContentPart, FinishReason, Message, Role, ToolCall, ToolChoice};
+use crate::types::{
+    ChatDelta, ChatModel, ChatRequest, ChatResponse, ContentPart, FinishReason, Message, Role, ToolCall, ToolChoice,
+    collect,
+};
+
+/// Streamed between a preamble and the text that follows it in a later turn.
+const PREAMBLE_SEPARATOR: &str = "\n\n";
 
 /// Upper bound for `max_iterations`.
 pub const MAX_ITERATIONS_LIMIT: u32 = 100;
@@ -138,6 +156,10 @@ pub struct AgentConfig {
     /// images are resent on every turn; `null` keeps every image.
     #[serde(default = "default_keep_tool_images")]
     pub keep_tool_images: Option<usize>,
+    /// Stream the text of turns that may still call tools as it is generated
+    /// (see the module docs). Default `true`; `false` buffers those turns.
+    #[serde(default = "default_true")]
+    pub stream_tool_turns: bool,
 }
 
 /// A tool bound for one run.
@@ -176,6 +198,9 @@ struct AgentState {
     usage: Usage,
     /// Calls awaiting approval.
     pending: Vec<ToolCall>,
+    /// Answer text streamed so far (preambles of tool-calling turns).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    answer: String,
 }
 
 /// Why the loop ended.
@@ -373,16 +398,20 @@ impl AgentNode {
                 Value::from_json(json!({"iteration": state.iteration, "tools_enabled": can_call_tools})),
             );
 
-            // A turn that may call tools is buffered: its text is only the answer if no tools are called.
-            let mode = if can_call_tools { StreamMode::Off } else { StreamMode::Raw };
-            let response = invoke(&ctx, model.as_ref(), request, mode).await?;
+            let plan = TurnPlan {
+                live: cfg.stream_tool_turns || !can_call_tools,
+                stop_at_tool_call: can_call_tools,
+                separate: !state.answer.is_empty(),
+            };
+            let (response, mut streamed) = stream_turn(&ctx, model.as_ref(), request, plan).await?;
             state.usage.add(&response.usage);
             // A content-filtered or malformed turn is an error, never an empty "completed" answer.
             let finish = check_finish(&response)?;
 
             if !can_call_tools || response.tool_calls.is_empty() {
-                if can_call_tools && !response.text.is_empty() {
+                if !plan.live && !response.text.is_empty() {
                     ctx.chunk_shared(StreamField::Text.shared(), response.text.clone());
+                    streamed = response.text.len();
                 }
                 let stop = if response.finish_reason == Some(FinishReason::Length) {
                     StopReason::Length
@@ -394,15 +423,18 @@ impl AgentNode {
                     StopReason::Completed
                 };
                 state.messages.push(Message::assistant(response.text.clone()));
-                break (response.text, stop);
+                break (final_answer(std::mem::take(&mut state.answer), response.text, streamed), stop);
             }
 
             if !response.text.trim().is_empty() {
                 ctx.progress(
                     "agent_thought",
-                    Value::from_json(json!({"iteration": state.iteration, "text": response.text})),
+                    Value::from_json(
+                        json!({"iteration": state.iteration, "text": response.text, "streamed": streamed > 0}),
+                    ),
                 );
             }
+            commit_preamble(&mut state.answer, &response.text, streamed);
             // Malformed arguments are never replayed to the provider: the history keeps `{}`
             // and the tool result explains the problem to the model.
             let mut assistant = response.to_message();
@@ -552,6 +584,69 @@ impl AgentNode {
             self.record(state, tools, call, output);
         }
     }
+}
+
+/// How one model turn streams.
+#[derive(Clone, Copy, Debug)]
+struct TurnPlan {
+    /// Stream text and reasoning as they arrive (otherwise nothing is streamed).
+    live: bool,
+    /// Stop streaming text at the turn's first tool-call fragment.
+    stop_at_tool_call: bool,
+    /// Earlier turns streamed text: send [`PREAMBLE_SEPARATOR`] before this turn's first text.
+    separate: bool,
+}
+
+/// Run one turn. Returns the response and how many leading bytes of its text
+/// were streamed on field `text` (always whole deltas, so a char boundary).
+/// Deltas are moved into chunks, never copied.
+async fn stream_turn(
+    ctx: &NodeContext,
+    model: &dyn ChatModel,
+    request: ChatRequest,
+    plan: TurnPlan,
+) -> Result<(ChatResponse, usize), NodeError> {
+    if !plan.live {
+        return Ok((invoke(ctx, model, request, StreamMode::Off).await?, 0));
+    }
+    let stream = model.chat(request).await?;
+    let mut streamed = 0;
+    let mut text_closed = false;
+    let mut separator_pending = plan.separate;
+    let response = collect(stream, |delta| match delta {
+        ChatDelta::ToolCall { .. } => text_closed |= plan.stop_at_tool_call,
+        ChatDelta::Text(text) if !text.is_empty() && !text_closed => {
+            if std::mem::take(&mut separator_pending) {
+                ctx.chunk_shared(StreamField::Text.shared(), PREAMBLE_SEPARATOR);
+            }
+            streamed += text.len();
+            ctx.chunk_shared(StreamField::Text.shared(), text);
+        }
+        ChatDelta::Reasoning(text) if !text.is_empty() => ctx.chunk_shared(StreamField::Reasoning.shared(), text),
+        _ => {}
+    })
+    .await?;
+    Ok((response, streamed))
+}
+
+/// Append the streamed part of a tool-calling turn's text to the answer,
+/// mirroring what [`stream_turn`] sent (separator included).
+fn commit_preamble(answer: &mut String, text: &str, streamed: usize) {
+    let Some(preamble) = text.get(..streamed).filter(|p| !p.is_empty()) else { return };
+    if !answer.is_empty() {
+        answer.push_str(PREAMBLE_SEPARATOR);
+    }
+    answer.push_str(preamble);
+}
+
+/// The `text` output: streamed preambles, then the final turn's text (which
+/// is always streamed whole). Without preambles the final text is moved as is.
+fn final_answer(mut answer: String, text: String, streamed: usize) -> String {
+    if answer.is_empty() {
+        return text;
+    }
+    commit_preamble(&mut answer, &text, streamed);
+    answer
 }
 
 /// Replace the images of all but the last `keep` image-bearing tool results
@@ -953,28 +1048,114 @@ mod tests {
         assert_eq!(requests[1].tool_choice, Some(ToolChoice::None));
     }
 
-    #[tokio::test]
-    async fn only_the_final_answer_is_streamed() {
-        let mut first = vec![crate::ChatDelta::Text("Let me check.".into())];
-        first.extend(MockModel::tool_calls(&[("c1", "add", r#"{"a":2,"b":3}"#)]));
-        let s = setup(vec![first, MockModel::text("It is 5.")]);
-        let out = completed(agent(json!({})).run(ctx(&s)).await);
-        assert_eq!(out.outputs["stopped_reason"], Value::from("completed"));
-        let events = s.events.lock().unwrap();
-        let streamed: String = events
+    fn text_chunks(s: &Setup) -> Vec<String> {
+        s.events
+            .lock()
+            .unwrap()
             .iter()
             .filter_map(|e| match e {
                 Event::NodeChunk { field, chunk, .. } if field.as_ref() == "text" => Some(chunk.clone()),
                 _ => None,
             })
-            .collect();
-        assert_eq!(streamed, "It is 5.");
-        assert_eq!(out.outputs["text"], Value::from(streamed.as_str()));
-        let thought = events.iter().find_map(|e| match e {
-            Event::NodeProgress { name, data, .. } if name == "agent_thought" => data.get_path(&["text"]),
+            .collect()
+    }
+
+    fn thought(s: &Setup) -> Option<Value> {
+        s.events.lock().unwrap().iter().find_map(|e| match e {
+            Event::NodeProgress { name, data, .. } if name == "agent_thought" => Some(data.clone()),
             _ => None,
-        });
-        assert_eq!(thought, Some(Value::from("Let me check.")));
+        })
+    }
+
+    fn tokens(pieces: &[&str]) -> Vec<crate::ChatDelta> {
+        let mut out: Vec<crate::ChatDelta> = pieces.iter().map(|p| crate::ChatDelta::Text((*p).into())).collect();
+        out.push(crate::ChatDelta::Finish(FinishReason::Stop));
+        out
+    }
+
+    #[tokio::test]
+    async fn final_answer_streams_token_by_token() {
+        let s =
+            setup(vec![MockModel::tool_calls(&[("c1", "add", r#"{"a":2,"b":3}"#)]), tokens(&["It", " is", " 5", "."])]);
+        let out = completed(agent(json!({})).run(ctx(&s)).await);
+        // One chunk per provider delta, on a turn that was still allowed to call tools.
+        assert_eq!(text_chunks(&s), ["It", " is", " 5", "."]);
+        assert_eq!(out.outputs["text"], Value::from("It is 5."));
+        assert_eq!(s.model.requests()[1].tool_choice, Some(ToolChoice::Auto));
+    }
+
+    #[tokio::test]
+    async fn preamble_before_a_tool_call_is_streamed_and_kept_in_the_answer() {
+        let mut first = tokens(&["Let me", " check."]);
+        first.pop();
+        first.extend(MockModel::tool_calls(&[("c1", "add", r#"{"a":2,"b":3}"#)]));
+        let s = setup(vec![first, tokens(&["It is", " 5."])]);
+        let out = completed(agent(json!({})).run(ctx(&s)).await);
+        let chunks = text_chunks(&s);
+        assert_eq!(chunks, ["Let me", " check.", "\n\n", "It is", " 5."]);
+        assert_eq!(out.outputs["text"], Value::from(chunks.concat().as_str()));
+        let thought = thought(&s).unwrap();
+        assert_eq!(thought.get_path(&["text"]), Some(Value::from("Let me check.")));
+        assert_eq!(thought.get_path(&["streamed"]), Some(Value::Bool(true)));
+        // The history keeps each turn separate: the preamble belongs to the tool-call turn.
+        let second = &s.model.requests()[1].messages;
+        assert_eq!(second[2].text(), "Let me check.");
+        assert_eq!(second[2].tool_calls.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tool_call_fragments_and_later_text_are_never_streamed() {
+        use crate::ChatDelta::{Finish, Text, ToolCall};
+        let first = vec![
+            Text("A".into()),
+            ToolCall { index: 0, id: Some("c1".into()), name: Some("add".into()), arguments: r#"{"a":"#.into() },
+            Text("B".into()),
+            ToolCall { index: 0, id: None, name: None, arguments: "1}".into() },
+            Finish(FinishReason::ToolCalls),
+        ];
+        let s = setup(vec![first, MockModel::text("done")]);
+        let out = completed(agent(json!({})).run(ctx(&s)).await);
+        assert_eq!(text_chunks(&s), ["A", "\n\n", "done"]);
+        assert_eq!(out.outputs["text"], Value::from("A\n\ndone"));
+        assert_eq!(thought(&s).unwrap().get_path(&["text"]), Some(Value::from("AB")));
+        assert_eq!(s.tools.calls.lock().unwrap().as_slice(), ["add"]);
+    }
+
+    #[tokio::test]
+    async fn stream_tool_turns_false_buffers_tool_turns() {
+        let mut first = vec![crate::ChatDelta::Text("Let me check.".into())];
+        first.extend(MockModel::tool_calls(&[("c1", "add", r#"{"a":2,"b":3}"#)]));
+        let s = setup(vec![first, tokens(&["It is", " 5."])]);
+        let out = completed(agent(json!({"stream_tool_turns": false})).run(ctx(&s)).await);
+        assert_eq!(out.outputs["stopped_reason"], Value::from("completed"));
+        assert_eq!(text_chunks(&s), ["It is 5."]);
+        assert_eq!(out.outputs["text"], Value::from("It is 5."));
+        let thought = thought(&s).unwrap();
+        assert_eq!(thought.get_path(&["text"]), Some(Value::from("Let me check.")));
+        assert_eq!(thought.get_path(&["streamed"]), Some(Value::Bool(false)));
+    }
+
+    #[tokio::test]
+    async fn forced_final_turn_streams_token_by_token() {
+        let s = setup(vec![MockModel::tool_calls(&[("c1", "add", r#"{"a":1,"b":1}"#)]), tokens(&["=", "2"])]);
+        let out = completed(agent(json!({"max_iterations": 2, "stream_tool_turns": false})).run(ctx(&s)).await);
+        assert_eq!(text_chunks(&s), ["=", "2"]);
+        assert_eq!(out.outputs["text"], Value::from("=2"));
+    }
+
+    #[tokio::test]
+    async fn preamble_survives_a_tool_approval_pause() {
+        let mut first = vec![crate::ChatDelta::Text("Checking.".into())];
+        first.extend(MockModel::tool_calls(&[("c1", "add", r#"{"a":2,"b":2}"#)]));
+        let s = setup(vec![first, MockModel::text("4")]);
+        let node = agent(json!({"require_approval": ["add"]}));
+        let NodeOutcome::Paused(paused) = node.run(ctx(&s)).await.unwrap() else { panic!("expected pause") };
+        let state: Json = serde_json::from_str(&paused.state.to_string()).unwrap();
+        let resumed =
+            ctx(&s).with_resume(Some(Resume { state, input: Some(Value::from_json(json!({"approved": true}))) }));
+        let out = completed(node.run(resumed).await);
+        assert_eq!(out.outputs["text"], Value::from("Checking.\n\n4"));
+        assert_eq!(text_chunks(&s), ["Checking.", "\n\n", "4"]);
     }
 
     #[tokio::test]
