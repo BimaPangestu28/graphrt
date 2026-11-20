@@ -549,6 +549,10 @@
           ],
           "minimum": 0,
           "default": 3
+        },
+        "stream_tool_turns": {
+          "type": "boolean",
+          "default": true
         }
       },
       "required": [

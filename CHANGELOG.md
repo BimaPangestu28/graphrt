@@ -7,6 +7,15 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Changed
+- `agent` streams the text of every turn token by token, including turns that
+  may still call tools, so the final answer of a tool-using agent no longer
+  arrives as one chunk after the model finished. Tool-call arguments are never
+  streamed as text. Text a turn streams before its tool calls (a preamble such
+  as "Let me check.") is now part of the `text` output, separated from later
+  text by a blank line, so the streamed text always equals `text`.
+  `stream_tool_turns: false` restores the previous behaviour.
+
 ### Added
 - `graphrt serve --input-header INPUT=HEADER` maps a request header (leading
   `Bearer ` stripped) to a secret start input of new, streamed and resumed
@@ -14,6 +23,10 @@ releases may contain breaking changes; they are called out under **Changed**.
   masked everywhere and never stored; resumes must send the header again. A
   missing header for a required input is `401`, the same input in the body
   `400`, and a non-`secret` declaration fails at startup.
+- `agent_thought` progress events carry `streamed` (whether the turn's text
+  was streamed).
+- docs/serving.md documents the SSE format, the `response` event and how
+  retry / `on_error` policies hold back live answer text.
 
 ### Fixed
 - Plaintext of secret-typed `conversation` variables is now scrubbed from node

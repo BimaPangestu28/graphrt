@@ -193,17 +193,27 @@ async fn llm_node_streams_bedrock_tokens_with_sigv4() {
 async fn agent_tool_loop_over_bedrock() {
     let first = stream(&[
         ("messageStart", json!({"role": "assistant"})),
+        ("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"text": "Adding"}})),
+        ("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"text": "."}})),
+        ("contentBlockStop", json!({"contentBlockIndex": 0})),
         (
             "contentBlockStart",
-            json!({"contentBlockIndex": 0, "start": {"toolUse": {"toolUseId": "tu_1", "name": "add"}}}),
+            json!({"contentBlockIndex": 1, "start": {"toolUse": {"toolUseId": "tu_1", "name": "add"}}}),
         ),
-        ("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"toolUse": {"input": "{\"a\": 4,"}}})),
-        ("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"toolUse": {"input": " \"b\": 5}"}}})),
-        ("contentBlockStop", json!({"contentBlockIndex": 0})),
+        ("contentBlockDelta", json!({"contentBlockIndex": 1, "delta": {"toolUse": {"input": "{\"a\": 4,"}}})),
+        ("contentBlockDelta", json!({"contentBlockIndex": 1, "delta": {"toolUse": {"input": " \"b\": 5}"}}})),
+        ("contentBlockStop", json!({"contentBlockIndex": 1})),
         ("messageStop", json!({"stopReason": "tool_use"})),
         ("metadata", json!({"usage": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}})),
     ]);
-    let (url, mut requests) = serve(vec![(200, EVENTSTREAM, first), (200, EVENTSTREAM, text_reply("4 + 5 = 9"))]).await;
+    let second = stream(&[
+        ("messageStart", json!({"role": "assistant"})),
+        ("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"text": "4 + 5"}})),
+        ("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"text": " = 9"}})),
+        ("contentBlockStop", json!({"contentBlockIndex": 0})),
+        ("messageStop", json!({"stopReason": "end_turn"})),
+    ]);
+    let (url, mut requests) = serve(vec![(200, EVENTSTREAM, first), (200, EVENTSTREAM, second)]).await;
 
     let calls = Arc::new(AtomicU32::new(0));
     let counter = calls.clone();
@@ -234,7 +244,16 @@ async fn agent_tool_loop_over_bedrock() {
     let services = Services::new().with(ModelRegistry::new().with("bedrock", sigv4_model(&url))).with(registry);
     let events: Vec<Event> =
         Engine::new(g).with_services(services).run(RunInput::new().sys("query", "4+5")).collect().await;
-    assert_eq!(outputs(&events).get("answer").map(Value::to_text).as_deref(), Some("4 + 5 = 9"));
+    // Every turn streams per token; the preamble of the tool turn stays in the answer.
+    let chunks: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::NodeChunk { node_id, chunk, .. } if node_id.as_ref() == "agent" => Some(chunk.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(chunks, ["Adding", ".", "\n\n", "4 + 5", " = 9"]);
+    assert_eq!(outputs(&events).get("answer").map(Value::to_text).as_deref(), Some("Adding.\n\n4 + 5 = 9"));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     let first_body = body_of(&requests.recv().await.unwrap());
@@ -242,8 +261,9 @@ async fn agent_tool_loop_over_bedrock() {
     let second_body = body_of(&requests.recv().await.unwrap());
     let messages = second_body["messages"].as_array().unwrap();
     let assistant = messages.iter().find(|m| m["role"] == "assistant").unwrap();
-    assert_eq!(assistant["content"][0]["toolUse"]["toolUseId"], "tu_1");
-    assert_eq!(assistant["content"][0]["toolUse"]["input"]["b"], 5);
+    assert_eq!(assistant["content"][0]["text"], "Adding.");
+    assert_eq!(assistant["content"][1]["toolUse"]["toolUseId"], "tu_1");
+    assert_eq!(assistant["content"][1]["toolUse"]["input"]["b"], 5);
     let result = &messages.last().unwrap()["content"][0]["toolResult"];
     assert_eq!(result["toolUseId"], "tu_1");
     assert_eq!(result["content"][0]["text"], "9");
