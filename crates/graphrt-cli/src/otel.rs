@@ -81,7 +81,7 @@ impl Telemetry {
                 exporter: Arc::new(exporters),
                 http,
                 metrics,
-                capture_content: config.capture_content,
+                capture_content: config.capture.is_enabled(),
             })))
         }
         #[cfg(not(feature = "otel"))]

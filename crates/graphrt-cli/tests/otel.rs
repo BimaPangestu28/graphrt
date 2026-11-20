@@ -37,9 +37,9 @@ fn otel_stdout_prints_span_lines_on_stderr() {
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .filter(|v| v.get("spanId").is_some())
         .collect();
-    let root = spans.iter().find(|s| s["name"] == "workflow hello").expect("root span");
+    let root = spans.iter().find(|s| s["name"] == "invoke_workflow hello").expect("root span");
     assert_eq!(spans.len(), 4, "root + start/greet/end");
-    for span in spans.iter().filter(|s| s["name"] != "workflow hello") {
+    for span in spans.iter().filter(|s| s["name"] != "invoke_workflow hello") {
         assert_eq!(span["traceId"], root["traceId"]);
         assert_eq!(span["parentSpanId"], root["spanId"]);
     }

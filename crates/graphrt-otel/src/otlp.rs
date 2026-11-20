@@ -52,6 +52,28 @@ pub fn any_value(value: &AttrValue) -> Json {
         AttrValue::Double(d) if d.is_finite() => json!({ "doubleValue": d }),
         AttrValue::Double(d) => json!({ "stringValue": d.to_string() }),
         AttrValue::Bool(b) => json!({ "boolValue": b }),
+        AttrValue::Structured(value) => structured_value(value),
+    }
+}
+
+/// Encode a JSON value as an OTLP `AnyValue` (objects become `kvlistValue`).
+fn structured_value(value: &Json) -> Json {
+    match value {
+        Json::Null => json!({}),
+        Json::Bool(b) => json!({ "boolValue": b }),
+        Json::Number(n) => match n.as_i64() {
+            Some(i) => json!({ "intValue": i.to_string() }),
+            None => any_value(&AttrValue::Double(n.as_f64().unwrap_or(f64::NAN))),
+        },
+        Json::String(s) => json!({ "stringValue": s }),
+        Json::Array(items) => {
+            json!({ "arrayValue": { "values": items.iter().map(structured_value).collect::<Vec<_>>() } })
+        }
+        Json::Object(map) => {
+            let values: Vec<Json> =
+                map.iter().map(|(k, v)| json!({ "key": k, "value": structured_value(v) })).collect();
+            json!({ "kvlistValue": { "values": values } })
+        }
     }
 }
 
@@ -141,6 +163,11 @@ mod tests {
         assert_eq!(j["attributes"][2]["value"]["boolValue"], true);
         assert_eq!(j["attributes"][3]["value"]["doubleValue"], 0.5);
         assert_eq!(j["events"][0]["timeUnixNano"], "15");
+        let structured = any_value(&AttrValue::Structured(json!([{"role": "user", "n": 2, "ok": true}])));
+        let item = &structured["arrayValue"]["values"][0]["kvlistValue"]["values"];
+        assert_eq!(item[0], json!({"key": "role", "value": {"stringValue": "user"}}));
+        assert_eq!(item[1]["value"]["intValue"], "2");
+        assert_eq!(item[2]["value"]["boolValue"], true);
         let req = traces_request(&Resource::new("svc"), &[s]);
         assert_eq!(req["resourceSpans"][0]["scopeSpans"][0]["scope"]["name"], SCOPE_NAME);
         assert_eq!(req["resourceSpans"][0]["resource"]["attributes"][0]["value"]["stringValue"], "svc");

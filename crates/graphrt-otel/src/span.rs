@@ -148,11 +148,15 @@ impl TraceParent {
 
 /// An attribute value.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum AttrValue {
     Str(String),
     Int(i64),
     Double(f64),
     Bool(bool),
+    /// A structured value (OTLP `AnyValue` with `arrayValue` / `kvlistValue`),
+    /// as the GenAI conventions require for messages and documents.
+    Structured(serde_json::Value),
 }
 
 impl From<&str> for AttrValue {
@@ -299,6 +303,13 @@ impl Span {
             return;
         }
         self.events.push(SpanEvent { time_unix_nano, name: name.to_owned(), attributes });
+    }
+
+    /// Whether this is a run's root span (it carries the run status). Exporters
+    /// that drop spans under pressure keep these: several backends hide or discard
+    /// a trace whose root never arrives.
+    pub fn is_run_root(&self) -> bool {
+        self.attr(crate::semconv::graphrt::RUN_STATUS).is_some()
     }
 
     /// Mark the span as failed.

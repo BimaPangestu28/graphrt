@@ -83,7 +83,7 @@ fn names(spans: &[Span]) -> Vec<&str> {
 }
 
 fn root(spans: &[Span]) -> &Span {
-    spans.iter().find(|s| s.name.starts_with("workflow ")).unwrap()
+    spans.iter().find(|s| s.name.starts_with("invoke_workflow ")).unwrap()
 }
 
 fn str_attr<'a>(span: &'a Span, key: &str) -> Option<&'a str> {
@@ -110,7 +110,7 @@ async fn linear_run_has_root_and_node_children() {
     let spans = trace(LINEAR, RunInput::new().input("name", "ada"), |t| t).await;
     assert_eq!(spans.len(), 4, "{:?}", names(&spans));
     let root = root(&spans);
-    assert_eq!(root.name, "workflow linear");
+    assert_eq!(root.name, "invoke_workflow linear");
     assert!(root.parent_span_id.is_none());
     assert_eq!(str_attr(root, "graphrt.run.status"), Some("succeeded"));
     assert!(str_attr(root, "graphrt.workflow.fingerprint").is_some());
