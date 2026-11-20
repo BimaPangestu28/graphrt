@@ -70,6 +70,16 @@ impl EngineTarget {
         self
     }
 
+    /// The engine test cases run on (for hosts that drive runs themselves, e.g. to trace them).
+    pub fn engine(&self) -> &Engine {
+        &self.engine
+    }
+
+    /// The values of the workflow's `env.*` variables.
+    pub fn env(&self) -> &IndexMap<String, Value> {
+        &self.env
+    }
+
     async fn run_case(&self, case: &TestCase) -> RunCapture {
         let mut input = RunInput::new();
         input.inputs = inputs_of(&case.vars);

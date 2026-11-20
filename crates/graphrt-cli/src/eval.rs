@@ -34,11 +34,19 @@ pub async fn eval(args: EvalArgs) -> Result<u8, CliError> {
     let suite = EvalSuite::load(&args.file).map_err(eval_error)?;
     // Read the baseline first: a wrong path should not cost a whole evaluation.
     let baseline = args.baseline.as_deref().map(Baseline::load).transpose().map_err(eval_error)?;
-    if args.services.otel || args.services.otel_stdout {
-        eprintln!("warning: `graphrt eval` does not export OpenTelemetry traces yet; --otel is ignored");
-    }
+    let vars = crate::run::service_options(&args.services)?.all_vars();
+    let telemetry = crate::otel::Telemetry::from_args(&args.services, &vars)?;
     // `_extensions` keeps plugin hosts (child processes) alive while tests run.
-    let (target, judges, _extensions) = build_target(&suite, &args).await?;
+    let (target, judges, _extensions) = build_target(&suite, &args, telemetry.as_ref()).await?;
+    #[cfg(feature = "otel")]
+    let traced = traced_target(&target, &suite, telemetry.as_ref());
+    #[cfg(feature = "otel")]
+    let target: &dyn Target = match &traced {
+        Some(traced) => traced,
+        None => &target,
+    };
+    #[cfg(not(feature = "otel"))]
+    let target: &dyn Target = &target;
     let mut registry = AssertionRegistry::with_builtins();
     let base = args.file.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
     graphrt_eval::judge::register(&mut registry, base, judges);
@@ -58,9 +66,18 @@ pub async fn eval(args: EvalArgs) -> Result<u8, CliError> {
     );
     let mut report = Runner::new(options)
         .with_registry(registry)
-        .run(&suite, &target, |result| eprintln!("{}", format_result_line(result)))
+        .run(&suite, target, |result| {
+            eprintln!("{}", format_result_line(result));
+            #[cfg(feature = "otel")]
+            if let Some(traced) = &traced {
+                traced.record_result(result);
+            }
+        })
         .await
         .map_err(eval_error)?;
+    if let Some(telemetry) = &telemetry {
+        telemetry.shutdown().await;
+    }
     if let Some(baseline) = &baseline {
         report.apply_baseline(baseline, &suite.gate.baseline);
     }
@@ -75,8 +92,10 @@ pub async fn eval(args: EvalArgs) -> Result<u8, CliError> {
 async fn build_target(
     suite: &EvalSuite,
     args: &EvalArgs,
+    telemetry: Option<&Arc<crate::otel::Telemetry>>,
 ) -> Result<(EngineTarget, WorkflowJudges, Extensions), CliError> {
     let mut options = crate::run::service_options(&args.services)?;
+    options.capture_content = crate::otel::captures_content(telemetry);
     if args.services.providers.is_none() && suite.providers.is_some() {
         options.providers.clone_from(&suite.providers);
     }
@@ -112,6 +131,28 @@ async fn build_target(
         options,
     };
     Ok((target, judges, extensions))
+}
+
+/// With telemetry, a target that traces each test run as a Langfuse experiment
+/// item ([`crate::eval_trace`]).
+#[cfg(feature = "otel")]
+fn traced_target(
+    target: &EngineTarget,
+    suite: &EvalSuite,
+    telemetry: Option<&Arc<crate::otel::Telemetry>>,
+) -> Option<crate::eval_trace::TracedTarget> {
+    let telemetry = telemetry?;
+    let name = suite.path.file_stem().map(|s| s.to_string_lossy().trim_end_matches(".eval").to_owned());
+    let name = name.unwrap_or_else(|| "eval".to_owned());
+    let started =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or_default();
+    let experiment = crate::eval_trace::Experiment {
+        id: format!("{name}-{started}"),
+        name,
+        dataset_id: suite.path.display().to_string(),
+        description: suite.description.clone(),
+    };
+    Some(crate::eval_trace::TracedTarget::new(target.clone(), Arc::clone(telemetry), experiment))
 }
 
 /// Compiles judge workflows on the suite's (or the server's) services.

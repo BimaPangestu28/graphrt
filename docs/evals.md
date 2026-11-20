@@ -376,7 +376,25 @@ graphrt eval <file.eval.yaml> [flags]
 | `--fail-exit-code CODE` | Exit code when the gate fails (default 5). |
 | `--include-events` | Add every run event (except token chunks) to the JSON results. |
 | `--timeout-ms MS` | Per-test run timeout (a timed-out run is an error). |
+| `--otel`, `--otel-stdout`, `--otel-preset NAME` | One trace per test run, as a Langfuse experiment item, with an `evaluate` span per assertion (below). |
 | `--providers`, `--knowledge`, `--mcp`, `--plugins`, `--model`, `--env-file`, ... | As for `graphrt run`; they win over the eval file. `--model` points every model node at another model, for A/B runs. |
+
+With `--otel` (or `--otel-stdout`, an OTLP endpoint variable, or
+`--otel-preset`), every test run is its own trace, shaped as a
+[Langfuse experiment over OpenTelemetry](https://langfuse.com/integrations/native/opentelemetry/experiments):
+`langfuse.experiment.id` (`<suite>-<start time>`, one per invocation),
+`langfuse.experiment.name` (the suite file stem) and
+`langfuse.experiment.dataset.id` (the suite path) on every span; the test id as
+`langfuse.experiment.item.id`, the root span id as
+`langfuse.experiment.item.root_observation_id`, `expected` as
+`langfuse.experiment.item.expected_output`, test metadata and the suite
+description on the root span. Each assertion result is an `evaluate {metric}`
+span under the root with a `gen_ai.evaluation.result` event (source
+`offline`). Inputs and outputs follow content capture
+(`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=SPAN_ONLY`), as for any run.
+Judge runs are not traced. With `--otel-preset braintrust` and
+`BRAINTRUST_PARENT=experiment_id:<id>` the traces land in a Braintrust
+experiment.
 
 Exit codes: `0` the gate passed, `5` (or `--fail-exit-code`) the gate failed
 (pass rate, pass^k, calibration thresholds or baseline regressions; the summary

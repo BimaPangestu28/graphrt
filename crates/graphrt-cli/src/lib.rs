@@ -10,6 +10,8 @@ pub mod diagnostics;
 pub mod error;
 #[cfg(feature = "eval")]
 pub mod eval;
+#[cfg(all(feature = "eval", feature = "otel"))]
+pub mod eval_trace;
 pub mod extensions;
 pub mod files;
 #[cfg(feature = "serve")]
