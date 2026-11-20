@@ -267,7 +267,7 @@ Run records gain these fields, all omitted when empty:
 
 | Field | Meaning |
 | --- | --- |
-| `metadata`, `session_id`, `user_id`, `tags` | From the request |
+| `metadata`, `session_id`, `user_id`, `tags` | From the request (`user_id` is the token's `sub` when `--verify-jwt` verified one) |
 | `trace_id`, `span_id` | OpenTelemetry trace id and root (`invoke_workflow`) span id of the latest execution, when tracing is on; lets later evaluation scores join the same trace |
 | `inputs` | The run's inputs as the start node accepted them, with `secret`-typed inputs stored as `******`. Only with `graphrt serve --store-inputs` |
 

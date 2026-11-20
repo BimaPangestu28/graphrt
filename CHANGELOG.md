@@ -106,7 +106,8 @@ per-user rate limits for `serve`. Contains breaking changes (see
   `--jwt-issuer` and `--jwt-audience` checks and a required `sub`. A valid
   token may start runs (`POST /v1/workflows/{name}/runs` only, of workflows
   that declare the input; others are `403`) without the API key and sets
-  `sys.user_id`; an invalid one is `401`. `--user-rate-limit N`
+  `sys.user_id` and the run's `user_id` (record and spans, replacing the
+  body's `user_id`); an invalid one is `401`. `--user-rate-limit N`
   allows N runs per minute per `sub` (`429` with `Retry-After`). The server
   refuses `--verify-jwt` on a non-loopback address without an API key. No new
   crates; about 33 KiB of binary.
