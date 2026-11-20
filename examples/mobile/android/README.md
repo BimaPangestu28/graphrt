@@ -65,6 +65,14 @@ adb shell am start -n dev.graphrt.sample/.MainActivity --es name Grace --ez auto
 adb logcat -s GraphrtSample:I
 ```
 
+To check the result automatically (as CI does), run the smoke test against a
+running emulator or device instead; it installs the APK, starts it with
+autorun and fails unless the logcat output shows the expected greeting:
+
+```sh
+examples/mobile/android/scripts/smoke-test.sh   # from the repository root
+```
+
 ## Expected output
 
 On screen, under the buttons:
