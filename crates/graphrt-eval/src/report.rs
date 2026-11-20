@@ -3,6 +3,9 @@
 //!
 //! The JSON report (`--output results.json`) is versioned by
 //! [`REPORT_SCHEMA_VERSION`]; fields are only ever added within a version.
+//! Version 2 renamed `repeat` to `trial` and added per-case trial statistics,
+//! calibration and baseline sections, judge records and excluded results;
+//! version 1 reports still load (as baselines).
 
 use std::fmt::Write as _;
 
@@ -13,10 +16,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json};
 
 use crate::assertion::AssertionResult;
+use crate::baseline::BaselineComparison;
+use crate::calibration::CalibrationSummary;
 use crate::capture::{RetrievalHit, RunStatus, ToolCallRecord};
+use crate::error::EvalError;
+use crate::stats::{pass_at_k, pass_hat_k};
 
 /// Version of the JSON report format.
-pub const REPORT_SCHEMA_VERSION: u32 = 1;
+pub const REPORT_SCHEMA_VERSION: u32 = 2;
 
 /// Verdict of one test.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,8 +74,9 @@ pub struct TestResult {
     pub source: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
-    /// Repetition index (0-based; see `RunnerOptions::repeat`).
-    pub repeat: u32,
+    /// Trial index (0-based; see `RunnerOptions::trials`).
+    #[serde(alias = "repeat")]
+    pub trial: u32,
     pub status: TestStatus,
     pub pass: bool,
     /// Weighted mean of the gating assertion scores (0..1).
@@ -84,9 +92,9 @@ pub struct TestResult {
 }
 
 impl TestResult {
-    /// `id`, with `#n` appended for repetitions after the first.
+    /// `id`, with `#n` appended for trials after the first.
     pub fn display_id(&self) -> String {
-        if self.repeat == 0 { self.id.clone() } else { format!("{}#{}", self.id, self.repeat) }
+        if self.trial == 0 { self.id.clone() } else { format!("{}#{}", self.id, self.trial) }
     }
 }
 
@@ -94,9 +102,21 @@ impl TestResult {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct MetricSummary {
+    /// Results counted (excluded ones are not).
     pub count: usize,
     pub passed: usize,
     pub mean_score: f64,
+    /// Results left out (a judge's `unknown` with `unknown: exclude`).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub excluded: usize,
+}
+
+fn no_tokens(usage: &Usage) -> bool {
+    usage.total_tokens == 0
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// Latency distribution over the tests, in milliseconds.
@@ -115,7 +135,86 @@ pub struct LatencySummary {
 pub struct GateResult {
     /// Required pass rate.
     pub pass_rate: f64,
+    /// Required mean pass^k, when gated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass_hat_k: Option<f64>,
     pub passed: bool,
+    /// Why the gate failed, one entry per unmet condition.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<String>,
+}
+
+impl GateResult {
+    /// Fail the gate with `failure` unless `ok`.
+    pub fn require(&mut self, ok: bool, failure: impl FnOnce() -> String) {
+        if !ok {
+            self.passed = false;
+            self.failures.push(failure());
+        }
+    }
+}
+
+/// pass@k and pass^k over the test cases (`--trials`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct TrialSummary {
+    /// Most trials of any test case.
+    pub trials: u32,
+    pub k: u32,
+    /// Mean over the cases of the unbiased pass@k.
+    pub pass_at_k: f64,
+    /// Mean over the cases of the unbiased pass^k.
+    pub pass_hat_k: f64,
+}
+
+/// One test case over its trials.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CaseSummary {
+    pub id: String,
+    pub trials: u32,
+    pub passed: u32,
+    /// `passed / trials`.
+    pub pass_rate: f64,
+    /// `1 - C(n-c, k) / C(n, k)`: at least one of k trials passes.
+    pub pass_at_k: f64,
+    /// `C(c, k) / C(n, k)`: all k trials pass.
+    pub pass_hat_k: f64,
+    pub mean_score: f64,
+}
+
+/// Group results by test id (suite order) into per-case trial statistics.
+pub fn case_summaries(tests: &[TestResult], k: u32) -> Vec<CaseSummary> {
+    let mut cases: IndexMap<&str, CaseSummary> = IndexMap::new();
+    for test in tests {
+        let case =
+            cases.entry(&test.id).or_insert_with(|| CaseSummary { id: test.id.clone(), ..CaseSummary::default() });
+        case.trials += 1;
+        case.passed += u32::from(test.status == TestStatus::Passed);
+        case.mean_score += test.score;
+    }
+    cases
+        .into_values()
+        .map(|mut case| {
+            let n = case.trials.max(1);
+            case.pass_rate = f64::from(case.passed) / f64::from(n);
+            case.mean_score /= f64::from(n);
+            case.pass_at_k = pass_at_k(case.trials, case.passed, k);
+            case.pass_hat_k = pass_hat_k(case.trials, case.passed, k);
+            case
+        })
+        .collect()
+}
+
+/// Means of pass@k and pass^k over `cases`.
+pub fn trial_summary(cases: &[CaseSummary], k: u32) -> TrialSummary {
+    let n = cases.len().max(1) as f64;
+    TrialSummary {
+        trials: cases.iter().map(|c| c.trials).max().unwrap_or_default(),
+        k,
+        pass_at_k: cases.iter().map(|c| c.pass_at_k).sum::<f64>() / n,
+        pass_hat_k: cases.iter().map(|c| c.pass_hat_k).sum::<f64>() / n,
+    }
 }
 
 /// Suite-level numbers.
@@ -131,8 +230,14 @@ pub struct Summary {
     /// Wall time of the whole evaluation.
     pub duration_ms: u64,
     pub usage: Usage,
+    /// Tokens the judge workflows used (not part of `usage`).
+    #[serde(default, skip_serializing_if = "no_tokens")]
+    pub judge_usage: Usage,
     pub latency_ms: LatencySummary,
     pub metrics: IndexMap<String, MetricSummary>,
+    /// pass@k / pass^k (with more than one trial or a `pass_hat_k` gate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trials: Option<TrialSummary>,
     pub gate: GateResult,
 }
 
@@ -147,9 +252,17 @@ impl Summary {
         for test in tests {
             usage.add(&test.run.usage);
         }
+        let mut judge_usage = Usage::default();
         let mut metrics: IndexMap<String, MetricSummary> = IndexMap::new();
         for result in tests.iter().flat_map(|t| &t.assertions) {
+            if let Some(judge) = &result.judge {
+                judge_usage.add(&judge.usage);
+            }
             let entry = metrics.entry(result.metric_name().to_owned()).or_default();
+            if result.excluded {
+                entry.excluded += 1;
+                continue;
+            }
             entry.count += 1;
             entry.passed += usize::from(result.pass);
             entry.mean_score += result.score;
@@ -165,9 +278,18 @@ impl Summary {
             pass_rate,
             duration_ms,
             usage,
+            judge_usage,
             latency_ms: latency_summary(tests),
             metrics,
-            gate: GateResult { pass_rate: required_pass_rate, passed: pass_rate + 1e-9 >= required_pass_rate },
+            trials: None,
+            gate: {
+                let mut gate =
+                    GateResult { pass_rate: required_pass_rate, pass_hat_k: None, passed: true, failures: Vec::new() };
+                gate.require(pass_rate + 1e-9 >= required_pass_rate, || {
+                    format!("pass rate {pass_rate:.3} < {required_pass_rate:.3}")
+                });
+                gate
+            },
         }
     }
 }
@@ -217,7 +339,16 @@ pub struct EvalReport {
     /// Unix time in milliseconds when the evaluation started.
     pub started_at_ms: u64,
     pub summary: Summary,
-    /// Results in suite order (repetitions next to each other).
+    /// Per test case over its trials (with more than one trial or a `pass_hat_k` gate).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cases: Vec<CaseSummary>,
+    /// Judge agreement with the human labels (calibration suites).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration: Option<CalibrationSummary>,
+    /// The comparison with `--baseline`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<BaselineComparison>,
+    /// Results in suite order (trials next to each other).
     pub tests: Vec<TestResult>,
 }
 
@@ -225,6 +356,22 @@ impl EvalReport {
     /// Whether the gate passed.
     pub fn gate_passed(&self) -> bool {
         self.summary.gate.passed
+    }
+
+    /// Read a report written by `--output` (any version up to this one), e.g. a baseline.
+    pub fn load(path: &std::path::Path) -> Result<Self, EvalError> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| EvalError::Io(format!("cannot read results `{}`: {e}", path.display())))?;
+        let report: Self = serde_json::from_str(&text)
+            .map_err(|e| EvalError::invalid(format!("{}: not a graphrt eval report: {e}", path.display())))?;
+        if report.schema_version == 0 || report.schema_version > REPORT_SCHEMA_VERSION {
+            return Err(EvalError::invalid(format!(
+                "{}: report schema version {} is not supported (this build reads 1 to {REPORT_SCHEMA_VERSION})",
+                path.display(),
+                report.schema_version
+            )));
+        }
+        Ok(report)
     }
 
     /// Pretty JSON.
@@ -295,7 +442,7 @@ fn failure_details(test: &TestResult) -> String {
     if let Some(error) = &test.run.error {
         lines.push(format!("run {}: {error}", status_word(test.run.status)));
     }
-    for a in test.assertions.iter().filter(|a| !a.pass) {
+    for a in test.assertions.iter().filter(|a| !a.pass && !a.excluded) {
         let note = if a.weight == 0.0 { " (report only)" } else { "" };
         lines.push(format!("{}{note}: {}", a.kind, a.reason));
     }
@@ -345,17 +492,47 @@ pub fn format_result_line(test: &TestResult) -> String {
     line
 }
 
-/// The closing summary block: metrics and totals with the gate verdict.
+/// The closing summary block: metrics, trials, calibration, the baseline
+/// comparison and totals with the gate verdict.
 pub fn format_summary(report: &EvalReport) -> String {
     let s = &report.summary;
     let mut out = String::new();
     if !s.metrics.is_empty() {
         out.push_str("\n  metric                          pass      mean\n");
         for (name, m) in &s.metrics {
-            let _ = writeln!(out, "  {name:<30} {:>3}/{:<3}  {:>6.3}", m.passed, m.count, m.mean_score);
+            let _ = write!(out, "  {name:<30} {:>3}/{:<3}  {:>6.3}", m.passed, m.count, m.mean_score);
+            if m.excluded > 0 {
+                let _ = write!(out, "  ({} excluded)", m.excluded);
+            }
+            out.push('\n');
         }
     }
-    let _ = writeln!(
+    if let Some(t) = &s.trials {
+        let _ = writeln!(out, "\n  test case                      passed  pass@{0}  pass^{0}", t.k);
+        for c in &report.cases {
+            let _ = writeln!(
+                out,
+                "  {:<30} {:>3}/{:<3} {:>6.3}  {:>6.3}",
+                c.id, c.passed, c.trials, c.pass_at_k, c.pass_hat_k
+            );
+        }
+        let _ = writeln!(
+            out,
+            "pass@{0} {1:.3}, pass^{0} {2:.3} over {3} case(s), up to {4} trial(s) each",
+            t.k,
+            t.pass_at_k,
+            t.pass_hat_k,
+            report.cases.len(),
+            t.trials
+        );
+    }
+    if let Some(c) = &report.calibration {
+        out.push_str(&crate::calibration::format_calibration(c));
+    }
+    if let Some(b) = &report.baseline {
+        out.push_str(&crate::baseline::format_baseline(b));
+    }
+    let _ = write!(
         out,
         "\n{} test(s): {} passed, {} failed, {} error(s); pass rate {:.1}% (gate {:.1}%) in {} ms, {} tokens",
         s.total,
@@ -367,7 +544,15 @@ pub fn format_summary(report: &EvalReport) -> String {
         s.duration_ms,
         s.usage.total_tokens
     );
-    let _ = writeln!(out, "gate: {}", if s.gate.passed { "PASSED" } else { "FAILED" });
+    if s.judge_usage.total_tokens > 0 {
+        let _ = write!(out, " (+{} judge tokens)", s.judge_usage.total_tokens);
+    }
+    out.push('\n');
+    if s.gate.passed {
+        out.push_str("gate: PASSED\n");
+    } else {
+        let _ = writeln!(out, "gate: FAILED ({})", s.gate.failures.join("; "));
+    }
     out
 }
 
@@ -383,7 +568,7 @@ mod tests {
             description: None,
             source: "inline".into(),
             tags: vec![],
-            repeat: 0,
+            trial: 0,
             status,
             pass: status == TestStatus::Passed,
             score: if status == TestStatus::Passed { 1.0 } else { 0.0 },
@@ -391,14 +576,13 @@ mod tests {
             vars: Map::new(),
             expected: None,
             run: RunSummary { latency_ms, ..RunSummary::default() },
-            assertions: vec![AssertionResult {
-                kind: "contains".into(),
-                metric: None,
-                pass: status == TestStatus::Passed,
-                score: if status == TestStatus::Passed { 1.0 } else { 0.0 },
-                weight: 1.0,
-                reason: "r".into(),
-            }],
+            assertions: vec![AssertionResult::new(
+                "contains",
+                status == TestStatus::Passed,
+                if status == TestStatus::Passed { 1.0 } else { 0.0 },
+                1.0,
+                "r",
+            )],
         }
     }
 
@@ -416,6 +600,9 @@ mod tests {
             workflow: WorkflowInfo { path: "w.yaml".into(), name: "wf".into(), fingerprint: "f".into() },
             started_at_ms: 0,
             summary: Summary::of(&tests, 0.5, 60),
+            cases: Vec::new(),
+            calibration: None,
+            baseline: None,
             tests,
         }
     }
@@ -443,7 +630,7 @@ mod tests {
         let back: EvalReport = serde_json::from_str(&text).unwrap();
         assert_eq!(back, r);
         let value: Json = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["schema_version"], 2);
         assert_eq!(value["tests"][1]["status"], "failed");
         assert_eq!(value["tests"][0]["assertions"][0]["type"], "contains");
     }

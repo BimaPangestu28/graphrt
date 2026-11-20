@@ -76,6 +76,9 @@ pub struct RetrievalHit {
     pub id: String,
     pub document_id: String,
     pub score: Option<f64>,
+    /// The chunk text (judges get it as `contexts`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content: String,
 }
 
 impl RetrievalHit {
@@ -217,6 +220,7 @@ impl RunCapture {
                             id: text(hit, "id"),
                             document_id: text(hit, "document_id"),
                             score: hit.get("score").and_then(Json::as_f64),
+                            content: text(hit, "content"),
                         });
                     }
                 }

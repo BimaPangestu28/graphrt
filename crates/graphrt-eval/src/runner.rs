@@ -1,5 +1,5 @@
-//! Running a suite: the [`Target`] under test, concurrency, repetitions,
-//! filters, scoring and the gate.
+//! Running a suite: the [`Target`] under test, concurrency, trials, filters,
+//! scoring, trial statistics, calibration and the gate.
 
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -16,7 +16,10 @@ use crate::capture::{RunCapture, RunStatus};
 use crate::config::{AssertionSpec, EvalSuite, TestCase, inputs_of};
 use crate::error::EvalError;
 use crate::path::render;
-use crate::report::{EvalReport, REPORT_SCHEMA_VERSION, RunSummary, Summary, TestResult, TestStatus, WorkflowInfo};
+use crate::report::{
+    EvalReport, REPORT_SCHEMA_VERSION, RunSummary, Summary, TestResult, TestStatus, WorkflowInfo, case_summaries,
+    trial_summary,
+};
 
 /// The system under test: runs one test case and reports what happened.
 ///
@@ -30,6 +33,12 @@ pub trait Target: Send + Sync {
     /// Describes the workflow for the report.
     fn workflow(&self) -> WorkflowInfo {
         WorkflowInfo::default()
+    }
+
+    /// The start variables and their input types (`paragraph`, `json`...),
+    /// used to shape judge inputs. Empty when unknown.
+    fn start_variables(&self) -> Vec<(String, String)> {
+        Vec::new()
     }
 }
 
@@ -91,6 +100,19 @@ impl Target for EngineTarget {
             fingerprint: graph.fingerprint().to_owned(),
         }
     }
+
+    fn start_variables(&self) -> Vec<(String, String)> {
+        let nodes = &self.engine.graph().workflow().graph.nodes;
+        let Some(start) = nodes.iter().find(|n| n.kind == "start" && n.parent.is_none()) else { return Vec::new() };
+        let declared = start.config.get("variables").and_then(Json::as_array).into_iter().flatten();
+        declared
+            .filter_map(|v| {
+                let name = v.get("variable")?.as_str()?;
+                let kind = v.get("type").and_then(Json::as_str).unwrap_or("text-input");
+                Some((name.to_owned(), kind.to_owned()))
+            })
+            .collect()
+    }
 }
 
 /// How to run a suite.
@@ -99,8 +121,9 @@ impl Target for EngineTarget {
 pub struct RunnerOptions {
     /// Tests running at the same time (at least 1).
     pub concurrency: usize,
-    /// Runs per test case (at least 1); each run is a separate result.
-    pub repeat: u32,
+    /// Trials per test case (at least 1); each trial is a separate result, and
+    /// with more than one the report adds pass@k and pass^k per case.
+    pub trials: u32,
     /// Keep only cases whose id or a tag matches one of these (`*` wildcards).
     pub filters: Vec<String>,
     /// Override the suite's `gate.pass_rate`.
@@ -111,7 +134,7 @@ pub struct RunnerOptions {
 
 impl Default for RunnerOptions {
     fn default() -> Self {
-        Self { concurrency: 4, repeat: 1, filters: Vec::new(), pass_rate: None, keep_events: false }
+        Self { concurrency: 4, trials: 1, filters: Vec::new(), pass_rate: None, keep_events: false }
     }
 }
 
@@ -127,7 +150,7 @@ type PreparedCase = (Arc<TestCase>, Arc<Vec<PreparedAssertion>>);
 
 struct Job {
     index: usize,
-    repeat: u32,
+    trial: u32,
     case: Arc<TestCase>,
     assertions: Arc<Vec<PreparedAssertion>>,
 }
@@ -180,14 +203,14 @@ impl Runner {
             .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or_default();
         let started = Instant::now();
-        let repeat = self.options.repeat.max(1);
+        let trials = self.options.trials.max(1);
         let jobs: Vec<Job> = prepared
             .iter()
             .enumerate()
             .flat_map(|(index, (case, assertions))| {
-                (0..repeat).map(move |r| Job {
+                (0..trials).map(move |trial| Job {
                     index,
-                    repeat: r,
+                    trial,
                     case: Arc::clone(case),
                     assertions: Arc::clone(assertions),
                 })
@@ -207,7 +230,7 @@ impl Runner {
             results.push((index, result));
         }
         drop(pending);
-        results.sort_by_key(|(index, result)| (*index, result.repeat));
+        results.sort_by_key(|(index, result)| (*index, result.trial));
         let tests: Vec<TestResult> = results.into_iter().map(|(_, r)| r).collect();
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let pass_rate = self.options.pass_rate.unwrap_or(suite.gate.pass_rate);
@@ -215,6 +238,27 @@ impl Runner {
         if workflow.path.is_empty() {
             workflow.path = suite.workflow.display().to_string();
         }
+        let mut summary = Summary::of(&tests, pass_rate, duration_ms);
+        let gate = &suite.gate;
+        let cases = if trials > 1 || gate.pass_hat_k.is_some() {
+            let k = gate.k.unwrap_or(trials).clamp(1, trials);
+            let cases = case_summaries(&tests, k);
+            let stats = trial_summary(&cases, k);
+            if let Some(required) = gate.pass_hat_k {
+                summary.gate.pass_hat_k = Some(required);
+                let actual = stats.pass_hat_k;
+                summary.gate.require(actual + 1e-9 >= required, || format!("pass^{k} {actual:.3} < {required:.3}"));
+            }
+            summary.trials = Some(stats);
+            cases
+        } else {
+            Vec::new()
+        };
+        let calibration = suite.calibration.as_ref().map(|config| {
+            let calibration = crate::calibration::calibrate(&tests, config);
+            crate::calibration::gate(&calibration, config, &mut summary.gate);
+            calibration
+        });
         Ok(EvalReport {
             schema_version: REPORT_SCHEMA_VERSION,
             graphrt_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -222,7 +266,10 @@ impl Runner {
             description: suite.description.clone(),
             workflow,
             started_at_ms,
-            summary: Summary::of(&tests, pass_rate, duration_ms),
+            summary,
+            cases,
+            calibration,
+            baseline: None,
             tests,
         })
     }
@@ -273,7 +320,7 @@ async fn run_job<T: Target + ?Sized>(target: &T, job: &Job, keep_events: bool) -
         TestStatus::Failed => {
             let failed: Vec<String> = assertions
                 .iter()
-                .filter(|a| !a.pass && a.weight > 0.0)
+                .filter(|a| !a.pass && a.gates())
                 .map(|a| format!("{}: {}", a.kind, a.reason))
                 .collect();
             Some(if failed.is_empty() {
@@ -293,7 +340,7 @@ async fn run_job<T: Target + ?Sized>(target: &T, job: &Job, keep_events: bool) -
         description: case.description.clone(),
         source: case.source.clone(),
         tags: case.tags.clone(),
-        repeat: job.repeat,
+        trial: job.trial,
         status,
         pass: status == TestStatus::Passed,
         score,
@@ -320,19 +367,23 @@ async fn run_job<T: Target + ?Sized>(target: &T, job: &Job, keep_events: bool) -
 
 /// Promptfoo scoring: the score is the weighted mean of the assertion scores
 /// (weight 0 = report only). Without a threshold every gating assertion must
-/// pass; with one, the score must reach it.
+/// pass; with one, the score must reach it. Excluded results (a judge's
+/// `unknown` with `unknown: exclude`) take no part; a test whose results are
+/// all excluded passes with score 1.
 pub fn verdict(assertions: &[AssertionResult], threshold: Option<f64>) -> (bool, f64) {
-    let total_weight: f64 = assertions.iter().map(|a| a.weight).sum();
+    let counted = || assertions.iter().filter(|a| !a.excluded);
+    let total_weight: f64 = counted().map(|a| a.weight).sum();
+    let count = counted().count();
     let score = if total_weight > 0.0 {
-        assertions.iter().map(|a| a.weight * a.score).sum::<f64>() / total_weight
-    } else if assertions.is_empty() {
+        counted().map(|a| a.weight * a.score).sum::<f64>() / total_weight
+    } else if count == 0 {
         1.0
     } else {
-        assertions.iter().map(|a| a.score).sum::<f64>() / assertions.len() as f64
+        counted().map(|a| a.score).sum::<f64>() / count as f64
     };
     let pass = match threshold {
         Some(t) => score + 1e-9 >= t,
-        None => assertions.iter().filter(|a| a.weight > 0.0).all(|a| a.pass),
+        None => counted().filter(|a| a.weight > 0.0).all(|a| a.pass),
     };
     (pass, score)
 }
@@ -345,7 +396,7 @@ mod tests {
     use serde_json::json;
 
     fn result(pass: bool, score: f64, weight: f64) -> AssertionResult {
-        AssertionResult { kind: "x".into(), metric: None, pass, score, weight, reason: String::new() }
+        AssertionResult::new("x", pass, score, weight, "")
     }
 
     #[test]
@@ -357,6 +408,10 @@ mod tests {
         assert_eq!(verdict(&weighted, Some(0.7)), (true, 0.75));
         assert_eq!(verdict(&weighted, Some(0.8)), (false, 0.75));
         assert!(verdict(&[result(false, 0.5, 0.0)], None).0);
+        let mut unknown = result(false, 0.0, 1.0);
+        unknown.excluded = true;
+        assert_eq!(verdict(&[result(true, 0.8, 1.0), unknown.clone()], None), (true, 0.8), "excluded is ignored");
+        assert_eq!(verdict(&[unknown], None), (true, 1.0));
     }
 
     /// A fake target answering `Hello, <name>.`, failing for `name: fail`.
@@ -427,14 +482,40 @@ tests:
         let mut options = RunnerOptions { pass_rate: Some(0.3), ..RunnerOptions::default() };
         assert!(run(options.clone()).0.gate_passed());
         options.filters = vec!["smoke".into()];
-        options.repeat = 3;
+        options.trials = 3;
         options.concurrency = 2;
         let (report, seen) = run(options);
         assert_eq!(report.tests.len(), 3);
         assert!(report.tests.iter().all(|t| t.id == "ada"));
-        assert_eq!(report.tests.iter().map(|t| t.repeat).collect::<Vec<_>>(), [0, 1, 2]);
+        assert_eq!(report.tests.iter().map(|t| t.trial).collect::<Vec<_>>(), [0, 1, 2]);
         assert!(seen.contains(&"ada#2".to_owned()));
         assert!(report.gate_passed());
+        assert_eq!(report.cases.len(), 1);
+        let trials = report.summary.trials.as_ref().unwrap();
+        assert_eq!((trials.trials, trials.k, trials.pass_hat_k), (3, 3, 1.0));
+    }
+
+    #[test]
+    fn trials_report_pass_at_k_and_gate_on_pass_hat_k() {
+        let mut suite = suite();
+        suite.gate.pass_rate = 0.0;
+        suite.gate.pass_hat_k = Some(0.5);
+        suite.gate.k = Some(2);
+        let options = RunnerOptions { trials: 4, concurrency: 3, ..RunnerOptions::default() };
+        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let report = rt.block_on(Runner::new(options).run(&suite, &Greeter, |_| {})).unwrap();
+        assert_eq!(report.tests.len(), 12);
+        let ids: Vec<&str> = report.cases.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["ada", "bob", "broken"]);
+        assert_eq!((report.cases[0].passed, report.cases[0].pass_hat_k), (4, 1.0));
+        assert_eq!((report.cases[1].passed, report.cases[1].pass_at_k), (0, 0.0));
+        let trials = report.summary.trials.as_ref().unwrap();
+        assert!((trials.pass_hat_k - 1.0 / 3.0).abs() < 1e-12, "{trials:?}");
+        assert!(!report.gate_passed());
+        assert_eq!(report.summary.gate.failures, ["pass^2 0.333 < 0.500"]);
+        let text = crate::report::format_summary(&report);
+        assert!(text.contains("pass@2 0.333, pass^2 0.333 over 3 case(s)"), "{text}");
+        assert!(text.contains("gate: FAILED (pass^2 0.333 < 0.500)"), "{text}");
     }
 
     #[test]
