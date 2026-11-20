@@ -34,6 +34,11 @@
 //!     secret_access_key_env: AWS_SECRET_ACCESS_KEY
 //!     session_token_env: AWS_SESSION_TOKEN          # optional
 //!     # ... or a Bedrock API key: api_key_env: AWS_BEARER_TOKEN_BEDROCK
+//!   - name: openai                       # feature `replay`: recorded responses
+//!     kind: replay
+//!     cassettes: cassettes/              # relative to the providers file (CLI)
+//!     mode: replay                       # replay (default) | record | auto
+//!     upstream: { kind: openai, api_key_env: OPENAI_API_KEY }   # or the name of a provider above
 //! ```
 //!
 //! `${VAR}` in `base_url`, `headers` and `query` values is replaced with the
@@ -136,6 +141,10 @@ pub struct ProviderConfig {
 #[serde(from = "ProvidersRepr")]
 pub struct ProvidersConfig {
     pub providers: Vec<ProviderConfig>,
+    /// `kind: replay` entries (feature `replay`), built after `providers` so they
+    /// can wrap one of them.
+    #[cfg(feature = "replay")]
+    pub replay: Vec<ReplayProviderConfig>,
     /// Providers authenticated by a dynamic credential source (token broker, env var
     /// read per request, or host-supplied), keyed by provider name. Entries replace
     /// same-named providers. See `docs/credentials.md`.
@@ -157,8 +166,18 @@ enum ProvidersRepr {
 impl From<ProvidersRepr> for ProvidersConfig {
     fn from(repr: ProvidersRepr) -> Self {
         match repr {
-            ProvidersRepr::Wrapped { providers, credentials } => Self { providers, credentials },
-            ProvidersRepr::List(providers) => Self { providers, credentials: IndexMap::new() },
+            ProvidersRepr::Wrapped { providers, credentials } => Self {
+                providers,
+                credentials,
+                #[cfg(feature = "replay")]
+                replay: Vec::new(),
+            },
+            ProvidersRepr::List(providers) => Self {
+                providers,
+                credentials: IndexMap::new(),
+                #[cfg(feature = "replay")]
+                replay: Vec::new(),
+            },
         }
     }
 }
@@ -187,14 +206,27 @@ impl ProvidersConfig {
             return Err(LlmError::Config("providers config must be a list of providers".into()));
         };
         let mut providers = Vec::with_capacity(items.len());
+        #[cfg(feature = "replay")]
+        let mut replay = Vec::new();
         for (i, item) in items.into_iter().enumerate() {
             let label = item.get("name").and_then(serde_json::Value::as_str).map(str::to_owned);
-            let cfg: ProviderConfig = serde_json::from_value(item).map_err(|e| {
+            let context = |e: serde_json::Error| {
                 LlmError::Config(format!("provider #{} ({}): {e}", i + 1, label.as_deref().unwrap_or("unnamed")))
-            })?;
+            };
+            #[cfg(feature = "replay")]
+            if item.get("kind").and_then(serde_json::Value::as_str) == Some("replay") {
+                replay.push(serde_json::from_value(item).map_err(context)?);
+                continue;
+            }
+            let cfg: ProviderConfig = serde_json::from_value(item).map_err(context)?;
             providers.push(cfg);
         }
-        Ok(Self { providers, credentials })
+        Ok(Self {
+            providers,
+            credentials,
+            #[cfg(feature = "replay")]
+            replay,
+        })
     }
 
     /// Decode from JSON text.
@@ -285,6 +317,20 @@ impl ProvidersConfig {
             registry.try_add(provider.name.clone(), Arc::clone(&model))?;
             for alias in &provider.aliases {
                 registry.alias(alias.clone(), provider.name.clone());
+            }
+        }
+        #[cfg(feature = "replay")]
+        for replay in &config.replay {
+            if names.contains(replay.name.as_str()) || aliases.contains_key(replay.name.as_str()) {
+                return Err(LlmError::Config(format!(
+                    "replay provider `{}` has the same name as another provider; rename one of them",
+                    replay.name
+                )));
+            }
+            let model = build_replay(replay, &registry, vars)?;
+            registry.try_add(replay.name.clone(), model)?;
+            for alias in &replay.aliases {
+                registry.alias(alias.clone(), replay.name.clone());
             }
         }
         let host = crate::credential_config::HostCredentials::new();
@@ -577,6 +623,83 @@ pub fn interpolate(text: &str, vars: &[(String, String)]) -> Result<String, Stri
     Ok(out)
 }
 
+/// A `kind: replay` providers-file entry (see [`crate::replay`]).
+#[cfg(feature = "replay")]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayProviderConfig {
+    pub name: String,
+    /// Always `replay`.
+    pub kind: String,
+    /// Cassette directory. Relative paths are resolved by the host (the CLI
+    /// resolves them against the providers file, see [`ProvidersConfig::resolve_paths`]).
+    pub cassettes: std::path::PathBuf,
+    /// `replay` (default), `record` or `auto`; `GRAPHRT_REPLAY_MODE` overrides it.
+    #[serde(default)]
+    pub mode: crate::replay::ReplayMode,
+    /// Provider to record from: the name of another provider of this file, or an
+    /// inline provider entry whose `name` may be omitted.
+    /// Only built when the mode records, so replaying needs no API key.
+    #[serde(default)]
+    pub upstream: Option<ReplayUpstream>,
+    /// Additional provider names resolving to this provider.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
+/// Where a replay provider records from.
+#[cfg(feature = "replay")]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+pub enum ReplayUpstream {
+    /// A provider registered under this name.
+    Provider(String),
+    /// An inline provider entry (`kind`, `base_url`, `api_key_env`, ...).
+    Inline(Box<serde_json::Value>),
+}
+
+#[cfg(feature = "replay")]
+impl ProvidersConfig {
+    /// Resolve relative replay `cassettes` directories against `base` (usually
+    /// the directory of the providers file).
+    pub fn resolve_paths(&mut self, base: &std::path::Path) {
+        for replay in &mut self.replay {
+            if replay.cassettes.is_relative() {
+                replay.cassettes = base.join(&replay.cassettes);
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "http", feature = "replay"))]
+fn build_replay(
+    p: &ReplayProviderConfig,
+    registry: &ModelRegistry,
+    vars: &[(String, String)],
+) -> Result<Arc<dyn ChatModel>, LlmError> {
+    use crate::replay::{REPLAY_MODE_ENV, ReplayMode, ReplayModel};
+    let ctx = |w: &str| LlmError::Config(format!("provider `{}`: {w}", p.name));
+    let mode = match lookup(vars, REPLAY_MODE_ENV) {
+        Some(text) => ReplayMode::parse(&text).map_err(|e| ctx(&format!("{REPLAY_MODE_ENV}: {e}")))?,
+        None => p.mode,
+    };
+    let upstream = match (&p.upstream, mode.needs_upstream()) {
+        (None, _) | (_, false) => None,
+        (Some(ReplayUpstream::Provider(name)), true) => Some(registry.get(name).map_err(|e| ctx(&e.to_string()))?),
+        (Some(ReplayUpstream::Inline(raw)), true) => {
+            let mut raw = (**raw).clone();
+            if let serde_json::Value::Object(map) = &mut raw {
+                map.entry("name").or_insert_with(|| serde_json::Value::String(format!("{}-upstream", p.name)));
+            }
+            let cfg: ProviderConfig =
+                serde_json::from_value(raw).map_err(|e| ctx(&format!("invalid `upstream`: {e}")))?;
+            Some(build_provider(&cfg, vars)?)
+        }
+    };
+    let model = ReplayModel::new(&p.cassettes, mode, upstream).map_err(|e| ctx(&e.to_string()))?;
+    Ok(Arc::new(model))
+}
+
 /// Applies model-name aliases and default parameters before delegating.
 #[cfg(feature = "http")]
 #[derive(Debug)]
@@ -662,6 +785,61 @@ mod credentials_section_tests {
         .unwrap();
         let err = ModelRegistry::from_config_with_vars(&config, &[]).unwrap_err().to_string();
         assert!(err.contains("unterminated"), "{err}");
+    }
+}
+
+#[cfg(all(test, feature = "replay", feature = "openai"))]
+mod replay_tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    use super::*;
+
+    fn config(json: serde_json::Value) -> ProvidersConfig {
+        ProvidersConfig::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn replay_entries_build_without_upstream_keys_in_replay_mode() {
+        let mut cfg = config(serde_json::json!({"providers": [
+            {"name": "openai", "kind": "replay", "cassettes": "tapes",
+             "upstream": {"kind": "openai", "api_key_env": "MISSING_KEY"}, "aliases": ["oai"]}
+        ]}));
+        assert_eq!(cfg.replay.len(), 1);
+        assert!(cfg.providers.is_empty());
+        cfg.resolve_paths(std::path::Path::new("/base"));
+        assert_eq!(cfg.replay[0].cassettes, std::path::PathBuf::from("/base/tapes"));
+        // Replay mode never builds the upstream, so its missing key is not an error.
+        let registry = cfg.load(&[]).unwrap().models;
+        assert!(registry.get("openai").is_ok() && registry.get("oai").is_ok());
+        // Recording builds it.
+        let vars = vec![("GRAPHRT_REPLAY_MODE".to_owned(), "record".to_owned())];
+        let err = cfg.load(&vars).unwrap_err().to_string();
+        assert!(err.contains("MISSING_KEY"), "{err}");
+    }
+
+    #[test]
+    fn replay_entries_are_validated() {
+        let bad = |json: serde_json::Value| match ProvidersConfig::from_value(json) {
+            Err(e) => e.to_string(),
+            Ok(cfg) => cfg.load(&[]).unwrap_err().to_string(),
+        };
+        assert!(bad(serde_json::json!([{"name": "r", "kind": "replay", "casettes": "x"}])).contains("casettes"));
+        assert!(
+            bad(serde_json::json!([{"name": "r", "kind": "replay", "cassettes": "x", "mode": "auto"}]))
+                .contains("upstream")
+        );
+        assert!(
+            bad(serde_json::json!([
+                {"name": "real", "kind": "openai", "base_url": "http://x/v1"},
+                {"name": "real", "kind": "replay", "cassettes": "x"}
+            ]))
+            .contains("same name")
+        );
+        let named = config(serde_json::json!([
+            {"name": "real", "kind": "openai", "base_url": "http://x/v1"},
+            {"name": "r", "kind": "replay", "cassettes": "x", "mode": "auto", "upstream": "real"}
+        ]));
+        assert!(named.load(&[]).unwrap().models.get("r").is_ok());
     }
 }
 

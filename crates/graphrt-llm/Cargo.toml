@@ -13,9 +13,12 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["openai", "anthropic", "typesafe", "mock"]
+default = ["openai", "anthropic", "typesafe", "mock", "replay"]
 # `mock::MockModel`, a scripted model for tests and offline examples (no dependencies).
 mock = []
+# `kind: replay` providers: record responses to cassette files and replay them
+# offline (`replay::ReplayModel`), for deterministic tests and evals.
+replay = ["dep:sha2"]
 # OpenAI-compatible chat completions (OpenAI, Azure OpenAI, Ollama, vLLM, Groq, OpenRouter, DeepSeek, ...).
 openai = ["http"]
 # Anthropic Messages API.

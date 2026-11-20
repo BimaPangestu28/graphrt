@@ -32,6 +32,9 @@ pub mod mock;
 pub mod nodes;
 pub mod providers;
 pub mod registry;
+/// Record / replay provider for deterministic runs (feature `replay`).
+#[cfg(feature = "replay")]
+pub mod replay;
 pub mod sse;
 pub mod types;
 #[cfg(feature = "typesafe")]
