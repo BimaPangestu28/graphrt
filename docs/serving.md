@@ -63,6 +63,16 @@ On startup the server marks runs that were `running` as `failed` with the error
 `interrupted by restart` (a run's in-flight work cannot be recovered). Paused
 runs stay paused and can be resumed.
 
+### Keep-alive after early rejections
+
+Some responses are sent before the request body is read: `401`/`403` from the
+API key or `--verify-jwt`, `429` from `--user-rate-limit` or
+`--max-active-runs`, `415` without a JSON `Content-Type`, `413` past
+`--max-body-bytes`. The server then reads and discards the rest of the body (up
+to `--max-body-bytes`, for at most 2 s), so a client's pooled keep-alive
+connection stays usable for the retry. A larger or slower body is not read: the
+response carries `Connection: close` and the client opens a new connection.
+
 ## Starting runs
 
 `POST /v1/workflows/{name}/runs`
@@ -135,6 +145,68 @@ curl -N http://localhost:8080/v1/workflows/chat/runs \
 - Webhooks have their own `headers:` mapping (below); `--input-header` does not
   apply to them.
 
+### Verifying end-user JWTs
+
+With `--input-header` alone the server passes the token through unchecked and
+`Authorization` must still carry the API key, so a mobile app would have to
+hold that key. `--verify-jwt INPUT` (cargo feature `jwt`, on by default) makes
+the server verify the token itself, and lets a valid token start runs
+**without** the API key:
+
+```sh
+GRAPHRT_API_KEY=admin-only graphrt serve flows/ \
+  --input-header user_jwt=X-User-Authorization --verify-jwt user_jwt \
+  --jwt-jwks-url https://<ref>.supabase.co/auth/v1/.well-known/jwks.json \
+  --jwt-issuer https://<ref>.supabase.co/auth/v1 --jwt-audience authenticated \
+  --user-rate-limit 20
+```
+
+```sh
+curl -N http://localhost:8080/v1/workflows/chat/runs -H 'Content-Type: application/json' \
+  -H "X-User-Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+  -d '{"stream": true, "inputs": {"message": "What is my balance?"}}'
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--verify-jwt INPUT` | Verify the token in the header mapped to `INPUT` by `--input-header` |
+| `--jwt-jwks-url URL` | JWKS of the identity provider (`ES256` P-256 and `RS256` keys). Fetched at startup (a failure stops the server), refreshed every 10 minutes, and early (at most every 30 s) when a token names an unknown `kid`. `https` only, except for loopback. Env fallback: `GRAPHRT_JWT_JWKS_URL` |
+| `--jwt-secret-env VAR` | Environment variable holding an `HS256` shared secret (e.g. the Supabase legacy JWT secret). Can be combined with a JWKS |
+| `--jwt-issuer ISS` | Required `iss`. Env fallback: `GRAPHRT_JWT_ISSUER` |
+| `--jwt-audience AUD` | Required `aud` (a string, or one entry of an array; Supabase uses `authenticated`). Env fallback: `GRAPHRT_JWT_AUDIENCE` |
+| `--user-rate-limit N` | Runs per minute per verified user (`sub`), bursts of up to N; `0` (default) = unlimited |
+
+The env fallbacks let a container without a shell take project-specific values
+from its environment.
+
+What a request gets:
+
+- **Valid token** (signature by a configured key with the key's own `alg`;
+  `exp` present and not past; `nbf`, `iss`, `aud` when set, 30 s leeway; a
+  non-empty `sub`): the run starts, with or without the API key. The run's
+  `sys.user_id` and its `user_id` (run record and spans) are set to `sub`,
+  replacing any client value. Only `HS256`,
+  `ES256` and `RS256` are accepted; `alg: none`, other algorithms and the
+  legacy anon / service-role keys (no `sub`) are refused.
+- **Invalid token**: `401 {"error": "invalid user token in `x-user-authorization`: expired"}`
+  with `WWW-Authenticate: Bearer error="invalid_token"`, even when the API key
+  is valid, so a bad token never reaches a tool.
+- **No token**: the API key rules apply as before (and a required input still
+  answers `401`).
+- **Over the rate limit**: `429` with `Retry-After` (seconds). Refused requests
+  do not use up the quota. The limit is per process; with several instances
+  each one counts separately.
+
+A user token opens only `POST /v1/workflows/{name}/runs`, and only for
+workflows whose start node declares the verified input (others answer `403`,
+so internal workflows served next to the chat stay key-only). Every other endpoint
+(run lists, events, resume, abort, validate, knowledge) still needs the API key,
+so users cannot read each other's runs; for the same reason the server refuses
+to start with `--verify-jwt` on a non-loopback address unless the API key is
+set. Verification is in memory (measured: +7 µs per request for `HS256`, +44 µs
+for `ES256`). A complete example, with a Supabase schema and container, is
+[examples/supabase-chatbot](../examples/supabase-chatbot/).
+
 ## Streaming (SSE)
 
 With `stream: true` the response is `text/event-stream`: one SSE message per
@@ -194,7 +266,7 @@ Run records gain these fields, all omitted when empty:
 
 | Field | Meaning |
 | --- | --- |
-| `metadata`, `session_id`, `user_id`, `tags` | From the request |
+| `metadata`, `session_id`, `user_id`, `tags` | From the request (`user_id` is the token's `sub` when `--verify-jwt` verified one) |
 | `trace_id`, `span_id` | OpenTelemetry trace id and root (`invoke_workflow`) span id of the latest execution, when tracing is on; lets later evaluation scores join the same trace |
 | `inputs` | The run's inputs as the start node accepted them, with `secret`-typed inputs stored as `******`. Only with `graphrt serve --store-inputs` |
 

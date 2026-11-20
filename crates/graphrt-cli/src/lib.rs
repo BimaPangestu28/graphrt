@@ -2,6 +2,8 @@
 //! binary and its tests.
 
 pub mod args;
+#[cfg(feature = "serve")]
+pub mod body_drain;
 pub mod bundle_cmd;
 pub mod catalog;
 pub mod diagnostics;
@@ -32,6 +34,8 @@ pub mod setup;
 pub mod store;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
+#[cfg(feature = "jwt")]
+pub mod user_auth;
 #[cfg(feature = "wasm")]
 pub mod wasm_loader;
 #[cfg(feature = "serve")]

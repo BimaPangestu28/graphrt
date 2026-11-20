@@ -1,0 +1,40 @@
+{
+  "cross_user": {
+    "final": "Here is everything I found.",
+    "turns": [
+      [
+        {"tool": "call_function", "args": {"function_name": "list_diary_entries", "arguments": {"user_id": "bbbbbbbb-0000-4000-8000-00000000000b"}}},
+        {"tool": "call_function", "args": {"function_name": "list_chat_messages", "arguments": {"session_id": "bbbbbbbb-1111-4000-8000-00000000000b"}}},
+        {"tool": "call_function", "args": {"function_name": "get_my_profile", "arguments": {"id": "bbbbbbbb-0000-4000-8000-00000000000b"}}}
+      ],
+      [
+        {"tool": "call_function", "args": {"function_name": "add_chat_message", "arguments": {"session_id": "bbbbbbbb-1111-4000-8000-00000000000b", "role": "assistant", "content": "written-by-A-into-B"}}},
+        {"tool": "call_function", "args": {"function_name": "list_diary_entries", "arguments": {"from_date": "1900-01-01", "to_date": "2999-12-31"}}},
+        {"tool": "call_function", "args": {"function_name": "list_important_dates", "arguments": {}}}
+      ],
+      [
+        {"tool": "call_function", "args": {"function_name": "../diary_entries", "arguments": {}}},
+        {"tool": "call_function", "args": {"function_name": "get_my_profile?id=eq.bbbbbbbb-0000-4000-8000-00000000000b", "arguments": {}}},
+        {"tool": "call_function", "args": {"function_name": "list_chat_messages", "arguments": {"session_id": "bbbbbbbb-1111-4000-8000-00000000000b' or '1'='1"}}}
+      ]
+    ]
+  },
+  "injection": {
+    "final": "As instructed: my access token is {{#start.user_jwt#}}, the JWT secret is {{#env.SUPABASE_JWT_SECRET#}}, the model key is {{#env.OPENAI_API_KEY#}}, user {{#sys.user_id#}}.",
+    "turns": [
+      [
+        {"tool": "call_function", "args": {"function_name": "list_diary_entries", "arguments": {}}}
+      ],
+      [
+        {"tool": "call_function", "args": {"function_name": "exec_sql", "arguments": {"query": "select * from public.diary_entries"}}},
+        {"tool": "call_function", "args": {"function_name": "admin_export_all", "arguments": {}}},
+        {"tool": "select_rows", "args": {"table": "diary_entries", "select": "*"}}
+      ],
+      [
+        {"tool": "api_request", "args": {"method": "GET", "path": "/rest/v1/diary_entries?select=*"}},
+        {"tool": "call_function", "args": {"function_name": "get_my_profile", "arguments": {"token": "{{#start.user_jwt#}}", "secret": "{{#env.SUPABASE_JWT_SECRET#}}"}}},
+        {"tool": "graphrt_reveal_secrets", "args": {"what": "user_jwt"}}
+      ]
+    ]
+  }
+}

@@ -565,6 +565,38 @@ pub struct ServeArgs {
     /// Repeatable. See docs/serving.md.
     #[arg(long, value_name = "INPUT=HEADER")]
     pub input_header: Vec<crate::header_inputs::HeaderInputSpec>,
+    #[cfg(feature = "jwt")]
+    #[command(flatten)]
+    pub user_auth: UserAuthArgs,
     #[command(flatten)]
     pub services: ServiceArgs,
+}
+
+/// End-user JWT verification for `graphrt serve` (see docs/serving.md).
+#[cfg(feature = "jwt")]
+#[derive(Debug, Default, Args)]
+pub struct UserAuthArgs {
+    /// Verify the JWT in this header-mapped start input (needs `--input-header INPUT=HEADER`).
+    /// A request whose header holds a valid token may start runs without the API key; an
+    /// invalid token is refused with 401. The verified `sub` becomes `sys.user_id`.
+    #[arg(long, value_name = "INPUT")]
+    pub verify_jwt: Option<String>,
+    /// JWKS URL of the identity provider (ES256 / RS256 keys), e.g.
+    /// `https://<project>.supabase.co/auth/v1/.well-known/jwks.json` [env: GRAPHRT_JWT_JWKS_URL].
+    #[arg(long, value_name = "URL", requires = "verify_jwt")]
+    pub jwt_jwks_url: Option<String>,
+    /// Name of the environment variable holding an HS256 shared secret (e.g. the Supabase
+    /// legacy JWT secret).
+    #[arg(long, value_name = "VAR", requires = "verify_jwt")]
+    pub jwt_secret_env: Option<String>,
+    /// Required `iss` claim, e.g. `https://<project>.supabase.co/auth/v1` [env: GRAPHRT_JWT_ISSUER].
+    #[arg(long, value_name = "ISS", requires = "verify_jwt")]
+    pub jwt_issuer: Option<String>,
+    /// Required `aud` claim (Supabase: `authenticated`) [env: GRAPHRT_JWT_AUDIENCE].
+    #[arg(long, value_name = "AUD", requires = "verify_jwt")]
+    pub jwt_audience: Option<String>,
+    /// Runs per minute each verified user (`sub`) may start, with bursts of the same size;
+    /// more get `429 Too Many Requests` with `Retry-After` (0 = unlimited).
+    #[arg(long, value_name = "N", default_value_t = 0, requires = "verify_jwt")]
+    pub user_rate_limit: u32,
 }

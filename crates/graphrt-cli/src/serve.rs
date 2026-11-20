@@ -91,7 +91,14 @@ pub struct AppState {
     header_inputs: HashMap<String, HeaderBindings>,
     /// Keep run inputs in run records (`--store-inputs`).
     store_inputs: bool,
+    /// End-user JWT verification of run starts (`--verify-jwt`).
+    #[cfg(feature = "jwt")]
+    user_auth: Option<Arc<crate::user_auth::UserAuth>>,
 }
+
+/// The verified end user of a request (`sub` of its JWT), set by `--verify-jwt`.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedUser(pub String);
 
 impl AppState {
     /// Create state from compiled engines.
@@ -110,7 +117,16 @@ impl AppState {
             webhooks: crate::webhooks::Webhooks::default(),
             header_inputs: HashMap::new(),
             store_inputs: false,
+            #[cfg(feature = "jwt")]
+            user_auth: None,
         }
+    }
+
+    /// Let a verified end-user JWT authorize run starts (`--verify-jwt`).
+    #[cfg(feature = "jwt")]
+    pub fn with_user_auth(mut self, user_auth: Option<crate::user_auth::UserAuth>) -> Self {
+        self.user_auth = user_auth.map(Arc::new);
+        self
     }
 
     /// Map request headers to secret start inputs of the run endpoints (`--input-header`).
@@ -148,6 +164,12 @@ impl AppState {
         }
         self.webhooks = webhooks;
         Ok(self)
+    }
+
+    /// Whether workflow `name` maps request header input `input` (`--input-header`).
+    #[cfg(feature = "jwt")]
+    pub(crate) fn takes_header_input(&self, name: &str, input: &str) -> bool {
+        self.header_inputs.get(name).is_some_and(|bindings| bindings.maps(input))
     }
 
     pub(crate) fn webhooks(&self) -> &crate::webhooks::Webhooks {
@@ -344,7 +366,6 @@ pub fn router(state: Arc<AppState>, max_body_bytes: usize) -> Router {
 pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_upload_bytes: usize) -> Router {
     let api = Router::new()
         .route("/v1/workflows", get(list_workflows))
-        .route("/v1/workflows/{name}/runs", post(start_run))
         .route("/v1/runs", get(list_runs))
         .route("/v1/runs/{run_id}", get(get_run).merge(delete(delete_run)))
         .route("/v1/runs/{run_id}/events", get(run_events))
@@ -374,9 +395,13 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     let api = api
         .route("/v1/hooks", get(crate::webhooks::list_hooks))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
+    // Run starts accept a verified end-user JWT instead of the key (`--verify-jwt`).
+    let start = Router::new()
+        .route("/v1/workflows/{name}/runs", post(start_run))
+        .layer(middleware::from_fn_with_state(state.clone(), authorize_start));
     // Webhook deliveries authenticate themselves (signature, else the bearer key).
     let hooks = Router::new().route("/v1/hooks/{hook}", post(crate::webhooks::receive));
-    let counted = api.merge(hooks);
+    let counted = api.merge(start).merge(hooks);
     // Opt-in usage telemetry counts API requests (in memory); health checks are not counted.
     #[cfg(feature = "telemetry")]
     let counted = counted.layer(middleware::from_fn(crate::telemetry::count_requests));
@@ -384,6 +409,11 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
         .route("/healthz", get(|| async { "ok" }))
         .merge(counted)
         .layer(DefaultBodyLimit::max(max_body_bytes))
+        // Outermost: early rejections leave the body unread; drain it so keep-alive clients can reuse the connection.
+        .layer(middleware::from_fn_with_state(
+            crate::body_drain::DrainLimit(max_body_bytes),
+            crate::body_drain::drain_unread_body,
+        ))
         .with_state(state)
 }
 
@@ -391,10 +421,12 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
 pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let mut options = service_options(&args.services)?;
     let files = discover(&args.path)?;
-    let api_key = std::env::var(&args.api_key_env)
-        .ok()
-        .or_else(|| options.env_file.iter().find(|(k, _)| *k == args.api_key_env).map(|(_, v)| v.clone()))
-        .filter(|k| !k.is_empty());
+    let lookup_env = |name: &str| {
+        std::env::var(name).ok().or_else(|| options.env_file.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()))
+    };
+    let api_key = lookup_env(&args.api_key_env).filter(|k| !k.is_empty());
+    #[cfg(feature = "jwt")]
+    let user_auth = crate::user_auth::UserAuth::from_args(&args.user_auth, &args.input_header, lookup_env).await?;
     let limits = setup::limits(args.services.timeout_ms, args.services.max_steps);
     let telemetry = crate::otel::Telemetry::from_args(&args.services, &options.all_vars())?;
     options.capture_content = crate::otel::captures_content(telemetry.as_ref());
@@ -403,16 +435,19 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         Some(path) => crate::webhooks::Webhooks::load(path, &options.all_vars(), options.allow_private_network)?,
         None => crate::webhooks::Webhooks::default(),
     };
-    let state = Arc::new(
-        build_state(&files, &options, limits, api_key.clone())
-            .await?
-            .with_store(store)
-            .with_telemetry(telemetry.clone())
-            .with_store_inputs(args.store_inputs)
-            .with_max_active_runs(args.max_active_runs)
-            .with_webhooks(webhooks)?
-            .with_header_inputs(&args.input_header)?,
-    );
+    #[cfg(feature = "jwt")]
+    let user_auth_line = user_auth.as_ref().map(crate::user_auth::UserAuth::describe);
+    let state = build_state(&files, &options, limits, api_key.clone())
+        .await?
+        .with_store(store)
+        .with_telemetry(telemetry.clone())
+        .with_store_inputs(args.store_inputs)
+        .with_max_active_runs(args.max_active_runs)
+        .with_webhooks(webhooks)?
+        .with_header_inputs(&args.input_header)?;
+    #[cfg(feature = "jwt")]
+    let state = state.with_user_auth(user_auth);
+    let state = Arc::new(state);
     let interrupted = state.recover().await?;
     if interrupted > 0 {
         eprintln!("marked {interrupted} run(s) interrupted by the previous shutdown as failed");
@@ -426,12 +461,27 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         .await
         .map_err(|e| CliError::usage(format!("cannot listen on {}: {e}", args.addr)))?;
     let loopback = listener.local_addr().map(|a| a.ip().is_loopback()).unwrap_or(false);
+    // User tokens only open run starts; without a key every other endpoint, including
+    // the run list and events of all users' chats, would be public.
+    #[cfg(feature = "jwt")]
+    if user_auth_line.is_some() && api_key.is_none() && !loopback {
+        return Err(CliError::usage(format!(
+            "--verify-jwt on a non-loopback address needs ${} too: user tokens only authorize \
+             POST /v1/workflows/{{name}}/runs, and without an API key every other endpoint \
+             (run lists, events) would be public",
+            args.api_key_env
+        )));
+    }
     // Without an API key, a loopback server is reachable from any web page through DNS
     // rebinding (the page's own host name resolving to 127.0.0.1). Such requests carry
     // that foreign host name, so only local `Host` values are accepted.
     let app =
         if api_key.is_none() && loopback { app.layer(axum::middleware::from_fn(require_local_host)) } else { app };
     eprintln!("graphrt serving {} workflow(s) on http://{}", state.workflows.len(), args.addr);
+    #[cfg(feature = "jwt")]
+    if let Some(line) = &user_auth_line {
+        eprintln!("  {line}");
+    }
     for name in state.workflows.keys() {
         eprintln!("  POST /v1/workflows/{name}/runs");
     }
@@ -512,6 +562,39 @@ fn is_local_host(host: &str) -> bool {
         return true;
     }
     name.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Authorize `POST /v1/workflows/{name}/runs`: a valid end-user JWT (with
+/// `--verify-jwt`), else the API key. A present but invalid token is refused.
+async fn authorize_start(
+    State(state): State<Arc<AppState>>,
+    UrlPath(name): UrlPath<String>,
+    request: Request,
+    next: Next,
+) -> Response {
+    #[cfg(feature = "jwt")]
+    if let Some(user_auth) = &state.user_auth {
+        let mut request = request;
+        match user_auth.admit(request.headers()).await {
+            Err(refused) => return refused,
+            // A user token starts only workflows built for end users: those that
+            // take the verified token as an input.
+            Ok(crate::user_auth::Admission::User(_)) if !state.takes_header_input(&name, user_auth.input()) => {
+                return error_response(
+                    StatusCode::FORBIDDEN,
+                    &format!("workflow `{name}` does not accept user tokens (no `{}` input)", user_auth.input()),
+                );
+            }
+            Ok(crate::user_auth::Admission::User(user)) => {
+                request.extensions_mut().insert(AuthenticatedUser(user.subject));
+                return next.run(request).await;
+            }
+            Ok(crate::user_auth::Admission::NoToken) => return require_auth(State(state), request, next).await,
+        }
+    }
+    #[cfg(not(feature = "jwt"))]
+    let _ = name;
+    require_auth(State(state), request, next).await
 }
 
 async fn require_auth(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
@@ -739,6 +822,7 @@ fn store_error(e: &StoreError) -> Response {
 async fn start_run(
     State(state): State<Arc<AppState>>,
     UrlPath(name): UrlPath<String>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: axum::http::HeaderMap,
     Json(body): Json<RunRequest>,
 ) -> Response {
@@ -754,6 +838,11 @@ async fn start_run(
     if let Err(message) = body.apply_context(&mut record) {
         return error_response(StatusCode::BAD_REQUEST, &message);
     }
+    let verified_subject = user.map(|axum::Extension(AuthenticatedUser(subject))| subject);
+    if let Some(subject) = &verified_subject {
+        // The verified identity wins over the body's `user_id` on the record and its spans.
+        record.user_id = Some(subject.clone());
+    }
     let mut inputs = to_values(body.inputs);
     if let Some(bindings) = state.header_inputs.get(&name)
         && let Err(refused) = bindings.apply_to_inputs(&headers, &mut inputs)
@@ -767,6 +856,10 @@ async fn start_run(
     input.run_id = Some(run_id);
     input.inputs = inputs;
     input.sys = to_values(body.sys);
+    if let Some(subject) = verified_subject {
+        // The verified identity wins over anything the client put in `sys`.
+        input.sys.insert("user_id".to_owned(), Value::String(subject.into()));
+    }
     input.conversation = to_values(body.conversation);
     input.env = workflow.env.clone();
     execute(&state, &workflow.engine, record, input, Delivery::of(body.stream, body.run_async), traceparent(&headers))

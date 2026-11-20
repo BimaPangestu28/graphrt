@@ -79,11 +79,17 @@ network on the build host has no DNS. Build with `docker build --network host .`
 | Model providers | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`, `OLLAMA_HOST`, `GRAPHRT_OPENAI_COMPAT_<NAME>_BASE_URL` / `_API_KEY` |
 | Workflow `env.*` variables | Environment variables with the same names (only names a workflow declares are exposed) |
 | API authentication | `GRAPHRT_API_KEY` (bearer token); without it the API is unauthenticated |
+| End-user JWTs | `--verify-jwt` with `GRAPHRT_JWT_JWKS_URL`, `GRAPHRT_JWT_ISSUER`, `GRAPHRT_JWT_AUDIENCE` ([serving.md](serving.md#verifying-end-user-jwts)) |
 | MCP servers | `graphrt serve ... --mcp /config/mcp.json` |
 | Private network egress | `--allow-private-network` (off by default; SSRF protection) |
 
 Mount secrets as environment variables or files; snapshots returned by paused
 runs never contain secret values.
+
+A complete service image, `graphrt serve` with only the `llm`, `serve`, `jwt`
+and `plugins` features plus a Node.js plugin on distroless Node, with Fly.io,
+Cloud Run and VPS notes, is in
+[examples/supabase-chatbot](../examples/supabase-chatbot/README.md#container).
 
 ## Bare binary
 

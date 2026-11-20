@@ -1,0 +1,35 @@
+# Fly.io app for the chatbot backend. Not deployed by this repository: copy it,
+# set `app` and `primary_region`, then from the repository root:
+#
+#   fly apps create my-supabase-chatbot
+#   fly secrets set OPENAI_API_KEY=... GRAPHRT_API_KEY=$(openssl rand -hex 32) \
+#     SUPABASE_URL=https://<ref>.supabase.co SUPABASE_KEY=sb_publishable_... \
+#     GRAPHRT_JWT_JWKS_URL=https://<ref>.supabase.co/auth/v1/.well-known/jwks.json \
+#     GRAPHRT_JWT_ISSUER=https://<ref>.supabase.co/auth/v1
+#   fly deploy --config examples/supabase-chatbot/deploy/fly.toml \
+#     --dockerfile examples/supabase-chatbot/Dockerfile
+app = "my-supabase-chatbot"
+primary_region = "sin"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Scale to zero when idle; graphrt starts in milliseconds, the first chat after
+  # a cold start also spawns the Node plugin (about 0.2 s).
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 24
+    hard_limit = 32   # matches --max-active-runs
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "30s"
+    timeout = "2s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
