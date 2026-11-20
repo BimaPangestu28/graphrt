@@ -76,6 +76,60 @@ For synchronous calls (blocking or streaming), the run is aborted when the
 client disconnects before it finishes. Async runs are never tied to a
 connection.
 
+### Per-user credentials from headers
+
+A chat or mobile app often holds a credential of the signed-in user (a Supabase
+or other OAuth JWT) that the workflow must use on the user's behalf, for
+example as the `Authorization` of an `http-request` to PostgREST. Map a request
+header to a start input with `--input-header INPUT=HEADER` (repeatable):
+
+```sh
+GRAPHRT_API_KEY=change-me graphrt serve flows/ --input-header user_jwt=X-User-Authorization
+```
+
+```yaml
+# flows/chat.yaml
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: user_jwt, type: secret, required: true }
+    - id: rpc
+      type: http-request
+      method: post
+      url: "https://<project>.supabase.co/rest/v1/rpc/get_balance"
+      headers: "apikey: {{#env.SUPABASE_ANON_KEY#}}"
+      authorization: { type: api-key, config: { type: bearer, api_key: "{{#start.user_jwt#}}" } }
+    # ...
+```
+
+```sh
+curl -N http://localhost:8080/v1/workflows/chat/runs \
+  -H 'Authorization: Bearer change-me' \
+  -H "X-User-Authorization: Bearer $SUPABASE_JWT" \
+  -d '{"stream": true, "sys": {"query": "What is my balance?"}}'
+```
+
+- `Authorization` stays the serve API key; pick any other header for the user
+  credential (`--input-header` refuses `Authorization`).
+- A leading `Bearer ` is stripped. The value becomes a secret: it shows as
+  `******` in responses, SSE, events, the run store, logs and OTel, is scrubbed
+  from node error messages, and is never written to snapshots.
+- The mapping applies to `POST /v1/workflows/{name}/runs` (blocking, `stream`
+  and `async`) and `POST /v1/runs/{id}/resume`, for every served workflow whose
+  start node declares the input. Such an input must be declared
+  `type: secret`; the server refuses to start otherwise. Workflows that do not
+  declare it are unaffected.
+- A missing or empty header for a `required` input answers `401` and starts
+  nothing. Setting the input in the body (`inputs`), or in the resume
+  `secrets`, answers `400`: the header is its only source.
+- Snapshots hold no plaintext, so a resume must send the header again (it is
+  re-supplied as the `<start>.<input>` resume secret). A resume refused for a
+  missing header leaves the run paused.
+- Webhooks have their own `headers:` mapping (below); `--input-header` does not
+  apply to them.
+
 ## Following runs
 
 | Request | Response |
@@ -309,3 +363,6 @@ the dataset, 413 upload too large, 502 provider failure) and an
 The API is single-tenant: anyone holding the server's API key can see and
 resume every run. Run one server (or one store directory) per tenant, or put an
 authenticating proxy in front that restricts which run ids a caller may use.
+Per-user credentials passed with `--input-header` are not checked by the
+server; they only reach the workflow, and whatever the workflow calls with them
+(PostgREST row-level security, for example) enforces them.

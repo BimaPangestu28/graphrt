@@ -137,3 +137,19 @@ async fn retry_events_are_masked() {
         events.iter().filter(|e| matches!(e, Event::NodeRetry { error, .. } if error.contains("******"))).count();
     assert_eq!(retries, 2, "{events:?}");
 }
+
+#[tokio::test]
+async fn secret_typed_conversation_variable_echoed_in_a_node_error_is_masked() {
+    const CONVERSATION_SECRET: &str = "eyJ-conversation-jwt";
+    let mut workflow = doc(json!(["conversation", "user_jwt"]), json!({}));
+    workflow["conversation"] = json!([{"name": "user_jwt", "type": "secret"}]);
+    let mut input = RunInput::new();
+    input.conversation.insert("user_jwt".to_owned(), Value::from(CONVERSATION_SECRET));
+    let events: Vec<Event> = engine(workflow).run(input).collect().await;
+    let text = format!("{events:?}");
+    assert!(!text.contains(CONVERSATION_SECRET), "plaintext conversation secret in events: {text}");
+    assert!(
+        matches!(events.last(), Some(Event::RunFailed { error, .. }) if error.contains("provided: ******")),
+        "{events:?}"
+    );
+}

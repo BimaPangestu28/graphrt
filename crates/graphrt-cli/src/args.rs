@@ -502,6 +502,13 @@ pub struct ServeArgs {
     /// requests get `429 Too Many Requests` (0 = unlimited). Paused runs do not count.
     #[arg(long, value_name = "N", default_value_t = crate::serve::DEFAULT_MAX_ACTIVE_RUNS)]
     pub max_active_runs: usize,
+    /// Map a request header to a start input as `INPUT=HEADER` (e.g.
+    /// `user_jwt=X-User-Authorization`), for per-user credentials such as a JWT. Applies
+    /// to workflows whose start node declares the input, which must be `type: secret`; a
+    /// leading `Bearer ` is stripped. Resume requests must send the header again.
+    /// Repeatable. See docs/serving.md.
+    #[arg(long, value_name = "INPUT=HEADER")]
+    pub input_header: Vec<crate::header_inputs::HeaderInputSpec>,
     #[command(flatten)]
     pub services: ServiceArgs,
 }

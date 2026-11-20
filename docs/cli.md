@@ -102,12 +102,18 @@ errors.
 graphrt serve <workflow-file|directory> [--addr 127.0.0.1:8080] [--api-key-env GRAPHRT_API_KEY]
               [--max-body-bytes N] [--env-file] [--mcp] [--allow-private-network]
               [--providers FILE] [--model PROVIDER/NAME] [--allow-python-subprocess]
-              [--timeout-ms] [--max-steps]
+              [--timeout-ms] [--max-steps] [--input-header INPUT=HEADER]...
 ```
 
 Each workflow file is served under its file stem and compiled once at startup.
 If the variable named by `--api-key-env` is set, every `/v1` request needs
 `Authorization: Bearer <key>`.
+
+`--input-header user_jwt=X-User-Authorization` passes a per-user credential from
+a request header (leading `Bearer ` stripped) to the start input `user_jwt` of
+new and resumed runs, as a secret. The input must be declared `type: secret`;
+a missing header for a required input is `401`. See
+[serving.md](serving.md#per-user-credentials-from-headers).
 
 | Method | Path | Body |
 | --- | --- | --- |

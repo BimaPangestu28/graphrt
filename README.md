@@ -102,7 +102,18 @@ curl -N -H 'Authorization: Bearer change-me' \
   http://localhost:8080/v1/workflows/hello/runs
 ```
 
-See [docs/cli.md](docs/cli.md) for every command and flag.
+Per-user credentials (a Supabase or OAuth JWT from a mobile app) can travel in
+their own header and reach the workflow as a masked secret input, while
+`Authorization` stays the server's API key:
+
+```sh
+graphrt serve flows/ --input-header user_jwt=X-User-Authorization
+curl -H "X-User-Authorization: Bearer $USER_JWT" -d '{"stream":true}' \
+  http://localhost:8080/v1/workflows/chat/runs
+```
+
+See [docs/serving.md](docs/serving.md#per-user-credentials-from-headers) and
+[docs/cli.md](docs/cli.md) for every command and flag.
 
 ## A workflow
 
@@ -293,7 +304,7 @@ Custom nodes, services, model providers and native tools are covered in
 | Code | QuickJS on its own stack-sized thread with memory, stack and time limits that workflows can only lower (and never switch off), no filesystem, network, environment, timers or modules; a fresh runtime per execution. |
 | MCP | stdio servers start with an empty environment plus an explicit allow-list; every call has a timeout; tools can be allow-listed. |
 | Plugins | Process plugins start lazily with an empty environment plus the variables their manifest lists, optional `checksums` verified before every start, per-request timeouts and message size caps; secrets are masked unless the manifest asks for them. WebAssembly plugins run in an interpreter with fuel and memory limits and no system imports. A plugin can never replace a built-in or another plugin's node kind. |
-| Server | Optional bearer auth (constant-time comparison); without a key, a loopback server only accepts loopback `Host` names (DNS rebinding). Body and upload limits, a cap on concurrently executing runs (`--max-active-runs`), no CORS, env values cannot be set by requests. Webhooks verify HMAC-SHA256 signatures in constant time with a replay window; completion callbacks are signed and go through the egress policy. |
+| Server | Optional bearer auth (constant-time comparison); without a key, a loopback server only accepts loopback `Host` names (DNS rebinding). Body and upload limits, a cap on concurrently executing runs (`--max-active-runs`), no CORS, env values cannot be set by requests. Per-user credentials mapped from headers (`--input-header`) are secrets, never stored or logged in plaintext. Webhooks verify HMAC-SHA256 signatures in constant time with a replay window; completion callbacks are signed and go through the egress policy. |
 | Limits | Step budget, run duration, per-node timeouts, container depth, iteration/loop caps. |
 
 The threat model, sandbox limits, egress rules and deployment knobs are in
