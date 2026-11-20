@@ -200,7 +200,10 @@ Model providers: any OpenAI-compatible API (OpenAI, Azure OpenAI, Ollama, vLLM,
 Groq, OpenRouter, DeepSeek…) and Anthropic, configured from the environment or a
 providers file (`--providers`); `--model ollama/qwen2.5:14b` points every model
 node at another model. Tools: native Rust closures and
-MCP servers (stdio and streamable HTTP).
+MCP servers (stdio and streamable HTTP). Opt-in live tests send tiny chat,
+streaming and tool-calling requests to OpenAI, Anthropic, Gemini, Bedrock and
+TypeSafe, nightly in CI behind repository secrets
+([docs/providers.md](docs/providers.md#live-provider-tests)).
 
 ## Knowledge bases
 
