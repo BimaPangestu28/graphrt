@@ -39,6 +39,11 @@ plugin. Pair it with a `graphrt-plugin.json` manifest; see `docs/plugins.md`.
 - `ctx.cancelled` / `await ctx.wait_cancelled()`; cancelled handlers are also
   interrupted with `asyncio.CancelledError`.
 - Never `print()` to stdout: stdout carries the protocol.
+- A tool handler with two positional parameters, `async def handler(args, context)`,
+  gets a `ToolContext`: `context.secrets` holds per-call values from an
+  `agent` node's `tool_context` (e.g. `context.secrets.get("user_jwt")`). It is
+  empty unless the manifest requests `permissions.secrets` and the plugin is
+  trusted. Never log or return them. One-parameter handlers keep working.
 - Tools can return images for the model:
   `{"text": ..., "images": [{"media_type": "image/png", "data": png_bytes}]}`
   (or `"data_base64"`, or `{"url": "https://..."}`); at most 4,

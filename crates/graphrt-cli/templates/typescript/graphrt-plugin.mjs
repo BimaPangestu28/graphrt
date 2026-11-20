@@ -34,6 +34,8 @@ export const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
 
 /** Feature a host lists in `initialize` when tool results may carry `images`. */
 export const TOOL_IMAGES_FEATURE = "tool_images";
+/** Feature a host lists in `initialize` when `tool.call` may carry a `context`. */
+export const TOOL_CONTEXT_FEATURE = "tool_context";
 /** Tool result image limits (the host enforces the same). */
 export const MAX_TOOL_IMAGES = 4;
 export const MAX_TOOL_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -88,6 +90,21 @@ export function toolResult(result, { hostSupportsImages = true } = {}) {
   }
   out.images = images.map(encodeImage);
   return out;
+}
+
+/**
+ * The second argument of a tool handler: `{secrets}` from `tool.call` `context`
+ * (empty when the host sent none). Only string values are kept.
+ */
+export function toolContext(context) {
+  const secrets = {};
+  const given = context?.secrets;
+  if (given && typeof given === "object" && !Array.isArray(given)) {
+    for (const [name, value] of Object.entries(given)) {
+      if (typeof value === "string") secrets[name] = value;
+    }
+  }
+  return Object.freeze({ secrets: Object.freeze(secrets) });
 }
 
 /** Best-effort request id from a line that could not be read. */
@@ -178,7 +195,10 @@ export class Plugin {
   }
 
   /**
-   * Register a tool `async (args) => string | {text, data?, is_error?, images?}`.
+   * Register a tool `async (args, context) => string | {text, data?, is_error?, images?}`.
+   * `context.secrets` holds per-call values from the host (e.g. the end user's
+   * JWT from an `agent` node's `tool_context`); it is `{}` unless the plugin
+   * requests `permissions.secrets` and is trusted. Never log or return them.
    * `images` entries are `{media_type, data_base64}`, `{media_type, data: Buffer}`
    * or `{url: "https://..."}`; at most 4, png/jpeg/webp/gif, 5 MiB each.
    */
@@ -324,7 +344,7 @@ export class Plugin {
         return;
       }
       try {
-        const result = await tool.handler(params.arguments ?? {});
+        const result = await tool.handler(params.arguments ?? {}, toolContext(params.context));
         const hostSupportsImages = this._hostFeatures.includes(TOOL_IMAGES_FEATURE);
         this._reply(id, toolResult(result, { hostSupportsImages }));
       } catch (e) {

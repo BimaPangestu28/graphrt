@@ -63,6 +63,22 @@ export interface ToolSpec {
 
 /** Feature a host lists in `initialize` when tool results may carry `images`. */
 export declare const TOOL_IMAGES_FEATURE: "tool_images";
+/** Feature a host lists in `initialize` when `tool.call` may carry a `context`. */
+export declare const TOOL_CONTEXT_FEATURE: "tool_context";
+
+/**
+ * Per-call values from the host, outside the model-written arguments (`tool.call`
+ * `context`). `secrets` is empty unless the plugin requests `permissions.secrets`
+ * and the operator trusts it.
+ */
+export interface ToolContext {
+  readonly secrets: Readonly<Record<string, string>>;
+}
+
+/** Normalize a `tool.call` `context` (missing or malformed parts become empty). */
+export declare function toolContext(context: unknown): ToolContext;
+
+export type ToolHandler = (args: Record<string, any>, context: ToolContext) => ToolResult | Promise<ToolResult>;
 export declare const MAX_TOOL_IMAGES: number;
 export declare const MAX_TOOL_IMAGE_BYTES: number;
 export declare const TOOL_IMAGE_MEDIA_TYPES: string[];
@@ -92,6 +108,6 @@ export declare class Plugin {
   constructor(name: string);
   readonly name: string;
   node(kind: string, handler: NodeHandler, descriptor?: Record<string, unknown>): this;
-  tool(spec: ToolSpec, handler: (args: Record<string, any>) => ToolResult | Promise<ToolResult>): this;
+  tool(spec: ToolSpec, handler: ToolHandler): this;
   run(options?: { input?: NodeJS.ReadableStream; output?: NodeJS.WritableStream }): Promise<void>;
 }
