@@ -106,6 +106,27 @@ graph:
 "#;
 
 #[tokio::test]
+async fn host_attributes_and_root_span_id() {
+    let root_id = graphrt_otel::SpanId::random();
+    let spans = trace(LINEAR, RunInput::new().input("name", "ada"), |t| {
+        t.with_root_span_id(root_id)
+            .with_span_attributes(vec![("langfuse.experiment.id".into(), AttrValue::from("exp-1"))])
+            .with_root_attributes(vec![(
+                "langfuse.experiment.item.root_observation_id".into(),
+                AttrValue::from(root_id.to_hex()),
+            )])
+    })
+    .await;
+    let root = root(&spans);
+    assert_eq!(root.span_id, root_id);
+    assert_eq!(str_attr(root, "langfuse.experiment.item.root_observation_id"), Some(root_id.to_hex().as_str()));
+    assert!(spans.iter().all(|s| str_attr(s, "langfuse.experiment.id") == Some("exp-1")), "{spans:?}");
+    let greet = by_name(&spans, "Greet");
+    assert_eq!(greet.parent_span_id, Some(root_id));
+    assert!(str_attr(greet, "langfuse.experiment.item.root_observation_id").is_none(), "root only");
+}
+
+#[tokio::test]
 async fn linear_run_has_root_and_node_children() {
     let spans = trace(LINEAR, RunInput::new().input("name", "ada"), |t| t).await;
     assert_eq!(spans.len(), 4, "{:?}", names(&spans));

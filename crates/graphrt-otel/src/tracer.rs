@@ -210,6 +210,12 @@ pub struct EventTracer {
     context: RunContext,
     /// Attributes stamped on every span (from [`RunContext`]).
     common: Attributes,
+    /// Host attributes stamped on every span ([`EventTracer::with_span_attributes`]).
+    extra: Attributes,
+    /// Host attributes of the root span ([`EventTracer::with_root_attributes`]).
+    root_extra: Attributes,
+    /// Root span id chosen by the host ([`EventTracer::with_root_span_id`]).
+    preset_root_id: Option<SpanId>,
     /// Open node spans by execution id.
     nodes: HashMap<Arc<str>, OpenNode>,
     /// Open tool spans by `(execution id, tool call id)`.
@@ -240,6 +246,9 @@ impl EventTracer {
             root_content: Vec::new(),
             context: RunContext::default(),
             common: Vec::new(),
+            extra: Vec::new(),
+            root_extra: Vec::new(),
+            preset_root_id: None,
             nodes: HashMap::new(),
             tools: HashMap::new(),
             by_node: HashMap::new(),
@@ -288,6 +297,26 @@ impl EventTracer {
     pub fn with_context(mut self, context: RunContext) -> Self {
         self.common = context.span_attributes();
         self.context = context;
+        self
+    }
+
+    /// Stamp these attributes on every span of the run (e.g. Langfuse
+    /// `langfuse.experiment.*` attributes of an offline evaluation).
+    pub fn with_span_attributes(mut self, attributes: Attributes) -> Self {
+        self.extra.extend(attributes);
+        self
+    }
+
+    /// Set these attributes on the run's root span.
+    pub fn with_root_attributes(mut self, attributes: Attributes) -> Self {
+        self.root_extra.extend(attributes);
+        self
+    }
+
+    /// Use `span_id` for the run's root span, so a host can reference it in
+    /// attributes before the run starts.
+    pub fn with_root_span_id(mut self, span_id: SpanId) -> Self {
+        self.preset_root_id = Some(span_id);
         self
     }
 
@@ -665,6 +694,12 @@ impl EventTracer {
             let parent = self.parent.map(|p| p.span_id);
             let name = semconv::span_name(operation::INVOKE_WORKFLOW, Some(&self.workflow_name));
             let mut span = Span::new(self.trace_id, parent, name, now);
+            if let Some(id) = self.preset_root_id {
+                span.span_id = id;
+            }
+            for (key, value) in &self.root_extra {
+                span.set(key, value.clone());
+            }
             // A run continuing a remote caller's trace serves that request.
             span.kind = if parent.is_some() { SpanKind::Server } else { SpanKind::Internal };
             span.set(gen_ai::OPERATION_NAME, operation::INVOKE_WORKFLOW);
@@ -872,6 +907,9 @@ impl EventTracer {
             {
                 span.set(gen_ai::CONVERSATION_ID, session.as_str());
             }
+        }
+        if !self.extra.is_empty() {
+            span.attributes.extend(self.extra.iter().cloned());
         }
         self.exporter.export(span);
     }

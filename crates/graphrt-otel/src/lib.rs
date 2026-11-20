@@ -5,7 +5,9 @@
 //! one per node execution, one per tool call, one per container body run) that
 //! follow the OpenTelemetry GenAI semantic conventions (`invoke_workflow`,
 //! `chat`, `invoke_agent`, `execute_tool`, `retrieval`; names in [`semconv`]),
-//! and exporters ship them as OTLP/HTTP JSON.
+//! and exporters ship them as OTLP/HTTP JSON. Evaluation scores become
+//! `evaluate {name}` spans with a `gen_ai.evaluation.result` event
+//! ([`evaluation`]).
 //!
 //! ```no_run
 //! # async fn demo(graph: std::sync::Arc<graphrt_core::Graph>, mut run: graphrt_core::RunStream) {
@@ -31,6 +33,7 @@
 //! the [`graphrt_core::node::CaptureContent`] service.
 
 pub mod config;
+pub mod evaluation;
 pub mod exporter;
 #[cfg(feature = "http")]
 pub mod http;
@@ -41,6 +44,7 @@ pub mod span;
 pub mod tracer;
 
 pub use config::{CaptureMode, ConfigError, OtelConfig};
+pub use evaluation::{EvaluationResult, evaluation_span};
 pub use exporter::{InMemoryExporter, MultiExporter, SpanExporter, StdoutExporter, WriterExporter};
 #[cfg(feature = "http")]
 pub use http::{ExportError, OtlpHttpExporter};

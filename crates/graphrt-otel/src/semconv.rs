@@ -41,6 +41,14 @@ pub mod gen_ai {
     pub const OUTPUT_MESSAGES: &str = "gen_ai.output.messages";
     /// Opt-in content (structured `AnyValue`).
     pub const SYSTEM_INSTRUCTIONS: &str = "gen_ai.system_instructions";
+    /// Evaluation result ([`super::EVALUATION_RESULT_EVENT`]): the evaluator's name.
+    pub const EVALUATION_NAME: &str = "gen_ai.evaluation.name";
+    /// Evaluation result: the numeric score (double).
+    pub const EVALUATION_SCORE_VALUE: &str = "gen_ai.evaluation.score.value";
+    /// Evaluation result: a low-cardinality label (`pass`, `fail`...).
+    pub const EVALUATION_SCORE_LABEL: &str = "gen_ai.evaluation.score.label";
+    /// Evaluation result: why the evaluator decided so.
+    pub const EVALUATION_EXPLANATION: &str = "gen_ai.evaluation.explanation";
 }
 
 /// Well-known `gen_ai.operation.name` values used by graphrt.
@@ -54,6 +62,14 @@ pub mod operation {
 
 /// Span event carrying content when capture is `EVENT_ONLY` / `SPAN_AND_EVENT`.
 pub const CONTENT_EVENT: &str = "gen_ai.client.inference.operation.details";
+
+/// Event carrying an evaluation result, parented to the evaluated operation.
+/// graphrt's exporter has no logs signal, so it is a span event (on an
+/// `evaluate {name}` span in the evaluated run's trace).
+pub const EVALUATION_RESULT_EVENT: &str = "gen_ai.evaluation.result";
+
+/// Span name prefix of an evaluation: `evaluate {evaluator name}`.
+pub const EVALUATE_SPAN: &str = "evaluate";
 
 /// General (non-GenAI) semantic convention names.
 pub mod general {
@@ -77,7 +93,30 @@ pub mod langfuse {
     pub const OBSERVATION_INPUT: &str = "langfuse.observation.input";
     /// Highest-precedence output of an observation (JSON text).
     pub const OBSERVATION_OUTPUT: &str = "langfuse.observation.output";
+    /// Experiments over OTLP (one trace per dataset item, no enclosing span).
+    /// On every span of the item's trace.
+    pub const EXPERIMENT_ID: &str = "langfuse.experiment.id";
+    pub const EXPERIMENT_NAME: &str = "langfuse.experiment.name";
+    pub const EXPERIMENT_DATASET_ID: &str = "langfuse.experiment.dataset.id";
+    /// Prefix: one attribute per experiment metadata key.
+    pub const EXPERIMENT_METADATA_PREFIX: &str = "langfuse.experiment.metadata.";
+    /// On the item's root span.
+    pub const EXPERIMENT_DESCRIPTION: &str = "langfuse.experiment.description";
+    pub const EXPERIMENT_ITEM_ID: &str = "langfuse.experiment.item.id";
+    /// Must equal the root span's own span id.
+    pub const EXPERIMENT_ITEM_ROOT_OBSERVATION_ID: &str = "langfuse.experiment.item.root_observation_id";
+    /// JSON text.
+    pub const EXPERIMENT_ITEM_EXPECTED_OUTPUT: &str = "langfuse.experiment.item.expected_output";
+    /// Prefix: one attribute per item metadata key.
+    pub const EXPERIMENT_ITEM_METADATA_PREFIX: &str = "langfuse.experiment.item.metadata.";
 }
+
+/// Comet Opik: the project of every span (as a resource attribute, which every
+/// span carries; Opik does not inherit it from the root).
+pub const OPIK_PROJECT_NAME: &str = "opik.project_name";
+
+/// Arize Phoenix / OpenInference: the project spans are filed under.
+pub const OPENINFERENCE_PROJECT_NAME: &str = "openinference.project.name";
 
 /// graphrt's own attributes that sit next to GenAI ones.
 pub mod graphrt {
@@ -95,6 +134,14 @@ pub mod graphrt {
     pub const RUN_TAGS: &str = "graphrt.run.tags";
     /// Set on the run's root span; exporters never drop spans carrying it.
     pub const RUN_STATUS: &str = "graphrt.run.status";
+    pub const RUN_ID: &str = "graphrt.run.id";
+    /// Who produced an evaluation score: `online` (an evaluator of `serve`),
+    /// `human` (feedback) or `offline` (`graphrt eval`).
+    pub const EVALUATION_SOURCE: &str = "graphrt.evaluation.source";
+    /// The assertion type behind an evaluation (`judge`, `regex`...).
+    pub const EVALUATION_TYPE: &str = "graphrt.evaluation.type";
+    /// Metric: evaluation scores (histogram, by evaluator name).
+    pub const EVAL_SCORE_METRIC: &str = "graphrt.eval.score";
 }
 
 /// `gen_ai.provider.name` value for a graphrt provider name. Known providers map
