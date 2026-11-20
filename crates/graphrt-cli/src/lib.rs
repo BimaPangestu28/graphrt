@@ -30,6 +30,8 @@ pub mod setup;
 pub mod store;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
+#[cfg(feature = "jwt")]
+pub mod user_auth;
 #[cfg(feature = "wasm")]
 pub mod wasm_loader;
 #[cfg(feature = "serve")]

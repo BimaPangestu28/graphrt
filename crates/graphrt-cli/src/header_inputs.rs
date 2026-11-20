@@ -134,6 +134,11 @@ impl HeaderBindings {
         Ok((!bindings.is_empty()).then_some(Self { bindings }))
     }
 
+    /// Whether `input` is one of this workflow's header-mapped inputs.
+    pub fn maps(&self, input: &str) -> bool {
+        self.bindings.iter().any(|b| b.input == input)
+    }
+
     /// Add the mapped header values to the start `inputs` of a new run.
     ///
     /// @throws HeaderInputError (400) - When the body already sets a mapped input.
@@ -203,7 +208,7 @@ impl Binding {
 }
 
 /// `value` without a leading `Bearer ` (any case) and surrounding whitespace.
-fn strip_bearer(value: &str) -> &str {
+pub(crate) fn strip_bearer(value: &str) -> &str {
     let value = value.trim_start();
     match value.get(..7) {
         Some(scheme) if scheme.eq_ignore_ascii_case("bearer ") => value.get(7..).unwrap_or_default().trim(),
