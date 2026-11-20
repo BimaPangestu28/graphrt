@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offline end-to-end check of the chatbot backend: no LLM key, no Supabase project.
 #
-#   examples/supabase-chatbot/test/smoke.sh <path-to-graphrt> <supabase-plugin-dir>
+#   examples/supabase-chatbot/tests/smoke.sh <path-to-graphrt> <supabase-plugin-dir>
 #
 # Starts mock OpenAI + Supabase upstreams (mock_upstreams.py), runs `graphrt serve`
 # exactly as deployed (--input-header, --verify-jwt, --user-rate-limit,

@@ -1542,6 +1542,7 @@ dependencies = [
  "graphrt-plugin",
  "graphrt-rag",
  "graphrt-wasm",
+ "http-body",
  "http-body-util",
  "indexmap",
  "jsonschema",

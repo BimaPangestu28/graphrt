@@ -2,6 +2,8 @@
 //! binary and its tests.
 
 pub mod args;
+#[cfg(feature = "serve")]
+pub mod body_drain;
 pub mod bundle_cmd;
 pub mod catalog;
 pub mod diagnostics;
