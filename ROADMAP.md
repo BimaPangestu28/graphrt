@@ -55,6 +55,9 @@ Models come from API providers; the runtime itself needs no server.
 ## Next
 
 - Windows binaries tested on Windows, and release automation per tag (CI).
+  The workflows are in place (tests on Linux, macOS and Windows gate every tag;
+  binaries are smoke-tested on their OS); done once a run on GitHub Actions
+  has passed.
 - Mobile builds verified in CI (Android emulator, iOS simulator) and on devices.
   The workflow ([mobile.yml](.github/workflows/mobile.yml)), smoke tests and a
   device checklist ([docs/mobile.md](docs/mobile.md#testing-on-devices)) are in
