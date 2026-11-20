@@ -4,7 +4,7 @@
 //! When a run of a covered workflow finishes (succeeded, failed or aborted),
 //! the run driver asks [`OnlineEval::submit`] whether any evaluator of the
 //! [`graphrt_eval::online`] config matches and samples it. A sampled run is
-//! queued, without waiting, to a bounded pool: one dispatcher task feeds at
+//! queued, without waiting, to a bounded pool: one task runs at
 //! most `concurrency` evaluations at a time from a queue of `queue` runs. When
 //! the queue is full the run is dropped and counted ([`OnlineEval::dropped`],
 //! and the `graphrt.eval.dropped` metric with OpenTelemetry). The run's
@@ -26,7 +26,7 @@ use graphrt_core::store::{RunRecord, RunStatus};
 use graphrt_eval::online::{OnlineConfig, OnlineEvaluators, RunInfo};
 use graphrt_eval::{AssertionResult, RunCapture};
 use serde_json::{Map, Value as Json};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::mpsc;
 
 use crate::scores::{Score, ScoreSinks, ScoreSource, ScoreStore, ScoreValue};
 use crate::store::live::SharedEvent;
@@ -142,17 +142,14 @@ impl OnlineEval {
     }
 }
 
-/// Take jobs off the queue as evaluation slots free up.
-async fn dispatch(mut rx: mpsc::Receiver<Job>, worker: Arc<Worker>, concurrency: usize) {
-    let slots = Arc::new(Semaphore::new(concurrency));
-    while let Some(job) = rx.recv().await {
-        let Ok(permit) = Arc::clone(&slots).acquire_owned().await else { return };
-        let worker = Arc::clone(&worker);
-        tokio::spawn(async move {
-            worker.evaluate(job).await;
-            drop(permit);
-        });
-    }
+/// Take jobs off the queue as evaluation slots free up: up to `concurrency`
+/// evaluations interleave on this one task (they wait on models and judge
+/// runs, not the CPU), and the next job is taken only when a slot is free, so
+/// the channel stays the bound.
+async fn dispatch(rx: mpsc::Receiver<Job>, worker: Arc<Worker>, concurrency: usize) {
+    use futures::StreamExt;
+    let jobs = futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|job| (job, rx)) });
+    jobs.for_each_concurrent(concurrency, |job| worker.evaluate(job)).await;
 }
 
 impl Worker {
@@ -269,7 +266,7 @@ mod tests {
 
     /// A judge that waits until the test opens the gate.
     #[derive(Debug)]
-    struct Gated(Arc<Semaphore>);
+    struct Gated(Arc<tokio::sync::Semaphore>);
 
     impl graphrt_eval::Assertion for Gated {
         fn evaluate<'a>(
@@ -297,7 +294,7 @@ mod tests {
             "concurrency: 1\nqueue: 2\nevaluators: [{name: slow, assert: {type: judge, workflow: j.yaml}}]",
         )
         .unwrap();
-        let gate = Arc::new(Semaphore::new(0));
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
         let mut registry = graphrt_eval::AssertionRegistry::with_builtins();
         let judge_gate = Arc::clone(&gate);
         registry.register("judge", move |_spec| {

@@ -11,6 +11,10 @@
 //! | GET | `/v1/runs/{run_id}/scores` | – | `{run_id, scores}` |
 //! | POST | `/v1/runs/{run_id}/feedback` | `{name, value, comment?, user?}` | `201` + the stored score |
 //!
+//! Scores are converted to and from JSON by hand (no serde derives): the
+//! `serde_json::Value` code is in every build already, while derived
+//! (de)serializers would add code per format for this small type.
+//!
 //! Score ids are deterministic (a hash of the run, the source, the name and,
 //! for feedback, the user), so re-scoring or re-sending feedback replaces the
 //! earlier score instead of adding another, and uploads (Langfuse) are
@@ -18,16 +22,16 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path as UrlPath, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::{Extension, Json};
 use futures::future::BoxFuture;
 use graphrt_core::store::{RunRecord, StoreResult, now_ms};
-use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value as JsonValue};
 use sha2::{Digest, Sha256};
 
-use crate::serve::{AppState, AuthenticatedUser, error_response};
+use crate::serve::{AppState, error_response};
 
 /// Scores kept per run; a new score beyond this is refused (`409`).
 pub const MAX_SCORES_PER_RUN: usize = 256;
@@ -38,8 +42,7 @@ const MAX_COMMENT_BYTES: usize = 4096;
 const MAX_USER_BYTES: usize = 256;
 
 /// Who produced a score.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScoreSource {
     /// An online evaluator of this server (`--evaluators`).
     Online,
@@ -54,11 +57,18 @@ impl ScoreSource {
             Self::Human => "human",
         }
     }
+
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "online" => Some(Self::Online),
+            "human" => Some(Self::Human),
+            _ => None,
+        }
+    }
 }
 
 /// A score value: a number, a boolean or a short text (a category).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ScoreValue {
     Bool(bool),
     Number(f64),
@@ -74,10 +84,29 @@ impl ScoreValue {
             Self::Text(_) => None,
         }
     }
+
+    /// A JSON number, boolean or string.
+    pub fn from_json(value: &JsonValue) -> Option<Self> {
+        match value {
+            JsonValue::Bool(flag) => Some(Self::Bool(*flag)),
+            JsonValue::Number(n) => n.as_f64().map(Self::Number),
+            JsonValue::String(text) => Some(Self::Text(text.clone())),
+            _ => None,
+        }
+    }
+
+    pub fn to_json(&self) -> JsonValue {
+        match self {
+            Self::Bool(flag) => JsonValue::Bool(*flag),
+            Self::Number(n) => serde_json::Number::from_f64(*n).map_or(JsonValue::Null, JsonValue::Number),
+            Self::Text(text) => JsonValue::String(text.clone()),
+        }
+    }
 }
 
-/// One stored score of a run.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One stored score of a run. JSON: `{id, name, value, label?, comment?,
+/// source, type?, user?, judge?, created_ms}`.
+#[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct Score {
     /// Deterministic: see [`score_id`].
@@ -85,21 +114,16 @@ pub struct Score {
     pub name: String,
     pub value: ScoreValue,
     /// A low-cardinality label (`pass` / `fail` / `unknown` for evaluators).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// The evaluator's explanation, or the person's comment.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
     pub source: ScoreSource,
-    /// The assertion type of an online evaluator (`judge`, `regex`...).
-    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    /// The assertion type of an online evaluator (`judge`, `regex`...); `type` in JSON.
     pub kind: Option<String>,
     /// Who gave the feedback.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
     /// Judge workflow, fingerprint and verdict (judge evaluators).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub judge: Option<serde_json::Value>,
+    pub judge: Option<JsonValue>,
     pub created_ms: u64,
 }
 
@@ -119,6 +143,53 @@ impl Score {
             created_ms: now_ms(),
         }
     }
+
+    /// The JSON form (stored and returned by the API).
+    pub fn to_json(&self) -> JsonValue {
+        let mut map = Map::new();
+        map.insert("id".into(), self.id.as_str().into());
+        map.insert("name".into(), self.name.as_str().into());
+        map.insert("value".into(), self.value.to_json());
+        let text_fields = [("label", &self.label), ("comment", &self.comment)];
+        for (key, field) in text_fields {
+            if let Some(text) = field {
+                map.insert(key.into(), text.as_str().into());
+            }
+        }
+        map.insert("source".into(), self.source.as_str().into());
+        for (key, field) in [("type", &self.kind), ("user", &self.user)] {
+            if let Some(text) = field {
+                map.insert(key.into(), text.as_str().into());
+            }
+        }
+        if let Some(judge) = &self.judge {
+            map.insert("judge".into(), judge.clone());
+        }
+        map.insert("created_ms".into(), self.created_ms.into());
+        JsonValue::Object(map)
+    }
+
+    /// Read the JSON form back. `None` when a required field is missing or wrong.
+    pub fn from_json(value: &JsonValue) -> Option<Self> {
+        let text = |key: &str| value.get(key).and_then(JsonValue::as_str).map(str::to_owned);
+        Some(Self {
+            id: text("id")?,
+            name: text("name")?,
+            value: ScoreValue::from_json(value.get("value")?)?,
+            label: text("label"),
+            comment: text("comment"),
+            source: ScoreSource::parse(value.get("source")?.as_str()?)?,
+            kind: text("type"),
+            user: text("user"),
+            judge: value.get("judge").filter(|j| !j.is_null()).cloned(),
+            created_ms: value.get("created_ms").and_then(JsonValue::as_u64).unwrap_or_default(),
+        })
+    }
+}
+
+/// Scores as a JSON array.
+pub fn scores_json(scores: &[Score]) -> JsonValue {
+    JsonValue::Array(scores.iter().map(Score::to_json).collect())
 }
 
 /// The id of a score: 32 hex digits of SHA-256 over the run id, the source,
@@ -172,19 +243,43 @@ pub(crate) fn merge_scores(stored: &mut Vec<Score>, new: Vec<Score>, run_id: &st
 }
 
 /// Body of `POST /v1/runs/{run_id}/feedback`.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct FeedbackRequest {
     pub name: String,
     pub value: ScoreValue,
-    #[serde(default)]
     pub comment: Option<String>,
     /// Who gives the feedback. With a verified user token, its subject instead.
-    #[serde(default)]
     pub user: Option<String>,
 }
 
 impl FeedbackRequest {
+    /// Parse and validate a request body.
+    ///
+    /// @throws String - A message for a `400` response (unknown keys, wrong
+    ///   types, sizes).
+    pub fn from_json(body: &JsonValue) -> Result<Self, String> {
+        let JsonValue::Object(map) = body else { return Err("the body must be a JSON object".into()) };
+        if let Some(key) = map.keys().find(|k| !matches!(k.as_str(), "name" | "value" | "comment" | "user")) {
+            return Err(format!("unknown field `{key}` (expected name, value, comment, user)"));
+        }
+        let optional_text = |key: &str| match map.get(key) {
+            None | Some(JsonValue::Null) => Ok(None),
+            Some(JsonValue::String(text)) => Ok(Some(text.clone())),
+            Some(_) => Err(format!("`{key}` must be a string")),
+        };
+        let request = Self {
+            name: optional_text("name")?.ok_or("`name` is required")?,
+            value: map
+                .get("value")
+                .and_then(ScoreValue::from_json)
+                .ok_or("`value` must be a number, a boolean or a string")?,
+            comment: optional_text("comment")?,
+            user: optional_text("user")?,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
     /// Check sizes and values.
     ///
     /// @throws String - A message for a `400` response.
@@ -213,7 +308,7 @@ impl FeedbackRequest {
 /// `GET /v1/runs/{run_id}/scores`.
 pub async fn get_scores(State(state): State<Arc<AppState>>, UrlPath(run_id): UrlPath<String>) -> Response {
     match state.score_store().scores(&run_id).await {
-        Ok(scores) => Json(serde_json::json!({ "run_id": run_id, "scores": scores })).into_response(),
+        Ok(scores) => Json(serde_json::json!({ "run_id": run_id, "scores": scores_json(&scores) })).into_response(),
         Err(e) => crate::serve::store_error(&e),
     }
 }
@@ -223,19 +318,25 @@ pub async fn get_scores(State(state): State<Arc<AppState>>, UrlPath(run_id): Url
 pub async fn post_feedback(
     State(state): State<Arc<AppState>>,
     UrlPath(run_id): UrlPath<String>,
-    user: Option<Extension<AuthenticatedUser>>,
-    Json(body): Json<FeedbackRequest>,
+    headers: HeaderMap,
+    Json(body): Json<JsonValue>,
 ) -> Response {
-    if let Err(message) = body.validate() {
-        return error_response(StatusCode::BAD_REQUEST, &message);
-    }
+    // Authorized here rather than by a middleware layer: one handler, less code.
+    let user = match state.authorize_user_or_key(&headers).await {
+        Ok(user) => user,
+        Err(refused) => return refused,
+    };
+    let body = match FeedbackRequest::from_json(&body) {
+        Ok(body) => body,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
+    };
     let record = match state.store().get(&run_id).await {
         Ok(Some(record)) => record,
         Ok(None) => return error_response(StatusCode::NOT_FOUND, "unknown run"),
         Err(e) => return crate::serve::store_error(&e),
     };
     let author = match user {
-        Some(Extension(AuthenticatedUser(subject))) => {
+        Some(subject) => {
             // A user token may only rate the user's own runs: those it started.
             if record.user_id.as_deref() != Some(subject.as_str()) {
                 return error_response(StatusCode::FORBIDDEN, "this run does not belong to the authenticated user");
@@ -250,7 +351,7 @@ pub async fn post_feedback(
         return crate::serve::store_error(&e);
     }
     state.score_sinks().publish(&record, &score, None);
-    (StatusCode::CREATED, Json(score)).into_response()
+    (StatusCode::CREATED, Json(score.to_json())).into_response()
 }
 
 /// When an evaluation ran, in Unix nanoseconds, for its span (`None`: now).
@@ -328,23 +429,39 @@ mod tests {
 
     #[test]
     fn values_parse_as_number_bool_or_text() {
-        let parse = |json: &str| serde_json::from_str::<ScoreValue>(json).unwrap();
+        let parse = |json: &str| ScoreValue::from_json(&serde_json::from_str(json).unwrap()).unwrap();
         assert_eq!(parse("0.5"), ScoreValue::Number(0.5));
         assert_eq!(parse("true"), ScoreValue::Bool(true));
         assert_eq!(parse("\"great\""), ScoreValue::Text("great".into()));
-        assert!(serde_json::from_str::<ScoreValue>("{}").is_err());
+        assert!(ScoreValue::from_json(&serde_json::json!({})).is_none());
         assert_eq!(ScoreValue::Bool(false).as_number(), Some(0.0));
     }
 
     #[test]
     fn feedback_is_validated() {
-        let body = |json: &str| serde_json::from_str::<FeedbackRequest>(json).unwrap().validate();
+        let body = |json: &str| FeedbackRequest::from_json(&serde_json::from_str(json).unwrap()).map(|_| ());
         assert!(body(r#"{"name": "thumbs", "value": true, "comment": "nice"}"#).is_ok());
         assert!(body(r#"{"name": " ", "value": 1}"#).unwrap_err().contains("name"));
         assert!(body(r#"{"name": "a\nb", "value": 1}"#).is_err());
         assert!(body(&format!(r#"{{"name": "n", "value": "{}"}}"#, "x".repeat(501))).is_err());
         assert!(body(r#"{"name": "n", "value": 1, "user": ""}"#).unwrap_err().contains("user"));
-        assert!(serde_json::from_str::<FeedbackRequest>(r#"{"name": "n", "value": 1, "extra": 2}"#).is_err());
+        assert!(body(r#"{"name": "n", "value": 1, "extra": 2}"#).unwrap_err().contains("extra"));
+        assert!(body(r#"{"name": "n", "value": {"a": 1}}"#).is_err());
+        assert!(body(r#"{"value": 1}"#).unwrap_err().contains("name"));
+        assert!(body("[1]").is_err());
+    }
+
+    #[test]
+    fn scores_round_trip_through_json() {
+        let mut score = Score::new("r", "judge", ScoreValue::Number(0.5), ScoreSource::Online, None);
+        score.label = Some("pass".into());
+        score.kind = Some("judge".into());
+        score.judge = Some(serde_json::json!({"verdict": "pass"}));
+        let json = score.to_json();
+        assert_eq!(json["type"], "judge");
+        assert!(json.get("user").is_none());
+        assert_eq!(Score::from_json(&json), Some(score));
+        assert!(Score::from_json(&serde_json::json!({"id": "x"})).is_none());
     }
 
     #[test]

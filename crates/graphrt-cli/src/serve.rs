@@ -255,6 +255,29 @@ impl AppState {
         &self.webhooks
     }
 
+    /// Authorize a request a user may make about their own runs (feedback): a
+    /// valid end-user JWT (with `--verify-jwt`; returns its subject for the
+    /// handler's ownership check), else the API key (returns `None`).
+    ///
+    /// @throws Response - `401` for an invalid token or key, `429` over the user's rate limit.
+    #[cfg(feature = "scores")]
+    pub(crate) async fn authorize_user_or_key(
+        &self,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<Option<String>, Response> {
+        #[cfg(feature = "jwt")]
+        if let Some(user_auth) = &self.user_auth
+            && let crate::user_auth::Admission::User(user) = user_auth.admit(headers).await?
+        {
+            return Ok(Some(user.subject));
+        }
+        if self.authorized(headers) {
+            Ok(None)
+        } else {
+            Err(error_response(StatusCode::UNAUTHORIZED, "missing or invalid bearer token"))
+        }
+    }
+
     /// Whether `headers` carry the API key (always true when none is set).
     pub(crate) fn authorized(&self, headers: &axum::http::HeaderMap) -> bool {
         let Some(expected) = &self.api_key else { return true };
@@ -517,13 +540,9 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     // Webhook deliveries authenticate themselves (signature, else the bearer key).
     let hooks = Router::new().route("/v1/hooks/{hook}", post(crate::webhooks::receive));
     let counted = api.merge(start).merge(hooks);
-    // Feedback accepts a verified end-user JWT for the user's own runs (`--verify-jwt`).
+    // Feedback authorizes itself: a verified end-user JWT for the user's own runs, else the key.
     #[cfg(feature = "scores")]
-    let counted = counted.merge(
-        Router::new()
-            .route("/v1/runs/{run_id}/feedback", post(crate::scores::post_feedback))
-            .layer(middleware::from_fn_with_state(state.clone(), authorize_user_or_key)),
-    );
+    let counted = counted.route("/v1/runs/{run_id}/feedback", post(crate::scores::post_feedback));
     // Opt-in usage telemetry counts API requests (in memory); health checks are not counted.
     #[cfg(feature = "telemetry")]
     let counted = counted.layer(middleware::from_fn(crate::telemetry::count_requests));
@@ -737,26 +756,6 @@ async fn authorize_start(
     }
     #[cfg(not(feature = "jwt"))]
     let _ = name;
-    require_auth(State(state), request, next).await
-}
-
-/// Authorize a request a user may make about their own runs (feedback): a valid
-/// end-user JWT (with `--verify-jwt`, recorded as [`AuthenticatedUser`] for the
-/// handler's ownership check), else the API key.
-#[cfg(feature = "scores")]
-async fn authorize_user_or_key(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
-    #[cfg(feature = "jwt")]
-    if let Some(user_auth) = &state.user_auth {
-        let mut request = request;
-        return match user_auth.admit(request.headers()).await {
-            Err(refused) => refused,
-            Ok(crate::user_auth::Admission::User(user)) => {
-                request.extensions_mut().insert(AuthenticatedUser(user.subject));
-                next.run(request).await
-            }
-            Ok(crate::user_auth::Admission::NoToken) => require_auth(State(state), request, next).await,
-        };
-    }
     require_auth(State(state), request, next).await
 }
 

@@ -204,9 +204,14 @@ fn sync_dir(_dir: &Path) -> StoreResult<()> {
 #[cfg(feature = "scores")]
 impl Inner {
     fn read_scores(dir: &Path) -> StoreResult<Vec<crate::scores::Score>> {
+        let corrupt = |e: &dyn std::fmt::Display| StoreError::Corrupt(format!("{}: {e}", dir.join(SCORES).display()));
         match fs::read(dir.join(SCORES)) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| StoreError::Corrupt(format!("{}: {e}", dir.join(SCORES).display()))),
+            Ok(bytes) => {
+                let list: Vec<serde_json::Value> = serde_json::from_slice(&bytes).map_err(|e| corrupt(&e))?;
+                list.iter()
+                    .map(|s| crate::scores::Score::from_json(s).ok_or_else(|| corrupt(&"invalid score")))
+                    .collect()
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(io("cannot read scores", &e)),
         }
@@ -221,7 +226,8 @@ impl crate::scores::ScoreStore for FileStore {
             let (dir, _) = inner.require_record(&run_id)?;
             let mut stored = Inner::read_scores(&dir)?;
             crate::scores::merge_scores(&mut stored, scores, &run_id)?;
-            let bytes = serde_json::to_vec_pretty(&stored).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+            let bytes = serde_json::to_vec_pretty(&crate::scores::scores_json(&stored))
+                .map_err(|e| StoreError::Corrupt(e.to_string()))?;
             inner.atomic_write(&dir, SCORES, &bytes)
         })
     }

@@ -30,7 +30,6 @@
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
-use serde::Deserialize;
 use serde_json::{Map, Value as Json};
 
 use crate::assertion::{AssertionContext, AssertionRegistry, AssertionResult, PreparedAssertion};
@@ -121,32 +120,51 @@ impl<'a> RunInfo<'a> {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawConfig {
-    #[serde(default)]
-    concurrency: Option<usize>,
-    #[serde(default)]
-    queue: Option<usize>,
-    evaluators: Vec<RawEvaluator>,
+/// The raw config, read by hand from the parsed YAML / JSON: derived
+/// deserializers would add code to every binary that serves.
+type Object = Map<String, Json>;
+
+/// Reject keys of `object` other than `allowed` (typos would silently do nothing).
+fn known_keys(object: &Object, allowed: &[&str]) -> Result<(), EvalError> {
+    match object.keys().find(|k| !allowed.contains(&k.as_str())) {
+        Some(key) => Err(EvalError::invalid(format!("unknown field `{key}`, expected one of {}", allowed.join(", ")))),
+        None => Ok(()),
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawEvaluator {
-    name: String,
-    #[serde(default)]
-    workflows: Vec<String>,
-    #[serde(default)]
-    sample: Option<f64>,
-    #[serde(default)]
-    status: Option<Vec<RunStatus>>,
-    #[serde(default)]
-    tags: Vec<String>,
-    #[serde(default)]
-    metadata: IndexMap<String, String>,
-    #[serde(rename = "assert")]
-    assertion: Json,
+fn count_field(object: &Object, key: &str, default: usize) -> Result<usize, EvalError> {
+    match object.get(key) {
+        None | Some(Json::Null) => Ok(default),
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| EvalError::invalid(format!("`{key}` must be a positive integer"))),
+    }
+}
+
+fn strings_field(object: &Object, key: &str) -> Result<Vec<String>, EvalError> {
+    let list = match object.get(key) {
+        None | Some(Json::Null) => return Ok(Vec::new()),
+        Some(Json::Array(items)) => items,
+        Some(_) => return Err(EvalError::invalid(format!("`{key}` must be a list of strings"))),
+    };
+    list.iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| EvalError::invalid(format!("`{key}` must be a list of strings")))
+        })
+        .collect()
+}
+
+fn status_of(name: &str) -> Option<RunStatus> {
+    match name {
+        "succeeded" => Some(RunStatus::Succeeded),
+        "failed" => Some(RunStatus::Failed),
+        "aborted" => Some(RunStatus::Aborted),
+        "paused" => Some(RunStatus::Paused),
+        _ => None,
+    }
 }
 
 impl OnlineConfig {
@@ -172,23 +190,33 @@ impl OnlineConfig {
     /// @throws EvalError - On unknown keys, duplicate names, a sample rate
     ///   outside `0..=1`, or an assertion type that needs an expected answer.
     pub fn parse(text: &str) -> Result<Self, EvalError> {
-        let raw: RawConfig =
-            serde_json::from_value(parse_structured(text)?).map_err(|e| EvalError::invalid(e.to_string()))?;
-        let concurrency = raw.concurrency.unwrap_or(DEFAULT_CONCURRENCY);
+        let Json::Object(raw) = parse_structured(text)? else {
+            return Err(EvalError::invalid("an evaluator config must be a mapping with `evaluators`"));
+        };
+        known_keys(&raw, &["concurrency", "queue", "evaluators"])?;
+        let concurrency = count_field(&raw, "concurrency", DEFAULT_CONCURRENCY)?;
         if !(1..=MAX_CONCURRENCY).contains(&concurrency) {
             return Err(EvalError::invalid(format!("`concurrency` must be 1-{MAX_CONCURRENCY}")));
         }
-        let queue = raw.queue.unwrap_or(DEFAULT_QUEUE);
+        let queue = count_field(&raw, "queue", DEFAULT_QUEUE)?;
         if !(1..=MAX_QUEUE).contains(&queue) {
             return Err(EvalError::invalid(format!("`queue` must be 1-{MAX_QUEUE}")));
         }
-        if raw.evaluators.is_empty() {
-            return Err(EvalError::invalid("`evaluators` is empty"));
-        }
-        let mut evaluators = Vec::with_capacity(raw.evaluators.len());
-        for evaluator in raw.evaluators {
-            let name = evaluator.name.clone();
-            let spec = evaluator_spec(evaluator).map_err(|e| EvalError::invalid(format!("evaluator `{name}`: {e}")))?;
+        let list = match raw.get("evaluators") {
+            Some(Json::Array(list)) if !list.is_empty() => list,
+            Some(Json::Array(_)) => return Err(EvalError::invalid("`evaluators` is empty")),
+            _ => return Err(EvalError::invalid("`evaluators` (a list) is required")),
+        };
+        let mut evaluators = Vec::with_capacity(list.len());
+        for (index, evaluator) in list.iter().enumerate() {
+            let Json::Object(evaluator) = evaluator else {
+                return Err(EvalError::invalid(format!("evaluator {}: must be a mapping", index + 1)));
+            };
+            let name = evaluator.get("name").and_then(Json::as_str).unwrap_or_default().to_owned();
+            let spec = evaluator_spec(evaluator).map_err(|e| {
+                let label = if name.is_empty() { format!("{}", index + 1) } else { format!("`{name}`") };
+                EvalError::invalid(format!("evaluator {label}: {e}"))
+            })?;
             if evaluators.iter().any(|e: &EvaluatorSpec| e.name == spec.name) {
                 return Err(EvalError::invalid(format!("duplicate evaluator name `{}`", spec.name)));
             }
@@ -213,31 +241,57 @@ impl OnlineConfig {
     }
 }
 
-fn evaluator_spec(raw: RawEvaluator) -> Result<EvaluatorSpec, EvalError> {
-    let name = raw.name.trim().to_owned();
+fn evaluator_spec(raw: &Object) -> Result<EvaluatorSpec, EvalError> {
+    known_keys(raw, &["name", "workflows", "sample", "status", "tags", "metadata", "assert"])?;
+    let name = raw.get("name").and_then(Json::as_str).unwrap_or_default().trim().to_owned();
     if name.is_empty() || name.len() > 200 {
         return Err(EvalError::invalid("`name` must be 1-200 characters"));
     }
-    let sample = raw.sample.unwrap_or(1.0);
+    let sample = match raw.get("sample") {
+        None | Some(Json::Null) => 1.0,
+        Some(value) => value.as_f64().ok_or_else(|| EvalError::invalid("`sample` must be a number"))?,
+    };
     if !(0.0..=1.0).contains(&sample) {
         return Err(EvalError::invalid("`sample` must be between 0 and 1"));
     }
-    let status = raw.status.unwrap_or_else(|| vec![RunStatus::Succeeded, RunStatus::Failed]);
+    let status = match raw.get("status") {
+        None | Some(Json::Null) => vec![RunStatus::Succeeded, RunStatus::Failed],
+        Some(_) => strings_field(raw, "status")?
+            .iter()
+            .map(|s| {
+                status_of(s).ok_or_else(|| {
+                    EvalError::invalid(format!("unknown status `{s}` (expected succeeded, failed or aborted)"))
+                })
+            })
+            .collect::<Result<_, _>>()?,
+    };
     if status.contains(&RunStatus::Paused) {
         return Err(EvalError::invalid("`status` cannot include `paused`: paused runs have not finished"));
     }
     if status.is_empty() {
         return Err(EvalError::invalid("`status` is empty"));
     }
-    let assertion = AssertionSpec::from_json(raw.assertion)?;
+    let metadata = match raw.get("metadata") {
+        None | Some(Json::Null) => IndexMap::new(),
+        Some(Json::Object(map)) => map
+            .iter()
+            .map(|(k, v)| match v {
+                Json::String(text) => Ok((k.clone(), text.clone())),
+                _ => Err(EvalError::invalid(format!("`metadata.{k}` must be a string"))),
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err(EvalError::invalid("`metadata` must be a mapping of strings")),
+    };
+    let assertion = raw.get("assert").cloned().ok_or_else(|| EvalError::invalid("`assert` is required"))?;
+    let assertion = AssertionSpec::from_json(assertion)?;
     check_online(&assertion)?;
     Ok(EvaluatorSpec {
         name,
-        workflows: raw.workflows,
+        workflows: strings_field(raw, "workflows")?,
         sample,
         status,
-        tags: raw.tags,
-        metadata: raw.metadata,
+        tags: strings_field(raw, "tags")?,
+        metadata,
         assertion,
     })
 }
