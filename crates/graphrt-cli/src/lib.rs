@@ -8,6 +8,8 @@ pub mod diagnostics;
 pub mod error;
 pub mod extensions;
 pub mod files;
+#[cfg(feature = "serve")]
+pub mod header_inputs;
 #[cfg(any(feature = "serve", feature = "telemetry"))]
 pub mod hex;
 pub mod inspect;

@@ -7,6 +7,18 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- `graphrt serve --input-header INPUT=HEADER` maps a request header (leading
+  `Bearer ` stripped) to a secret start input of new, streamed and resumed
+  runs, so an app can send a user's JWT next to the serve API key. The value is
+  masked everywhere and never stored; resumes must send the header again. A
+  missing header for a required input is `401`, the same input in the body
+  `400`, and a non-`secret` declaration fails at startup.
+
+### Fixed
+- Plaintext of secret-typed `conversation` variables is now scrubbed from node
+  error messages, like other secrets.
+
 ## [0.3.2] - 2026-11-20
 
 Telemetry fix and the project's collector endpoint in release builds.

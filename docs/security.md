@@ -124,7 +124,8 @@ They honour standard proxy environment variables, except the OTel exporter and
 ## Secret masking
 
 - **Typed secrets.** A value declared `type: secret` (an `env` entry, a start
-  input), a re-supplied resume secret, or a secret returned by a node is a
+  input, a conversation variable), a header passed with `serve --input-header`,
+  a re-supplied resume secret, or a secret returned by a node is a
   `Value::Secret`. It serialises, displays and `Debug`-prints as `******`
   everywhere: events, SSE, the run store, logs, OTel attributes and templates
   (`Bearer {{#env.KEY#}}` renders as `Bearer ******` in anything shown).

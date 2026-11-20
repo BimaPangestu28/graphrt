@@ -54,6 +54,7 @@ use serde::Deserialize;
 use crate::args::ServeArgs;
 use crate::error::{CliError, EXIT_OK};
 use crate::extensions::Extensions;
+use crate::header_inputs::{HeaderBindings, HeaderInputSpec};
 use crate::run::service_options;
 use crate::setup::{self, ServiceOptions};
 use crate::store::MemoryStore;
@@ -86,6 +87,8 @@ pub struct AppState {
     knowledge: Option<crate::knowledge_api::KnowledgeService>,
     /// Webhook triggers under `/v1/hooks` (`--webhooks`).
     webhooks: crate::webhooks::Webhooks,
+    /// Header-mapped secret start inputs per workflow (`--input-header`); empty by default.
+    header_inputs: HashMap<String, HeaderBindings>,
 }
 
 impl AppState {
@@ -103,7 +106,25 @@ impl AppState {
             #[cfg(feature = "rag")]
             knowledge: None,
             webhooks: crate::webhooks::Webhooks::default(),
+            header_inputs: HashMap::new(),
         }
+    }
+
+    /// Map request headers to secret start inputs of the run endpoints (`--input-header`).
+    ///
+    /// @throws CliError (usage) - When a served workflow declares a mapped input with a
+    ///   type other than `secret`.
+    pub fn with_header_inputs(mut self, specs: &[HeaderInputSpec]) -> Result<Self, CliError> {
+        let mut header_inputs = HashMap::new();
+        for (name, workflow) in &self.workflows {
+            if let Some(bindings) =
+                HeaderBindings::resolve(specs, name, workflow.engine.graph()).map_err(CliError::usage)?
+            {
+                header_inputs.insert(name.clone(), bindings);
+            }
+        }
+        self.header_inputs = header_inputs;
+        Ok(self)
     }
 
     /// Serve these webhooks under `/v1/hooks`.
@@ -378,7 +399,8 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             .with_store(store)
             .with_telemetry(telemetry.clone())
             .with_max_active_runs(args.max_active_runs)
-            .with_webhooks(webhooks)?,
+            .with_webhooks(webhooks)?
+            .with_header_inputs(&args.input_header)?,
     );
     let interrupted = state.recover().await?;
     if interrupted > 0 {
@@ -653,6 +675,12 @@ async fn start_run(
     if let Some(busy) = state.refuse_if_busy() {
         return busy;
     }
+    let mut inputs = to_values(body.inputs);
+    if let Some(bindings) = state.header_inputs.get(&name)
+        && let Err(refused) = bindings.apply_to_inputs(&headers, &mut inputs)
+    {
+        return refused.into_response();
+    }
     let run_id = state.new_run_id();
     let record = RunRecord::running(&run_id, &name, workflow.engine.graph().fingerprint(), now_ms());
     if let Err(e) = state.store.create(record.clone()).await {
@@ -660,7 +688,7 @@ async fn start_run(
     }
     let mut input = RunInput::new();
     input.run_id = Some(run_id);
-    input.inputs = to_values(body.inputs);
+    input.inputs = inputs;
     input.sys = to_values(body.sys);
     input.conversation = to_values(body.conversation);
     input.env = workflow.env.clone();
@@ -695,12 +723,7 @@ async fn resume_run(
             match state.store.load_snapshot(&run_id).await {
                 Ok(Some(snapshot)) => (record, snapshot),
                 Ok(None) | Err(_) => {
-                    // Undo the claim so the run stays visible as paused.
-                    let mut back = record;
-                    back.status = RunStatus::Paused;
-                    if let Err(e) = state.store.put(back).await {
-                        eprintln!("warning: run {run_id}: cannot restore paused status: {e}");
-                    }
+                    release_claim(&state, record).await;
                     return error_response(
                         StatusCode::CONFLICT,
                         "no stored snapshot for this run; pass the `snapshot` from the paused response",
@@ -736,21 +759,37 @@ async fn resume_run(
     };
     let workflow = state
         .workflows
-        .get(&record.workflow)
-        .or_else(|| state.workflows.values().find(|w| w.engine.graph().fingerprint() == snapshot.graph_fingerprint));
-    let Some(workflow) = workflow else {
+        .get_key_value(&record.workflow)
+        .or_else(|| state.workflows.iter().find(|(_, w)| w.engine.graph().fingerprint() == snapshot.graph_fingerprint));
+    let Some((name, workflow)) = workflow else {
         return error_response(StatusCode::NOT_FOUND, &format!("workflow `{}` is not served", record.workflow));
     };
+    let mut secrets = body.secrets;
+    if let Some(bindings) = state.header_inputs.get(name)
+        && let Err(refused) = bindings.apply_to_resume(&headers, &mut secrets)
+    {
+        release_claim(&state, record).await;
+        return refused.into_response();
+    }
     let mut input = RunInput::new();
     input.run_id = Some(run_id);
     input.env = workflow.env.clone();
     let mut resume = ResumeFrom::new(snapshot, to_values(body.inputs));
-    for (selector, secret) in body.secrets {
+    for (selector, secret) in secrets {
         resume = resume.secret(selector, secret);
     }
     input.resume = Some(resume);
     execute(&state, &workflow.engine, record, input, Delivery::of(body.stream, body.run_async), traceparent(&headers))
         .await
+}
+
+/// Undo a resume claim so a refused resume leaves the run visible as paused.
+async fn release_claim(state: &AppState, mut record: RunRecord) {
+    record.status = RunStatus::Paused;
+    let run_id = record.run_id.clone();
+    if let Err(e) = state.store.put(record).await {
+        eprintln!("warning: run {run_id}: cannot restore paused status: {e}");
+    }
 }
 
 async fn abort_run(State(state): State<Arc<AppState>>, UrlPath(run_id): UrlPath<String>) -> Response {
