@@ -1,0 +1,34 @@
+[package]
+name = "graphrt-eval"
+description = "Evaluation harness for graphrt workflows: datasets, deterministic, trajectory and retrieval assertions, CI gates, JSON and JUnit reports."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-eval"
+homepage = "https://github.com/BimaPangestu28/graphrt"
+keywords = ["evaluation", "llm", "agent", "testing", "workflow"]
+categories = ["development-tools::testing", "asynchronous"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+graphrt-core = { workspace = true, features = ["yaml"] }
+# Only for its dependency-free JSON Schema validator (`nodes::schema`).
+graphrt-llm.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+serde-saphyr.workspace = true
+regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
+
+[dev-dependencies]
+graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }
+graphrt-llm = { workspace = true, features = ["mock"] }
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+jsonschema = { version = "0.61", default-features = false }
+
+[lints]
+workspace = true

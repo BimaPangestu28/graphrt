@@ -25,6 +25,10 @@ pub enum Command {
     Inspect(WorkflowArg),
     /// List the node kinds available in this build (the node catalog).
     Nodes(NodesArgs),
+    /// Evaluate a workflow against the test cases of an eval file and gate CI on the
+    /// pass rate (exit code 5 when the gate fails).
+    #[cfg(feature = "eval")]
+    Eval(Box<EvalArgs>),
     /// Serve one workflow (file) or many (directory) over HTTP with SSE streaming.
     #[cfg(feature = "serve")]
     Serve(Box<ServeArgs>),
@@ -470,6 +474,42 @@ pub struct RunArgs {
     /// Metadata `key=value` for the run's OpenTelemetry spans. Repeatable.
     #[arg(long = "metadata", value_name = "KEY=VALUE")]
     pub metadata: Vec<String>,
+    #[command(flatten)]
+    pub services: ServiceArgs,
+}
+
+/// Options of `graphrt eval`.
+#[cfg(feature = "eval")]
+#[derive(Debug, Args)]
+pub struct EvalArgs {
+    /// Eval file (`*.eval.yaml`): workflow, test cases, assertions and gate.
+    pub file: PathBuf,
+    /// Tests running at the same time.
+    #[arg(short = 'j', long = "concurrency", value_name = "N", default_value_t = 4)]
+    pub concurrency: usize,
+    /// Only run tests whose id or a tag matches (`*` wildcards). Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    pub filter: Vec<String>,
+    /// Run every test this many times (each run is reported separately).
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub repeat: u32,
+    /// Write the full results as JSON (schema in docs/evals.md).
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+    /// Write the results as JUnit XML (CI test reports).
+    #[arg(long, value_name = "FILE")]
+    pub junit: Option<PathBuf>,
+    /// Required pass rate (0..1), overriding the eval file's `gate.pass_rate`.
+    #[arg(long, value_name = "RATE")]
+    pub pass_rate: Option<f64>,
+    /// Exit code when the gate fails.
+    #[arg(long, value_name = "CODE", default_value_t = crate::error::EXIT_GATE_FAILED)]
+    pub fail_exit_code: u8,
+    /// Include every run event (except token chunks) in the JSON results.
+    #[arg(long)]
+    pub include_events: bool,
+    /// `--timeout-ms` applies to each test run. `--providers`, `--knowledge`, `--mcp`
+    /// and `--plugins` add to (or override) the eval file's settings.
     #[command(flatten)]
     pub services: ServiceArgs,
 }

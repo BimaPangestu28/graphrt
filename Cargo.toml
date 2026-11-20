@@ -13,6 +13,7 @@ members = [
     "crates/graphrt-wasm",
     "crates/graphrt-otel",
     "crates/graphrt-bundle",
+    "crates/graphrt-eval",
     "crates/graphrt-ffi",
     "crates/graphrt-cli",
 ]
@@ -39,6 +40,7 @@ graphrt-plugin-sdk = { path = "crates/graphrt-plugin-sdk", version = "0.3.2", de
 graphrt-wasm = { path = "crates/graphrt-wasm", version = "0.3.2", default-features = false }
 graphrt-otel = { path = "crates/graphrt-otel", version = "0.3.2", default-features = false }
 graphrt-bundle = { path = "crates/graphrt-bundle", version = "0.3.2", default-features = false }
+graphrt-eval = { path = "crates/graphrt-eval", version = "0.3.2", default-features = false }
 
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 thiserror = "2"

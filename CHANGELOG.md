@@ -66,6 +66,32 @@ keep the context and data an evaluator needs.
   root_span_id}`, `Span::is_run_root`, `AttrValue::Structured`.
 - docs/observability.md: setups for Langfuse v4, Phoenix, Opik, MLflow,
   LangSmith and Braintrust.
+- `graphrt eval <file.eval.yaml>`: evaluate a workflow against test cases and
+  gate CI on the pass rate. Eval files use Promptfoo's `tests` / `assert` /
+  `defaultTest` shape plus JSONL datasets; assertions cover outputs (`equals`,
+  `contains` and its variants, `regex`, `starts-with`, `is-json`,
+  `json-schema`, `transform` paths), `latency` and `tokens` budgets, agent
+  trajectories (`trajectory:tool-used`, `tool-sequence`, `tool-args-match`,
+  `step-count`, from the run's tool-call events) and retrieval quality
+  (`retrieval:recall-at-k`, `precision-at-k`, `mrr`), each negatable with
+  `not-` and weighted (`weight: 0` reports only). The workflow is compiled
+  once and tests run in-process and concurrently (`-j`), with `--filter`,
+  `--repeat`, per-test `--timeout-ms`, `--output` JSON results and `--junit`
+  XML. A failed gate exits with the new exit code 5 (`--fail-exit-code`).
+  Feature `eval`, on by default; not in the small-device build. See
+  [docs/evals.md](docs/evals.md).
+- `graphrt-eval` crate: the same harness as a library, for `cargo test`, with
+  an `Assertion` trait and registry for custom assertion types.
+- `kind: replay` providers: serve model responses from recorded cassettes
+  (keyed by a hash of the normalized request, streamed delta by delta), record
+  them from an `upstream` provider (`mode: record`), or both (`mode: auto`,
+  a response cache). `GRAPHRT_REPLAY_MODE` overrides the mode. Works with
+  `eval`, `run` and `serve` (`--providers`). Feature `replay` of graphrt-llm
+  and graphrt-cli.
+- `schema/eval-v1.schema.json`: JSON Schema of eval files.
+- `examples/evals`: offline suites for the hello and branching workflows, an
+  agent judged on its tool trajectory from committed cassettes, and
+  retrieval metrics over a committed knowledge store.
 
 ### Changed (Breaking)
 - OpenTelemetry span names: the run span is `invoke_workflow {workflow}`

@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/eval-v1.schema.json
+# An agent evaluated on its answers and its tool trajectory, offline: model
+# responses come from replay cassettes, tools from a local plugin (needs python3).
+#   graphrt eval examples/evals/agent/agent.eval.yaml
+description: The order-desk agent looks orders up and refunds only on request.
+workflow: support-agent.yaml
+providers: providers.replay.yaml
+plugins: [plugins]
+
+defaultTest:
+  assert:
+    # Efficiency is reported, not gated (weight 0).
+    - { type: tokens, threshold: 4000, weight: 0, metric: token-budget }
+    - { type: trajectory:step-count, value: { type: step, max: 4 }, weight: 0, metric: agent-steps }
+
+tests:
+  - id: order-status
+    vars: { question: "Where is order 123?" }
+    assert:
+      - { type: icontains, value: shipped }
+      - { type: trajectory:tool-used, value: search_orders }
+      - { type: trajectory:tool-args-match, value: { name: search_orders, args: { order_id: "123" } } }
+      - { type: not-trajectory:tool-used, value: refund_order }
+
+  - id: refund-on-request
+    tags: [refund]
+    vars: { question: "Please refund order 456." }
+    assert:
+      - { type: icontains, value: refunded }
+      - { type: trajectory:tool-sequence, value: [search_orders, refund_order] }
+      - { type: trajectory:step-count, value: { type: tool, min: 2, max: 2 } }
+
+  - id: small-talk-needs-no-tools
+    vars: { question: "Hi there!" }
+    assert:
+      - { type: not-trajectory:tool-used, value: "*" }
+      - { type: icontains-any, value: [help, hello, hi] }
+
+gate:
+  pass_rate: 1.0

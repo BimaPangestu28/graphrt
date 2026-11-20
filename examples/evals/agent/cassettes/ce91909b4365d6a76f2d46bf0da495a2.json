@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "key": "ce91909b4365d6a76f2d46bf0da495a2",
+  "request": {
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "You are an order-desk assistant. Look orders up before answering and only\nrefund an order when the customer asks for it.\n",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      },
+      {
+        "content": [
+          {
+            "text": "Where is order 123?",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [],
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "arguments": "{\"order_id\": \"123\"}",
+            "id": "call_1",
+            "name": "search_orders"
+          }
+        ]
+      },
+      {
+        "content": [
+          {
+            "text": "order 123: shipped, delivery Friday",
+            "type": "text"
+          }
+        ],
+        "role": "tool",
+        "tool_call_id": "call_1"
+      }
+    ],
+    "model": "gpt-4o-mini",
+    "temperature": 0.0,
+    "tool_choice": "auto",
+    "tools": [
+      {
+        "description": "Look up an order by id: status and delivery date",
+        "name": "search_orders",
+        "parameters": {
+          "properties": {
+            "order_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "order_id"
+          ],
+          "type": "object"
+        }
+      },
+      {
+        "description": "Refund an order by id",
+        "name": "refund_order",
+        "parameters": {
+          "properties": {
+            "order_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "order_id"
+          ],
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "response": [
+    {
+      "text": "Order "
+    },
+    {
+      "text": "123 "
+    },
+    {
+      "text": "has "
+    },
+    {
+      "text": "shipped "
+    },
+    {
+      "text": "and "
+    },
+    {
+      "text": "should "
+    },
+    {
+      "text": "arrive "
+    },
+    {
+      "text": "on "
+    },
+    {
+      "text": "Friday."
+    },
+    {
+      "finish": "stop"
+    },
+    {
+      "usage": {
+        "prompt_tokens": 240,
+        "completion_tokens": 18,
+        "total_tokens": 258
+      }
+    }
+  ]
+}

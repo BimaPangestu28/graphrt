@@ -1534,6 +1534,7 @@ dependencies = [
  "graphrt-code",
  "graphrt-core",
  "graphrt-doc",
+ "graphrt-eval",
  "graphrt-http",
  "graphrt-llm",
  "graphrt-mcp",
@@ -1603,6 +1604,23 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "zip",
+]
+
+[[package]]
+name = "graphrt-eval"
+version = "0.3.2"
+dependencies = [
+ "futures",
+ "graphrt-core",
+ "graphrt-llm",
+ "indexmap",
+ "jsonschema",
+ "regex",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

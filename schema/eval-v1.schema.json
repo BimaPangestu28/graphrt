@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/eval-v1.schema.json",
+  "title": "graphrt eval file",
+  "description": "Test cases and assertions for `graphrt eval`. The `tests` / `assert` / `defaultTest` shape follows Promptfoo.",
+  "type": "object",
+  "required": [
+    "workflow"
+  ],
+  "properties": {
+    "description": {
+      "type": "string"
+    },
+    "workflow": {
+      "type": "string",
+      "description": "Workflow under test, relative to this file."
+    },
+    "providers": {
+      "type": "string",
+      "description": "Model providers file (e.g. with `kind: replay` entries), relative to this file."
+    },
+    "knowledge": {
+      "type": "string",
+      "description": "Knowledge base config for knowledge-retrieval nodes, relative to this file."
+    },
+    "mcp": {
+      "type": "string",
+      "description": "MCP servers file, relative to this file."
+    },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Plugin directories, relative to this file."
+    },
+    "dataset": {
+      "type": "string",
+      "description": "JSONL file: one `{id?, vars, expected?, tags?, metadata?, assert?}` object per line."
+    },
+    "defaultTest": {
+      "$ref": "#/$defs/defaultTest"
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/test"
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pass_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1,
+          "description": "Minimum fraction of passing tests; below it `graphrt eval` exits with code 5."
+        }
+      }
+    }
+  },
+  "patternProperties": {
+    "^x-": {}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "test": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique test id (default: `test-<n>`)."
+        },
+        "description": {
+          "type": "string"
+        },
+        "vars": {
+          "type": "object",
+          "description": "Start inputs of the workflow."
+        },
+        "expected": {
+          "description": "Expected output; a test without assertions checks `equals: expected`. Available as `{{expected}}`."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Pass when the weighted assertion score reaches this, instead of requiring every assertion."
+        },
+        "assert": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/assertion"
+          }
+        }
+      },
+      "patternProperties": {
+        "^x-": {}
+      },
+      "additionalProperties": false
+    },
+    "defaultTest": {
+      "type": "object",
+      "description": "Merged into every test: vars and metadata as defaults, tags and assertions prepended.",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "vars": {
+          "type": "object"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "assert": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/assertion"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "assertion": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Assertion type; any type can be negated with a `not-` prefix.",
+          "anyOf": [
+            {
+              "enum": [
+                "equals",
+                "not-equals",
+                "contains",
+                "not-contains",
+                "icontains",
+                "not-icontains",
+                "contains-any",
+                "not-contains-any",
+                "icontains-any",
+                "not-icontains-any",
+                "contains-all",
+                "not-contains-all",
+                "icontains-all",
+                "not-icontains-all",
+                "starts-with",
+                "not-starts-with",
+                "regex",
+                "not-regex",
+                "is-json",
+                "not-is-json",
+                "json-schema",
+                "not-json-schema",
+                "latency",
+                "not-latency",
+                "tokens",
+                "not-tokens",
+                "trajectory:tool-used",
+                "not-trajectory:tool-used",
+                "trajectory:tool-sequence",
+                "not-trajectory:tool-sequence",
+                "trajectory:tool-args-match",
+                "not-trajectory:tool-args-match",
+                "trajectory:step-count",
+                "not-trajectory:step-count",
+                "retrieval:recall-at-k",
+                "not-retrieval:recall-at-k",
+                "retrieval:precision-at-k",
+                "not-retrieval:precision-at-k",
+                "retrieval:mrr",
+                "not-retrieval:mrr"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "value": {
+          "description": "Expected value; strings may reference test variables as `{{name}}`."
+        },
+        "threshold": {
+          "type": "number"
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1,
+          "description": "Weight in the test score; 0 reports the result without failing the test."
+        },
+        "metric": {
+          "type": "string",
+          "description": "Name the score is aggregated under in the summary."
+        },
+        "transform": {
+          "type": "string",
+          "description": "Path to the value under test, e.g. `output.field` or `outputs.text` (no JavaScript)."
+        },
+        "k": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "retrieval:*: rank cut-off."
+        },
+        "node": {
+          "type": "string",
+          "description": "retrieval:*: only this knowledge-retrieval node."
+        }
+      }
+    }
+  }
+}

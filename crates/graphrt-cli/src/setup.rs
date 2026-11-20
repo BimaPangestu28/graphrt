@@ -167,8 +167,12 @@ pub async fn services(
             let text = std::fs::read_to_string(path)
                 .map_err(|e| CliError::usage(format!("cannot read providers file `{}`: {e}", path.display())))?;
             let value = parse_structured(&text, &format!("providers file `{}`", path.display()))?;
-            let config = graphrt_llm::providers::ProvidersConfig::from_value(value)
+            #[allow(unused_mut)]
+            let mut config = graphrt_llm::providers::ProvidersConfig::from_value(value)
                 .map_err(|e| CliError::usage(format!("providers file `{}`: {e}", path.display())))?;
+            // Replay cassette directories are relative to the providers file.
+            #[cfg(feature = "replay")]
+            config.resolve_paths(path.parent().unwrap_or_else(|| Path::new("")));
             let loaded =
                 config.load(&vars).map_err(|e| CliError::usage(format!("providers file `{}`: {e}", path.display())))?;
             models.merge(loaded.models);

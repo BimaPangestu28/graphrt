@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "telemetry"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "telemetry", "eval"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -50,6 +50,12 @@ wasm = ["dep:graphrt-plugin", "graphrt-plugin/yaml", "dep:graphrt-wasm", "graphr
 bundle = ["wasm", "dep:graphrt-bundle", "graphrt-bundle/wasm"]
 # MCP tool servers (`--mcp`).
 mcp = ["dep:graphrt-mcp"]
+# `kind: replay` model providers in providers files: record responses to
+# cassette files and replay them offline (deterministic runs, evals, CI).
+replay = ["llm", "graphrt-llm/replay"]
+# `graphrt eval`: run a workflow against test cases with assertions and a CI
+# gate (JSON and JUnit reports). Pulls in `replay`.
+eval = ["replay", "dep:graphrt-eval"]
 # OpenTelemetry traces and metrics over OTLP/HTTP (`--otel`, `--otel-stdout`).
 otel = ["dep:graphrt-otel"]
 # mimalloc as the global allocator. Much faster than musl's allocator, which the
@@ -79,6 +85,7 @@ graphrt-plugin = { workspace = true, optional = true }
 graphrt-wasm = { workspace = true, optional = true }
 graphrt-otel = { workspace = true, optional = true, features = ["http"] }
 graphrt-bundle = { workspace = true, optional = true }
+graphrt-eval = { workspace = true, optional = true }
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 tokio = { workspace = true, features = ["rt", "time", "signal", "fs", "io-util"] }
 futures.workspace = true
