@@ -844,6 +844,10 @@ async fn start_run(
     {
         return refused.into_response();
     }
+    if let Some(axum::Extension(AuthenticatedUser(subject))) = &user {
+        // A verified end user (`--verify-jwt`) is the run's user, whatever the body said.
+        record.user_id = Some(subject.clone());
+    }
     if let Err(e) = state.store.create(record.clone()).await {
         return store_error(&e);
     }
