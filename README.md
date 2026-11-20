@@ -211,6 +211,37 @@ In-process embeddings, the SQLite store, parent-child chunking and the
 management API (including creating and deleting datasets) are available since
 0.2.0.
 
+## Evaluate
+
+`graphrt eval` checks a workflow against test cases and gates CI on the pass
+rate (exit code 5 when the gate fails). Eval files use Promptfoo's
+`tests` / `assert` shape; assertions cover answers, JSON outputs, latency and
+token budgets, the tools an agent called (and in what order, with which
+arguments), and retrieval recall / precision / MRR. Model responses can be
+replayed from recorded cassettes (`kind: replay` providers), so agent suites
+run offline, free and deterministically.
+
+```yaml
+# support.eval.yaml
+workflow: support-agent.yaml
+providers: providers.replay.yaml        # recorded model responses
+tests:
+  - vars: { question: "Please refund order 456." }
+    assert:
+      - { type: icontains, value: refunded }
+      - { type: trajectory:tool-sequence, value: [search_orders, refund_order] }
+      - { type: tokens, threshold: 4000, weight: 0 }   # reported, never fails the test
+gate: { pass_rate: 0.95 }
+```
+
+```sh
+graphrt eval support.eval.yaml -j 8 --output results.json --junit junit.xml
+```
+
+The same harness is a library ([`graphrt-eval`](crates/graphrt-eval)) for
+`cargo test`. See [docs/evals.md](docs/evals.md) and the offline
+[examples](examples/evals).
+
 ## Plugins: write a node in 20 lines
 
 Add node kinds (and agent tools) in Python, TypeScript/JavaScript, Rust or
@@ -386,8 +417,9 @@ graphrt-doc     document-extractor node (PDF, Office, HTML, EPUB, e-mail...)
 graphrt-rag     knowledge-retrieval node, stores, embedders, ingestion
 graphrt-plugin  process / HTTP plugin host; graphrt-wasm: sandboxed WebAssembly plugins
 graphrt-bundle  portable .grt bundles; graphrt-otel: OpenTelemetry export
+graphrt-eval    eval harness: test suites, assertions, trajectories, retrieval metrics, CI gate
 graphrt-ffi     Kotlin / Swift bindings for Android and iOS
-graphrt-cli     `graphrt` binary: run, validate, inspect, serve, kb, plugin, bundle
+graphrt-cli     `graphrt` binary: run, validate, inspect, serve, eval, kb, plugin, bundle
 ```
 
 Read [docs/architecture.md](docs/architecture.md) for the scheduling rules,

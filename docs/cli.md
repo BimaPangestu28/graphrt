@@ -7,6 +7,7 @@ graphrt schema               JSON Schema of workflow documents for this build's 
 graphrt inspect <workflow>   Show nodes, inputs, env variables and missing node kinds
 graphrt nodes [--json] [--kind K]  The node catalog: built-ins plus plugins (with config JSON Schemas)
 graphrt serve <file|dir>     HTTP + SSE API
+graphrt eval <file.eval.yaml>  Evaluate a workflow against test cases; gate CI on the pass rate
 graphrt kb ingest|query      Fill and query a knowledge base
 graphrt plugin list|install|search|remove|info|new   Manage plugins
 graphrt version              Version and enabled features
@@ -23,6 +24,7 @@ Workflows can be YAML (`.yaml`, `.yml`) or JSON.
 | 2 | Invalid workflow or command-line usage |
 | 3 | The run paused (snapshot written) |
 | 4 | The run was aborted (e.g. Ctrl-C, timeout) |
+| 5 | `graphrt eval`: the gate failed (pass rate below `gate.pass_rate`); configurable with `--fail-exit-code` |
 
 ## `graphrt run`
 
@@ -95,6 +97,34 @@ providers:
 Providers from the file win over environment providers with the same name,
 and an alias shadows an environment provider of that name. Unknown keys are
 errors.
+
+A `kind: replay` entry serves recorded responses ("cassettes") instead of
+calling a model, for deterministic, offline runs; `mode: record` or `auto`
+records them from an `upstream` provider. See
+[evals.md](evals.md#replay-deterministic-model-responses).
+
+## `graphrt eval`
+
+Runs a workflow against the test cases of an eval file (Promptfoo-shaped
+`tests` / `assert`, plus an optional JSONL dataset), prints a line per test as
+it finishes and a summary, and exits with 5 when the pass rate is below the
+file's `gate.pass_rate`. The workflow is compiled once and the tests run
+in-process, `-j` at a time.
+
+| Flag | Description |
+| --- | --- |
+| `-j, --concurrency N` | Tests running at the same time (default 4). |
+| `--filter PATTERN` | Only tests whose id or a tag matches (`*` wildcards). Repeatable. |
+| `--repeat N` | Run every test N times. |
+| `-o, --output FILE` | JSON results (`schema_version: 1`). |
+| `--junit FILE` | JUnit XML. |
+| `--pass-rate RATE` | Override the gate. |
+| `--fail-exit-code CODE` | Exit code of a failed gate (default 5). |
+| `--include-events` | Add the run events to the JSON results. |
+| `--timeout-ms`, `--providers`, `--model`, `--knowledge`, `--mcp`, `--plugins`, `--env-file`, ... | As for `run`; `--timeout-ms` applies per test. |
+
+See [evals.md](evals.md) for the file format, the assertion types, replay
+cassettes, CI and Promptfoo interop.
 
 ## `graphrt serve`
 

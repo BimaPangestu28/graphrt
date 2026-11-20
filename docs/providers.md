@@ -164,6 +164,7 @@ Fields:
 | `auth_header`, `query` | `openai` | Custom key header, query parameters. |
 | `auth` | `gemini` | `api-key` (default) or `bearer`. |
 | `region`, `access_key_id_env`, `secret_access_key_env`, `session_token_env` | `bedrock` | Region and SigV4 credentials. |
+| `cassettes`, `mode`, `upstream` | `replay` | Recorded responses: cassette directory (relative to the providers file), `replay` / `record` / `auto`, and the provider to record from. See [evals.md](evals.md#replay-deterministic-model-responses). |
 
 Unknown fields and fields that do not apply to the provider kind are errors.
 
