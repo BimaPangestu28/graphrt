@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# An order-desk agent with two tools from the `orders` plugin (plugins/orders).
+# Evaluated offline from recorded model responses: see agent.eval.yaml.
+#   graphrt run examples/evals/agent/support-agent.yaml --plugins examples/evals/agent/plugins \
+#     --input question="Where is order 123?"
+version: "1"
+name: support-agent
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: question, type: paragraph, required: true }
+
+    - id: agent
+      type: agent
+      model: { provider: openai, name: gpt-4o-mini, completion_params: { temperature: 0 } }
+      instruction: |
+        You are an order-desk assistant. Look orders up before answering and only
+        refund an order when the customer asks for it.
+      query: "{{#start.question#}}"
+      tools: [orders/*]
+      max_iterations: 4
+
+    - id: answer
+      type: answer
+      answer: "{{#agent.text#}}"
+
+  edges:
+    - { source: start, target: agent }
+    - { source: agent, target: answer }

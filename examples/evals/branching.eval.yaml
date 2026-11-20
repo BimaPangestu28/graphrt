@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/eval-v1.schema.json
+# Fully offline: the ticket router of examples/branching.yaml against a JSONL dataset.
+#   graphrt eval examples/evals/branching.eval.yaml --junit junit.xml
+description: Every priority band routes to the right queue.
+workflow: ../branching.yaml
+# One {id, vars, expected, tags} object per line; `expected` alone means `equals`.
+dataset: branching-cases.jsonl
+
+defaultTest:
+  assert:
+    - { type: contains, value: "{{subject}}" }
+    - { type: regex, value: "\\(priority \\d+\\)$" }
+
+tests:
+  - id: boundary-8-is-urgent
+    tags: [boundary]
+    vars: { subject: Disk full, priority: 8 }
+    assert:
+      - { type: starts-with, value: "URGENT" }
+
+gate:
+  pass_rate: 1.0

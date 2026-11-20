@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/eval-v1.schema.json
+# Fully offline: deterministic checks of examples/hello.yaml.
+#   graphrt eval examples/evals/hello.eval.yaml
+description: Greets by name, with and without excitement.
+workflow: ../hello.yaml
+
+defaultTest:
+  assert:
+    # Reported in the summary, never fails a test (weight 0).
+    - { type: latency, threshold: 500, weight: 0, metric: fast }
+
+tests:
+  - id: plain
+    vars: { name: Ada }
+    assert:
+      - { type: equals, value: "Hello, Ada." }
+
+  - id: excited
+    vars: { name: Grace, excited: true }
+    assert:
+      # A path into the outputs instead of the default output.
+      - { type: equals, transform: outputs.greeting, value: "Hello, Grace!!!" }
+      - { type: regex, value: "!{3}$" }
+
+  - id: uses-the-name
+    tags: [templating]
+    vars: { name: Linus }
+    assert:
+      # `{{name}}` is the test's variable.
+      - { type: starts-with, value: "Hello, {{name}}" }
+      - { type: not-icontains, value: "ada" }
+
+gate:
+  pass_rate: 1.0

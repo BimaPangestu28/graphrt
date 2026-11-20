@@ -1,0 +1,4 @@
+{"id": "refund-window", "vars": {"question": "How many days do I have to request a refund?"}, "metadata": {"relevant": ["examples/evals/retrieval/docs/refund-policy.md"]}, "tags": ["refund"]}
+{"id": "express-shipping", "vars": {"question": "When does express shipping arrive?"}, "metadata": {"relevant": ["examples/evals/retrieval/docs/shipping.md"]}, "tags": ["shipping"]}
+{"id": "water-damage", "vars": {"question": "Is water damage covered by the warranty?"}, "metadata": {"relevant": ["examples/evals/retrieval/docs/warranty.md"]}, "tags": ["warranty"]}
+{"id": "gift-cards", "vars": {"question": "Can gift cards be refunded?"}, "metadata": {"relevant": ["examples/evals/retrieval/docs/refund-policy.md"]}, "tags": ["refund"]}

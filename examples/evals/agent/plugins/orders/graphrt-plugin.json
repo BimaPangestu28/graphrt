@@ -1,0 +1,31 @@
+{
+  "name": "orders",
+  "version": "0.1.0",
+  "description": "Fake order-desk tools for the agent eval example (deterministic, offline)",
+  "license": "Apache-2.0",
+  "runtime": "process",
+  "command": "python3",
+  "args": ["-u", "plugin.py"],
+  "limits": { "timeout_ms": 10000, "max_concurrency": 8 },
+  "nodes": [],
+  "tools": [
+    {
+      "name": "search_orders",
+      "description": "Look up an order by id: status and delivery date",
+      "parameters": {
+        "type": "object",
+        "properties": { "order_id": { "type": "string" } },
+        "required": ["order_id"]
+      }
+    },
+    {
+      "name": "refund_order",
+      "description": "Refund an order by id",
+      "parameters": {
+        "type": "object",
+        "properties": { "order_id": { "type": "string" } },
+        "required": ["order_id"]
+      }
+    }
+  ]
+}

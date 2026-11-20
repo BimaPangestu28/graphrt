@@ -1,0 +1,15 @@
+# Knowledge base for examples/evals/retrieval: fully offline.
+# `hash` embeddings (feature hashing, no model) plus the keyword side of hybrid
+# search; chunks live in store.json. Store paths are relative to the working
+# directory, so run from the repository root. Rebuild the store with:
+#   rm examples/evals/retrieval/store.json
+#   graphrt kb --knowledge examples/evals/retrieval/knowledge.yaml ingest --dataset policies examples/evals/retrieval/docs/*.md
+embedders:
+  offline: { type: hash, dimensions: 256 }
+stores:
+  file: { type: memory, path: examples/evals/retrieval/store.json }
+datasets:
+  - id: policies
+    name: Customer policies
+    store: file
+    embedder: offline

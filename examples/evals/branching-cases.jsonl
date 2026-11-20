@@ -1,0 +1,4 @@
+{"id": "urgent", "vars": {"subject": "Server down", "priority": 9}, "expected": "URGENT: paging on-call for 'Server down' (priority 9)", "tags": ["urgent"]}
+{"id": "normal", "vars": {"subject": "Password reset", "priority": 5}, "expected": "Queued 'Password reset' for the support team (priority 5)", "tags": ["normal"]}
+{"id": "backlog", "vars": {"subject": "Typo on the pricing page", "priority": 1}, "expected": "Added 'Typo on the pricing page' to the backlog (priority 1)", "tags": ["low"]}
+{"id": "boundary-4-is-normal", "vars": {"subject": "Slow export", "priority": 4}, "expected": "Queued 'Slow export' for the support team (priority 4)", "tags": ["boundary", "normal"]}

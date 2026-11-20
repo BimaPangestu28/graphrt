@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# Retrieval only: returns the best-matching policy chunks for a question.
+#   graphrt run examples/evals/retrieval/retrieve.yaml --knowledge examples/evals/retrieval/knowledge.yaml \
+#     --input question="How long do refunds take?"
+version: "1"
+name: policy-retrieval
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: question, type: paragraph, required: true }
+
+    - id: retrieve
+      type: knowledge-retrieval
+      query_variable_selector: [start, question]
+      dataset_ids: [policies]
+      retrieval_mode: multiple
+      multiple_retrieval_config: { top_k: 3 }
+
+    - id: end
+      type: end
+      outputs:
+        - { variable: result, value_selector: [retrieve, result] }
+
+  edges:
+    - { source: start, target: retrieve }
+    - { source: retrieve, target: end }
