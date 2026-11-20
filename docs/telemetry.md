@@ -30,6 +30,12 @@ written or sent. Release builds get the endpoint at build time
 `GRAPHRT_TELEMETRY_URL` at run time overrides it, e.g. to point at your own
 collector.
 
+Official release binaries, the Homebrew formula and the container image from
+graphrt 0.3.2 on report to `https://graphrt-telemetry.bimapangestu280.workers.dev/v1/report`, the
+collector in [tools/telemetry-collector](../tools/telemetry-collector) run by the
+project maintainer. Builds from source (`cargo install`, `cargo build`) have no
+endpoint unless you set one, so they never send anything.
+
 ## Exactly what is sent
 
 `graphrt telemetry status` prints the next report verbatim (`--json` for a
@@ -83,9 +89,12 @@ it.
   file lock before sending, so concurrent `graphrt` processes send once between
   them. If the send fails, its counts are kept for the next day's report; at
   most 31 days are kept.
-- The send never blocks or slows a run: it happens on its own thread, with a
-  5-second timeout, and the process does not wait for it on exit (a report cut
-  off by a short `graphrt run` is simply retried next time).
+- The send never slows a run: it happens on its own thread, with a 5-second
+  timeout. A command that finishes while the day's report is still in flight
+  (typically the first `graphrt run` of a day) waits for it before exiting, so
+  the report is not cut off: usually a few hundred milliseconds, at most about
+  5.5 seconds on a broken network, and only once a day. Every other run exits
+  without waiting.
 - The request goes through the same egress policy as the `http-request` node
   (private addresses refused, no redirects, no environment proxies).
 - Only the CLI binary reports. The embedded library (`graphrt-core` and

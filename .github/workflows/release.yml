@@ -20,6 +20,9 @@ env:
   BIN: graphrt
   # Build profile for release binaries (see [profile.min-size] in Cargo.toml).
   PROFILE: min-size
+  # Opt-in usage telemetry endpoint compiled into release binaries (docs/telemetry.md).
+  # Telemetry stays off until a user runs `graphrt telemetry enable`.
+  GRAPHRT_TELEMETRY_URL: https://graphrt-telemetry.bimapangestu280.workers.dev/v1/report
 
 jobs:
   build:
@@ -138,6 +141,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GRAPHRT_TELEMETRY_URL=${{ env.GRAPHRT_TELEMETRY_URL }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

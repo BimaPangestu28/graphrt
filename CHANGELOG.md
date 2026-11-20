@@ -7,6 +7,20 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Fixed
+- Telemetry: the daily report of a short command such as `graphrt run` was
+  lost. The background thread claimed the day and removed its counts, then the
+  process exited before the request finished, so nothing arrived and nothing
+  was retried (only long-running `serve` delivered reports). A finishing
+  process now waits for that once-a-day report, at most the 5-second send
+  timeout. Telemetry is opt-in and no released binary had an endpoint, so no
+  user data was affected.
+
+### Changed
+- Release binaries, the Homebrew formula and the container image report to
+  the project's collector (`graphrt-telemetry.bimapangestu280.workers.dev`)
+  once a user opts in with `graphrt telemetry enable`; still off by default.
+
 ## [0.3.1] - 2026-11-20
 
 Loading large workflows is fast again. 0.3.0's strict validation built every
