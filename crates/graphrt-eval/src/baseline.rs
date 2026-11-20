@@ -8,12 +8,15 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::path::Path;
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as Json;
 
 use crate::config::Tolerance;
-use crate::report::{EvalReport, TestResult, TestStatus};
+use crate::error::EvalError;
+use crate::report::{EvalReport, REPORT_SCHEMA_VERSION, TestStatus};
 
 /// How one metric or test moved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,21 +66,106 @@ pub struct BaselineComparison {
     pub tests: Vec<Delta>,
 }
 
-impl BaselineComparison {
-    /// Compare `current` with `baseline` (loaded from `path`).
-    pub fn compare(current: &EvalReport, baseline: &EvalReport, path: &str, tolerance: &Tolerance) -> Self {
-        let mut comparison = Self {
+/// What a comparison needs from a report: read from a results file as plain
+/// JSON (any schema version), so the comparison does not deserialize whole
+/// reports and their run events.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct Baseline {
+    /// Where it was read from.
+    pub path: String,
+    pub workflow_fingerprint: String,
+    /// Mean score per metric (metrics with counted results only).
+    pub metrics: IndexMap<String, f64>,
+    /// Pass rate per test id over its trials, in suite order.
+    pub pass_rates: IndexMap<String, f64>,
+    /// Fingerprint per judge workflow.
+    pub judges: HashMap<String, String>,
+}
+
+impl Baseline {
+    /// Read an `--output` results file (report schema version 1 or 2).
+    pub fn load(path: &Path) -> Result<Self, EvalError> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| EvalError::Io(format!("cannot read baseline `{}`: {e}", path.display())))?;
+        let report: Json = serde_json::from_str(&text)
+            .map_err(|e| EvalError::invalid(format!("baseline {}: invalid JSON: {e}", path.display())))?;
+        Self::from_json(&path.display().to_string(), &report)
+            .map_err(|why| EvalError::invalid(format!("baseline {}: {why}", path.display())))
+    }
+
+    /// Extract a baseline from a report's JSON.
+    pub fn from_json(path: &str, report: &Json) -> Result<Self, String> {
+        match report.get("schema_version").and_then(Json::as_u64) {
+            Some(v) if (1..=u64::from(REPORT_SCHEMA_VERSION)).contains(&v) => {}
+            Some(v) => {
+                return Err(format!("report schema version {v} is not supported (1 to {REPORT_SCHEMA_VERSION})"));
+            }
+            None => return Err("not a graphrt eval report (no `schema_version`)".into()),
+        }
+        let text = |v: Option<&Json>| v.and_then(Json::as_str).unwrap_or_default().to_owned();
+        let mut baseline = Self {
             path: path.to_owned(),
-            workflow_fingerprint: baseline.workflow.fingerprint.clone(),
-            judges_changed: judges_changed(&current.tests, &baseline.tests),
+            workflow_fingerprint: text(report.pointer("/workflow/fingerprint")),
             ..Self::default()
         };
-        let metric_means = |report: &EvalReport| -> IndexMap<String, f64> {
-            report.summary.metrics.iter().filter(|(_, m)| m.count > 0).map(|(k, m)| (k.clone(), m.mean_score)).collect()
+        for (name, m) in report.pointer("/summary/metrics").and_then(Json::as_object).into_iter().flatten() {
+            if m.get("count").and_then(Json::as_u64).unwrap_or_default() > 0 {
+                baseline.metrics.insert(name.clone(), m.get("mean_score").and_then(Json::as_f64).unwrap_or_default());
+            }
+        }
+        let tests = report.get("tests").and_then(Json::as_array).map(Vec::as_slice).unwrap_or_default();
+        baseline.pass_rates = pass_rates(tests.iter().map(|t| (text(t.get("id")), text(t.get("status")) == "passed")));
+        for judge in tests.iter().flat_map(|t| t.get("assertions").and_then(Json::as_array).into_iter().flatten()) {
+            if let Some(record) = judge.get("judge") {
+                baseline.judges.insert(text(record.get("workflow")), text(record.get("fingerprint")));
+            }
+        }
+        Ok(baseline)
+    }
+
+    /// The same view of a report in memory.
+    pub fn of(report: &EvalReport, path: &str) -> Self {
+        let tests = &report.tests;
+        Self {
+            path: path.to_owned(),
+            workflow_fingerprint: report.workflow.fingerprint.clone(),
+            metrics: report
+                .summary
+                .metrics
+                .iter()
+                .filter(|(_, m)| m.count > 0)
+                .map(|(k, m)| (k.clone(), m.mean_score))
+                .collect(),
+            pass_rates: pass_rates(tests.iter().map(|t| (t.id.clone(), t.status == TestStatus::Passed))),
+            judges: tests
+                .iter()
+                .flat_map(|t| &t.assertions)
+                .filter_map(|a| a.judge.as_deref())
+                .map(|j| (j.workflow.clone(), j.fingerprint.clone()))
+                .collect(),
+        }
+    }
+}
+
+impl BaselineComparison {
+    /// Compare `current` with `baseline`.
+    pub fn compare(current: &Baseline, baseline: &Baseline, tolerance: &Tolerance) -> Self {
+        let mut judges_changed: Vec<String> = current
+            .judges
+            .iter()
+            .filter(|(path, fingerprint)| baseline.judges.get(*path).is_some_and(|old| old != *fingerprint))
+            .map(|(path, _)| path.clone())
+            .collect();
+        judges_changed.sort();
+        let mut comparison = Self {
+            path: baseline.path.clone(),
+            workflow_fingerprint: baseline.workflow_fingerprint.clone(),
+            judges_changed,
+            metrics: diff(&current.metrics, &baseline.metrics, |name| tolerance.of(name)),
+            tests: diff(&current.pass_rates, &baseline.pass_rates, |_| tolerance.test_tolerance),
+            ..Self::default()
         };
-        comparison.metrics = diff(&metric_means(current), &metric_means(baseline), |name| tolerance.of(name));
-        comparison.tests =
-            diff(&pass_rates(&current.tests), &pass_rates(&baseline.tests), |_| tolerance.test_tolerance);
         comparison.tests.retain(|d| d.change != Change::Unchanged);
         let count = |change| comparison.metrics.iter().chain(&comparison.tests).filter(|d| d.change == change).count();
         comparison.regressions = count(Change::Regressed);
@@ -87,22 +175,22 @@ impl BaselineComparison {
 }
 
 impl EvalReport {
-    /// Compare with `baseline` (read from `path`), record the comparison and
-    /// fail the gate on any regression beyond `tolerance`.
-    pub fn apply_baseline(&mut self, baseline: &EvalReport, path: &str, tolerance: &Tolerance) {
-        let comparison = BaselineComparison::compare(self, baseline, path, tolerance);
+    /// Compare with `baseline`, record the comparison and fail the gate on any
+    /// regression beyond `tolerance`.
+    pub fn apply_baseline(&mut self, baseline: &Baseline, tolerance: &Tolerance) {
+        let comparison = BaselineComparison::compare(&Baseline::of(self, ""), baseline, tolerance);
         let regressions = comparison.regressions;
         self.summary.gate.require(regressions == 0, || format!("{regressions} regression(s) vs the baseline"));
         self.baseline = Some(comparison);
     }
 }
 
-/// Each test's pass rate over its trials, in suite order.
-fn pass_rates(tests: &[TestResult]) -> IndexMap<String, f64> {
+/// Pass rate per test id over its trials, in first-seen order.
+fn pass_rates(results: impl Iterator<Item = (String, bool)>) -> IndexMap<String, f64> {
     let mut counts: IndexMap<String, (u32, u32)> = IndexMap::new();
-    for test in tests {
-        let entry = counts.entry(test.id.clone()).or_default();
-        entry.0 += u32::from(test.status == TestStatus::Passed);
+    for (id, passed) in results {
+        let entry = counts.entry(id).or_default();
+        entry.0 += u32::from(passed);
         entry.1 += 1;
     }
     counts.into_iter().map(|(id, (passed, n))| (id, f64::from(passed) / f64::from(n.max(1)))).collect()
@@ -137,26 +225,6 @@ fn diff(
     deltas
 }
 
-/// Judge workflows (by path) whose fingerprint is not one the baseline used.
-fn judges_changed(current: &[TestResult], baseline: &[TestResult]) -> Vec<String> {
-    let fingerprints = |tests: &[TestResult]| -> HashMap<String, String> {
-        tests
-            .iter()
-            .flat_map(|t| &t.assertions)
-            .filter_map(|a| a.judge.as_deref())
-            .map(|j| (j.workflow.clone(), j.fingerprint.clone()))
-            .collect()
-    };
-    let before = fingerprints(baseline);
-    let mut changed: Vec<String> = fingerprints(current)
-        .into_iter()
-        .filter(|(path, fingerprint)| before.get(path).is_some_and(|old| old != fingerprint))
-        .map(|(path, _)| path)
-        .collect();
-    changed.sort();
-    changed
-}
-
 /// The terminal block for a baseline comparison.
 pub fn format_baseline(b: &BaselineComparison) -> String {
     let mut out = String::new();
@@ -188,7 +256,7 @@ mod tests {
     use super::*;
     use crate::assertion::AssertionResult;
     use crate::judge::JudgeRecord;
-    use crate::report::{REPORT_SCHEMA_VERSION, RunSummary, Summary, WorkflowInfo};
+    use crate::report::{RunSummary, Summary, TestResult, WorkflowInfo};
     use serde_json::Map;
 
     fn test(id: &str, trial: u32, pass: bool, faithfulness: f64, judge_fingerprint: &str) -> TestResult {
@@ -232,6 +300,23 @@ mod tests {
         }
     }
 
+    /// Through the results file's JSON, as `--baseline` reads it.
+    fn baseline_of(report: &EvalReport) -> Baseline {
+        let json: Json = serde_json::from_str(&report.to_json().unwrap()).unwrap();
+        Baseline::from_json("prev.json", &json).unwrap()
+    }
+
+    #[test]
+    fn reads_baselines_of_every_schema_version() {
+        let mut json: Json =
+            serde_json::from_str(&report(vec![test("a", 0, true, 0.9, "j")]).to_json().unwrap()).unwrap();
+        json["schema_version"] = 1.into();
+        assert_eq!(Baseline::from_json("v1", &json).unwrap().pass_rates["a"], 1.0);
+        json["schema_version"] = 99.into();
+        assert!(Baseline::from_json("v99", &json).unwrap_err().contains("99 is not supported"));
+        assert!(Baseline::from_json("x", &serde_json::json!({})).unwrap_err().contains("not a graphrt eval report"));
+    }
+
     #[test]
     fn detects_regressions_beyond_tolerance() {
         let baseline = report(vec![
@@ -248,7 +333,8 @@ mod tests {
             test("new", 0, true, 0.7, "j2"),
         ]);
         let tolerance = Tolerance::default();
-        let c = BaselineComparison::compare(&current, &baseline, "prev.json", &tolerance);
+        let (current, baseline) = (Baseline::of(&current, ""), baseline_of(&baseline));
+        let c = BaselineComparison::compare(&current, &baseline, &tolerance);
         assert_eq!(c.judges_changed, ["judges/faithfulness.yaml"]);
         let faithfulness = c.metrics.iter().find(|d| d.name == "faithfulness").unwrap();
         assert_eq!(faithfulness.change, Change::Regressed, "{faithfulness:?}");
@@ -262,16 +348,16 @@ mod tests {
         // Generous tolerances absorb the drops; the reverse direction improves.
         let mut loose = Tolerance { test_tolerance: 0.5, ..Tolerance::default() };
         loose.metrics.insert("faithfulness".into(), 0.3);
-        let c = BaselineComparison::compare(&current, &baseline, "prev.json", &loose);
+        let c = BaselineComparison::compare(&current, &baseline, &loose);
         assert_eq!(c.regressions, 0, "{c:?}");
-        let c = BaselineComparison::compare(&baseline, &current, "prev.json", &tolerance);
+        let c = BaselineComparison::compare(&baseline, &current, &tolerance);
         assert_eq!((c.regressions, c.improvements), (0, 2));
     }
 
     #[test]
     fn identical_reports_do_not_change() {
         let r = report(vec![test("a", 0, true, 0.9, "j")]);
-        let c = BaselineComparison::compare(&r, &r, "same.json", &Tolerance::default());
+        let c = BaselineComparison::compare(&Baseline::of(&r, ""), &baseline_of(&r), &Tolerance::default());
         assert_eq!((c.regressions, c.improvements), (0, 0));
         assert!(c.tests.is_empty() && c.judges_changed.is_empty());
         assert!(c.metrics.iter().all(|d| d.change == Change::Unchanged));

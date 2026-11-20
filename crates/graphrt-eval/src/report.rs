@@ -5,7 +5,7 @@
 //! [`REPORT_SCHEMA_VERSION`]; fields are only ever added within a version.
 //! Version 2 renamed `repeat` to `trial` and added per-case trial statistics,
 //! calibration and baseline sections, judge records and excluded results;
-//! version 1 reports still load (as baselines).
+//! version 1 reports still load as baselines ([`crate::baseline::Baseline`]).
 
 use std::fmt::Write as _;
 
@@ -19,7 +19,6 @@ use crate::assertion::AssertionResult;
 use crate::baseline::BaselineComparison;
 use crate::calibration::CalibrationSummary;
 use crate::capture::{RetrievalHit, RunStatus, ToolCallRecord};
-use crate::error::EvalError;
 use crate::stats::{pass_at_k, pass_hat_k};
 
 /// Version of the JSON report format.
@@ -356,22 +355,6 @@ impl EvalReport {
     /// Whether the gate passed.
     pub fn gate_passed(&self) -> bool {
         self.summary.gate.passed
-    }
-
-    /// Read a report written by `--output` (any version up to this one), e.g. a baseline.
-    pub fn load(path: &std::path::Path) -> Result<Self, EvalError> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| EvalError::Io(format!("cannot read results `{}`: {e}", path.display())))?;
-        let report: Self = serde_json::from_str(&text)
-            .map_err(|e| EvalError::invalid(format!("{}: not a graphrt eval report: {e}", path.display())))?;
-        if report.schema_version == 0 || report.schema_version > REPORT_SCHEMA_VERSION {
-            return Err(EvalError::invalid(format!(
-                "{}: report schema version {} is not supported (this build reads 1 to {REPORT_SCHEMA_VERSION})",
-                path.display(),
-                report.schema_version
-            )));
-        }
-        Ok(report)
     }
 
     /// Pretty JSON.

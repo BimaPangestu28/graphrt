@@ -12,6 +12,7 @@ use std::sync::Arc;
 use graphrt_core::engine::Limits;
 use graphrt_core::node::TokioClock;
 use graphrt_core::{Engine, Registry, Services};
+use graphrt_eval::baseline::Baseline;
 use graphrt_eval::report::{format_result_line, format_summary};
 use graphrt_eval::{
     AssertionRegistry, EngineTarget, EvalError, EvalReport, EvalSuite, JudgeLoader, Runner, RunnerOptions, Target,
@@ -32,7 +33,7 @@ pub async fn eval(args: EvalArgs) -> Result<u8, CliError> {
     }
     let suite = EvalSuite::load(&args.file).map_err(eval_error)?;
     // Read the baseline first: a wrong path should not cost a whole evaluation.
-    let baseline = args.baseline.as_deref().map(EvalReport::load).transpose().map_err(eval_error)?;
+    let baseline = args.baseline.as_deref().map(Baseline::load).transpose().map_err(eval_error)?;
     if args.services.otel || args.services.otel_stdout {
         eprintln!("warning: `graphrt eval` does not export OpenTelemetry traces yet; --otel is ignored");
     }
@@ -60,8 +61,8 @@ pub async fn eval(args: EvalArgs) -> Result<u8, CliError> {
         .run(&suite, &target, |result| eprintln!("{}", format_result_line(result)))
         .await
         .map_err(eval_error)?;
-    if let (Some(baseline), Some(path)) = (&baseline, &args.baseline) {
-        report.apply_baseline(baseline, &path.display().to_string(), &suite.gate.baseline);
+    if let Some(baseline) = &baseline {
+        report.apply_baseline(baseline, &suite.gate.baseline);
     }
     eprint!("{}", format_summary(&report));
     write_outputs(&report, &args)?;
