@@ -7,12 +7,18 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
-Telemetry and run data for evaluation: spans follow the OpenTelemetry GenAI
-semantic conventions, content capture follows the standard variable, and runs
-keep the context and data an evaluator needs. Online evaluation scores sampled
-production runs in `serve`, people add feedback, and scores reach any OTLP
-backend as `gen_ai.evaluation.result` events (and Langfuse through its scores
-API); vendor presets configure six backends from their own variables.
+## [0.4.0] - 2026-11-20
+
+Evaluation. `graphrt eval` runs datasets against a workflow with deterministic,
+trajectory, retrieval and judge assertions (a judge is an ordinary graphrt
+workflow), trials with pass@k / pass^k, baselines, judge calibration and CI
+gates; the `replay` provider makes it deterministic. `graphrt serve` scores
+sampled production runs online, takes human feedback and exports scores as
+OpenTelemetry `gen_ai.evaluation.result` events. Spans now follow the
+OpenTelemetry GenAI semantic conventions, with presets for Langfuse, LangSmith,
+Braintrust, Opik, Phoenix and MLflow. Also end-user JWT verification and
+per-user rate limits for `serve`. Contains breaking changes (see
+**Changed (Breaking)**).
 
 ### Added
 - Online evaluation: `graphrt serve --evaluators <file>` (cargo feature
@@ -921,7 +927,8 @@ laptop, a server, a container, the edge or a phone.
   credentials, plugins, WebAssembly runtime, document extraction and retrieval,
   with regression tests for every finding.
 
-[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.2.1...v0.3.0

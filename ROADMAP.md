@@ -41,6 +41,17 @@ Models come from API providers; the runtime itself needs no server.
   ([bench/compare](bench/compare)).
 - Engine, LLM path and server another 20-45% faster, with fewer allocations per node.
 
+## Done in 0.4
+
+- Evaluation: `graphrt eval` with datasets, deterministic, trajectory, retrieval
+  and judge assertions (judges are graphrt workflows), trials with pass@k /
+  pass^k, baselines, judge calibration and CI gates; a `replay` provider for
+  deterministic runs ([docs/evals.md](docs/evals.md)).
+- Online evaluation in `graphrt serve` (sampled judges, human feedback, scores
+  API) and OpenTelemetry GenAI semantic conventions, with presets for Langfuse,
+  LangSmith, Braintrust, Opik, Phoenix and MLflow.
+- End-user JWT verification and per-user rate limits for `graphrt serve`.
+
 ## Next
 
 - Windows binaries tested on Windows, and release automation per tag (CI).

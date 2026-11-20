@@ -70,7 +70,7 @@ adb logcat -s GraphrtSample:I
 On screen, under the buttons:
 
 ```text
-graphrt 0.3.2 loaded workflow 'hello'
+graphrt 0.4.0 loaded workflow 'hello'
 status: succeeded
 greeting: Hello, Grace.
 {"elapsed_ms":1,"outputs":{"greeting":"Hello, Grace."},...,"status":"succeeded","answer":""}

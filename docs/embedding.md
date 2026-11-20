@@ -5,11 +5,11 @@ you full control over services, persistence and transport.
 
 ```toml
 [dependencies]
-graphrt-core = "0.3"
-graphrt-llm = "0.3"      # optional: llm / agent / classifier / extractor nodes
-graphrt-http = "0.3"     # optional: http-request node
-graphrt-code = "0.3"     # optional: code node
-graphrt-mcp = "0.3"      # optional: MCP tools
+graphrt-core = "0.4"
+graphrt-llm = "0.4"      # optional: llm / agent / classifier / extractor nodes
+graphrt-http = "0.4"     # optional: http-request node
+graphrt-code = "0.4"     # optional: code node
+graphrt-mcp = "0.4"      # optional: MCP tools
 futures = "0.3"
 tokio = { version = "1", features = ["rt", "macros"] }
 ```
