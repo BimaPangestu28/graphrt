@@ -1,0 +1,60 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# Judge: did the run achieve the user's goal? Grades the outcome; the tool
+# trajectory is evidence, not a script to match.
+#   - { type: judge, workflow: judges/goal-success.yaml, metric: goal-success,
+#       inputs: { goal: "The customer learns how long standard shipping takes." } }
+# The harness passes `output` (the final answer) and `trajectory` (the agent
+# tool calls, empty for workflows without agents).
+version: "1"
+name: judge-goal-success
+description: Pass when the final answer (and the actions taken) achieve the stated goal.
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: goal, type: paragraph, required: true }
+        - { variable: output, type: paragraph, required: true }
+        - { variable: trajectory, type: paragraph }
+
+    - id: judge
+      type: llm
+      model: { provider: openai, name: gpt-4o-mini, completion_params: { temperature: 0 } }
+      prompt_template:
+        - role: system
+          text: |
+            You are a goal success judge. Decide one thing only: did the
+            assistant achieve the GOAL? Judge the outcome, using the TOOL CALLS
+            as evidence of what was actually done; extra steps are fine.
+            - pass: the goal is fully achieved.
+            - fail: the goal is not achieved, or only partly.
+            - unknown: the goal is too vague to check against the answer.
+            First write your reasoning in one sentence, then the verdict.
+        - role: user
+          text: |
+            GOAL:
+            {{#start.goal#}}
+
+            TOOL CALLS:
+            {{#start.trajectory#}}
+
+            FINAL ANSWER:
+            {{#start.output#}}
+      structured_output:
+        schema:
+          type: object
+          required: [reasoning, verdict]
+          additionalProperties: false
+          properties:
+            reasoning: { type: string }
+            verdict: { type: string, enum: [pass, fail, unknown] }
+
+    - id: end
+      type: end
+      outputs:
+        - { variable: verdict, value_selector: [judge, structured_output, verdict] }
+        - { variable: reasoning, value_selector: [judge, structured_output, reasoning] }
+
+  edges:
+    - { source: start, target: judge }
+    - { source: judge, target: end }

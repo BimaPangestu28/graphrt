@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "key": "794f2fdd8516b293078b93afa72be09d",
+  "request": {
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "You are a faithfulness judge. Decide one thing only: is every factual\nclaim in the ANSWER supported by the CONTEXT? Ignore style, tone and\nwhether the answer is complete or helpful.\n- pass: every claim can be verified from the context.\n- fail: at least one claim is missing from, or contradicts, the context.\n- unknown: the context is empty or unreadable, so you cannot tell.\nFirst write your reasoning (one or two sentences naming any unsupported\nclaim), then the verdict.\n",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      },
+      {
+        "content": [
+          {
+            "text": "QUESTION:\nWhen does express shipping arrive?\n\nCONTEXT:\nStandard shipping takes 3 to 5 business days. Express shipping arrives the next business day when ordered before 14:00. We ship to every country in the European Union.\n\nANSWER:\nExpress orders arrive within 2 days.\n",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o-mini",
+    "response_format": {
+      "name": "structured_output",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "reasoning": {
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "pass",
+              "fail",
+              "unknown"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "reasoning",
+          "verdict"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "json_schema"
+    },
+    "temperature": 0.0
+  },
+  "response": [
+    {
+      "text": "{\"reasoning\": \"The answer states "
+    },
+    {
+      "text": "2, which the context "
+    },
+    {
+      "text": "does not.\", \"verdict\": \"fail\"}"
+    },
+    {
+      "finish": "stop"
+    },
+    {
+      "usage": {
+        "prompt_tokens": 246,
+        "completion_tokens": 24,
+        "total_tokens": 270
+      }
+    }
+  ]
+}

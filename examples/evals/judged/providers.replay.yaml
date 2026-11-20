@@ -1,0 +1,9 @@
+# Serve `openai` from the cassettes committed next to this file: no key, no network.
+# Re-record against the real API (overwrites the cassettes):
+#   GRAPHRT_REPLAY_MODE=record OPENAI_API_KEY=sk-... graphrt eval examples/evals/judged/judged.eval.yaml
+providers:
+  - name: openai
+    kind: replay
+    cassettes: cassettes        # relative to this file
+    mode: replay                # replay | record | auto
+    upstream: { kind: openai, api_key_env: OPENAI_API_KEY }

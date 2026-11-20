@@ -1,0 +1,61 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# Judge: is every claim in the answer supported by the retrieved context?
+# Binary, one criterion, with an `unknown` way out. Use it from an eval file:
+#   - { type: judge, workflow: judges/faithfulness.yaml, metric: faithfulness,
+#       inputs: { question: "{{question}}" } }
+# The harness passes `output` (the answer) and `contexts` (the run's retrieved
+# chunks); calibrate it with examples/evals/calibration.
+version: "1"
+name: judge-faithfulness
+description: Pass when every claim of the answer is supported by the context.
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: output, type: paragraph, required: true }
+        - { variable: contexts, type: paragraph }
+        - { variable: question, type: paragraph }
+
+    - id: judge
+      type: llm
+      model: { provider: openai, name: gpt-4o-mini, completion_params: { temperature: 0 } }
+      prompt_template:
+        - role: system
+          text: |
+            You are a faithfulness judge. Decide one thing only: is every factual
+            claim in the ANSWER supported by the CONTEXT? Ignore style, tone and
+            whether the answer is complete or helpful.
+            - pass: every claim can be verified from the context.
+            - fail: at least one claim is missing from, or contradicts, the context.
+            - unknown: the context is empty or unreadable, so you cannot tell.
+            First write your reasoning (one or two sentences naming any unsupported
+            claim), then the verdict.
+        - role: user
+          text: |
+            QUESTION:
+            {{#start.question#}}
+
+            CONTEXT:
+            {{#start.contexts#}}
+
+            ANSWER:
+            {{#start.output#}}
+      structured_output:
+        schema:
+          type: object
+          required: [reasoning, verdict]
+          additionalProperties: false
+          properties:
+            reasoning: { type: string }
+            verdict: { type: string, enum: [pass, fail, unknown] }
+
+    - id: end
+      type: end
+      outputs:
+        - { variable: verdict, value_selector: [judge, structured_output, verdict] }
+        - { variable: reasoning, value_selector: [judge, structured_output, reasoning] }
+
+  edges:
+    - { source: start, target: judge }
+    - { source: judge, target: end }

@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "key": "8702a18e25115195734fbebed919f33c",
+  "request": {
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "You are a faithfulness judge. Decide one thing only: is every factual\nclaim in the ANSWER supported by the CONTEXT? Ignore style, tone and\nwhether the answer is complete or helpful.\n- pass: every claim can be verified from the context.\n- fail: at least one claim is missing from, or contradicts, the context.\n- unknown: the context is empty or unreadable, so you cannot tell.\nFirst write your reasoning (one or two sentences naming any unsupported\nclaim), then the verdict.\n",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      },
+      {
+        "content": [
+          {
+            "text": "QUESTION:\nHow long is the warranty?\n\nCONTEXT:\nAll hardware comes with a two year warranty covering manufacturing defects. Accidental damage and water damage are not covered by the warranty.\n\nANSWER:\nThe warranty lasts 5 years.\n",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o-mini",
+    "response_format": {
+      "name": "structured_output",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "reasoning": {
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "pass",
+              "fail",
+              "unknown"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "reasoning",
+          "verdict"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "json_schema"
+    },
+    "temperature": 0.0
+  },
+  "response": [
+    {
+      "text": "{\"reasoning\": \"The answer states "
+    },
+    {
+      "text": "5, which the context "
+    },
+    {
+      "text": "does not.\", \"verdict\": \"fail\"}"
+    },
+    {
+      "finish": "stop"
+    },
+    {
+      "usage": {
+        "prompt_tokens": 232,
+        "completion_tokens": 24,
+        "total_tokens": 256
+      }
+    }
+  ]
+}

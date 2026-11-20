@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "key": "02d30f6782985c27ba987e9333c87778",
+  "request": {
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "You answer customer questions about the store's policies using only\nthis context. When the question is not about the policies, say you\ncan only help with store policies.\n\n# Shipping\n\nStandard shipping takes 3 to 5 business days. Express shipping arrives the next business day when ordered before 14:00. We ship to every country in the European Union.\n",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      },
+      {
+        "content": [
+          {
+            "text": "When does express shipping arrive?",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o-mini",
+    "temperature": 0.0
+  },
+  "response": [
+    {
+      "text": "Express shipping arrives the "
+    },
+    {
+      "text": "next business day when "
+    },
+    {
+      "text": "ordered before 14:00."
+    },
+    {
+      "finish": "stop"
+    },
+    {
+      "usage": {
+        "prompt_tokens": 126,
+        "completion_tokens": 22,
+        "total_tokens": 148
+      }
+    }
+  ]
+}

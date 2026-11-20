@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/eval-v1.schema.json
+# Calibrating the faithfulness judge against human labels: the workflow under
+# test is the judge itself, each row's `expected` is the label a person gave
+# (pass / fail), and the report adds agreement, TPR, TNR, Cohen's kappa and the
+# confusion matrix. Offline: the judge's verdicts are replayed from cassettes.
+#   graphrt eval examples/evals/calibration/faithfulness.eval.yaml
+# Compare a cheaper judge model (re-records the cassettes it misses):
+#   GRAPHRT_REPLAY_MODE=auto OPENAI_API_KEY=sk-... graphrt eval \
+#     examples/evals/calibration/faithfulness.eval.yaml --judge-model openai/gpt-4.1-nano
+description: The faithfulness judge agrees with human labels.
+workflow: ../judges/faithfulness.yaml
+providers: providers.replay.yaml
+# {id, vars: {question, output, contexts}, expected: pass | fail} per line.
+dataset: labels.jsonl
+
+calibration:
+  unknown: exclude           # "unknown" verdicts are counted apart
+  min_kappa: 0.5             # the gate: chance-corrected agreement
+  min_tnr: 0.7               # the judge must catch most unfaithful answers
+
+gate:
+  pass_rate: 0               # individual disagreements do not fail the run; kappa does

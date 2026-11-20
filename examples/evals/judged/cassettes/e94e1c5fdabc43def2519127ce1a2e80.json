@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "key": "e94e1c5fdabc43def2519127ce1a2e80",
+  "request": {
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "You answer customer questions about the store's policies using only\nthis context. When the question is not about the policies, say you\ncan only help with store policies.\n\n# Refund policy\n\nCustomers can request a refund within 30 days of delivery. Refunds go back to the original payment method within 5 business days. Opened software and gift cards cannot be refunded.\n",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      },
+      {
+        "content": [
+          {
+            "text": "How many days do I have to request a refund?",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o-mini",
+    "temperature": 0.0
+  },
+  "response": [
+    {
+      "text": "You can request a "
+    },
+    {
+      "text": "refund within 30 days "
+    },
+    {
+      "text": "of delivery."
+    },
+    {
+      "finish": "stop"
+    },
+    {
+      "usage": {
+        "prompt_tokens": 142,
+        "completion_tokens": 20,
+        "total_tokens": 162
+      }
+    }
+  ]
+}

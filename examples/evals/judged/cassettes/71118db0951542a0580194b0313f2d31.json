@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "key": "71118db0951542a0580194b0313f2d31",
+  "request": {
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "You answer customer questions about the store's policies using only\nthis context. When the question is not about the policies, say you\ncan only help with store policies.\n\n# Warranty\n\nAll hardware comes with a two year warranty covering manufacturing defects. Accidental damage and water damage are not covered by the warranty.\n",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      },
+      {
+        "content": [
+          {
+            "text": "Is water damage covered by the warranty?",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o-mini",
+    "temperature": 0.0
+  },
+  "response": [
+    {
+      "text": "No. Water damage is "
+    },
+    {
+      "text": "not covered by the "
+    },
+    {
+      "text": "warranty."
+    },
+    {
+      "finish": "stop"
+    },
+    {
+      "usage": {
+        "prompt_tokens": 118,
+        "completion_tokens": 18,
+        "total_tokens": 136
+      }
+    }
+  ]
+}

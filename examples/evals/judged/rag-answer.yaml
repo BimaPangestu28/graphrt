@@ -1,0 +1,46 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# Retrieval-augmented answers over the policy documents of examples/evals/retrieval.
+# Evaluated offline with LLM judges in judged.eval.yaml.
+#   graphrt run examples/evals/judged/rag-answer.yaml \
+#     --knowledge examples/evals/retrieval/knowledge.yaml \
+#     --providers examples/evals/judged/providers.replay.yaml \
+#     --input question="How many days do I have to request a refund?"
+version: "1"
+name: policy-answer
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: question, type: paragraph, required: true }
+
+    - id: retrieve
+      type: knowledge-retrieval
+      query_variable_selector: [start, question]
+      dataset_ids: [policies]
+      retrieval_mode: multiple
+      multiple_retrieval_config: { top_k: 1 }
+
+    - id: answer_llm
+      type: llm
+      model: { provider: openai, name: gpt-4o-mini, completion_params: { temperature: 0 } }
+      context: { enabled: true, variable_selector: [retrieve, result] }
+      prompt_template:
+        - role: system
+          text: |
+            You answer customer questions about the store's policies using only
+            this context. When the question is not about the policies, say you
+            can only help with store policies.
+
+            {{#context#}}
+        - role: user
+          text: "{{#start.question#}}"
+
+    - id: answer
+      type: answer
+      answer: "{{#answer_llm.text#}}"
+
+  edges:
+    - { source: start, target: retrieve }
+    - { source: retrieve, target: answer_llm }
+    - { source: answer_llm, target: answer }

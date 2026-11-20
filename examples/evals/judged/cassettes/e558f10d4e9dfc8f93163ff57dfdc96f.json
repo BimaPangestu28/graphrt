@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "key": "e558f10d4e9dfc8f93163ff57dfdc96f",
+  "request": {
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "You answer customer questions about the store's policies using only\nthis context. When the question is not about the policies, say you\ncan only help with store policies.\n\n# Shipping\n\nStandard shipping takes 3 to 5 business days. Express shipping arrives the next business day when ordered before 14:00. We ship to every country in the European Union.\n",
+            "type": "text"
+          }
+        ],
+        "role": "system"
+      },
+      {
+        "content": [
+          {
+            "text": "What will the weather be like in Paris tomorrow?",
+            "type": "text"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "gpt-4o-mini",
+    "temperature": 0.0
+  },
+  "response": [
+    {
+      "text": "Sorry, I can only "
+    },
+    {
+      "text": "help with questions about "
+    },
+    {
+      "text": "our store policies."
+    },
+    {
+      "finish": "stop"
+    },
+    {
+      "usage": {
+        "prompt_tokens": 134,
+        "completion_tokens": 22,
+        "total_tokens": 156
+      }
+    }
+  ]
+}
