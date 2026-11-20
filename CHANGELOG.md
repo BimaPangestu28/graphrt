@@ -9,9 +9,58 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 Telemetry and run data for evaluation: spans follow the OpenTelemetry GenAI
 semantic conventions, content capture follows the standard variable, and runs
-keep the context and data an evaluator needs.
+keep the context and data an evaluator needs. Online evaluation scores sampled
+production runs in `serve`, people add feedback, and scores reach any OTLP
+backend as `gen_ai.evaluation.result` events (and Langfuse through its scores
+API); vendor presets configure six backends from their own variables.
 
 ### Added
+- Online evaluation: `graphrt serve --evaluators <file>` (cargo feature
+  `online-eval`, on by default, not in the IoT build) scores a deterministic
+  sample of finished runs with the assertions of `graphrt eval` that need no
+  expected answer (`judge` workflows, `regex`, `contains*`, `starts-with`,
+  `is-json`, `json-schema`, `latency`, `tokens`, `trajectory:*`), validated at
+  startup. Evaluators filter on workflow, run status, tags and metadata;
+  sampling hashes the run id with the evaluator name. Runs are queued after
+  their response to a bounded pool (`concurrency`, `queue`); a full queue
+  drops and counts (`graphrt.eval.dropped`). Without `--evaluators` nothing
+  runs and runs pay only an empty `Option` check (serve throughput within
+  noise). Scores, online evaluation, presets and the uploader add about
+  98 KiB to the default min-size binary and nothing to the IoT build. `graphrt_eval::online` holds
+  the config, sampling and evaluation; `examples/evals/online` replays the
+  reference judges offline. See docs/evals.md#online-evaluation.
+- Run scores (cargo feature `scores`): `GET /v1/runs/{id}/scores`, and
+  `POST /v1/runs/{id}/feedback` for human feedback `{name, value, comment?,
+  user?}` (number, boolean or text values). Scores are stored next to the run
+  (`runs/<id>/scores.json`, or in memory, bounded by `--max-runs` and the TTL)
+  with deterministic ids, so a repeated score replaces the earlier one. With
+  `--verify-jwt`, an end user's token may give feedback on the user's own runs
+  only, as that user.
+- `evaluate {name}` spans: every score (online, human, and each assertion of
+  `graphrt eval`) becomes a span in the evaluated run's trace, under its root
+  span, with a `gen_ai.evaluation.result` event (`gen_ai.evaluation.name`,
+  `.score.value`, `.score.label`, `.explanation`), plus a `graphrt.eval.score`
+  histogram by evaluator. Names live in `graphrt_otel::semconv`.
+- Vendor presets: `--otel-preset <name>` (or `GRAPHRT_OTEL_PRESET`) for
+  `langfuse`, `langsmith`, `braintrust`, `opik`, `phoenix` and `mlflow` fills
+  the traces endpoint, auth and routing headers (Langfuse Basic auth and
+  `x-langfuse-ingestion-version: 4`, `x-bt-parent`, `x-mlflow-experiment-id`...)
+  and resource attributes (`opik.project_name`, `openinference.project.name`)
+  from each vendor's own environment variables, and turns the metrics push off.
+  Small static tables in `graphrt_otel::preset`.
+- `graphrt serve --langfuse-scores` (cargo feature `langfuse`) uploads online
+  and human scores to Langfuse's `/api/public/scores` with the run's trace and
+  root observation ids and the score's deterministic id, through the egress
+  policy, with retries.
+- `graphrt eval --otel` exports one trace per test run with
+  `langfuse.experiment.*` attributes (a Langfuse experiment over OTLP; with
+  the Braintrust preset and `BRAINTRUST_PARENT=experiment_id:<id>`, a
+  Braintrust experiment) and an `evaluate` span per assertion. It used to
+  ignore `--otel`.
+- `graphrt-otel`: `EventTracer::with_span_attributes`, `with_root_attributes`
+  and `with_root_span_id`; `TraceId::from_hex` / `SpanId::from_hex`;
+  `OtelConfig::export_metrics` and `preset`. `graphrt-eval`:
+  `EngineTarget::engine` and `env`.
 - `graphrt serve --verify-jwt INPUT` (cargo feature `jwt`, on by default)
   verifies the token of a header-mapped input as a JWT: `ES256` / `RS256` keys
   from a JWKS (`--jwt-jwks-url`, refreshed in the background and on unknown

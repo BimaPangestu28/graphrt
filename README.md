@@ -270,6 +270,14 @@ The same harness is a library ([`graphrt-eval`](crates/graphrt-eval)) for
 `cargo test`. See [docs/evals.md](docs/evals.md) and the offline
 [examples](examples/evals).
 
+In production, `graphrt serve --evaluators evaluators.yaml` scores a sample of
+finished runs with the same judges and checks in a bounded background pool,
+`POST /v1/runs/{id}/feedback` records human feedback, and every score is a
+`gen_ai.evaluation.result` span event in the run's trace. `--otel-preset
+langfuse` (or `langsmith`, `braintrust`, `opik`, `phoenix`, `mlflow`) sends the
+traces to a vendor configured from its own environment variables, and
+`--langfuse-scores` uploads the scores.
+
 ## Plugins: write a node in 20 lines
 
 Add node kinds (and agent tools) in Python, TypeScript/JavaScript, Rust or

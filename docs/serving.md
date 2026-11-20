@@ -351,7 +351,8 @@ user's token, for the user's **own** runs only: the run's `user_id` must be the
 token's `sub` (runs started with a user token have it; runs started with the
 API key have no owner and refuse user tokens with `403`), and the score's
 `user` is the verified `sub`, whatever the body says. Reading scores stays an
-API-key endpoint. An invalid token is `401`.
+API-key endpoint. An invalid token is `401`, and feedback with a user token counts
+against that user's `--user-rate-limit` like a run start.
 
 With [OpenTelemetry](observability.md) on, every score (online or human) also
 becomes an `evaluate {name}` span under the run's root span in the run's trace,

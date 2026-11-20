@@ -636,13 +636,17 @@ evaluators:
   evaluators sample independently.
 - **When.** After a run of a matching workflow ends (succeeded, failed or
   aborted; paused runs wait until they finish), the matching evaluators that
-  sample it are queued as one job. A dispatcher feeds at most `concurrency`
-  jobs at a time from a queue of `queue` jobs; a job that finds the queue full
+  sample it are queued as one job. One background task runs at most
+  `concurrency` jobs at a time (interleaved: they wait on models and judge
+  runs) from a queue of `queue` jobs; a job that finds the queue full
   is dropped, counted in the `graphrt.eval.dropped` metric, and logged (first
   drop, then every thousandth). The run's response never waits: the job is
   queued after the run is recorded and its callers are answered.
 - **Cost.** Without `--evaluators` there is no task, queue or check: a run
-  pays a test of an empty `Option`. With it, a run of a workflow no evaluator
+  pays a test of an empty `Option` (measured against the previous release:
+  `serve` sync throughput on the hello workflow within noise, medians -1.4%
+  to -3% with ±10% spread between rounds). Scoring every run with two
+  deterministic evaluators cost about 10% throughput in the same test. With it, a run of a workflow no evaluator
   covers pays the same; a covered one pays a hash per evaluator when it ends.
   The feature (`online-eval`, on by default) is not in the IoT build
   (`--no-default-features --features llm,http,wasm,serve`).
