@@ -1,58 +1,80 @@
 //! `graphrt eval`: run a workflow against the test cases of an eval file.
 //!
 //! The workflow is loaded and compiled once; every test runs in-process on the
-//! same engine (and host services), up to `-j` at a time. Results stream to
-//! stderr as tests finish, followed by the summary and the gate verdict.
+//! same engine (and host services), up to `-j` at a time. Judge workflows
+//! (`type: judge`) are compiled once each on the same services and run inside
+//! their test, so they share the `-j` limit. Results stream to stderr as tests
+//! finish, followed by the summary and the gate verdict.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use graphrt_core::Engine;
+use graphrt_core::engine::Limits;
 use graphrt_core::node::TokioClock;
+use graphrt_core::{Engine, Registry, Services};
 use graphrt_eval::report::{format_result_line, format_summary};
-use graphrt_eval::{EngineTarget, EvalError, EvalReport, EvalSuite, Runner, RunnerOptions};
+use graphrt_eval::{
+    AssertionRegistry, EngineTarget, EvalError, EvalReport, EvalSuite, JudgeLoader, Runner, RunnerOptions, Target,
+};
 
 use crate::args::EvalArgs;
 use crate::error::{CliError, EXIT_OK};
 use crate::extensions::Extensions;
-use crate::setup;
+use crate::setup::{self, ServiceOptions};
 
 /// Execute `graphrt eval`. Returns the process exit code.
 pub async fn eval(args: EvalArgs) -> Result<u8, CliError> {
     if args.pass_rate.is_some_and(|r| !(0.0..=1.0).contains(&r)) {
         return Err(CliError::usage("`--pass-rate` must be between 0 and 1"));
     }
+    if let Some(raw) = &args.judge_model {
+        setup::parse_model_override(raw)?;
+    }
     let suite = EvalSuite::load(&args.file).map_err(eval_error)?;
+    // Read the baseline first: a wrong path should not cost a whole evaluation.
+    let baseline = args.baseline.as_deref().map(EvalReport::load).transpose().map_err(eval_error)?;
     if args.services.otel || args.services.otel_stdout {
         eprintln!("warning: `graphrt eval` does not export OpenTelemetry traces yet; --otel is ignored");
     }
     // `_extensions` keeps plugin hosts (child processes) alive while tests run.
-    let (target, _extensions) = build_target(&suite, &args).await?;
+    let (target, judges, _extensions) = build_target(&suite, &args).await?;
+    let mut registry = AssertionRegistry::with_builtins();
+    let base = args.file.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+    graphrt_eval::judge::register(&mut registry, base, judges);
     let mut options = RunnerOptions::default();
     options.concurrency = args.concurrency.max(1);
-    options.repeat = args.repeat.max(1);
+    options.trials = args.trials.max(1);
     options.filters.clone_from(&args.filter);
     options.pass_rate = args.pass_rate;
     options.keep_events = args.include_events;
     eprintln!(
-        "graphrt eval: {} ({} test case(s), workflow {}, -j {})",
+        "graphrt eval: {} ({} test case(s){}, workflow {}, -j {})",
         args.file.display(),
         suite.cases.len(),
+        if options.trials > 1 { format!(" x {} trials", options.trials) } else { String::new() },
         suite.workflow.display(),
         options.concurrency
     );
-    let report = Runner::new(options)
+    let mut report = Runner::new(options)
+        .with_registry(registry)
         .run(&suite, &target, |result| eprintln!("{}", format_result_line(result)))
         .await
         .map_err(eval_error)?;
+    if let (Some(baseline), Some(path)) = (&baseline, &args.baseline) {
+        report.apply_baseline(baseline, &path.display().to_string(), &suite.gate.baseline);
+    }
     eprint!("{}", format_summary(&report));
     write_outputs(&report, &args)?;
     Ok(if report.gate_passed() { EXIT_OK } else { args.fail_exit_code })
 }
 
-/// Load the workflow once and build the engine every test runs on. The eval
-/// file supplies providers / knowledge / MCP / plugins unless flags override them.
-async fn build_target(suite: &EvalSuite, args: &EvalArgs) -> Result<(EngineTarget, Extensions), CliError> {
+/// Load the workflow once and build the engine every test runs on, plus the
+/// loader judges compile with. The eval file supplies providers / knowledge /
+/// MCP / plugins unless flags override them.
+async fn build_target(
+    suite: &EvalSuite,
+    args: &EvalArgs,
+) -> Result<(EngineTarget, WorkflowJudges, Extensions), CliError> {
     let mut options = crate::run::service_options(&args.services)?;
     if args.services.providers.is_none() && suite.providers.is_some() {
         options.providers.clone_from(&suite.providers);
@@ -64,6 +86,10 @@ async fn build_target(suite: &EvalSuite, args: &EvalArgs) -> Result<(EngineTarge
         options.mcp_config.clone_from(&suite.mcp);
     }
     options.plugins.dirs.extend(suite.plugins.iter().cloned());
+    // A calibration suite evaluates a judge: `--judge-model` applies to it too.
+    if suite.calibration.is_some() && args.judge_model.is_some() {
+        options.model_override.clone_from(&args.judge_model);
+    }
     let extensions = Extensions::load(&options.plugins)?;
     let graph = setup::load_graph_with(&suite.workflow, options.model_override.as_deref(), &extensions.registry)?;
     for warning in graph.warnings() {
@@ -71,12 +97,46 @@ async fn build_target(suite: &EvalSuite, args: &EvalArgs) -> Result<(EngineTarge
     }
     let services = setup::services(&options, extensions.tools.clone()).await?;
     let env = setup::workflow_env(&graph, &options);
+    let limits = setup::limits(args.services.timeout_ms, args.services.max_steps);
     let engine = Engine::new(Arc::clone(&graph))
-        .with_services(services)
+        .with_services(services.clone())
         .with_clock(Arc::new(TokioClock))
-        .with_limits(setup::limits(args.services.timeout_ms, args.services.max_steps));
+        .with_limits(limits.clone());
     let target = EngineTarget::new(engine).with_env(env).with_path(suite.workflow.display().to_string());
-    Ok((target, extensions))
+    let judges = WorkflowJudges {
+        registry: extensions.registry.clone(),
+        services,
+        model: args.judge_model.clone(),
+        limits,
+        options,
+    };
+    Ok((target, judges, extensions))
+}
+
+/// Compiles judge workflows on the suite's services. `--judge-model` (never
+/// `--model`) overrides their models.
+struct WorkflowJudges {
+    registry: Registry,
+    services: Services,
+    model: Option<String>,
+    limits: Limits,
+    options: ServiceOptions,
+}
+
+impl JudgeLoader for WorkflowJudges {
+    fn load(&self, path: &Path) -> Result<Arc<dyn Target>, EvalError> {
+        let graph = setup::load_graph_with(path, self.model.as_deref(), &self.registry)
+            .map_err(|e| EvalError::Invalid(format!("judge workflow {}: {}", path.display(), e.message.trim_end())))?;
+        for warning in graph.warnings() {
+            eprintln!("warning: judge {}: {warning}", path.display());
+        }
+        let env = setup::workflow_env(&graph, &self.options);
+        let engine = Engine::new(graph)
+            .with_services(self.services.clone())
+            .with_clock(Arc::new(TokioClock))
+            .with_limits(self.limits.clone());
+        Ok(Arc::new(EngineTarget::new(engine).with_env(env)))
+    }
 }
 
 fn write_outputs(report: &EvalReport, args: &EvalArgs) -> Result<(), CliError> {
