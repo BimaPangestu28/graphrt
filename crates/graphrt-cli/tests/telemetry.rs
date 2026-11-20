@@ -212,6 +212,30 @@ fn capture_one(listener: TcpListener) -> mpsc::Receiver<(String, Vec<u8>)> {
     rx
 }
 
+/// `graphrt run` exits right after its workflow; the day's report must still be
+/// delivered rather than cut off with the process (and the day marked as sent).
+#[test]
+fn run_delivers_the_daily_report_before_exiting() {
+    let config = ConfigDir::new("run-report");
+    std::fs::create_dir_all(&config.0).unwrap();
+    let pending = serde_json::json!({ "enabled": true, "days": { "2000-01-02": { "runs": 4, "serve_requests": 0 } } });
+    std::fs::write(config.state_file(), pending.to_string()).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/v1/report", listener.local_addr().unwrap());
+    let received = capture_one(listener);
+
+    let out = run(graphrt(&config, Some(&endpoint)).args(["run"]).arg(hello()).args(["-i", "name=Ada"]));
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // The process has exited: the request must already have reached the collector.
+    let (head, body) = received.recv_timeout(Duration::from_secs(2)).expect("report sent before exit");
+    assert!(head.starts_with("POST /v1/report HTTP/1.1"), "{head}");
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["days"], serde_json::json!([{ "date": "2000-01-02", "runs": 4, "serve_requests": 0 }]));
+    // This run is counted for today, and the reported day is gone from the state.
+    let state = config.state();
+    assert!(state["days"].get("2000-01-02").is_none(), "{state}");
+}
+
 #[test]
 fn serve_sends_one_daily_report() {
     let config = ConfigDir::new("serve");

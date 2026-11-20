@@ -13,7 +13,7 @@ use super::state::DayCounts;
 /// Payload schema version.
 pub const SCHEMA: u32 = 1;
 /// Total time allowed for one report request.
-const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 /// Placeholder shown by `graphrt telemetry status` before an id exists.
 pub const PENDING_INSTALL_ID: &str = "<created when telemetry is enabled>";
 

@@ -11,7 +11,8 @@
 //! process ends (hourly for `serve`). At most once a day a background thread
 //! sends one [`report::Report`] with the complete days: it never delays a run,
 //! and a report that cannot be sent in 5 seconds is dropped (its counts are
-//! kept for the next day).
+//! kept for the next day). A process that finishes while that report is in
+//! flight waits for it (at most the send timeout) so it is not cut off.
 //!
 //! Only the binary ([`Session`] in `main`) persists or sends anything: library
 //! users (and the FFI library, which does not link this crate) only ever touch
@@ -22,6 +23,7 @@ pub mod state;
 
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::args::{Command, TelemetryArgs, TelemetryCommand};
@@ -57,6 +59,8 @@ const CI_VARS: &[&str] = &[
 ];
 /// How often a long-running process (`serve`) saves counts and checks the daily report.
 const BACKGROUND_INTERVAL: Duration = Duration::from_secs(60 * 60);
+/// Slack on top of the send timeout when a finishing process waits for the report.
+const EXIT_GRACE: Duration = Duration::from_millis(500);
 
 static RUNS: AtomicU64 = AtomicU64::new(0);
 static SERVE_REQUESTS: AtomicU64 = AtomicU64::new(0);
@@ -192,6 +196,9 @@ pub fn tracks_usage(command: &Command) -> bool {
 #[derive(Debug)]
 pub struct Session {
     environment: Option<Environment>,
+    /// Signalled when the background thread finished its first round (counts
+    /// saved, daily report sent or not needed).
+    first_round: Option<mpsc::Receiver<()>>,
 }
 
 impl Session {
@@ -199,23 +206,34 @@ impl Session {
     /// environment lookups happen on the calling thread.
     pub fn begin(command: &Command) -> Self {
         if !tracks_usage(command) {
-            return Self { environment: None };
+            return Self { environment: None, first_round: None };
         }
         let environment = Environment::current();
         if environment.blocked().is_some() {
-            return Self { environment: None };
+            return Self { environment: None, first_round: None };
         }
         let background = environment.clone();
+        let (done, first_round) = mpsc::channel();
         let spawned = std::thread::Builder::new().name("graphrt-telemetry".into()).spawn(move || {
-            run_background(&background);
+            run_background(&background, done);
         });
         // No thread, no report: telemetry must never get in the way.
-        drop(spawned);
-        Self { environment: Some(environment) }
+        let first_round = spawned.is_ok().then_some(first_round);
+        Self { environment: Some(environment), first_round }
     }
 
     /// Save this process's counts (no network).
+    ///
+    /// A short command such as `graphrt run` usually ends while the background
+    /// thread is still sending the day's report; exiting then would kill the
+    /// request after the day was already claimed, losing the report. So this
+    /// first waits for the thread's first round, which sends at most once a day
+    /// and gives up after [`report::SEND_TIMEOUT`]. On every other run the round
+    /// is a state-file read and the wait is negligible.
     pub fn end(self) {
+        if let Some(first_round) = &self.first_round {
+            let _finished_or_timed_out = first_round.recv_timeout(report::SEND_TIMEOUT + EXIT_GRACE);
+        }
         if let Some(environment) = &self.environment {
             save_counts(environment);
         }
@@ -223,10 +241,16 @@ impl Session {
 }
 
 /// Save counts and send the daily report, then repeat hourly while the process lives.
-fn run_background(environment: &Environment) {
+fn run_background(environment: &Environment, first_round: mpsc::Sender<()>) {
+    let mut first_round = Some(first_round);
     loop {
         save_counts(environment);
-        if !send_daily_report(environment) {
+        let still_on = send_daily_report(environment);
+        if let Some(done) = first_round.take() {
+            // The process may already be gone; nobody listening is fine.
+            let _ = done.send(());
+        }
+        if !still_on {
             return;
         }
         std::thread::sleep(BACKGROUND_INTERVAL);
