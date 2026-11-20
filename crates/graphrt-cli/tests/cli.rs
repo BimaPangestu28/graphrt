@@ -47,7 +47,7 @@ fn validate_all_examples() {
         names.push("http.yaml");
     }
     if cfg!(feature = "llm") {
-        names.extend(["chatbot.yaml", "research-agent.yaml"]);
+        names.extend(["chatbot.yaml", "research-agent.yaml", "supabase-chatbot/agent.yaml"]);
     }
     for name in names {
         let path = example(name);
@@ -267,4 +267,36 @@ fn model_override_is_validated() {
     let out = run(&["run", example("chatbot.yaml").to_str().expect("utf8"), "--model", "no-slash"]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(stderr(&out).contains("provider/name"), "{}", stderr(&out));
+}
+
+/// The chatbot example's start inputs: a bounded message and the JWT as a secret
+/// (required by `--input-header` / `--verify-jwt`).
+#[cfg(feature = "llm")]
+#[test]
+fn supabase_chatbot_declares_its_contract() {
+    let path = example("supabase-chatbot/agent.yaml");
+    let out = run(&["inspect", path.to_str().expect("utf8")]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    for expected in ["message", "paragraph", "session_id", "user_jwt", "secret", "status: valid"] {
+        assert!(text.contains(expected), "missing `{expected}` in:\n{text}");
+    }
+}
+
+/// User tokens only open run starts, so a public `--verify-jwt` server must have
+/// an API key closing everything else.
+#[cfg(feature = "jwt")]
+#[test]
+fn verify_jwt_on_a_public_address_needs_an_api_key() {
+    let path = example("supabase-chatbot/agent.yaml");
+    let out = bin()
+        .args(["serve", path.to_str().expect("utf8"), "--addr", "0.0.0.0:0", "--no-default-plugins"])
+        .args(["--input-header", "user_jwt=X-User-Authorization", "--verify-jwt", "user_jwt"])
+        .args(["--jwt-secret-env", "TEST_JWT_SECRET"])
+        .env("TEST_JWT_SECRET", "a-secret-for-the-startup-check-only")
+        .env_remove("GRAPHRT_API_KEY")
+        .output()
+        .expect("spawn graphrt");
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("needs $GRAPHRT_API_KEY"), "{}", stderr(&out));
 }

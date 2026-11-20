@@ -1526,6 +1526,7 @@ name = "graphrt-cli"
 version = "0.3.2"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "clap",
  "flate2",
  "futures",
@@ -1546,11 +1547,13 @@ dependencies = [
  "jsonschema",
  "mimalloc",
  "reqwest",
+ "ring",
  "rustls",
  "serde",
  "serde-saphyr",
  "serde_json",
  "sha2 0.11.0",
+ "thiserror 2.0.21",
  "tokio",
  "tower",
 ]

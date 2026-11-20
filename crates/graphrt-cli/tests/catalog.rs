@@ -43,8 +43,10 @@ fn lazily_built_descriptors_describe_the_kind_they_are_registered_under() {
 fn example_node_configs_match_their_schemas() {
     let registry = setup::builtin_registry();
     let mut checked = 0;
-    for entry in std::fs::read_dir(examples()).expect("examples dir") {
-        let path = entry.expect("entry").path();
+    let top_level = std::fs::read_dir(examples()).expect("examples dir").map(|entry| entry.expect("entry").path());
+    // Examples with their own folder.
+    let nested = [examples().join("supabase-chatbot/agent.yaml")];
+    for path in top_level.chain(nested) {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
         if !matches!(ext, "yaml" | "yml") {
             continue;

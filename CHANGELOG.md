@@ -21,6 +21,21 @@ releases may contain breaking changes; they are called out under **Changed**.
   `graphrt_plugin_sdk::ToolCall` has a new `context` field.
 
 ### Added
+- `graphrt serve --verify-jwt INPUT` (cargo feature `jwt`, on by default)
+  verifies the token of a header-mapped input as a JWT: `ES256` / `RS256` keys
+  from a JWKS (`--jwt-jwks-url`, refreshed in the background and on unknown
+  `kid`) and/or an `HS256` secret (`--jwt-secret-env`), with `exp`, `nbf`,
+  `--jwt-issuer` and `--jwt-audience` checks and a required `sub`. A valid
+  token may start runs (`POST /v1/workflows/{name}/runs` only, of workflows
+  that declare the input; others are `403`) without the API key and sets
+  `sys.user_id`; an invalid one is `401`. `--user-rate-limit N`
+  allows N runs per minute per `sub` (`429` with `Retry-After`). The server
+  refuses `--verify-jwt` on a non-loopback address without an API key. No new
+  crates; about 33 KiB of binary.
+- `examples/supabase-chatbot`: a multi-user chatbot backend for apps signed in
+  with Supabase Auth: agent with the supabase plugin in `user_rpc` mode and
+  `tool_context`, memory from `sys.history`, a sample schema with RLS and an
+  isolation test, a distroless container and Fly.io / Cloud Run / VPS notes.
 - `graphrt serve --input-header INPUT=HEADER` maps a request header (leading
   `Bearer ` stripped) to a secret start input of new, streamed and resumed
   runs, so an app can send a user's JWT next to the serve API key. The value is
