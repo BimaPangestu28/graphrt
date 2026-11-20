@@ -216,7 +216,12 @@ can lag up to 10 minutes). The run span is the trace's root observation and
 carries `langfuse.observation.input` / `output`, which observation-level
 evaluators ("Is Root Observation") read. Session, user, tags and metadata are
 on every observation. Langfuse bills per trace, observation and score: a run
-with N nodes and M tool calls costs about 1 + N + M units.
+with N nodes and M tool calls costs about 1 + N + M units. Langfuse does not
+read scores from OTLP: `graphrt serve --langfuse-scores` uploads online and
+human scores through its scores API (see
+[serving.md](serving.md#uploading-scores-to-langfuse)), and `graphrt eval
+--otel-preset langfuse` sends each test as an experiment item
+([evals.md](evals.md#running)).
 
 **Arize Phoenix** (self-hosted, one container)
 

@@ -652,7 +652,8 @@ evaluators:
   `comment`, the assertion type, and the judge's workflow, fingerprint and
   verdict. With OpenTelemetry each becomes an `evaluate {name}` span in the
   run's trace with a `gen_ai.evaluation.result` event and feeds the
-  `graphrt.eval.score` histogram. Judge runs themselves are not traced or stored as runs.
+  `graphrt.eval.score` histogram; with `--langfuse-scores` it is also uploaded
+  to Langfuse. Judge runs themselves are not traced or stored as runs.
 
 A resumed run is evaluated on the events of its last execution (the part after
 the pause). [`examples/evals/online`](../examples/evals/online/evaluators.yaml)

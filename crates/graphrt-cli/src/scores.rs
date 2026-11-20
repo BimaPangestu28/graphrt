@@ -263,6 +263,8 @@ pub type Timing = Option<(u64, u64)>;
 pub struct ScoreSinks {
     #[cfg(feature = "otel")]
     pub telemetry: Option<Arc<crate::otel::Telemetry>>,
+    #[cfg(feature = "langfuse")]
+    pub langfuse: Option<Arc<crate::langfuse::LangfuseUploader>>,
 }
 
 impl ScoreSinks {
@@ -272,6 +274,10 @@ impl ScoreSinks {
         if let Some(telemetry) = &self.telemetry {
             let ids = (record.trace_id.as_deref(), record.span_id.as_deref());
             telemetry.record_evaluation(ids, &record.workflow, &evaluation_result(score), timing);
+        }
+        #[cfg(feature = "langfuse")]
+        if let Some(langfuse) = &self.langfuse {
+            langfuse.submit(record, score);
         }
         #[cfg(not(feature = "otel"))]
         let _ = (record, score, timing);

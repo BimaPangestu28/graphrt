@@ -23,6 +23,8 @@ pub mod inspect;
 pub mod kb;
 #[cfg(all(feature = "serve", feature = "rag"))]
 pub mod knowledge_api;
+#[cfg(feature = "langfuse")]
+pub mod langfuse;
 #[cfg(feature = "online-eval")]
 pub mod online_eval;
 pub mod otel;
@@ -97,6 +99,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     }
     if cfg!(feature = "online-eval") {
         features.push("online-eval");
+    }
+    if cfg!(feature = "langfuse") {
+        features.push("langfuse");
     }
     if cfg!(feature = "telemetry") {
         features.push("telemetry");

@@ -585,6 +585,13 @@ pub struct ServeArgs {
     #[cfg(feature = "online-eval")]
     #[arg(long, value_name = "FILE")]
     pub evaluators: Option<PathBuf>,
+    /// Upload every online and human score to Langfuse (`POST /api/public/scores`, with
+    /// the run's trace id and a deterministic score id). Credentials and URL come from
+    /// `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL`; use with
+    /// `--otel-preset langfuse` so runs have trace ids.
+    #[cfg(feature = "langfuse")]
+    #[arg(long)]
+    pub langfuse_scores: bool,
     #[cfg(feature = "jwt")]
     #[command(flatten)]
     pub user_auth: UserAuthArgs,

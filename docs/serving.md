@@ -361,6 +361,34 @@ with a `gen_ai.evaluation.result` event (`gen_ai.evaluation.name`,
 histogram. This needs the run's `trace_id` / `span_id`, which runs only have
 when they were traced.
 
+### Uploading scores to Langfuse
+
+Langfuse does not read scores from OTLP, so `--langfuse-scores` (cargo feature
+`langfuse`, on by default) also POSTs every stored score, online and human,
+to `<LANGFUSE_BASE_URL>/api/public/scores`:
+
+```sh
+export LANGFUSE_PUBLIC_KEY=pk-lf-... LANGFUSE_SECRET_KEY=sk-lf-...   # LANGFUSE_BASE_URL defaults to the EU cloud
+graphrt serve flows/ --otel-preset langfuse --evaluators evaluators.yaml --langfuse-scores
+```
+
+| Score | Langfuse |
+| --- | --- |
+| `id` | `id`: deterministic, so a retried or repeated upload overwrites instead of duplicating |
+| the run's `trace_id`, `span_id` | `traceId`, `observationId` (the root observation, which v4 observation evaluators read) |
+| number / boolean / text `value` | `NUMERIC` / `BOOLEAN` (0 or 1) / `CATEGORICAL` |
+| `comment` | `comment` (the evaluator's reason, or the person's comment) |
+| `source`, `label`, `type`, `user`, run id, workflow | `metadata` |
+
+Credentials and URL are those of the [`langfuse` preset](observability.md#vendor-presets)
+(environment or `--env-file`, never flags). Uploads go through the egress
+policy: a self-hosted Langfuse on a private or loopback address needs
+`--allow-private-network`. They run on one background task from a queue of
+1024; a full queue drops the upload, and `408` / `429` / `5xx` / network
+errors are retried four times with backoff. Runs without a trace id (served
+without OpenTelemetry) are not uploaded, so pair it with `--otel-preset langfuse`.
+A score may arrive before its trace; Langfuse links them when the trace does.
+
 ## Resuming
 
 `POST /v1/runs/{id}/resume`

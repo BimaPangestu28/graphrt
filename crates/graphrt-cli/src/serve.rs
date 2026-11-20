@@ -105,6 +105,9 @@ pub struct AppState {
     /// Online evaluation pool (`--evaluators`).
     #[cfg(feature = "online-eval")]
     online: Option<Arc<crate::online_eval::OnlineEval>>,
+    /// Score uploads to Langfuse (`--langfuse-scores`).
+    #[cfg(feature = "langfuse")]
+    langfuse: Option<Arc<crate::langfuse::LangfuseUploader>>,
 }
 
 /// The verified end user of a request (`sub` of its JWT), set by `--verify-jwt`.
@@ -137,7 +140,17 @@ impl AppState {
             services: None,
             #[cfg(feature = "online-eval")]
             online: None,
+            #[cfg(feature = "langfuse")]
+            langfuse: None,
         }
+    }
+
+    /// Upload every stored score to Langfuse (`--langfuse-scores`). Call before
+    /// [`AppState::with_evaluators`], whose pool reports to the sinks set then.
+    #[cfg(feature = "langfuse")]
+    pub fn with_langfuse(mut self, uploader: Option<crate::langfuse::LangfuseUploader>) -> Self {
+        self.langfuse = uploader.map(Arc::new);
+        self
     }
 
     /// Score a sample of finished runs with the evaluators of this config
@@ -331,6 +344,8 @@ impl AppState {
         crate::scores::ScoreSinks {
             #[cfg(feature = "otel")]
             telemetry: self.telemetry.clone(),
+            #[cfg(feature = "langfuse")]
+            langfuse: self.langfuse.clone(),
         }
     }
 
@@ -556,6 +571,20 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         .with_header_inputs(&args.input_header)?;
     #[cfg(feature = "jwt")]
     let state = state.with_user_auth(user_auth);
+    #[cfg(feature = "langfuse")]
+    let state = if args.langfuse_scores {
+        let uploader = crate::langfuse::LangfuseUploader::start(&options.all_vars(), options.allow_private_network)?;
+        eprintln!("  scores uploaded to {}", uploader.url());
+        if telemetry.is_none() {
+            eprintln!(
+                "warning: --langfuse-scores without OpenTelemetry: runs have no trace id, so no score is uploaded \
+                 (add --otel-preset langfuse)"
+            );
+        }
+        state.with_langfuse(Some(uploader))
+    } else {
+        state
+    };
     #[cfg(feature = "online-eval")]
     let state = match &args.evaluators {
         Some(path) => state.with_evaluators(path, &options, judge_limits)?,

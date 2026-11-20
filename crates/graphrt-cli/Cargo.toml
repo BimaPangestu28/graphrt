@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "jwt", "telemetry", "eval", "scores", "online-eval"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "jwt", "telemetry", "eval", "scores", "online-eval", "langfuse"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -79,6 +79,9 @@ scores = ["serve"]
 # scored in a bounded background pool with the assertions of `graphrt eval`
 # (judge workflows included). Needs `eval`.
 online-eval = ["scores", "eval", "tokio/sync"]
+# Upload online and human scores to Langfuse (`serve --langfuse-scores`), through
+# the `http` egress policy, with the `langfuse` OTel preset's credentials.
+langfuse = ["scores", "otel", "http", "tokio/sync"]
 # Opt-in anonymous usage telemetry of the CLI binary (`graphrt telemetry`). Off
 # by default and inert unless an endpoint is configured; see docs/telemetry.md.
 telemetry = ["http", "dep:getrandom"]
