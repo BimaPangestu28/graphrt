@@ -84,7 +84,14 @@ pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Contr
 
     // Secrets known up front; nodes add the ones they produce (see `Frame::commit`).
     let secret_values = SecretSet::new();
-    let initial = env.iter().map(|(_, v)| v).chain(secrets.iter().map(|(_, v)| v)).chain(input.inputs.values());
+    // Includes secret-typed conversation variables, so their plaintext is scrubbed
+    // from node error messages like any other secret's.
+    let initial = env
+        .iter()
+        .map(|(_, v)| v)
+        .chain(secrets.iter().map(|(_, v)| v))
+        .chain(input.inputs.values())
+        .chain(conversation.iter().map(|(_, v)| v));
     initial.for_each(|value| secret_values.observe(value));
 
     let shared = Arc::new(RunShared {
