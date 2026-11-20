@@ -27,6 +27,8 @@ pub mod plugin;
 #[cfg(any(feature = "plugins", feature = "wasm"))]
 pub mod plugin_catalog;
 pub mod run;
+#[cfg(feature = "scores")]
+pub mod scores;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod setup;
@@ -85,6 +87,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     }
     if cfg!(feature = "serve") {
         features.push("serve");
+    }
+    if cfg!(feature = "scores") {
+        features.push("scores");
     }
     if cfg!(feature = "telemetry") {
         features.push("telemetry");

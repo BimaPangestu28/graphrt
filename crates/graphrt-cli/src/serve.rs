@@ -13,6 +13,8 @@
 //! | DELETE | `/v1/runs/{run_id}` | – | `204`; `409` while the run executes |
 //! | GET | `/v1/nodes` | – | node catalog (descriptors with config JSON Schemas) |
 //! | POST | `/v1/validate` | workflow document, or `{document: "<yaml/json text>"}` | `{valid, errors, warnings}` |
+//! | GET | `/v1/runs/{run_id}/scores` | – | evaluation scores (feature `scores`, see [`crate::scores`]) |
+//! | POST | `/v1/runs/{run_id}/feedback` | `{name, value, comment?, user?}` | `201` + the stored `human` score |
 //! | GET | `/v1/hooks` | – | webhooks configured with `--webhooks` |
 //! | POST | `/v1/hooks/{hook}` | any JSON (signature-checked when configured) | `202` + run id; see [`crate::webhooks`] |
 //!
@@ -76,6 +78,9 @@ pub struct AppState {
     /// Cap on `runs` (executing runs); `0` = unlimited.
     max_active_runs: usize,
     store: Arc<dyn RunStore>,
+    /// Evaluation scores, kept by the same backend as `store`.
+    #[cfg(feature = "scores")]
+    scores: Arc<dyn crate::scores::ScoreStore>,
     api_key: Option<String>,
     next_id: AtomicU64,
     /// Node kinds (built-in and plugins) used for `/v1/nodes` and `/v1/validate`.
@@ -103,11 +108,14 @@ pub struct AuthenticatedUser(pub String);
 impl AppState {
     /// Create state from compiled engines.
     pub fn new(workflows: IndexMap<String, ServedWorkflow>, api_key: Option<String>) -> Self {
+        let memory = Arc::new(MemoryStore::new());
         Self {
             workflows,
             runs: Mutex::new(HashMap::new()),
             max_active_runs: 0,
-            store: Arc::new(MemoryStore::new()),
+            store: memory.clone(),
+            #[cfg(feature = "scores")]
+            scores: memory,
             api_key,
             next_id: AtomicU64::new(1),
             extensions: Extensions::builtin(),
@@ -236,9 +244,33 @@ impl AppState {
         ))
     }
 
+    /// Only the run store: scores stay in the previous store, so prefer
+    /// [`AppState::with_stores`] when serving scores.
     pub fn with_store(mut self, store: Arc<dyn RunStore>) -> Self {
         self.store = store;
         self
+    }
+
+    /// Record runs, and their scores, in these stores.
+    pub fn with_stores(mut self, stores: crate::store::Stores) -> Self {
+        self.store = stores.runs;
+        #[cfg(feature = "scores")]
+        {
+            self.scores = stores.scores;
+        }
+        self
+    }
+
+    /// The score store.
+    #[cfg(feature = "scores")]
+    pub fn score_store(&self) -> &Arc<dyn crate::scores::ScoreStore> {
+        &self.scores
+    }
+
+    /// The OpenTelemetry export, when enabled.
+    #[cfg(all(feature = "otel", feature = "scores"))]
+    pub(crate) fn telemetry(&self) -> Option<&Arc<crate::otel::Telemetry>> {
+        self.telemetry.as_ref()
     }
 
     /// The run store.
@@ -392,6 +424,8 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     };
     #[cfg(not(feature = "rag"))]
     let _ = max_upload_bytes;
+    #[cfg(feature = "scores")]
+    let api = api.route("/v1/runs/{run_id}/scores", get(crate::scores::get_scores));
     let api = api
         .route("/v1/hooks", get(crate::webhooks::list_hooks))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -402,6 +436,13 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     // Webhook deliveries authenticate themselves (signature, else the bearer key).
     let hooks = Router::new().route("/v1/hooks/{hook}", post(crate::webhooks::receive));
     let counted = api.merge(start).merge(hooks);
+    // Feedback accepts a verified end-user JWT for the user's own runs (`--verify-jwt`).
+    #[cfg(feature = "scores")]
+    let counted = counted.merge(
+        Router::new()
+            .route("/v1/runs/{run_id}/feedback", post(crate::scores::post_feedback))
+            .layer(middleware::from_fn_with_state(state.clone(), authorize_user_or_key)),
+    );
     // Opt-in usage telemetry counts API requests (in memory); health checks are not counted.
     #[cfg(feature = "telemetry")]
     let counted = counted.layer(middleware::from_fn(crate::telemetry::count_requests));
@@ -430,7 +471,7 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let limits = setup::limits(args.services.timeout_ms, args.services.max_steps);
     let telemetry = crate::otel::Telemetry::from_args(&args.services, &options.all_vars())?;
     options.capture_content = crate::otel::captures_content(telemetry.as_ref());
-    let store = crate::store::open(args.store.as_ref(), args.max_runs)?;
+    let stores = crate::store::open_stores(args.store.as_ref(), args.max_runs)?;
     let webhooks = match &args.webhooks {
         Some(path) => crate::webhooks::Webhooks::load(path, &options.all_vars(), options.allow_private_network)?,
         None => crate::webhooks::Webhooks::default(),
@@ -439,7 +480,7 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let user_auth_line = user_auth.as_ref().map(crate::user_auth::UserAuth::describe);
     let state = build_state(&files, &options, limits, api_key.clone())
         .await?
-        .with_store(store)
+        .with_stores(stores)
         .with_telemetry(telemetry.clone())
         .with_store_inputs(args.store_inputs)
         .with_max_active_runs(args.max_active_runs)
@@ -594,6 +635,26 @@ async fn authorize_start(
     }
     #[cfg(not(feature = "jwt"))]
     let _ = name;
+    require_auth(State(state), request, next).await
+}
+
+/// Authorize a request a user may make about their own runs (feedback): a valid
+/// end-user JWT (with `--verify-jwt`, recorded as [`AuthenticatedUser`] for the
+/// handler's ownership check), else the API key.
+#[cfg(feature = "scores")]
+async fn authorize_user_or_key(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
+    #[cfg(feature = "jwt")]
+    if let Some(user_auth) = &state.user_auth {
+        let mut request = request;
+        return match user_auth.admit(request.headers()).await {
+            Err(refused) => refused,
+            Ok(crate::user_auth::Admission::User(user)) => {
+                request.extensions_mut().insert(AuthenticatedUser(user.subject));
+                next.run(request).await
+            }
+            Ok(crate::user_auth::Admission::NoToken) => require_auth(State(state), request, next).await,
+        };
+    }
     require_auth(State(state), request, next).await
 }
 
@@ -805,7 +866,7 @@ fn to_values(map: serde_json::Map<String, serde_json::Value>) -> IndexMap<String
     map.into_iter().map(|(k, v)| (k, Value::from_json(v))).collect()
 }
 
-fn store_error(e: &StoreError) -> Response {
+pub(crate) fn store_error(e: &StoreError) -> Response {
     let status = match e {
         StoreError::NotFound(_) => StatusCode::NOT_FOUND,
         StoreError::Conflict(_) => StatusCode::CONFLICT,

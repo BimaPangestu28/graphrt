@@ -198,7 +198,8 @@ What a request gets:
 
 A user token opens only `POST /v1/workflows/{name}/runs`, and only for
 workflows whose start node declares the verified input (others answer `403`,
-so internal workflows served next to the chat stay key-only). Every other endpoint
+so internal workflows served next to the chat stay key-only), plus
+[feedback](#scores-and-feedback) on the user's own runs. Every other endpoint
 (run lists, events, resume, abort, validate, knowledge) still needs the API key,
 so users cannot read each other's runs; for the same reason the server refuses
 to start with `--verify-jwt` on a non-loopback address unless the API key is
@@ -300,6 +301,65 @@ for a node paused inside an iteration or loop.
 
 A listener that falls behind the live tail receives a `lagged` event with the
 number of skipped events; the complete history stays available from the store.
+
+## Scores and feedback
+
+Each run collects evaluation **scores**: from [online evaluators](#online-evaluation)
+(`source: online`) and from people (`source: human`). They are kept next to
+the run (`runs/<id>/scores.json` in a `--store` directory, in memory
+otherwise), so `--max-runs`, `--store-ttl-days` and `DELETE /v1/runs/{id}`
+remove them with it. (Cargo feature `scores`, on by default; not in the IoT
+build.)
+
+| Request | Response |
+| --- | --- |
+| `GET /v1/runs/{id}/scores` | `{run_id, scores}`, oldest first; `404` for an unknown run |
+| `POST /v1/runs/{id}/feedback` | `201` and the stored score; `400` for an invalid body, `404` for an unknown run, `409` once a run has 256 scores |
+
+```sh
+curl -s localhost:8080/v1/runs/$RUN/feedback -H "authorization: Bearer $GRAPHRT_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"name": "thumbs", "value": true, "comment": "solved it", "user": "agent-7"}'
+```
+
+| Field | Rules |
+| --- | --- |
+| `name` | 1–200 bytes, no control characters: the score name |
+| `value` | A number (finite), a boolean, or a text of 1–500 characters (a category) |
+| `comment` | Optional, up to 4096 bytes |
+| `user` | Optional, 1–256 bytes: who gives the feedback |
+
+A stored score:
+
+```json
+{
+  "id": "5d1f0c3a9b8e7d6c5b4a39281706f5e4", "name": "thumbs", "value": true,
+  "comment": "solved it", "source": "human", "user": "agent-7", "created_ms": 1763640000000
+}
+```
+
+Online scores also carry `label` (`pass`, `fail` or `unknown`), `type` (the
+assertion type), `comment` (the evaluator's reason) and, for judges, `judge`
+(the judge workflow, its fingerprint and verdict). Ids are deterministic (a
+hash of the run, the source, the name and the user), so the same person rating
+the same run again **replaces** their score, and uploads to Langfuse are
+idempotent.
+
+**Auth.** Both endpoints take the API key. With
+[`--verify-jwt`](#verifying-end-user-jwts), feedback also accepts the end
+user's token, for the user's **own** runs only: the run's `user_id` must be the
+token's `sub` (runs started with a user token have it; runs started with the
+API key have no owner and refuse user tokens with `403`), and the score's
+`user` is the verified `sub`, whatever the body says. Reading scores stays an
+API-key endpoint. An invalid token is `401`.
+
+With [OpenTelemetry](observability.md) on, every score (online or human) also
+becomes an `evaluate {name}` span under the run's root span in the run's trace,
+with a `gen_ai.evaluation.result` event (`gen_ai.evaluation.name`,
+`gen_ai.evaluation.score.value`, `gen_ai.evaluation.score.label`,
+`gen_ai.evaluation.explanation`), and feeds the `graphrt.eval.score`
+histogram. This needs the run's `trace_id` / `span_id`, which runs only have
+when they were traced.
 
 ## Resuming
 

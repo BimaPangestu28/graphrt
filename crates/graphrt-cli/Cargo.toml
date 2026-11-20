@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "jwt", "telemetry", "eval"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "jwt", "telemetry", "eval", "scores"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -72,6 +72,9 @@ serve = ["dep:axum", "dep:http-body", "dep:sha2", "tokio/rt-multi-thread", "toki
 # `--user-rate-limit`): HS256 / ES256 / RS256 with `ring` and a JWKS fetched with
 # `reqwest`, both already linked for TLS, so it adds no new crates.
 jwt = ["serve", "dep:reqwest", "dep:rustls", "dep:ring", "dep:base64", "dep:thiserror"]
+# Evaluation scores of served runs: `GET /v1/runs/{id}/scores` and human
+# feedback (`POST /v1/runs/{id}/feedback`), kept next to each run in the store.
+scores = ["serve"]
 # Opt-in anonymous usage telemetry of the CLI binary (`graphrt telemetry`). Off
 # by default and inert unless an endpoint is configured; see docs/telemetry.md.
 telemetry = ["http", "dep:getrandom"]

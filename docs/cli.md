@@ -163,6 +163,8 @@ invalid one is `401`. `--user-rate-limit N` caps runs per minute per token
 | GET | `/v1/workflows` | – |
 | POST | `/v1/workflows/{name}/runs` | `{"inputs": {}, "sys": {}, "conversation": {}, "stream": false}` |
 | POST | `/v1/runs/{run_id}/abort` | – |
+| GET | `/v1/runs/{run_id}/scores` | – (evaluation scores, see [serving.md](serving.md#scores-and-feedback)) |
+| POST | `/v1/runs/{run_id}/feedback` | `{"name": "thumbs", "value": true, "comment": "...", "user": "..."}` |
 | POST | `/v1/runs/{run_id}/resume` | `{"snapshot": {...}, "inputs": {"<node>": {...}}, "secrets": {"ns.name": "..."}, "stream": false}` |
 | GET | `/v1/nodes` | – (node catalog: `{"nodes": [descriptor...]}`) |
 | POST | `/v1/validate` | a workflow document (JSON), or `{"document": "<YAML or JSON text>"}` → `{"valid", "errors", "warnings"}` |

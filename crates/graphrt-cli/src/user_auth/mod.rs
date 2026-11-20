@@ -16,8 +16,10 @@
 //! - The verified `sub` becomes `sys.user_id` of the run (the body cannot set it).
 //! - `--user-rate-limit N` allows each `sub` N runs per minute (bursts of N);
 //!   more answer `429` with `Retry-After`.
-//! - Every other endpoint (run lists, events, resume, knowledge...) still needs
-//!   the API key, so users cannot read each other's runs.
+//! - `POST /v1/runs/{id}/feedback` (feature `scores`) accepts the token too, for
+//!   runs whose `user_id` is the token's `sub` only.
+//! - Every other endpoint (run lists, events, scores, resume, knowledge...) still
+//!   needs the API key, so users cannot read each other's runs.
 //!
 //! Keys come from a JWKS URL (`ES256`/`RS256`, fetched at startup and kept fresh)
 //! and/or an `HS256` shared secret named by `--jwt-secret-env`. Verification is

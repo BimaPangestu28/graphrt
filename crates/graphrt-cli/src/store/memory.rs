@@ -24,6 +24,9 @@ struct Entry {
     record: Option<RunRecord>,
     events: Vec<StoredEvent>,
     snapshot: Option<Snapshot>,
+    /// Evaluation scores, dropped with the run.
+    #[cfg(feature = "scores")]
+    scores: Vec<crate::scores::Score>,
 }
 
 /// Run store kept in memory.
@@ -204,6 +207,26 @@ impl RunStore for MemoryStore {
     }
 }
 
+#[cfg(feature = "scores")]
+impl crate::scores::ScoreStore for MemoryStore {
+    fn put_scores<'a>(&'a self, run_id: &'a str, scores: Vec<crate::scores::Score>) -> BoxFuture<'a, StoreResult<()>> {
+        let result = validate_run_id(run_id).and_then(|()| {
+            let mut runs = self.lock();
+            let entry = existing(&mut runs, run_id)?;
+            crate::scores::merge_scores(&mut entry.scores, scores, run_id)
+        });
+        Box::pin(ready(result))
+    }
+
+    fn scores<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, StoreResult<Vec<crate::scores::Score>>> {
+        let result = validate_run_id(run_id).and_then(|()| {
+            let mut runs = self.lock();
+            Ok(existing(&mut runs, run_id)?.scores.clone())
+        });
+        Box::pin(ready(result))
+    }
+}
+
 /// Paused -> running, or a conflict.
 pub(super) fn claim(record: &mut RunRecord, now_ms: u64) -> StoreResult<RunRecord> {
     if record.status != RunStatus::Paused {
@@ -302,5 +325,36 @@ mod tests {
         assert_eq!(block_on(store.get("r1")).unwrap().unwrap().status, RunStatus::Failed);
         assert_eq!(block_on(store.purge_before(100)).unwrap(), 1);
         assert!(block_on(store.get("r1")).unwrap().is_none());
+    }
+
+    #[cfg(feature = "scores")]
+    #[test]
+    fn scores_live_and_die_with_their_run() {
+        use crate::scores::{Score, ScoreSource, ScoreStore, ScoreValue};
+        let store = MemoryStore::new().max_runs(10);
+        let score = |name: &str| Score::new("r", name, ScoreValue::Number(0.5), ScoreSource::Online, None);
+        assert!(matches!(block_on(store.put_scores("r", vec![score("a")])), Err(StoreError::NotFound(_))));
+        assert!(matches!(block_on(store.scores("r")), Err(StoreError::NotFound(_))));
+        let mut done = RunRecord::running("r", "wf", "fp", 0);
+        done.status = RunStatus::Succeeded;
+        block_on(store.create(done.clone())).unwrap();
+        block_on(store.put_scores("r", vec![score("a"), score("b")])).unwrap();
+        block_on(store.put_scores("r", vec![score("a")])).unwrap();
+        // The final record `put` keeps the scores.
+        block_on(store.put(done)).unwrap();
+        let names: Vec<String> = block_on(store.scores("r")).unwrap().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["a", "b"]);
+        // Evicted with the run once `--max-runs` newer runs finished.
+        for i in 1..=12u64 {
+            let mut newer = RunRecord::running(format!("n{i}"), "wf", "fp", i);
+            newer.status = RunStatus::Succeeded;
+            newer.updated_ms = i;
+            block_on(store.create(newer)).unwrap();
+        }
+        assert!(matches!(block_on(store.scores("r")), Err(StoreError::NotFound(_))));
+        // And purged with it by the TTL cleanup.
+        block_on(store.put_scores("n12", vec![score("a")])).unwrap();
+        block_on(store.purge_before(u64::MAX)).unwrap();
+        assert!(block_on(store.scores("n12")).is_err());
     }
 }

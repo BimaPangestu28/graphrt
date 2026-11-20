@@ -178,6 +178,36 @@ impl Telemetry {
         }
     }
 
+    /// Record an evaluation score of a run of `workflow`: the
+    /// `graphrt.eval.score` metric, and an `evaluate {name}` span (with its
+    /// `gen_ai.evaluation.result` event) under the run's root span when the run
+    /// was traced (`ids` are its stored trace and root span ids, as hex).
+    #[cfg(feature = "otel")]
+    pub fn record_evaluation(
+        &self,
+        ids: (Option<&str>, Option<&str>),
+        workflow: &str,
+        result: &graphrt_otel::EvaluationResult,
+        timing: Option<(u64, u64)>,
+    ) {
+        if let Some(score) = result.score {
+            self.metrics.record_score(&result.name, workflow, result.source.as_deref().unwrap_or_default(), score);
+        }
+        let Some(trace_id) = ids.0.and_then(graphrt_otel::TraceId::from_hex) else { return };
+        let parent = ids.1.and_then(graphrt_otel::SpanId::from_hex);
+        let (start, end) = timing.unwrap_or_else(|| {
+            let now = graphrt_otel::span::now_unix_nanos();
+            (now, now)
+        });
+        self.exporter.export(graphrt_otel::evaluation_span(trace_id, parent, result, start, end));
+    }
+
+    /// Shared metrics (tests and embedders).
+    #[cfg(feature = "otel")]
+    pub fn metrics(&self) -> &Arc<graphrt_otel::Metrics> {
+        &self.metrics
+    }
+
     /// Deliver queued spans and metrics.
     pub async fn shutdown(&self) {
         #[cfg(feature = "otel")]
