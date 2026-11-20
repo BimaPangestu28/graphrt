@@ -102,7 +102,7 @@ Unknown keys are errors.
 | --- | --- | --- | --- |
 | `network` | boolean | `false` | Informational: the plugin makes network calls. |
 | `env` | array of strings | `[]` | Host environment variables passed to a process plugin. Lists `bearer_token_env` for HTTP plugins. |
-| `secrets` | boolean | `false` | Plaintext secrets in node config and resume input. Granted only to trusted plugins; others receive `******`. |
+| `secrets` | boolean | `false` | Plaintext secrets in node config, resume input and `tool.call` `context` (an `agent` node's `tool_context`). Granted only to trusted plugins; others receive `******`. |
 
 ## `limits`
 

@@ -175,7 +175,7 @@ Values are referenced as `{{#node.output.path#}}`. The full format is in
 | `human-input` | Pause for a form / decision, resume with the answer | core |
 | `tool` | Call a native or MCP tool | core |
 | `llm` | Chat completion with streaming, memory, vision, structured output | llm |
-| `agent` | Tool-calling loop with approvals and parallel tool calls; streams every turn per token | llm |
+| `agent` | Tool-calling loop with approvals and parallel tool calls; streams every turn per token; per-run tool context (e.g. the user's JWT, never shown to the model) | llm |
 | `question-classifier` | Route by LLM classification | llm |
 | `parameter-extractor` | Extract typed parameters from text | llm |
 | `http-request` | HTTP with SSRF-safe egress, auth, JSON/form/multipart bodies | http |

@@ -88,7 +88,7 @@ with a JSON Schema in [`schemas/plugin-manifest.schema.json`](schemas/plugin-man
 | `nodes` | Node descriptors (see the node catalog). Each `kind` must start with `<name>.`. With `allow_unprefixed_kinds: true`, plain names without `.` (e.g. `slugify`) are also allowed; another plugin's `<other>.` namespace never is. Unknown descriptor keys are errors. |
 | `tools` | Tools exposed to `tool` and `agent` nodes under provider `<name>`. |
 | `permissions.env` | Host environment variables passed to the process (in addition to `PATH`, `HOME`, `LANG`, `TMPDIR` and their Windows equivalents). An HTTP plugin's `bearer_token_env` must be listed here. |
-| `permissions.secrets` | Requests plaintext secret values in node config and resume input. **Granted only when the operator trusts the plugin** (`--trust-plugin <name>`); otherwise secrets are sent masked as `******` and a warning is printed. |
+| `permissions.secrets` | Requests plaintext secret values in node config, resume input and the `context` of tool calls ([Tool call context](#tool-call-context)). **Granted only when the operator trusts the plugin** (`--trust-plugin <name>`); otherwise secrets are sent masked as `******` and a warning is printed. |
 | `permissions.network` | Informational: whether the plugin makes network calls. Shown to users before install. |
 | `limits.timeout_ms` | Per-request timeout (default 60 000). The node's own deadline still applies. After 3 consecutive timeouts a process plugin is considered stuck: it is killed and restarted on the next request. |
 | `limits.max_concurrency` | Concurrent requests per plugin (default 16). |
@@ -124,14 +124,16 @@ Messages are [JSON-RPC 2.0](https://www.jsonrpc.org/specification).
 1. Host → plugin `initialize`
 
    ```json
-   {"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocol_version":1,"host":{"name":"graphrt","version":"0.1.0"},"max_message_bytes":16777216,"features":["tool_images"]}}
+   {"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocol_version":1,"host":{"name":"graphrt","version":"0.1.0"},"max_message_bytes":16777216,"features":["tool_images","tool_context"]}}
    ```
 
    `max_message_bytes` is the largest line the host will send; the SDKs adopt it.
    It also bounds what the host reads: a longer line from the plugin breaks the
    connection, so the SDKs answer `message_too_large` instead of sending one.
    `features` lists optional protocol features the host supports (absent on
-   older hosts): `tool_images` means `tool.call` results may carry `images`.
+   older hosts): `tool_images` means `tool.call` results may carry `images`;
+   `tool_context` means `tool.call` requests may carry a `context` (see
+   [Tool call context](#tool-call-context)).
    A plugin that receives a longer line should skip it up to the newline and
    answer that request (id recovered from the line when possible) with an
    error such as `{"kind": "message_too_large"}`.
@@ -228,7 +230,7 @@ response for it is ignored.
 
 - `tool.list` → `{"tools": [ToolSpec...]}` (optional; the manifest's `tools` are
   used when the method is not implemented).
-- `tool.call {name, arguments}` → `{"text": "...", "data": <json>?, "is_error": false, "images": [...]?}`.
+- `tool.call {request_id, name, arguments, context?}` → `{"text": "...", "data": <json>?, "is_error": false, "images": [...]?}`.
 
 `images` (only when the host announced `tool_images`) shows images to the
 model, for example a screenshot for a computer-use loop:
@@ -243,6 +245,57 @@ rules fails the call with a `plugin_protocol` error. The whole result must
 still fit in `max_message_bytes`. Older hosts reject unknown result fields, so
 the SDKs drop images (adding a note to `text`) when `tool_images` was not
 announced. Per-provider encoding is described in [tool-images.md](tool-images.md).
+
+### Tool call context
+
+An `agent` node can send per-run values to a plugin's tools without putting
+them in the model-written `arguments`, for example the end user's JWT so a
+database tool queries with the user's own permissions:
+
+```yaml
+# agent node
+tools: [supabase/call_function]
+tool_context:
+  supabase:                              # tool provider (the plugin name)
+    user_jwt: "{{#start.user_jwt#}}"     # any template; secrets are rendered in plaintext
+```
+
+The host then adds a `context` object to every `tool.call` for that plugin:
+
+```json
+{"jsonrpc":"2.0","id":"r-9","method":"tool.call","params":{
+  "request_id":"r-9",
+  "name":"call_function",
+  "arguments":{"function_name":"get_balance"},
+  "context":{"secrets":{"user_jwt":"eyJhbGciOiJIUzI1NiJ9..."}}
+}}
+```
+
+- `context` is `{"secrets": {<name>: <string>}}`. Values are always strings.
+  Names whose template renders empty (e.g. a missing variable) are left out,
+  so the tool can refuse the call instead of running without credentials.
+- It is only sent to plugins that request `permissions.secrets` **and** are
+  trusted by the operator (`--trust-plugin <name>`). An `agent` whose
+  `tool_context` names any other provider (an untrusted plugin, an MCP server,
+  native tools) fails with `tool_context_denied` before calling the model.
+- It is omitted when empty, so plugins that predate it see the same requests
+  as before. Hosts that may send it list `tool_context` in `initialize`
+  `features`.
+- The values never reach the model, events, SSE, run records, snapshots or
+  traces. The host registers them as run secrets and replaces them with
+  `******` in tool results, logged tool arguments and node error messages.
+  On resume (e.g. after a tool approval) they are rendered again from the
+  run's variables; secret inputs must be re-supplied as for any resume.
+- Plugins must not log the values or return them in results.
+
+SDKs pass the context as the tool handler's second argument (handlers that
+take only the arguments keep working):
+
+| SDK | Handler | Context |
+| --- | --- | --- |
+| TypeScript | `async (args, context) => ...` | `context.secrets.user_jwt` (`{ secrets: {} }` when none; frozen) |
+| Python | `async def handler(args, context)` | `context.secrets.get("user_jwt")` (`ToolContext`; passed only to handlers with two positional parameters) |
+| Rust | `\|call: ToolCall\| async move { ... }` | `call.context.secret("user_jwt")` (`ToolCallContext`) |
 
 ### Errors
 
