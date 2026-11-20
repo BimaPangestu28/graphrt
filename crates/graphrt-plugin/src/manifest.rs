@@ -448,9 +448,16 @@ impl PluginManifest {
     }
 }
 
-/// Relative path without `..` segments.
+/// Relative path without `..` segments. A leading `/` or `\` and a drive prefix
+/// (`C:`) are rejected on every platform: on Windows `/etc/x` is not "absolute"
+/// (no drive) but still escapes the plugin directory when joined.
 fn is_inside(path: &str) -> bool {
-    !path.trim().is_empty() && !Path::new(path).is_absolute() && !path.split(['/', '\\']).any(|seg| seg == "..")
+    let candidate = Path::new(path);
+    !path.trim().is_empty()
+        && !path.starts_with(['/', '\\'])
+        && !candidate.has_root()
+        && !candidate.components().any(|part| matches!(part, std::path::Component::Prefix(_)))
+        && !path.split(['/', '\\']).any(|seg| seg == "..")
 }
 
 /// Whether an http(s) URL points at the local machine.
@@ -594,6 +601,21 @@ mod tests {
         assert!(PluginManifest::from_json(&v.to_string()).is_err());
         v["checksums"] = serde_json::json!({"plugin.wasm": "00"});
         assert!(PluginManifest::from_json(&v.to_string()).is_ok());
+    }
+
+    #[test]
+    fn plugin_paths_must_stay_inside_on_every_platform() {
+        for inside in ["run.sh", "./bin/tool", "lib/notes.txt", "a\\b.txt"] {
+            assert!(is_inside(inside), "{inside}");
+        }
+        // `/etc/x` and `\x` are rooted on Windows too (current drive), so they escape there.
+        for outside in ["", " ", "/etc/passwd", "\\windows\\x", "../evil", "a/../../b", "a\\..\\b"] {
+            assert!(!is_inside(outside), "{outside}");
+        }
+        #[cfg(windows)]
+        for outside in ["C:\\x.exe", "C:x.exe", "C:/x.exe", "\\\\server\\share\\x"] {
+            assert!(!is_inside(outside), "{outside}");
+        }
     }
 
     #[test]

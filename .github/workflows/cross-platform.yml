@@ -1,0 +1,81 @@
+name: Cross-platform tests
+
+# The workspace test suite on Windows and macOS (Linux runs in ci.yml).
+# The release workflow calls this with `linux: true`, so every tagged binary is
+# built only after the tests passed on the OS it targets.
+on:
+  pull_request:
+    paths-ignore: ["**.md", "docs/**", "examples/**/*.md"]
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "examples/**/*.md"]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      linux:
+        description: "Also test on ubuntu-latest"
+        type: boolean
+        default: false
+      ref:
+        description: "Git ref to test (default: the triggering ref)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  # Called from the release workflow the group is the caller's, so no clash with PR runs.
+  group: cross-platform-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  # No incremental artifacts: smaller caches, faster restores on CI.
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.linux && '["ubuntu-latest","macos-latest","windows-latest"]' || '["macos-latest","windows-latest"]') }}
+    steps:
+      # Fixtures are hashed (plugin checksums, bundles) and compared byte for
+      # byte: keep LF line endings on Windows checkouts.
+      - name: Keep LF line endings
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # One cache per OS, shared by PR, main and release runs.
+          shared-key: cross-platform
+      # Plugin and code-node tests start `python3`; Windows images only ship `python.exe`.
+      - name: Provide python3 on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Ignore the WindowsApps store aliases: they are stubs, not interpreters.
+          function Find-Real($name) {
+            Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue |
+              Where-Object { $_.Source -notlike '*WindowsApps*' } | Select-Object -First 1
+          }
+          if (-not (Find-Real python3)) {
+            $python = Find-Real python
+            if (-not $python) { throw 'no python.exe on PATH' }
+            Copy-Item $python.Source (Join-Path (Split-Path $python.Source) 'python3.exe')
+          }
+          python3 --version
+          node --version
+      - run: cargo test --workspace --all-features --locked

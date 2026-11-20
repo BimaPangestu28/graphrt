@@ -64,8 +64,10 @@ cargo install graphrt-cli            # installs the `graphrt` binary
 docker run --rm -p 8080:8080 -v "$PWD/flows:/workflows" ghcr.io/bimapangestu28/graphrt
 ```
 
-macOS and Linux archives are on the [releases page](https://github.com/BimaPangestu28/graphrt/releases),
-plus an experimental Windows x86_64 archive (cross-compiled; not yet tested on Windows, reports welcome).
+Linux (x86_64, aarch64; static musl), macOS (x86_64, aarch64) and Windows (x86_64,
+`.zip`, no Visual C++ runtime needed) archives with `SHA256SUMS` are on the
+[releases page](https://github.com/BimaPangestu28/graphrt/releases). The release
+workflow builds them on each OS after the test suite passed on Linux, macOS and Windows.
 Libraries are on crates.io: `graphrt-core` (runtime) plus integration crates such as
 `graphrt-llm`, `graphrt-http`, `graphrt-rag`.
 

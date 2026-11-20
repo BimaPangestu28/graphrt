@@ -72,7 +72,10 @@ New dependencies must use a license in the `deny.toml` allow-list. Keep
 2. `scripts/publish.sh` — dry run: verifies `graphrt-core` against crates.io and
    packages every other crate.
 3. `scripts/test-install.sh` — checks `install.sh` against a fake local release.
-4. Tag `vX.Y.Z` and push the tag. The release workflow builds binaries for Linux
-   (static musl), macOS and Windows, publishes the GitHub Release with
+4. Tag `vX.Y.Z` and push the tag. The release workflow runs the test suite on
+   Linux, macOS and Windows (`.github/workflows/cross-platform.yml`), builds
+   binaries for Linux (static musl, x86_64 and aarch64), macOS (x86_64 and
+   aarch64) and Windows (x86_64 MSVC, static C runtime), runs each binary that
+   the runner can execute (`scripts/smoke-release-binary.sh`), publishes the GitHub Release with
    `SHA256SUMS`, pushes `ghcr.io/<owner>/graphrt`, and publishes crates when the
    repository variable `PUBLISH_CRATES=true` and secret `CARGO_REGISTRY_TOKEN` are set.
