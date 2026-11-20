@@ -91,8 +91,18 @@ pub struct SubprocessPython {
 
 impl Default for SubprocessPython {
     fn default() -> Self {
-        Self { interpreter: PathBuf::from("python3"), path_env: "/usr/local/bin:/usr/bin:/bin".to_owned() }
+        Self { interpreter: PathBuf::from("python3"), path_env: default_path_env() }
     }
+}
+
+/// The child's `PATH`: the standard system directories on Unix. Windows has no
+/// fixed equivalent (Python lives under the user profile or `Program Files`), so
+/// there the host `PATH` is kept.
+fn default_path_env() -> String {
+    if cfg!(windows) {
+        return std::env::var("PATH").unwrap_or_default();
+    }
+    "/usr/local/bin:/usr/bin:/bin".to_owned()
 }
 
 impl SubprocessPython {
@@ -119,15 +129,14 @@ impl SubprocessPython {
             .map_err(|e| NodeError::fatal("invalid_input", format!("cannot encode inputs: {e}")))?;
 
         let mut command = self.command(&limits);
-        command
-            .current_dir(workdir.path())
-            .env_clear()
-            .env("PATH", &self.path_env)
-            .env("PYTHONIOENCODING", "utf-8")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        command.current_dir(workdir.path()).env_clear().env("PATH", &self.path_env).env("PYTHONIOENCODING", "utf-8");
+        // CPython on Windows cannot initialise (no random seed, no DLL lookup)
+        // without `SYSTEMROOT`; it names the OS directory, not a secret.
+        #[cfg(windows)]
+        if let Some(system_root) = std::env::var_os("SYSTEMROOT") {
+            command.env("SYSTEMROOT", system_root);
+        }
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
 
         let mut child = command
             .spawn()
@@ -325,6 +334,7 @@ impl TempDir {
         let dir = std::env::temp_dir().join(format!("graphrt-py-{}-{n}-{nanos}", std::process::id()));
         // A fresh directory only: never adopt one (or a symlink) another local user
         // created at the predictable name. Owner-only on Unix.
+        #[cfg_attr(not(unix), allow(unused_mut))] // only mutated by the Unix mode below
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
@@ -456,6 +466,7 @@ mod tests {
     fn working_directory_is_fresh_and_private() {
         let dir = TempDir::create().unwrap();
         // Creating the same path again must fail rather than adopt the existing directory.
+        #[cfg_attr(not(unix), allow(unused_mut))] // only mutated by the Unix mode below
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
