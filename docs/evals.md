@@ -521,6 +521,7 @@ do not record prompts that carry secrets.
 | `retrieval/retrieval.eval.yaml` | recall@1, MRR and precision@3 over a committed, hash-embedded knowledge store. |
 | `judged/judged.eval.yaml` | A RAG workflow graded by the reference judges (faithfulness, relevance, goal success, refusal), an `unknown` excluded, `gate.pass_hat_k`. The answers and the verdicts replay from cassettes recorded against a scripted OpenAI-compatible server. Try `--trials 3`. |
 | `calibration/faithfulness.eval.yaml` + `labels.jsonl` | Calibrating the faithfulness judge against ten human labels: agreement, TPR, TNR, kappa, confusion matrix, a `min_kappa` gate. |
+| `online/evaluators.yaml` | [Online evaluation](#online-evaluation) of the RAG workflow in `graphrt serve` with the same judges, a token budget, a negated text check and a tag filter, replayed offline. |
 
 ## CI
 
@@ -574,6 +575,71 @@ async fn support_agent_regressions() {
 `ReplayModel`s or real providers. A custom `Target` can evaluate something
 other than an in-process engine (for example a `graphrt serve` deployment).
 See [crates/graphrt-eval/tests/engine.rs](../crates/graphrt-eval/tests/engine.rs).
+
+## Online evaluation
+
+`graphrt serve --evaluators evaluators.yaml` scores a **sample of production
+runs** after they finish, with the same assertion types and judge workflows as
+`graphrt eval`. The config is a file of its own (the workflow format is frozen):
+
+```yaml
+concurrency: 2        # evaluations running at once (default 2, max 256)
+queue: 256            # sampled runs waiting for a slot (default 256); more are dropped and counted
+evaluators:
+  - name: faithfulness                    # the score name, unique
+    workflows: [support, "chat-*"]        # served workflow names, `*` wildcards (default: all)
+    sample: 0.05                          # fraction of matching runs (default 1)
+    status: [succeeded]                   # succeeded / failed / aborted (default: succeeded, failed)
+    tags: [prod]                          # the run has at least one of these tags (optional)
+    metadata: { tier: gold }              # and every one of these metadata values (optional)
+    assert:                               # one assertion, as in an eval file
+      type: judge
+      workflow: judges/faithfulness.yaml  # relative to this file
+      unknown: exclude
+      inputs: { question: "{{question}}" } # the run's own inputs, metadata, tags and id
+  - name: no-apology
+    assert: { type: not-icontains, value: "i apologize" }
+  - name: budget
+    assert: { type: tokens, threshold: 4000 }
+```
+
+- **Assertions.** Only types that need no expected answer run online:
+  `judge`, `regex`, `contains` and its `i`/`-any`/`-all` forms, `starts-with`,
+  `is-json`, `json-schema`, `latency`, `tokens` and `trajectory:*` (and their
+  `not-` forms). `equals`, `verdict`, the retrieval metrics and any
+  `{{expected}}` reference are refused when the server starts, as are unknown
+  keys, a judge workflow that does not compile and a sample rate outside
+  `0..1`. `{{name}}` references resolve against the run: its inputs (also as
+  `{{vars.name}}`), `{{metadata.key}}`, `{{tags}}` and `{{id}}` (the run id).
+  Judges receive the inputs listed in [LLM judges](#llm-judges-judges-are-workflows),
+  with `vars` being the run's inputs (secrets masked) and no `expected`.
+- **Sampling** is deterministic: a hash of the run id and the evaluator name
+  decides, so the same run id always gets the same decision (reproducible) and
+  evaluators sample independently.
+- **When.** After a run of a matching workflow ends (succeeded, failed or
+  aborted; paused runs wait until they finish), the matching evaluators that
+  sample it are queued as one job. A dispatcher feeds at most `concurrency`
+  jobs at a time from a queue of `queue` jobs; a job that finds the queue full
+  is dropped, counted in the `graphrt.eval.dropped` metric, and logged (first
+  drop, then every thousandth). The run's response never waits: the job is
+  queued after the run is recorded and its callers are answered.
+- **Cost.** Without `--evaluators` there is no task, queue or check: a run
+  pays a test of an empty `Option`. With it, a run of a workflow no evaluator
+  covers pays the same; a covered one pays a hash per evaluator when it ends.
+  The feature (`online-eval`, on by default) is not in the IoT build
+  (`--no-default-features --features llm,http,wasm,serve`).
+- **Results** are `online` [scores](serving.md#scores-and-feedback) of the run
+  (`GET /v1/runs/{id}/scores`): the assertion score as `value`, `label`
+  (`pass`, `fail`, or `unknown` for an excluded judge verdict), the reason as
+  `comment`, the assertion type, and the judge's workflow, fingerprint and
+  verdict. With OpenTelemetry each becomes an `evaluate {name}` span in the
+  run's trace with a `gen_ai.evaluation.result` event and feeds the
+  `graphrt.eval.score` histogram. Judge runs themselves are not traced or stored as runs.
+
+A resumed run is evaluated on the events of its last execution (the part after
+the pause). [`examples/evals/online`](../examples/evals/online/evaluators.yaml)
+scores the RAG workflow of `examples/evals/judged` with the reference judges,
+replayed offline.
 
 ## Promptfoo interop
 

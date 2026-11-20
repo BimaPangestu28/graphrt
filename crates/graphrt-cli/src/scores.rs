@@ -249,24 +249,43 @@ pub async fn post_feedback(
     if let Err(e) = state.score_store().put_scores(&run_id, vec![score.clone()]).await {
         return crate::serve::store_error(&e);
     }
-    publish(&state, &record, &score, None);
+    state.score_sinks().publish(&record, &score, None);
     (StatusCode::CREATED, Json(score)).into_response()
 }
 
 /// When an evaluation ran, in Unix nanoseconds, for its span (`None`: now).
 pub type Timing = Option<(u64, u64)>;
 
-/// Tell the outside world about a stored score: an `evaluate {name}` span in
-/// the run's trace and the `graphrt.eval.score` metric (with OpenTelemetry),
-/// and a Langfuse upload (`--langfuse-scores`).
-pub fn publish(state: &AppState, record: &RunRecord, score: &Score, timing: Timing) {
+/// Where stored scores are reported besides the store: an `evaluate {name}`
+/// span in the run's trace and the `graphrt.eval.score` metric (with
+/// OpenTelemetry), and a Langfuse upload (`--langfuse-scores`).
+#[derive(Clone, Debug, Default)]
+pub struct ScoreSinks {
     #[cfg(feature = "otel")]
-    if let Some(telemetry) = state.telemetry() {
-        let ids = (record.trace_id.as_deref(), record.span_id.as_deref());
-        telemetry.record_evaluation(ids, &record.workflow, &evaluation_result(score), timing);
+    pub telemetry: Option<Arc<crate::otel::Telemetry>>,
+}
+
+impl ScoreSinks {
+    /// Report a stored score of `record`'s run.
+    pub fn publish(&self, record: &RunRecord, score: &Score, timing: Timing) {
+        #[cfg(feature = "otel")]
+        if let Some(telemetry) = &self.telemetry {
+            let ids = (record.trace_id.as_deref(), record.span_id.as_deref());
+            telemetry.record_evaluation(ids, &record.workflow, &evaluation_result(score), timing);
+        }
+        #[cfg(not(feature = "otel"))]
+        let _ = (record, score, timing);
     }
-    #[cfg(not(feature = "otel"))]
-    let _ = (state, record, score, timing);
+
+    /// Count a sampled run of `workflow` the online evaluation queue had no room for.
+    pub fn dropped(&self, workflow: &str) {
+        #[cfg(feature = "otel")]
+        if let Some(telemetry) = &self.telemetry {
+            telemetry.metrics().record_eval_dropped(workflow);
+        }
+        #[cfg(not(feature = "otel"))]
+        let _ = workflow;
+    }
 }
 
 /// The OpenTelemetry view of a score: a numeric value (booleans as 0/1), a

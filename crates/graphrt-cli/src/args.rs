@@ -578,6 +578,13 @@ pub struct ServeArgs {
     /// Repeatable. See docs/serving.md.
     #[arg(long, value_name = "INPUT=HEADER")]
     pub input_header: Vec<crate::header_inputs::HeaderInputSpec>,
+    /// Online evaluation: an evaluator config (YAML or JSON) that scores a deterministic
+    /// sample of finished runs with judge workflows, regexes, JSON schemas, budgets or
+    /// trajectory checks, in a bounded background pool. Scores are stored with each run
+    /// (`GET /v1/runs/{id}/scores`). See docs/evals.md.
+    #[cfg(feature = "online-eval")]
+    #[arg(long, value_name = "FILE")]
+    pub evaluators: Option<PathBuf>,
     #[cfg(feature = "jwt")]
     #[command(flatten)]
     pub user_auth: UserAuthArgs,

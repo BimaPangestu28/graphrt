@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "jwt", "telemetry", "eval", "scores"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "jwt", "telemetry", "eval", "scores", "online-eval"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -75,6 +75,10 @@ jwt = ["serve", "dep:reqwest", "dep:rustls", "dep:ring", "dep:base64", "dep:this
 # Evaluation scores of served runs: `GET /v1/runs/{id}/scores` and human
 # feedback (`POST /v1/runs/{id}/feedback`), kept next to each run in the store.
 scores = ["serve"]
+# Online evaluation in `serve` (`--evaluators`): a sample of finished runs is
+# scored in a bounded background pool with the assertions of `graphrt eval`
+# (judge workflows included). Needs `eval`.
+online-eval = ["scores", "eval", "tokio/sync"]
 # Opt-in anonymous usage telemetry of the CLI binary (`graphrt telemetry`). Off
 # by default and inert unless an endpoint is configured; see docs/telemetry.md.
 telemetry = ["http", "dep:getrandom"]

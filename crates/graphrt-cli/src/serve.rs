@@ -99,6 +99,12 @@ pub struct AppState {
     /// End-user JWT verification of run starts (`--verify-jwt`).
     #[cfg(feature = "jwt")]
     user_auth: Option<Arc<crate::user_auth::UserAuth>>,
+    /// Host services of the served workflows, for judge workflows of online evaluators.
+    #[cfg(feature = "online-eval")]
+    services: Option<Arc<graphrt_core::Services>>,
+    /// Online evaluation pool (`--evaluators`).
+    #[cfg(feature = "online-eval")]
+    online: Option<Arc<crate::online_eval::OnlineEval>>,
 }
 
 /// The verified end user of a request (`sub` of its JWT), set by `--verify-jwt`.
@@ -127,7 +133,59 @@ impl AppState {
             store_inputs: false,
             #[cfg(feature = "jwt")]
             user_auth: None,
+            #[cfg(feature = "online-eval")]
+            services: None,
+            #[cfg(feature = "online-eval")]
+            online: None,
         }
+    }
+
+    /// Score a sample of finished runs with the evaluators of this config
+    /// (`--evaluators`). Judge workflows compile now, on the served workflows'
+    /// services. Call after [`AppState::with_stores`] and
+    /// [`AppState::with_telemetry`]: the pool reports to the stores and sinks
+    /// set at this point.
+    ///
+    /// @throws CliError (usage) - When the config or a judge workflow is invalid.
+    #[cfg(feature = "online-eval")]
+    pub fn with_evaluators(mut self, path: &Path, options: &ServiceOptions, limits: Limits) -> Result<Self, CliError> {
+        use graphrt_eval::online::{OnlineConfig, OnlineEvaluators};
+        let config = OnlineConfig::load(path).map_err(crate::eval::eval_error)?;
+        let served: Vec<&str> = self.workflows.keys().map(String::as_str).collect();
+        for pattern in config.unmatched_workflows(&served) {
+            eprintln!("warning: evaluators: workflow pattern `{pattern}` matches no served workflow");
+        }
+        let services = match &self.services {
+            Some(services) => Arc::clone(services),
+            None => Arc::new(graphrt_core::Services::new()),
+        };
+        let judges = crate::eval::WorkflowJudges {
+            registry: self.extensions.registry.clone(),
+            services,
+            model: None,
+            limits,
+            options: options.clone(),
+        };
+        let mut registry = graphrt_eval::AssertionRegistry::with_builtins();
+        graphrt_eval::judge::register(&mut registry, config.base_dir(), judges);
+        let evaluators = OnlineEvaluators::new(&config, registry).map_err(crate::eval::eval_error)?;
+        eprintln!(
+            "  online evaluation: {} evaluator(s) from {} (concurrency {}, queue {})",
+            config.evaluators.len(),
+            path.display(),
+            config.concurrency,
+            config.queue
+        );
+        let pool =
+            crate::online_eval::OnlineEval::start(&config, evaluators, Arc::clone(&self.scores), self.score_sinks());
+        self.online = Some(pool);
+        Ok(self)
+    }
+
+    /// The online evaluation pool, when `--evaluators` is set.
+    #[cfg(feature = "online-eval")]
+    pub fn online_eval(&self) -> Option<&Arc<crate::online_eval::OnlineEval>> {
+        self.online.as_ref()
     }
 
     /// Let a verified end-user JWT authorize run starts (`--verify-jwt`).
@@ -267,10 +325,13 @@ impl AppState {
         &self.scores
     }
 
-    /// The OpenTelemetry export, when enabled.
-    #[cfg(all(feature = "otel", feature = "scores"))]
-    pub(crate) fn telemetry(&self) -> Option<&Arc<crate::otel::Telemetry>> {
-        self.telemetry.as_ref()
+    /// Where scores are reported besides the store (spans, metrics, uploads).
+    #[cfg(feature = "scores")]
+    pub fn score_sinks(&self) -> crate::scores::ScoreSinks {
+        crate::scores::ScoreSinks {
+            #[cfg(feature = "otel")]
+            telemetry: self.telemetry.clone(),
+        }
     }
 
     /// The run store.
@@ -371,7 +432,12 @@ pub async fn build_state(
             .with_limits(limits.clone());
         workflows.insert(name.clone(), ServedWorkflow { engine, env });
     }
-    let state = AppState::new(workflows, api_key).with_extensions(extensions);
+    #[allow(unused_mut)]
+    let mut state = AppState::new(workflows, api_key).with_extensions(extensions);
+    #[cfg(feature = "online-eval")]
+    {
+        state.services = Some(Arc::clone(&services));
+    }
     // The same knowledge base the workflows use, so documents added over the API
     // are searchable by running workflows right away.
     #[cfg(feature = "rag")]
@@ -478,6 +544,8 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     };
     #[cfg(feature = "jwt")]
     let user_auth_line = user_auth.as_ref().map(crate::user_auth::UserAuth::describe);
+    #[cfg(feature = "online-eval")]
+    let judge_limits = limits.clone();
     let state = build_state(&files, &options, limits, api_key.clone())
         .await?
         .with_stores(stores)
@@ -488,6 +556,11 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         .with_header_inputs(&args.input_header)?;
     #[cfg(feature = "jwt")]
     let state = state.with_user_auth(user_auth);
+    #[cfg(feature = "online-eval")]
+    let state = match &args.evaluators {
+        Some(path) => state.with_evaluators(path, &options, judge_limits)?,
+        None => state,
+    };
     let state = Arc::new(state);
     let interrupted = state.recover().await?;
     if interrupted > 0 {
@@ -1243,7 +1316,11 @@ fn launch(
         Some(telemetry) => telemetry.tracer(engine.graph(), traceparent, &record_context(&record)),
         None => crate::otel::RunTracer::default(),
     };
-    let capture = live::Capture { start_node: state.store_inputs.then(|| root_start_node(engine.graph())).flatten() };
+    let capture = live::Capture {
+        start_node: state.store_inputs.then(|| root_start_node(engine.graph())).flatten(),
+        #[cfg(feature = "online-eval")]
+        online: state.online.as_ref().filter(|online| online.covers(&record.workflow)).cloned(),
+    };
     let assembler = new_assembler(engine, &input);
     let run = engine.run(input);
     let weak = Arc::downgrade(state);

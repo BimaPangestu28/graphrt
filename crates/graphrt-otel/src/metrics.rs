@@ -57,6 +57,7 @@ struct Inner {
     node_duration: BTreeMap<Key, Histogram>,
     run_duration: BTreeMap<Key, Histogram>,
     scores: BTreeMap<Key, Histogram>,
+    eval_dropped: BTreeMap<Key, u64>,
 }
 
 /// Process-wide cumulative metrics. Share one instance (`Arc<Metrics>`) between all
@@ -135,6 +136,12 @@ impl Metrics {
         self.with(|m| m.scores.entry(k).or_default().record_in(score, SCORE_BOUNDS));
     }
 
+    /// Count a run whose online evaluation was dropped because the queue was full.
+    pub fn record_eval_dropped(&self, workflow: &str) {
+        let k = key(&[("graphrt.workflow.name", workflow)]);
+        self.with(|m| *m.eval_dropped.entry(k).or_default() += 1);
+    }
+
     /// Total runs recorded (all statuses), for tests and diagnostics.
     pub fn total_runs(&self) -> u64 {
         self.with(|m| m.runs.values().sum())
@@ -200,6 +207,14 @@ impl Metrics {
             if !m.tokens.is_empty() {
                 out.push(sum("graphrt.tokens", "{token}", "Model tokens used.", &m.tokens));
             }
+            if !m.eval_dropped.is_empty() {
+                out.push(sum(
+                    crate::semconv::graphrt::EVAL_DROPPED_METRIC,
+                    "{run}",
+                    "Sampled runs not evaluated because the online evaluation queue was full.",
+                    &m.eval_dropped,
+                ));
+            }
             if !m.scores.is_empty() {
                 out.push(histogram(
                     crate::semconv::graphrt::EVAL_SCORE_METRIC,
@@ -255,5 +270,10 @@ mod tests {
         assert_eq!(helpful["count"], "2");
         assert_eq!(helpful["sum"], 1.25);
         assert_eq!(helpful["explicitBounds"].as_array().map(Vec::len), Some(SCORE_BOUNDS.len()));
+        m.record_eval_dropped("chat");
+        m.record_eval_dropped("chat");
+        let enc = m.encode();
+        let dropped = enc.iter().find(|j| j["name"] == "graphrt.eval.dropped").unwrap();
+        assert_eq!(dropped["sum"]["dataPoints"][0]["asInt"], "2");
     }
 }

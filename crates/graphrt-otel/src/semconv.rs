@@ -142,6 +142,8 @@ pub mod graphrt {
     pub const EVALUATION_TYPE: &str = "graphrt.evaluation.type";
     /// Metric: evaluation scores (histogram, by evaluator name).
     pub const EVAL_SCORE_METRIC: &str = "graphrt.eval.score";
+    /// Metric: sampled runs dropped by a full online evaluation queue (counter).
+    pub const EVAL_DROPPED_METRIC: &str = "graphrt.eval.dropped";
 }
 
 /// `gen_ai.provider.name` value for a graphrt provider name. Known providers map

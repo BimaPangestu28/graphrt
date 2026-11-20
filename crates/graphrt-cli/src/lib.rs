@@ -21,6 +21,8 @@ pub mod inspect;
 pub mod kb;
 #[cfg(all(feature = "serve", feature = "rag"))]
 pub mod knowledge_api;
+#[cfg(feature = "online-eval")]
+pub mod online_eval;
 pub mod otel;
 #[cfg(any(feature = "plugins", feature = "wasm"))]
 pub mod plugin;
@@ -90,6 +92,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     }
     if cfg!(feature = "scores") {
         features.push("scores");
+    }
+    if cfg!(feature = "online-eval") {
+        features.push("online-eval");
     }
     if cfg!(feature = "telemetry") {
         features.push("telemetry");

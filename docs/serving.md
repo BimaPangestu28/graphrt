@@ -304,8 +304,8 @@ number of skipped events; the complete history stays available from the store.
 
 ## Scores and feedback
 
-Each run collects evaluation **scores**: from [online evaluators](#online-evaluation)
-(`source: online`) and from people (`source: human`). They are kept next to
+Each run collects evaluation **scores**: from [online evaluators](evals.md#online-evaluation)
+(`--evaluators`, `source: online`) and from people (`source: human`). They are kept next to
 the run (`runs/<id>/scores.json` in a `--store` directory, in memory
 otherwise), so `--max-runs`, `--store-ttl-days` and `DELETE /v1/runs/{id}`
 remove them with it. (Cargo feature `scores`, on by default; not in the IoT

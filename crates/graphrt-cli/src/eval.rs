@@ -96,11 +96,11 @@ async fn build_target(
     for warning in graph.warnings() {
         eprintln!("warning: {warning}");
     }
-    let services = setup::services(&options, extensions.tools.clone()).await?;
+    let services = Arc::new(setup::services(&options, extensions.tools.clone()).await?);
     let env = setup::workflow_env(&graph, &options);
     let limits = setup::limits(args.services.timeout_ms, args.services.max_steps);
     let engine = Engine::new(Arc::clone(&graph))
-        .with_services(services.clone())
+        .with_shared_services(Arc::clone(&services))
         .with_clock(Arc::new(TokioClock))
         .with_limits(limits.clone());
     let target = EngineTarget::new(engine).with_env(env).with_path(suite.workflow.display().to_string());
@@ -114,14 +114,14 @@ async fn build_target(
     Ok((target, judges, extensions))
 }
 
-/// Compiles judge workflows on the suite's services. `--judge-model` (never
-/// `--model`) overrides their models.
-struct WorkflowJudges {
-    registry: Registry,
-    services: Services,
-    model: Option<String>,
-    limits: Limits,
-    options: ServiceOptions,
+/// Compiles judge workflows on the suite's (or the server's) services.
+/// `--judge-model` (never `--model`) overrides their models.
+pub(crate) struct WorkflowJudges {
+    pub(crate) registry: Registry,
+    pub(crate) services: Arc<Services>,
+    pub(crate) model: Option<String>,
+    pub(crate) limits: Limits,
+    pub(crate) options: ServiceOptions,
 }
 
 impl JudgeLoader for WorkflowJudges {
@@ -133,7 +133,7 @@ impl JudgeLoader for WorkflowJudges {
         }
         let env = setup::workflow_env(&graph, &self.options);
         let engine = Engine::new(graph)
-            .with_services(self.services.clone())
+            .with_shared_services(Arc::clone(&self.services))
             .with_clock(Arc::new(TokioClock))
             .with_limits(self.limits.clone());
         Ok(Arc::new(EngineTarget::new(engine).with_env(env)))
@@ -161,7 +161,7 @@ fn write_file(path: &Path, text: &str) -> Result<(), CliError> {
     std::fs::write(path, text).map_err(|e| CliError::failed(format!("cannot write `{}`: {e}", path.display())))
 }
 
-fn eval_error(error: EvalError) -> CliError {
+pub(crate) fn eval_error(error: EvalError) -> CliError {
     match error {
         EvalError::Invalid(message) | EvalError::Io(message) => CliError::usage(message),
         other => CliError::failed(other.to_string()),
