@@ -83,7 +83,7 @@ pub(crate) async fn run_root(engine: Engine, input: RunInput, control: Arc<Contr
     let resumed = resume_snapshot.is_some();
 
     // Secrets known up front; nodes add the ones they produce (see `Frame::commit`).
-    let secret_values = SecretSet::new();
+    let secret_values = Arc::new(SecretSet::new());
     // Includes secret-typed conversation variables, so their plaintext is scrubbed
     // from node error messages like any other secret's.
     let initial = env

@@ -15,6 +15,10 @@ releases may contain breaking changes; they are called out under **Changed**.
   as "Let me check.") is now part of the `text` output, separated from later
   text by a blank line, so the streamed text always equals `text`.
   `stream_tool_turns: false` restores the previous behaviour.
+- **Breaking (Rust API):** `ToolRuntime::call` takes a third argument,
+  `&ToolCallContext` (pass `ToolCallContext::empty()` when there is nothing to
+  send), and `ToolRuntime::accepts_secrets` (default `false`) was added.
+  `graphrt_plugin_sdk::ToolCall` has a new `context` field.
 
 ### Added
 - `graphrt serve --input-header INPUT=HEADER` maps a request header (leading
@@ -27,6 +31,19 @@ releases may contain breaking changes; they are called out under **Changed**.
   was streamed).
 - docs/serving.md documents the SSE format, the `response` event and how
   retry / `on_error` policies hold back live answer text.
+- `agent` node `tool_context`: per-run values (e.g. the end user's JWT) sent
+  to one provider's tools beside the arguments, as a new `context` field of
+  the plugin protocol's `tool.call` (`{"secrets": {name: string}}`). Only
+  plugins with `permissions.secrets` that the operator trusts receive it;
+  other providers fail the node with `tool_context_denied`. The values are
+  never shown to the model or recorded, and are masked in tool results,
+  logged arguments and node errors. Hosts announce the `tool_context` feature
+  in `initialize`.
+- Plugin SDKs pass the context as the tool handler's second argument
+  (TypeScript `(args, context)`, Python `(args, context)` for two-parameter
+  handlers, Rust `ToolCall::context`); existing handlers keep working.
+- `NodeContext::observe_secret` lets a node register plaintext it handles as a
+  run secret, so later node error messages are scrubbed.
 
 ### Fixed
 - Plaintext of secret-typed `conversation` variables is now scrubbed from node

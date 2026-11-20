@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
 
-import { Plugin, PluginError, toolResult } from "./index.mjs";
+import { Plugin, PluginError, toolContext, toolResult } from "./index.mjs";
 
 const PNG = Buffer.from("hello");
 
@@ -90,4 +90,27 @@ test("toolResult validates limits", () => {
   assert.throws(() => toolResult({ text: "", images: [{ media_type: "image/png", data_base64: "%%%" }] }), /base64/);
   const huge = "A".repeat(((5 * 1024 * 1024) / 3 + 1) * 4);
   assert.throws(() => toolResult({ text: "", images: [{ media_type: "image/png", data_base64: huge }] }), /limit/);
+});
+
+test("tool handlers receive the call context as a second argument", async () => {
+  const plugin = new Plugin("db")
+    .tool({ name: "who" }, async (_args, context) => context.secrets.user_jwt ?? "anonymous")
+    .tool({ name: "legacy" }, async (args) => `legacy ${args.n}`);
+  const replies = await exchange(plugin, [
+    { id: "i", method: "initialize", params: { features: ["tool_images", "tool_context"] } },
+    { id: "a", method: "tool.call", params: { name: "who", arguments: {}, context: { secrets: { user_jwt: "eyJ-1", n: 7 } } } },
+    { id: "b", method: "tool.call", params: { name: "who", arguments: {} } },
+    { id: "c", method: "tool.call", params: { name: "legacy", arguments: { n: 1 }, context: { secrets: { user_jwt: "eyJ-1" } } } },
+  ]);
+  const text = (id) => replies.find((r) => r.id === id).result.text;
+  assert.equal(text("a"), "eyJ-1");
+  assert.equal(text("b"), "anonymous");
+  assert.equal(text("c"), "legacy 1");
+});
+
+test("toolContext keeps only string secrets", () => {
+  assert.deepEqual(toolContext(undefined), { secrets: {} });
+  assert.deepEqual(toolContext({ secrets: ["x"] }), { secrets: {} });
+  assert.deepEqual(toolContext({ secrets: { a: "1", b: 2 } }), { secrets: { a: "1" } });
+  assert.ok(Object.isFrozen(toolContext({ secrets: { a: "1" } }).secrets));
 });

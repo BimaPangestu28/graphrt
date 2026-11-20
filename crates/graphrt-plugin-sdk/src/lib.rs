@@ -24,7 +24,7 @@
 //! plugin documentation). Never print to stdout yourself: it carries the protocol.
 //! Use [`RunCtx::log`] or stderr instead.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -201,6 +201,41 @@ impl std::error::Error for PluginError {}
 pub struct ToolCall {
     pub name: String,
     pub arguments: Value,
+    /// Per-call values from the host, outside the model-written arguments.
+    pub context: ToolCallContext,
+}
+
+/// The `context` of a `tool.call`: per-run values the host sends next to the
+/// arguments (e.g. the end user's JWT from an `agent` node's `tool_context`).
+/// Only sent to plugins that request `permissions.secrets` and are trusted;
+/// empty otherwise. `Debug` shows only the names.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ToolCallContext {
+    /// Secret name → plaintext value.
+    pub secrets: BTreeMap<String, String>,
+}
+
+impl ToolCallContext {
+    /// The plaintext of secret `name`.
+    pub fn secret(&self, name: &str) -> Option<&str> {
+        self.secrets.get(name).map(String::as_str)
+    }
+
+    /// Read `params.context` (missing or malformed entries are ignored).
+    fn from_params(params: &Value) -> Self {
+        let secrets = params
+            .pointer("/context/secrets")
+            .and_then(Value::as_object)
+            .map(|map| map.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect())
+            .unwrap_or_default();
+        Self { secrets }
+    }
+}
+
+impl fmt::Debug for ToolCallContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolCallContext").field("secrets", &self.secrets.keys().collect::<Vec<_>>()).finish()
+    }
 }
 
 /// A tool result.
@@ -588,7 +623,11 @@ impl Plugin {
             send(out, error_response(&id, -32602, &msg, Some(json!({"kind": "unknown_tool"}))));
             return;
         };
-        let call = ToolCall { name, arguments: params.get("arguments").cloned().unwrap_or(Value::Null) };
+        let call = ToolCall {
+            name,
+            arguments: params.get("arguments").cloned().unwrap_or(Value::Null),
+            context: ToolCallContext::from_params(&params),
+        };
         let out = out.clone();
         tokio::spawn(async move {
             let inner = AbortOnDrop(tokio::spawn(handler(call)));
@@ -813,6 +852,10 @@ mod tests {
             .tool(json!({"name": "add", "description": "", "parameters": {}}), |call| async move {
                 let a = call.arguments["a"].as_i64().unwrap_or(0);
                 Ok(ToolResult::text(format!("{}", a + 1)))
+            })
+            .tool(json!({"name": "who", "description": "", "parameters": {}}), |call| async move {
+                assert!(!format!("{:?}", call.context).contains("tok-1"));
+                Ok(ToolResult::text(call.context.secret("user_jwt").unwrap_or("anonymous")))
             });
         let input = [
             r#"{"jsonrpc":"2.0","id":"i","method":"initialize","params":{}}"#,
@@ -822,6 +865,8 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":"r-4","method":"node.run","params":{"request_id":"r-4","kind":"t.pause","config":{}}}"#,
             r#"{"jsonrpc":"2.0","id":"r-5","method":"node.run","params":{"request_id":"r-5","kind":"t.pause","config":{},"resume":{"state":{"step":1},"input":"yes"}}}"#,
             r#"{"jsonrpc":"2.0","id":"t-1","method":"tool.call","params":{"name":"add","arguments":{"a":41}}}"#,
+            r#"{"jsonrpc":"2.0","id":"t-2","method":"tool.call","params":{"name":"who","arguments":{},"context":{"secrets":{"user_jwt":"tok-1"}}}}"#,
+            r#"{"jsonrpc":"2.0","id":"t-3","method":"tool.call","params":{"name":"who","arguments":{}}}"#,
             r#"{"jsonrpc":"2.0","id":"x","method":"bogus"}"#,
             "",
         ]
@@ -844,6 +889,8 @@ mod tests {
         assert_eq!(by_id("r-4")["result"]["pause"]["state"]["step"], 1);
         assert_eq!(by_id("r-5")["result"]["outputs"]["input"], "yes");
         assert_eq!(by_id("t-1")["result"]["text"], "42");
+        assert_eq!(by_id("t-2")["result"]["text"], "tok-1");
+        assert_eq!(by_id("t-3")["result"]["text"], "anonymous");
         assert_eq!(by_id("x")["error"]["code"], -32601);
     }
 

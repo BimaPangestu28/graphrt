@@ -10,7 +10,7 @@ use std::time::Duration;
 use graphrt_core::dsl::NodeDoc;
 use graphrt_core::node::{Node, NodeContext, NodeOutcome, Services};
 use graphrt_core::pool::VariablePool;
-use graphrt_core::tool::ToolRuntime;
+use graphrt_core::tool::{ToolCallContext, ToolRuntime};
 use graphrt_core::value::Value;
 use graphrt_mcp::{McpServerConfig, McpToolRuntime, McpTransport, StdioConfig, connect_all};
 use rmcp::model::{
@@ -120,18 +120,18 @@ async fn lists_and_calls_tools_in_process() {
     assert_eq!(tools[0].name, "echo");
     assert_eq!(tools[0].parameters["required"][0], "text");
 
-    let out = rt.call("echo", serde_json::json!({"text": "hello"})).await.unwrap();
+    let out = rt.call("echo", serde_json::json!({"text": "hello"}), ToolCallContext::empty()).await.unwrap();
     assert_eq!(out.text, "hello");
     assert!(!out.is_error);
 
-    let out = rt.call("add", serde_json::json!({"a": 2, "b": 3})).await.unwrap();
+    let out = rt.call("add", serde_json::json!({"a": 2, "b": 3}), ToolCallContext::empty()).await.unwrap();
     assert_eq!(out.data.get_path(&["sum"]), Some(Value::Int(5)));
 
-    let out = rt.call("fail", serde_json::json!({})).await.unwrap();
+    let out = rt.call("fail", serde_json::json!({}), ToolCallContext::empty()).await.unwrap();
     assert!(out.is_error);
 
-    assert!(rt.call("missing", serde_json::json!({})).await.is_err());
-    assert!(rt.call("echo", serde_json::json!("not an object")).await.is_err());
+    assert!(rt.call("missing", serde_json::json!({}), ToolCallContext::empty()).await.is_err());
+    assert!(rt.call("echo", serde_json::json!("not an object"), ToolCallContext::empty()).await.is_err());
     rt.close().await;
 }
 
@@ -142,9 +142,9 @@ async fn enforces_timeout_and_allow_list() {
     let rt = in_process(&cfg).await;
     let names: Vec<String> = rt.list().await.unwrap().into_iter().map(|t| t.name).collect();
     assert_eq!(names, ["echo", "slow"]);
-    let err = rt.call("add", serde_json::json!({"a": 1, "b": 1})).await.unwrap_err();
+    let err = rt.call("add", serde_json::json!({"a": 1, "b": 1}), ToolCallContext::empty()).await.unwrap_err();
     assert!(err.message.contains("allowed"), "{err}");
-    let err = rt.call("slow", serde_json::json!({})).await.unwrap_err();
+    let err = rt.call("slow", serde_json::json!({}), ToolCallContext::empty()).await.unwrap_err();
     assert!(err.message.contains("timed out"), "{err}");
 }
 
@@ -212,9 +212,9 @@ async fn stdio_child_process_with_clean_environment() {
     }
     let registry = connect_all(&[stdio_config("child")]).await.expect("connect stdio server");
     let rt = registry.get("mcp:child").expect("registered").clone();
-    let out = rt.call("echo", serde_json::json!({"text": "over stdio"})).await.unwrap();
+    let out = rt.call("echo", serde_json::json!({"text": "over stdio"}), ToolCallContext::empty()).await.unwrap();
     assert_eq!(out.text, "over stdio");
-    let probe = rt.call("env_probe", serde_json::json!({})).await.unwrap();
+    let probe = rt.call("env_probe", serde_json::json!({}), ToolCallContext::empty()).await.unwrap();
     assert_eq!(probe.text, "secret=false explicit=yes");
 }
 

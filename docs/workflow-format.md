@@ -338,6 +338,8 @@ require_approval: [mcp:github/create_issue]   # or ["*"]
 memory: { window: { enabled: true, size: 20 } }
 keep_tool_images: 3   # optional (default 3): images of only the last 3 image-bearing tool results; null keeps all
 stream_tool_turns: true   # optional (default true): stream every turn's text per token; false buffers turns that may call tools
+tool_context:         # optional: per-run values sent to a provider's tools outside the arguments
+  crm: { user_jwt: "{{#start.user_jwt#}}" }
 ```
 
 Runs a tool-calling loop until the model answers without tools (the last
@@ -360,6 +362,16 @@ streamed). `stream_tool_turns: false` buffers tool-calling turns instead: only
 the final answer is streamed (as one chunk unless it was the forced last turn)
 and `text` is the final turn's text alone. See
 [serving.md](serving.md#streaming-sse) for the SSE format.
+
+`tool_context` passes per-run values, such as the end user's JWT, to the tools
+of one provider without the model seeing them: they travel in the `context` of
+each `tool.call`, never in the arguments, and are kept out of events, outputs,
+snapshots and traces (any echo in a tool result is replaced with `******`).
+Keys are tool providers that appear in `tools`; values map names to templates,
+rendered with secrets in plaintext. Only plugins that request
+`permissions.secrets` and are trusted (`--trust-plugin`) may receive it; any
+other provider fails the node with `tool_context_denied`. See
+[plugins.md](plugins.md#tool-call-context).
 
 ### `question-classifier` (branch)
 

@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from graphrt_plugin import MAX_TOOL_IMAGE_BYTES, PluginError, tool_result  # noqa: E402
+from graphrt_plugin import MAX_TOOL_IMAGE_BYTES, PluginError, ToolContext, tool_result  # noqa: E402
 
 PLUGIN = textwrap.dedent(
     """
@@ -28,6 +28,15 @@ PLUGIN = textwrap.dedent(
     @plugin.tool("bad")
     async def bad(args):
         return {{"text": "odd", "images": [{{"media_type": "image/bmp", "data": b"abc"}}]}}
+
+    @plugin.tool("who")
+    async def who(args, context):
+        assert "eyJ" not in repr(context)
+        return context.secrets.get("user_jwt", "anonymous")
+
+    @plugin.tool("sync_who")
+    def sync_who(args, context):
+        return context.secrets.get("user_jwt", "anonymous")
 
     plugin.run()
     """
@@ -93,3 +102,26 @@ class ToolImagesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ToolContextTest(unittest.TestCase):
+    def test_handlers_with_two_arguments_receive_the_context(self):
+        context = {"secrets": {"user_jwt": "eyJ-1", "n": 7}}
+        with_context = {"name": "who", "arguments": {}, "context": context}
+        replies = exchange([
+            {"id": "a", "method": "tool.call", "params": with_context},
+            {"id": "b", "method": "tool.call", "params": {"name": "who", "arguments": {}}},
+            {"id": "c", "method": "tool.call", "params": {**with_context, "name": "sync_who"}},
+            {"id": "d", "method": "tool.call", "params": {**with_context, "name": "shot", "arguments": {"size": 1}}},
+        ])
+        self.assertEqual(replies["a"]["result"]["text"], "eyJ-1")
+        self.assertEqual(replies["b"]["result"]["text"], "anonymous")
+        self.assertEqual(replies["c"]["result"]["text"], "eyJ-1")
+        # One-argument handlers keep working.
+        self.assertIn("800x600", replies["d"]["result"]["text"])
+
+    def test_from_params_keeps_only_string_secrets(self):
+        self.assertEqual(ToolContext.from_params(None).secrets, {})
+        self.assertEqual(ToolContext.from_params({"secrets": ["x"]}).secrets, {})
+        self.assertEqual(ToolContext.from_params({"secrets": {"a": "1", "b": 2}}).secrets, {"a": "1"})
+        self.assertEqual(repr(ToolContext({"a": "secret-value"})), "ToolContext(secrets=['a'])")

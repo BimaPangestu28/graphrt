@@ -44,8 +44,9 @@ pub trait Transport: Send + Sync + fmt::Debug {
 }
 
 /// Optional protocol features this host supports, announced in `initialize`
-/// (`tool_images`: `tool.call` results may carry `images`).
-pub const HOST_FEATURES: &[&str] = &["tool_images"];
+/// (`tool_images`: `tool.call` results may carry `images`; `tool_context`:
+/// `tool.call` requests may carry a `context` with per-call secrets).
+pub const HOST_FEATURES: &[&str] = &["tool_images", "tool_context"];
 
 /// Parameters of `initialize`. `max_message_bytes` tells the plugin how large a
 /// line the host may send, so SDKs size their read buffers to match.
@@ -159,6 +160,6 @@ mod tests {
     fn initialize_announces_features() {
         let params = initialize_params(1024);
         assert_eq!(params["max_message_bytes"], 1024);
-        assert_eq!(params["features"], serde_json::json!(["tool_images"]));
+        assert_eq!(params["features"], serde_json::json!(["tool_images", "tool_context"]));
     }
 }

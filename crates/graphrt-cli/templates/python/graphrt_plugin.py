@@ -50,7 +50,9 @@ __all__ = [
     "pause",
     "tool_result",
     "PROTOCOL_VERSION",
+    "ToolContext",
     "TOOL_IMAGES_FEATURE",
+    "TOOL_CONTEXT_FEATURE",
     "MAX_TOOL_IMAGES",
     "MAX_TOOL_IMAGE_BYTES",
     "TOOL_IMAGE_MEDIA_TYPES",
@@ -61,6 +63,8 @@ PROTOCOL_VERSION = 1
 MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 # Feature a host lists in `initialize` when tool results may carry `images`.
 TOOL_IMAGES_FEATURE = "tool_images"
+# Feature a host lists in `initialize` when `tool.call` may carry a `context`.
+TOOL_CONTEXT_FEATURE = "tool_context"
 # Tool result image limits (the host enforces the same).
 MAX_TOOL_IMAGES = 4
 MAX_TOOL_IMAGE_BYTES = 5 * 1024 * 1024
@@ -213,13 +217,48 @@ def tool_result(result: Any, host_supports_images: bool = True) -> Dict[str, Any
 
 
 NodeHandler = Callable[[RunContext, RunRequest], Awaitable[Any]]
-ToolHandler = Callable[[Dict[str, Any]], Awaitable[Any]]
+ToolHandler = Callable[..., Awaitable[Any]]
+
+
+@dataclass(frozen=True)
+class ToolContext:
+    """Per-call values from the host, outside the model-written arguments.
+
+    ``secrets`` comes from ``tool.call`` ``context`` (e.g. the end user's JWT from
+    an ``agent`` node's ``tool_context``). It is empty unless the plugin requests
+    ``permissions.secrets`` and the operator trusts it. ``repr`` shows only the names.
+    """
+
+    secrets: Dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_params(cls, context: Any) -> "ToolContext":
+        given = context.get("secrets") if isinstance(context, dict) else None
+        if not isinstance(given, dict):
+            return cls()
+        return cls({str(k): v for k, v in given.items() if isinstance(v, str)})
+
+    def __repr__(self) -> str:
+        return f"ToolContext(secrets={sorted(self.secrets)!r})"
+
+
+def _accepts_context(fn: Callable[..., Any]) -> bool:
+    """Whether a tool handler takes a second positional argument (the context)."""
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    if any(p.kind == p.VAR_POSITIONAL for p in params):
+        return True
+    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    return len(positional) >= 2
 
 
 @dataclass
 class _Tool:
     spec: Dict[str, Any]
     handler: Callable[..., Any]
+    takes_context: bool = False
 
 
 @dataclass
@@ -249,7 +288,12 @@ class Plugin:
 
     def tool(self, name: str, description: str = "", parameters: Optional[Dict[str, Any]] = None
              ) -> Callable[[ToolHandler], ToolHandler]:
-        """Decorator registering a tool ``async def handler(arguments)``.
+        """Decorator registering a tool ``async def handler(arguments)`` or
+        ``async def handler(arguments, context)``.
+
+        ``context`` is a :class:`ToolContext`; ``context.secrets`` holds per-call
+        values from the host (empty unless the plugin requests
+        ``permissions.secrets`` and is trusted). Never log or return them.
 
         Return a string, or ``{"text": ..., "data": ..., "is_error": bool, "images": [...]}``.
         ``images`` entries are ``{"media_type": "image/png", "data": b"..."}``
@@ -259,7 +303,7 @@ class Plugin:
 
         def register(fn: ToolHandler) -> ToolHandler:
             spec = {"name": name, "description": description, "parameters": parameters or {"type": "object"}}
-            self._tools[name] = _Tool(spec, fn)
+            self._tools[name] = _Tool(spec, fn, _accepts_context(fn))
             return fn
 
         return register
@@ -424,7 +468,11 @@ class Plugin:
             self._error(msg_id, -32602, f"plugin `{self.name}` has no tool `{name}`", {"kind": "unknown_tool"})
             return
         try:
-            result = tool.handler(params.get("arguments") or {})
+            arguments = params.get("arguments") or {}
+            if tool.takes_context:
+                result = tool.handler(arguments, ToolContext.from_params(params.get("context")))
+            else:
+                result = tool.handler(arguments)
             if inspect.isawaitable(result):
                 result = await result
             self._reply(msg_id, tool_result(result, TOOL_IMAGES_FEATURE in self._host_features))

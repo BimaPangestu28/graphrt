@@ -11,7 +11,7 @@ use graphrt_core::node::{
     ConfigError, Node, NodeContext, NodeError, NodeOutcome, NodeOutput, NodeResult, NodeRole, PauseRequest,
 };
 use graphrt_core::pool::Selector;
-use graphrt_core::tool::{ToolError, ToolOutput, ToolRuntime, ToolSpec};
+use graphrt_core::tool::{ToolCallContext, ToolError, ToolOutput, ToolRuntime, ToolSpec};
 use graphrt_core::value::Value;
 use tokio::sync::Semaphore;
 
@@ -304,7 +304,12 @@ impl ToolRuntime for PluginTools {
         })
     }
 
-    fn call<'a>(&'a self, name: &'a str, arguments: serde_json::Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+    fn call<'a>(
+        &'a self,
+        name: &'a str,
+        arguments: serde_json::Value,
+        context: &'a ToolCallContext,
+    ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         Box::pin(async move {
             let _permit = self
                 .shared
@@ -315,8 +320,27 @@ impl ToolRuntime for PluginTools {
                 .map_err(|_| self.error(name, CallError::Crashed("closed".into())))?;
             let clock = graphrt_core::node::default_clock();
             let id = self.shared.transport.next_id();
-            let params = serde_json::json!({"request_id": id, "name": name, "arguments": arguments});
-            let call = self.shared.transport.call(id, "tool.call", params, None, true, &clock);
+            let mut params = serde_json::Map::with_capacity(4);
+            params.insert("request_id".into(), serde_json::Value::from(id.clone()));
+            params.insert("name".into(), serde_json::Value::from(name));
+            params.insert("arguments".into(), arguments);
+            // `context` is only sent when there is something in it, and only to plugins
+            // granted plaintext secrets: older plugins never see the new field.
+            if !context.is_empty() {
+                if !self.shared.expose_secrets {
+                    return Err(ToolError {
+                        tool: name.to_owned(),
+                        message: format!(
+                            "plugin `{}` may not receive a tool call context: it needs `permissions.secrets` \
+                             and must be trusted",
+                            self.shared.name
+                        ),
+                    });
+                }
+                params.insert("context".into(), serde_json::json!({"secrets": context.secrets}));
+            }
+            let call =
+                self.shared.transport.call(id, "tool.call", serde_json::Value::Object(params), None, true, &clock);
             let result = with_timeout(&clock, self.shared.timeout, call).await;
             track(self.shared.transport.as_ref(), &result);
             let result = result.map_err(|e| self.error(name, e))?;
@@ -328,5 +352,10 @@ impl ToolRuntime for PluginTools {
                 images: msg.images,
             })
         })
+    }
+
+    /// Only plugins granted plaintext secrets (`permissions.secrets` + trusted).
+    fn accepts_secrets(&self) -> bool {
+        self.shared.expose_secrets
     }
 }
