@@ -159,6 +159,14 @@ They honour standard proxy environment variables, except the OTel exporter and
 - **No key on another address.** Without a key on a non-loopback address, the
   API is open to anyone who can reach it. graphrt prints a warning. The Docker
   image binds `0.0.0.0`, so always set a key there.
+- **End-user JWTs.** With `--verify-jwt`, a request whose mapped header holds a
+  valid JWT (JWKS or HS256 signature, `exp`, optional `iss` / `aud`, a `sub`)
+  may start runs without the API key; an invalid token is `401` even next to a
+  valid key. The token opens only `POST /v1/workflows/{name}/runs` of workflows
+  that declare the verified input (others are `403`); the server
+  refuses to start on a non-loopback address without an API key, so the rest
+  of the API stays closed. `--user-rate-limit` caps runs per `sub`. See
+  [serving.md](serving.md#verifying-end-user-jwts).
 - **CORS.** None. Browsers get no `Access-Control-Allow-Origin`, and JSON
   bodies force a preflight.
 - **Limits.**
@@ -220,6 +228,7 @@ They honour standard proxy environment variables, except the OTel exporter and
 | Code limits ceiling | register a `CodeLimits` service (embedders) | 10 s / 64 MiB / 1 MiB stack / 4 MiB result |
 | Python subprocess | `--allow-python-subprocess` | off |
 | Concurrent runs | `--max-active-runs` | 256 |
+| End-user JWTs, per-user rate limit | `--verify-jwt`, `--jwt-*`, `--user-rate-limit` | off |
 | Kept runs | `--max-runs`, `--store-ttl-days` | 1,000 in memory / forever on disk |
 | Body and upload size | `--max-body-bytes`, `--max-upload-bytes` | 2 MiB / 16 MiB |
 | Run budget | `--timeout-ms`, `--max-steps`, `Limits` | engine defaults |

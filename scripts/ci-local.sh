@@ -7,7 +7,7 @@
 # never fights another build over `target/`.
 #
 # Usage: scripts/ci-local.sh [--skip <job>]... [--keep]
-#   jobs:   fmt, clippy, test, msrv, minimal-core, wasm, size  (all run by default)
+#   jobs:   fmt, clippy, test, msrv, minimal-core, wasm, size, chatbot-e2e  (all run by default)
 #   --keep  keep the temporary worktree afterwards (for debugging)
 # Environment: GRAPHRT_CI_TARGET_DIR (default: ~/.cache/graphrt-ci-local/target)
 #
@@ -15,10 +15,12 @@
 #
 # Needs rustup. The msrv job needs the 1.89 toolchain and the wasm job the
 # wasm32-unknown-unknown target; the script installs them with rustup if missing.
+# The chatbot-e2e job (examples/supabase-chatbot/tests/run.sh) needs Node.js,
+# Postgres and PostgREST; it is skipped with a note when one is missing.
 set -euo pipefail
 
 MSRV_TOOLCHAIN="1.89"
-ALL_JOBS=(fmt clippy test msrv minimal-core wasm size)
+ALL_JOBS=(fmt clippy test msrv minimal-core wasm size chatbot-e2e)
 skipped_jobs=()
 keep_worktree=false
 while [ $# -gt 0 ]; do
@@ -56,6 +58,20 @@ run_job() {
   "$@"
 }
 
+# The chatbot e2e test needs a few services; without them it is skipped, not failed.
+run_chatbot_e2e() {
+  local tool
+  for tool in node postgrest pg_ctl initdb psql; do
+    if ! command -v "$tool" >/dev/null && ! [ -x "${PG_BIN:-/nonexistent}/$tool" ]; then
+      echo "ci-local: chatbot-e2e needs $tool (brew install node postgresql@16 postgrest); skipped" >&2
+      return 0
+    fi
+  done
+  # Same features as the test job, so the debug binary it built is reused.
+  cargo build -p graphrt-cli --all-features &&
+    examples/supabase-chatbot/tests/run.sh "$target_dir/debug/graphrt"
+}
+
 ensure_toolchain() { rustup toolchain list | grep -q "^$1" || rustup toolchain install --profile minimal "$1"; }
 ensure_wasm_target() { rustup target list --installed | grep -q '^wasm32-unknown-unknown$' || rustup target add wasm32-unknown-unknown; }
 
@@ -70,6 +86,7 @@ for job in "${ALL_JOBS[@]}"; do
     wasm) is_skipped wasm || ensure_wasm_target
       command=(cargo build -p graphrt-core --no-default-features --features yaml,jinja --target wasm32-unknown-unknown) ;;
     size) command=(cargo build -p graphrt-cli --profile min-size) ;;
+    chatbot-e2e) command=(run_chatbot_e2e) ;;
   esac
   if ! run_job "$job" "${command[@]}"; then failed_jobs+=("$job"); fi
 done

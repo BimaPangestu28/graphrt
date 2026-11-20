@@ -22,7 +22,7 @@ or embedded in your own Rust program.
 | Laptop / server | `graphrt run flow.yaml` or `graphrt serve flows/` (single static binary) |
 | Container | ~17 MB distroless image (linux/amd64, linux/arm64) — see [docs/deploy.md](docs/deploy.md) |
 | Small devices / IoT | A 6 MiB build serves workflows in a 16 MiB memory limit on a tenth of a core — see [docs/serving.md](docs/serving.md#small-devices) |
-| Phone | Embed `graphrt-ffi` in an Android or iOS app — see [docs/mobile.md](docs/mobile.md) and the [sample apps](examples/mobile/) |
+| Phone | Embed `graphrt-ffi` in an Android or iOS app — see [docs/mobile.md](docs/mobile.md) and the [sample apps](examples/mobile/); or chat with a served agent from Flutter / React Native — see [docs/chatbot-supabase.md](docs/chatbot-supabase.md) |
 | Browser / edge | The core compiles to WebAssembly |
 | Your Rust app | `graphrt-core` as a library — see [docs/embedding.md](docs/embedding.md) |
 
@@ -116,8 +116,17 @@ curl -H "X-User-Authorization: Bearer $USER_JWT" -d '{"stream":true}' \
   http://localhost:8080/v1/workflows/chat/runs
 ```
 
+With `--verify-jwt user_jwt` the server verifies that token itself (JWKS or
+HS256, `exp`, `iss`, `aud`), so the app needs no API key, and
+`--user-rate-limit` caps runs per user. A full Supabase chatbot backend (schema
+with RLS, agent, container, deploy notes, end-to-end security tests) is in
+[examples/supabase-chatbot](examples/supabase-chatbot/), with Flutter and React
+Native clients in [graphrt-examples](https://github.com/BimaPangestu28/graphrt-examples);
+the guide is [docs/chatbot-supabase.md](docs/chatbot-supabase.md).
+
 See [docs/serving.md](docs/serving.md#per-user-credentials-from-headers) and
-[docs/cli.md](docs/cli.md) for every command and flag.
+[docs/cli.md](docs/cli.md) for every command and flag, and the
+[docs index](docs/README.md) for everything else.
 
 ## A workflow
 
@@ -343,7 +352,7 @@ Custom nodes, services, model providers and native tools are covered in
 | Code | QuickJS on its own stack-sized thread with memory, stack and time limits that workflows can only lower (and never switch off), no filesystem, network, environment, timers or modules; a fresh runtime per execution. |
 | MCP | stdio servers start with an empty environment plus an explicit allow-list; every call has a timeout; tools can be allow-listed. |
 | Plugins | Process plugins start lazily with an empty environment plus the variables their manifest lists, optional `checksums` verified before every start, per-request timeouts and message size caps; secrets are masked unless the manifest asks for them. WebAssembly plugins run in an interpreter with fuel and memory limits and no system imports. A plugin can never replace a built-in or another plugin's node kind. |
-| Server | Optional bearer auth (constant-time comparison); without a key, a loopback server only accepts loopback `Host` names (DNS rebinding). Body and upload limits, a cap on concurrently executing runs (`--max-active-runs`), no CORS, env values cannot be set by requests. Per-user credentials mapped from headers (`--input-header`) are secrets, never stored or logged in plaintext. Webhooks verify HMAC-SHA256 signatures in constant time with a replay window; completion callbacks are signed and go through the egress policy. |
+| Server | Optional bearer auth (constant-time comparison); without a key, a loopback server only accepts loopback `Host` names (DNS rebinding). Body and upload limits, a cap on concurrently executing runs (`--max-active-runs`), no CORS, env values cannot be set by requests. Per-user credentials mapped from headers (`--input-header`) are secrets, never stored or logged in plaintext; `--verify-jwt` verifies them as JWTs (a valid token may only start runs) and `--user-rate-limit` limits each user. Webhooks verify HMAC-SHA256 signatures in constant time with a replay window; completion callbacks are signed and go through the egress policy. |
 | Limits | Step budget, run duration, per-node timeouts, container depth, iteration/loop caps. |
 
 The threat model, sandbox limits, egress rules and deployment knobs are in
@@ -383,6 +392,9 @@ about 2.1 MiB (measured on macOS arm64: 10.3 MiB → 12.4 MiB);
 models themselves are downloaded on first use, not bundled. A server build for
 small devices, `--no-default-features --features llm,http,wasm,serve`, is
 6.3 MiB as a static aarch64 musl binary (6.2 MiB for 32-bit ARMv7).
+
+End-user JWT verification for `serve` (`jwt`, on by default) adds about
+33 KiB: it reuses the `ring` and `reqwest` crates already linked for TLS.
 
 Every feature is optional: build only what a deployment needs.
 

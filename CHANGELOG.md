@@ -12,6 +12,21 @@ semantic conventions, content capture follows the standard variable, and runs
 keep the context and data an evaluator needs.
 
 ### Added
+- `graphrt serve --verify-jwt INPUT` (cargo feature `jwt`, on by default)
+  verifies the token of a header-mapped input as a JWT: `ES256` / `RS256` keys
+  from a JWKS (`--jwt-jwks-url`, refreshed in the background and on unknown
+  `kid`) and/or an `HS256` secret (`--jwt-secret-env`), with `exp`, `nbf`,
+  `--jwt-issuer` and `--jwt-audience` checks and a required `sub`. A valid
+  token may start runs (`POST /v1/workflows/{name}/runs` only, of workflows
+  that declare the input; others are `403`) without the API key and sets
+  `sys.user_id`; an invalid one is `401`. `--user-rate-limit N`
+  allows N runs per minute per `sub` (`429` with `Retry-After`). The server
+  refuses `--verify-jwt` on a non-loopback address without an API key. No new
+  crates; about 33 KiB of binary.
+- `examples/supabase-chatbot`: a multi-user chatbot backend for apps signed in
+  with Supabase Auth: agent with the supabase plugin in `user_rpc` mode and
+  `tool_context`, memory from `sys.history`, a sample schema with RLS and an
+  isolation test, a distroless container and Fly.io / Cloud Run / VPS notes.
 - `graphrt serve --input-header INPUT=HEADER` maps a request header (leading
   `Bearer ` stripped) to a secret start input of new, streamed and resumed
   runs, so an app can send a user's JWT next to the serve API key. The value is
@@ -159,6 +174,17 @@ keep the context and data an evaluator needs.
   error messages, like other secrets.
 - The OTLP exporter no longer drops a run's root span when its queue is full;
   several backends hide or discard every span of a trace without its root.
+- `graphrt serve` keeps keep-alive connections usable after responses sent
+  before the request body was read (`401`/`403` auth, `429` rate limits, `415`,
+  `413`): the unread body is drained (up to `--max-body-bytes`, at most 2 s),
+  or the response says `Connection: close`. Pooling clients such as Dart's
+  `http.Client` no longer fail their next request with "Broken pipe".
+- `examples/supabase-chatbot/tests`: end-to-end security test (real
+  `graphrt serve`, supabase plugin in `user_rpc` mode, PostgREST and Postgres,
+  a scripted hostile model) proving user A cannot reach user B's rows and that
+  prompt injection cannot call functions outside the allowlist or reveal the
+  user's JWT; `tests/run.sh` runs it with the smoke test. New guide
+  [docs/chatbot-supabase.md](docs/chatbot-supabase.md) and a docs index.
 
 ## [0.3.2] - 2026-11-20
 

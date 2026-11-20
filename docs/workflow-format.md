@@ -95,6 +95,47 @@ written to snapshots.
 - Namespaces: node ids, `sys` (host-provided: `query`, `files`, `history`,
   `user_id`, `run_id`...), `env`, `conversation`.
 
+### Conversation history (`sys.history`)
+
+graphrt keeps no conversation state between runs: a chat host sends the
+previous turns with every request, and `llm` / `agent` nodes with `memory`
+read them. The contract:
+
+```json
+{
+  "sys": {
+    "query": "And on Friday?",
+    "history": [
+      { "role": "user", "content": "What's on my calendar Thursday?" },
+      { "role": "assistant", "content": "A dentist appointment at 10:00." }
+    ]
+  }
+}
+```
+
+- `sys.history` is an array of `{role, content}` objects, **oldest first**,
+  holding the earlier turns only. The current message is **not** in it: it is
+  `sys.query`, or a start input the node's prompt / `query` references.
+- `role` is `user` (or `human`), `assistant` (or `ai`), or `system`; anything
+  else (including `tool`) fails the node with `invalid_input`. `content` is
+  text; other values are converted to text (objects and arrays as JSON).
+- A missing, `null` or empty history means a fresh conversation. A JSON string
+  holding such an array is also accepted (handy for `--sys history=...` on the
+  command line); any other type is `invalid_input`.
+- `memory: { window: { enabled: true, size: N } }` keeps only the last `N`
+  turns (`2N` messages; `N` defaults to 10). Without a window every message is
+  sent, so hosts should trim long chats themselves.
+- `memory.variable_selector` reads the history from another variable (default
+  `[sys, history]`).
+- `llm`: the history goes after the system prompt, then the current query as a
+  user message (`memory.query_prompt_template`, default `{{#sys.query#}}`; not
+  added again when a prompt message already references `sys.query`). `agent`:
+  instruction, history, then the node's `query`.
+- The history is client input. A client can put anything in it, including
+  `system` entries, so it can steer its own conversation; do not use the system
+  prompt as an authorization boundary (enforce access in tools and data, as in
+  [examples/supabase-chatbot](../examples/supabase-chatbot/)).
+
 ## Nodes
 
 Every node has:
@@ -315,7 +356,7 @@ prompt_template:
   - { role: user, text: "{{#sys.query#}}" }
 context: { enabled: true, variable_selector: [search, text] }
 vision: { enabled: true, variable_selector: [sys, files] }
-memory: { window: { enabled: true, size: 10 }, variable_selector: [sys, history] }
+memory: { window: { enabled: true, size: 10 }, variable_selector: [sys, history] }   # see "Conversation history"
 structured_output_enabled: true
 structured_output: { schema: { type: object, properties: { score: { type: number } } } }
 ```

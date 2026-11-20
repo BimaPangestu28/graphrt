@@ -136,6 +136,8 @@ graphrt serve <workflow-file|directory> [--addr 127.0.0.1:8080] [--api-key-env G
               [--max-body-bytes N] [--env-file] [--mcp] [--allow-private-network]
               [--providers FILE] [--model PROVIDER/NAME] [--allow-python-subprocess]
               [--timeout-ms] [--max-steps] [--input-header INPUT=HEADER]...
+              [--verify-jwt INPUT [--jwt-jwks-url URL] [--jwt-secret-env VAR]
+               [--jwt-issuer ISS] [--jwt-audience AUD] [--user-rate-limit N]]
 ```
 
 Each workflow file is served under its file stem and compiled once at startup.
@@ -147,6 +149,13 @@ a request header (leading `Bearer ` stripped) to the start input `user_jwt` of
 new and resumed runs, as a secret. The input must be declared `type: secret`;
 a missing header for a required input is `401`. See
 [serving.md](serving.md#per-user-credentials-from-headers).
+
+`--verify-jwt user_jwt` also verifies that header as a JWT (JWKS with
+`--jwt-jwks-url`, or an HS256 secret with `--jwt-secret-env`; `--jwt-issuer`,
+`--jwt-audience`) and lets a valid token start runs without the API key; an
+invalid one is `401`. `--user-rate-limit N` caps runs per minute per token
+`sub` (`429` with `Retry-After`). See
+[serving.md](serving.md#verifying-end-user-jwts).
 
 | Method | Path | Body |
 | --- | --- | --- |

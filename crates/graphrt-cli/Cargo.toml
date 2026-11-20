@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "telemetry", "eval"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "jwt", "telemetry", "eval"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -67,7 +67,11 @@ otel = ["dep:graphrt-otel"]
 mimalloc = ["dep:mimalloc"]
 # `graphrt serve`: HTTP + SSE API, webhook triggers (`--webhooks`). Completion
 # callbacks of webhooks additionally need `http` (they go through its egress policy).
-serve = ["dep:axum", "dep:sha2", "tokio/rt-multi-thread", "tokio/net", "tokio/sync"]
+serve = ["dep:axum", "dep:http-body", "dep:sha2", "tokio/rt-multi-thread", "tokio/net", "tokio/sync"]
+# End-user JWT verification and per-user rate limits for `serve` (`--verify-jwt`,
+# `--user-rate-limit`): HS256 / ES256 / RS256 with `ring` and a JWKS fetched with
+# `reqwest`, both already linked for TLS, so it adds no new crates.
+jwt = ["serve", "dep:reqwest", "dep:rustls", "dep:ring", "dep:base64", "dep:thiserror"]
 # Opt-in anonymous usage telemetry of the CLI binary (`graphrt telemetry`). Off
 # by default and inert unless an endpoint is configured; see docs/telemetry.md.
 telemetry = ["http", "dep:getrandom"]
@@ -100,7 +104,13 @@ rustls = { version = "0.23", optional = true, default-features = false, features
 flate2 = { version = "1", optional = true }
 sha2 = { version = "0.11", optional = true, default-features = false }
 getrandom = { version = "0.3", optional = true }
+# `jwt`: signature checks (the same `ring` rustls uses) and base64url.
+ring = { version = "0.17", optional = true, default-features = false, features = ["alloc"] }
+base64 = { version = "0.22", optional = true }
+thiserror = { workspace = true, optional = true }
 axum ={ version = "0.8", optional = true, default-features = false, features = ["http1", "json", "query", "tokio"] }
+# Already linked through axum/hyper; named for `Frame` in the body drain of `serve`.
+http-body = { version = "1", optional = true }
 
 [dev-dependencies]
 tower = { version = "0.5", default-features = false, features = ["util"] }
