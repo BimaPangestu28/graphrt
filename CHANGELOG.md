@@ -63,7 +63,11 @@ releases may contain breaking changes; they are called out under **Changed**.
 ### Fixed
 - Plaintext of secret-typed `conversation` variables is now scrubbed from node
   error messages, like other secrets.
-
+- `graphrt serve` keeps keep-alive connections usable after responses sent
+  before the request body was read (`401`/`403` auth, `429` rate limits, `415`,
+  `413`): the unread body is drained (up to `--max-body-bytes`, at most 2 s),
+  or the response says `Connection: close`. Pooling clients such as Dart's
+  `http.Client` no longer fail their next request with "Broken pipe".
 ## [0.3.2] - 2026-11-20
 
 Telemetry fix and the project's collector endpoint in release builds.

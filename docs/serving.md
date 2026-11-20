@@ -61,6 +61,16 @@ On startup the server marks runs that were `running` as `failed` with the error
 `interrupted by restart` (a run's in-flight work cannot be recovered). Paused
 runs stay paused and can be resumed.
 
+### Keep-alive after early rejections
+
+Some responses are sent before the request body is read: `401`/`403` from the
+API key or `--verify-jwt`, `429` from `--user-rate-limit` or
+`--max-active-runs`, `415` without a JSON `Content-Type`, `413` past
+`--max-body-bytes`. The server then reads and discards the rest of the body (up
+to `--max-body-bytes`, for at most 2 s), so a client's pooled keep-alive
+connection stays usable for the retry. A larger or slower body is not read: the
+response carries `Connection: close` and the client opens a new connection.
+
 ## Starting runs
 
 `POST /v1/workflows/{name}/runs`

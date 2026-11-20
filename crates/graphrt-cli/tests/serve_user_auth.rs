@@ -320,3 +320,89 @@ async fn user_tokens_only_start_workflows_that_take_them() {
         .unwrap();
     assert_eq!(send(&app, req).await.0, StatusCode::OK);
 }
+
+// ---------------------------------------------------------------- keep-alive after early rejections
+
+/// A body the size of a long chat request: larger than what hyper drains on its own.
+fn large_body() -> String {
+    json!({ "inputs": { "message": "x".repeat(60_000) } }).to_string()
+}
+
+/// Serves `app` on a loopback port, as `graphrt serve` does.
+async fn listen(app: axum::Router) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+/// Sends one HTTP/1.1 request on `stream` and reads one response: (status, lowercase head).
+async fn exchange(stream: &mut tokio::net::TcpStream, head: &str, body: &str) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let request = format!("{head}\r\nhost: localhost\r\ncontent-length: {}\r\n\r\n{body}", body.len());
+    stream.write_all(request.as_bytes()).await.expect("write request (connection reused)");
+    let mut received = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = stream.read(&mut buffer).await.expect("read response");
+        assert!(read > 0, "connection closed before a full response: {}", String::from_utf8_lossy(&received));
+        received.extend_from_slice(&buffer[..read]);
+        let text = String::from_utf8_lossy(&received).into_owned();
+        let Some(end) = text.find("\r\n\r\n") else { continue };
+        let head = text[..end].to_ascii_lowercase();
+        let length: usize = head
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length: "))
+            .map_or(0, |value| value.trim().parse().unwrap());
+        if received.len() >= end + 4 + length {
+            return (head[9..12].parse().unwrap(), head);
+        }
+    }
+}
+
+/// After each early rejection the client sends its next request on the same connection.
+#[tokio::test]
+async fn early_rejections_keep_the_connection_reusable() {
+    let dir = TempDir::new("keep-alive");
+    let addr = listen(app(&dir, 1).await).await;
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let token = token_for("keep-alive-user", SECRET, 3600);
+    let run = "POST /v1/workflows/chat/runs HTTP/1.1\r\ncontent-type: application/json";
+    let cases = [
+        (format!("{run}\r\n{HEADER}: Bearer not-a-jwt"), 401), // --verify-jwt
+        ("POST /v1/validate HTTP/1.1\r\ncontent-type: application/json".to_owned(), 401), // API key
+        (format!("{run}\r\n{HEADER}: Bearer {token}"), 200),   // uses the 1-per-minute quota
+        (format!("{run}\r\n{HEADER}: Bearer {token}"), 429),   // --user-rate-limit
+        (format!("POST /v1/validate HTTP/1.1\r\nauthorization: Bearer {API_KEY}"), 415), // no content type
+    ];
+    for (head, expected) in cases {
+        let (status, response_head) = exchange(&mut stream, &head, &large_body()).await;
+        assert_eq!(status, expected, "{head}\n{response_head}");
+        assert!(!response_head.contains("connection: close"), "{response_head}");
+        let (status, _) = exchange(&mut stream, "GET /healthz HTTP/1.1", "").await;
+        assert_eq!(status, 200, "connection not reusable after {head}");
+    }
+}
+
+/// A body over the limit is not read: the response says `Connection: close`, and a new connection works.
+#[tokio::test]
+async fn oversized_rejected_bodies_close_the_connection_explicitly() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let dir = TempDir::new("keep-alive-large");
+    let addr = listen(app(&dir, 0).await).await;
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    // Only the head: the 2 MiB body (limit 1 MiB) is announced but never sent.
+    let head = format!(
+        "POST /v1/workflows/chat/runs HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\n\
+         {HEADER}: Bearer not-a-jwt\r\ncontent-length: {}\r\n\r\n",
+        2 << 20
+    );
+    stream.write_all(head.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let response = String::from_utf8_lossy(&response).to_ascii_lowercase();
+    assert!(response.starts_with("http/1.1 401"), "{response}");
+    assert!(response.contains("connection: close"), "{response}");
+    let mut fresh = tokio::net::TcpStream::connect(addr).await.unwrap();
+    assert_eq!(exchange(&mut fresh, "GET /healthz HTTP/1.1", "").await.0, 200);
+}
