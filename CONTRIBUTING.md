@@ -26,6 +26,15 @@ features, wasm32 and the min-size build) against your committed `HEAD`:
 scripts/ci-local.sh            # --skip <job> to leave one out, e.g. --skip size
 ```
 
+Live tests against real model APIs are opt-in and skipped by default. To run
+them, set `GRAPHRT_LIVE_PROVIDERS=1` and the provider's key (see
+[docs/providers.md](docs/providers.md#live-provider-tests)):
+
+```sh
+GRAPHRT_LIVE_PROVIDERS=1 ANTHROPIC_API_KEY=... \
+  cargo test -p graphrt-llm --features gemini,bedrock --test live_providers -- --nocapture anthropic::
+```
+
 ## Code guidelines
 
 - No `unwrap()`, `expect()`, `panic!()` or unchecked indexing outside tests

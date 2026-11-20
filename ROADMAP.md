@@ -56,7 +56,9 @@ Models come from API providers; the runtime itself needs no server.
 
 - Windows binaries tested on Windows, and release automation per tag (CI).
 - Mobile builds verified in CI (Android emulator, iOS simulator) and on devices.
-- Live provider test matrix in CI (OpenAI, Anthropic, Gemini, Bedrock, TypeSafe) behind secrets.
+- Live provider test matrix in CI (OpenAI, Anthropic, Gemini, Bedrock, TypeSafe) behind secrets:
+  the tests and the nightly `Live providers` workflow are in place; done once the
+  repository secrets are set and the first nightly run is green.
 
 ## Later
 

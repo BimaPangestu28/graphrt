@@ -1,0 +1,138 @@
+# Live provider matrix: tiny chat, streaming and tool-calling requests against the
+# real OpenAI, Anthropic, Gemini, AWS Bedrock and TypeSafe APIs
+# (crates/graphrt-llm/tests/live_providers.rs).
+#
+# Runs nightly and on manual dispatch, never on pull requests: it needs repository
+# secrets and costs a few hundred tokens per provider. A provider whose secret is
+# not set is skipped (green, noted in the job summary) before anything is built,
+# so forks and repositories without secrets stay green and spend almost nothing.
+#
+# Repository secrets (Settings > Secrets and variables > Actions > Secrets):
+#   OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, TYPESAFE_API_KEY,
+#   Bedrock: AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY.
+# Optional repository variables: AWS_REGION (default us-east-1), TYPESAFE_BASE_URL,
+#   GRAPHRT_LIVE_<PROVIDER>_MODEL to override a default model (e.g. GRAPHRT_LIVE_OPENAI_MODEL).
+name: Live providers
+
+on:
+  schedule:
+    - cron: "23 3 * * *" # nightly, 03:23 UTC
+  workflow_dispatch:
+    inputs:
+      providers:
+        description: "Providers to test (comma-separated)"
+        default: "openai,anthropic,gemini,bedrock,typesafe"
+        type: string
+      require_secrets:
+        description: "Fail (instead of skip) a selected provider whose secret is missing"
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-providers-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  live:
+    name: live ${{ matrix.provider }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [openai, anthropic, gemini, bedrock, typesafe]
+    steps:
+      # Only booleans here: the secret values themselves reach the test step alone.
+      - name: Check credentials
+        id: credentials
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          SELECTED: ${{ github.event_name == 'workflow_dispatch' && inputs.providers || 'openai,anthropic,gemini,bedrock,typesafe' }}
+          REQUIRE_SECRETS: ${{ github.event_name == 'workflow_dispatch' && inputs.require_secrets || false }}
+          HAS_OPENAI: ${{ secrets.OPENAI_API_KEY != '' }}
+          HAS_ANTHROPIC: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HAS_GEMINI: ${{ secrets.GEMINI_API_KEY != '' }}
+          HAS_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK != '' || (secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '') }}
+          HAS_TYPESAFE: ${{ secrets.TYPESAFE_API_KEY != '' }}
+        run: |
+          case ",${SELECTED// /}," in
+            *",$PROVIDER,"*) ;;
+            *)
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              echo "### $PROVIDER: not selected" >> "$GITHUB_STEP_SUMMARY"
+              exit 0 ;;
+          esac
+          case "$PROVIDER" in
+            openai)    present="$HAS_OPENAI";    needs="OPENAI_API_KEY" ;;
+            anthropic) present="$HAS_ANTHROPIC"; needs="ANTHROPIC_API_KEY" ;;
+            gemini)    present="$HAS_GEMINI";    needs="GEMINI_API_KEY" ;;
+            bedrock)   present="$HAS_BEDROCK";   needs="AWS_BEARER_TOKEN_BEDROCK or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY" ;;
+            typesafe)  present="$HAS_TYPESAFE";  needs="TYPESAFE_API_KEY" ;;
+            *) echo "unknown provider $PROVIDER" >&2; exit 1 ;;
+          esac
+          if [ "$present" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "run=false" >> "$GITHUB_OUTPUT"
+          echo "### $PROVIDER: skipped (secret $needs not set)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$REQUIRE_SECRETS" = "true" ]; then
+            echo "::error::$PROVIDER selected but secret $needs is not set"
+            exit 1
+          fi
+          echo "::notice::$PROVIDER skipped: secret $needs is not set"
+
+      - if: steps.credentials.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - if: steps.credentials.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@stable
+      - if: steps.credentials.outputs.run == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          # One cache for the whole matrix (same build); a single job writes it.
+          shared-key: live-providers
+          save-if: ${{ matrix.provider == 'openai' }}
+      - if: steps.credentials.outputs.run == 'true'
+        name: Build tests
+        run: cargo test -p graphrt-llm --features gemini,bedrock --test live_providers --no-run
+
+      - if: steps.credentials.outputs.run == 'true'
+        name: Live ${{ matrix.provider }} tests
+        env:
+          PROVIDER: ${{ matrix.provider }}
+          GRAPHRT_LIVE_PROVIDERS: "1"
+          # Each job receives only its own provider's secrets.
+          OPENAI_API_KEY: ${{ matrix.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ matrix.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY || '' }}
+          GEMINI_API_KEY: ${{ matrix.provider == 'gemini' && secrets.GEMINI_API_KEY || '' }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ matrix.provider == 'bedrock' && secrets.AWS_BEARER_TOKEN_BEDROCK || '' }}
+          AWS_ACCESS_KEY_ID: ${{ matrix.provider == 'bedrock' && secrets.AWS_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ matrix.provider == 'bedrock' && secrets.AWS_SECRET_ACCESS_KEY || '' }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          TYPESAFE_API_KEY: ${{ matrix.provider == 'typesafe' && secrets.TYPESAFE_API_KEY || '' }}
+          TYPESAFE_BASE_URL: ${{ vars.TYPESAFE_BASE_URL }}
+          GRAPHRT_LIVE_OPENAI_MODEL: ${{ vars.GRAPHRT_LIVE_OPENAI_MODEL }}
+          GRAPHRT_LIVE_ANTHROPIC_MODEL: ${{ vars.GRAPHRT_LIVE_ANTHROPIC_MODEL }}
+          GRAPHRT_LIVE_GEMINI_MODEL: ${{ vars.GRAPHRT_LIVE_GEMINI_MODEL }}
+          GRAPHRT_LIVE_BEDROCK_MODEL: ${{ vars.GRAPHRT_LIVE_BEDROCK_MODEL }}
+          GRAPHRT_LIVE_TYPESAFE_MODEL: ${{ vars.GRAPHRT_LIVE_TYPESAFE_MODEL }}
+        run: |
+          set -o pipefail
+          cargo test -p graphrt-llm --features gemini,bedrock --test live_providers -- \
+            --nocapture --test-threads=1 "${PROVIDER}::" 2>&1 | tee live.log
+          # A run that skipped everything (e.g. a renamed variable) must not pass silently.
+          if grep -q "skipping live" live.log; then
+            echo "::error::$PROVIDER tests were skipped although the secret is set"
+            exit 1
+          fi
+          echo "### $PROVIDER: passed" >> "$GITHUB_STEP_SUMMARY"
+          grep -oE "\[$PROVIDER\] .*" live.log >> "$GITHUB_STEP_SUMMARY" || true

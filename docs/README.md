@@ -5,7 +5,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 ## Writing workflows
 
 - [Workflow format](workflow-format.md): nodes, variables, templates, edges, conversation history
-- [Model providers](providers.md): OpenAI-compatible, Anthropic, Gemini, Bedrock and more
+- [Model providers](providers.md): OpenAI-compatible, Anthropic, Gemini, Bedrock and more; live provider tests
 - [TypeSafe System One (Jev)](typesafe.md): the fast classification model
 - [Images in tool results](tool-images.md)
 

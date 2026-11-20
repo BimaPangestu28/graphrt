@@ -7,6 +7,14 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- Live provider test matrix: `crates/graphrt-llm/tests/live_providers.rs` sends
+  tiny streamed chat and tool-call round-trip requests to OpenAI, Anthropic,
+  Gemini and Bedrock and a typed question to TypeSafe (opt-in with
+  `GRAPHRT_LIVE_PROVIDERS=1`, each provider skipped without its credentials),
+  and the `Live providers` workflow runs it nightly and on demand behind
+  repository secrets. See [docs/providers.md](docs/providers.md#live-provider-tests).
+
 ## [0.4.0] - 2026-11-20
 
 Evaluation. `graphrt eval` runs datasets against a workflow with deterministic,
