@@ -22,7 +22,7 @@ or embedded in your own Rust program.
 | Laptop / server | `graphrt run flow.yaml` or `graphrt serve flows/` (single static binary) |
 | Container | ~17 MB distroless image (linux/amd64, linux/arm64) — see [docs/deploy.md](docs/deploy.md) |
 | Small devices / IoT | A 6 MiB build serves workflows in a 16 MiB memory limit on a tenth of a core — see [docs/serving.md](docs/serving.md#small-devices) |
-| Phone | Embed `graphrt-ffi` in an Android or iOS app — see [docs/mobile.md](docs/mobile.md) and the [sample apps](examples/mobile/); or chat with a served agent from Flutter / React Native — see [docs/chatbot-supabase.md](docs/chatbot-supabase.md) |
+| Phone | Embed `graphrt-ffi` in an Android or iOS app — see [docs/mobile.md](docs/mobile.md) and the [sample apps](examples/mobile/), smoke-tested in an Android emulator and an iOS simulator by the [mobile CI workflow](.github/workflows/mobile.yml); or chat with a served agent from Flutter / React Native — see [docs/chatbot-supabase.md](docs/chatbot-supabase.md) |
 | Browser / edge | The core compiles to WebAssembly |
 | Your Rust app | `graphrt-core` as a library — see [docs/embedding.md](docs/embedding.md) |
 

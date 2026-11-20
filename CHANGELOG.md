@@ -14,6 +14,12 @@ releases may contain breaking changes; they are called out under **Changed**.
   `GRAPHRT_LIVE_PROVIDERS=1`, each provider skipped without its credentials),
   and the `Live providers` workflow runs it nightly and on demand behind
   repository secrets. See [docs/providers.md](docs/providers.md#live-provider-tests).
+- CI workflow `mobile.yml` builds `graphrt-ffi` for `aarch64-linux-android` and
+  `x86_64-linux-android` (cargo-ndk) and for `aarch64-apple-ios`,
+  `aarch64-apple-ios-sim` and `x86_64-apple-ios`, builds both sample apps, and
+  runs the hello workflow in an Android emulator and an iOS simulator through
+  the new `examples/mobile/*/scripts/smoke-test.sh`. docs/mobile.md gains a
+  checklist for testing on physical devices.
 
 ## [0.4.0] - 2026-11-20
 

@@ -20,6 +20,11 @@ Both build graphrt with `--no-default-features` (engine, templates, LLM and
 HTTP nodes; no JavaScript, MCP, document or RAG nodes) and the `min-size`
 profile. Start from them when embedding graphrt in your own app.
 
+Each app also has a `scripts/smoke-test.sh` that installs it on a running
+emulator, simulator or device, runs the workflow with autorun, and fails unless
+both the waited result and the streamed events report `Hello, Grace.`. CI runs
+these scripts (see [CI](#ci-github-actions)); you can run them locally too.
+
 ## What runs on mobile
 
 Everything in the embedded build avoids spawning processes (forbidden on iOS):
@@ -315,7 +320,23 @@ produces the same bindings.
 
 ### CI (GitHub Actions)
 
-Example jobs producing an XCFramework and Android libraries:
+graphrt's own [`mobile.yml`](../.github/workflows/mobile.yml) workflow runs on
+pull requests that touch the crates, the Kotlin / Swift bindings or
+`examples/mobile`, and on `main`:
+
+| Job | Runner | Builds | Runs |
+| --- | --- | --- | --- |
+| `android` | `ubuntu-24.04` | `aarch64-linux-android` + `x86_64-linux-android` with `cargo-ndk` (runner NDK), then the debug APK with Gradle | the APK in an API 34 x86_64 emulator (KVM, cached AVD snapshot) via `android-emulator-runner` |
+| `ios` | `macos-15` | XCFramework for `aarch64-apple-ios` + `aarch64-apple-ios-sim`, `cargo check` for `x86_64-apple-ios`, the sample app for the simulator | the app in a fresh simulator (newest iOS runtime) via `xcrun simctl` |
+
+Both jobs build with `--no-default-features`, the `min-size` profile and
+`-D warnings`, cache Rust builds with `rust-cache` (Gradle with
+`setup-gradle`), and run the `smoke-test.sh` script of each sample app. The
+arm64 Android library is built but only runs on arm64 hardware (an Apple
+Silicon emulator or a phone, see [Testing on devices](#testing-on-devices)).
+
+To produce the same artifacts in your own app's CI, with the default
+features plus `mobile-js`:
 
 ```yaml
 jobs:
@@ -355,6 +376,48 @@ jobs:
         with: { name: jniLibs, path: jniLibs }
 ```
 
+## Testing on devices
+
+CI covers emulators and simulators only. Before a release, or after a change to
+`graphrt-ffi`, the bindings or the build scripts, run the sample apps on real
+hardware and record the result under [Verification status](#verification-status).
+
+**Android** (any arm64 phone, Android 8.0 / API 26 or newer):
+
+1. Turn on Developer options and USB debugging; connect the phone and accept
+   the RSA prompt. `adb devices` lists it as `device`.
+2. Build: `examples/mobile/android/scripts/build-rust.sh`, then
+   `./gradlew assembleDebug` in `examples/mobile/android`.
+3. Run `examples/mobile/android/scripts/smoke-test.sh` (set `ANDROID_SERIAL`
+   when an emulator is also running). It must print `smoke test passed`.
+4. Open the app by hand, change the name, tick **excited**, tap **Run** and
+   **Stream events**: the greeting ends in `!!!` and no event is missing.
+5. Rotate the phone and leave and reopen the app during a run: no crash
+   (`adb logcat -s GraphrtSample AndroidRuntime:E`).
+6. Note the phone model, Android version, ABI (`adb shell getprop
+   ro.product.cpu.abi`), NDK and Rust versions, and the APK size.
+
+**iOS** (any iPhone with iOS 16 or newer, Developer Mode on):
+
+1. Build the device slice and a signed app as in
+   [the iOS sample](../examples/mobile/ios/README.md#run-on-an-iphone)
+   (`GRAPHRT_TARGETS=aarch64-apple-ios`, your `DEVELOPMENT_TEAM`).
+2. Install with `xcrun devicectl device install app` and launch with
+   `xcrun devicectl device process launch --console --device <id>
+   dev.graphrt.sample -- -name Grace -autorun YES`. The console must show
+   `[GraphrtSample] result:` with `"status":"succeeded"` and
+   `"greeting":"Hello, Grace."`, every event through `run_succeeded`, and
+   `[GraphrtSample] finish:`.
+3. Repeat step 4 and 5 of the Android list by hand (excited greeting,
+   background and foreground during a run).
+4. Build Release once and check the app binary size against the number in
+   the sample's README.
+5. Note the iPhone model, iOS version, Xcode and Rust versions.
+
+A feature set other than `--no-default-features` (for example
+`GRAPHRT_FEATURES="--features mobile-js"`) needs the same checklist before it
+counts as verified on devices.
+
 ## Verification status
 
 - Rust API tests (`cargo test -p graphrt-ffi`): runs, streaming callbacks,
@@ -370,10 +433,15 @@ jobs:
 - Android: all three ABIs compile and link with NDK r28c. The
   [sample app](../examples/mobile/android/) (`--no-default-features`, NDK 28.2)
   ran the hello workflow on an API 36 arm64-v8a emulator, covering
-  `waitJson` and streamed events. The x86_64 library is built but has not
-  been run, and no physical device has been tested.
+  `waitJson` and streamed events; `smoke-test.sh` passed there (Rust 1.95,
+  NDK 28.2). The x86_64 library has not been run yet: the `android` CI job
+  runs it in an API 34 x86_64 emulator, but GitHub Actions has not run on this
+  repository so far. No physical Android device has been tested.
 - iOS: the [sample app](../examples/mobile/ios/) (`--no-default-features`)
   ran the hello workflow on an iOS 26.5 simulator (arm64), covering `waitJson`
   and streamed events, and on a physical iPhone 14 Pro Max (iOS 18.3, arm64,
-  signed Debug build installed with `devicectl`). The default feature set
-  (`mobile-js`, `doc`, `rag`) has not been built for iOS yet.
+  signed Debug build installed with `devicectl`); `smoke-test.sh` passed on
+  the iOS 26.5 simulator (Xcode 26.6). `x86_64-apple-ios` passes `cargo check`
+  but has not been linked into an app. The `ios` CI job (macos-15) has not run
+  on GitHub yet. The default feature set (`mobile-js`, `doc`, `rag`) has not
+  been built for iOS yet.
