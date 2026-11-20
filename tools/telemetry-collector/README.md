@@ -63,12 +63,23 @@ wrangler d1 execute graphrt-telemetry --local --command "SELECT * FROM reports"
 
 ## Usage
 
+`wrangler d1 execute --file` runs a file as an import and prints only a
+summary, so pass a query with `--command` to see its rows:
+
 ```sh
-# Weekly active installs (and a 12-week series, and a version/build breakdown)
-wrangler d1 execute graphrt-telemetry --remote --file=queries/weekly_active.sql
+# Weekly active installs
+wrangler d1 execute graphrt-telemetry --remote --command \
+  "SELECT COUNT(DISTINCT install_id) AS weekly_active FROM reports WHERE received_day >= date('now','-6 days')"
+# Active installs per week, last 12 weeks
+wrangler d1 execute graphrt-telemetry --remote --command \
+  "SELECT strftime('%Y-W%W', received_day) AS week, COUNT(DISTINCT install_id) AS active FROM reports WHERE received_day >= date('now','-84 days') GROUP BY week ORDER BY week DESC"
 # Runs and serve requests per day, last 30 days
-wrangler d1 execute graphrt-telemetry --remote --file=queries/daily_runs.sql
+wrangler d1 execute graphrt-telemetry --remote --command \
+  "SELECT day, SUM(runs) AS runs, SUM(serve_requests) AS serve_requests FROM daily_counts WHERE day >= date('now','-29 days') GROUP BY day ORDER BY day DESC"
 ```
+
+`queries/` holds these and a few more (version and build breakdowns); paste
+one statement at a time into `--command`.
 
 An install counts as active in a week when it sent a report that week. The
 CLI reports at most once a day and only when `graphrt run` or `graphrt serve`
