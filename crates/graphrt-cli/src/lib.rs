@@ -6,6 +6,8 @@ pub mod bundle_cmd;
 pub mod catalog;
 pub mod diagnostics;
 pub mod error;
+#[cfg(feature = "eval")]
+pub mod eval;
 pub mod extensions;
 pub mod files;
 #[cfg(any(feature = "serve", feature = "telemetry"))]
@@ -60,6 +62,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "rag") {
         features.push("rag");
     }
+    if cfg!(feature = "eval") {
+        features.push("eval");
+    }
     if cfg!(feature = "bundle") {
         features.push("bundle");
     }
@@ -107,6 +112,14 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
                 .build()
                 .map_err(|e| CliError::failed(format!("cannot start runtime: {e}")))?;
             runtime.block_on(run::run(*args))
+        }
+        #[cfg(feature = "eval")]
+        Command::Eval(args) => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| CliError::failed(format!("cannot start runtime: {e}")))?;
+            runtime.block_on(eval::eval(*args))
         }
         #[cfg(feature = "rag")]
         Command::Kb(args) => {

@@ -13,6 +13,8 @@ pub const EXIT_INVALID: u8 = 2;
 pub const EXIT_PAUSED: u8 = 3;
 /// Exit code: the run was aborted.
 pub const EXIT_ABORTED: u8 = 4;
+/// Exit code: `graphrt eval` finished but its gate failed (pass rate too low).
+pub const EXIT_GATE_FAILED: u8 = 5;
 
 /// An error that ends the command with a specific exit code.
 #[derive(Debug)]
