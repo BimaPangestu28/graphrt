@@ -7,6 +7,66 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+Telemetry and run data for evaluation: spans follow the OpenTelemetry GenAI
+semantic conventions, content capture follows the standard variable, and runs
+keep the context and data an evaluator needs.
+
+### Added
+- OpenTelemetry: agent tool calls are `execute_tool {tool}` child spans
+  (`gen_ai.tool.name`, `gen_ai.tool.call.id`, error status for failed or denied
+  calls); `knowledge-retrieval` nodes are `retrieval` spans with
+  `gen_ai.retrieval.top_k`; `gen_ai.provider.name`, `gen_ai.agent.name` and
+  `gen_ai.response.finish_reasons`.
+- OpenTelemetry content capture follows `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`
+  (`NO_CONTENT` default, `SPAN_ONLY`, `EVENT_ONLY`, `SPAN_AND_EVENT`). With it on,
+  the run span carries the run input and output (`graphrt.run.input` /
+  `output` and `langfuse.observation.input` / `output`), model spans
+  `gen_ai.system_instructions` and `gen_ai.input.messages` /
+  `gen_ai.output.messages` as structured values, tool spans their arguments and
+  result, retrieval spans the query and document ids. Values stay masked and
+  capped at 4 KB.
+- `graphrt_core::node::CaptureContent` service: when registered (the CLI does so
+  while content capture is on), `llm` nodes report their rendered messages as
+  `model_request` progress, agents add result text to `tool_result` progress and
+  `knowledge-retrieval` adds its `query` to the node metadata. Nothing extra is
+  built without it.
+- `POST /v1/workflows/{name}/runs` accepts `metadata`, `session_id`, `user_id`
+  and `tags`; they are stored on the run record and stamped on every span
+  (`session.id`, `user.id`, `gen_ai.conversation.id`, `langfuse.session.id`,
+  `langfuse.user.id`, `langfuse.trace.tags`, `langfuse.trace.metadata.*`).
+  `graphrt run` gets `--session-id`, `--user-id`, `--tag` and `--metadata`.
+- `RunRecord` gains `trace_id` and `span_id` (root span of the latest traced
+  execution), `metadata`, `session_id`, `user_id`, `tags`, and `inputs`, kept
+  (secrets masked) only with the new `graphrt serve --store-inputs`.
+- `graphrt-otel`: `semconv` module with every attribute name, `CaptureMode`,
+  `RunContext`, `EventTracer::{capture, with_context, content_limit,
+  root_span_id}`, `Span::is_run_root`, `AttrValue::Structured`.
+- docs/observability.md: setups for Langfuse v4, Phoenix, Opik, MLflow,
+  LangSmith and Braintrust.
+
+### Fixed
+- The OTLP exporter no longer drops a run's root span when its queue is full;
+  several backends hide or discard every span of a trace without its root.
+
+### Changed (Breaking)
+- OpenTelemetry span names: the run span is `invoke_workflow {workflow}`
+  (was `workflow {workflow}`) with `gen_ai.operation.name=invoke_workflow`, and
+  is kind `INTERNAL` unless it continues a caller's `traceparent` (then
+  `SERVER`, as before); model nodes are `chat {model}` (was the node title,
+  now in `graphrt.node.title`); agents are `invoke_agent {title}` with
+  `gen_ai.operation.name=invoke_agent` (was `chat`).
+- `system-one` spans report `gen_ai.operation.name=chat` (was the non-standard
+  `classify`, now `graphrt.operation.kind=classify`).
+- `gen_ai.system` is deprecated in favor of `gen_ai.provider.name`; both are
+  emitted for this release, `gen_ai.system` will be removed in the next.
+- `tool_call` / `tool_result` progress no longer appear as span events on the
+  agent span (they are `execute_tool` spans); `model_request` progress never
+  becomes a span event.
+- `graphrt-otel` API: `OtelConfig::capture_content: bool` is replaced by
+  `OtelConfig::capture: CaptureMode`; `AttrValue` is `#[non_exhaustive]`;
+  `RunRecord` and the CLI's `ServiceOptions` have new public fields (construct
+  them with `RunRecord::running` / `..Default::default()`).
+
 ## [0.3.2] - 2026-11-20
 
 Telemetry fix and the project's collector endpoint in release builds.
