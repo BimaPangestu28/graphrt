@@ -22,6 +22,8 @@ env:
   BIN: graphrt
   # Build profile for release binaries (see [profile.min-size] in Cargo.toml).
   PROFILE: min-size
+  # Opt-in features the released binaries and image add to the CLI defaults.
+  EXTRA_FEATURES: eval,online-eval
   # Opt-in usage telemetry endpoint compiled into release binaries (docs/telemetry.md).
   # Telemetry stays off until a user runs `graphrt telemetry enable`.
   GRAPHRT_TELEMETRY_URL: https://graphrt-telemetry.bimapangestu280.workers.dev/v1/report
@@ -75,9 +77,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.zig }}" = "true" ]; then
-            cargo zigbuild -p graphrt-cli --locked --profile "$PROFILE" --target "${{ matrix.target }}"
+            cargo zigbuild -p graphrt-cli --locked --profile "$PROFILE" --features "$EXTRA_FEATURES" --target "${{ matrix.target }}"
           else
-            cargo build -p graphrt-cli --locked --profile "$PROFILE" --target "${{ matrix.target }}"
+            cargo build -p graphrt-cli --locked --profile "$PROFILE" --features "$EXTRA_FEATURES" --target "${{ matrix.target }}"
           fi
       - name: Package
         id: package
@@ -168,6 +170,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             GRAPHRT_TELEMETRY_URL=${{ env.GRAPHRT_TELEMETRY_URL }}
+            EXTRA_FEATURES=${{ env.EXTRA_FEATURES }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

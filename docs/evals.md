@@ -4,6 +4,12 @@
 assertions, and gates CI on the pass rate. The same harness is a Rust library,
 [`graphrt-eval`](../crates/graphrt-eval), for `cargo test`.
 
+The release binaries, the Homebrew formula and the GHCR image include it. It is
+an opt-in cargo feature, so a build from source needs it named:
+`cargo install graphrt-cli --features eval` (add `online-eval` for
+[online evaluation](#online-evaluation) in `graphrt serve`), or
+`docker build --build-arg EXTRA_FEATURES=eval,online-eval .`.
+
 ```sh
 graphrt eval examples/evals/hello.eval.yaml
 graphrt eval evals/support.eval.yaml -j 8 --output results.json --junit junit.xml
@@ -648,8 +654,8 @@ evaluators:
   to -3% with ±10% spread between rounds). Scoring every run with two
   deterministic evaluators cost about 10% throughput in the same test. With it, a run of a workflow no evaluator
   covers pays the same; a covered one pays a hash per evaluator when it ends.
-  The feature (`online-eval`, on by default) is not in the IoT build
-  (`--no-default-features --features llm,http,wasm,serve`).
+  The feature (`online-eval`, opt-in; in the release binaries and image) is
+  not in the IoT build (`--no-default-features --features llm,http,wasm,serve`).
 - **Results** are `online` [scores](serving.md#scores-and-feedback) of the run
   (`GET /v1/runs/{id}/scores`): the assertion score as `value`, `label`
   (`pass`, `fail`, or `unknown` for an excluded judge verdict), the reason as

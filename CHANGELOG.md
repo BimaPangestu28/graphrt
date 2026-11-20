@@ -7,6 +7,15 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Changed
+- The `eval` and `online-eval` cargo features of `graphrt-cli` are no longer
+  on by default (`online-eval` needs `eval`), so `cargo install graphrt-cli`
+  and `docker build .` are smaller. Enable them with
+  `--features eval,online-eval` (Docker: `--build-arg
+  EXTRA_FEATURES=eval,online-eval`). The release binaries, Homebrew formula
+  and GHCR image are built with both, as in 0.4.0. `jwt`, `scores` and
+  `langfuse` stay on by default.
+
 ### Added
 - Live provider test matrix: `crates/graphrt-llm/tests/live_providers.rs` sends
   tiny streamed chat and tool-call round-trip requests to OpenAI, Anthropic,
