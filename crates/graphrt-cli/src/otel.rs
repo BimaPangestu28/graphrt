@@ -7,6 +7,10 @@
 //!
 //! Content capture follows `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`
 //! (`GRAPHRT_OTEL_CAPTURE_CONTENT=true` is an alias for `SPAN_ONLY`).
+//!
+//! `--otel-preset <vendor>` (or `$GRAPHRT_OTEL_PRESET`) fills the endpoint,
+//! headers and resource attributes of a vendor from its own environment
+//! variables (`graphrt_otel::preset`); credentials never go on the command line.
 
 use std::sync::Arc;
 
@@ -92,8 +96,7 @@ impl Telemetry {
     pub fn from_args(args: &ServiceArgs, vars: &[(String, String)]) -> Result<Option<Arc<Self>>, CliError> {
         #[cfg(feature = "otel")]
         {
-            let config = graphrt_otel::OtelConfig::from_vars(vars)
-                .map_err(|e| CliError::usage(format!("OpenTelemetry configuration: {e}")))?;
+            let config = otel_config(args, vars)?;
             if config.disabled {
                 return Ok(None);
             }
@@ -175,6 +178,53 @@ impl Telemetry {
         }
     }
 
+    /// Record an evaluation score of a run of `workflow`: the
+    /// `graphrt.eval.score` metric, and an `evaluate {name}` span (with its
+    /// `gen_ai.evaluation.result` event) under the run's root span when the run
+    /// was traced (`ids` are its stored trace and root span ids, as hex).
+    #[cfg(feature = "otel")]
+    pub fn record_evaluation(
+        &self,
+        ids: (Option<&str>, Option<&str>),
+        workflow: &str,
+        result: &graphrt_otel::EvaluationResult,
+        timing: Option<(u64, u64)>,
+    ) {
+        if let Some(score) = result.score {
+            self.metrics.record_score(&result.name, workflow, result.source.as_deref().unwrap_or_default(), score);
+        }
+        let Some(trace_id) = ids.0.and_then(graphrt_otel::TraceId::from_hex) else { return };
+        let parent = ids.1.and_then(graphrt_otel::SpanId::from_hex);
+        let (start, end) = timing.unwrap_or_else(|| {
+            let now = graphrt_otel::span::now_unix_nanos();
+            (now, now)
+        });
+        self.exporter.export(graphrt_otel::evaluation_span(trace_id, parent, result, start, end));
+    }
+
+    /// Shared metrics (tests and embedders).
+    #[cfg(feature = "otel")]
+    pub fn metrics(&self) -> &Arc<graphrt_otel::Metrics> {
+        &self.metrics
+    }
+
+    /// [`Telemetry::tracer`] for a host-labelled run: `attributes` are stamped
+    /// on (every span, the root span), whose id is `root`.
+    #[cfg(feature = "otel")]
+    pub fn tracer_with(
+        &self,
+        graph: &Arc<Graph>,
+        context: &RunContext,
+        attributes: (graphrt_otel::span::Attributes, graphrt_otel::span::Attributes),
+        root: graphrt_otel::SpanId,
+    ) -> RunTracer {
+        let mut run = self.tracer(graph, None, context);
+        run.inner = run.inner.take().map(|tracer| {
+            tracer.with_span_attributes(attributes.0).with_root_attributes(attributes.1).with_root_span_id(root)
+        });
+        run
+    }
+
     /// Deliver queued spans and metrics.
     pub async fn shutdown(&self) {
         #[cfg(feature = "otel")]
@@ -189,6 +239,22 @@ impl Telemetry {
             }
         }
     }
+}
+
+/// The exporter configuration of `vars`, with `--otel-preset` applied.
+#[cfg(feature = "otel")]
+pub fn otel_config(args: &ServiceArgs, vars: &[(String, String)]) -> Result<graphrt_otel::OtelConfig, CliError> {
+    let with_preset;
+    let vars = match &args.otel_preset {
+        Some(name) => {
+            let mut all = vars.to_vec();
+            all.push((graphrt_otel::preset::PRESET_ENV.to_owned(), name.clone()));
+            with_preset = all;
+            &with_preset
+        }
+        None => vars,
+    };
+    graphrt_otel::OtelConfig::from_vars(vars).map_err(|e| CliError::usage(format!("OpenTelemetry configuration: {e}")))
 }
 
 /// Convenience: a tracer from optional telemetry.

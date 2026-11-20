@@ -7,6 +7,7 @@
 //! <dir>/runs/<run_id>/record.json run record (atomic replace)
 //! <dir>/runs/<run_id>/events.jsonl one stored event per line (append)
 //! <dir>/runs/<run_id>/snapshot.json snapshot of a paused run (atomic replace)
+//! <dir>/runs/<run_id>/scores.json evaluation scores (atomic replace; feature `scores`)
 //! ```
 //!
 //! Records and snapshots are written to a unique temporary file, fsynced, renamed
@@ -34,6 +35,8 @@ use crate::error::CliError;
 const RECORD: &str = "record.json";
 const EVENTS: &str = "events.jsonl";
 const SNAPSHOT: &str = "snapshot.json";
+#[cfg(feature = "scores")]
+const SCORES: &str = "scores.json";
 
 #[derive(Debug)]
 struct Inner {
@@ -196,6 +199,46 @@ fn sync_dir(dir: &Path) -> StoreResult<()> {
 #[cfg(not(unix))]
 fn sync_dir(_dir: &Path) -> StoreResult<()> {
     Ok(())
+}
+
+#[cfg(feature = "scores")]
+impl Inner {
+    fn read_scores(dir: &Path) -> StoreResult<Vec<crate::scores::Score>> {
+        let corrupt = |e: &dyn std::fmt::Display| StoreError::Corrupt(format!("{}: {e}", dir.join(SCORES).display()));
+        match fs::read(dir.join(SCORES)) {
+            Ok(bytes) => {
+                let list: Vec<serde_json::Value> = serde_json::from_slice(&bytes).map_err(|e| corrupt(&e))?;
+                list.iter()
+                    .map(|s| crate::scores::Score::from_json(s).ok_or_else(|| corrupt(&"invalid score")))
+                    .collect()
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(io("cannot read scores", &e)),
+        }
+    }
+}
+
+#[cfg(feature = "scores")]
+impl crate::scores::ScoreStore for FileStore {
+    fn put_scores<'a>(&'a self, run_id: &'a str, scores: Vec<crate::scores::Score>) -> BoxFuture<'a, StoreResult<()>> {
+        let run_id = run_id.to_owned();
+        self.blocking(move |inner| {
+            let (dir, _) = inner.require_record(&run_id)?;
+            let mut stored = Inner::read_scores(&dir)?;
+            crate::scores::merge_scores(&mut stored, scores, &run_id)?;
+            let bytes = serde_json::to_vec_pretty(&crate::scores::scores_json(&stored))
+                .map_err(|e| StoreError::Corrupt(e.to_string()))?;
+            inner.atomic_write(&dir, SCORES, &bytes)
+        })
+    }
+
+    fn scores<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, StoreResult<Vec<crate::scores::Score>>> {
+        let run_id = run_id.to_owned();
+        self.blocking(move |inner| {
+            let (dir, _) = inner.require_record(&run_id)?;
+            Inner::read_scores(&dir)
+        })
+    }
 }
 
 impl RunStore for FileStore {
@@ -424,6 +467,35 @@ mod tests {
         assert_eq!(store.get("e1").await.unwrap(), Some(record.clone()));
         let claimed = store.claim_resume("e1", 2).await.unwrap();
         assert_eq!((claimed.inputs, claimed.metadata, claimed.tags), (record.inputs, record.metadata, record.tags));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "scores")]
+    #[tokio::test]
+    async fn scores_are_kept_next_to_the_run() {
+        use crate::scores::{Score, ScoreSource, ScoreStore, ScoreValue};
+        let dir = temp_dir("scores");
+        let store = FileStore::open(&dir).unwrap();
+        let score =
+            |name: &str, value: f64| Score::new("s1", name, ScoreValue::Number(value), ScoreSource::Online, None);
+        assert!(matches!(store.put_scores("s1", vec![score("a", 1.0)]).await, Err(StoreError::NotFound(_))));
+        let mut record = RunRecord::running("s1", "wf", "fp", 1);
+        record.status = RunStatus::Succeeded;
+        store.create(record.clone()).await.unwrap();
+        assert!(store.scores("s1").await.unwrap().is_empty());
+        store.put_scores("s1", vec![score("a", 1.0), score("b", 0.5)]).await.unwrap();
+        store.put_scores("s1", vec![score("a", 0.0)]).await.unwrap();
+        store.put(record).await.unwrap();
+        assert!(dir.join("runs/s1/scores.json").is_file());
+        drop(store);
+        let store = FileStore::open(&dir).unwrap();
+        let scores = store.scores("s1").await.unwrap();
+        assert_eq!(scores.len(), 2);
+        assert_eq!((scores[0].name.as_str(), &scores[0].value), ("a", &ScoreValue::Number(0.0)));
+        // Removed with the run by the TTL cleanup.
+        assert_eq!(store.purge_before(u64::MAX).await.unwrap(), 1);
+        assert!(matches!(store.scores("s1").await, Err(StoreError::NotFound(_))));
+        assert!(!dir.join("runs/s1").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 }

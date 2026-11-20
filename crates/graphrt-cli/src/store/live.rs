@@ -109,6 +109,9 @@ pub struct Capture {
     /// Root start node: its validated outputs become `RunRecord::inputs`
     /// (`--store-inputs`). `None` keeps inputs out of the record.
     pub start_node: Option<Arc<str>>,
+    /// Online evaluation pool, when an evaluator covers the run's workflow.
+    #[cfg(feature = "online-eval")]
+    pub online: Option<Arc<crate::online_eval::OnlineEval>>,
 }
 
 /// Called when an execution ends (to drop it from the active set).
@@ -229,4 +232,9 @@ async fn drive(
     }
     on_finish(&run_id);
     active.done_tx.send_replace(true);
+    // After the waiters are woken, so evaluation never delays a response.
+    #[cfg(feature = "online-eval")]
+    if let Some(online) = &recorder.capture.online {
+        online.submit(&record, &active.feed().events);
+    }
 }

@@ -28,9 +28,52 @@ fn graphrt_eval(args: &[&str]) -> Output {
         .env_remove("GRAPHRT_REPLAY_MODE")
         .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
         .env_remove("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        .env_remove("GRAPHRT_OTEL_PRESET")
         .env("GRAPHRT_TELEMETRY", "0")
         .output()
         .expect("spawn graphrt")
+}
+
+/// `--otel`: one trace per test, as a Langfuse experiment item, with an
+/// `evaluate` span per assertion.
+#[cfg(feature = "otel")]
+#[test]
+fn otel_exports_one_experiment_trace_per_test() {
+    let out = graphrt_eval(&["examples/evals/hello.eval.yaml", "--otel-stdout"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let spans: Vec<serde_json::Value> = stderr(&out)
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .filter(|v: &serde_json::Value| v.get("spanId").is_some())
+        .collect();
+    let attr = |span: &serde_json::Value, key: &str| {
+        span["attributes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["key"] == key)
+            .map(|a| a["value"]["stringValue"].clone())
+    };
+    let roots: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "invoke_workflow hello").collect();
+    assert_eq!(roots.len(), 3, "one trace per test");
+    let traces: std::collections::HashSet<&str> = roots.iter().filter_map(|r| r["traceId"].as_str()).collect();
+    assert_eq!(traces.len(), 3);
+    let plain = roots.iter().find(|r| attr(r, "langfuse.experiment.item.id") == Some("plain".into())).unwrap();
+    assert_eq!(attr(plain, "langfuse.experiment.item.root_observation_id"), Some(plain["spanId"].clone()));
+    let experiment = attr(plain, "langfuse.experiment.id").unwrap();
+    for span in spans.iter().filter(|s| !s["name"].as_str().unwrap().starts_with("evaluate ")) {
+        assert_eq!(attr(span, "langfuse.experiment.id"), Some(experiment.clone()), "{span}");
+        assert_eq!(attr(span, "langfuse.experiment.name"), Some("hello".into()));
+    }
+    let evaluations: Vec<&serde_json::Value> = spans
+        .iter()
+        .filter(|s| s["traceId"] == plain["traceId"] && s["name"].as_str().unwrap().starts_with("evaluate "))
+        .collect();
+    assert!(!evaluations.is_empty());
+    for span in evaluations {
+        assert_eq!(span["parentSpanId"], plain["spanId"]);
+        assert_eq!(span["events"][0]["name"], "gen_ai.evaluation.result");
+    }
 }
 
 fn stderr(o: &Output) -> String {

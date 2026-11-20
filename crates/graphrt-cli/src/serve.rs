@@ -13,6 +13,8 @@
 //! | DELETE | `/v1/runs/{run_id}` | – | `204`; `409` while the run executes |
 //! | GET | `/v1/nodes` | – | node catalog (descriptors with config JSON Schemas) |
 //! | POST | `/v1/validate` | workflow document, or `{document: "<yaml/json text>"}` | `{valid, errors, warnings}` |
+//! | GET | `/v1/runs/{run_id}/scores` | – | evaluation scores (feature `scores`, see [`crate::scores`]) |
+//! | POST | `/v1/runs/{run_id}/feedback` | `{name, value, comment?, user?}` | `201` + the stored `human` score |
 //! | GET | `/v1/hooks` | – | webhooks configured with `--webhooks` |
 //! | POST | `/v1/hooks/{hook}` | any JSON (signature-checked when configured) | `202` + run id; see [`crate::webhooks`] |
 //!
@@ -76,6 +78,9 @@ pub struct AppState {
     /// Cap on `runs` (executing runs); `0` = unlimited.
     max_active_runs: usize,
     store: Arc<dyn RunStore>,
+    /// Evaluation scores, kept by the same backend as `store`.
+    #[cfg(feature = "scores")]
+    scores: Arc<dyn crate::scores::ScoreStore>,
     api_key: Option<String>,
     next_id: AtomicU64,
     /// Node kinds (built-in and plugins) used for `/v1/nodes` and `/v1/validate`.
@@ -94,6 +99,15 @@ pub struct AppState {
     /// End-user JWT verification of run starts (`--verify-jwt`).
     #[cfg(feature = "jwt")]
     user_auth: Option<Arc<crate::user_auth::UserAuth>>,
+    /// Host services of the served workflows, for judge workflows of online evaluators.
+    #[cfg(feature = "online-eval")]
+    services: Option<Arc<graphrt_core::Services>>,
+    /// Online evaluation pool (`--evaluators`).
+    #[cfg(feature = "online-eval")]
+    online: Option<Arc<crate::online_eval::OnlineEval>>,
+    /// Score uploads to Langfuse (`--langfuse-scores`).
+    #[cfg(feature = "langfuse")]
+    langfuse: Option<Arc<crate::langfuse::LangfuseUploader>>,
 }
 
 /// The verified end user of a request (`sub` of its JWT), set by `--verify-jwt`.
@@ -103,11 +117,14 @@ pub struct AuthenticatedUser(pub String);
 impl AppState {
     /// Create state from compiled engines.
     pub fn new(workflows: IndexMap<String, ServedWorkflow>, api_key: Option<String>) -> Self {
+        let memory = Arc::new(MemoryStore::new());
         Self {
             workflows,
             runs: Mutex::new(HashMap::new()),
             max_active_runs: 0,
-            store: Arc::new(MemoryStore::new()),
+            store: memory.clone(),
+            #[cfg(feature = "scores")]
+            scores: memory,
             api_key,
             next_id: AtomicU64::new(1),
             extensions: Extensions::builtin(),
@@ -119,7 +136,69 @@ impl AppState {
             store_inputs: false,
             #[cfg(feature = "jwt")]
             user_auth: None,
+            #[cfg(feature = "online-eval")]
+            services: None,
+            #[cfg(feature = "online-eval")]
+            online: None,
+            #[cfg(feature = "langfuse")]
+            langfuse: None,
         }
+    }
+
+    /// Upload every stored score to Langfuse (`--langfuse-scores`). Call before
+    /// [`AppState::with_evaluators`], whose pool reports to the sinks set then.
+    #[cfg(feature = "langfuse")]
+    pub fn with_langfuse(mut self, uploader: Option<crate::langfuse::LangfuseUploader>) -> Self {
+        self.langfuse = uploader.map(Arc::new);
+        self
+    }
+
+    /// Score a sample of finished runs with the evaluators of this config
+    /// (`--evaluators`). Judge workflows compile now, on the served workflows'
+    /// services. Call after [`AppState::with_stores`] and
+    /// [`AppState::with_telemetry`]: the pool reports to the stores and sinks
+    /// set at this point.
+    ///
+    /// @throws CliError (usage) - When the config or a judge workflow is invalid.
+    #[cfg(feature = "online-eval")]
+    pub fn with_evaluators(mut self, path: &Path, options: &ServiceOptions, limits: Limits) -> Result<Self, CliError> {
+        use graphrt_eval::online::{OnlineConfig, OnlineEvaluators};
+        let config = OnlineConfig::load(path).map_err(crate::eval::eval_error)?;
+        let served: Vec<&str> = self.workflows.keys().map(String::as_str).collect();
+        for pattern in config.unmatched_workflows(&served) {
+            eprintln!("warning: evaluators: workflow pattern `{pattern}` matches no served workflow");
+        }
+        let services = match &self.services {
+            Some(services) => Arc::clone(services),
+            None => Arc::new(graphrt_core::Services::new()),
+        };
+        let judges = crate::eval::WorkflowJudges {
+            registry: self.extensions.registry.clone(),
+            services,
+            model: None,
+            limits,
+            options: options.clone(),
+        };
+        let mut registry = graphrt_eval::AssertionRegistry::with_builtins();
+        graphrt_eval::judge::register(&mut registry, config.base_dir(), judges);
+        let evaluators = OnlineEvaluators::new(&config, registry).map_err(crate::eval::eval_error)?;
+        eprintln!(
+            "  online evaluation: {} evaluator(s) from {} (concurrency {}, queue {})",
+            config.evaluators.len(),
+            path.display(),
+            config.concurrency,
+            config.queue
+        );
+        let pool =
+            crate::online_eval::OnlineEval::start(&config, evaluators, Arc::clone(&self.scores), self.score_sinks());
+        self.online = Some(pool);
+        Ok(self)
+    }
+
+    /// The online evaluation pool, when `--evaluators` is set.
+    #[cfg(feature = "online-eval")]
+    pub fn online_eval(&self) -> Option<&Arc<crate::online_eval::OnlineEval>> {
+        self.online.as_ref()
     }
 
     /// Let a verified end-user JWT authorize run starts (`--verify-jwt`).
@@ -174,6 +253,29 @@ impl AppState {
 
     pub(crate) fn webhooks(&self) -> &crate::webhooks::Webhooks {
         &self.webhooks
+    }
+
+    /// Authorize a request a user may make about their own runs (feedback): a
+    /// valid end-user JWT (with `--verify-jwt`; returns its subject for the
+    /// handler's ownership check), else the API key (returns `None`).
+    ///
+    /// @throws Response - `401` for an invalid token or key, `429` over the user's rate limit.
+    #[cfg(feature = "scores")]
+    pub(crate) async fn authorize_user_or_key(
+        &self,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<Option<String>, Response> {
+        #[cfg(feature = "jwt")]
+        if let Some(user_auth) = &self.user_auth
+            && let crate::user_auth::Admission::User(user) = user_auth.admit(headers).await?
+        {
+            return Ok(Some(user.subject));
+        }
+        if self.authorized(headers) {
+            Ok(None)
+        } else {
+            Err(error_response(StatusCode::UNAUTHORIZED, "missing or invalid bearer token"))
+        }
     }
 
     /// Whether `headers` carry the API key (always true when none is set).
@@ -236,9 +338,38 @@ impl AppState {
         ))
     }
 
+    /// Only the run store: scores stay in the previous store, so prefer
+    /// [`AppState::with_stores`] when serving scores.
     pub fn with_store(mut self, store: Arc<dyn RunStore>) -> Self {
         self.store = store;
         self
+    }
+
+    /// Record runs, and their scores, in these stores.
+    pub fn with_stores(mut self, stores: crate::store::Stores) -> Self {
+        self.store = stores.runs;
+        #[cfg(feature = "scores")]
+        {
+            self.scores = stores.scores;
+        }
+        self
+    }
+
+    /// The score store.
+    #[cfg(feature = "scores")]
+    pub fn score_store(&self) -> &Arc<dyn crate::scores::ScoreStore> {
+        &self.scores
+    }
+
+    /// Where scores are reported besides the store (spans, metrics, uploads).
+    #[cfg(feature = "scores")]
+    pub fn score_sinks(&self) -> crate::scores::ScoreSinks {
+        crate::scores::ScoreSinks {
+            #[cfg(feature = "otel")]
+            telemetry: self.telemetry.clone(),
+            #[cfg(feature = "langfuse")]
+            langfuse: self.langfuse.clone(),
+        }
     }
 
     /// The run store.
@@ -339,7 +470,12 @@ pub async fn build_state(
             .with_limits(limits.clone());
         workflows.insert(name.clone(), ServedWorkflow { engine, env });
     }
-    let state = AppState::new(workflows, api_key).with_extensions(extensions);
+    #[allow(unused_mut)]
+    let mut state = AppState::new(workflows, api_key).with_extensions(extensions);
+    #[cfg(feature = "online-eval")]
+    {
+        state.services = Some(Arc::clone(&services));
+    }
     // The same knowledge base the workflows use, so documents added over the API
     // are searchable by running workflows right away.
     #[cfg(feature = "rag")]
@@ -392,6 +528,8 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     };
     #[cfg(not(feature = "rag"))]
     let _ = max_upload_bytes;
+    #[cfg(feature = "scores")]
+    let api = api.route("/v1/runs/{run_id}/scores", get(crate::scores::get_scores));
     let api = api
         .route("/v1/hooks", get(crate::webhooks::list_hooks))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
@@ -402,6 +540,9 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     // Webhook deliveries authenticate themselves (signature, else the bearer key).
     let hooks = Router::new().route("/v1/hooks/{hook}", post(crate::webhooks::receive));
     let counted = api.merge(start).merge(hooks);
+    // Feedback authorizes itself: a verified end-user JWT for the user's own runs, else the key.
+    #[cfg(feature = "scores")]
+    let counted = counted.route("/v1/runs/{run_id}/feedback", post(crate::scores::post_feedback));
     // Opt-in usage telemetry counts API requests (in memory); health checks are not counted.
     #[cfg(feature = "telemetry")]
     let counted = counted.layer(middleware::from_fn(crate::telemetry::count_requests));
@@ -430,16 +571,18 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let limits = setup::limits(args.services.timeout_ms, args.services.max_steps);
     let telemetry = crate::otel::Telemetry::from_args(&args.services, &options.all_vars())?;
     options.capture_content = crate::otel::captures_content(telemetry.as_ref());
-    let store = crate::store::open(args.store.as_ref(), args.max_runs)?;
+    let stores = crate::store::open_stores(args.store.as_ref(), args.max_runs)?;
     let webhooks = match &args.webhooks {
         Some(path) => crate::webhooks::Webhooks::load(path, &options.all_vars(), options.allow_private_network)?,
         None => crate::webhooks::Webhooks::default(),
     };
     #[cfg(feature = "jwt")]
     let user_auth_line = user_auth.as_ref().map(crate::user_auth::UserAuth::describe);
+    #[cfg(feature = "online-eval")]
+    let judge_limits = limits.clone();
     let state = build_state(&files, &options, limits, api_key.clone())
         .await?
-        .with_store(store)
+        .with_stores(stores)
         .with_telemetry(telemetry.clone())
         .with_store_inputs(args.store_inputs)
         .with_max_active_runs(args.max_active_runs)
@@ -447,6 +590,25 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         .with_header_inputs(&args.input_header)?;
     #[cfg(feature = "jwt")]
     let state = state.with_user_auth(user_auth);
+    #[cfg(feature = "langfuse")]
+    let state = if args.langfuse_scores {
+        let uploader = crate::langfuse::LangfuseUploader::start(&options.all_vars(), options.allow_private_network)?;
+        eprintln!("  scores uploaded to {}", uploader.url());
+        if telemetry.is_none() {
+            eprintln!(
+                "warning: --langfuse-scores without OpenTelemetry: runs have no trace id, so no score is uploaded \
+                 (add --otel-preset langfuse)"
+            );
+        }
+        state.with_langfuse(Some(uploader))
+    } else {
+        state
+    };
+    #[cfg(feature = "online-eval")]
+    let state = match &args.evaluators {
+        Some(path) => state.with_evaluators(path, &options, judge_limits)?,
+        None => state,
+    };
     let state = Arc::new(state);
     let interrupted = state.recover().await?;
     if interrupted > 0 {
@@ -805,7 +967,7 @@ fn to_values(map: serde_json::Map<String, serde_json::Value>) -> IndexMap<String
     map.into_iter().map(|(k, v)| (k, Value::from_json(v))).collect()
 }
 
-fn store_error(e: &StoreError) -> Response {
+pub(crate) fn store_error(e: &StoreError) -> Response {
     let status = match e {
         StoreError::NotFound(_) => StatusCode::NOT_FOUND,
         StoreError::Conflict(_) => StatusCode::CONFLICT,
@@ -1182,7 +1344,11 @@ fn launch(
         Some(telemetry) => telemetry.tracer(engine.graph(), traceparent, &record_context(&record)),
         None => crate::otel::RunTracer::default(),
     };
-    let capture = live::Capture { start_node: state.store_inputs.then(|| root_start_node(engine.graph())).flatten() };
+    let capture = live::Capture {
+        start_node: state.store_inputs.then(|| root_start_node(engine.graph())).flatten(),
+        #[cfg(feature = "online-eval")]
+        online: state.online.as_ref().filter(|online| online.covers(&record.workflow)).cloned(),
+    };
     let assembler = new_assembler(engine, &input);
     let run = engine.run(input);
     let weak = Arc::downgrade(state);

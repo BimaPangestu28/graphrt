@@ -30,6 +30,11 @@ impl TraceId {
     pub fn to_hex(&self) -> String {
         hex(&self.0)
     }
+
+    /// Parse 32 hex digits (as stored in run records). `None` for malformed or all-zero ids.
+    pub fn from_hex(text: &str) -> Option<Self> {
+        parse_hex::<16>(&text.to_ascii_lowercase()).filter(|id| *id != [0u8; 16]).map(Self)
+    }
 }
 
 impl SpanId {
@@ -44,6 +49,11 @@ impl SpanId {
 
     pub fn to_hex(&self) -> String {
         hex(&self.0)
+    }
+
+    /// Parse 16 hex digits. `None` for malformed or all-zero ids.
+    pub fn from_hex(text: &str) -> Option<Self> {
+        parse_hex::<8>(&text.to_ascii_lowercase()).filter(|id| *id != [0u8; 8]).map(Self)
     }
 }
 
@@ -345,6 +355,10 @@ mod tests {
         assert_ne!(a.0, [0; 16]);
         assert_eq!(a.to_hex().len(), 32);
         assert_eq!(SpanId::random().to_hex().len(), 16);
+        assert_eq!(TraceId::from_hex(&a.to_hex()), Some(a));
+        let span = SpanId::random();
+        assert_eq!(SpanId::from_hex(&span.to_hex().to_ascii_uppercase()), Some(span));
+        assert!(TraceId::from_hex(&"0".repeat(32)).is_none() && SpanId::from_hex("abc").is_none());
     }
 
     #[test]

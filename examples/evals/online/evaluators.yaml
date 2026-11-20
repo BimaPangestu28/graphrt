@@ -1,0 +1,49 @@
+# Online evaluation of the RAG workflow in examples/evals/judged: `graphrt serve`
+# scores a sample of finished runs with the same judge workflows the offline
+# suite uses (examples/evals/judges). Fully offline: the answers and the judge
+# verdicts are replayed from examples/evals/judged/cassettes, so the questions
+# of judged.eval.yaml get the recorded verdicts. Run from the repository root
+# (the knowledge store path is relative to the working directory):
+#
+#   graphrt serve examples/evals/judged/rag-answer.yaml \
+#     --knowledge examples/evals/retrieval/knowledge.yaml \
+#     --providers examples/evals/judged/providers.replay.yaml \
+#     --evaluators examples/evals/online/evaluators.yaml
+#
+#   RUN=$(curl -s localhost:8080/v1/workflows/rag-answer/runs -H 'content-type: application/json' \
+#     -d '{"inputs": {"question": "How many days do I have to request a refund?"}}' | jq -r .run_id)
+#   curl -s localhost:8080/v1/runs/$RUN/scores | jq
+#
+# With a real model, drop the replay providers file (and set OPENAI_API_KEY),
+# and lower `sample`: every sampled run costs one judge call per judge.
+concurrency: 2          # evaluations running at once
+queue: 128              # sampled runs waiting; more are dropped and counted
+evaluators:
+  # Is the answer supported by the retrieved policy text? A refusal makes no
+  # claims: `unknown` is stored with label `unknown` and a score of 0.
+  - name: faithfulness
+    workflows: [rag-answer]
+    sample: 1.0          # every run; e.g. 0.05 in production
+    status: [succeeded]
+    assert:
+      type: judge
+      workflow: ../judges/faithfulness.yaml   # relative to this file
+      unknown: exclude
+      inputs: { question: "{{question}}" }    # the run's own input
+
+  - name: relevance
+    workflows: [rag-answer]
+    status: [succeeded]
+    assert: { type: judge, workflow: ../judges/answer-relevance.yaml, inputs: { question: "{{question}}" } }
+
+  # Deterministic checks cost nothing: run them on every run, failed ones too.
+  - name: token-budget
+    assert: { type: tokens, threshold: 2000 }
+
+  - name: no-ai-disclaimer
+    assert: { type: not-icontains, value: "as an ai" }
+
+  # Only runs the caller tagged `canary` (`"tags": ["canary"]` in the run request).
+  - name: canary-latency
+    tags: [canary]
+    assert: { type: latency, threshold: 5000 }

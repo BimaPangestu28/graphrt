@@ -429,6 +429,13 @@ pub struct ServiceArgs {
     /// Print OpenTelemetry spans as JSON lines on stderr (debugging).
     #[arg(long)]
     pub otel_stdout: bool,
+    /// Export to a vendor over OTLP with its endpoint, headers and resource attributes
+    /// filled from its own environment variables: langfuse, langsmith, braintrust, opik,
+    /// phoenix, mlflow (see docs/observability.md). Also `$GRAPHRT_OTEL_PRESET`.
+    /// Implies `--otel`.
+    #[cfg(feature = "otel")]
+    #[arg(long, value_name = "NAME")]
+    pub otel_preset: Option<String>,
     /// Require bundles (`.grt`) to be signed by this hex public key. Repeatable; also
     /// `$GRAPHRT_TRUSTED_KEYS` (comma-separated).
     #[arg(long = "trust-key", value_name = "HEX")]
@@ -571,6 +578,20 @@ pub struct ServeArgs {
     /// Repeatable. See docs/serving.md.
     #[arg(long, value_name = "INPUT=HEADER")]
     pub input_header: Vec<crate::header_inputs::HeaderInputSpec>,
+    /// Online evaluation: an evaluator config (YAML or JSON) that scores a deterministic
+    /// sample of finished runs with judge workflows, regexes, JSON schemas, budgets or
+    /// trajectory checks, in a bounded background pool. Scores are stored with each run
+    /// (`GET /v1/runs/{id}/scores`). See docs/evals.md.
+    #[cfg(feature = "online-eval")]
+    #[arg(long, value_name = "FILE")]
+    pub evaluators: Option<PathBuf>,
+    /// Upload every online and human score to Langfuse (`POST /api/public/scores`, with
+    /// the run's trace id and a deterministic score id). Credentials and URL come from
+    /// `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL`; use with
+    /// `--otel-preset langfuse` so runs have trace ids.
+    #[cfg(feature = "langfuse")]
+    #[arg(long)]
+    pub langfuse_scores: bool,
     #[cfg(feature = "jwt")]
     #[command(flatten)]
     pub user_auth: UserAuthArgs,

@@ -138,6 +138,7 @@ graphrt serve <workflow-file|directory> [--addr 127.0.0.1:8080] [--api-key-env G
               [--timeout-ms] [--max-steps] [--input-header INPUT=HEADER]...
               [--verify-jwt INPUT [--jwt-jwks-url URL] [--jwt-secret-env VAR]
                [--jwt-issuer ISS] [--jwt-audience AUD] [--user-rate-limit N]]
+              [--evaluators FILE] [--otel | --otel-preset NAME]
 ```
 
 Each workflow file is served under its file stem and compiled once at startup.
@@ -157,12 +158,18 @@ invalid one is `401`. `--user-rate-limit N` caps runs per minute per token
 `sub` (`429` with `Retry-After`). See
 [serving.md](serving.md#verifying-end-user-jwts).
 
+`--evaluators evaluators.yaml` scores a deterministic sample of finished runs
+in a bounded background pool (judge workflows, regexes, schemas, budgets,
+trajectory checks); see [evals.md](evals.md#online-evaluation).
+
 | Method | Path | Body |
 | --- | --- | --- |
 | GET | `/healthz` | – |
 | GET | `/v1/workflows` | – |
 | POST | `/v1/workflows/{name}/runs` | `{"inputs": {}, "sys": {}, "conversation": {}, "stream": false}` |
 | POST | `/v1/runs/{run_id}/abort` | – |
+| GET | `/v1/runs/{run_id}/scores` | – (evaluation scores, see [serving.md](serving.md#scores-and-feedback)) |
+| POST | `/v1/runs/{run_id}/feedback` | `{"name": "thumbs", "value": true, "comment": "...", "user": "..."}` |
 | POST | `/v1/runs/{run_id}/resume` | `{"snapshot": {...}, "inputs": {"<node>": {...}}, "secrets": {"ns.name": "..."}, "stream": false}` |
 | GET | `/v1/nodes` | – (node catalog: `{"nodes": [descriptor...]}`) |
 | POST | `/v1/validate` | a workflow document (JSON), or `{"document": "<YAML or JSON text>"}` → `{"valid", "errors", "warnings"}` |

@@ -144,7 +144,7 @@ impl OtlpHttpExporter {
             metrics_url: config.metrics_endpoint.clone(),
             headers: config.headers.clone(),
             resource: config.resource.clone(),
-            metrics,
+            metrics: metrics.filter(|_| config.export_metrics),
             settings,
             counters: counters.clone(),
         };
