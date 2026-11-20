@@ -86,6 +86,8 @@ pub struct AppState {
     knowledge: Option<crate::knowledge_api::KnowledgeService>,
     /// Webhook triggers under `/v1/hooks` (`--webhooks`).
     webhooks: crate::webhooks::Webhooks,
+    /// Keep run inputs in run records (`--store-inputs`).
+    store_inputs: bool,
 }
 
 impl AppState {
@@ -103,7 +105,14 @@ impl AppState {
             #[cfg(feature = "rag")]
             knowledge: None,
             webhooks: crate::webhooks::Webhooks::default(),
+            store_inputs: false,
         }
+    }
+
+    /// Keep each run's inputs (secrets masked) in its run record.
+    pub fn with_store_inputs(mut self, store_inputs: bool) -> Self {
+        self.store_inputs = store_inputs;
+        self
     }
 
     /// Serve these webhooks under `/v1/hooks`.
@@ -359,7 +368,7 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
 
 /// Execute `graphrt serve`.
 pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
-    let options = service_options(&args.services)?;
+    let mut options = service_options(&args.services)?;
     let files = discover(&args.path)?;
     let api_key = std::env::var(&args.api_key_env)
         .ok()
@@ -367,6 +376,7 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         .filter(|k| !k.is_empty());
     let limits = setup::limits(args.services.timeout_ms, args.services.max_steps);
     let telemetry = crate::otel::Telemetry::from_args(&args.services, &options.all_vars())?;
+    options.capture_content = crate::otel::captures_content(telemetry.as_ref());
     let store = crate::store::open(args.store.as_ref(), args.max_runs)?;
     let webhooks = match &args.webhooks {
         Some(path) => crate::webhooks::Webhooks::load(path, &options.all_vars(), options.allow_private_network)?,
@@ -377,6 +387,7 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             .await?
             .with_store(store)
             .with_telemetry(telemetry.clone())
+            .with_store_inputs(args.store_inputs)
             .with_max_active_runs(args.max_active_runs)
             .with_webhooks(webhooks)?,
     );
@@ -578,6 +589,68 @@ pub struct RunRequest {
     /// and `/events`.
     #[serde(default, rename = "async")]
     pub run_async: bool,
+    /// Caller labels, stored on the run record and stamped on its spans
+    /// (`langfuse.trace.metadata.<key>`, `graphrt.run.metadata.<key>`).
+    #[serde(default)]
+    pub metadata: IndexMap<String, String>,
+    /// Session / conversation id (`session.id`, `gen_ai.conversation.id`, `langfuse.session.id`).
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// End-user id (`user.id`, `langfuse.user.id`).
+    #[serde(default)]
+    pub user_id: Option<String>,
+    /// Tags (`langfuse.trace.tags`).
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Limits on the caller context of a run request.
+const MAX_METADATA_ENTRIES: usize = 64;
+const MAX_TAGS: usize = 32;
+const MAX_LABEL_BYTES: usize = 256;
+const MAX_METADATA_VALUE_BYTES: usize = 2048;
+
+impl RunRequest {
+    /// Validate and copy the caller context onto `record`.
+    ///
+    /// @throws String - A message for a `400` response when a field is too large.
+    fn apply_context(&self, record: &mut RunRecord) -> Result<(), String> {
+        if self.metadata.len() > MAX_METADATA_ENTRIES {
+            return Err(format!("`metadata` has more than {MAX_METADATA_ENTRIES} entries"));
+        }
+        if self.tags.len() > MAX_TAGS {
+            return Err(format!("`tags` has more than {MAX_TAGS} entries"));
+        }
+        let label_ok = |text: &str| !text.is_empty() && text.len() <= MAX_LABEL_BYTES;
+        if let Some(key) = self.metadata.keys().find(|k| !label_ok(k)) {
+            return Err(format!("`metadata` key `{key}` must be 1-{MAX_LABEL_BYTES} bytes"));
+        }
+        if self.metadata.values().any(|v| v.len() > MAX_METADATA_VALUE_BYTES) {
+            return Err(format!("`metadata` values must be at most {MAX_METADATA_VALUE_BYTES} bytes"));
+        }
+        let ids = [("session_id", &self.session_id), ("user_id", &self.user_id)];
+        if let Some((name, _)) = ids.iter().find(|(_, id)| id.as_deref().is_some_and(|id| !label_ok(id))) {
+            return Err(format!("`{name}` must be 1-{MAX_LABEL_BYTES} bytes"));
+        }
+        if self.tags.iter().any(|t| !label_ok(t)) {
+            return Err(format!("`tags` entries must be 1-{MAX_LABEL_BYTES} bytes"));
+        }
+        record.metadata.clone_from(&self.metadata);
+        record.session_id.clone_from(&self.session_id);
+        record.user_id.clone_from(&self.user_id);
+        record.tags.clone_from(&self.tags);
+        Ok(())
+    }
+}
+
+/// Caller context stored on a run record, for its spans.
+fn record_context(record: &RunRecord) -> crate::otel::RunContext {
+    crate::otel::RunContext {
+        session_id: record.session_id.clone(),
+        user_id: record.user_id.clone(),
+        tags: record.tags.clone(),
+        metadata: record.metadata.clone(),
+    }
 }
 
 /// Body of `POST /v1/runs/{run_id}/resume`.
@@ -654,7 +727,10 @@ async fn start_run(
         return busy;
     }
     let run_id = state.new_run_id();
-    let record = RunRecord::running(&run_id, &name, workflow.engine.graph().fingerprint(), now_ms());
+    let mut record = RunRecord::running(&run_id, &name, workflow.engine.graph().fingerprint(), now_ms());
+    if let Err(message) = body.apply_context(&mut record) {
+        return error_response(StatusCode::BAD_REQUEST, &message);
+    }
     if let Err(e) = state.store.create(record.clone()).await {
         return store_error(&e);
     }
@@ -969,7 +1045,12 @@ fn launch(
     input: RunInput,
     traceparent: Option<&str>,
 ) -> Arc<ActiveRun> {
-    let tracer = crate::otel::tracer_for(state.telemetry.as_ref(), engine.graph(), traceparent);
+    // The context lives on the record; building it is skipped when nothing traces.
+    let tracer = match &state.telemetry {
+        Some(telemetry) => telemetry.tracer(engine.graph(), traceparent, &record_context(&record)),
+        None => crate::otel::RunTracer::default(),
+    };
+    let capture = live::Capture { start_node: state.store_inputs.then(|| root_start_node(engine.graph())).flatten() };
     let assembler = new_assembler(engine, &input);
     let run = engine.run(input);
     let weak = Arc::downgrade(state);
@@ -978,11 +1059,16 @@ fn launch(
             state.untrack(id);
         }
     });
-    let active = live::spawn(run, assembler, record, Arc::clone(&state.store), on_finish, tracer);
+    let active = live::spawn(run, assembler, record, Arc::clone(&state.store), on_finish, tracer, capture);
     state.track(Arc::clone(&active));
     #[cfg(feature = "telemetry")]
     crate::telemetry::count_run();
     active
+}
+
+/// Id of the root graph's start node, whose outputs are the run's validated inputs.
+fn root_start_node(graph: &Graph) -> Option<Arc<str>> {
+    graph.nodes().iter().find(|n| n.parent.is_none() && n.kind.as_ref() == "start").map(|n| Arc::clone(&n.id))
 }
 
 /// Result of [`launch_detached`].

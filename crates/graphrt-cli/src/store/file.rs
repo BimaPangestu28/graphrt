@@ -402,4 +402,28 @@ mod tests {
         assert!(matches!(store.get("../etc").await, Err(StoreError::InvalidId(_))));
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[tokio::test]
+    async fn evaluation_fields_survive_reopen_and_claims() {
+        let dir = temp_dir("eval-fields");
+        let store = FileStore::open(&dir).unwrap();
+        let mut record = RunRecord::running("e1", "wf", "fp", 1);
+        record.status = RunStatus::Paused;
+        let mut inputs = graphrt_core::IndexMap::new();
+        inputs.insert("q".to_owned(), graphrt_core::Value::from("hi"));
+        record.inputs = Some(inputs);
+        record.trace_id = Some("4bf92f3577b34da6a3ce929d0e0e4736".into());
+        record.span_id = Some("00f067aa0ba902b7".into());
+        record.metadata.insert("tenant".into(), "acme".into());
+        record.session_id = Some("s".into());
+        record.user_id = Some("u".into());
+        record.tags = vec!["t".into()];
+        store.create(record.clone()).await.unwrap();
+        drop(store);
+        let store = FileStore::open(&dir).unwrap();
+        assert_eq!(store.get("e1").await.unwrap(), Some(record.clone()));
+        let claimed = store.claim_resume("e1", 2).await.unwrap();
+        assert_eq!((claimed.inputs, claimed.metadata, claimed.tags), (record.inputs, record.metadata, record.tags));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

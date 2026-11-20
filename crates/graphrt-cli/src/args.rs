@@ -458,6 +458,18 @@ pub struct RunArgs {
     /// Where to write the snapshot if the run pauses [default: <workflow>.snapshot.json].
     #[arg(long, value_name = "FILE")]
     pub snapshot_out: Option<PathBuf>,
+    /// Session / conversation id stamped on the run's OpenTelemetry spans.
+    #[arg(long, value_name = "ID")]
+    pub session_id: Option<String>,
+    /// End-user id stamped on the run's OpenTelemetry spans.
+    #[arg(long, value_name = "ID")]
+    pub user_id: Option<String>,
+    /// Tag for the run's OpenTelemetry spans. Repeatable.
+    #[arg(long = "tag", value_name = "TAG")]
+    pub tags: Vec<String>,
+    /// Metadata `key=value` for the run's OpenTelemetry spans. Repeatable.
+    #[arg(long = "metadata", value_name = "KEY=VALUE")]
+    pub metadata: Vec<String>,
     #[command(flatten)]
     pub services: ServiceArgs,
 }
@@ -488,6 +500,10 @@ pub struct ServeArgs {
     /// Delete stored runs (except running ones) not updated for this many days.
     #[arg(long, value_name = "DAYS")]
     pub store_ttl_days: Option<u64>,
+    /// Keep each run's inputs (as the start node accepted them, secrets masked) in its
+    /// run record, e.g. to turn production runs into evaluation cases. Off by default.
+    #[arg(long)]
+    pub store_inputs: bool,
     /// In-memory store only: keep at most this many runs; the oldest finished runs are
     /// dropped first, running and paused runs are always kept (0 = unlimited). Lower it
     /// on small devices: a finished run takes roughly 10-20 KiB.

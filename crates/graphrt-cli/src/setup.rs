@@ -32,6 +32,9 @@ pub struct ServiceOptions {
     pub plugins: crate::extensions::PluginOptions,
     /// Public keys (hex) whose bundle signatures are trusted (`--trust-key`).
     pub trust_keys: Vec<String>,
+    /// Ask nodes to report content (rendered messages, tool results...) because
+    /// OpenTelemetry content capture is on.
+    pub capture_content: bool,
 }
 
 /// Environment variable naming a default providers file.
@@ -255,6 +258,9 @@ pub async fn services(
             return Err(CliError::usage(format!("`--mcp {}` requires a build with the `mcp` feature", path.display())));
         }
         services.insert(plugin_tools);
+    }
+    if options.capture_content {
+        services.insert(graphrt_core::node::CaptureContent);
     }
     Ok(services)
 }

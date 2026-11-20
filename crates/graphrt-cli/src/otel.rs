@@ -4,13 +4,26 @@
 //! `http://localhost:4318`), automatically when an OTLP endpoint variable is set,
 //! or `--otel-stdout` (span JSON lines on stderr). `OTEL_SDK_DISABLED=true` turns
 //! everything off. Without the `otel` feature these flags are rejected.
+//!
+//! Content capture follows `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`
+//! (`GRAPHRT_OTEL_CAPTURE_CONTENT=true` is an alias for `SPAN_ONLY`).
 
 use std::sync::Arc;
 
-use graphrt_core::{Event, Graph};
+use graphrt_core::{Event, Graph, IndexMap};
 
 use crate::args::ServiceArgs;
 use crate::error::CliError;
+
+/// Caller context of a run (session, user, tags, metadata), stamped on its
+/// spans and stored on its run record.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunContext {
+    pub session_id: Option<String>,
+    pub user_id: Option<String>,
+    pub tags: Vec<String>,
+    pub metadata: IndexMap<String, String>,
+}
 
 /// Per-process telemetry: exporters and shared metrics.
 #[derive(Debug)]
@@ -22,7 +35,7 @@ pub struct Telemetry {
     #[cfg(feature = "otel")]
     metrics: Arc<graphrt_otel::Metrics>,
     #[cfg(feature = "otel")]
-    capture_content: bool,
+    capture: graphrt_otel::CaptureMode,
 }
 
 /// Traces one run. A no-op when telemetry is off.
@@ -45,6 +58,31 @@ impl RunTracer {
         }
         #[cfg(not(feature = "otel"))]
         let _ = event;
+    }
+
+    /// Whether this run is traced.
+    pub fn is_active(&self) -> bool {
+        #[cfg(feature = "otel")]
+        {
+            self.inner.is_some()
+        }
+        #[cfg(not(feature = "otel"))]
+        {
+            false
+        }
+    }
+
+    /// `(trace id, root span id)` as hex, once the run started.
+    pub fn ids(&self) -> Option<(String, String)> {
+        #[cfg(feature = "otel")]
+        {
+            let tracer = self.inner.as_ref()?;
+            Some((tracer.trace_id().to_hex(), tracer.root_span_id()?.to_hex()))
+        }
+        #[cfg(not(feature = "otel"))]
+        {
+            None
+        }
     }
 }
 
@@ -77,12 +115,7 @@ impl Telemetry {
             if args.otel_stdout {
                 exporters = exporters.with(Arc::new(graphrt_otel::WriterExporter::stderr()));
             }
-            Ok(Some(Arc::new(Self {
-                exporter: Arc::new(exporters),
-                http,
-                metrics,
-                capture_content: config.capture.is_enabled(),
-            })))
+            Ok(Some(Arc::new(Self { exporter: Arc::new(exporters), http, metrics, capture: config.capture })))
         }
         #[cfg(not(feature = "otel"))]
         {
@@ -94,14 +127,42 @@ impl Telemetry {
         }
     }
 
+    /// Telemetry exporting to `exporter` (e.g. an in-memory one, for tests and
+    /// embedding hosts).
+    #[cfg(feature = "otel")]
+    pub fn with_exporter(exporter: Arc<dyn graphrt_otel::SpanExporter>, capture: graphrt_otel::CaptureMode) -> Self {
+        Self { exporter, http: None, metrics: Arc::new(graphrt_otel::Metrics::new()), capture }
+    }
+
+    /// Whether spans record content, so nodes should report it
+    /// ([`graphrt_core::node::CaptureContent`]).
+    pub fn captures_content(&self) -> bool {
+        #[cfg(feature = "otel")]
+        {
+            self.capture.is_enabled()
+        }
+        #[cfg(not(feature = "otel"))]
+        {
+            false
+        }
+    }
+
     /// Tracer for one run of `graph`, optionally continuing an upstream `traceparent`.
-    pub fn tracer(&self, graph: &Arc<Graph>, traceparent: Option<&str>) -> RunTracer {
+    pub fn tracer(&self, graph: &Arc<Graph>, traceparent: Option<&str>, context: &RunContext) -> RunTracer {
         #[cfg(feature = "otel")]
         {
             let mut tracer = graphrt_otel::EventTracer::new(self.exporter.clone())
                 .with_graph(graph.clone())
                 .with_metrics(self.metrics.clone())
-                .capture_content(self.capture_content);
+                .capture(self.capture);
+            if *context != RunContext::default() {
+                tracer = tracer.with_context(graphrt_otel::RunContext {
+                    session_id: context.session_id.clone(),
+                    user_id: context.user_id.clone(),
+                    tags: context.tags.clone(),
+                    metadata: context.metadata.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                });
+            }
             if let Some(tp) = traceparent {
                 tracer = tracer.with_parent(tp);
             }
@@ -109,7 +170,7 @@ impl Telemetry {
         }
         #[cfg(not(feature = "otel"))]
         {
-            let _ = (graph, traceparent);
+            let _ = (graph, traceparent, context);
             RunTracer::default()
         }
     }
@@ -131,6 +192,16 @@ impl Telemetry {
 }
 
 /// Convenience: a tracer from optional telemetry.
-pub fn tracer_for(telemetry: Option<&Arc<Telemetry>>, graph: &Arc<Graph>, traceparent: Option<&str>) -> RunTracer {
-    telemetry.map(|t| t.tracer(graph, traceparent)).unwrap_or_default()
+pub fn tracer_for(
+    telemetry: Option<&Arc<Telemetry>>,
+    graph: &Arc<Graph>,
+    traceparent: Option<&str>,
+    context: &RunContext,
+) -> RunTracer {
+    telemetry.map(|t| t.tracer(graph, traceparent, context)).unwrap_or_default()
+}
+
+/// Whether `telemetry` records content.
+pub fn captures_content(telemetry: Option<&Arc<Telemetry>>) -> bool {
+    telemetry.is_some_and(|t| t.captures_content())
 }
