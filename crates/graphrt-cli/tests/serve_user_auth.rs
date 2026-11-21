@@ -136,6 +136,27 @@ async fn a_valid_user_token_starts_runs_without_the_api_key() {
 }
 
 #[tokio::test]
+async fn the_verified_user_overrides_the_body_user_id_on_the_run_record() {
+    let dir = TempDir::new("record-user");
+    let app = app(&dir, 0).await;
+    let token = token_for("user-123", SECRET, 3600);
+    // The run context's `user_id` (stamped on spans as `user.id`) cannot impersonate another user.
+    let body = json!({ "user_id": "someone-else", "session_id": "chat-1" });
+    let (status, _, text) = send(&app, start(Some(&token), None, &body)).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let run_id = serde_json::from_str::<Json>(&text).unwrap()["run_id"].as_str().unwrap().to_owned();
+    let get = Request::get(format!("/v1/runs/{run_id}"))
+        .header("authorization", format!("Bearer {API_KEY}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, text) = send(&app, get).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let record: Json = serde_json::from_str(&text).unwrap();
+    assert_eq!(record["user_id"], "user-123", "{record}");
+    assert_eq!(record["session_id"], "chat-1", "{record}");
+}
+
+#[tokio::test]
 async fn invalid_tokens_are_refused_even_with_the_api_key() {
     let dir = TempDir::new("invalid");
     let app = app(&dir, 0).await;

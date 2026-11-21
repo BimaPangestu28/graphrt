@@ -184,7 +184,8 @@ What a request gets:
 - **Valid token** (signature by a configured key with the key's own `alg`;
   `exp` present and not past; `nbf`, `iss`, `aud` when set, 30 s leeway; a
   non-empty `sub`): the run starts, with or without the API key. The run's
-  `sys.user_id` is set to `sub`, replacing any client value. Only `HS256`,
+  `sys.user_id` and its `user_id` (run record and spans) are set to `sub`,
+  replacing any client value. Only `HS256`,
   `ES256` and `RS256` are accepted; `alg: none`, other algorithms and the
   legacy anon / service-role keys (no `sub`) are refused.
 - **Invalid token**: `401 {"error": "invalid user token in `x-user-authorization`: expired"}`

@@ -13,7 +13,8 @@
 //!   reaches a tool. Without the header the API key rules apply unchanged.
 //!   Only workflows whose start node declares `INPUT` accept a user token
 //!   (others answer `403`), so internal workflows stay key-only.
-//! - The verified `sub` becomes `sys.user_id` of the run (the body cannot set it).
+//! - The verified `sub` becomes `sys.user_id` of the run and the `user_id` of its
+//!   record and spans (the body cannot set either).
 //! - `--user-rate-limit N` allows each `sub` N runs per minute (bursts of N);
 //!   more answer `429` with `Retry-After`.
 //! - `POST /v1/runs/{id}/feedback` (feature `scores`) accepts the token too, for
