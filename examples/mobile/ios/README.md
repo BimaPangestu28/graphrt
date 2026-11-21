@@ -66,6 +66,14 @@ xcrun simctl launch --console-pty booted dev.graphrt.sample -name Grace -autorun
 xcrun simctl io booted screenshot graphrt-sample.png
 ```
 
+Or let the smoke test install, launch and check it (as CI does). It uses the
+booted simulator, or the one in `SIMULATOR_DEVICE`, and fails unless the
+console shows the expected greeting:
+
+```sh
+examples/mobile/ios/scripts/smoke-test.sh       # from the repository root
+```
+
 ## Run on an iPhone
 
 With the device connected and unlocked (Developer Mode on), build the device

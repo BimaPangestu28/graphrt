@@ -7,6 +7,38 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- Live provider test matrix: `crates/graphrt-llm/tests/live_providers.rs` sends
+  tiny streamed chat and tool-call round-trip requests to OpenAI, Anthropic,
+  Gemini and Bedrock and a typed question to TypeSafe (opt-in with
+  `GRAPHRT_LIVE_PROVIDERS=1`, each provider skipped without its credentials),
+  and the `Live providers` workflow runs it nightly and on demand behind
+  repository secrets. See [docs/providers.md](docs/providers.md#live-provider-tests).
+- CI workflow `mobile.yml` builds `graphrt-ffi` for `aarch64-linux-android` and
+  `x86_64-linux-android` (cargo-ndk) and for `aarch64-apple-ios`,
+  `aarch64-apple-ios-sim` and `x86_64-apple-ios`, builds both sample apps, and
+  runs the hello workflow in an Android emulator and an iOS simulator through
+  the new `examples/mobile/*/scripts/smoke-test.sh`. docs/mobile.md gains a
+  checklist for testing on physical devices.
+- Release automation per tag: `.github/workflows/cross-platform.yml` runs the
+  workspace tests on Windows and macOS for pull requests and `main`, and on
+  Linux, macOS and Windows before a tag is built; nothing is published unless
+  they pass. Release binaries are smoke-tested on their own OS
+  (`scripts/smoke-release-binary.sh`; x86_64 macOS is cross-built only), and
+  the Windows `.exe` links the C runtime statically (no `VCRUNTIME140.dll`).
+
+### Fixed
+- Windows: plugin manifests no longer accept rooted paths such as `/etc/x` or
+  `\x` for `module`, checksums or the entrypoint (they are not "absolute" on
+  Windows, yet escaped the plugin directory when joined).
+- Windows: `file:///C:/dir/index.json` URLs work for `GRAPHRT_PLUGIN_INDEX` and
+  catalog tarballs.
+- Windows: a killed or wedged process plugin takes its child processes with it
+  (`taskkill /T`), and plugin and MCP stdio processes get `TEMP`, `TMP` and
+  `PATHEXT` besides `SYSTEMROOT`, `USERPROFILE` and `APPDATA`.
+- Windows: the Python code node keeps the host `PATH` and `SYSTEMROOT`, without
+  which CPython cannot start (the Unix default `PATH` does not exist there).
+
 ## [0.4.0] - 2026-11-20
 
 Evaluation. `graphrt eval` runs datasets against a workflow with deterministic,

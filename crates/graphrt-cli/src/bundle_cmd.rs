@@ -133,6 +133,7 @@ fn create_private_dir(label: &str) -> Result<std::path::PathBuf, CliError> {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
     let unique = format!("{}-{}-{nanos}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
     let dir = std::env::temp_dir().join(format!("graphrt-bundle-{label}-{unique}"));
+    #[cfg_attr(not(unix), allow(unused_mut))] // only mutated by the Unix mode below
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);

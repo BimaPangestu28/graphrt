@@ -192,3 +192,36 @@ named `openai`, `anthropic`, `gemini`, `bedrock` or `typesafe`; only `env` and
 `token_broker` sources are allowed (no host app); and an entry may not share its
 name with a `providers` entry. A `typesafe` entry configures the System One
 client used by `question-classifier` (typesafe engine) and `system-one` nodes.
+
+## Live provider tests
+
+Every provider is covered offline by in-test HTTP servers. On top of that,
+`crates/graphrt-llm/tests/live_providers.rs` sends tiny real requests (at most
+48 output tokens each) to OpenAI, Anthropic, Gemini, Bedrock and TypeSafe: a
+streamed chat answer whose deltas must add up to the final text with usage
+reported, and a forced tool call whose result is sent back and answered
+(TypeSafe: one yes/no and one choice question). The tests only run with
+`GRAPHRT_LIVE_PROVIDERS=1`, and each provider only when its credentials are set;
+otherwise they print a skip line and pass. Credential values are scrubbed from
+every failure message.
+
+```sh
+GRAPHRT_LIVE_PROVIDERS=1 OPENAI_API_KEY=... \
+  cargo test -p graphrt-llm --features gemini,bedrock --test live_providers -- --nocapture openai::
+```
+
+| Provider | Credentials | Default model (override) |
+| --- | --- | --- |
+| `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` (`GRAPHRT_LIVE_OPENAI_MODEL`) |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-haiku-4-5` (`GRAPHRT_LIVE_ANTHROPIC_MODEL`) |
+| `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash-lite` (`GRAPHRT_LIVE_GEMINI_MODEL`) |
+| `bedrock` | `AWS_BEARER_TOKEN_BEDROCK`, or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`; `AWS_REGION` (default `us-east-1`) | `us.amazon.nova-micro-v1:0` (`GRAPHRT_LIVE_BEDROCK_MODEL`) |
+| `typesafe` | `TYPESAFE_API_KEY` (optional `TYPESAFE_BASE_URL`) | `jev-latest` (`GRAPHRT_LIVE_TYPESAFE_MODEL`) |
+
+The [`Live providers` workflow](../.github/workflows/live-providers.yml) runs
+this matrix nightly and on manual dispatch (never on pull requests), one job per
+provider, each job receiving only its own provider's secrets. A provider whose
+repository secret is missing is skipped before anything is built; dispatching
+with `require_secrets: true` turns a missing secret into a failure. The secrets
+above are repository secrets; `AWS_REGION`, `TYPESAFE_BASE_URL` and the
+`GRAPHRT_LIVE_<PROVIDER>_MODEL` overrides are repository variables.

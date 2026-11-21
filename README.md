@@ -22,7 +22,7 @@ or embedded in your own Rust program.
 | Laptop / server | `graphrt run flow.yaml` or `graphrt serve flows/` (single static binary) |
 | Container | ~17 MB distroless image (linux/amd64, linux/arm64) — see [docs/deploy.md](docs/deploy.md) |
 | Small devices / IoT | A 6 MiB build serves workflows in a 16 MiB memory limit on a tenth of a core — see [docs/serving.md](docs/serving.md#small-devices) |
-| Phone | Embed `graphrt-ffi` in an Android or iOS app — see [docs/mobile.md](docs/mobile.md) and the [sample apps](examples/mobile/); or chat with a served agent from Flutter / React Native — see [docs/chatbot-supabase.md](docs/chatbot-supabase.md) |
+| Phone | Embed `graphrt-ffi` in an Android or iOS app — see [docs/mobile.md](docs/mobile.md) and the [sample apps](examples/mobile/), smoke-tested in an Android emulator and an iOS simulator by the [mobile CI workflow](.github/workflows/mobile.yml); or chat with a served agent from Flutter / React Native — see [docs/chatbot-supabase.md](docs/chatbot-supabase.md) |
 | Browser / edge | The core compiles to WebAssembly |
 | Your Rust app | `graphrt-core` as a library — see [docs/embedding.md](docs/embedding.md) |
 
@@ -64,8 +64,10 @@ cargo install graphrt-cli            # installs the `graphrt` binary
 docker run --rm -p 8080:8080 -v "$PWD/flows:/workflows" ghcr.io/bimapangestu28/graphrt
 ```
 
-macOS and Linux archives are on the [releases page](https://github.com/BimaPangestu28/graphrt/releases),
-plus an experimental Windows x86_64 archive (cross-compiled; not yet tested on Windows, reports welcome).
+Linux (x86_64, aarch64; static musl), macOS (x86_64, aarch64) and Windows (x86_64,
+`.zip`, no Visual C++ runtime needed) archives with `SHA256SUMS` are on the
+[releases page](https://github.com/BimaPangestu28/graphrt/releases). The release
+workflow builds them on each OS after the test suite passed on Linux, macOS and Windows.
 Libraries are on crates.io: `graphrt-core` (runtime) plus integration crates such as
 `graphrt-llm`, `graphrt-http`, `graphrt-rag`.
 
@@ -200,7 +202,10 @@ Model providers: any OpenAI-compatible API (OpenAI, Azure OpenAI, Ollama, vLLM,
 Groq, OpenRouter, DeepSeek…) and Anthropic, configured from the environment or a
 providers file (`--providers`); `--model ollama/qwen2.5:14b` points every model
 node at another model. Tools: native Rust closures and
-MCP servers (stdio and streamable HTTP).
+MCP servers (stdio and streamable HTTP). Opt-in live tests send tiny chat,
+streaming and tool-calling requests to OpenAI, Anthropic, Gemini, Bedrock and
+TypeSafe, nightly in CI behind repository secrets
+([docs/providers.md](docs/providers.md#live-provider-tests)).
 
 ## Knowledge bases
 

@@ -71,7 +71,7 @@ first use and restarted after crashes.
 | `command` | string | required | Not blank. A relative path with a separator (`./bin/plugin`, `bin/plugin`) is resolved against the plugin directory and must not be a symlink; a bare name (`python3`, `node`) is looked up in `PATH`. |
 | `args` | array of strings | `[]` | |
 | `env` | object of strings | `{}` | Fixed environment variables. |
-| `inherit_env` | boolean | `false` | `true` passes the whole host environment. Otherwise the process gets `PATH`, `HOME`, `LANG`, `TMPDIR` (and Windows equivalents) plus `permissions.env`. |
+| `inherit_env` | boolean | `false` | `true` passes the whole host environment. Otherwise the process gets `PATH`, `HOME`, `LANG`, `TMPDIR` (and `SYSTEMROOT`, `USERPROFILE`, `APPDATA`, `TEMP`, `TMP`, `PATHEXT` on Windows) plus `permissions.env`. |
 | `cwd` | string \| null | `null` | Working directory relative to the plugin directory; default the plugin directory. The parser does not check it for `..`. |
 
 ### `runtime: http`

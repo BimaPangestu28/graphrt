@@ -71,7 +71,7 @@ fn parse_url(text: &str) -> Result<Option<Location>, String> {
     match scheme.to_ascii_lowercase().as_str() {
         "https" => Ok(Some(Location::Https(text.to_owned()))),
         "file" => {
-            let path = PathBuf::from(rest);
+            let path = file_url_path(rest);
             if !path.is_absolute() {
                 return Err(format!("`{text}` must be an absolute file:// URL (file:///path/to/file)"));
             }
@@ -79,6 +79,25 @@ fn parse_url(text: &str) -> Result<Option<Location>, String> {
         }
         _ => Err(format!("`{text}` must be an https:// URL, a file:// URL or a local path")),
     }
+}
+
+/// The local path in a `file://` URL after the scheme. On Windows the URL form
+/// `file:///C:/dir/index.json` names `C:/dir/index.json`, so the slash before
+/// the drive letter is dropped there.
+fn file_url_path(rest: &str) -> PathBuf {
+    if cfg!(windows)
+        && let Some(drive_path) = rest.strip_prefix('/')
+        && starts_with_drive_letter(drive_path)
+    {
+        return PathBuf::from(drive_path);
+    }
+    PathBuf::from(rest)
+}
+
+/// Whether `path` starts like `C:`.
+fn starts_with_drive_letter(path: &str) -> bool {
+    let mut chars = path.chars();
+    matches!((chars.next(), chars.next()), (Some(letter), Some(':')) if letter.is_ascii_alphabetic())
 }
 
 /// How much may be read, and for how long.
@@ -168,13 +187,24 @@ async fn download_capped_async(url: &str, limits: FetchLimits) -> Result<Vec<u8>
 mod tests {
     use super::*;
 
+    /// An absolute directory on the host, spelled as a `file://` URL path.
+    #[cfg(windows)]
+    const TMP: &str = "C:/tmp";
+    #[cfg(not(windows))]
+    const TMP: &str = "/tmp";
+
+    fn file_url(path: &str) -> String {
+        format!("file:///{}", path.trim_start_matches('/'))
+    }
+
     #[test]
     fn index_locations_are_https_file_urls_or_paths() {
         assert_eq!(
             parse_index_location("https://x.example/index.json"),
             Ok(Location::Https("https://x.example/index.json".into()))
         );
-        assert_eq!(parse_index_location("file:///tmp/index.json"), Ok(Location::File("/tmp/index.json".into())));
+        let index = format!("{TMP}/index.json");
+        assert_eq!(parse_index_location(&file_url(&index)), Ok(Location::File(index.into())));
         assert_eq!(parse_index_location("catalog/index.json"), Ok(Location::File("catalog/index.json".into())));
         assert!(parse_index_location("http://x.example/index.json").unwrap_err().contains("https://"));
         assert!(parse_index_location("ftp://x.example/index.json").is_err());
@@ -182,18 +212,30 @@ mod tests {
     }
 
     #[test]
+    fn file_urls_with_a_drive_letter_name_windows_paths() {
+        assert!(starts_with_drive_letter("C:/tmp") && starts_with_drive_letter("d:\\x"));
+        assert!(
+            !starts_with_drive_letter("/tmp") && !starts_with_drive_letter("1:/x") && !starts_with_drive_letter("C")
+        );
+        let expected = if cfg!(windows) { "C:/tmp/index.json" } else { "/C:/tmp/index.json" };
+        assert_eq!(file_url_path("/C:/tmp/index.json"), PathBuf::from(expected));
+        assert_eq!(file_url_path("/tmp/index.json"), PathBuf::from("/tmp/index.json"));
+    }
+
+    #[test]
     fn tarballs_need_https_unless_the_index_is_local() {
         let remote_index = Location::Https("https://x.example/index.json".into());
-        let local_index = Location::File("/tmp/index.json".into());
+        let local_index = Location::File(format!("{TMP}/index.json").into());
         let https = "https://x.example/a-1.0.0.tar.gz";
         assert_eq!(parse_tarball_location(https, &remote_index), Ok(Location::Https(https.into())));
+        let tarball = format!("{TMP}/a.tar.gz");
         assert_eq!(
-            parse_tarball_location("file:///tmp/a.tar.gz", &local_index),
-            Ok(Location::File("/tmp/a.tar.gz".into()))
+            parse_tarball_location(&file_url(&tarball), &local_index),
+            Ok(Location::File(tarball.clone().into()))
         );
-        assert!(parse_tarball_location("file:///etc/passwd", &remote_index).unwrap_err().contains("not local"));
+        assert!(parse_tarball_location(&file_url(&tarball), &remote_index).unwrap_err().contains("not local"));
         assert!(parse_tarball_location("http://x.example/a.tar.gz", &local_index).is_err());
-        assert!(parse_tarball_location("/tmp/a.tar.gz", &local_index).is_err());
+        assert!(parse_tarball_location(&tarball, &local_index).is_err());
         let hostile = parse_tarball_location("http://x.example/\u{1b}]52;c;x\u{7}", &local_index).unwrap_err();
         assert!(!hostile.chars().any(char::is_control), "{hostile:?}");
     }

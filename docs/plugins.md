@@ -87,7 +87,7 @@ with a JSON Schema in [`schemas/plugin-manifest.schema.json`](schemas/plugin-man
 | `runtime` | `process`, `http` or `wasm`. |
 | `nodes` | Node descriptors (see the node catalog). Each `kind` must start with `<name>.`. With `allow_unprefixed_kinds: true`, plain names without `.` (e.g. `slugify`) are also allowed; another plugin's `<other>.` namespace never is. Unknown descriptor keys are errors. |
 | `tools` | Tools exposed to `tool` and `agent` nodes under provider `<name>`. |
-| `permissions.env` | Host environment variables passed to the process (in addition to `PATH`, `HOME`, `LANG`, `TMPDIR` and their Windows equivalents). An HTTP plugin's `bearer_token_env` must be listed here. |
+| `permissions.env` | Host environment variables passed to the process (in addition to `PATH`, `HOME`, `LANG`, `TMPDIR`, and `SYSTEMROOT`, `USERPROFILE`, `APPDATA`, `TEMP`, `TMP`, `PATHEXT` on Windows). An HTTP plugin's `bearer_token_env` must be listed here. |
 | `permissions.secrets` | Requests plaintext secret values in node config, resume input and the `context` of tool calls ([Tool call context](#tool-call-context)). **Granted only when the operator trusts the plugin** (`--trust-plugin <name>`); otherwise secrets are sent masked as `******` and a warning is printed. |
 | `permissions.network` | Informational: whether the plugin makes network calls. Shown to users before install. |
 | `limits.timeout_ms` | Per-request timeout (default 60 000). The node's own deadline still applies. After 3 consecutive timeouts a process plugin is considered stuck: it is killed and restarted on the next request. |
@@ -336,7 +336,8 @@ Manifest permissions are **requests**; the operator grants them:
   (loopback addresses excepted).
 - Plugin processes start with a **clean environment**: only the variables listed
   in `permissions.env`, the fixed `env` map and a few basic variables (`PATH`,
-  `HOME`, `LANG`, `TMPDIR`). This is hygiene, not a sandbox: native plugin code
+  `HOME`, `LANG`, `TMPDIR`; on Windows also `SYSTEMROOT`, `USERPROFILE`, `APPDATA`,
+  `TEMP`, `TMP`, `PATHEXT`). This is hygiene, not a sandbox: native plugin code
   runs with the privileges of the graphrt process and can read anything the
   process can.
 - Plugin node kinds never replace built-in nodes or another plugin's nodes, and
@@ -471,7 +472,8 @@ How a name is resolved and installed:
    wins; write `./name` to make a local install explicit.
 2. The index is read from `--index <url|path>`, else `$GRAPHRT_PLUGIN_INDEX`,
    else `https://github.com/BimaPangestu28/graphrt-plugins/releases/download/catalog/index.json`.
-   It may be an `https://` URL, a `file://` URL or a local path; plain
+   It may be an `https://` URL, a `file://` URL (`file:///C:/catalog/index.json`
+   on Windows) or a local path; plain
    `http://` is refused because the index carries the checksums. Catalogs with
    a `schema` other than 1 are refused (upgrade graphrt).
 3. Without a version, the highest version by semver precedence is picked,

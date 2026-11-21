@@ -55,8 +55,17 @@ Models come from API providers; the runtime itself needs no server.
 ## Next
 
 - Windows binaries tested on Windows, and release automation per tag (CI).
+  The workflows are in place (tests on Linux, macOS and Windows gate every tag;
+  binaries are smoke-tested on their OS); done once a run on GitHub Actions
+  has passed.
 - Mobile builds verified in CI (Android emulator, iOS simulator) and on devices.
-- Live provider test matrix in CI (OpenAI, Anthropic, Gemini, Bedrock, TypeSafe) behind secrets.
+  The workflow ([mobile.yml](.github/workflows/mobile.yml)), smoke tests and a
+  device checklist ([docs/mobile.md](docs/mobile.md#testing-on-devices)) are in
+  place; open until the jobs pass on GitHub Actions and the checklist has run
+  on an Android phone.
+- Live provider test matrix in CI (OpenAI, Anthropic, Gemini, Bedrock, TypeSafe) behind secrets:
+  the tests and the nightly `Live providers` workflow are in place; done once the
+  repository secrets are set and the first nightly run is green.
 
 ## Later
 

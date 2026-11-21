@@ -17,7 +17,10 @@ use crate::manifest::{LoadedManifest, ProcessRuntime};
 use crate::transport::{INITIALIZE_TIMEOUT, Transport, check_initialize, initialize_params, with_timeout};
 
 /// Host variables always passed to plugin processes.
-pub const DEFAULT_PASS_ENV: &[&str] = &["PATH", "HOME", "LANG", "TMPDIR", "SYSTEMROOT", "USERPROFILE", "APPDATA"];
+/// The Windows names (`SYSTEMROOT`, `TEMP`, `PATHEXT`, ...) are needed by most
+/// Windows programs to start, find temp space and resolve `.cmd` launchers.
+pub const DEFAULT_PASS_ENV: &[&str] =
+    &["PATH", "HOME", "LANG", "TMPDIR", "SYSTEMROOT", "USERPROFILE", "APPDATA", "TEMP", "TMP", "PATHEXT"];
 
 /// How much plugin stderr is kept for diagnostics.
 const STDERR_TAIL_BYTES: usize = 64 * 1024;
@@ -150,7 +153,8 @@ impl ProcessTransport {
         // A relative command with a path separator (`./bin/plugin`) is relative to the
         // plugin directory; a bare name (`python3`) is looked up on PATH.
         let command = std::path::Path::new(&self.runtime.command);
-        let in_plugin_dir = command.is_relative() && command.components().count() > 1;
+        // `has_root` too: on Windows `/usr/bin/x` is "relative" (no drive) but rooted.
+        let in_plugin_dir = command.is_relative() && !command.has_root() && command.components().count() > 1;
         let program = if in_plugin_dir { self.plugin.dir.join(command) } else { command.to_path_buf() };
         if in_plugin_dir {
             // A symlinked entrypoint could point anywhere, bypassing checksums.
@@ -188,7 +192,7 @@ impl ProcessTransport {
         cmd.stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
         // Own process group, so wrappers (`sh run.sh`, `npx`, `uv run`) and every
-        // process they start are killed together.
+        // process they start are killed together (on Windows `taskkill /T` walks the tree).
         #[cfg(unix)]
         cmd.process_group(0);
 
@@ -228,7 +232,7 @@ impl ProcessTransport {
             let status = tokio::select! {
                 status = child.wait() => status,
                 _ = kill_rx => {
-                    kill_group(pid);
+                    kill_tree(pid);
                     let _already_exited = child.start_kill();
                     child.wait().await
                 }
@@ -273,19 +277,35 @@ impl ProcessTransport {
 }
 
 /// Kill every process in the plugin's process group (Unix). Uses the `kill`
-/// utility, so no unsafe libc call is needed.
+/// utility, so no unsafe libc call is needed. Safe after the plugin exited: the
+/// group lives on while any member does.
 fn kill_group(pid: Option<u32>) {
     #[cfg(unix)]
     if let Some(pid) = pid {
-        let _no_group_left = std::process::Command::new("kill")
-            .args(["-s", "KILL", "--", &format!("-{pid}")])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        run_quietly(std::process::Command::new("kill").args(["-s", "KILL", "--", &format!("-{pid}")]));
     }
     #[cfg(not(unix))]
     let _ = pid;
+}
+
+/// Kill a still-running plugin and every process it started. Windows has no
+/// process groups here, so `taskkill /T /F` walks the tree. Call it only while
+/// the child is unreaped: its handle keeps the PID from being reused.
+fn kill_tree(pid: Option<u32>) {
+    #[cfg(windows)]
+    if let Some(pid) = pid {
+        run_quietly(std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]));
+    }
+    kill_group(pid);
+}
+
+#[cfg(any(unix, windows))]
+fn run_quietly(command: &mut std::process::Command) {
+    let _no_process_left = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 fn describe_exit(status: &std::process::ExitStatus) -> String {
