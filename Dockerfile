@@ -7,6 +7,8 @@
 #
 # Build args:
 #   FEATURES   cargo features of graphrt-cli (empty = the CLI's default set)
+#   EXTRA_FEATURES  features added to the default set when FEATURES is empty,
+#              e.g. `eval,online-eval` (the release image does this)
 #   PROFILE    cargo profile (default: min-size)
 #   GRAPHRT_TELEMETRY_URL  opt-in telemetry endpoint baked into the binary (default: none)
 #
@@ -23,6 +25,7 @@ RUN apk add --no-cache musl-dev gcc make
 WORKDIR /src
 COPY . .
 ARG FEATURES=""
+ARG EXTRA_FEATURES=""
 ARG PROFILE=min-size
 # Opt-in usage telemetry (docs/telemetry.md): reports from this image say
 # `build: docker`; without GRAPHRT_TELEMETRY_URL the binary has no endpoint and
@@ -35,7 +38,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ -n "$FEATURES" ]; then \
         cargo build -p graphrt-cli --profile "$PROFILE" --locked --no-default-features --features "$FEATURES"; \
     else \
-        cargo build -p graphrt-cli --profile "$PROFILE" --locked; \
+        cargo build -p graphrt-cli --profile "$PROFILE" --locked --features "$EXTRA_FEATURES"; \
     fi; \
     install -D -m 0755 "target/$PROFILE/graphrt" /out/graphrt
 

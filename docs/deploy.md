@@ -29,6 +29,7 @@ Measured on x86_64 with the CLI's default features (`llm`, `http`, `code`,
 | Build argument | Default | Meaning |
 | --- | --- | --- |
 | `FEATURES` | *(empty: CLI defaults)* | Cargo features of `graphrt-cli`, e.g. `FEATURES="llm,http,serve"` for an image without the JS engine or MCP. |
+| `EXTRA_FEATURES` | *(empty)* | Features added to the CLI defaults when `FEATURES` is empty, e.g. `EXTRA_FEATURES=eval,online-eval` for `graphrt eval` and `serve --evaluators` (the published GHCR image is built so). |
 | `PROFILE` | `min-size` | Cargo profile. `release` is faster to run, `min-size` is smaller. |
 | `RUST_VERSION`, `ALPINE_VERSION` | `1`, `3.22` | Builder image versions. |
 

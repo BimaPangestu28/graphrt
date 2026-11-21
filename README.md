@@ -59,6 +59,7 @@ brew install bimapangestu28/graphrt/graphrt
 
 # with Rust (1.89+)
 cargo install graphrt-cli            # installs the `graphrt` binary
+cargo install graphrt-cli --features eval,online-eval   # + `graphrt eval` and `serve --evaluators`
 
 # container (linux/amd64, linux/arm64)
 docker run --rm -p 8080:8080 -v "$PWD/flows:/workflows" ghcr.io/bimapangestu28/graphrt
@@ -408,6 +409,10 @@ small devices, `--no-default-features --features llm,http,wasm,serve`, is
 
 End-user JWT verification for `serve` (`jwt`, on by default) adds about
 33 KiB: it reuses the `ring` and `reqwest` crates already linked for TLS.
+
+Evaluation (`eval` for `graphrt eval`, `online-eval` for `serve --evaluators`)
+is opt-in: `cargo install graphrt-cli --features eval,online-eval`. The release
+binaries, Homebrew formula and GHCR image are built with both.
 
 Every feature is optional: build only what a deployment needs.
 

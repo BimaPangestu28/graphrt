@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "jwt", "telemetry", "eval", "scores", "online-eval", "langfuse"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "jwt", "telemetry", "scores", "langfuse"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -54,7 +54,8 @@ mcp = ["dep:graphrt-mcp"]
 # cassette files and replay them offline (deterministic runs, evals, CI).
 replay = ["llm", "graphrt-llm/replay"]
 # `graphrt eval`: run a workflow against test cases with assertions and a CI
-# gate (JSON and JUnit reports). Pulls in `replay`.
+# gate (JSON and JUnit reports). Pulls in `replay`. Opt-in (`--features eval`):
+# the release binaries and the GHCR image are built with it.
 eval = ["replay", "dep:graphrt-eval"]
 # OpenTelemetry traces and metrics over OTLP/HTTP (`--otel`, `--otel-stdout`).
 otel = ["dep:graphrt-otel"]
@@ -77,7 +78,7 @@ jwt = ["serve", "dep:reqwest", "dep:rustls", "dep:ring", "dep:base64", "dep:this
 scores = ["serve"]
 # Online evaluation in `serve` (`--evaluators`): a sample of finished runs is
 # scored in a bounded background pool with the assertions of `graphrt eval`
-# (judge workflows included). Needs `eval`.
+# (judge workflows included). Needs `eval`; opt-in like it.
 online-eval = ["scores", "eval", "tokio/sync"]
 # Upload online and human scores to Langfuse (`serve --langfuse-scores`), through
 # the `http` egress policy, with the `langfuse` OTel preset's credentials.
