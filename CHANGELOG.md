@@ -52,6 +52,12 @@ releases may contain breaking changes; they are called out under **Changed**.
 - Dependencies: `wasmi` 2.0.1 (yanked) is updated to 2.0.2. The remaining
   `cargo deny` ignores (unmaintained, no vulnerability) carry a reason and a
   review date.
+- A workflow could grow a variable exponentially: an `assigner` in a loop that
+  appends or extends a variable with itself doubled it every round (memory
+  with `extend`; CPU through shared children with `append`, where type
+  inference walked the whole value). Assigner inputs read from a variable are
+  now limited to 1,000,000 values and 128 levels of nesting, and type
+  inference no longer descends into nested arrays.
 
 ## [0.4.0] - 2026-11-20
 
