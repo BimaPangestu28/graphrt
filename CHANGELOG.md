@@ -116,8 +116,9 @@ releases may contain breaking changes; they are called out under **Changed**.
   `graphrt_gateway_prewarm_{started,hits,misses}_total{source}`,
   `…_warm_replica_seconds`, `…_warm_budget_replica_seconds`,
   `…_wakes_in_flight`, `…_wakes_gated_total`. Binary (`min-size`,
-  `--features gateway`): +56.9 KiB x86_64 musl, +44.4 KiB aarch64 musl,
-  +32.5 KiB macOS arm64.
+  `--features gateway`): +60.8 KiB x86_64 musl (9,441,208 → 9,503,416 B),
+  +48.2 KiB aarch64 musl (8,074,536 → 8,123,944 B), +48.6 KiB macOS arm64
+  (7,011,360 → 7,061,136 B).
 - `graphrt gateway` preempts runs shortly before a platform's request cap
   (Cloud Run 60 min, Container Apps standard ingress 240 s) and re-dispatches
   them, so long runs continue across the cap: the gateway sends
