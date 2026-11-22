@@ -194,7 +194,31 @@ What a request gets:
   is valid, so a bad token never reaches a tool.
 - **No token**: the API key rules apply as before (and a required input still
   answers `401`).
-- **What the response contains** (`--user-events answer`, the default): a
+- **Over the rate limit**: `429` with `Retry-After` (seconds). Refused requests
+  do not use up the quota. The limit is per process; with several instances
+  each one counts separately.
+
+Verification is in memory (measured: +7 µs per request for `HS256`, +44 µs
+for `ES256`). A complete example, with a Supabase schema and container, is
+[examples/supabase-chatbot](../examples/supabase-chatbot/).
+
+#### What a user token may do
+
+These are the access rules for end-user tokens; the rest of the documentation
+links here.
+
+| Endpoint | With a verified user token |
+| --- | --- |
+| `POST /v1/workflows/{name}/runs` | Allowed for workflows whose start node declares the verified input. Others answer `403`, so internal workflows served next to the chat stay key-only |
+| `POST /v1/runs/{id}/feedback` | Allowed only on the user's **own** runs: those started with a token of the same `sub` (the record has `user_verified: true`). Other runs answer `403`, including runs started with the API key whose body set `user_id`: that is a label, not proof of who the user is. The score's `user` is the token's `sub`, whatever the body says |
+| Every other endpoint | API key only: run lists, run records, events, scores, resume, abort, delete, nodes, validate, hooks and knowledge. Webhook deliveries take their signature or the API key |
+
+- **An API key is required.** The server refuses to start with `--verify-jwt`
+  unless the API key is set, also on a loopback address: without a key, every
+  endpoint in the last row would be public (a reverse proxy on the same host
+  exposes a loopback port). With the key set, users cannot read each other's
+  runs.
+- **Responses are filtered.** With `--user-events answer` (the default), a
   streamed run sends only `response` events (the answer text), `run_started`
   and the terminal event: `run_succeeded` (the end node's `outputs` and
   `usage`), `run_failed` (`error_type` and `usage`, not the error text, which
@@ -204,23 +228,10 @@ What a request gets:
   `reasons`, `error_type`, `reason` and `elapsed_ms` only. Node events (inputs,
   outputs, retrieved documents, tool results, rendered prompts) never reach
   the client. `--user-events all` restores the full stream and result for
-  trusted clients. Requests authorized by the API key always get everything,
-  and every endpoint that reads or resumes runs takes only the API key.
-- **Over the rate limit**: `429` with `Retry-After` (seconds). Refused requests
-  do not use up the quota. The limit is per process; with several instances
-  each one counts separately.
-
-A user token opens only `POST /v1/workflows/{name}/runs`, and only for
-workflows whose start node declares the verified input (others answer `403`,
-so internal workflows served next to the chat stay key-only), plus
-[feedback](#scores-and-feedback) on the user's own runs. Every other endpoint
-(run lists, events, resume, abort, validate, knowledge) still needs the API key,
-so users cannot read each other's runs; for the same reason the server refuses
-to start with `--verify-jwt` unless the API key is set, also on a loopback
-address (a reverse proxy on the same host would otherwise make the whole API
-public). Verification is in memory (measured: +7 µs per request for `HS256`, +44 µs
-for `ES256`). A complete example, with a Supabase schema and container, is
-[examples/supabase-chatbot](../examples/supabase-chatbot/).
+  trusted clients. Requests authorized by the API key always get everything.
+- **Invalid tokens** are `401` on both routes, even next to a valid API key.
+- **Rate limit.** Run starts and feedback with a user token both count against
+  the user's `--user-rate-limit`.
 
 ## Streaming (SSE)
 
@@ -363,13 +374,8 @@ idempotent.
 
 **Auth.** Both endpoints take the API key. With
 [`--verify-jwt`](#verifying-end-user-jwts), feedback also accepts the end
-user's token, for the user's **own** runs only: runs started with that user's
-token (the record has `user_verified: true` and `user_id` equal to the token's
-`sub`). Runs started with the API key refuse user tokens with `403`, even when
-the body set `user_id`: that is a label, not proof of who the user is. The
-score's `user` is the verified `sub`, whatever the body says. Reading scores stays an
-API-key endpoint. An invalid token is `401`, and feedback with a user token counts
-against that user's `--user-rate-limit` like a run start.
+user's token on the user's own runs only; see
+[What a user token may do](#what-a-user-token-may-do).
 
 With [OpenTelemetry](observability.md) on, every score (online or human) also
 becomes an `evaluate {name}` span under the run's root span in the run's trace,
@@ -613,6 +619,8 @@ the dataset, 413 upload too large, 502 provider failure) and an
 The API is single-tenant: anyone holding the server's API key can see and
 resume every run. Run one server (or one store directory) per tenant, or put an
 authenticating proxy in front that restricts which run ids a caller may use.
-Per-user credentials passed with `--input-header` are not checked by the
+Per-user credentials passed with `--input-header` alone are not checked by the
 server; they only reach the workflow, and whatever the workflow calls with them
-(PostgREST row-level security, for example) enforces them.
+(PostgREST row-level security, for example) enforces them. With `--verify-jwt`
+the server verifies them, and a token reaches only its user's own runs (see
+[What a user token may do](#what-a-user-token-may-do)).

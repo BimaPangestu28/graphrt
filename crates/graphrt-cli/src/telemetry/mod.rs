@@ -352,53 +352,66 @@ fn status_json(environment: &Environment) -> serde_json::Value {
 pub fn telemetry(args: &TelemetryArgs) -> Result<u8, CliError> {
     let environment = Environment::current();
     let mut out = std::io::stdout().lock();
-    let io = |e: std::io::Error| CliError::failed(e.to_string());
-    let paths = || {
-        environment.paths.clone().ok_or_else(|| {
-            CliError::usage(format!("cannot find a user config directory; set {}", state::CONFIG_DIR_ENV))
-        })
-    };
     match &args.command {
-        TelemetryCommand::Enable => {
-            let paths = paths()?;
-            state::update(&paths, |state| {
-                state.enabled = true;
-                state.ensure_install_id().map(|_| ())
-            })
-            .and_then(|created| created)
-            .map_err(CliError::failed)?;
-            writeln!(out, "telemetry enabled ({})", paths.file.display()).map_err(io)?;
-            if let Some(reason) = environment.blocked() {
-                writeln!(out, "note: nothing is sent while {reason}").map_err(io)?;
-            }
-            writeln!(out, "see `graphrt telemetry status` for exactly what is sent").map_err(io)?;
-        }
-        TelemetryCommand::Disable => {
-            let paths = paths()?;
-            // Forget the install id and unsent counts too.
-            state::update(&paths, |state| *state = State::default()).map_err(CliError::failed)?;
-            writeln!(out, "telemetry disabled; install id and unsent counts deleted").map_err(io)?;
-        }
-        TelemetryCommand::Status { json } => {
+        TelemetryCommand::Enable => enable(&environment, &mut out)?,
+        TelemetryCommand::Disable => disable(&environment, &mut out)?,
+        TelemetryCommand::Status { json: true } => {
             let status = status_json(&environment);
-            if *json {
-                writeln!(out, "{}", serde_json::to_string_pretty(&status).unwrap_or_default()).map_err(io)?;
-                return Ok(EXIT_OK);
-            }
-            let text = |key: &str| status.get(key).and_then(serde_json::Value::as_str).map(str::to_owned);
-            match text("reason") {
-                None => writeln!(out, "telemetry: on").map_err(io)?,
-                Some(reason) => writeln!(out, "telemetry: off ({reason})").map_err(io)?,
-            }
-            writeln!(out, "endpoint: {}", text("endpoint").unwrap_or_else(|| "none".into())).map_err(io)?;
-            writeln!(out, "state file: {}", text("state_file").unwrap_or_else(|| "none".into())).map_err(io)?;
-            writeln!(out, "last report: {}", text("last_sent_day").unwrap_or_else(|| "never".into())).map_err(io)?;
-            writeln!(out, "next report (sent at most once a day, only while on):").map_err(io)?;
-            let payload = serde_json::to_string_pretty(&status.get("next_report")).unwrap_or_default();
-            writeln!(out, "{payload}").map_err(io)?;
+            writeln!(out, "{}", serde_json::to_string_pretty(&status).unwrap_or_default()).map_err(output_error)?;
         }
+        TelemetryCommand::Status { json: false } => print_status(&status_json(&environment), &mut out)?,
     }
     Ok(EXIT_OK)
+}
+
+fn output_error(e: std::io::Error) -> CliError {
+    CliError::failed(e.to_string())
+}
+
+/// @throws CliError (usage) - Without a user config directory.
+fn state_paths(environment: &Environment) -> Result<Paths, CliError> {
+    environment
+        .paths
+        .clone()
+        .ok_or_else(|| CliError::usage(format!("cannot find a user config directory; set {}", state::CONFIG_DIR_ENV)))
+}
+
+/// `graphrt telemetry enable`: opt in, creating the install id.
+fn enable(environment: &Environment, out: &mut impl Write) -> Result<(), CliError> {
+    let paths = state_paths(environment)?;
+    state::update(&paths, |state| {
+        state.enabled = true;
+        state.ensure_install_id().map(|_| ())
+    })
+    .and_then(|created| created)
+    .map_err(CliError::failed)?;
+    writeln!(out, "telemetry enabled ({})", paths.file.display()).map_err(output_error)?;
+    if let Some(reason) = environment.blocked() {
+        writeln!(out, "note: nothing is sent while {reason}").map_err(output_error)?;
+    }
+    writeln!(out, "see `graphrt telemetry status` for exactly what is sent").map_err(output_error)
+}
+
+/// `graphrt telemetry disable`: opt out and forget the install id and unsent counts.
+fn disable(environment: &Environment, out: &mut impl Write) -> Result<(), CliError> {
+    let paths = state_paths(environment)?;
+    state::update(&paths, |state| *state = State::default()).map_err(CliError::failed)?;
+    writeln!(out, "telemetry disabled; install id and unsent counts deleted").map_err(output_error)
+}
+
+/// `graphrt telemetry status` as text.
+fn print_status(status: &serde_json::Value, out: &mut impl Write) -> Result<(), CliError> {
+    let text = |key: &str| status.get(key).and_then(serde_json::Value::as_str).map(str::to_owned);
+    match text("reason") {
+        None => writeln!(out, "telemetry: on").map_err(output_error)?,
+        Some(reason) => writeln!(out, "telemetry: off ({reason})").map_err(output_error)?,
+    }
+    writeln!(out, "endpoint: {}", text("endpoint").unwrap_or_else(|| "none".into())).map_err(output_error)?;
+    writeln!(out, "state file: {}", text("state_file").unwrap_or_else(|| "none".into())).map_err(output_error)?;
+    writeln!(out, "last report: {}", text("last_sent_day").unwrap_or_else(|| "never".into())).map_err(output_error)?;
+    writeln!(out, "next report (sent at most once a day, only while on):").map_err(output_error)?;
+    let payload = serde_json::to_string_pretty(&status.get("next_report")).unwrap_or_default();
+    writeln!(out, "{payload}").map_err(output_error)
 }
 
 #[cfg(test)]

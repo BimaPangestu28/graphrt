@@ -101,6 +101,25 @@ impl ActiveRun {
     pub fn is_done(&self) -> bool {
         *self.done_tx.borrow()
     }
+
+    /// Hand `event` to the in-memory feed and any listeners. `terminal_answer`
+    /// is the final answer text, given with the terminal event.
+    fn publish(&self, event: &SharedEvent, terminal_answer: Option<&str>) {
+        let mut feed = self.feed();
+        if feed.events.len() < FEED_CAP {
+            feed.events.push(Arc::clone(event));
+        } else {
+            feed.dropped = true;
+        }
+        // No receivers is fine: the run is recorded either way.
+        if let Some(tx) = &feed.tx {
+            let _receivers = tx.send(Arc::clone(event));
+        }
+        if let Some(answer) = terminal_answer {
+            feed.terminal = Some(Arc::clone(event));
+            feed.answer = answer.to_owned();
+        }
+    }
 }
 
 /// What the driver copies from a run's events into its record, besides status.
@@ -171,6 +190,7 @@ impl Recorder {
     }
 }
 
+/// The background task of a run: record, publish and store each event until the run ends.
 async fn drive(
     mut run: RunStream,
     mut assembler: ResponseAssembler,
@@ -191,44 +211,16 @@ async fn drive(
         let terminal = event.is_terminal();
         pending.push(event_to_stored(&event));
         let event = Arc::new(event);
-        {
-            let mut feed = active.feed();
-            if feed.events.len() < FEED_CAP {
-                feed.events.push(Arc::clone(&event));
-            } else {
-                feed.dropped = true;
-            }
-            // No receivers is fine: the run is recorded either way.
-            if let Some(tx) = &feed.tx {
-                let _receivers = tx.send(Arc::clone(&event));
-            }
-            if terminal {
-                feed.terminal = Some(Arc::clone(&event));
-                feed.answer = assembler.text_so_far().to_owned();
-            }
-        }
-        if (pending.len() >= FLUSH_EVERY || terminal)
-            && let Err(e) = store.append_events(&run_id, std::mem::take(&mut pending)).await
-        {
-            eprintln!("warning: run {run_id}: cannot store events: {e}");
+        active.publish(&event, terminal.then(|| assembler.text_so_far()));
+        if pending.len() >= FLUSH_EVERY || terminal {
+            store_events(&*store, &run_id, std::mem::take(&mut pending)).await;
         }
         if terminal {
-            if let Some(snapshot) = record.apply_terminal(&event, now_ms())
-                && let Err(e) = store.save_snapshot(&run_id, &snapshot).await
-            {
-                eprintln!("warning: run {run_id}: cannot store snapshot, it will not be resumable by id: {e}");
-            }
-            record.answer = assembler.text_so_far().to_owned();
-            // `put` keeps the store's own event counters.
-            if let Err(e) = store.put(record.clone()).await {
-                eprintln!("warning: run {run_id}: cannot store final status: {e}");
-            }
+            store_final_state(&*store, &mut record, &event, assembler.text_so_far()).await;
         }
     }
-    if !pending.is_empty()
-        && let Err(e) = store.append_events(&run_id, pending).await
-    {
-        eprintln!("warning: run {run_id}: cannot store events: {e}");
+    if !pending.is_empty() {
+        store_events(&*store, &run_id, pending).await;
     }
     on_finish(&run_id);
     active.done_tx.send_replace(true);
@@ -236,5 +228,27 @@ async fn drive(
     #[cfg(feature = "online-eval")]
     if let Some(online) = &recorder.capture.online {
         online.submit(&record, &active.feed().events);
+    }
+}
+
+/// Append a batch of a run's events to the store; a failure is logged, the run goes on.
+async fn store_events(store: &dyn RunStore, run_id: &str, events: Vec<StoredEvent>) {
+    if let Err(e) = store.append_events(run_id, events).await {
+        eprintln!("warning: run {run_id}: cannot store events: {e}");
+    }
+}
+
+/// Record a finished execution: its status, its snapshot when it paused, and
+/// the final answer text. Failures are logged.
+async fn store_final_state(store: &dyn RunStore, record: &mut RunRecord, terminal: &Event, answer: &str) {
+    if let Some(snapshot) = record.apply_terminal(terminal, now_ms())
+        && let Err(e) = store.save_snapshot(&record.run_id, &snapshot).await
+    {
+        eprintln!("warning: run {}: cannot store snapshot, it will not be resumable by id: {e}", record.run_id);
+    }
+    record.answer = answer.to_owned();
+    // `put` keeps the store's own event counters.
+    if let Err(e) = store.put(record.clone()).await {
+        eprintln!("warning: run {}: cannot store final status: {e}", record.run_id);
     }
 }

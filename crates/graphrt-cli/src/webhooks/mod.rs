@@ -51,7 +51,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::error::CliError;
-use crate::serve::{AppState, Launch, error_response, launch_detached};
+use crate::serve::{AppState, Launch, error_response, launch_detached, traceparent};
 pub use signature::{SignatureScheme, Verifier};
 
 /// Default header carrying the sender's idempotency key.
@@ -343,16 +343,8 @@ pub(crate) async fn receive(
         Ok(body) => body,
         Err(rejection) => return error_response(rejection.status(), &rejection.body_text()),
     };
-    match &hook.verifier {
-        Some(verifier) => {
-            if let Err(e) = verifier.verify(&headers, &body, unix_now_secs()) {
-                return error_response(StatusCode::UNAUTHORIZED, &e.to_string());
-            }
-        }
-        None if !state.authorized(&headers) => {
-            return error_response(StatusCode::UNAUTHORIZED, "missing or invalid bearer token");
-        }
-        None => {}
+    if let Some(refused) = refuse_unauthenticated_delivery(&state, hook, &headers, &body) {
+        return refused;
     }
     let json: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(json) => json,
@@ -363,11 +355,17 @@ pub(crate) async fn receive(
         Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
     };
     let inputs = hook.map_inputs(&json, &headers);
-    let traceparent = headers.get("traceparent").and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let launch = match launch_detached(&state, &hook.workflow, run_id, inputs, traceparent).await {
-        Ok(launch) => launch,
-        Err(response) => return response,
-    };
+    match launch_detached(&state, &hook.workflow, run_id, inputs, traceparent(&headers)).await {
+        Ok(launch) => accepted_delivery(hook, launch),
+        Err(response) => response,
+    }
+}
+
+/// `202` for a delivery: the new run (whose completion callback starts now),
+/// or the existing run of a redelivery.
+fn accepted_delivery(hook: &Hook, launch: Launch) -> Response {
+    #[cfg(not(feature = "http"))]
+    let _ = hook;
     let (run_id, status, duplicate) = match launch {
         Launch::Started(active) => {
             let run_id = active.run_id.clone();
@@ -387,6 +385,19 @@ pub(crate) async fn receive(
         "events": format!("/v1/runs/{run_id}/events"),
     });
     (StatusCode::ACCEPTED, Json(body)).into_response()
+}
+
+/// `401` unless the delivery carries a valid signature (hooks with a
+/// `signature`) or the bearer API key (the others).
+fn refuse_unauthenticated_delivery(
+    state: &AppState,
+    hook: &Hook,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Option<Response> {
+    let Some(verifier) = &hook.verifier else { return state.refuse_without_api_key(headers) };
+    let refusal = verifier.verify(headers, body, unix_now_secs()).err()?;
+    Some(error_response(StatusCode::UNAUTHORIZED, &refusal.to_string()))
 }
 
 /// The delivery's idempotency key, if it sent one.

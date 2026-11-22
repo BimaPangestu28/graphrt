@@ -129,36 +129,28 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
                 .map_err(|e| CliError::failed(e.to_string()))?;
             Ok(EXIT_OK)
         }
-        Command::Run(args) => {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| CliError::failed(format!("cannot start runtime: {e}")))?;
-            runtime.block_on(run::run(*args))
-        }
+        Command::Run(args) => block_on_current_thread(run::run(*args)),
         #[cfg(feature = "eval")]
-        Command::Eval(args) => {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| CliError::failed(format!("cannot start runtime: {e}")))?;
-            runtime.block_on(eval::eval(*args))
-        }
+        Command::Eval(args) => block_on_current_thread(eval::eval(*args)),
         #[cfg(feature = "rag")]
-        Command::Kb(args) => {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| CliError::failed(format!("cannot start runtime: {e}")))?;
-            runtime.block_on(kb::kb(*args))
-        }
+        Command::Kb(args) => block_on_current_thread(kb::kb(*args)),
         #[cfg(feature = "serve")]
         Command::Serve(args) => {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| CliError::failed(format!("cannot start runtime: {e}")))?;
+            let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(runtime_error)?;
             runtime.block_on(serve::serve(*args))
         }
     }
+}
+
+/// Run a command on a single-threaded runtime: one run or evaluation at a
+/// time needs no worker pool (only `serve` gets a multi-threaded one).
+///
+/// @throws CliError - When the runtime cannot start, or the command's own error.
+fn block_on_current_thread(command: impl std::future::Future<Output = Result<u8, CliError>>) -> Result<u8, CliError> {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(runtime_error)?;
+    runtime.block_on(command)
+}
+
+fn runtime_error(e: std::io::Error) -> CliError {
+    CliError::failed(format!("cannot start runtime: {e}"))
 }

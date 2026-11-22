@@ -62,7 +62,7 @@ Every boundary that matters is enforced outside the model:
 | Layer | Enforces | Stops |
 | --- | --- | --- |
 | App | Holds only the project URL, the publishable key and the user's session | Leaked LLM, service role or serve keys (there are none to leak) |
-| `serve --verify-jwt` | Signature, `exp`, `iss`, `aud`, `sub`; a user token opens only run starts of workflows that take it | Forged or expired tokens, reading other users' runs (`/v1/runs` and events need the admin key) |
+| `serve --verify-jwt` | Signature, `exp`, `iss`, `aud`, `sub`; a user token opens only run starts of workflows that take it and feedback on its own runs ([rules](serving.md#what-a-user-token-may-do)) | Forged or expired tokens, reading other users' runs (`/v1/runs` and events need the admin key) |
 | `serve --user-rate-limit` | Runs per minute per `sub` | One user exhausting the model budget |
 | `tool_context` + `type: secret` | The JWT reaches the plugin, never the model's context, events, logs or store | The model revealing the token, even when told to |
 | Plugin `user_rpc` | Only `call_function`, only names in `SUPABASE_TOOL_RPC_ALLOWLIST`, only as the user; refuses service role keys | Prompt injection calling `exec_sql`, table endpoints or admin functions |
