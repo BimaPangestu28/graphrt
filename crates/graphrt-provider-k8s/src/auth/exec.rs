@@ -10,8 +10,6 @@
 use std::process::Stdio;
 use std::time::{Duration, SystemTime};
 
-use serde::Deserialize;
-
 use graphrt_provider_api::{BoxFuture, ProviderError};
 
 use super::{AccessToken, AuthError, SecretString, TokenFetcher, UNKNOWN_EXPIRY, parse_rfc3339};
@@ -96,39 +94,32 @@ impl TokenFetcher for ExecTokenFetcher {
     }
 }
 
-#[derive(Deserialize)]
-struct ExecCredential {
-    kind: Option<String>,
-    status: Option<ExecCredentialStatus>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ExecCredentialStatus {
-    token: Option<String>,
-    expiration_timestamp: Option<String>,
-    client_certificate_data: Option<String>,
-}
-
-/// Parse the plugin's stdout (an `ExecCredential` object).
+/// Parse the plugin's stdout (an `ExecCredential` object). Read as a JSON
+/// value (no per-struct deserializer: the gateway already links `Value`).
 fn parse_exec_credential(stdout: &[u8]) -> Result<AccessToken, AuthError> {
     // The error never echoes stdout: it carries the credential.
-    let credential: ExecCredential = serde_json::from_slice(stdout)
-        .map_err(|_| AuthError::Exec("output is not an ExecCredential JSON object".into()))?;
-    if credential.kind.as_deref().is_some_and(|kind| kind != "ExecCredential") {
+    let credential: serde_json::Value = serde_json::from_slice(stdout)
+        .ok()
+        .filter(serde_json::Value::is_object)
+        .ok_or_else(|| AuthError::Exec("output is not an ExecCredential JSON object".into()))?;
+    if credential.get("kind").and_then(serde_json::Value::as_str).is_some_and(|kind| kind != "ExecCredential") {
         return Err(AuthError::Exec("output kind is not ExecCredential".into()));
     }
-    let status = credential.status.ok_or_else(|| AuthError::Exec("ExecCredential without status".into()))?;
-    let Some(token) = status.token.filter(|token| !token.is_empty()) else {
-        let reason = if status.client_certificate_data.is_some() {
+    let status = credential
+        .get("status")
+        .filter(|status| status.is_object())
+        .ok_or_else(|| AuthError::Exec("ExecCredential without status".into()))?;
+    let field = |name: &str| status.get(name).and_then(serde_json::Value::as_str);
+    let Some(token) = field("token").filter(|token| !token.is_empty()) else {
+        let reason = if field("clientCertificateData").is_some() {
             "client certificates from exec plugins are not supported, use client-certificate-data"
         } else {
             "ExecCredential status has no token"
         };
         return Err(AuthError::Unsupported(reason.into()));
     };
-    let expires_in = match status.expiration_timestamp {
-        Some(timestamp) => parse_rfc3339(&timestamp)
+    let expires_in = match field("expirationTimestamp") {
+        Some(timestamp) => parse_rfc3339(timestamp)
             .ok_or_else(|| AuthError::Exec(format!("bad expirationTimestamp {timestamp:?}")))?
             .duration_since(SystemTime::now())
             .unwrap_or_default(),

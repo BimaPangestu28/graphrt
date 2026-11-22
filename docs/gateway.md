@@ -149,9 +149,19 @@ gateway cases (drain and re-dispatch, long stream, request cap, 7-day version
 pool, idle release) against fake cloud APIs in
 `crates/graphrt-gateway/tests/provider_harness.rs`.
 
-Known gap: on platforms with a request cap *and* a grace period (Cloud Run's
-60 minutes, Container Apps' standard ingress 240 s), the gateway does not yet preempt a run shortly before the cap;
-such a run is cut by the platform and reclaimed like a lost stream.
+Request caps: on platforms with a cap and a grace period (Cloud Run 60
+minutes, Container Apps' standard ingress 240 s) the gateway asks the agent
+to preempt each execution at `cap − min(60 s, cap/4)` (3540 s, 180 s); the run
+pauses with a snapshot and is re-dispatched at once, so a run longer than the
+cap continues instead of being cut. On Lambda (no grace) a run past the
+function timeout fails with `platform_timeout`.
+
+Retirement: when a version's 7-day pool expires the gateway closes it (new
+resumes get `410 version_retired`) and frees what the platform keeps for it:
+Cloud Run traffic tags (`deploy-cloud-run`), Container Apps revisions
+(`deploy-aca`, needs a write role) and Fly Machine pools (`deploy-fly`); a
+failed retirement is retried every hour. Kubernetes, ECS and Lambda keep
+nothing running for an old version once its pool is closed.
 
 ## Deploying versions
 
