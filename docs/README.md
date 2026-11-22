@@ -18,6 +18,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 - [The `graphrt` CLI](cli.md): every command and flag
 - [Serving workflows](serving.md): HTTP API, SSE, run store, per-user tokens (`--verify-jwt`), webhooks, knowledge base
 - [Deploying graphrt](deploy.md): container, Fly.io, Cloud Run, systemd
+- [Gateway on AWS](gateway-aws.md): ECS Fargate and Lambda targets of the upcoming gateway, credentials, IAM policies, limits
 - [Bundles (`.grt`)](bundles.md)
 - [Observability](observability.md): OpenTelemetry traces and metrics, GenAI semantic conventions, presets for Langfuse, LangSmith, Braintrust, Opik, Phoenix and MLflow
 - [Usage telemetry](telemetry.md)

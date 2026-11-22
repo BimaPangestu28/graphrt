@@ -22,6 +22,18 @@ releases may contain breaking changes; they are called out under **Changed**.
   shared provider HTTP layer (token bucket per provider API, jittered retry,
   token cache with one refresh on 401) and the C1–C13 provider conformance
   harness with a scripted fake HTTP server. No user-visible change yet.
+- `graphrt-provider-aws` (internal crate): AWS targets of the upcoming
+  gateway without the AWS SDK. `auth-aws` is a hand-rolled SigV4 signer
+  (header and presigned), the credential chain env → container endpoint (ECS
+  task role, EKS Pod Identity) → STS web identity (IRSA) → IMDSv2 with caching,
+  refresh-once on 401/403 and clock-skew correction, and presigned EKS tokens.
+  `provider-ecs` runs one ECS Fargate task per replica (`RunTask` / `StopTask`
+  / `DescribeTasks` / `ListTasks`, `stopTimeout` ≤ 120 s, for async and cron
+  runs). `provider-lambda` runs short synchronous runs (≤ 14 min) through
+  `InvokeWithResponseStream` and Lambda Web Adapter, detects buffered replies
+  and ends over-long runs with an explicit `platform_timeout`. App Runner is
+  not supported (closed to new customers). See
+  [docs/gateway-aws.md](docs/gateway-aws.md). No user-visible change yet.
 - Live provider test matrix: `crates/graphrt-llm/tests/live_providers.rs` sends
   tiny streamed chat and tool-call round-trip requests to OpenAI, Anthropic,
   Gemini and Bedrock and a typed question to TypeSafe (opt-in with
