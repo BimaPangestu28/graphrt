@@ -116,6 +116,9 @@ pub struct LiveRun {
     orphan: Mutex<Option<oneshot::Sender<Json>>>,
     current: Mutex<Option<(graphrt_provider_api::EndpointAddress, u64)>>,
     callback: Option<String>,
+    /// Created by this request with no event anywhere yet: until the ring has
+    /// frames, nothing is in the store either.
+    new_run: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for LiveRun {
@@ -145,6 +148,7 @@ impl LiveRun {
             orphan: Mutex::new(None),
             current: Mutex::new(None),
             callback,
+            new_run: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -171,6 +175,15 @@ impl LiveRun {
     /// Lowest engine event index still in the ring.
     pub fn ring_start(&self) -> Option<u64> {
         self.ring.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find_map(|frame| frame.event_index())
+    }
+
+    /// Whether events from `index` on may be in the store only (evicted from
+    /// the ring, or written by an earlier execution or gateway process).
+    pub fn needs_store_from(&self, index: u64) -> bool {
+        match self.ring_start() {
+            Some(first) => first > index,
+            None => !self.new_run.load(std::sync::atomic::Ordering::Relaxed),
+        }
     }
 
     /// Watches the settled state.
@@ -494,6 +507,7 @@ impl Gateway {
         }
         bump(&self.metrics.runs_started);
         let run = LiveRun::new(&run_id, deployment.clone(), input, options.callback, self.settings.replay_ring);
+        run.new_run.store(true, std::sync::atomic::Ordering::Relaxed);
         self.register(&run);
         let gateway = Arc::clone(self);
         let supervised = run.clone();

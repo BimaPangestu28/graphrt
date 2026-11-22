@@ -433,8 +433,9 @@ fn client_stream(
         bump(&gateway.metrics.client_streams);
         let mut cursor = (start, chunks);
         let subscription = live.as_ref().map(|run| (run.subscribe(), run.settled()));
-        let ring_start = live.as_ref().and_then(|run| run.ring_start());
-        let needs_store = ring_start.is_none_or(|first| first > cursor.0);
+        // A run this request just created streams from its ring alone: one
+        // store read (and its wait for the connection) fewer before the first byte.
+        let needs_store = live.as_ref().is_none_or(|run| run.needs_store_from(cursor.0));
         let send = |frame: &Frame, cursor: &mut (u64, Option<u64>)| -> Option<Bytes> {
             let id = frame.id.as_deref()?;
             if !is_after(id, cursor.0, cursor.1) {
