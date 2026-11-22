@@ -26,10 +26,10 @@ fn main() {
         config.api_base_url = base_url.clone();
         let provider: Arc<dyn Provider> = Arc::new(FlyProvider::new(config).unwrap());
         let deployment = DeploymentRef::new("probe", "v1", "probe");
-        println!("{:?}", provider.wake(&deployment, 1).await.err());
+        std::hint::black_box(provider.wake(&deployment, 1).await.is_ok());
         let replica = ReplicaRef { deployment: deployment.clone(), id: "abc".to_owned() };
-        println!("{:?}", provider.release(&replica, ReleaseMode::Suspend).await.err());
-        println!("{:?}", provider.list(&deployment).await.err());
+        std::hint::black_box(provider.release(&replica, ReleaseMode::Suspend).await.is_ok());
+        std::hint::black_box(provider.list(&deployment).await.is_ok());
         let driver: Box<dyn DeployDriver> = Box::new(FlyDeployDriver::new(FlyDeployConfig {
             api_base_url: base_url,
             token_origin: TokenOrigin::Env("FLY_API_TOKEN".to_owned()),
@@ -51,6 +51,6 @@ fn main() {
             workflow_fingerprint: String::new(),
             provider_settings: BTreeMap::new(),
         };
-        println!("{:?}", driver.apply(&spec).await.err());
+        std::hint::black_box(driver.apply(&spec).await.is_ok());
     });
 }

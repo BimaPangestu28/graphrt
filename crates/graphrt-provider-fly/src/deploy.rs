@@ -27,7 +27,7 @@ use crate::model::{
     CreateMachineRequest, GuestConfig, InitConfig, METADATA_DEPLOYMENT, METADATA_POOL, METADATA_VERSION, MachineConfig,
     RestartConfig, StopConfig,
 };
-use crate::provider::{pool_machine_name, pool_metadata};
+use crate::provider::pool_machine_name;
 use crate::token::TokenOrigin;
 
 /// Metadata key with the workflow fingerprint, so resumes go to the right version.
@@ -111,7 +111,7 @@ impl FlyDeployDriver {
             self.config.token_origin.clone(),
             self.config.client_policy.clone(),
         )?;
-        let machines = client.list_machines(&pool_metadata(deployment)).await?;
+        let machines = client.list_pool_machines(&deployment.name, &deployment.version).await?;
         let mut destroyed = 0;
         for machine in machines.iter().filter(|machine| machine.belongs_to(&deployment.name, &deployment.version)) {
             match client.destroy_machine(&machine.id).await {
@@ -278,7 +278,7 @@ async fn create_pool(
     plan: &FlyDeployPlan,
 ) -> Result<(), DeployError> {
     let existing_names: BTreeSet<String> = client
-        .list_machines(&pool_metadata(deployment))
+        .list_pool_machines(&deployment.name, &deployment.version)
         .await?
         .into_iter()
         .filter(|machine| machine.belongs_to(&deployment.name, &deployment.version))
@@ -291,8 +291,7 @@ async fn create_pool(
         if existing_names.contains(&name) {
             continue;
         }
-        let request =
-            CreateMachineRequest { name, region: plan.region.clone(), config: config.clone(), skip_launch: true };
+        let request = CreateMachineRequest { name, region: &plan.region, config: &config, skip_launch: true };
         match client.create_machine(&request).await {
             Err(error) if !is_name_taken(&error) => return Err(error.into()),
             _ => {}

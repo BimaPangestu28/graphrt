@@ -153,12 +153,12 @@ pub struct StopConfig {
 
 /// Body of `POST /apps/{app}/machines`.
 #[derive(Clone, Debug, Serialize)]
-pub struct CreateMachineRequest {
+pub struct CreateMachineRequest<'request> {
     pub name: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub region: String,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub region: &'request str,
     /// A [`MachineConfig`] (deploy) or a pool member's config (clone), as JSON.
-    pub config: serde_json::Value,
+    pub config: &'request serde_json::Value,
     /// Create the Machine without booting it: a pooled replica costs only its rootfs.
     pub skip_launch: bool,
 }

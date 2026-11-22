@@ -23,9 +23,9 @@ fn main() {
         config.api_base_url = base_url;
         let provider: Arc<dyn Provider> = Arc::new(FlyProvider::new(config).unwrap());
         let deployment = DeploymentRef::new("probe", "v1", "probe");
-        println!("{:?}", provider.wake(&deployment, 1).await.err());
+        std::hint::black_box(provider.wake(&deployment, 1).await.is_ok());
         let replica = ReplicaRef { deployment: deployment.clone(), id: "abc".to_owned() };
-        println!("{:?}", provider.release(&replica, ReleaseMode::Suspend).await.err());
-        println!("{:?}", provider.list(&deployment).await.err());
+        std::hint::black_box(provider.release(&replica, ReleaseMode::Suspend).await.is_ok());
+        std::hint::black_box(provider.list(&deployment).await.is_ok());
     });
 }

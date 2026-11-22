@@ -44,7 +44,7 @@ impl Provider for HttpProbe {
             let body = response.bytes().await.map_err(|error| ProviderError::transient(error.to_string()))?;
             let value: serde_json::Value =
                 serde_json::from_slice(&body).map_err(|error| ProviderError::fatal(error.to_string()))?;
-            println!("{value}");
+            std::hint::black_box(&value);
             Ok(Vec::new())
         })
     }
@@ -65,6 +65,6 @@ pub fn main() {
         let provider: Arc<dyn Provider> =
             Arc::new(HttpProbe { http: ProviderHttp::new(client, Arc::new(TokenBucket::new(10.0, 10))), url });
         let deployment = DeploymentRef::new("probe", "v1", "probe");
-        println!("{:?}", provider.wake(&deployment, 1).await.err());
+        std::hint::black_box(provider.wake(&deployment, 1).await.is_ok());
     });
 }

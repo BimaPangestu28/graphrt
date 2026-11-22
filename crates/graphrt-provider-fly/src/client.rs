@@ -21,8 +21,8 @@ use serde::Serialize;
 
 use crate::error::{classify_fly_response, decode_error};
 use crate::model::{
-    CreateAppRequest, CreateMachineRequest, ListSecretsResponse, Machine, MachineState, StopMachineRequest,
-    UpdateSecretsRequest,
+    CreateAppRequest, CreateMachineRequest, ListSecretsResponse, METADATA_DEPLOYMENT, METADATA_POOL, METADATA_VERSION,
+    Machine, MachineState, StopMachineRequest, UpdateSecretsRequest,
 };
 use crate::token::{FlyToken, TokenOrigin};
 
@@ -111,45 +111,47 @@ impl MachinesClient {
         &self.app_name
     }
 
-    /// `GET /apps/{app}/machines`, filtered server-side by metadata.
+    /// `GET /apps/{app}/machines` of one version's pool, filtered server-side by metadata.
     ///
-    /// @param metadata_filter - `metadata.{key}=value` pairs (&BTreeMap<String, String>)
+    /// @param deployment - deployment name (&str)
+    /// @param version - deployment version (&str)
     /// @returns Machines of the app (callers re-check metadata: the filter is a hint)
-    pub async fn list_machines(
-        &self,
-        metadata_filter: &BTreeMap<String, String>,
-    ) -> Result<Vec<Machine>, ProviderError> {
-        let query: Vec<(String, String)> =
-            metadata_filter.iter().map(|(key, value)| (format!("metadata.{key}"), value.clone())).collect();
-        let body = self.send(reqwest::Method::GET, &self.machines_path(), &query, None).await?;
+    pub async fn list_pool_machines(&self, deployment: &str, version: &str) -> Result<Vec<Machine>, ProviderError> {
+        let path = format!(
+            "{}?metadata.{METADATA_POOL}=1&metadata.{METADATA_DEPLOYMENT}={}&metadata.{METADATA_VERSION}={}",
+            self.machines_path(),
+            percent_encode(deployment),
+            percent_encode(version)
+        );
+        let body = self.send(reqwest::Method::GET, &path, None).await?;
         serde_json::from_slice(&body).map_err(|error| decode_error("machine list", &error))
     }
 
     /// `GET /apps/{app}/machines/{id}`.
     pub async fn get_machine(&self, machine_id: &str) -> Result<Machine, ProviderError> {
-        let body = self.send(reqwest::Method::GET, &self.machine_path(machine_id, "")?, &[], None).await?;
+        let body = self.send(reqwest::Method::GET, &self.machine_path(machine_id, "")?, None).await?;
         serde_json::from_slice(&body).map_err(|error| decode_error("machine", &error))
     }
 
     /// `POST /apps/{app}/machines`.
-    pub async fn create_machine(&self, request: &CreateMachineRequest) -> Result<Machine, ProviderError> {
-        let body = self.send(reqwest::Method::POST, &self.machines_path(), &[], Some(encode(request)?)).await?;
+    pub async fn create_machine(&self, request: &CreateMachineRequest<'_>) -> Result<Machine, ProviderError> {
+        let body = self.send(reqwest::Method::POST, &self.machines_path(), Some(encode(request)?)).await?;
         serde_json::from_slice(&body).map_err(|error| decode_error("created machine", &error))
     }
 
     /// `POST /apps/{app}/machines/{id}/start`: cold boot, or resume of a suspended snapshot.
     pub async fn start_machine(&self, machine_id: &str) -> Result<(), ProviderError> {
-        self.send(reqwest::Method::POST, &self.machine_path(machine_id, "/start")?, &[], None).await.map(drop)
+        self.send(reqwest::Method::POST, &self.machine_path(machine_id, "/start")?, None).await.map(drop)
     }
 
     /// `POST /apps/{app}/machines/{id}/suspend`: snapshot memory, then stop.
     pub async fn suspend_machine(&self, machine_id: &str) -> Result<(), ProviderError> {
-        self.send(reqwest::Method::POST, &self.machine_path(machine_id, "/suspend")?, &[], None).await.map(drop)
+        self.send(reqwest::Method::POST, &self.machine_path(machine_id, "/suspend")?, None).await.map(drop)
     }
 
     /// `POST /apps/{app}/machines/{id}/stop` with a signal and grace.
     pub async fn stop_machine(&self, machine_id: &str, request: &StopMachineRequest) -> Result<(), ProviderError> {
-        self.send(reqwest::Method::POST, &self.machine_path(machine_id, "/stop")?, &[], Some(encode(request)?))
+        self.send(reqwest::Method::POST, &self.machine_path(machine_id, "/stop")?, Some(encode(request)?))
             .await
             .map(drop)
     }
@@ -165,23 +167,19 @@ impl MachinesClient {
         state: MachineState,
         timeout: Duration,
     ) -> Result<(), ProviderError> {
-        let query = [
-            ("state".to_owned(), state.as_api_str().to_owned()),
-            ("timeout".to_owned(), wait_timeout_secs(timeout).to_string()),
-        ];
-        self.send(reqwest::Method::GET, &self.machine_path(machine_id, "/wait")?, &query, None).await.map(drop)
+        let suffix = format!("/wait?state={}&timeout={}", state.as_api_str(), wait_timeout_secs(timeout));
+        self.send(reqwest::Method::GET, &self.machine_path(machine_id, &suffix)?, None).await.map(drop)
     }
 
     /// `DELETE /apps/{app}/machines/{id}?force=true`.
     pub async fn destroy_machine(&self, machine_id: &str) -> Result<(), ProviderError> {
-        let query = [("force".to_owned(), "true".to_owned())];
-        self.send(reqwest::Method::DELETE, &self.machine_path(machine_id, "")?, &query, None).await.map(drop)
+        self.send(reqwest::Method::DELETE, &self.machine_path(machine_id, "?force=true")?, None).await.map(drop)
     }
 
     /// `GET /apps/{app}`: whether the app exists.
     pub async fn app_exists(&self) -> Result<bool, ProviderError> {
         let path = format!("/v1/apps/{}", self.app_name);
-        match self.send(reqwest::Method::GET, &path, &[], None).await {
+        match self.send(reqwest::Method::GET, &path, None).await {
             Ok(_) => Ok(true),
             Err(error) if error.kind == ProviderErrorKind::NotFound => Ok(false),
             Err(error) => Err(error),
@@ -195,20 +193,20 @@ impl MachinesClient {
             org_slug: org_slug.to_owned(),
             network: network.to_owned(),
         };
-        self.send(reqwest::Method::POST, "/v1/apps", &[], Some(encode(&request)?)).await.map(drop)
+        self.send(reqwest::Method::POST, "/v1/apps", Some(encode(&request)?)).await.map(drop)
     }
 
     /// `POST /apps/{app}/secrets`: sets (or, with `None`, deletes) app secrets in
     /// one call. Fly injects them as environment variables into Machines on boot.
     pub async fn update_secrets(&self, values: BTreeMap<&str, Option<&str>>) -> Result<(), ProviderError> {
         let path = format!("/v1/apps/{}/secrets", self.app_name);
-        self.send(reqwest::Method::POST, &path, &[], Some(encode(&UpdateSecretsRequest { values })?)).await.map(drop)
+        self.send(reqwest::Method::POST, &path, Some(encode(&UpdateSecretsRequest { values })?)).await.map(drop)
     }
 
     /// `GET /apps/{app}/secrets`: names of the app's secrets (values are never requested).
     pub async fn list_secret_names(&self) -> Result<Vec<String>, ProviderError> {
         let path = format!("/v1/apps/{}/secrets", self.app_name);
-        let body = self.send(reqwest::Method::GET, &path, &[], None).await?;
+        let body = self.send(reqwest::Method::GET, &path, None).await?;
         let listing: ListSecretsResponse =
             serde_json::from_slice(&body).map_err(|error| decode_error("secret list", &error))?;
         Ok(listing.secrets.into_iter().map(|secret| secret.name).collect())
@@ -229,14 +227,13 @@ impl MachinesClient {
     async fn send(
         &self,
         method: reqwest::Method,
-        path: &str,
-        query: &[(String, String)],
+        path_and_query: &str,
         encoded_body: Option<Vec<u8>>,
     ) -> Result<Vec<u8>, ProviderError> {
         let mut reloaded = false;
         loop {
             let token = self.token(reloaded)?;
-            let url = format!("{}{path}{}", self.api_base_url, encode_query(query));
+            let url = format!("{}{path_and_query}", self.api_base_url);
             let build = |client: &reqwest::Client| {
                 let mut request =
                     client.request(method.clone(), &url).header(AUTHORIZATION, token.authorization_header());
@@ -247,15 +244,17 @@ impl MachinesClient {
             };
             match self.http.send(build, None).await {
                 Ok(response) => {
-                    let body = response
-                        .bytes()
-                        .await
-                        .map_err(|error| ProviderError::transient(format!("reading response of {path}: {error}")))?;
+                    let body = response.bytes().await.map_err(|error| {
+                        ProviderError::transient(format!("Fly {method} {}: {error}", path_only(path_and_query)))
+                    })?;
                     return Ok(body.to_vec());
                 }
                 Err(error) if error.kind == ProviderErrorKind::Auth && !reloaded => reloaded = true,
                 Err(error) => {
-                    return Err(ProviderError { message: format!("Fly {method} {path}: {}", error.message), ..error });
+                    return Err(ProviderError {
+                        message: format!("Fly {method} {}: {}", path_only(path_and_query), error.message),
+                        ..error
+                    });
                 }
             }
         }
@@ -279,13 +278,12 @@ fn validate_app_name(app_name: &str) -> Result<(), ProviderError> {
     if valid { Ok(()) } else { Err(ProviderError::fatal(format!("invalid Fly app name {app_name:?}"))) }
 }
 
-/// `?k=v&...` with RFC 3986 percent-encoding (reqwest's `query` feature is not linked).
-fn encode_query(query: &[(String, String)]) -> String {
-    let pairs: Vec<String> =
-        query.iter().map(|(key, value)| format!("{}={}", percent_encode(key), percent_encode(value))).collect();
-    if pairs.is_empty() { String::new() } else { format!("?{}", pairs.join("&")) }
+/// The path of a request without its query string, for error messages.
+fn path_only(path_and_query: &str) -> &str {
+    path_and_query.split('?').next().unwrap_or(path_and_query)
 }
 
+/// RFC 3986 percent-encoding of a query value (reqwest's `query` feature is not linked).
 fn percent_encode(text: &str) -> String {
     let mut encoded = String::with_capacity(text.len());
     for byte in text.bytes() {
@@ -326,9 +324,8 @@ mod tests {
 
     #[test]
     fn query_is_percent_encoded() {
-        let query = [("metadata.graphrt_version".to_owned(), "v1 &x=y".to_owned())];
-        assert_eq!(encode_query(&query), "?metadata.graphrt_version=v1%20%26x%3Dy");
-        assert_eq!(encode_query(&[]), "");
+        assert_eq!(percent_encode("v1 &x=y"), "v1%20%26x%3Dy");
+        assert_eq!(path_only("/v1/apps/a/machines?metadata.x=1"), "/v1/apps/a/machines");
     }
 
     #[test]

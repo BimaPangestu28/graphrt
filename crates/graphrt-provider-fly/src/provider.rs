@@ -19,7 +19,7 @@
 //! The provider never sees deployment secrets: those are Fly app secrets set
 //! at deploy time and injected by Fly into the Machine's environment.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use graphrt_provider_api::{
@@ -30,10 +30,7 @@ use tokio::time::Instant;
 
 use crate::client::{MAX_WAIT_SECS, MachinesClient};
 use crate::config::FlyProviderConfig;
-use crate::model::{
-    CreateMachineRequest, METADATA_DEPLOYMENT, METADATA_POOL, METADATA_VERSION, Machine, MachineState,
-    StopMachineRequest,
-};
+use crate::model::{CreateMachineRequest, Machine, MachineState, StopMachineRequest};
 
 /// Wake p95 targets of plan §5.
 const WAKE_P95_SUSPEND_MS: u64 = 800;
@@ -46,8 +43,10 @@ const NAME_ATTEMPTS: u32 = 8;
 pub struct FlyProvider {
     config: FlyProviderConfig,
     clients: BTreeMap<String, MachinesClient>,
-    wake_locks: Mutex<BTreeMap<DeploymentRef, Arc<tokio::sync::Mutex<()>>>>,
-    suspend_refused: Mutex<BTreeSet<String>>,
+    /// One lock per deployment version (singleflight). A gateway has a handful
+    /// of versions, so a linear list is smaller and as fast as a map.
+    wake_locks: Mutex<Vec<(DeploymentRef, Arc<tokio::sync::Mutex<()>>)>>,
+    suspend_refused: Mutex<Vec<String>>,
 }
 
 impl FlyProvider {
@@ -68,12 +67,7 @@ impl FlyProvider {
             )?;
             clients.insert(app_name.clone(), client);
         }
-        Ok(Self {
-            config,
-            clients,
-            wake_locks: Mutex::new(BTreeMap::new()),
-            suspend_refused: Mutex::new(BTreeSet::new()),
-        })
+        Ok(Self { config, clients, wake_locks: Mutex::new(Vec::new()), suspend_refused: Mutex::new(Vec::new()) })
     }
 
     fn client_for(&self, deployment: &DeploymentRef) -> Result<&MachinesClient, ProviderError> {
@@ -84,7 +78,12 @@ impl FlyProvider {
 
     fn wake_lock(&self, deployment: &DeploymentRef) -> Arc<tokio::sync::Mutex<()>> {
         let mut wake_locks = self.wake_locks.lock().unwrap_or_else(PoisonError::into_inner);
-        wake_locks.entry(deployment.clone()).or_default().clone()
+        if let Some((_, lock)) = wake_locks.iter().find(|(known, _)| known == deployment) {
+            return lock.clone();
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        wake_locks.push((deployment.clone(), lock.clone()));
+        lock
     }
 
     /// Machines of the version's pool, filtered server-side and checked again here.
@@ -93,7 +92,7 @@ impl FlyProvider {
         client: &MachinesClient,
         deployment: &DeploymentRef,
     ) -> Result<Vec<Machine>, ProviderError> {
-        let machines = client.list_machines(&pool_metadata(deployment)).await?;
+        let machines = client.list_pool_machines(&deployment.name, &deployment.version).await?;
         Ok(machines
             .into_iter()
             .filter(|machine| {
@@ -102,7 +101,7 @@ impl FlyProvider {
             .collect())
     }
 
-    fn endpoint_of(&self, deployment: &DeploymentRef, machine: &Machine) -> Option<Endpoint> {
+    fn endpoint_of(&self, deployment: &DeploymentRef, machine: &BootingMachine) -> Option<Endpoint> {
         let address = six_pn_address(&machine.private_ip, self.config.agent_port)?;
         Some(Endpoint { replica: ReplicaRef { deployment: deployment.clone(), id: machine.id.clone() }, address })
     }
@@ -111,7 +110,7 @@ impl FlyProvider {
         machines
             .iter()
             .filter(|machine| machine.state == MachineState::Started)
-            .filter_map(|machine| self.endpoint_of(deployment, machine))
+            .filter_map(|machine| self.endpoint_of(deployment, &BootingMachine::of(machine)))
             .collect()
     }
 
@@ -149,16 +148,20 @@ impl FlyProvider {
         deployment: &DeploymentRef,
         machines: &[Machine],
         missing: usize,
-    ) -> Result<Vec<Machine>, ProviderError> {
-        let mut booting: Vec<Machine> =
-            machines.iter().filter(|machine| machine.state == MachineState::Starting).take(missing).cloned().collect();
+    ) -> Result<Vec<BootingMachine>, ProviderError> {
+        let mut booting: Vec<BootingMachine> = machines
+            .iter()
+            .filter(|machine| machine.state == MachineState::Starting)
+            .take(missing)
+            .map(BootingMachine::of)
+            .collect();
         let mut last_capacity_error = None;
         for machine in start_order(machines) {
             if booting.len() >= missing {
                 break;
             }
             match client.start_machine(&machine.id).await {
-                Ok(()) => booting.push(machine.clone()),
+                Ok(()) => booting.push(BootingMachine::of(machine)),
                 Err(error) if matches!(error.kind, ProviderErrorKind::Capacity | ProviderErrorKind::NotFound) => {
                     last_capacity_error = Some(error)
                 }
@@ -189,7 +192,7 @@ impl FlyProvider {
         machines: &[Machine],
         count: usize,
         last_capacity_error: &mut Option<ProviderError>,
-    ) -> Result<Vec<Machine>, ProviderError> {
+    ) -> Result<Vec<BootingMachine>, ProviderError> {
         let room = (self.config.max_machines_per_version as usize).saturating_sub(machines.len());
         let Some(template) = machines.iter().find(|machine| machine.config.is_some()) else {
             return Err(ProviderError::not_found(format!(
@@ -201,7 +204,7 @@ impl FlyProvider {
         let mut next_index = machines.len() as u32;
         for _ in 0..count.min(room) {
             match self.create_clone(client, deployment, template, &mut next_index).await {
-                Ok(machine) => created.push(machine),
+                Ok(machine) => created.push(BootingMachine { id: machine.id, private_ip: machine.private_ip }),
                 Err(error) if error.kind == ProviderErrorKind::Capacity => {
                     *last_capacity_error = Some(error);
                     break;
@@ -219,13 +222,13 @@ impl FlyProvider {
         template: &Machine,
         next_index: &mut u32,
     ) -> Result<Machine, ProviderError> {
-        let config = template.config.clone().unwrap_or_default();
         // The template's config is reused verbatim (same image, guest, stop_config, metadata).
+        let config = template.config.as_ref().unwrap_or(&serde_json::Value::Null);
         for _ in 0..NAME_ATTEMPTS {
             let request = CreateMachineRequest {
                 name: pool_machine_name(&deployment.name, &deployment.version, *next_index),
-                region: template.region.clone(),
-                config: config.clone(),
+                region: &template.region,
+                config,
                 skip_launch: false,
             };
             *next_index += 1;
@@ -243,7 +246,7 @@ impl FlyProvider {
     /// Waits for every booting Machine to report `started` until `start_timeout`;
     /// returns the ones that did. The Machines boot in parallel on Fly, so
     /// waiting on them one after the other costs no more than the slowest boot.
-    async fn wait_until_started(&self, client: &MachinesClient, booting: Vec<Machine>) -> Vec<Machine> {
+    async fn wait_until_started(&self, client: &MachinesClient, booting: Vec<BootingMachine>) -> Vec<BootingMachine> {
         let deadline = Instant::now() + self.config.start_timeout;
         let mut started = Vec::with_capacity(booting.len());
         for machine in booting {
@@ -276,12 +279,17 @@ impl FlyProvider {
     }
 
     fn should_suspend(&self, machine_id: &str, mode: ReleaseMode) -> bool {
-        let refused = self.suspend_refused.lock().unwrap_or_else(PoisonError::into_inner).contains(machine_id);
+        let refused = self
+            .suspend_refused
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|refused| refused == machine_id);
         mode != ReleaseMode::Stop && self.config.preferred_release == ReleaseMode::Suspend && !refused
     }
 
     fn remember_suspend_refused(&self, machine_id: &str) {
-        self.suspend_refused.lock().unwrap_or_else(PoisonError::into_inner).insert(machine_id.to_owned());
+        self.suspend_refused.lock().unwrap_or_else(PoisonError::into_inner).push(machine_id.to_owned());
     }
 
     async fn stop_machine(&self, client: &MachinesClient, machine_id: &str) -> Result<(), ProviderError> {
@@ -342,13 +350,18 @@ impl Provider for FlyProvider {
     }
 }
 
-/// `metadata.*` filter selecting one version's pool.
-pub(crate) fn pool_metadata(deployment: &DeploymentRef) -> BTreeMap<String, String> {
-    BTreeMap::from([
-        (METADATA_POOL.to_owned(), "1".to_owned()),
-        (METADATA_DEPLOYMENT.to_owned(), deployment.name.clone()),
-        (METADATA_VERSION.to_owned(), deployment.version.clone()),
-    ])
+/// The id and 6PN address of a Machine being booted: all `wake` needs to
+/// return an endpoint, without cloning the Machine's config.
+#[derive(Debug)]
+struct BootingMachine {
+    id: String,
+    private_ip: String,
+}
+
+impl BootingMachine {
+    fn of(machine: &Machine) -> Self {
+        Self { id: machine.id.clone(), private_ip: machine.private_ip.clone() }
+    }
 }
 
 /// Deterministic Machine name `<deployment>-<version>-<index>` (Fly names: `[a-z0-9-]`, ≤ 63).
@@ -364,15 +377,10 @@ pub(crate) fn pool_machine_name(deployment: &str, version: &str, index: u32) -> 
 }
 
 /// Start priority: suspended (snapshot resume), then stopped (cold), then never booted.
-fn start_order(machines: &[Machine]) -> Vec<&Machine> {
-    let priority = |state: MachineState| match state {
-        MachineState::Suspended => 0,
-        MachineState::Stopped => 1,
-        _ => 2,
-    };
-    let mut candidates: Vec<&Machine> = machines.iter().filter(|machine| machine.state.is_startable()).collect();
-    candidates.sort_by_key(|machine| priority(machine.state));
-    candidates
+fn start_order(machines: &[Machine]) -> impl Iterator<Item = &Machine> {
+    [MachineState::Suspended, MachineState::Stopped, MachineState::Created]
+        .into_iter()
+        .flat_map(move |state| machines.iter().filter(move |machine| machine.state == state))
 }
 
 /// Whether the Machine reached `started` before `deadline`.
@@ -391,13 +399,15 @@ async fn wait_started_until(client: &MachinesClient, machine_id: &str, deadline:
     }
 }
 
-/// `http://[fdaa:…]:port` from the Machine's 6PN address; `None` until Fly assigned one.
+/// `http://[fdaa:…]:port` from the Machine's 6PN address; `None` until Fly
+/// assigned one. 6PN is IPv6: only hex digits and `:` are accepted, which keeps
+/// anything but an address out of the URL without linking an IP parser.
 pub(crate) fn six_pn_address(private_ip: &str, port: u16) -> Option<EndpointAddress> {
-    let address: std::net::IpAddr = private_ip.parse().ok()?;
-    Some(EndpointAddress::Http(match address {
-        std::net::IpAddr::V6(v6) => format!("http://[{v6}]:{port}"),
-        std::net::IpAddr::V4(v4) => format!("http://{v4}:{port}"),
-    }))
+    let looks_like_ipv6 = private_ip.len() >= 2
+        && private_ip.len() <= 39
+        && private_ip.contains(':')
+        && private_ip.bytes().all(|byte| byte.is_ascii_hexdigit() || byte == b':');
+    looks_like_ipv6.then(|| EndpointAddress::Http(format!("http://[{private_ip}]:{port}")))
 }
 
 fn replica_phase(state: MachineState) -> ReplicaPhase {

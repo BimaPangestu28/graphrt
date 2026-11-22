@@ -170,12 +170,19 @@ gateway already links: tokio, reqwest + rustls, serde_json and the shared
 
 | Build | `.text` of the crate | Δ text+const+cstring | Δ file |
 | --- | --- | --- | --- |
-| run-time only (`--no-default-features`, gateway) | 51.2 KiB | 90.5 KiB | 113.8 KiB |
-| with `deploy` (CLI) | 79.7 KiB | 125.9 KiB | 145.4 KiB |
+| run-time only (`--no-default-features`, gateway) | 40.0 KiB | **77.0 KiB** | 97.6 KiB |
+| with `deploy` (CLI) | 72.6 KiB | 118.6 KiB | 146.3 KiB |
 
-The §9 budget for this feature (`gw-fly`) is **80 KiB**. The crate's own code
-fits it in a gateway-only build. The whole-binary delta does not yet: it also
-counts monomorphised serde, reqwest and tokio code, and the probe's own `main`.
-Mach-O pads segments to 16 KiB pages, which explains the gap between the
-section and file columns. The authoritative number is the Linux musl
+The §9 budget for this feature (`gw-fly`) is **80 KiB** of sections, and the gateway-only build fits it. The `deploy` driver belongs to the CLI build and is outside this budget. Mach-O pads segments to 16 KiB pages, which explains the gap between the section and file columns.
+
+What kept it small:
+- the Machine config read from the API stays opaque JSON, borrowed when a Machine is cloned;
+- a wake tracks only `(id, 6PN IP)` of booting Machines;
+- the start order is computed without a generic sort;
+- the per-version locks are a short `Vec`, not a map;
+- the metadata filter is a fixed query string;
+- the 6PN address is checked by character set instead of linking an IP parser;
+- the shared `ProviderHttp` does all retry and rate limiting.
+
+The authoritative number is the Linux musl
 gateway build, once the gateway exists.
