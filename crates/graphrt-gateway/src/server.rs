@@ -37,6 +37,7 @@ use graphrt_core::coordination::{CoordinationStore, deployment_key};
 use graphrt_core::store::{RunRecord, RunStatus, RunStore, now_ms, stored_event_type};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
+use tokio::sync::broadcast;
 
 use crate::auth::{AuthError, Principal};
 use crate::deployment::{Deployment, VersionError, VersionInfo};
@@ -488,8 +489,20 @@ fn client_stream(
             tokio::select! {
                 frame = frames.recv() => match frame {
                     Ok(frame) => if let Some(bytes) = send(&frame, &mut cursor) && sender.send(bytes).await.is_err() { return finish_stream(&gateway) },
-                    // Lagged or closed: end the stream; the client resumes with Last-Event-ID.
-                    Err(_) => return finish_stream(&gateway),
+                    // Lagged: continue from the ring when it still holds the frames after the cursor.
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        let Some((buffered, receiver)) = live.as_ref().and_then(|run| run.catch_up(cursor)) else {
+                            // The client resumes with Last-Event-ID (from the store).
+                            return finish_stream(&gateway);
+                        };
+                        frames = receiver;
+                        for frame in &buffered {
+                            if let Some(bytes) = send(frame, &mut cursor) && sender.send(bytes).await.is_err() {
+                                return finish_stream(&gateway);
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return finish_stream(&gateway),
                 },
                 changed = settled.changed() => if changed.is_err() { return finish_stream(&gateway) },
                 _ = heartbeat.tick() => if sender.send(Bytes::from_static(b": heartbeat\n\n")).await.is_err() { return finish_stream(&gateway) },

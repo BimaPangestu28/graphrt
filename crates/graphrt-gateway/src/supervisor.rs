@@ -43,6 +43,15 @@ use crate::sse::Frame;
 use crate::store::SqliteStore;
 use crate::stored_request::{CREDENTIALS_REQUIRED, StoredRequest};
 
+/// Frames a live run queues per subscriber before the subscriber lags. Small,
+/// because every slot of every live run is memory (1,024 slots were ~36 KiB per
+/// run: 36 MiB with 1,000 streams), and a lagging client stream catches up
+/// from the ring instead ([`LiveRun::catch_up`]).
+pub const LIVE_FRAMES: usize = 32;
+
+/// Buffered frames (oldest first) and the receiver of the next ones.
+pub type Subscription = (Vec<Arc<Frame>>, broadcast::Receiver<Arc<Frame>>);
+
 /// Timing knobs of the supervisor.
 #[derive(Debug, Clone)]
 pub struct SupervisorSettings {
@@ -135,7 +144,7 @@ impl LiveRun {
         callback: Option<String>,
         ring_capacity: usize,
     ) -> Arc<Self> {
-        let (frames, _) = broadcast::channel(1024);
+        let (frames, _) = broadcast::channel(LIVE_FRAMES);
         let (settled, _) = watch::channel(Settled::Running);
         Arc::new(Self {
             run_id: run_id.to_owned(),
@@ -166,10 +175,24 @@ impl LiveRun {
 
     /// Subscribes to new frames and returns the buffered ones (oldest first).
     /// Subscribe before reading the ring, so nothing falls between them.
-    pub fn subscribe(&self) -> (Vec<Arc<Frame>>, broadcast::Receiver<Arc<Frame>>) {
+    pub fn subscribe(&self) -> Subscription {
         let receiver = self.frames.subscribe();
         let buffered = self.ring.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().cloned().collect();
         (buffered, receiver)
+    }
+
+    /// A fresh subscription for a subscriber that lagged at `cursor` (as in
+    /// [`crate::sse::is_after`]), with the ring's frames to send first. `None`
+    /// when frames after the cursor may be gone: the ring dropped frames and
+    /// its oldest one was not sent yet.
+    pub fn catch_up(&self, cursor: (u64, Option<u64>)) -> Option<Subscription> {
+        let (buffered, receiver) = self.subscribe();
+        let whole_history = buffered.len() < self.ring_capacity;
+        let oldest_sent = buffered
+            .first()
+            .and_then(|frame| frame.id.as_deref())
+            .is_some_and(|id| !crate::sse::is_after(id, cursor.0, cursor.1));
+        (whole_history || oldest_sent).then_some((buffered, receiver))
     }
 
     /// Lowest engine event index still in the ring.
@@ -1288,5 +1311,53 @@ mod preemption_tests {
         assert_eq!(super::planned_preemption_ms(&caps(Some(2), 10)), Some(1_500));
         assert_eq!(super::planned_preemption_ms(&caps(None, 30)), None);
         assert_eq!(super::planned_preemption_ms(&caps(Some(840), 0)), None, "no grace: platform_timeout instead");
+    }
+}
+
+#[cfg(test)]
+mod live_run_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use graphrt_provider_api::conformance::MemoryProvider;
+    use tokio::sync::broadcast::error::RecvError;
+
+    use super::{LIVE_FRAMES, LiveRun, RunInput};
+    use crate::auth::DeploymentAuth;
+    use crate::deployment::Deployment;
+    use crate::pool::PoolConfig;
+    use crate::signature::GatewayKey;
+    use crate::sse::Frame;
+
+    fn run(ring: usize) -> Arc<LiveRun> {
+        let key = GatewayKey::new("k", &[1; 32]).unwrap();
+        let provider = Arc::new(MemoryProvider::new(Duration::ZERO));
+        let deployment = Deployment::new("shop", DeploymentAuth::default(), vec![key], provider, PoolConfig::default());
+        LiveRun::new("run-1", Arc::new(deployment), RunInput::default(), None, ring)
+    }
+
+    fn publish(run: &LiveRun, events: std::ops::Range<u64>) {
+        for index in events {
+            run.publish(Frame { event: "node_succeeded".into(), id: Some(index.to_string()), data: "{}".into() });
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lagging_subscriber_catches_up_from_the_ring() {
+        let run = run(512);
+        let (_, mut receiver) = run.subscribe();
+        publish(&run, 0..(LIVE_FRAMES as u64 * 3));
+        assert!(matches!(receiver.recv().await, Err(RecvError::Lagged(_))));
+        let (buffered, _) = run.catch_up((0, None)).expect("the ring holds every frame");
+        assert_eq!(buffered.len(), LIVE_FRAMES * 3);
+    }
+
+    #[tokio::test]
+    async fn catching_up_needs_the_frames_after_the_cursor() {
+        let run = run(8);
+        publish(&run, 0..20);
+        // The ring holds 12..19: a subscriber that sent up to 13 continues, one at 5 cannot.
+        assert!(run.catch_up((14, None)).is_some());
+        assert!(run.catch_up((5, None)).is_none());
     }
 }
