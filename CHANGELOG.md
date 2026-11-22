@@ -66,6 +66,11 @@ releases may contain breaking changes; they are called out under **Changed**.
   64-hex digests, which it pastes into Ruby that `brew` evaluates, and no
   longer prints a formula with an empty `sha256` when an archive is missing
   from `SHA256SUMS`.
+- CI: `ci.yml` and `live-providers.yml` pin every third-party action by
+  commit SHA (a moved `@v4` / `@stable` tag could have run new code next to
+  the live provider API keys), `ci.yml` runs with a read-only token and
+  without persisted checkout credentials, and the PostgREST binary the
+  chatbot e2e job installs as root is checked against its sha256.
 
 ## [0.4.0] - 2026-11-20
 
