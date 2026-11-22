@@ -32,6 +32,19 @@ pub enum AgentError {
     /// The stream broke or was malformed.
     #[error("agent stream broke: {0}")]
     Stream(String),
+    /// The platform ended the request at its own limit (Lambda): the run can
+    /// neither be preempted nor continued elsewhere.
+    #[error("platform timeout: {0}")]
+    PlatformTimeout(String),
+}
+
+/// An invoke-transport error as an [`AgentError`]; `broken` is used for
+/// every kind other than `PlatformTimeout`.
+fn invoke_error(error: &graphrt_provider_api::ProviderError, broken: fn(String) -> AgentError) -> AgentError {
+    match error.kind {
+        graphrt_provider_api::ProviderErrorKind::PlatformTimeout => AgentError::PlatformTimeout(error.message.clone()),
+        _ => broken(error.to_string()),
+    }
 }
 
 impl From<SseError> for AgentError {
@@ -93,13 +106,15 @@ impl AgentStream {
                     .chunk()
                     .await
                     .map(|chunk| chunk.map(|bytes| bytes.to_vec()))
-                    .map_err(|error| error.to_string()),
-                StreamSource::Invoke(stream) => stream.next().await.transpose().map_err(|error| error.to_string()),
+                    .map_err(|error| AgentError::Stream(error.to_string())),
+                StreamSource::Invoke(stream) => {
+                    stream.next().await.transpose().map_err(|error| invoke_error(&error, AgentError::Stream))
+                }
             };
             match chunk {
                 Ok(Some(chunk)) => self.pending.extend(self.parser.feed(&chunk)?),
                 Ok(None) => return Ok(None),
-                Err(error) => return Err(AgentError::Stream(error)),
+                Err(error) => return Err(error),
             }
         }
     }
@@ -226,7 +241,7 @@ impl AgentClient {
         let Some(invocation) = provider.invoke(endpoint, request) else {
             return self.start_run(&endpoint.address, key, deployment, scope, body).await;
         };
-        let response = invocation.await.map_err(|error| AgentError::Unreachable(error.to_string()))?;
+        let response = invocation.await.map_err(|error| invoke_error(&error, AgentError::Unreachable))?;
         if !(200..300).contains(&response.status) {
             return Err(AgentError::Refused { status: response.status, body: String::new() });
         }

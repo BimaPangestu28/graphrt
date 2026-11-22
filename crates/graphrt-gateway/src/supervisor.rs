@@ -305,6 +305,8 @@ enum Outcome {
     Finished(Box<Event>),
     /// Stream ended without a terminal event.
     Broken(String),
+    /// The platform ended the request at its limit; no preemption or re-dispatch.
+    PlatformTimeout(String),
 }
 
 /// Whether every pause reason is external (drain, preemption, lost gateway):
@@ -605,7 +607,10 @@ impl Gateway {
                     if let Some(count) = self.flush(&run.run_id, &mut buffer).await {
                         record.event_count = count;
                     }
-                    return Outcome::Broken(error.to_string());
+                    return match error {
+                        AgentError::PlatformTimeout(message) => Outcome::PlatformTimeout(message),
+                        other => Outcome::Broken(other.to_string()),
+                    };
                 }
             };
             if frame.event == "hello" || frame.event == "lagged" {
@@ -658,14 +663,14 @@ impl Gateway {
         record: &RunRecord,
         lease: &mut Option<Lease>,
         resume: Option<&Json>,
-    ) -> Result<AgentStream, String> {
+    ) -> Result<AgentStream, (&'static str, String)> {
         let deployment = &run.deployment;
-        let key = deployment.signing_key().ok_or("deployment has no signing key")?;
+        let key = deployment.signing_key().ok_or(("dispatch_failed", "deployment has no signing key".to_owned()))?;
         let mut last_error = String::new();
         for _ in 0..self.settings.max_dispatch_attempts {
             let current = match lease.take() {
                 Some(current) => current,
-                None => version.pool.acquire().await.map_err(|error| error.to_string())?,
+                None => version.pool.acquire().await.map_err(|error| ("dispatch_failed", error.to_string()))?,
             };
             let body = self.dispatch_body(version, record, run.input().as_ref(), resume);
             let scope = RunScope { run_id: &run.run_id, epoch: Some(record.epoch) };
@@ -686,10 +691,11 @@ impl Gateway {
                     current.release_broken();
                 }
                 Err(AgentError::Refused { status: 503, body }) => last_error = body,
-                Err(error) => return Err(error.to_string()),
+                Err(AgentError::PlatformTimeout(message)) => return Err(("platform_timeout", message)),
+                Err(error) => return Err(("dispatch_failed", error.to_string())),
             }
         }
-        Err(format!("no replica accepted the run: {last_error}"))
+        Err(("dispatch_failed", format!("no replica accepted the run: {last_error}")))
     }
 
     async fn fail(self: &Arc<Self>, run: &Arc<LiveRun>, mut record: RunRecord, error_type: &str, message: &str) {
@@ -825,7 +831,7 @@ impl Gateway {
             };
             let mut stream = match self.open_stream(&run, &version, &record, &mut lease, resume.as_ref()).await {
                 Ok(stream) => stream,
-                Err(message) => return self.fail(&run, record, "dispatch_failed", &message).await,
+                Err((error_type, message)) => return self.fail(&run, record, error_type, &message).await,
             };
             let capabilities = version.pool.capabilities().clone();
             let request_cap =
@@ -845,6 +851,7 @@ impl Gateway {
                 };
                 match pumped {
                     Outcome::Finished(event) => break Outcome::Finished(event),
+                    Outcome::PlatformTimeout(message) => break Outcome::PlatformTimeout(message),
                     Outcome::Broken(reason) => match self.reattach(&run, &version, &record, lease.as_ref()).await {
                         Some(reattached) => stream = reattached,
                         None => break Outcome::Broken(reason),
@@ -861,6 +868,13 @@ impl Gateway {
                     }
                     None => return,
                 },
+                // Lambda-like platforms end the request themselves: no preemption
+                // happened, so there is nothing to re-dispatch from.
+                Outcome::PlatformTimeout(message) => {
+                    return self
+                        .fail(&run, record, "platform_timeout", &format!("platform ended the run: {message}"))
+                        .await;
+                }
                 Outcome::Broken(reason) => {
                     let receiver = run.expect_orphan();
                     if let Some(broken) = lease.take() {

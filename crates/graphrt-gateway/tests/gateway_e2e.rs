@@ -407,3 +407,76 @@ async fn invoke_transport_and_platform_timeout() {
     assert_eq!(record["status"], "failed");
     assert_eq!(record["error_type"], "platform_timeout");
 }
+
+/// Lambda's own timeout comes back from `invoke` as `PlatformTimeout`.
+struct TimesOut(Arc<common::FakeAgentProvider>, std::sync::atomic::AtomicU32);
+
+impl graphrt_provider_api::Provider for TimesOut {
+    fn capabilities(&self) -> graphrt_provider_api::Capabilities {
+        graphrt_provider_api::Capabilities { max_grace_secs: 0, ..self.0.capabilities() }
+    }
+    fn wake<'a>(
+        &'a self,
+        deployment: &'a graphrt_provider_api::DeploymentRef,
+        replicas: u32,
+    ) -> graphrt_provider_api::BoxFuture<
+        'a,
+        Result<Vec<graphrt_provider_api::Endpoint>, graphrt_provider_api::ProviderError>,
+    > {
+        self.0.wake(deployment, replicas)
+    }
+    fn release<'a>(
+        &'a self,
+        replica: &'a graphrt_provider_api::ReplicaRef,
+        mode: graphrt_provider_api::ReleaseMode,
+    ) -> graphrt_provider_api::BoxFuture<'a, Result<(), graphrt_provider_api::ProviderError>> {
+        self.0.release(replica, mode)
+    }
+    fn list<'a>(
+        &'a self,
+        deployment: &'a graphrt_provider_api::DeploymentRef,
+    ) -> graphrt_provider_api::BoxFuture<
+        'a,
+        Result<Vec<graphrt_provider_api::ReplicaState>, graphrt_provider_api::ProviderError>,
+    > {
+        self.0.list(deployment)
+    }
+    fn invoke<'a>(
+        &'a self,
+        _endpoint: &'a graphrt_provider_api::Endpoint,
+        _request: graphrt_provider_api::InvokeRequest,
+    ) -> Option<
+        graphrt_provider_api::BoxFuture<
+            'a,
+            Result<graphrt_provider_api::InvokeResponse, graphrt_provider_api::ProviderError>,
+        >,
+    > {
+        self.1.fetch_add(1, Ordering::SeqCst);
+        Some(Box::pin(async { Err(graphrt_provider_api::ProviderError::platform_timeout("Sandbox.Timedout")) }))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn platform_timeout_from_invoke_fails_without_redispatch() {
+    let base = start_gateway(Options::default()).await;
+    let provider = Arc::new(TimesOut(base.provider.clone(), std::sync::atomic::AtomicU32::new(0)));
+    let auth = graphrt_gateway::auth::DeploymentAuth::new(
+        vec![graphrt_gateway::hex::sha256_hex(API_KEY.as_bytes())],
+        None,
+        &reqwest::Client::new(),
+    )
+    .unwrap();
+    let lambda = Arc::new(graphrt_gateway::deployment::Deployment::new(
+        "lambda",
+        auth,
+        vec![common::key()],
+        provider.clone(),
+        PoolConfig::default(),
+    ));
+    lambda.add_version(common::version("v1"), graphrt_core::store::now_ms());
+    base.gateway.add_deployment(lambda);
+    let (_, record) = base.post("/v1/deployments/lambda/runs", json!({})).await;
+    assert_eq!(record["status"], "failed", "{record}");
+    assert_eq!(record["error_type"], "platform_timeout");
+    assert_eq!(provider.1.load(Ordering::SeqCst), 1, "not re-dispatched");
+}
