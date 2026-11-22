@@ -401,7 +401,9 @@ graphrt serve flows/ --otel-preset langfuse --evaluators evaluators.yaml --langf
 Credentials and URL are those of the [`langfuse` preset](observability.md#vendor-presets)
 (environment or `--env-file`, never flags). Uploads go through the egress
 policy: a self-hosted Langfuse on a private or loopback address needs
-`--allow-private-network`. They run on one background task from a queue of
+`--allow-private-network`, and the keys are never sent over plain `http://`
+to another machine (startup fails; use `https://` or a loopback address).
+`LANGFUSE_BASE_URL` may be the base or the full OTLP traces URL. They run on one background task from a queue of
 1024; a full queue drops the upload, and `408` / `429` / `5xx` / network
 errors are retried four times with backoff. Runs without a trace id (served
 without OpenTelemetry) are not uploaded, so pair it with `--otel-preset langfuse`.

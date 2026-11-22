@@ -145,12 +145,19 @@ pub const PRESETS: &[Preset] = &[
     },
 ];
 
+/// Whether a header carries a credential (an API key or token), as opposed to
+/// routing data such as a project name.
+pub fn is_credential_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("x-api-key")
+}
+
 /// Environment variable selecting a preset.
 pub const PRESET_ENV: &str = "GRAPHRT_OTEL_PRESET";
 
 /// A preset resolved against the environment.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Resolved {
+    /// The vendor's base URL, without the traces path.
     pub base_url: String,
     pub traces_endpoint: String,
     /// Values are secrets: never logged.
@@ -162,8 +169,8 @@ impl std::fmt::Debug for Resolved {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let header_names: Vec<&str> = self.headers.iter().map(|(name, _)| name.as_str()).collect();
         f.debug_struct("Resolved")
-            .field("base_url", &self.base_url)
-            .field("traces_endpoint", &self.traces_endpoint)
+            .field("base_url", &graphrt_core::urls::redact_userinfo(&self.base_url))
+            .field("traces_endpoint", &graphrt_core::urls::redact_userinfo(&self.traces_endpoint))
             .field("headers", &header_names)
             .field("resource", &self.resource)
             .finish()
@@ -195,11 +202,10 @@ impl Preset {
         if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
             return Err(self.invalid(self.base_env.first().copied().unwrap_or(PRESET_ENV), "must be an http(s) URL"));
         }
-        let traces_endpoint = if base_url.ends_with(self.traces_path) {
-            base_url.clone()
-        } else {
-            format!("{base_url}{}", self.traces_path)
-        };
+        // A base URL may already name the traces endpoint; `base_url` is always
+        // the base, so other APIs of the vendor (Langfuse scores) resolve from it.
+        let base_url = base_url.strip_suffix(self.traces_path).unwrap_or(&base_url).to_owned();
+        let traces_endpoint = format!("{base_url}{}", self.traces_path);
         let need = |var: &'static str, rule: &HeaderRule| -> Result<Option<&str>, ConfigError> {
             match get(var) {
                 Some(value) => Ok(Some(value)),
@@ -299,6 +305,16 @@ mod tests {
             ]))
             .unwrap();
         assert_eq!(self_hosted.traces_endpoint, "http://lf:3000/api/public/otel/v1/traces");
+        // A base URL that already names the traces endpoint still yields the base.
+        let full = preset
+            .resolve(&vars(&[
+                ("LANGFUSE_BASE_URL", "https://lf.example/api/public/otel/v1/traces"),
+                ("LANGFUSE_PUBLIC_KEY", "pk"),
+                ("LANGFUSE_SECRET_KEY", "sk"),
+            ]))
+            .unwrap();
+        assert_eq!(full.base_url, "https://lf.example");
+        assert_eq!(full.traces_endpoint, "https://lf.example/api/public/otel/v1/traces");
     }
 
     #[test]

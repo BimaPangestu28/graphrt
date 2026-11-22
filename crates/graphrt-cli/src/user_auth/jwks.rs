@@ -121,7 +121,10 @@ impl RemoteKeySet {
                 true
             }
             Err(e) => {
-                eprintln!("warning: cannot refresh the JWT key set ({}): {e}; keeping the previous keys", self.url);
+                eprintln!(
+                    "warning: cannot refresh the JWT key set ({}): {e}; keeping the previous keys",
+                    graphrt_core::urls::redact_userinfo(&self.url)
+                );
                 false
             }
         }
@@ -143,12 +146,13 @@ impl RemoteKeySet {
 }
 
 fn check_url(url: &str) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid JWKS URL `{url}`: {e}"))?;
+    let shown = graphrt_core::urls::redact_userinfo(url);
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid JWKS URL `{shown}`: {e}"))?;
     let loopback = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
     if parsed.scheme() == "https" || (parsed.scheme() == "http" && loopback) {
         Ok(())
     } else {
-        Err(format!("JWKS URL `{url}` must be https (http only for localhost)"))
+        Err(format!("JWKS URL `{shown}` must be https (http only for localhost)"))
     }
 }
 

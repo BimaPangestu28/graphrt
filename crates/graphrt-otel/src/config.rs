@@ -1,5 +1,7 @@
 //! Configuration from the standard `OTEL_*` environment variables.
 
+use graphrt_core::urls::{self, redact_userinfo};
+
 use crate::otlp::Resource;
 use crate::span::AttrValue;
 
@@ -15,7 +17,7 @@ pub enum ConfigError {
 }
 
 /// Exporter settings resolved from environment variables. `Debug` shows header
-/// names only.
+/// names only and endpoints without userinfo.
 #[derive(Clone, PartialEq)]
 pub struct OtelConfig {
     /// `OTEL_SDK_DISABLED=true`.
@@ -92,8 +94,8 @@ impl std::fmt::Debug for OtelConfig {
         f.debug_struct("OtelConfig")
             .field("disabled", &self.disabled)
             .field("endpoint_configured", &self.endpoint_configured)
-            .field("traces_endpoint", &self.traces_endpoint)
-            .field("metrics_endpoint", &self.metrics_endpoint)
+            .field("traces_endpoint", &redact_userinfo(&self.traces_endpoint))
+            .field("metrics_endpoint", &redact_userinfo(&self.metrics_endpoint))
             .field("headers", &header_names)
             .field("resource", &self.resource)
             .field("capture", &self.capture)
@@ -187,6 +189,9 @@ impl OtelConfig {
                 cfg.headers.push((k, v));
             }
         }
+        if let Some((name, resolved)) = &preset {
+            cfg.check_preset_credentials(name, resolved)?;
+        }
 
         let mut resource = Resource::default();
         for (k, v) in preset.iter().flat_map(|(_, resolved)| &resolved.resource) {
@@ -209,6 +214,68 @@ impl OtelConfig {
         };
         Ok(cfg)
     }
+}
+
+impl OtelConfig {
+    /// Where the export headers go: the traces endpoint, and the metrics one
+    /// when metrics are pushed.
+    fn header_destinations(&self) -> Vec<(&'static str, &str)> {
+        let mut destinations = vec![("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", self.traces_endpoint.as_str())];
+        if self.export_metrics {
+            destinations.push(("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", self.metrics_endpoint.as_str()));
+        }
+        destinations
+    }
+
+    /// Refuse to send a preset's credential headers anywhere but the preset's
+    /// own host, and never in clear text to another machine.
+    ///
+    /// An explicit endpoint variable overriding the preset's (a collector, a
+    /// typo, a variable left over from another setup) would otherwise receive
+    /// the vendor key. Credentials the operator set explicitly in
+    /// `OTEL_EXPORTER_OTLP_HEADERS` replace the preset's and are not checked:
+    /// that is the documented escape hatch.
+    ///
+    /// @throws ConfigError - When a preset credential would go to another host,
+    ///   or over `http://` to a non-loopback host.
+    fn check_preset_credentials(&self, preset: &str, resolved: &crate::preset::Resolved) -> Result<(), ConfigError> {
+        let carries_preset_credential = self.headers.iter().any(|header| {
+            crate::preset::is_credential_header(&header.0) && resolved.headers.iter().any(|own| own == header)
+        });
+        if !carries_preset_credential {
+            return Ok(());
+        }
+        let preset_origin = urls::origin(&resolved.traces_endpoint);
+        for (var, endpoint) in self.header_destinations() {
+            if urls::origin(endpoint) != preset_origin {
+                return Err(ConfigError::Invalid {
+                    var: var.to_owned(),
+                    message: format!(
+                        "points at {}, not the `{preset}` preset's host {}; its credentials are only sent \
+                         there. Set the preset's base URL variable instead, or put the credentials in \
+                         OTEL_EXPORTER_OTLP_HEADERS yourself",
+                        display_host(endpoint),
+                        display_host(&resolved.traces_endpoint),
+                    ),
+                });
+            }
+            if urls::is_cleartext_remote(endpoint) {
+                return Err(ConfigError::Invalid {
+                    var: format!("{preset} preset URL"),
+                    message: format!(
+                        "{} is plain http:// to another machine; the preset's credentials need https:// \
+                         (or a loopback address)",
+                        redact_userinfo(endpoint)
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+fn display_host(url: &str) -> String {
+    urls::host(url).unwrap_or_else(|| "an invalid URL".to_owned())
 }
 
 fn is_true(v: &str) -> bool {
@@ -360,6 +427,52 @@ mod tests {
         assert!(OtelConfig::from_vars(&vars(&[("GRAPHRT_OTEL_PRESET", "mlflow")])).is_err());
         assert!(OtelConfig::from_vars(&vars(&[("GRAPHRT_OTEL_PRESET", "nope")])).is_err());
         assert!(OtelConfig::from_vars(&[]).unwrap().export_metrics);
+    }
+
+    #[test]
+    fn preset_credentials_stay_on_the_preset_host() {
+        let langfuse =
+            [("GRAPHRT_OTEL_PRESET", "langfuse"), ("LANGFUSE_PUBLIC_KEY", "pk"), ("LANGFUSE_SECRET_KEY", "sk")];
+        let with = |extra: &[(&str, &str)]| {
+            let mut pairs = langfuse.to_vec();
+            pairs.extend_from_slice(extra);
+            OtelConfig::from_vars(&vars(&pairs))
+        };
+        // Another host for traces or pushed metrics: refused, naming the variable.
+        let err = with(&[("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://collector.example/v1/traces")]).unwrap_err();
+        let shown = err.to_string();
+        assert!(
+            shown.contains("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") && shown.contains("cloud.langfuse.com"),
+            "{shown}"
+        );
+        assert!(with(&[("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "https://metrics.example/v1/metrics")]).is_err());
+        // The preset's own host, by any spelling, is fine.
+        let same = "https://Cloud.Langfuse.com:443/api/public/otel/v1/traces";
+        assert!(with(&[("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", same)]).is_ok());
+        // Explicit credentials replace the preset's: the operator's own choice.
+        let explicit = [
+            ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://collector.example/v1/traces"),
+            ("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer%20collector-key"),
+        ];
+        assert!(with(&explicit).is_ok());
+        // Plain http to another machine: refused; loopback is fine.
+        let err = with(&[("LANGFUSE_BASE_URL", "http://lf.internal:3000")]).unwrap_err();
+        assert!(err.to_string().contains("plain http://"), "{err}");
+        assert!(with(&[("LANGFUSE_BASE_URL", "http://127.0.0.1:3000")]).is_ok());
+        // Presets without a credential header set are not restricted.
+        let phoenix = OtelConfig::from_vars(&vars(&[
+            ("GRAPHRT_OTEL_PRESET", "phoenix"),
+            ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://px.internal:6006/v1/traces"),
+        ]));
+        assert!(phoenix.is_ok());
+    }
+
+    #[test]
+    fn debug_hides_url_credentials() {
+        let cfg = OtelConfig::from_vars(&vars(&[("OTEL_EXPORTER_OTLP_ENDPOINT", "https://user:hunter2@otel.example")]))
+            .unwrap();
+        let shown = format!("{cfg:?}");
+        assert!(!shown.contains("hunter2") && shown.contains("***@otel.example"), "{shown}");
     }
 
     #[test]

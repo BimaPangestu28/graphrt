@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use graphrt_core::store::RunRecord;
+use graphrt_core::urls::redact_userinfo;
 use graphrt_http::{EgressPolicy, HttpClient};
 use serde_json::{Value as Json, json};
 use tokio::sync::mpsc;
@@ -88,17 +89,23 @@ impl LangfuseUploader {
             .ok_or_else(|| usage("no Langfuse credentials".to_owned()))?;
         let url = reqwest::Url::parse(&format!("{}/api/public/scores", resolved.base_url))
             .map_err(|e| usage(format!("invalid Langfuse URL: {e}")))?;
+        let shown = redact_userinfo(url.as_str()).into_owned();
+        if graphrt_core::urls::is_cleartext_remote(url.as_str()) {
+            return Err(usage(format!(
+                "{shown} is plain http:// to another machine; the Langfuse keys need https:// (or a loopback address)"
+            )));
+        }
         let policy = EgressPolicy { allow_private, max_redirects: 0, ..EgressPolicy::default() };
         let client = HttpClient::new(policy).map_err(|e| usage(e.to_string()))?;
-        client.check_url(&url).map_err(|e| usage(format!("{url}: {e} (see --allow-private-network)")))?;
+        client.check_url(&url).map_err(|e| usage(format!("{shown}: {e} (see --allow-private-network)")))?;
         let counters = Arc::new(Counters::default());
         let (tx, rx) = mpsc::channel(QUEUE);
         let target = Target { url: url.clone(), authorization, client, backoff };
         tokio::spawn(deliver_all(rx, target, Arc::clone(&counters)));
-        Ok(Self { tx, counters, url: url.to_string() })
+        Ok(Self { tx, counters, url: shown })
     }
 
-    /// The scores endpoint.
+    /// The scores endpoint, without userinfo (for logs).
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -273,5 +280,23 @@ mod tests {
             LangfuseUploader::start(&cloud, false).unwrap().url(),
             "https://cloud.langfuse.com/api/public/scores"
         );
+        // A base URL naming the OTLP traces endpoint resolves to the same scores API.
+        let full = vars(&[
+            ("LANGFUSE_PUBLIC_KEY", "pk"),
+            ("LANGFUSE_SECRET_KEY", "sk"),
+            ("LANGFUSE_BASE_URL", "https://cloud.langfuse.com/api/public/otel/v1/traces"),
+        ]);
+        assert_eq!(
+            LangfuseUploader::start(&full, false).unwrap().url(),
+            "https://cloud.langfuse.com/api/public/scores"
+        );
+        // Keys never go over plain http to another machine, and URL credentials are not shown.
+        let cleartext = vars(&[
+            ("LANGFUSE_PUBLIC_KEY", "pk"),
+            ("LANGFUSE_SECRET_KEY", "sk"),
+            ("LANGFUSE_BASE_URL", "http://u:pw@lf.example"),
+        ]);
+        let err = LangfuseUploader::start(&cleartext, true).unwrap_err();
+        assert!(err.message.contains("plain http://") && !err.message.contains("pw@"), "{}", err.message);
     }
 }

@@ -24,6 +24,17 @@ releases may contain breaking changes; they are called out under **Changed**.
   only the API key. **Migration:** clients that read `node_chunk` should read
   `response` events instead; to keep the old behaviour for trusted clients,
   pass `--user-events all`.
+- OpenTelemetry presets (`--otel-preset`, `GRAPHRT_OTEL_PRESET`) refuse to
+  start when the preset's credential header (`Authorization`, `x-api-key`)
+  would go to a host other than the preset's, because an explicit
+  `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or a pushed
+  `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` points elsewhere, or over plain
+  `http://` to a non-loopback host. `--langfuse-scores` refuses plain `http://`
+  to a non-loopback host too. **Migration:** point the preset at its backend
+  with its base URL variable (`LANGFUSE_BASE_URL`, `PHOENIX_COLLECTOR_ENDPOINT`,
+  ...), use `https://` for a self-hosted backend on another machine, or set
+  the credentials yourself in `OTEL_EXPORTER_OTLP_HEADERS` when exporting
+  through a collector.
 - `POST /v1/runs/{id}/feedback` with a user token (`--verify-jwt`) accepts
   only runs started with a token of the same user. Run records gain
   `user_verified` (`true` when `user_id` is a verified `sub`, kept on resume,
@@ -64,6 +75,9 @@ releases may contain breaking changes; they are called out under **Changed**.
   the Windows `.exe` links the C runtime statically (no `VCRUNTIME140.dll`).
 
 ### Fixed
+- `--langfuse-scores` posted to `.../api/public/otel/v1/traces/api/public/scores`
+  when `LANGFUSE_BASE_URL` already named the OTLP traces endpoint (which the
+  preset accepts). Preset base URLs now drop the traces path.
 - `graphrt serve`: resuming a paused run whose workflow is no longer served
   answered `404` but left the run `running` until the next restart, so it
   could not be resumed or deleted. It stays `paused` now.
@@ -79,6 +93,9 @@ releases may contain breaking changes; they are called out under **Changed**.
   which CPython cannot start (the Unix default `PATH` does not exist there).
 
 ### Security
+- URLs are shown without `user:password@` userinfo in startup lines, errors
+  and `Debug` output: `OtelConfig`, the preset's resolved settings, the
+  Langfuse uploader, JWKS, webhook callback and telemetry endpoints.
 - Run data written to disk is owner-only on Unix (`0600` files, `0700`
   directories): the `serve --store` directory (records, events, snapshots,
   `scores.json`, `.lock`), replay cassettes, and `graphrt eval -o` / `--junit`

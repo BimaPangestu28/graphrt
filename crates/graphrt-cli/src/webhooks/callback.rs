@@ -57,10 +57,11 @@ impl CallbackTarget {
     ///   egress policy refuses (scheme, literal private address).
     pub fn from_spec(spec: CallbackSpec, vars: &[(String, String)], allow_private: bool) -> Result<Self, String> {
         let secret = super::resolve_secret(&spec.secret, vars).map_err(|e| format!("callback: {e}"))?;
-        let url = reqwest::Url::parse(&spec.url).map_err(|e| format!("callback url `{}`: {e}", spec.url))?;
+        let shown = graphrt_core::urls::redact_userinfo(&spec.url).into_owned();
+        let url = reqwest::Url::parse(&spec.url).map_err(|e| format!("callback url `{shown}`: {e}"))?;
         let policy = EgressPolicy { allow_private, max_redirects: 0, ..EgressPolicy::default() };
         let client = HttpClient::new(policy).map_err(|e| format!("callback: {e}"))?;
-        client.check_url(&url).map_err(|e| format!("callback url `{}`: {e}", spec.url))?;
+        client.check_url(&url).map_err(|e| format!("callback url `{shown}`: {e}"))?;
         let on = spec.on.unwrap_or_else(|| STATUSES.iter().map(|s| (*s).to_owned()).collect());
         if let Some(unknown) = on.iter().find(|s| !STATUSES.contains(&s.as_str())) {
             return Err(format!("callback: unknown status `{unknown}` in `on` (expected one of {STATUSES:?})"));
@@ -99,7 +100,8 @@ pub fn spawn_delivery(target: Arc<CallbackTarget>, hook: &str, workflow: &str, r
             return;
         }
         if let Err(error) = deliver(&target, &run.run_id, &status, &payload).await {
-            eprintln!("warning: run {}: completion callback to {} failed: {error}", run.run_id, target.url);
+            let url = graphrt_core::urls::redact_userinfo(target.url.as_str());
+            eprintln!("warning: run {}: completion callback to {url} failed: {error}", run.run_id);
         }
     });
 }

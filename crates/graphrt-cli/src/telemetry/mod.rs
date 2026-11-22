@@ -317,7 +317,7 @@ fn status_json(environment: &Environment) -> serde_json::Value {
     serde_json::json!({
         "enabled": decision.is_ok(),
         "reason": decision.err().map(|reason| reason.to_string()),
-        "endpoint": environment.endpoint,
+        "endpoint": environment.endpoint.as_deref().map(graphrt_core::urls::redact_userinfo),
         "state_file": environment.paths.as_ref().map(|p| p.file.display().to_string()),
         "last_sent_day": state.last_sent_day,
         "next_report": Report::new(install_id, &days),

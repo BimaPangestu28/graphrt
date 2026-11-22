@@ -178,7 +178,18 @@ variables**, so keys never go on a command line where `ps` shows them. It
 implies `--otel`, and turns the metrics push off (none of these backends
 ingests OTLP metrics) unless `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` is set.
 Explicit `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS`
-values still win over the preset's, as an escape hatch.
+values still win over the preset's, as an escape hatch, with two guards on the
+preset's own credential headers (`Authorization`, `x-api-key`):
+
+- they are only sent to the preset's host. An explicit traces (or pushed
+  metrics) endpoint on another host fails at startup instead of receiving the
+  vendor key; move the preset with its base URL variable, or put the
+  credentials in `OTEL_EXPORTER_OTLP_HEADERS` yourself;
+- they are never sent over plain `http://` to another machine. A self-hosted
+  backend over `http` works on a loopback address; elsewhere use `https://`.
+
+Endpoint URLs are shown without `user:password@` in logs, errors and `Debug`
+output.
 
 | Preset | Base URL (default) | Traces path | Required | Optional |
 | --- | --- | --- | --- | --- |
