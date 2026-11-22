@@ -35,28 +35,17 @@ impl Template {
             let (before, after_open) = rest.split_at(start);
             text.push_str(before);
             let body_start = &after_open[3..];
-            match find_placeholder_end(body_start) {
-                Some(end) => {
-                    let body = &body_start[..end];
-                    match parse_placeholder(body) {
-                        Some(selector) => {
-                            if !text.is_empty() {
-                                parts.push(Part::Text(std::mem::take(&mut text)));
-                            }
-                            parts.push(Part::Var(selector));
-                            rest = &body_start[end + 3..];
-                        }
-                        None => {
-                            text.push_str("{{#");
-                            rest = body_start;
-                        }
-                    }
-                }
-                None => {
-                    text.push_str("{{#");
-                    rest = body_start;
-                }
+            let Some((selector, end)) = placeholder_at(body_start) else {
+                // Not a placeholder: keep the opener as text and scan on after it.
+                text.push_str("{{#");
+                rest = body_start;
+                continue;
+            };
+            if !text.is_empty() {
+                parts.push(Part::Text(std::mem::take(&mut text)));
             }
+            parts.push(Part::Var(selector));
+            rest = &body_start[end + 3..];
         }
         text.push_str(rest);
         if !text.is_empty() {
@@ -133,6 +122,14 @@ fn find_placeholder_end(body_start: &str) -> Option<usize> {
     let window = window.get(..window.len().min(MAX_PLACEHOLDER_BYTES + 3)).unwrap_or(window);
     // `#}}` is ASCII, so its offset is a char boundary.
     window.windows(3).position(|w| w == b"#}}")
+}
+
+/// The selector of a well-formed placeholder whose body starts at `body_start`
+/// (just after `{{#`), with the offset of its closing `#}}`.
+fn placeholder_at(body_start: &str) -> Option<(Selector, usize)> {
+    let end = find_placeholder_end(body_start)?;
+    let selector = parse_placeholder(body_start.get(..end)?)?;
+    Some((selector, end))
 }
 
 fn parse_placeholder(body: &str) -> Option<Selector> {
