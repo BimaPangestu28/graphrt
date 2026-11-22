@@ -99,6 +99,16 @@ releases may contain breaking changes; they are called out under **Changed**.
   which CPython cannot start (the Unix default `PATH` does not exist there).
 
 ### Security
+- Plugin manifests: a process plugin's `cwd` must be a relative path inside
+  the plugin directory, and a relative `command` must not contain `..`, so a
+  manifest cannot point the process at files outside its directory. Bare
+  names on `PATH` (`python3`) and absolute system paths stay allowed.
+  **Migration:** move a `cwd` such as `../shared` inside the plugin, or start
+  the process through a script in the plugin directory.
+- Bundles: extraction refuses Windows device names (`CON`, `PRN`, `AUX`,
+  `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, with any extension) in any path
+  component, and paths that differ only in case, which overwrite each other
+  on case-insensitive file systems so a verified file could be swapped.
 - URLs are shown without `user:password@` userinfo in startup lines, errors
   and `Debug` output: `OtelConfig`, the preset's resolved settings, the
   Langfuse uploader, JWKS, webhook callback and telemetry endpoints.

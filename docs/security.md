@@ -234,7 +234,9 @@ They honour standard proxy environment variables, except the OTel exporter and
     (or the full environment with `inherit_env`);
   - optional checksums are verified before every start;
   - each call has a timeout and a message-size cap (at most 256 MiB);
-  - the whole process group is killed on drop.
+  - the whole process group is killed on drop;
+  - the manifest's `cwd` must stay inside the plugin directory, and a relative
+    `command` may not climb out of it with `..`.
 
   Treat installing one like installing any program: the manifest's own
   requests are honoured, and only plaintext secrets and bearer tokens need
@@ -246,8 +248,10 @@ They honour standard proxy environment variables, except the OTel exporter and
     a signature from your keys. Without it, an unsigned bundle is accepted
     and is exactly as trusted as a workflow file plus a providers file.
   - **Extraction:** archives are checked for path traversal, absolute paths,
-    symlinks, duplicates, entry count, size and compression ratio. Configs are
-    extracted into a fresh owner-only directory.
+    symlinks, duplicates, entry count, size and compression ratio. Windows
+    device names (`CON`, `nul.txt`, `COM1`...) and names that differ only in
+    case are refused before anything is written. Configs are extracted into a
+    fresh owner-only directory.
 
 ## Hardening checklist for deployers
 

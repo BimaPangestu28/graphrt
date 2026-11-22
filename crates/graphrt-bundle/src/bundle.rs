@@ -6,7 +6,7 @@ use std::path::Path;
 use graphrt_core::{Registry, Workflow};
 use serde::Serialize;
 
-use crate::archive::{ArchiveLimits, read_zip, validate_path};
+use crate::archive::{ArchiveLimits, check_extractable, read_zip, validate_path};
 use crate::error::BundleError;
 use crate::manifest::{BUNDLE_FORMAT_VERSION, BundleManifest, MANIFEST_PATH, SIGNATURE_PATH};
 use crate::sha256_hex;
@@ -332,8 +332,14 @@ impl Bundle {
     }
 
     /// Write every file under `dir` (created if needed), preserving the layout.
-    /// Paths were validated on open, so nothing escapes `dir`.
+    /// Paths were validated on open, so nothing escapes `dir`; before writing
+    /// anything, paths that are Windows device names or differ only in case
+    /// are refused, so every verified file lands as its own file everywhere.
+    ///
+    /// @throws BundleError::Archive - For a device name or a case collision.
+    /// @throws BundleError::Io - When a file cannot be written.
     pub fn extract_to(&self, dir: &Path) -> Result<(), BundleError> {
+        check_extractable(self.files.keys().map(String::as_str))?;
         for (path, data) in &self.files {
             let target = dir.join(path);
             if let Some(parent) = target.parent() {
