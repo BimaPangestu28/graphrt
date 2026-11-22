@@ -18,6 +18,8 @@ pub mod extensions;
 pub mod files;
 #[cfg(feature = "trust-gateway")]
 pub mod gateway_agent;
+#[cfg(feature = "gateway")]
+pub mod gateway_cmd;
 #[cfg(feature = "serve")]
 pub mod header_inputs;
 #[cfg(any(feature = "serve", feature = "telemetry"))]
@@ -117,6 +119,12 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "telemetry") {
         features.push("telemetry");
     }
+    if cfg!(feature = "gateway") {
+        features.push("gateway");
+    }
+    if cfg!(feature = "mimalloc") {
+        features.push("mimalloc");
+    }
     features
 }
 
@@ -163,6 +171,10 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
                 .map_err(|e| CliError::failed(format!("cannot start runtime: {e}")))?;
             runtime.block_on(kb::kb(*args))
         }
+        #[cfg(feature = "gateway")]
+        Command::Gateway(args) => gateway_cmd::gateway(*args),
+        #[cfg(feature = "gateway")]
+        Command::Deploy(args) => gateway_cmd::deploy(*args),
         #[cfg(feature = "serve")]
         Command::Serve(args) => {
             let runtime = tokio::runtime::Builder::new_multi_thread()

@@ -181,6 +181,29 @@ releases may contain breaking changes; they are called out under **Changed**.
   created or updated, published, aliased by version, with Lambda Web Adapter
   streaming settings and an IAM Function URL in `RESPONSE_STREAM` mode. See
   [docs/gateway-aws.md](docs/gateway-aws.md). No user-visible change yet.
+- `graphrt gateway` (preview, opt-in `--features gateway`, crate
+  `graphrt-gateway`): an always-on front of scale-to-zero agents and the only
+  writer of the run store. SQLite (WAL) store with in-process `VACUUM INTO`
+  backups and import of `graphrt serve --store` directories; per-deployment
+  API keys and JWT `iss`/`aud` with a JWKS cache; per-IP and per-user GCRA
+  limits; activator (hold + singleflight wake + bounded, age-limited queue),
+  least-loaded scaler 0→N, idle release and reconciliation; quotas
+  (`max_replicas`, `max_queued`, `max_wakes_per_hour`); webhooks whose run
+  record is the idempotency marker, with a completion-callback outbox; cron
+  with time zones, an explicit DST policy, catch-up, deterministic jitter and
+  prewarm; immutable versions with a 7-day pool for paused runs; re-dispatch
+  of drained, preempted and orphaned runs, and reclaim after a gateway
+  restart; `/metrics`; `graphrt gateway --dev`, `key`, `import`, `check`;
+  local-process provider; `graphrt deploy --target local`. The gateway build
+  uses mimalloc, agents do not. See [docs/gateway.md](docs/gateway.md).
+- `graphrt-provider-api` (internal crate): the `Provider` / `DeployDriver`
+  traits, capabilities and error kinds of the upcoming `graphrt gateway`, the
+  shared provider HTTP layer (token bucket per provider API, jittered retry,
+  token cache with one refresh on 401) and the C1–C13 provider conformance
+  harness with a scripted fake HTTP server; `Provider::invoke` lets a
+  platform without an HTTP address (Lambda) carry the gateway's requests, and
+  `max_grace_secs = 0` marks a platform where no preemption is possible.
+  No user-visible change yet.
 - Live provider test matrix: `crates/graphrt-llm/tests/live_providers.rs` sends
   tiny streamed chat and tool-call round-trip requests to OpenAI, Anthropic,
   Gemini and Bedrock and a typed question to TypeSafe (opt-in with
