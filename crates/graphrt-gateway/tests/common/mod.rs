@@ -75,6 +75,9 @@ pub struct AgentWorld {
     pub starts: AtomicU32,
     /// `preempt_after_ms` of every run start.
     pub preempt_after: Mutex<Vec<Option<u64>>>,
+    /// Starts to refuse with `409 epoch_conflict`, like an agent that still holds
+    /// the lost execution of the previous epoch until it preempted it.
+    pub epoch_conflicts: AtomicU32,
 }
 
 struct AgentState {
@@ -113,6 +116,10 @@ fn hold_orphan(world: &AgentWorld, replica: &str, run_id: &str, epoch: u64, term
 async fn start_run(State(state): State<Arc<AgentState>>, headers: HeaderMap, body: Bytes) -> Response {
     if let Err(refused) = verify(&state, "POST", "/internal/v1/runs", &headers, &body) {
         return refused;
+    }
+    if state.world.epoch_conflicts.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+        let body = json!({ "error": "the run is executing at another epoch", "error_type": "epoch_conflict" });
+        return (StatusCode::CONFLICT, axum::Json(body)).into_response();
     }
     let request: Json = serde_json::from_slice(&body).unwrap();
     state.world.bodies.lock().unwrap().push(request.clone());
@@ -186,7 +193,22 @@ async fn start_run(State(state): State<Arc<AgentState>>, headers: HeaderMap, bod
                 hold_orphan(&world, &replica, &run_id, epoch, terminal, index);
                 return;
             }
+            // The executor disappears without a terminal event and without an
+            // orphan (`kill -9`, a platform instance gone).
             "vanish" => {
+                drop(sender);
+                return;
+            }
+            "vanish_once" if previous == 0 => {
+                drop(sender);
+                return;
+            }
+            // Preempted once (the gateway stores the snapshot), then the resumed
+            // execution vanishes: the next one must resume from the stored snapshot.
+            "preempt_then_vanish" if previous == 0 => {
+                json!({ "type": "run_paused", "reasons": [{ "frame": "", "node_id": null, "kind": "external", "data": "drained" }], "snapshot": snapshot(&run_id) })
+            }
+            "preempt_then_vanish" if previous == 1 => {
                 drop(sender);
                 return;
             }
@@ -267,10 +289,14 @@ pub async fn serve_agent(world: Arc<AgentWorld>, id: &str) -> (SocketAddr, tokio
     (address, task)
 }
 
-/// A provider whose replicas are fake agents on loopback.
+/// A provider whose replicas are fake agents on loopback. With `url` set it
+/// behaves like Cloud Run / ACA / Lambda: one URL in front of the platform's
+/// instances (`Addressing::Url`), so `list` gives no instance address and the
+/// gateway cannot pull an orphan from a lost instance.
 #[derive(Default)]
 pub struct FakeAgentProvider {
     pub world: Arc<AgentWorld>,
+    pub url: std::sync::atomic::AtomicBool,
     replicas: Mutex<HashMap<ReplicaRef, (SocketAddr, tokio::task::JoinHandle<()>)>>,
     next: AtomicU64,
     pub wakes: AtomicU32,
@@ -308,9 +334,10 @@ impl FakeAgentProvider {
 
 impl Provider for FakeAgentProvider {
     fn capabilities(&self) -> Capabilities {
+        let url = self.url.load(Ordering::SeqCst);
         Capabilities {
-            addressing: Addressing::Replica,
-            scaler: Scaler::Gateway,
+            addressing: if url { Addressing::Url } else { Addressing::Replica },
+            scaler: if url { Scaler::Platform } else { Scaler::Gateway },
             max_request_secs: None,
             idle_timeout_secs: None,
             max_grace_secs: 30,
@@ -356,6 +383,7 @@ impl Provider for FakeAgentProvider {
     }
 
     fn list<'a>(&'a self, deployment: &'a DeploymentRef) -> BoxFuture<'a, Result<Vec<ReplicaState>, ProviderError>> {
+        let url = self.url.load(Ordering::SeqCst);
         let rows = self
             .replicas
             .lock()
@@ -365,7 +393,8 @@ impl Provider for FakeAgentProvider {
             .map(|(replica, (address, _))| ReplicaState {
                 replica: replica.clone(),
                 phase: ReplicaPhase::Ready,
-                address: Some(EndpointAddress::Http(format!("http://{address}"))),
+                // A platform-scaled service exposes no per-instance address.
+                address: (!url).then(|| EndpointAddress::Http(format!("http://{address}"))),
                 started_at_ms: None,
             })
             .collect();
@@ -412,6 +441,8 @@ pub struct Options {
     pub provider: Option<Arc<dyn Provider>>,
     /// `DeploymentRef::target` of version v1.
     pub target: String,
+    /// The fake-agent provider behaves like a platform-scaled service (`Addressing::Url`).
+    pub url_provider: bool,
 }
 
 impl Default for Options {
@@ -424,6 +455,7 @@ impl Default for Options {
             configure_app: None,
             provider: None,
             target: "fake".into(),
+            url_provider: false,
         }
     }
 }
@@ -437,6 +469,7 @@ pub async fn start_gateway(options: Options) -> TestGateway {
     };
     let gateway = Gateway::new(options.store, settings);
     let provider = Arc::new(FakeAgentProvider::new(options.world.clone()));
+    provider.url.store(options.url_provider, Ordering::SeqCst);
     let chosen: Arc<dyn Provider> = options.provider.clone().unwrap_or_else(|| provider.clone());
     let auth =
         DeploymentAuth::new(vec![graphrt_gateway::hex::sha256_hex(API_KEY.as_bytes())], None, &reqwest::Client::new())
@@ -522,4 +555,40 @@ impl TestGateway {
         }
         panic!("run {run_id} did not settle");
     }
+}
+
+/// Runs `body` (an async start) on a gateway over the store at `path` and kills
+/// it after `after`, like `kill -9`: its runtime is dropped with its agents.
+/// Returns the run id and the run's status at the crash.
+pub fn crash_mid_stream(
+    path: &std::path::Path,
+    world: &Arc<AgentWorld>,
+    body: Json,
+    after: Duration,
+    url_provider: bool,
+) -> (String, graphrt_core::store::RunStatus) {
+    use graphrt_core::store::RunStore as _;
+    let (path, world) = (path.to_owned(), world.clone());
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let result = runtime.block_on(async move {
+            let first = start_gateway(Options {
+                store: SqliteStore::open(&path).unwrap(),
+                world,
+                url_provider,
+                ..Options::default()
+            })
+            .await;
+            let (_, accepted) = first.post(&format!("/v1/deployments/{DEPLOYMENT}/runs"), body).await;
+            let run_id = accepted["run_id"].as_str().unwrap().to_owned();
+            tokio::time::sleep(after).await;
+            let status = first.gateway.store.get(&run_id).await.unwrap().unwrap().status;
+            std::mem::forget(first);
+            (run_id, status)
+        });
+        runtime.shutdown_background();
+        result
+    })
+    .join()
+    .unwrap()
 }

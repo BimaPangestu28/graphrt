@@ -15,6 +15,9 @@ pub struct Metrics {
     pub runs_paused: AtomicU64,
     /// Re-dispatches after drain / preemption / a lost replica.
     pub redispatches: AtomicU64,
+    /// Executions lost without an outcome and re-dispatched from a checkpoint
+    /// or from the start (nodes may have run twice).
+    pub lost_executions: AtomicU64,
     /// Requests refused by auth.
     pub auth_failures: AtomicU64,
     /// Requests refused by a rate limit.
@@ -63,7 +66,7 @@ impl Metrics {
     /// Renders the exposition text.
     pub fn render(&self, gauges: &[DeploymentGauges], live_runs: usize) -> String {
         let mut out = String::with_capacity(2048);
-        let counters: [(&str, &AtomicU64, &str); 15] = [
+        let counters: [(&str, &AtomicU64, &str); 16] = [
             ("graphrt_gateway_runs_started_total", &self.runs_started, "Runs accepted."),
             ("graphrt_gateway_runs_finished_total", &self.runs_finished, "Runs that reached a terminal status."),
             ("graphrt_gateway_runs_paused_total", &self.runs_paused, "Runs paused for human input."),
@@ -71,6 +74,11 @@ impl Metrics {
                 "graphrt_gateway_redispatches_total",
                 &self.redispatches,
                 "Runs re-dispatched after drain, preemption or a lost replica.",
+            ),
+            (
+                "graphrt_gateway_lost_executions_total",
+                &self.lost_executions,
+                "Executions lost without an outcome and re-dispatched from a checkpoint or the start.",
             ),
             ("graphrt_gateway_auth_failures_total", &self.auth_failures, "Requests refused by authentication."),
             ("graphrt_gateway_rate_limited_total", &self.rate_limited, "Requests refused by a rate limit."),

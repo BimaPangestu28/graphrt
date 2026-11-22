@@ -6,6 +6,10 @@
 //! the scenario is reproducible, the interleaving of tokio tasks is not.
 //! `GRAPHRT_SIM_SEEDS` sets the number of seeds (default 1000 per PR; the
 //! nightly runs 10000), `GRAPHRT_SIM_SEED_START` the first one.
+//!
+//! The same checker runs on a platform-scaled service (`Addressing::Url`:
+//! Cloud Run, ACA, Lambda) whose instances vanish without an orphan, and over
+//! seeded gateway crashes mid-stream: no run may be lost silently (I1).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::print_stdout)]
 
@@ -15,8 +19,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{API_KEY, DEPLOYMENT, Options, TestGateway, start_gateway};
-use graphrt_core::store::{RunStore, StoredEvent};
+use common::{API_KEY, AgentWorld, DEPLOYMENT, Options, TestGateway, crash_mid_stream, start_gateway};
+use graphrt_core::store::{RunStatus, RunStore, StoredEvent};
 use graphrt_gateway::cron::Schedule;
 use graphrt_gateway::pool::PoolConfig;
 use graphrt_gateway::quota::Quotas;
@@ -27,6 +31,9 @@ use serde_json::{Value as Json, json};
 
 const SECRET: &str = "sk-sim-never-stored";
 const MODES: [&str; 6] = ["ok", "ok", "hitl", "preempt_once", "break_once", "fail"];
+/// On a `Url` platform an instance can also vanish without an orphan, before
+/// or after a checkpoint (`break_once` holds an orphan nobody can pull there).
+const URL_MODES: [&str; 6] = ["ok", "hitl", "preempt_once", "vanish_once", "preempt_then_vanish", "fail"];
 
 #[derive(Debug, Default)]
 struct Violations(Vec<String>);
@@ -63,9 +70,9 @@ fn check_events(violations: &mut Violations, run_id: &str, events: &[StoredEvent
     });
 }
 
-async fn simulate_seed(gateway: &TestGateway, seed: u64, violations: &mut Violations) {
+async fn simulate_seed(gateway: &TestGateway, seed: u64, modes: &[&str], violations: &mut Violations) {
     let rng = JitterRng::seeded(seed);
-    let mode = MODES[(rng.next_u64() % MODES.len() as u64) as usize];
+    let mode = modes[(rng.next_u64() % modes.len() as u64) as usize];
     let stream = rng.next_u64().is_multiple_of(2);
     let events = rng.next_u64() % 6;
     if std::env::var_os("GRAPHRT_SIM_TRACE").is_some() {
@@ -201,7 +208,7 @@ async fn invariants_hold_over_seeds() {
                 if std::env::var_os("GRAPHRT_SIM_TRACE").is_some() {
                     println!("seed {seed}");
                 }
-                simulate_seed(&gateway, seed, &mut violations).await;
+                simulate_seed(&gateway, seed, &MODES, &mut violations).await;
                 if seed.is_multiple_of(5) {
                     simulate_duplicates(&gateway, seed, &mut violations).await;
                 }
@@ -252,4 +259,97 @@ async fn invariants_hold_over_seeds() {
         violations.len(),
         violations.iter().take(30).cloned().collect::<Vec<_>>().join("\n")
     );
+}
+
+fn seed_count(default: u64) -> u64 {
+    std::env::var("GRAPHRT_SIM_SEEDS").ok().and_then(|value| value.parse().ok()).map_or(default, |seeds: u64| seeds / 5)
+}
+
+/// I1, I2, I5 and I6 on a platform-scaled service whose instances vanish
+/// mid-run without an orphan: every run still settles as its mode says.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn invariants_hold_on_a_url_platform() {
+    let seeds = seed_count(200);
+    let options = Options {
+        url_provider: true,
+        // Proves nothing waits for an orphan that cannot be pulled.
+        reclaim_grace: Duration::from_secs(30),
+        pool: PoolConfig {
+            max_active_runs: 16,
+            quotas: Quotas { max_wakes_per_hour: u32::MAX, ..Quotas::default() },
+            ..PoolConfig::default()
+        },
+        ..Options::default()
+    };
+    let gateway = Arc::new(start_gateway(options).await);
+    let lanes = 8;
+    let tasks = (0..lanes).map(|lane| {
+        let gateway = gateway.clone();
+        tokio::spawn(async move {
+            let mut violations = Violations::default();
+            let mut seed = lane;
+            while seed < seeds {
+                simulate_seed(&gateway, seed, &URL_MODES, &mut violations).await;
+                seed += lanes;
+            }
+            violations.0
+        })
+    });
+    let violations: Vec<String> = futures::future::join_all(tasks).await.into_iter().flat_map(Result::unwrap).collect();
+    println!("url simulation: {seeds} seeds, {} violations", violations.len());
+    assert!(violations.is_empty(), "{} invariant violations:\n{}", violations.len(), violations.join("\n"));
+}
+
+/// I1 across a gateway crash at a seeded point of a run on a `Url` platform
+/// (its instance dies with it): after the restart the run settles. It may end
+/// `owner_lost` only when it had no checkpoint (its request inputs lived only
+/// in the dead gateway's memory, decision 7), and then the error says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_gateway_crash_on_a_url_platform_never_loses_a_run_silently() {
+    let seeds = seed_count(8).max(1);
+    let mut violations = Violations::default();
+    let (mut resumed, mut lost_without_checkpoint) = (0, 0);
+    for seed in 0..seeds {
+        let rng = JitterRng::seeded(seed + 7_000);
+        let mode = ["ok", "preempt_once"][(rng.next_u64() % 2) as usize];
+        let crash_ms = 100 + rng.next_u64() % 1_400;
+        let dir = std::env::temp_dir().join(format!("graphrt-sim-crash-{seed}-{}", std::process::id()));
+        let _cleanup = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gateway.db");
+        let world = Arc::new(AgentWorld::default());
+        let body = json!({ "async": true, "inputs": { "mode": mode, "events": 40, "delay_ms": 20 } });
+        let (run_id, at_crash) = crash_mid_stream(&path, &world, body, Duration::from_millis(crash_ms), true);
+        let store = graphrt_gateway::store::SqliteStore::open(&path).unwrap();
+        let checkpoint = store.load_snapshot(&run_id).await.unwrap().is_some();
+        let second = start_gateway(Options { store, world, url_provider: true, ..Options::default() }).await;
+        second.gateway.recover().await.unwrap();
+        let record = second.wait_settled(&run_id).await;
+        let lost = record["error_type"] == "owner_lost";
+        if lost {
+            lost_without_checkpoint += 1;
+        } else if checkpoint && at_crash == RunStatus::Running {
+            resumed += 1;
+        }
+        violations.check(record["status"] == "succeeded" || lost, || {
+            format!("I1 seed {seed} ({mode}, crash {crash_ms} ms, {at_crash:?}): {record}")
+        });
+        violations.check(!lost || (!checkpoint && at_crash == RunStatus::Running), || {
+            format!("I1 seed {seed}: owner_lost although a checkpoint existed: {record}")
+        });
+        violations
+            .check(!lost || record["error"].as_str().is_some_and(|error| error.contains("no checkpoint")), || {
+                format!("I1 seed {seed}: owner_lost without its reason: {record}")
+            });
+        let stored = second.gateway.store.get(&run_id).await.unwrap().unwrap();
+        let events = second.gateway.store.events(&run_id, 0).await.unwrap();
+        check_events(&mut violations, &run_id, &events, stored.event_count);
+        drop(second);
+        let _cleanup = std::fs::remove_dir_all(&dir);
+    }
+    println!(
+        "crash simulation: {seeds} seeds ({resumed} resumed from a checkpoint, {lost_without_checkpoint} without one), {} violations",
+        violations.0.len()
+    );
+    assert!(violations.0.is_empty(), "{} invariant violations:\n{}", violations.0.len(), violations.0.join("\n"));
 }

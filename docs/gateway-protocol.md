@@ -191,9 +191,13 @@ restarts:
    from 100 ms to 2 s, and releases a taken orphan with `DELETE`. The agent
    never calls the gateway, so it needs no gateway address, no HTTP client and
    no outbound network access;
-4. an orphan nobody took over is dropped at the end of the grace. Marking the
-   run `failed{owner_lost}` is the gateway's decision: it owns the run's
-   record, and the agent's store is only a cache of its executions.
+4. an orphan nobody took over is dropped at the end of the grace. What happens
+   to the run is the gateway's decision: it owns the run's record, and the
+   agent's store is only a cache of its executions. Without an orphan (a
+   one-URL platform, or an instance that is gone) the gateway re-dispatches the
+   run at the next epoch from its latest stored snapshot, else from its
+   request, and ends it `failed{owner_lost}` only when that is impossible
+   (see [gateway.md](gateway.md)).
 
 The orphan body is `{run_id, epoch, deployment, status, event_count, terminal,
 answer, orphaned_ms}`; `terminal` is the last event as streamed (a
