@@ -17,6 +17,7 @@ members = [
     "crates/graphrt-provider-api",
     "crates/graphrt-provider-aws",
     "crates/graphrt-gateway",
+    "crates/graphrt-provider-fly",
     "crates/graphrt-ffi",
     "crates/graphrt-gcp",
     "crates/graphrt-provider-k8s",
@@ -48,6 +49,7 @@ graphrt-bundle = { path = "crates/graphrt-bundle", version = "0.4.0", default-fe
 graphrt-eval = { path = "crates/graphrt-eval", version = "0.4.0", default-features = false }
 graphrt-gateway = { path = "crates/graphrt-gateway", version = "0.4.0", default-features = false }
 graphrt-provider-api = { path = "crates/graphrt-provider-api", version = "0.4.0", default-features = false }
+graphrt-provider-fly = { path = "crates/graphrt-provider-fly", version = "0.4.0", default-features = false }
 
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 thiserror = "2"
