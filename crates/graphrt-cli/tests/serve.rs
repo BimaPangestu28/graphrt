@@ -124,6 +124,49 @@ async fn auth_is_enforced_except_health() {
     assert_eq!(send(app, req).await.0, StatusCode::OK);
 }
 
+/// Every `/v1` route answers `401` without the key before it looks at the
+/// body (none here has a JSON content type), so a route added outside the
+/// auth layer cannot go unnoticed.
+#[tokio::test]
+async fn every_api_route_needs_the_key() {
+    let app = router(state(Some("s3cret")).await, 1 << 20);
+    let mut routes = vec![
+        ("GET", "/v1/workflows"),
+        ("POST", "/v1/workflows/hello/runs"),
+        ("GET", "/v1/runs"),
+        ("GET", "/v1/runs/run-1"),
+        ("DELETE", "/v1/runs/run-1"),
+        ("GET", "/v1/runs/run-1/events"),
+        ("POST", "/v1/runs/run-1/abort"),
+        ("POST", "/v1/runs/run-1/resume"),
+        ("GET", "/v1/nodes"),
+        ("POST", "/v1/validate"),
+        ("GET", "/v1/hooks"),
+    ];
+    if cfg!(feature = "scores") {
+        routes.extend([("GET", "/v1/runs/run-1/scores"), ("POST", "/v1/runs/run-1/feedback")]);
+    }
+    if cfg!(feature = "rag") {
+        routes.extend([
+            ("GET", "/v1/knowledge/datasets"),
+            ("POST", "/v1/knowledge/datasets"),
+            ("DELETE", "/v1/knowledge/datasets/d"),
+            ("GET", "/v1/knowledge/resources"),
+            ("GET", "/v1/knowledge/datasets/d/documents"),
+            ("POST", "/v1/knowledge/datasets/d/documents"),
+            ("GET", "/v1/knowledge/datasets/d/documents/doc"),
+            ("PATCH", "/v1/knowledge/datasets/d/documents/doc"),
+            ("DELETE", "/v1/knowledge/datasets/d/documents/doc"),
+            ("PUT", "/v1/knowledge/datasets/d/documents/doc/file"),
+            ("POST", "/v1/knowledge/retrieve"),
+        ]);
+    }
+    for (method, path) in routes {
+        let req = Request::builder().method(method).uri(path).body(Body::from("{")).expect("request");
+        assert_eq!(send(app.clone(), req).await.0, StatusCode::UNAUTHORIZED, "{method} {path}");
+    }
+}
+
 #[tokio::test]
 async fn body_limit_is_enforced() {
     let app = router(state(None).await, 64);

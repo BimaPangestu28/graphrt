@@ -163,7 +163,8 @@ They honour standard proxy environment variables, except the OTel exporter and
   valid JWT (JWKS or HS256 signature, `exp`, optional `iss` / `aud`, a `sub`)
   may start runs without the API key; an invalid token is `401` even next to a
   valid key. The token opens only `POST /v1/workflows/{name}/runs` of workflows
-  that declare the verified input (others are `403`); the server
+  that declare the verified input (others are `403`) and
+  `POST /v1/runs/{id}/feedback` on runs whose `user_id` is its `sub`; the server
   refuses to start on a non-loopback address without an API key, so the rest
   of the API stays closed. `--user-rate-limit` caps runs per `sub`. See
   [serving.md](serving.md#verifying-end-user-jwts).

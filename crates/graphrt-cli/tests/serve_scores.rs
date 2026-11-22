@@ -118,6 +118,25 @@ async fn feedback_is_validated_and_needs_the_key() {
 }
 
 #[tokio::test]
+async fn feedback_authenticates_before_reading_the_body() {
+    let app = router(Arc::new(hello_state(Some(API_KEY)).await), 1 << 20);
+    let run_id = start_hello(&app, Some(API_KEY)).await;
+    let feedback = format!("/v1/runs/{run_id}/feedback");
+    // Without a key, neither the content type nor the body may be judged first.
+    let untyped = Request::post(&feedback).body(Body::from("{}")).unwrap();
+    assert_eq!(send(&app, untyped).await.0, StatusCode::UNAUTHORIZED);
+    let malformed = Request::post(&feedback).header("content-type", "application/json").body(Body::from("{")).unwrap();
+    assert_eq!(send(&app, malformed).await.0, StatusCode::UNAUTHORIZED);
+    // With the key, the body is still checked.
+    let keyed = Request::post(&feedback)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {API_KEY}"))
+        .body(Body::from("{"))
+        .unwrap();
+    assert_eq!(send(&app, keyed).await.0, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn the_directory_store_keeps_scores_next_to_the_run() {
     let dir = std::env::temp_dir().join(format!("graphrt-serve-scores-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -260,6 +279,14 @@ graph:
         let internal_feedback = format!("/v1/runs/{internal}/feedback");
         let (status, _) = send(&app, with_token(post(&internal_feedback, None, &body), &alice)).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+        // An API-key run labelled with a body `user_id` belongs to that user:
+        // the record cannot tell a claimed user from a verified one.
+        let (status, labelled) =
+            send(&app, post("/v1/workflows/chat/runs", Some(API_KEY), &json!({ "user_id": "alice" }))).await;
+        assert_eq!(status, StatusCode::OK, "{labelled}");
+        let labelled_feedback = format!("/v1/runs/{}/feedback", labelled["run_id"].as_str().unwrap());
+        assert_eq!(send(&app, with_token(post(&labelled_feedback, None, &body), &alice)).await.0, StatusCode::CREATED);
+        assert_eq!(send(&app, with_token(post(&labelled_feedback, None, &body), &bob)).await.0, StatusCode::FORBIDDEN);
         // The API key still rates any run, with the body's user.
         let (status, keyed) = send(&app, post(&internal_feedback, Some(API_KEY), &body)).await;
         assert_eq!((status, keyed["user"].as_str()), (StatusCode::CREATED, Some("mallory")));
