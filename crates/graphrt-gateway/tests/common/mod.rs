@@ -78,6 +78,11 @@ fn verify(state: &AgentState, method: &str, path: &str, headers: &HeaderMap, bod
     state.verifier.verify(Some(&signature), &signed, unix_now()).map_err(|error| (StatusCode::UNAUTHORIZED, error.to_string()).into_response())
 }
 
+fn orphan_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 async fn post_orphan(world: &AgentWorld, run_id: &str, epoch: u64, terminal: Json, event_count: u64) {
     let Some(url) = world.gateway_url.lock().unwrap().clone() else { return };
     let body = serde_json::to_vec(&json!({ "run_id": run_id, "epoch": epoch, "deployment": DEPLOYMENT, "status": "paused", "event_count": event_count, "terminal": terminal, "answer": "", "orphaned_ms": 0 })).unwrap();
@@ -85,7 +90,7 @@ async fn post_orphan(world: &AgentWorld, run_id: &str, epoch: u64, terminal: Jso
     let epoch_text = epoch.to_string();
     let signed = Signed { deployment: DEPLOYMENT, method: "POST", path: &path, run_id, epoch: &epoch_text, body: &body };
     for _ in 0..50 {
-        let response = reqwest::Client::new()
+        let response = orphan_client()
             .post(format!("{url}{path}"))
             .header(SIGNATURE_HEADER, sign(&key(), unix_now(), &signed))
             .header(DEPLOYMENT_HEADER, DEPLOYMENT)
@@ -286,6 +291,7 @@ pub struct TestGateway {
     pub app: Arc<App>,
     pub provider: Arc<FakeAgentProvider>,
     pub deployment: Arc<Deployment>,
+    http: reqwest::Client,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -334,12 +340,12 @@ pub async fn start_gateway(options: Options) -> TestGateway {
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, service).await;
     });
-    TestGateway { url, gateway, app, provider, deployment, task }
+    TestGateway { url, gateway, app, provider, deployment, http: reqwest::Client::new(), task }
 }
 
 impl TestGateway {
     pub fn client(&self) -> reqwest::Client {
-        reqwest::Client::new()
+        self.http.clone()
     }
 
     pub async fn post(&self, path: &str, body: Json) -> (u16, Json) {

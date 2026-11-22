@@ -48,6 +48,13 @@ impl WakeWindow {
     }
 }
 
+impl WakeWindow {
+    /// Gives back the latest wake (it found existing replicas and started none).
+    pub fn refund(&mut self) {
+        self.wakes.pop_back();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

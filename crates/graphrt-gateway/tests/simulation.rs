@@ -19,6 +19,7 @@ use common::{API_KEY, DEPLOYMENT, Options, TestGateway, start_gateway};
 use graphrt_core::store::{RunStore, StoredEvent};
 use graphrt_gateway::cron::Schedule;
 use graphrt_gateway::pool::PoolConfig;
+use graphrt_gateway::quota::Quotas;
 use graphrt_gateway::scheduler::{CronJob, fire};
 use graphrt_gateway::webhook::{HookConfig, Scheme};
 use graphrt_provider_api::http::JitterRng;
@@ -150,7 +151,8 @@ async fn invariants_hold_over_seeds() {
     let start: u64 = std::env::var("GRAPHRT_SIM_SEED_START").ok().and_then(|value| value.parse().ok()).unwrap_or(0);
     let hook = HookConfig { id: "sim".into(), scheme: Scheme::Github, secret_env: None, idempotency_header: Some("x-delivery".into()), input: None, callback_url: None };
     let options = Options {
-        pool: PoolConfig { max_active_runs: 16, idle_timeout: Duration::from_millis(300), ..PoolConfig::default() },
+        // The wake quota is unit-tested; thousands of seeds in seconds would exhaust it.
+        pool: PoolConfig { max_active_runs: 16, idle_timeout: Duration::from_millis(300), quotas: Quotas { max_wakes_per_hour: u32::MAX, ..Quotas::default() }, ..PoolConfig::default() },
         configure_app: Some(Box::new(move |app| {
             app.hooks.insert((DEPLOYMENT.into(), "sim".into()), (hook, Some(b"sim-hook".to_vec())));
         })),

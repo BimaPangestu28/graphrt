@@ -263,10 +263,15 @@ impl Pool {
         state.waking = false;
         match outcome {
             Ok(Ok(endpoints)) => {
+                let before = state.slots.len();
                 for endpoint in endpoints {
                     if !state.slots.iter().any(|slot| slot.endpoint.replica == endpoint.replica) {
                         state.slots.push(Slot { endpoint, active_runs: 0, idle_since: Instant::now() });
                     }
+                }
+                if state.slots.len() == before {
+                    // Nothing new was started: the wake does not count against the quota.
+                    state.wakes.refund();
                 }
                 state.last_wake_error = None;
             }

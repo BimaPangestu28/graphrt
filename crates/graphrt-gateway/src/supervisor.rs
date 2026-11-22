@@ -432,6 +432,9 @@ impl Gateway {
         let version = deployment.version(&version_name, now_ms())?;
         let snapshot = self.store.load_snapshot(run_id).await?.ok_or_else(|| StartError::Conflict("paused run has no snapshot".to_owned()))?;
         let lease = version.pool.acquire().await?;
+        // Claim before answering, so a second resume of the same pause is refused
+        // and no reader sees the run still paused after a 202.
+        let record = self.store.claim_dispatch(run_id, record.epoch, Some(lease.endpoint.replica.id.clone()), now_ms()).await?;
         let previous = self.live_run(run_id).and_then(|run| run.input());
         let run_input = input.or(previous).unwrap_or_default();
         let run = LiveRun::new(run_id, deployment.clone(), run_input, None, self.settings.replay_ring);
@@ -439,7 +442,7 @@ impl Gateway {
         let resume = serde_json::json!({ "snapshot": snapshot, "inputs": inputs, "secrets": secrets });
         let gateway = Arc::clone(self);
         let supervised = run.clone();
-        tokio::spawn(async move { gateway.supervise(supervised, version, record, Some(lease), Some(resume)).await });
+        tokio::spawn(async move { gateway.supervise_claimed(supervised, version, record, Some(lease), Some(resume)).await });
         Ok(run)
     }
 
@@ -675,8 +678,17 @@ impl Gateway {
 
     /// Drives `record` through executions until it settles.
     async fn supervise(self: Arc<Self>, run: Arc<LiveRun>, version: VersionEntry, record: RunRecord, lease: Option<Lease>, resume: Option<Json>) {
+        self.supervise_inner(run, version, record, lease, resume, false).await;
+    }
+
+    /// [`Self::supervise`] for a record already claimed at its current epoch.
+    async fn supervise_claimed(self: Arc<Self>, run: Arc<LiveRun>, version: VersionEntry, record: RunRecord, lease: Option<Lease>, resume: Option<Json>) {
+        self.supervise_inner(run, version, record, lease, resume, true).await;
+    }
+
+    async fn supervise_inner(self: Arc<Self>, run: Arc<LiveRun>, version: VersionEntry, record: RunRecord, lease: Option<Lease>, resume: Option<Json>, claimed: bool) {
         let deadline = Instant::now() + self.settings.run_timeout;
-        match tokio::time::timeout_at(deadline, self.clone().executions(run.clone(), version, record.clone(), lease, resume)).await {
+        match tokio::time::timeout_at(deadline, self.clone().executions(run.clone(), version, record.clone(), lease, resume, claimed)).await {
             Ok(()) => {}
             Err(_) => {
                 let current = self.store.get(&run.run_id).await.ok().flatten().unwrap_or(record);
@@ -685,10 +697,11 @@ impl Gateway {
         }
     }
 
-    async fn executions(self: Arc<Self>, run: Arc<LiveRun>, version: VersionEntry, mut record: RunRecord, mut lease: Option<Lease>, mut resume: Option<Json>) {
+    async fn executions(self: Arc<Self>, run: Arc<LiveRun>, version: VersionEntry, mut record: RunRecord, mut lease: Option<Lease>, mut resume: Option<Json>, mut claimed: bool) {
         loop {
             let owner = lease.as_ref().map(|lease| lease.endpoint.replica.id.clone());
-            record = match self.store.claim_dispatch(&run.run_id, record.epoch, owner, now_ms()).await {
+            let claim = if std::mem::take(&mut claimed) { Ok(record.clone()) } else { self.store.claim_dispatch(&run.run_id, record.epoch, owner, now_ms()).await };
+            record = match claim {
                 Ok(claimed) => claimed,
                 Err(error) => {
                     eprintln!("gateway: run {}: dispatch claim refused: {error}", run.run_id);
