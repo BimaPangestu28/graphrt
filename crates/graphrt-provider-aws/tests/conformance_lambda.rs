@@ -69,7 +69,7 @@ async fn collect(response: graphrt_provider_aws::lambda::LambdaResponse) -> (Vec
 async fn invoke_sends_a_function_url_event_with_qualifier() {
     let fake = support::start().await;
     let provider = provider(&fake);
-    let response = provider.invoke(&deployment(), &request()).await.unwrap();
+    let response = provider.invoke_agent(&deployment(), &request()).await.unwrap();
     assert_eq!(response.head.status, 200);
     let (body, error) = collect(response).await;
     assert!(error.is_none(), "{error:?}");
@@ -102,7 +102,7 @@ async fn c6_streaming_adds_under_50ms_per_event_and_never_buffers() {
     let fake = support::start().await;
     let provider = provider(&fake);
     set(&fake, LambdaBehavior::Stream { chunks: 60, interval: Duration::from_millis(20) });
-    let response = provider.invoke(&deployment(), &request()).await.unwrap();
+    let response = provider.invoke_agent(&deployment(), &request()).await.unwrap();
     let diagnostics = response.diagnostics.clone();
     let mut stream = response.body;
     let mut delays = Vec::new();
@@ -129,7 +129,7 @@ async fn c6_buffered_adapter_reply_is_detected() {
     let fake = support::start().await;
     let provider = provider(&fake);
     set(&fake, LambdaBehavior::Buffered { chunks: 5, delay: Duration::from_millis(50) });
-    let response = provider.invoke(&deployment(), &request()).await.unwrap();
+    let response = provider.invoke_agent(&deployment(), &request()).await.unwrap();
     assert_eq!(response.diagnostics.mode(), StreamMode::Buffered);
     let (body, error) = collect(response).await;
     assert!(error.is_none());
@@ -141,7 +141,7 @@ async fn c6_unflushed_single_chunk_after_threshold_is_reported_as_buffered() {
     let fake = support::start().await;
     let provider = provider(&fake);
     set(&fake, LambdaBehavior::SingleChunk { chunks: 5, delay: Duration::from_millis(400) });
-    let response = provider.invoke(&deployment(), &request()).await.unwrap();
+    let response = provider.invoke_agent(&deployment(), &request()).await.unwrap();
     let diagnostics = response.diagnostics.clone();
     let (_, error) = collect(response).await;
     assert!(error.is_none());
@@ -154,7 +154,7 @@ async fn c7_platform_timeout_is_an_explicit_failure() {
     let fake = support::start().await;
     let provider = provider(&fake);
     set(&fake, LambdaBehavior::Timeout { chunks: 2 });
-    let response = provider.invoke(&deployment(), &request()).await.unwrap();
+    let response = provider.invoke_agent(&deployment(), &request()).await.unwrap();
     let (body, error) = collect(response).await;
     assert_eq!(
         String::from_utf8_lossy(&body).matches("event: token").count(),
@@ -172,7 +172,7 @@ async fn c7_gateway_cap_ends_a_stalled_run_with_platform_timeout() {
     let provider = provider_with(&fake, 1, Duration::from_secs(20));
     set(&fake, LambdaBehavior::Stall { stall: Duration::from_secs(5) });
     let started = Instant::now();
-    let response = provider.invoke(&deployment(), &request()).await.unwrap();
+    let response = provider.invoke_agent(&deployment(), &request()).await.unwrap();
     let (_, error) = collect(response).await;
     assert!(matches!(error, Some(InvokeError::PlatformTimeout { .. })), "{error:?}");
     assert!(started.elapsed() < Duration::from_millis(2500), "{:?}", started.elapsed());
@@ -187,7 +187,7 @@ async fn function_errors_are_surfaced() {
     let fake = support::start().await;
     let provider = provider(&fake);
     set(&fake, LambdaBehavior::FunctionError);
-    let response = provider.invoke(&deployment(), &request()).await.unwrap();
+    let response = provider.invoke_agent(&deployment(), &request()).await.unwrap();
     let (_, error) = collect(response).await;
     assert!(matches!(error, Some(InvokeError::Function { ref code, .. }) if code == "Runtime.ExitError"), "{error:?}");
 }
@@ -198,14 +198,54 @@ async fn c8_c9_invoke_refreshes_credentials_and_retries_throttling_only() {
     let provider = provider(&fake);
     fake.state.lock().unwrap().expired_token_next = 1;
     fake.state.lock().unwrap().throttle_next = 1;
-    let response = provider.invoke(&deployment(), &request()).await.unwrap();
+    let response = provider.invoke_agent(&deployment(), &request()).await.unwrap();
     assert!(collect(response).await.1.is_none());
     assert_eq!(fake.state.lock().unwrap().lambda_requests.len(), 1);
 
     // A 5xx may mean the function ran: the invoke is not retried.
     fake.state.lock().unwrap().server_error_next = 1;
-    let error = provider.invoke(&deployment(), &request()).await.unwrap_err();
+    let error = provider.invoke_agent(&deployment(), &request()).await.unwrap_err();
     assert!(matches!(&error, InvokeError::Provider(e) if e.kind == ProviderErrorKind::Transient), "{error:?}");
     assert_eq!(fake.state.lock().unwrap().server_error_next, 0);
     assert_eq!(fake.state.lock().unwrap().lambda_requests.len(), 1);
+}
+
+#[tokio::test]
+async fn provider_invoke_carries_gateway_requests_over_lambda() {
+    use graphrt_provider_aws::api::{Endpoint, EndpointAddress, InvokeRequest, ReplicaRef};
+
+    let fake = support::start().await;
+    let provider = provider(&fake);
+    let endpoints = provider.wake(&deployment(), 1).await.unwrap();
+    assert!(!provider.capabilities().can_preempt());
+    let request = InvokeRequest {
+        method: "POST".into(),
+        path: "/internal/v1/runs".into(),
+        headers: vec![("graphrt-run-id".into(), "run-42".into()), ("graphrt-sig".into(), "v1;kid=k".into())],
+        body: b"{}".to_vec(),
+    };
+    let response = provider.invoke(&endpoints[0], request.clone()).expect("lambda:// is invoked").await.unwrap();
+    assert_eq!(response.status, 200);
+    let body: Vec<u8> = response.body.map(|chunk| chunk.unwrap()).concat().await;
+    assert_eq!(String::from_utf8_lossy(&body).matches("event: token").count(), 3);
+    {
+        let state = fake.state.lock().unwrap();
+        assert_eq!(state.lambda_requests[0]["requestContext"]["requestId"], "run-42");
+        assert_eq!(state.lambda_requests[0]["headers"]["graphrt-sig"], "v1;kid=k");
+    }
+
+    // A platform timeout surfaces as a Fatal error tagged platform_timeout.
+    set(&fake, LambdaBehavior::Timeout { chunks: 1 });
+    let response = provider.invoke(&endpoints[0], request.clone()).unwrap().await.unwrap();
+    let items: Vec<_> = response.body.collect().await;
+    let error = items.into_iter().find_map(Result::err).expect("timeout error");
+    assert_eq!(error.kind, ProviderErrorKind::Fatal);
+    assert!(error.message.starts_with(graphrt_provider_aws::lambda::PLATFORM_TIMEOUT_PREFIX), "{error}");
+
+    // HTTP endpoints are not Lambda's: the gateway uses plain HTTP for them.
+    let http = Endpoint {
+        replica: ReplicaRef { deployment: deployment(), id: "x".into() },
+        address: EndpointAddress::Http("http://10.0.0.1:8080".into()),
+    };
+    assert!(provider.invoke(&http, request).is_none());
 }

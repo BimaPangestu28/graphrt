@@ -173,8 +173,13 @@ At run time:
   have run); throttling, expired credentials and clock skew are retried.
 - `wake`, `release` and `list` are no-ops / observability only (`Url`
   addressing, the platform scales). The endpoint address is
-  `lambda://<function>:<qualifier>`: the gateway invokes Lambda deployments
-  through `LambdaProvider::invoke`, not plain HTTP.
+  `lambda://<function>:<qualifier>`: the gateway sends its signed protocol
+  requests through `Provider::invoke` (implemented by `LambdaProvider`), not
+  plain HTTP. `Capabilities::can_preempt()` is false (`max_grace_secs = 0`). A
+  run cut by the time cap comes back as a `Fatal` `ProviderError` whose message
+  starts with `platform_timeout` (`lambda::PLATFORM_TIMEOUT_PREFIX`), to be
+  recorded as `failed{platform_timeout}` rather than re-dispatched; a truncated
+  stream is `Transient`.
 
 ### IAM policy for the gateway (Lambda)
 
@@ -377,24 +382,26 @@ unless `resolve-to-env`, and invalid specs make no AWS call.
 
 Measured on macOS arm64, `--profile min-size`, with
 `cargo build -p graphrt-provider-aws --example size_probe --profile min-size [--features …]`.
-The baseline already links reqwest + rustls + tokio + serde_json, which the
-gateway has anyway, so the delta is the feature alone.
+The probe's baseline already links reqwest + rustls + tokio + serde_json, which
+the gateway has anyway, and every feature's probe exercises its whole API
+(credential chain and signed REST client for `auth-aws`, the `dyn Provider`
+path including `invoke` for the providers, `apply` for the drivers), so the
+delta is the cost of the feature alone. Numbers are the sum of Mach-O section
+sizes (`size -m`); file sizes move in 16 KiB page steps and hide small changes.
 
-| Build | Binary | Δ | §9 budget |
+| Build | Sections | Δ | §9 budget |
 | --- | --- | --- | --- |
-| baseline (HTTP stack only) | 1,719,488 B | – | – |
-| `auth-aws` | 1,802,704 B | **+81.3 KiB** vs baseline | 120 KiB |
-| `provider-ecs` | 1,885,952 B | **+81.3 KiB** vs `auth-aws` | 100 KiB (`gw-ecs`) |
-| `provider-lambda` | 1,869,216 B | **+65.0 KiB** vs `auth-aws` | 80 KiB (`gw-lambda`) |
-| `provider-ecs,provider-lambda` | 1,935,776 B | +211.2 KiB vs baseline | 300 KiB (sum) |
-| `deploy-ecs` | 1,902,704 B | +16.4 KiB vs `provider-ecs` | none (deploy CLI only) |
-| `deploy-lambda` | 1,952,464 B | +81.3 KiB vs `provider-lambda` | none (deploy CLI only) |
-| `deploy` (both) | 1,985,840 B | +48.9 KiB vs both providers | none (deploy CLI only) |
+| baseline (HTTP stack only) | 1,658,536 B | – | – |
+| `auth-aws` | 1,774,913 B | **+113.6 KiB** vs baseline | 120 KiB |
+| `provider-ecs` | 1,838,262 B | **+61.9 KiB** vs `auth-aws` | 100 KiB (`gw-ecs`) |
+| `provider-lambda` | 1,848,570 B | **+71.9 KiB** vs `auth-aws` | 80 KiB (`gw-lambda`) |
+| `provider-ecs,provider-lambda` | 1,881,867 B | +218.1 KiB vs baseline | 300 KiB (sum) |
+| `deploy-ecs` | 1,857,686 B | +19.0 KiB vs `provider-ecs` | none (deploy CLI only) |
+| `deploy-lambda` | 1,891,581 B | +42.0 KiB vs `provider-lambda` | none (deploy CLI only) |
+| `deploy` (both) | 1,935,553 B | +52.4 KiB vs both providers | none (deploy CLI only) |
 
-The run-time builds (`provider-*`) are byte-identical with and without the
-deploy code in the crate: the drivers are only linked with `deploy-*`.
-
-The Linux musl numbers of the §9 gate are measured by the gateway's size job
-once the gateway binary exists. Nothing here is on the request hot path:
-signing costs one HMAC chain per control-plane call, and the Lambda stream
-decoder copies each chunk once.
+The deploy drivers are only linked with `deploy-*`; the gateway's run-time
+build (`provider-*`) does not contain them. The Linux musl numbers of the §9
+gate are measured by the gateway's size job once the gateway binary exists.
+Nothing here is on the request hot path: signing costs one HMAC chain per
+control-plane call, and the Lambda stream decoder copies each chunk once.

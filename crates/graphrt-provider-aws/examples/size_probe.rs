@@ -48,6 +48,12 @@ async fn probe() {
         Ok(creds) => println!("{}", graphrt_provider_aws::auth::eks_token(&creds, "eu-west-1", "sts", "c", 0).len()),
         Err(e) => println!("{e}"),
     }
+    // The signed REST client is part of `auth-aws` (shared by every AWS provider).
+    let endpoint = graphrt_provider_aws::rest::ServiceEndpoint::regional("sts", "eu-west-1");
+    if let Ok(client) = graphrt_provider_aws::rest::AwsRestClient::new(Arc::clone(&chain), endpoint, Default::default())
+    {
+        println!("{:?}", client.json_11("X.Y", &serde_json::json!({})).await.err());
+    }
     #[cfg(feature = "provider-ecs")]
     probe_ecs(Arc::clone(&chain)).await;
     #[cfg(feature = "deploy-ecs")]
@@ -113,8 +119,23 @@ async fn probe_lambda(chain: std::sync::Arc<graphrt_provider_aws::auth::Credenti
 
     let Ok(provider) = LambdaProvider::new(chain, LambdaConfig::new("eu-west-1")) else { return };
     let deployment = DeploymentRef::new("d", "1", "fn");
-    match provider.invoke(&deployment, &AgentRequest::default()).await {
+    match provider.invoke_agent(&deployment, &AgentRequest::default()).await {
         Ok(mut response) => println!("{:?}", response.body.next().await),
         Err(e) => println!("{e}"),
+    }
+    // The gateway goes through the trait object.
+    let provider: std::sync::Arc<dyn graphrt_provider_aws::api::Provider> = std::sync::Arc::new(provider);
+    if let Ok(endpoints) = provider.wake(&deployment, 1).await {
+        for endpoint in &endpoints {
+            let request = graphrt_provider_aws::api::InvokeRequest {
+                method: "POST".into(),
+                path: "/".into(),
+                headers: Vec::new(),
+                body: Vec::new(),
+            };
+            if let Some(future) = provider.invoke(endpoint, request) {
+                println!("{:?}", future.await.map(|r| r.status));
+            }
+        }
     }
 }

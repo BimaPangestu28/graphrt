@@ -185,7 +185,7 @@ async fn lambda_creates_publishes_aliases_and_streams_through_the_provider() {
     let provider = LambdaProvider::new(fake.chain(), config).unwrap();
     let request =
         AgentRequest { method: "POST".into(), path_and_query: "/internal/v1/runs".into(), ..AgentRequest::default() };
-    let response = provider.invoke(&reference, &request).await.unwrap();
+    let response = provider.invoke_agent(&reference, &request).await.unwrap();
     let chunks: Vec<_> = response.body.collect().await;
     assert!(chunks.iter().all(Result::is_ok));
     assert_eq!(

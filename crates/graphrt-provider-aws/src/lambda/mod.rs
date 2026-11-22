@@ -19,6 +19,7 @@ pub mod lwa;
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -30,8 +31,8 @@ use serde_json::Value;
 pub use self::lwa::{AgentRequest, ResponseHead, StreamMode};
 
 use crate::api::{
-    Addressing, BoxFuture, Capabilities, DeployError, DeploymentRef, Endpoint, EndpointAddress, Provider,
-    ProviderError, ReleaseMode, ReplicaPhase, ReplicaRef, ReplicaState, Scaler,
+    Addressing, BoxFuture, Capabilities, DeployError, DeploymentRef, Endpoint, EndpointAddress, InvokeRequest,
+    InvokeResponse, Provider, ProviderError, ReleaseMode, ReplicaPhase, ReplicaRef, ReplicaState, Scaler,
 };
 use crate::auth::CredentialChain;
 use crate::auth::sigv4::uri_encode;
@@ -242,7 +243,8 @@ struct InvocationReader {
     head: Option<ResponseHead>,
     complete: bool,
     started: Instant,
-    deadline: Instant,
+    /// Fires at the gateway-side `max_run_secs` cap (one timer per invocation).
+    deadline: Pin<Box<tokio::time::Sleep>>,
     buffering_threshold: Duration,
     diagnostics: StreamDiagnostics,
 }
@@ -331,7 +333,10 @@ impl InvocationReader {
 
     /// Read and handle one network chunk.
     async fn read_one(&mut self) -> Result<(), InvokeError> {
-        let next = tokio::time::timeout_at(self.deadline.into(), self.bytes.next()).await;
+        let next = match futures::future::select(self.bytes.next(), self.deadline.as_mut()).await {
+            futures::future::Either::Left((item, _)) => Ok(item),
+            futures::future::Either::Right(((), _)) => Err(()),
+        };
         let chunk = match next {
             Err(_) => return Err(self.timeout_error("gateway max_run_secs reached")),
             Ok(None) => return Err(InvokeError::Truncated),
@@ -401,7 +406,7 @@ impl LambdaProvider {
     }
 
     /// `lambda://<function>[:<qualifier>]`: not an HTTP URL; the gateway invokes
-    /// Lambda deployments through [`LambdaProvider::invoke`].
+    /// Lambda deployments through `Provider::invoke` ([`LambdaProvider::invoke_agent`]).
     fn invoke_address(function: &LambdaFunction, deployment: &DeploymentRef) -> EndpointAddress {
         if deployment.version.is_empty() {
             EndpointAddress::Http(format!("lambda://{}", function.function_name))
@@ -420,7 +425,7 @@ impl LambdaProvider {
     /// with an `InvokeError` when the platform cuts the run.
     ///
     /// @throws `InvokeError::Provider` when the invoke is rejected (throttled, not found, auth).
-    pub async fn invoke(
+    pub async fn invoke_agent(
         &self,
         deployment: &DeploymentRef,
         request: &AgentRequest,
@@ -461,7 +466,7 @@ impl LambdaProvider {
             head: None,
             complete: false,
             started,
-            deadline,
+            deadline: Box::pin(tokio::time::sleep_until(deadline.into())),
             buffering_threshold: self.config.buffering_threshold,
             diagnostics: diagnostics.clone(),
         };
@@ -530,7 +535,66 @@ impl Provider for LambdaProvider {
             }])
         })
     }
+
+    /// Carries the gateway's (already signed) protocol request to the agent through
+    /// `InvokeWithResponseStream`. `None` for anything that is not a `lambda://` endpoint.
+    fn invoke<'a>(
+        &'a self,
+        endpoint: &'a Endpoint,
+        request: InvokeRequest,
+    ) -> Option<BoxFuture<'a, Result<InvokeResponse, ProviderError>>> {
+        match &endpoint.address {
+            EndpointAddress::Http(address) if address.starts_with("lambda://") => {}
+            _ => return None,
+        }
+        Some(Box::pin(async move {
+            let agent_request = agent_request(request);
+            let response = self
+                .invoke_agent(&endpoint.replica.deployment, &agent_request)
+                .await
+                .map_err(InvokeError::into_provider_error)?;
+            let body =
+                response.body.map(|item| item.map(|chunk| chunk.to_vec()).map_err(InvokeError::into_provider_error));
+            Ok(InvokeResponse { status: response.head.status, body: Box::pin(body) })
+        }))
+    }
 }
+
+/// The run id travels in the `graphrt-run-id` header; it becomes the Lambda request id.
+fn agent_request(request: InvokeRequest) -> AgentRequest {
+    let request_id = request
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("graphrt-run-id"))
+        .map(|(_, value)| value.clone())
+        .unwrap_or_default();
+    AgentRequest {
+        method: request.method,
+        path_and_query: request.path,
+        headers: request.headers,
+        body: request.body,
+        request_id,
+    }
+}
+
+impl InvokeError {
+    /// The `ProviderError` the gateway sees through `Provider::invoke`.
+    ///
+    /// A platform timeout is `Fatal` with a message starting with
+    /// [`PLATFORM_TIMEOUT_PREFIX`], so the gateway records
+    /// `failed{error_type: platform_timeout}` instead of re-dispatching.
+    pub fn into_provider_error(self) -> ProviderError {
+        match self {
+            Self::Provider(error) => error,
+            Self::PlatformTimeout { .. } => ProviderError::fatal(format!("{PLATFORM_TIMEOUT_PREFIX}: {self}")),
+            Self::Function { .. } => ProviderError::fatal(format!("platform_error: {self}")),
+            Self::Truncated | Self::Malformed(_) => ProviderError::transient(self.to_string()),
+        }
+    }
+}
+
+/// Message prefix of the `ProviderError` for a run cut by the Lambda / gateway time cap.
+pub const PLATFORM_TIMEOUT_PREFIX: &str = "platform_timeout";
 
 #[cfg(test)]
 mod tests {
