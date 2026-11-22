@@ -31,6 +31,12 @@ pub struct VersionInfo {
     /// Agent command (local-process provider).
     #[serde(default)]
     pub command: Vec<String>,
+    /// Start inputs the workflow declares `type: secret`. They are stripped
+    /// from the request the store keeps for a restart (never written).
+    /// `None` (registered by an older `graphrt deploy`): every input counts as
+    /// one, so nothing a version did not declare is ever persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_inputs: Option<Vec<String>>,
     /// When it became current.
     pub activated_ms: u64,
     /// When a newer version replaced it.
@@ -242,6 +248,7 @@ mod tests {
             fingerprint: format!("fp-{version}"),
             target: "mem".into(),
             command: Vec::new(),
+            secret_inputs: None,
             activated_ms: 0,
             superseded_ms: None,
         }

@@ -37,5 +37,6 @@ pub mod outbox;
 pub mod scheduler;
 pub mod server;
 pub mod sse;
+pub mod stored_request;
 pub mod supervisor;
 pub mod webhook;

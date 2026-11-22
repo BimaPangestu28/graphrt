@@ -316,6 +316,21 @@ releases may contain breaking changes; they are called out under **Changed**.
   the Windows `.exe` links the C runtime statically (no `VCRUNTIME140.dll`).
 
 ### Fixed
+- `graphrt gateway` no longer loses a run without a checkpoint when the gateway
+  restarts. Each accepted run request is written to the store in the
+  transaction that creates the run (no extra write), without the start inputs
+  the version declares `type: secret` and without the inputs mapped from
+  request headers (`user_jwt`); only their names are kept (`needs_secrets`).
+  After a restart such a run is re-dispatched from the stored request with the
+  same run id; only one that needs a secret ends `failed{owner_lost}` with
+  `credentials_required: it needs the secret inputs …`, so the client submits
+  it again. `graphrt deploy` and `graphrt gateway --dev` register the
+  workflow's secret inputs with the version (`secret_inputs` on
+  `POST /admin/v1/deployments/{name}/versions`); a version registered without
+  them has every input treated as secret, so nothing undeclared is persisted.
+  In the gateway crash simulation (40 seeds on a one-URL platform) the 18 runs
+  that used to end `owner_lost` now finish; the 14 that carry a secret end
+  `credentials_required`.
 - `graphrt gateway` no longer loses a run whose executor disappears without an
   outcome. On a one-URL platform (Cloud Run, ACA, Lambda), where no orphan can
   be pulled from an instance, or when no orphan comes within the reclaim grace
@@ -324,8 +339,8 @@ releases may contain breaking changes; they are called out under **Changed**.
   run again: at-least-once, keyed by `Idempotency-Key`). It ends
   `failed{owner_lost}` only when that is impossible, and says why: the
   request's credentials expired, the executor was lost 4 times in a row
-  (`SupervisorSettings::max_lost_executions`), or a gateway restart lost the
-  in-memory request of a run that had no checkpoint. A re-dispatch that reaches
+  (`SupervisorSettings::max_lost_executions`), or it needs a secret input after
+  a gateway restart (see below). A re-dispatch that reaches
   the instance still holding the lost execution retries its `409
   epoch_conflict` until that instance preempted it. New metric
   `graphrt_gateway_lost_executions_total`.

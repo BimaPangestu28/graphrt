@@ -18,13 +18,27 @@ pub struct LocalDeployDriver {
     gateway_url: String,
     admin_token: String,
     client: reqwest::Client,
+    secret_inputs: Option<Vec<String>>,
 }
 
 impl LocalDeployDriver {
     /// A driver for the gateway at `gateway_url`.
     pub fn new(gateway_url: &str, admin_token: &str) -> Self {
         let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap_or_default();
-        Self { gateway_url: gateway_url.trim_end_matches('/').to_owned(), admin_token: admin_token.to_owned(), client }
+        Self {
+            gateway_url: gateway_url.trim_end_matches('/').to_owned(),
+            admin_token: admin_token.to_owned(),
+            client,
+            secret_inputs: None,
+        }
+    }
+
+    /// Registers versions with the start inputs the workflow declares
+    /// `type: secret`, so the gateway never persists them with a request.
+    #[must_use]
+    pub fn with_secret_inputs(mut self, secret_inputs: Option<Vec<String>>) -> Self {
+        self.secret_inputs = secret_inputs;
+        self
     }
 }
 
@@ -77,6 +91,7 @@ impl LocalDeployDriver {
         let body = serde_json::json!({
             "version": registration.version, "workflow": registration.workflow, "fingerprint": registration.fingerprint,
             "target": registration.target, "command": registration.command,
+            "secret_inputs": self.secret_inputs,
         });
         let url = format!("{}/admin/v1/deployments/{}/versions", self.gateway_url, registration.deployment);
         let response =
