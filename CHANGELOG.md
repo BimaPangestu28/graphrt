@@ -61,6 +61,16 @@ releases may contain breaking changes; they are called out under **Changed**.
 - `template-transform` checked its 1 MiB output limit only after rendering,
   so a short loop over a large string could render gigabytes first. The
   render now writes into a capped buffer and stops at the limit.
+- PDF extraction: the decompression budget (`max_decompressed_bytes`) could be
+  bypassed, letting a small uploaded PDF make the parser allocate gigabytes.
+  Only `FlateDecode` streams were measured, by a text scan that missed a
+  stream whose dictionary held a nested `DecodeParms` dictionary after
+  `/Filter`, or had whitespace before `stream`, or had a bad zlib header
+  (the parser then retries as raw deflate). `LZWDecode`, filter chains,
+  PNG-predictor row buffers (sized from `/Columns`) and encrypted documents
+  were not measured at all. Streams are now decoded the way the parser
+  decodes them, with every filter it supports, both before loading and on
+  the parsed document before text is extracted.
 
 ## [0.4.0] - 2026-11-20
 

@@ -8,8 +8,8 @@
 //!   streaming reader into a sparse map, and ODS sheet dimensions (including
 //!   repeated rows/columns) are checked against the row, column and cell limits
 //!   before the parser builds its dense grid.
-//! - PDF streams are inflated with a running budget before the document is
-//!   loaded, and the document is parsed once.
+//! - PDF streams are decoded with a running budget before the document is
+//!   loaded and again before text is extracted ([`crate::pdf_budget`]).
 //!
 //! These checks bound memory, not CPU time spent inside the parsers. Run
 //! untrusted extraction under a timeout (the node runs it on the blocking pool).
@@ -248,13 +248,16 @@ fn render_range(
 /// PDF text, page by page (pages separated by a blank line).
 #[cfg(feature = "pdf")]
 pub(crate) fn pdf(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
-    check_pdf_streams(bytes, opts.max_decompressed_bytes)?;
+    crate::pdf_budget::check_raw_streams(bytes, opts.max_decompressed_bytes)?;
     guarded("pdf", || {
         let mut doc = pdf_extract::Document::load_mem(bytes).map_err(|e| DocError::malformed("pdf", e))?;
         if doc.is_encrypted() {
             // Documents encrypted with an empty user password are readable; others fail here.
             doc.decrypt("").map_err(|e| DocError::malformed("pdf", format!("encrypted document: {e}")))?;
         }
+        // The raw scan is a heuristic and cannot read encrypted streams; this
+        // sees every stream as the extractor will decode it.
+        crate::pdf_budget::check_loaded_streams(&doc, opts.max_decompressed_bytes)?;
         let pages = doc.get_pages();
         if pages.len() > opts.max_pages {
             return Err(DocError::LimitExceeded(format!("{} pages (limit {})", pages.len(), opts.max_pages)));
@@ -287,65 +290,6 @@ pub(crate) fn pdf(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
             _ => Ok(out.join("\n\n")),
         }
     })
-}
-
-/// Inflate every `FlateDecode` stream of a PDF into a sink with a shared budget,
-/// rejecting documents whose streams expand beyond `budget` bytes (decompression
-/// bombs) before the PDF parser inflates them without limits.
-#[cfg(feature = "pdf")]
-pub(crate) fn check_pdf_streams(bytes: &[u8], budget: u64) -> Result<(), DocError> {
-    use std::io::Read;
-
-    let mut remaining = budget;
-    let mut pos = 0usize;
-    while let Some(offset) = find(bytes.get(pos..).unwrap_or_default(), b"stream") {
-        let keyword = pos + offset;
-        let mut data_start = keyword + b"stream".len();
-        // The keyword must end a dictionary (`>> stream`) and be followed by EOL.
-        let is_stream =
-            bytes.get(keyword.saturating_sub(16)..keyword).is_some_and(|before| before.windows(2).any(|w| w == b">>"))
-                && bytes.get(keyword.saturating_sub(3)..keyword).is_none_or(|b| b != b"end");
-        match bytes.get(data_start..data_start + 2) {
-            Some(b"\r\n") => data_start += 2,
-            Some([b'\n', _]) | Some([b'\r', _]) => data_start += 1,
-            _ => {}
-        }
-        if !is_stream {
-            pos = keyword + 1;
-            continue;
-        }
-        let Some(end_offset) = find(bytes.get(data_start..).unwrap_or_default(), b"endstream") else {
-            break;
-        };
-        let data_end = data_start + end_offset;
-        // Look for the dictionary start only in a bounded window, keeping the scan linear.
-        let window_start = keyword.saturating_sub(4096);
-        let dict_start = rfind(bytes.get(window_start..keyword).unwrap_or_default(), b"<<")
-            .map_or(window_start, |p| window_start + p);
-        let dict = bytes.get(dict_start..keyword).unwrap_or_default();
-        if find(dict, b"/FlateDecode").is_some() || find(dict, b"/Fl ").is_some() || find(dict, b"/Fl/").is_some() {
-            let data = bytes.get(data_start..data_end).unwrap_or_default();
-            let mut decoder = flate2::read::ZlibDecoder::new(data).take(remaining.saturating_add(1));
-            // Corrupt streams are left for the parser to report; only the size matters here.
-            let inflated = std::io::copy(&mut decoder, &mut std::io::sink()).unwrap_or(0);
-            if inflated > remaining {
-                return Err(DocError::LimitExceeded(format!("PDF streams decompress to more than {budget} bytes")));
-            }
-            remaining -= inflated;
-        }
-        pos = data_end + b"endstream".len();
-    }
-    Ok(())
-}
-
-#[cfg(feature = "pdf")]
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-#[cfg(feature = "pdf")]
-fn rfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).rposition(|w| w == needle)
 }
 
 /// E-mail: main headers followed by the text body (HTML converted when there is no text part).

@@ -170,11 +170,24 @@ fn table_padding_stops_at_the_output_budget() {
     assert!(start.elapsed() < Duration::from_secs(5));
 }
 
-/// A one-page PDF whose content stream is `FlateDecode`-compressed.
-fn pdf_with_flate_stream(raw: &[u8]) -> Vec<u8> {
+fn zlib(raw: &[u8]) -> Vec<u8> {
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
     encoder.write_all(raw).unwrap();
-    let compressed = encoder.finish().unwrap();
+    encoder.finish().unwrap()
+}
+
+/// LZW as the PDF parser decodes it by default (`EarlyChange 1`).
+fn lzw(raw: &[u8]) -> Vec<u8> {
+    weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(raw).unwrap()
+}
+
+/// A one-page PDF whose content stream is `FlateDecode`-compressed.
+fn pdf_with_flate_stream(raw: &[u8]) -> Vec<u8> {
+    pdf_with_content_stream("/Filter /FlateDecode", &zlib(raw))
+}
+
+/// A one-page PDF whose content stream has `dict_entries` and `data`.
+fn pdf_with_content_stream(dict_entries: &str, data: &[u8]) -> Vec<u8> {
     let mut out = b"%PDF-1.4\n".to_vec();
     let mut offsets = Vec::new();
     let objects: Vec<Vec<u8>> = vec![
@@ -183,8 +196,8 @@ fn pdf_with_flate_stream(raw: &[u8]) -> Vec<u8> {
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
             .to_vec(),
         {
-            let mut body = format!("<< /Length {} /Filter /FlateDecode >>\nstream\n", compressed.len()).into_bytes();
-            body.extend_from_slice(&compressed);
+            let mut body = format!("<< /Length {} {dict_entries} >>\nstream\n", data.len()).into_bytes();
+            body.extend_from_slice(data);
             body.extend_from_slice(b"\nendstream");
             body
         },
@@ -205,6 +218,59 @@ fn pdf_with_flate_stream(raw: &[u8]) -> Vec<u8> {
         format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).as_bytes(),
     );
     out
+}
+
+/// Every way the PDF parser can expand a stream must count against the budget.
+#[test]
+fn pdf_decompression_bombs_through_every_decoder_are_rejected() {
+    let spaces = vec![b' '; 8 * 1024 * 1024];
+    let mut raw_deflate = flate2::write::DeflateEncoder::new(vec![0xff, 0xff], flate2::Compression::best());
+    raw_deflate.write_all(&spaces).unwrap();
+    let raw_deflate = raw_deflate.finish().unwrap();
+    let bombs = [
+        ("LZW", pdf_with_content_stream("/Filter /LZWDecode", &lzw(&spaces))),
+        ("LZW inside Flate", pdf_with_content_stream("/Filter [/FlateDecode /LZWDecode]", &zlib(&lzw(&spaces)))),
+        // A nested dictionary after the filter hid it from the old scan.
+        (
+            "Flate with DecodeParms",
+            pdf_with_content_stream("/Filter /FlateDecode /DecodeParms << /Columns 1 >>", &zlib(&spaces)),
+        ),
+        // A bad zlib header makes the parser retry as raw deflate.
+        ("raw deflate", pdf_with_content_stream("/Filter /FlateDecode", &raw_deflate)),
+        // Whitespace between the dictionary and `stream` hid it from the old scan.
+        ("spaced keyword", {
+            let pdf = pdf_with_flate_stream(&spaces);
+            let at = pdf.windows(9).position(|w| w == b">>\nstream").unwrap();
+            [&pdf[..at + 2], &[b' '; 64][..], &pdf[at + 2..]].concat()
+        }),
+    ];
+    let opts = Options { max_decompressed_bytes: 1024 * 1024, ..Options::default() };
+    for (name, pdf) in bombs {
+        let err = extract(&pdf, None, None, &opts).unwrap_err();
+        assert!(matches!(err, DocError::LimitExceeded(_)), "{name}: {err:?}");
+    }
+}
+
+#[test]
+fn pdf_predictor_rows_count_against_the_budget() {
+    // Two zeroed rows of 4 GB each would be allocated for a 10-byte stream.
+    let pdf = pdf_with_content_stream(
+        "/Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 4000000000 >>",
+        &zlib(b"\x00 BT ET"),
+    );
+    let err = extract(&pdf, None, None, &Options::default()).unwrap_err();
+    assert!(matches!(err, DocError::LimitExceeded(_)), "{err:?}");
+}
+
+#[test]
+fn pdf_lzw_and_chained_streams_within_budget_extract() {
+    let content = b"BT /F1 24 Tf 72 720 Td (Chained hello) Tj ET";
+    for (dict, data) in
+        [("/Filter /LZWDecode", lzw(content)), ("/Filter [/FlateDecode /LZWDecode]", zlib(&lzw(content)))]
+    {
+        let text = extract(&pdf_with_content_stream(dict, &data), None, None, &Options::default()).unwrap();
+        assert!(text.contains("Chained hello"), "{dict}: {text}");
+    }
 }
 
 #[test]

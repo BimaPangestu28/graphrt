@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 mod binary;
 pub mod detect;
 mod node;
+#[cfg(feature = "pdf")]
+mod pdf_budget;
 pub mod text;
 #[cfg(feature = "zip-formats")]
 mod zipfmt;
