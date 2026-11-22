@@ -1741,6 +1741,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphrt-provider-api"
+version = "0.4.0"
+dependencies = [
+ "futures",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "graphrt-rag"
 version = "0.4.0"
 dependencies = [
