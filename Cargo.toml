@@ -15,6 +15,7 @@ members = [
     "crates/graphrt-bundle",
     "crates/graphrt-eval",
     "crates/graphrt-provider-api",
+    "crates/graphrt-provider-aws",
     "crates/graphrt-ffi",
     "crates/graphrt-gcp",
     "crates/graphrt-provider-k8s",
