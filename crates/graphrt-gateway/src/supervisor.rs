@@ -456,8 +456,9 @@ impl Gateway {
         if record.status.is_terminal() {
             return Err(StartError::Conflict("run already finished".to_owned()));
         }
-        if let Some(run) = self.live_run(run_id)
-            && let Some((address, epoch)) = run.current.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        let current = self.live_run(run_id).and_then(|run| run.current.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+        if record.status == RunStatus::Running
+            && let Some((address, epoch)) = current
             && let Some(key) = deployment.signing_key()
         {
             self.agents.abort(&address, key, &deployment.name, RunScope { run_id, epoch: Some(epoch) }).await.map_err(|error| StartError::Conflict(error.to_string()))?;
@@ -476,7 +477,9 @@ impl Gateway {
         body.remove("stream");
         body.remove("async");
         body.insert("workflow".into(), Json::from(version.info.workflow.clone()));
-        body.insert("fingerprint".into(), Json::from(version.info.fingerprint.clone()));
+        if !version.info.fingerprint.is_empty() {
+            body.insert("fingerprint".into(), Json::from(version.info.fingerprint.clone()));
+        }
         body.insert("deployment_version".into(), Json::from(version.info.version.clone()));
         body.insert("event_index".into(), Json::from(record.event_count));
         if let Some(resume) = resume {

@@ -1,0 +1,180 @@
+//! Builds a running gateway from a [`GatewayConfig`] and serves it
+//! (`graphrt gateway`): store, deployments on the local-process provider,
+//! version reload, reclaim after a restart, and the background loops (outbox,
+//! backups, idle release, reconciliation, version retirement, TTL purge,
+//! cron).
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use graphrt_core::store::{RunStore, now_ms};
+
+use crate::auth::DeploymentAuth;
+use crate::config::{DeploymentConfig, GatewayConfig};
+use crate::deployment::{Deployment, VersionInfo};
+use crate::limiter::Gcra;
+use crate::local::{LocalProvider, LocalVersion};
+use crate::scheduler::CronJob;
+use crate::server::{App, VersionHook, load_versions, router};
+use crate::signature::parse_keys;
+use crate::store::SqliteStore;
+use crate::supervisor::{Gateway, SupervisorSettings};
+
+/// A gateway assembled from its config, not yet listening.
+#[derive(Debug)]
+pub struct Built {
+    /// HTTP state.
+    pub app: Arc<App>,
+    /// Cron jobs per deployment.
+    pub crons: Vec<(Arc<Deployment>, CronJob)>,
+    /// Callback secrets per deployment.
+    pub callback_secrets: HashMap<String, Vec<u8>>,
+    /// Backup policy.
+    pub backup: Option<crate::store::backup::BackupPolicy>,
+    /// TTL of finished runs.
+    pub ttl: Duration,
+}
+
+fn env_value(name: &str) -> Result<String, String> {
+    std::env::var(name).map_err(|_| format!("environment variable {name} is not set"))
+}
+
+fn build_deployment(config: &DeploymentConfig, provider: Arc<LocalProvider>, client: &reqwest::Client) -> Result<Deployment, String> {
+    let keys_text = env_value(&config.keys_env)?;
+    let keys = parse_keys(&keys_text).map_err(|error| format!("{}: {error}", config.name))?;
+    let auth = DeploymentAuth::new(config.api_keys.clone(), config.jwt.clone(), client).map_err(|error| format!("{}: {error}", config.name))?;
+    let mut deployment = Deployment::new(&config.name, auth, keys, provider, config.pool_config());
+    deployment.principal_limiter = config.rate_limit.map(|limit| Gcra::new(limit.into(), 100_000));
+    deployment.input_headers = config.input_headers.iter().map(|mapping| crate::deployment::InputHeader { header: mapping.header.to_ascii_lowercase(), ..mapping.clone() }).collect();
+    deployment.open = config.open;
+    Ok(deployment)
+}
+
+/// Assembles the gateway. `keys_by_deployment` receives each deployment's
+/// raw key list so the local provider can hand it to its agents.
+///
+/// # Errors
+/// Missing environment variables, bad keys, store failures.
+pub async fn build(config: &GatewayConfig) -> Result<Built, String> {
+    crate::install_crypto_provider();
+    let store = if config.store == Path::new(":memory:") { SqliteStore::in_memory() } else { SqliteStore::open(&config.store) }.map_err(|error| error.to_string())?;
+    let settings = SupervisorSettings { reclaim_grace: Duration::from_secs(config.reclaim_grace_secs), ..SupervisorSettings::default() };
+    let gateway = Gateway::new(store, settings);
+    let provider = Arc::new(LocalProvider::new(&config.socket_dir, Duration::from_secs(config.local_grace_secs)).map_err(|error| format!("socket dir: {error}"))?);
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|error| error.to_string())?;
+    let mut app = App::new(gateway.clone());
+    let mut crons = Vec::new();
+    let mut callback_secrets = HashMap::new();
+    let mut keys_by_deployment = HashMap::new();
+    for deployment_config in &config.deployments {
+        let deployment = Arc::new(build_deployment(deployment_config, provider.clone(), &client)?);
+        keys_by_deployment.insert(deployment.name.clone(), env_value(&deployment_config.keys_env)?);
+        if let Some(name) = &deployment_config.callback_secret_env {
+            callback_secrets.insert(deployment.name.clone(), env_value(name)?.into_bytes());
+        }
+        for hook in &deployment_config.hooks {
+            let secret = hook.secret_env.as_deref().map(env_value).transpose()?.map(String::into_bytes);
+            app.hooks.insert((deployment.name.clone(), hook.id.clone()), (hook.clone(), secret));
+        }
+        for cron in &deployment_config.crons {
+            let mut schedule = crate::cron::Schedule::new(&cron.id, &cron.schedule, &cron.timezone)?;
+            schedule.catchup = cron.catchup;
+            schedule.max_catchup = cron.max_catchup;
+            schedule.jitter_secs = cron.jitter_secs;
+            schedule.prewarm_secs = cron.prewarm_secs;
+            let mut body = serde_json::Map::new();
+            body.insert("inputs".into(), serde_json::Value::Object(cron.inputs.clone()));
+            crons.push((deployment.clone(), CronJob { schedule, body }));
+        }
+        gateway.add_deployment(deployment);
+    }
+    app.ip_limiter = config.per_ip.map(|limit| Gcra::new(limit.into(), 200_000));
+    app.admin_token_hash = config.admin_token_env.as_deref().map(env_value).transpose()?.map(|token| crate::hex::sha256_hex(token.as_bytes()));
+    let local = provider.clone();
+    let hook: VersionHook = Arc::new(move |deployment: &Deployment, info: &VersionInfo| {
+        let keys = keys_by_deployment.get(&deployment.name).cloned().unwrap_or_default();
+        local.register(&info.reference(&deployment.name), LocalVersion { command: info.command.clone(), keys, env: Vec::new() });
+    });
+    load_versions(&gateway, Some(&hook)).await.map_err(|error| error.to_string())?;
+    app.on_version = Some(hook);
+    let backup = config.backup.as_ref().map(|backup| crate::store::backup::BackupPolicy { dir: backup.dir.clone(), interval: Duration::from_secs(backup.interval_secs.max(10)), keep: backup.keep });
+    Ok(Built { app: Arc::new(app), crons, callback_secrets, backup, ttl: Duration::from_secs(config.store_ttl_days * 86_400) })
+}
+
+/// Idle release every 5 s, reconciliation every minute (I7: at most one
+/// `list` per minute per pool), retirement of 7-day-old versions, TTL purge hourly.
+pub async fn maintenance(gateway: Arc<Gateway>, ttl: Duration) {
+    let mut tick: u64 = 0;
+    loop {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        tick += 1;
+        for deployment in gateway.deployments() {
+            for version in deployment.versions() {
+                version.pool.release_idle().await;
+                if tick % 12 == 0
+                    && let Err(error) = version.pool.reconcile().await
+                {
+                    eprintln!("gateway: reconcile {}@{}: {error}", deployment.name, version.info.version);
+                }
+            }
+            if tick % 720 == 0 {
+                for retired in deployment.take_retired(now_ms()) {
+                    eprintln!("{{\"audit\":\"version_retired\",\"deployment\":\"{}\",\"version\":\"{}\"}}", deployment.name, retired.info.version);
+                    retired.pool.close().await;
+                }
+            }
+        }
+        if tick % 720 == 1 {
+            let cutoff = now_ms().saturating_sub(ttl.as_millis() as u64);
+            if let Err(error) = gateway.store.purge_before(cutoff).await {
+                eprintln!("gateway: purge: {error}");
+            }
+        }
+    }
+}
+
+/// Starts the background loops of `built`.
+pub fn spawn_background(built: &Built) {
+    let gateway = built.app.gateway.clone();
+    let callback_client = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().unwrap_or_default();
+    tokio::spawn(crate::outbox::run_outbox(gateway.clone(), callback_client, built.callback_secrets.clone()));
+    if let Some(policy) = built.backup.clone() {
+        tokio::spawn(crate::store::backup::run_backups(gateway.store.clone(), policy));
+    }
+    tokio::spawn(maintenance(gateway.clone(), built.ttl));
+    for (deployment, job) in &built.crons {
+        tokio::spawn(crate::scheduler::run_job(gateway.clone(), deployment.clone(), job.clone()));
+    }
+}
+
+/// Serves until SIGTERM / SIGINT. Agents keep running and report their runs as
+/// orphans, so a restarted gateway reclaims them (plan §3.4).
+///
+/// # Errors
+/// Bind failures and build errors.
+pub async fn serve(config: GatewayConfig) -> Result<(), String> {
+    let started = tokio::time::Instant::now();
+    let built = build(&config).await?;
+    let (queued, running) = built.app.gateway.recover().await.map_err(|error| error.to_string())?;
+    spawn_background(&built);
+    let listener = tokio::net::TcpListener::bind(&config.listen).await.map_err(|error| format!("binding {}: {error}", config.listen))?;
+    let address = listener.local_addr().map_err(|error| error.to_string())?;
+    eprintln!(
+        "graphrt gateway listening on http://{address} ({} deployments, reclaiming {running} running and {queued} queued runs, ready in {} ms)",
+        built.app.gateway.deployments().len(),
+        started.elapsed().as_millis()
+    );
+    let service = router(built.app.clone()).into_make_service_with_connect_info::<SocketAddr>();
+    axum::serve(listener, service).with_graceful_shutdown(shutdown_signal()).await.map_err(|error| error.to_string())
+}
+
+async fn shutdown_signal() {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        () = async { match terminate.as_mut() { Some(signal) => { signal.recv().await; } None => std::future::pending().await } } => {}
+    }
+}

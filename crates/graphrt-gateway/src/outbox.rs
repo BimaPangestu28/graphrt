@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use graphrt_core::store::now_ms;
 
-use crate::metrics::{Metrics, bump};
-use crate::store::{OutboxEntry, SqliteStore};
+use crate::metrics::bump;
+use crate::store::OutboxEntry;
+use crate::supervisor::Gateway;
 use crate::webhook::sign_callback;
 
 /// Attempts before a callback is dropped (≈ 2 days of backoff).
@@ -40,7 +41,9 @@ pub async fn deliver(client: &reqwest::Client, entry: &OutboxEntry, secret: Opti
 
 /// Delivers due callbacks every second until the task is dropped.
 /// `secrets` maps deployment → callback signing secret.
-pub async fn run_outbox(store: SqliteStore, client: reqwest::Client, secrets: HashMap<String, Vec<u8>>, metrics: Arc<Metrics>) {
+pub async fn run_outbox(gateway: Arc<Gateway>, client: reqwest::Client, secrets: HashMap<String, Vec<u8>>) {
+    let store = &gateway.store;
+    let metrics = &gateway.metrics;
     loop {
         let due = store.due_callbacks(now_ms(), 32).await.unwrap_or_default();
         for entry in due {
