@@ -5,10 +5,12 @@
 #![cfg(all(feature = "pdf", feature = "office", feature = "spreadsheet", feature = "epub", feature = "email"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use std::io::{Cursor, Write};
+mod support;
+
 use std::time::{Duration, Instant};
 
 use graphrt_doc::{Options, extract};
+use support::{pdf_with_content, zip_of};
 
 /// Extract `bytes` as each of the given MIME types and require a prompt result.
 fn extract_quickly(what: &str, bytes: &[u8], mimes: &[Option<&str>]) {
@@ -17,38 +19,6 @@ fn extract_quickly(what: &str, bytes: &[u8], mimes: &[Option<&str>]) {
         let _ = extract(bytes, *mime, None, &Options::default());
         assert!(started.elapsed() < Duration::from_secs(10), "{what} as {mime:?} took {:?}", started.elapsed());
     }
-}
-
-/// A one-page PDF whose (uncompressed) content stream is `content`.
-fn pdf_with_content(content: &[u8]) -> Vec<u8> {
-    let mut out = b"%PDF-1.4\n".to_vec();
-    let mut offsets = Vec::new();
-    let mut stream = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
-    stream.extend_from_slice(content);
-    stream.extend_from_slice(b"\nendstream");
-    let objects: Vec<Vec<u8>> = vec![
-        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
-            .to_vec(),
-        stream,
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
-    ];
-    for (i, body) in objects.iter().enumerate() {
-        offsets.push(out.len());
-        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
-        out.extend_from_slice(body);
-        out.extend_from_slice(b"\nendobj\n");
-    }
-    let xref = out.len();
-    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
-    for off in offsets {
-        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
-    }
-    out.extend_from_slice(
-        format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).as_bytes(),
-    );
-    out
 }
 
 #[test]
@@ -101,10 +71,7 @@ fn deeply_nested_xml_and_html_are_linear() {
         "</w:tc></w:tr></w:tbl>".repeat(depth / 4)
     );
     let document = format!("<w:document><w:body>{body}</w:body></w:document>");
-    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    zip.start_file("word/document.xml", zip::write::SimpleFileOptions::default()).unwrap();
-    zip.write_all(document.as_bytes()).unwrap();
-    let docx = zip.finish().unwrap().into_inner();
+    let docx = zip_of(&[("word/document.xml", &document)]);
     extract_quickly("nested docx", &docx, &[None]);
 }
 

@@ -4,19 +4,12 @@
 #![cfg(all(feature = "pdf", feature = "office", feature = "spreadsheet", feature = "epub", feature = "email"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod support;
+
 use std::io::{Cursor, Write};
 
 use graphrt_doc::{DocError, Format, Options, OutputFormat, extract, extract_detailed};
-
-fn zip_of(entries: &[(&str, &str)]) -> Vec<u8> {
-    let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let opts = zip::write::SimpleFileOptions::default();
-    for (name, body) in entries {
-        w.start_file(*name, opts).unwrap();
-        w.write_all(body.as_bytes()).unwrap();
-    }
-    w.finish().unwrap().into_inner()
-}
+use support::{pdf_with_content, zip_of};
 
 fn md() -> Options {
     Options::default().with_format(OutputFormat::Markdown)
@@ -139,32 +132,9 @@ fn xlsx_sheets_as_tables() {
     assert_eq!(text, "Stock\nItem\tQty\nPear\t7");
 }
 
-/// Build a one-page PDF with correct xref offsets.
+/// A one-page PDF showing `text`.
 fn pdf(text: &str) -> Vec<u8> {
-    let content = format!("BT /F1 24 Tf 72 720 Td ({text}) Tj ET");
-    let objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
-            .to_owned(),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
-        format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
-    ];
-    let mut out = b"%PDF-1.4\n".to_vec();
-    let mut offsets = Vec::new();
-    for (i, body) in objects.iter().enumerate() {
-        offsets.push(out.len());
-        out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
-    }
-    let xref = out.len();
-    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
-    for off in offsets {
-        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
-    }
-    out.extend_from_slice(
-        format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).as_bytes(),
-    );
-    out
+    pdf_with_content(format!("BT /F1 24 Tf 72 720 Td ({text}) Tj ET").as_bytes())
 }
 
 #[test]
