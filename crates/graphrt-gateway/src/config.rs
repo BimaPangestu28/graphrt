@@ -22,6 +22,8 @@
 //!     callback_secret_env: SHOP_CALLBACK_SECRET
 //!     hooks: [{ id: github, scheme: github, secret_env: GH_SECRET, idempotency_header: x-github-delivery }]
 //!     crons: [{ id: nightly, schedule: "0 3 * * *", timezone: Europe/Berlin, catchup: latest, jitter_secs: 120, prewarm_secs: 30 }]
+//!     warm: { predictive: true, lead_secs: 60, max_warm_replica_secs_per_day: 7200 }
+//! wake_storm: { max_parallel_wakes: 16, prewarm_jitter_ms: 1000 }
 //! ```
 
 use std::path::PathBuf;
@@ -175,6 +177,9 @@ pub struct DeploymentConfig {
     /// Name of the entry under `providers:` (default `local`).
     #[serde(default)]
     pub provider: Option<String>,
+    /// Predictive prewarm and keep-warm budget.
+    #[serde(default)]
+    pub warm: crate::warm::WarmConfig,
     /// Agent keys given programmatically (`--dev`) instead of `keys_env`.
     #[serde(skip)]
     pub inline_keys: Option<String>,
@@ -190,6 +195,11 @@ impl DeploymentConfig {
             queue_timeout: Duration::from_secs(self.pool.queue_timeout_secs.max(1)),
             wake_timeout: Duration::from_secs(self.pool.wake_timeout_secs.max(1)),
             quotas: self.quotas,
+            warm_budget: self
+                .warm
+                .max_warm_replica_secs_per_day
+                .map(|secs| std::sync::Arc::new(crate::warm::WarmBudget::new(secs))),
+            wake_gate: None,
         }
     }
 }
@@ -230,6 +240,9 @@ pub struct GatewayConfig {
     /// Named providers (operator configuration; see [`crate::providers`]).
     #[serde(default)]
     pub providers: std::collections::BTreeMap<String, crate::providers::ProviderConfig>,
+    /// Gateway-wide wake-storm protection.
+    #[serde(default)]
+    pub wake_storm: crate::warm::WakeStormConfig,
     /// Deployments.
     #[serde(default)]
     pub deployments: Vec<DeploymentConfig>,
@@ -308,6 +321,7 @@ impl GatewayConfig {
             if deployment.api_keys.iter().any(|hash| hash.len() != 64 || crate::hex::decode(hash).is_none()) {
                 return Err(format!("{}: api_keys are SHA-256 hex digests (graphrt gateway key new)", deployment.name));
             }
+            deployment.warm.validate().map_err(|error| format!("{}: {error}", deployment.name))?;
             for cron in &deployment.crons {
                 crate::cron::Schedule::new(&cron.id, &cron.schedule, &cron.timezone)
                     .map_err(|error| format!("{}: cron {}: {error}", deployment.name, cron.id))?;
@@ -339,6 +353,9 @@ deployments:
         let config = GatewayConfig::from_yaml(yaml).unwrap();
         assert_eq!(config.deployments[0].pool_config().max_active_runs, 4);
         assert_eq!(config.deployments[0].crons[0].catchup, Catchup::Latest);
+        assert!(!config.deployments[0].warm.predictive, "predictive prewarm is off by default");
+        assert!(config.deployments[0].pool_config().warm_budget.is_none(), "no budget by default");
+        assert_eq!(config.wake_storm.max_parallel_wakes, 16);
     }
 
     #[test]
@@ -348,5 +365,7 @@ deployments:
         let reserved = "deployments: [{ name: shop, keys_env: K, open: true, input_headers: [{ header: Graphrt-Epoch, input: x }] }]";
         assert!(GatewayConfig::from_yaml(reserved).unwrap_err().contains("reserved"));
         assert!(GatewayConfig::from_yaml("store_ttl_days: 1").is_err());
+        let threshold = "deployments: [{ name: shop, keys_env: K, open: true, warm: { threshold: 2 } }]";
+        assert!(GatewayConfig::from_yaml(threshold).unwrap_err().contains("warm.threshold"));
     }
 }

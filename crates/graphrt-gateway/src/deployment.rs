@@ -109,6 +109,8 @@ pub struct Deployment {
     pub retirer: Option<Arc<dyn crate::retire::VersionRetirer>>,
     /// Retired versions whose platform retirement failed (retried hourly).
     pub pending_retirement: std::sync::Mutex<Vec<DeploymentRef>>,
+    /// Learned arrival pattern (`warm.predictive`) and the prewarm lead in seconds.
+    pub predictor: Option<(std::sync::Mutex<crate::warm::ArrivalModel>, u64)>,
     versions: RwLock<Vec<VersionEntry>>,
 }
 
@@ -142,8 +144,24 @@ impl Deployment {
             open: false,
             retirer: None,
             pending_retirement: std::sync::Mutex::new(Vec::new()),
+            predictor: None,
             versions: RwLock::new(Vec::new()),
         }
+    }
+
+    /// Records client traffic for the predictive prewarm (no-op when it is off).
+    pub fn record_arrival(&self, unix_secs: u64) {
+        if let Some((model, _)) = &self.predictor {
+            model.lock().unwrap_or_else(std::sync::PoisonError::into_inner).record_arrival(unix_secs as i64);
+        }
+    }
+
+    /// Whether the learned pattern expects traffic within the prewarm lead
+    /// (true once per predicted slot), and that lead.
+    pub fn predicts_traffic(&self, unix_secs: u64) -> Option<Duration> {
+        let (model, lead_secs) = self.predictor.as_ref()?;
+        let mut model = model.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        model.should_prewarm(unix_secs as i64, *lead_secs).then(|| Duration::from_secs(*lead_secs))
     }
 
     /// Signing key.

@@ -48,6 +48,7 @@ admin_token_env: GRAPHRT_GATEWAY_ADMIN_TOKEN   # for graphrt deploy
 per_ip: { per_second: 20, burst: 40 }
 socket_dir: /run/graphrt                 # Unix sockets of local agents
 store_ttl_days: 7                        # ≥ 3: webhook senders retry for days
+wake_storm: { max_parallel_wakes: 16, prewarm_jitter_ms: 1000 }   # see Warm-up and cost guards
 deployments:
   - name: shop
     keys_env: SHOP_GATEWAY_KEYS          # kid:hex[,kid:hex]; the agents get the same value
@@ -62,6 +63,7 @@ deployments:
       - { id: github, scheme: github, secret_env: GH_WEBHOOK_SECRET, idempotency_header: x-github-delivery, callback_url: https://example.com/done }
     crons:
       - { id: nightly, schedule: "0 3 * * *", timezone: Europe/Berlin, catchup: latest, jitter_secs: 120, prewarm_secs: 30, inputs: { report: daily } }
+    warm: { predictive: true, lead_secs: 60, max_warm_replica_secs_per_day: 7200 }   # off / unlimited by default
 ```
 
 Keys: `graphrt gateway key new` prints a client API key and its digest;
@@ -78,6 +80,7 @@ can be active at once for rotation (the first signs).
 | POST | `/v1/deployments/{d}/runs/{id}/resume` | `{inputs, secrets, stream}` for a paused (human-input) run |
 | POST | `/v1/deployments/{d}/runs/{id}/abort` | |
 | POST | `/v1/deployments/{d}/hooks/{hook}` | webhook ingress; duplicates answer `{"duplicate": true}` |
+| POST | `/v1/deployments/{d}/warm` | prewarm the current version ahead of traffic, `{"replicas": n}` (default 1): `202 warming`, `200 warm`, `429 warm_budget_exhausted` (see [Warm-up and cost guards](#warm-up-and-cost-guards)) |
 | GET | `/metrics`, `/healthz` | Prometheus text; liveness |
 
 Credentials: `X-Api-Key: <key>` or `Authorization: Bearer <key or JWT>`. A
@@ -115,6 +118,76 @@ fire happens once; a fire in a DST gap is skipped and logged, or with
 `catchup: latest|all` runs at the end of the gap. After downtime, `catchup:
 none` logs the missed fires, `latest` runs the last one, `all` runs up to
 `max_catchup`. Jitter is deterministic per fire.
+
+## Warm-up and cost guards
+
+A cold wake costs from 15 ms (local process) to tens of seconds (ECS
+Fargate). Four mechanisms hide it without paying for idle replicas blindly.
+All are in gateway memory only (no store operation, I7) and default to off or
+to bounds that a single gateway rarely reaches.
+
+| Mechanism | Setting | Default |
+| --- | --- | --- |
+| Explicit warm-up | `POST /v1/deployments/{d}/warm` | always available, authenticated |
+| Cron prewarm | `crons[].prewarm_secs` | 0 (off) |
+| Predictive prewarm | `warm: { predictive, lead_secs, threshold, alpha }` | off; 60 s, 0.6, 0.3 |
+| Keep-warm budget | `warm.max_warm_replica_secs_per_day` | unlimited |
+| Wake-storm gate | `wake_storm: { max_parallel_wakes, prewarm_jitter_ms }` | 16 (0 = unlimited), 1000 ms |
+
+**`POST …/warm`** is for clients that know traffic is coming: a chat page
+calls it when the user opens it, a batch job before it starts. It takes the
+same credentials and rate limits as a run, answers at once (the wake goes on in
+the background), counts against `max_wakes_per_hour`, and is not an arrival
+for the predictive model.
+
+**Cron prewarm** wakes one replica `prewarm_secs` before a fire, after a
+random delay below half of `prewarm_secs` (and below `prewarm_jitter_ms`), so
+many schedules on the same minute do not wake together.
+
+**Predictive prewarm** learns when client traffic arrives (runs, resumes,
+webhooks): 288 five-minute slots of the UTC day, once for weekdays and once
+for Saturday/Sunday, each an exponentially weighted probability (`alpha`) that
+the slot sees traffic; 2.3 KiB per deployment, O(1) per request. `lead_secs`
+before a slot, it prewarms one replica when traffic in that slot or the next is
+likely enough (`1 − (1 − p₀)(1 − p₁) ≥ threshold` and `p₀ ≥ threshold / 2`),
+and keeps that replica through both slots even when `idle_timeout` is shorter.
+With the defaults a slot needs traffic on three days of its kind in a row, and
+one or two quiet days stop it again. Set `lead_secs` to at least the
+provider's wake time. The model starts empty after a gateway restart and
+predicts nothing until it has learned again (days, not minutes).
+
+In the seeded simulation (`tests/warm_simulation.rs`: three bursts per weekday
+drifting ± 3 minutes, each skipped on 15 % of the days, quiet weekends,
+random noise, `idle_timeout` 300 s) the hit rate is 81–84 % (plan target
+≥ 70 %), and about 70 % of the first requests of a burst find a warm replica
+instead of 0 %.
+
+**Keep-warm budget** caps the idle replica-seconds a deployment keeps per UTC
+day: prewarmed replicas, `min_replicas`, and the idle tail before
+`idle_timeout`. Busy time does not count. Once today's budget is spent,
+prewarms are refused (`POST …/warm` answers `429 warm_budget_exhausted` with
+`Retry-After` until UTC midnight) and idle replicas are released at once,
+`min_replicas` included. Requests still wake replicas on demand: the budget
+never refuses a run. It applies to providers where the gateway holds replicas
+(local, Kubernetes, ECS, Fly); on one-URL platforms (Cloud Run, ACA, Lambda)
+the platform's own minimum instances decide.
+
+**Wake-storm gate**: at most `max_parallel_wakes` provider wakes are in flight
+for the whole gateway; more wait in FIFO order (within `queue_timeout`). A
+restart, a launch or a midnight of crons across many deployments therefore
+calls the cloud API in bounded waves instead of all at once. Prewarms are also
+spread by a random delay below `prewarm_jitter_ms`; on-demand wakes are never
+delayed by jitter, since a user waits for them. The simulation checks both: 48
+cold deployments behind a gate of 4 never exceed 4 wakes in flight and are all
+served in 12 waves; 48 simultaneous prewarms spread over the jitter window.
+
+Prewarm hit rate per deployment version and source (`predictive`, `cron`,
+`api`, `min_replicas`):
+
+```promql
+sum by (deployment) (increase(graphrt_gateway_prewarm_hits_total[1d]))
+  / sum by (deployment) (increase(graphrt_gateway_prewarm_started_total[1d]))
+```
 
 ## Providers
 
@@ -265,3 +338,12 @@ managed Kubernetes (GKE, EKS, AKS).
 `…_callbacks_failed_total`, `…_store_write_errors_total`,
 `graphrt_gateway_client_streams`, `graphrt_gateway_live_runs`, and per
 deployment version `graphrt_gateway_replicas`, `…_active_runs`, `…_queued`.
+
+Warm-up: per deployment version and `source`,
+`graphrt_gateway_prewarm_started_total` (replicas a prewarm started),
+`…_prewarm_hits_total` (their first lease came) and `…_prewarm_misses_total`
+(released or lost unused); per deployment with a budget,
+`graphrt_gateway_warm_replica_seconds` (idle replica-seconds today) and
+`graphrt_gateway_warm_budget_replica_seconds`; gateway-wide
+`graphrt_gateway_wakes_in_flight` and `graphrt_gateway_wakes_gated_total`
+(wakes that waited for `max_parallel_wakes`).
