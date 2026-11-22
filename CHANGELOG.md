@@ -22,6 +22,19 @@ releases may contain breaking changes; they are called out under **Changed**.
   shared provider HTTP layer (token bucket per provider API, jittered retry,
   token cache with one refresh on 401) and the C1–C13 provider conformance
   harness with a scripted fake HTTP server. No user-visible change yet.
+- `graphrt-gcp` crate (gateway plan F2, GCP family), each part behind its own
+  cargo feature and without a Google SDK. `auth-gcp`: access and ID tokens from
+  the metadata server or a service-account key (RS256 JWT signed with `ring`,
+  exchanged at the OAuth 2.0 token endpoint), cached until `exp - 5 min`, one
+  shared fetch per token, one refresh after a 401, ±5 min clock skew corrected
+  from the token endpoint's `Date`, never logged. `provider-cloud-run`: the
+  Cloud Run provider (`Addressing::Url`, platform-scaled, min instances 0,
+  startup CPU boost, request-based billing, 10 s grace → preempt, 60-min cap →
+  planned preempt); `deploy-cloud-run`: its deploy driver over the Cloud Run
+  Admin API v2 (one traffic tag per version so old versions stay wakeable
+  until retired) and Secret Manager references. Conformance C1–C12 against fake Google APIs; see
+  [docs/gateway-cloud-run.md](docs/gateway-cloud-run.md) for IAM roles and what
+  still needs a real project.
 - Live provider test matrix: `crates/graphrt-llm/tests/live_providers.rs` sends
   tiny streamed chat and tool-call round-trip requests to OpenAI, Anthropic,
   Gemini and Bedrock and a typed question to TypeSafe (opt-in with
