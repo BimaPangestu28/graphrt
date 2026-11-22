@@ -179,6 +179,11 @@ impl LiveRun {
         receiver
     }
 
+    /// Whether a supervisor waits for this run's orphan report.
+    fn awaits_orphan(&self) -> bool {
+        self.orphan.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
+    }
+
     /// Hands an orphan report to the waiting supervisor. Returns whether one was waiting.
     pub fn deliver_orphan(&self, orphan: Json) -> bool {
         match self.orphan.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
@@ -968,7 +973,26 @@ impl Gateway {
             tokio::spawn(async move { gateway.reclaim(run, record, receiver).await });
         }
         self.poll_orphans(&waiting).await;
+        tokio::spawn(Arc::clone(self).keep_polling_orphans(waiting));
         Ok((queued.len(), running.len()))
+    }
+
+    /// An agent notices a lost stream only some milliseconds after the gateway
+    /// died, so a gateway that comes back quickly (an active/passive takeover
+    /// takes tens of milliseconds) polls again with backoff, for the runs still
+    /// waiting, until the reclaim grace ends.
+    async fn keep_polling_orphans(self: Arc<Self>, mut waiting: Vec<String>) {
+        let deadline = tokio::time::Instant::now() + self.settings.reclaim_grace;
+        let mut delay = Duration::from_millis(100);
+        loop {
+            waiting.retain(|run_id| self.live_run(run_id).is_some_and(|run| run.awaits_orphan()));
+            if waiting.is_empty() || tokio::time::Instant::now() + delay >= deadline {
+                return;
+            }
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_secs(2));
+            self.poll_orphans(&waiting).await;
+        }
     }
 
     async fn reclaim(self: Arc<Self>, run: Arc<LiveRun>, record: RunRecord, receiver: oneshot::Receiver<Json>) {
