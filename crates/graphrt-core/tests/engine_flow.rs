@@ -1231,6 +1231,7 @@ async fn a_chain_reads_the_clock_about_once_per_node() {
 // ---------------------------------------------------------------------------
 
 /// `exec_id` of every `NodeStarted` of `node` in the root frame.
+#[cfg(feature = "tokio")] // only the tokio-gated preempt tests use it
 fn exec_ids_of(events: &[Event], node: &str) -> Vec<String> {
     events
         .iter()
