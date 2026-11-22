@@ -107,13 +107,21 @@ curl -N -H 'Authorization: Bearer change-me' \
 
 Each run event is one SSE message; `response` events carry the ordered answer
 text token by token, from `llm` and `agent` nodes alike (see
-[docs/serving.md](docs/serving.md#streaming-sse)).
+[docs/serving.md](docs/serving.md#streaming-sse)). Every event has an `id:` (its
+index in the run's log), so a client that reconnects to
+`/v1/runs/{id}/events` with `Last-Event-ID` gets exactly the rest of the run.
 
 On SIGTERM or SIGINT the server drains: new runs get `503`, active runs pause
 and are stored (nodes still running near `--drain-timeout` are cancelled and
 run again on resume), then it exits, also as PID 1 of a container. Async runs
 resume when the next server starts on the same store; see the grace periods
 per platform in [docs/deploy.md](docs/deploy.md#graceful-shutdown).
+
+`graphrt serve --trust-gateway --deployment shop --listen unix:/run/shop.sock`
+runs the server as an agent behind a graphrt gateway: a signed (HMAC-SHA256)
+`/internal/v1` API for starting, resuming, reattaching to and draining runs,
+where a lost gateway connection pauses the run for reclaim instead of losing
+it. See [docs/gateway-protocol.md](docs/gateway-protocol.md).
 
 Per-user credentials (a Supabase or OAuth JWT from a mobile app) can travel in
 their own header and reach the workflow as a masked secret input, while

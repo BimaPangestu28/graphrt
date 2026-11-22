@@ -20,6 +20,8 @@ graphrt serve examples/ --store ./runs --store-ttl-days 30
 | `--max-active-runs <n>` | At most `n` runs execute at once (default 256, `0` = unlimited); further starts and resumes get `429 Too Many Requests`. Paused runs do not count. |
 | `--drain-timeout <d>` | On SIGTERM / SIGINT, pause or preempt active runs and exit within `d` (default `4s`; `500ms`, `30s`, `2m`). See [Shutdown and restarts](#shutdown-and-restarts). |
 | `--no-resume-drained` | Leave async and webhook runs drained by a previous shutdown paused instead of resuming them at startup. |
+| `--listen unix:/path` | Listen on a Unix socket (mode `0600`) instead of TCP (`--listen` is an alias of `--addr`). |
+| `--trust-gateway` | Run as an agent behind a graphrt gateway: signed `/internal/v1` API. See [gateway-protocol.md](gateway-protocol.md). |
 
 ### Small devices
 
@@ -294,12 +296,21 @@ stream ends right after the terminal event (`run_succeeded`, `run_failed`,
 `run_aborted` or `run_paused`).
 
 ```text
-event: node_chunk
-data: {"type":"node_chunk","frame":"","node_id":"agent","exec_id":"...","field":"text","chunk":"Your"}
-
 event: response
+id: 4.0
 data: {"node_id":"answer","text":"Your","is_final":false}
+
+event: node_chunk
+id: 4
+data: {"type":"node_chunk","frame":"","node_id":"agent","exec_id":"...","field":"text","chunk":"Your"}
 ```
+
+Every engine event has an `id:`: its index in the run's event log (the
+`?from=` index of [`/events`](#following-runs)), counting on across the
+executions of a run (a resumed run's stream continues where the paused one
+stopped). A `response` event has `id: <index>.<k>`: the engine event it was
+assembled from, and its position among that event's response events. A
+`lagged` event has no id.
 
 Two kinds of text arrive while a run executes:
 
@@ -350,6 +361,12 @@ Run records gain these fields, all omitted when empty:
 | `trace_id`, `span_id` | OpenTelemetry trace id and root (`invoke_workflow`) span id of the latest execution, when tracing is on; lets later evaluation scores join the same trace |
 | `inputs` | The run's inputs as the start node accepted them, with `secret`-typed inputs stored as `******`. Only with `graphrt serve --store-inputs` |
 
+Every record also has `epoch` (0, incremented by each resume claim) and
+`event_count` (the index of the run's next event, also past the store's
+per-run cap of 5,000 kept events); runs started by a gateway carry
+`deployment` and `deployment_version` (see
+[gateway-protocol.md](gateway-protocol.md#run-store-contract)).
+
 `--store-inputs` is off by default because inputs often hold personal data;
 turn it on to build evaluation datasets from production runs.
 
@@ -378,6 +395,12 @@ turn it on to build evaluation datasets from production runs.
 
 `key` is what to use in the resume `inputs`: the node id, or `<frame>/<node_id>`
 for a node paused inside an iteration or loop.
+
+`/events` honours `Last-Event-ID`, which browsers' `EventSource` sends when it
+reconnects: `N` resumes after event `N`, `N.k` (the client saw part of event
+`N`'s response text) resumes at event `N`; the larger of the header and
+`?from=` wins. A client that reconnects after any event gets exactly the rest
+of the run, without gaps or duplicates.
 
 A listener that falls behind the live tail (a slow client of a fast run) is
 refilled from the run's in-memory feed, so it skips nothing. Only when it falls
