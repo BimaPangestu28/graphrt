@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -126,10 +127,9 @@ impl ProcessTransport {
             }
             *live = None;
         }
-        let failures = self.failures.load(Ordering::SeqCst);
-        if failures > 0 && clock.supports_timers() {
-            let exp = u32::try_from(failures.min(6)).unwrap_or(6);
-            let backoff = Duration::from_millis(100u64.saturating_mul(1u64 << exp)).min(MAX_BACKOFF);
+        if let Some(backoff) = restart_backoff(self.failures.load(Ordering::SeqCst))
+            && clock.supports_timers()
+        {
             clock.sleep(backoff).await;
         }
         let started = self.start(clock).await;
@@ -146,27 +146,65 @@ impl ProcessTransport {
         }
     }
 
+    /// Start the process and run the `initialize` handshake.
     async fn start(&self, clock: &Arc<dyn Clock>) -> Result<Live, CallError> {
-        let name = &self.plugin.manifest.name;
         verify_checksums(&self.plugin).map_err(|e| CallError::Start(e.to_string()))?;
-        // A relative command with a path separator (`./bin/plugin`) is relative to the
-        // plugin directory; a bare name (`python3`) is looked up on PATH.
-        let command = std::path::Path::new(&self.runtime.command);
+        let program = self.program()?;
+        let mut child = self
+            .command(&program)
+            .spawn()
+            .map_err(|e| CallError::Start(format!("cannot run `{}`: {e}", self.runtime.command)))?;
+        let pid = child.id();
+        if let Ok(mut status) = self.exit_status.lock() {
+            *status = None;
+        }
+        let stdin = child.stdin.take().ok_or_else(|| CallError::Start("no stdin pipe".into()))?;
+        let stdout = child.stdout.take().ok_or_else(|| CallError::Start("no stdout pipe".into()))?;
+        if let Some(stderr) = child.stderr.take() {
+            self.collect_stderr(stderr);
+        }
+        // The guard owns the child: dropping the connection kills the process group.
+        let kill_tx = supervise(child, pid, self.exit_status.clone());
+        let max_message_bytes = self.plugin.manifest.limits.max_message_bytes;
+        let conn = Arc::new(Connection::with_guard(
+            stdout,
+            stdin,
+            max_message_bytes,
+            Some(Box::new(kill_tx)),
+            Some(self.crash_detail()),
+        ));
+        conn.set_label(&self.plugin.manifest.name);
+        let init = initialize(&conn, clock, max_message_bytes).await?;
+        Ok(Live { conn, init })
+    }
+
+    /// The program to run. A relative command with a path separator
+    /// (`./bin/plugin`) is relative to the plugin directory; a bare name
+    /// (`python3`) is looked up on PATH.
+    fn program(&self) -> Result<PathBuf, CallError> {
+        let command = Path::new(&self.runtime.command);
         // `has_root` too: on Windows `/usr/bin/x` is "relative" (no drive) but rooted.
         let in_plugin_dir = command.is_relative() && !command.has_root() && command.components().count() > 1;
-        let program = if in_plugin_dir { self.plugin.dir.join(command) } else { command.to_path_buf() };
-        if in_plugin_dir {
-            // A symlinked entrypoint could point anywhere, bypassing checksums.
-            let meta = std::fs::symlink_metadata(&program)
-                .map_err(|e| CallError::Start(format!("cannot stat `{}`: {e}", self.runtime.command)))?;
-            if meta.file_type().is_symlink() {
-                return Err(CallError::Start(format!(
-                    "`{}` is a symlink; plugin entrypoints must be files",
-                    self.runtime.command
-                )));
-            }
+        if !in_plugin_dir {
+            return Ok(command.to_path_buf());
         }
-        let mut cmd = tokio::process::Command::new(&program);
+        let program = self.plugin.dir.join(command);
+        // A symlinked entrypoint could point anywhere, bypassing checksums.
+        let meta = std::fs::symlink_metadata(&program)
+            .map_err(|e| CallError::Start(format!("cannot stat `{}`: {e}", self.runtime.command)))?;
+        if meta.file_type().is_symlink() {
+            return Err(CallError::Start(format!(
+                "`{}` is a symlink; plugin entrypoints must be files",
+                self.runtime.command
+            )));
+        }
+        Ok(program)
+    }
+
+    /// The configured command: arguments, working directory, environment,
+    /// piped stdio and its own process group.
+    fn command(&self, program: &Path) -> tokio::process::Command {
+        let mut cmd = tokio::process::Command::new(program);
         cmd.args(&self.runtime.args);
         let cwd = match &self.runtime.cwd {
             Some(rel) => self.plugin.resolve(rel),
@@ -178,7 +216,7 @@ impl ProcessTransport {
             cmd.envs(minimal_env(self.plugin.manifest.permissions.env.iter().map(String::as_str)));
         }
         cmd.envs(&self.runtime.env);
-        cmd.env("GRAPHRT_PLUGIN", name);
+        cmd.env("GRAPHRT_PLUGIN", &self.plugin.manifest.name);
         cmd.env("GRAPHRT_PLUGIN_PROTOCOL", crate::manifest::PROTOCOL_VERSION.to_string());
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
@@ -188,60 +226,37 @@ impl ProcessTransport {
         // process they start are killed together (on Windows `taskkill /T` walks the tree).
         #[cfg(unix)]
         cmd.process_group(0);
+        cmd
+    }
 
-        let mut child =
-            cmd.spawn().map_err(|e| CallError::Start(format!("cannot run `{}`: {e}", self.runtime.command)))?;
-        let pid = child.id();
-        if let Ok(mut status) = self.exit_status.lock() {
-            *status = None;
+    /// Keep the last [`STDERR_TAIL_BYTES`] the new process writes to stderr,
+    /// replacing the previous process's tail.
+    fn collect_stderr(&self, mut stderr: tokio::process::ChildStderr) {
+        if let Ok(mut tail) = self.stderr.lock() {
+            tail.clear();
         }
-        let stdin = child.stdin.take().ok_or_else(|| CallError::Start("no stdin pipe".into()))?;
-        let stdout = child.stdout.take().ok_or_else(|| CallError::Start("no stdout pipe".into()))?;
-        if let Some(mut stderr) = child.stderr.take() {
-            if let Ok(mut tail) = self.stderr.lock() {
-                tail.clear();
-            }
-            let sink = self.stderr.clone();
-            tokio::spawn(async move {
-                let mut buf = [0u8; 4096];
-                while let Ok(n) = stderr.read(&mut buf).await {
-                    if n == 0 {
-                        break;
-                    }
-                    if let Ok(mut tail) = sink.lock() {
-                        tail.extend(buf.iter().take(n));
-                        while tail.len() > STDERR_TAIL_BYTES {
-                            tail.pop_front();
-                        }
-                    }
-                }
-            });
-        }
-
-        // The guard owns the child: dropping the connection kills the process group.
-        let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
-        let exit_status = self.exit_status.clone();
+        let sink = self.stderr.clone();
         tokio::spawn(async move {
-            let status = tokio::select! {
-                status = child.wait() => status,
-                _ = kill_rx => {
-                    kill_tree(pid);
-                    let _already_exited = child.start_kill();
-                    child.wait().await
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stderr.read(&mut buf).await {
+                if n == 0 {
+                    break;
                 }
-            };
-            // The main process is gone; reap anything it left in its group.
-            kill_group(pid);
-            if let Ok(mut slot) = exit_status.lock() {
-                *slot = Some(match status {
-                    Ok(s) => describe_exit(&s),
-                    Err(e) => format!("unknown exit status ({e})"),
-                });
+                if let Ok(mut tail) = sink.lock() {
+                    tail.extend(buf.iter().take(n));
+                    while tail.len() > STDERR_TAIL_BYTES {
+                        tail.pop_front();
+                    }
+                }
             }
         });
+    }
+
+    /// What a crash report adds: how the process exited and its stderr tail.
+    fn crash_detail(&self) -> crate::conn::CrashDetail {
         let stderr_view = self.stderr.clone();
         let status_view = self.exit_status.clone();
-        let detail: crate::conn::CrashDetail = Arc::new(move || {
+        Arc::new(move || {
             let status = status_view.lock().ok().and_then(|s| s.clone());
             let stderr = stderr_text(&stderr_view);
             match (status, stderr.is_empty()) {
@@ -250,23 +265,65 @@ impl ProcessTransport {
                 (None, false) => format!("stderr: {stderr}"),
                 (None, true) => String::new(),
             }
-        });
-        let max_message_bytes = self.plugin.manifest.limits.max_message_bytes;
-        let conn =
-            Arc::new(Connection::with_guard(stdout, stdin, max_message_bytes, Some(Box::new(kill_tx)), Some(detail)));
-        conn.set_label(name);
-
-        let id = conn.next_id();
-        let params = initialize_params(max_message_bytes);
-        let init = with_timeout(clock, INITIALIZE_TIMEOUT, conn.call(id, "initialize", params, None, false))
-            .await
-            .map_err(|e| match e {
-                CallError::Crashed(m) => CallError::Start(m),
-                other => other,
-            })?;
-        check_initialize(&init)?;
-        Ok(Live { conn, init })
+        })
     }
+}
+
+/// Delay before the next start after `failures` consecutive failed starts or
+/// crashes: none for the first start, then 200 ms doubling up to [`MAX_BACKOFF`].
+fn restart_backoff(failures: u64) -> Option<Duration> {
+    if failures == 0 {
+        return None;
+    }
+    let exp = u32::try_from(failures.min(6)).unwrap_or(6);
+    Some(Duration::from_millis(100u64.saturating_mul(1u64 << exp)).min(MAX_BACKOFF))
+}
+
+/// Wait for `child` in the background, killing its process tree when the
+/// returned sender fires or is dropped, and record how it exited.
+fn supervise(
+    mut child: tokio::process::Child,
+    pid: Option<u32>,
+    exit_status: Arc<Mutex<Option<String>>>,
+) -> tokio::sync::oneshot::Sender<()> {
+    let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let status = tokio::select! {
+            status = child.wait() => status,
+            _ = kill_rx => {
+                kill_tree(pid);
+                let _already_exited = child.start_kill();
+                child.wait().await
+            }
+        };
+        // The main process is gone; reap anything it left in its group.
+        kill_group(pid);
+        if let Ok(mut slot) = exit_status.lock() {
+            *slot = Some(match status {
+                Ok(s) => describe_exit(&s),
+                Err(e) => format!("unknown exit status ({e})"),
+            });
+        }
+    });
+    kill_tx
+}
+
+/// The `initialize` handshake. A process that dies during it failed to start.
+async fn initialize(
+    conn: &Connection,
+    clock: &Arc<dyn Clock>,
+    max_message_bytes: usize,
+) -> Result<serde_json::Value, CallError> {
+    let id = conn.next_id();
+    let params = initialize_params(max_message_bytes);
+    let init = with_timeout(clock, INITIALIZE_TIMEOUT, conn.call(id, "initialize", params, None, false))
+        .await
+        .map_err(|e| match e {
+            CallError::Crashed(m) => CallError::Start(m),
+            other => other,
+        })?;
+    check_initialize(&init)?;
+    Ok(init)
 }
 
 /// Kill every process in the plugin's process group (Unix). Uses the `kill`
@@ -370,5 +427,17 @@ impl Transport for ProcessTransport {
 
     fn note_answer(&self) {
         self.timeouts.store(0, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restart_backoff_doubles_up_to_the_cap() {
+        let delays: Vec<Option<u128>> =
+            [0, 1, 2, 5, 6, 60].iter().map(|f| restart_backoff(*f).map(|d| d.as_millis())).collect();
+        assert_eq!(delays, [None, Some(200), Some(400), Some(3200), Some(5000), Some(5000)]);
     }
 }
