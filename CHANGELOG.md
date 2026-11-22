@@ -60,6 +60,15 @@ releases may contain breaking changes; they are called out under **Changed**.
   `--max-body-bytes` of JSON per request. It now authenticates first, like
   every other route. (Low; 0.4.0 is affected.)
 
+- With OpenTelemetry content capture on, the agent's `tool_result` progress
+  (and so `gen_ai.tool.call.result`, `-o events` output and stored run events)
+  carried the tool's raw result text, so a tool echoing its `tool_context`
+  (for example an upstream error repeating the end user's JWT) leaked the
+  plaintext. It now carries the same masked text the model sees, masked before
+  it is cut to `max_tool_output_chars` so no prefix of the secret survives.
+  Affects 0.4.0 with capture on.
+
+
 ## [0.4.0] - 2026-11-20
 
 Evaluation. `graphrt eval` runs datasets against a workflow with deterministic,
