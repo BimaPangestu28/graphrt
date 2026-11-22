@@ -1650,6 +1650,10 @@
           "type": "boolean",
           "default": false
         },
+        "idempotency_key": {
+          "type": "boolean",
+          "default": true
+        },
         "parse_json": {
           "type": "string",
           "enum": [

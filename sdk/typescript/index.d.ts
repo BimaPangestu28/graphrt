@@ -23,6 +23,11 @@ export interface RunRequest {
   kind: string;
   nodeId: string;
   attempt: number;
+  /**
+   * `<run_id>:<exec_id>`: the same for every attempt and re-execution of this
+   * node execution; key external side effects on it. Empty with older hosts.
+   */
+  idempotencyKey: string;
   /** Node config with variables resolved by the host. */
   config: Record<string, any>;
   resume: Resume | null;

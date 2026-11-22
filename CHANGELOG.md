@@ -98,6 +98,16 @@ releases may contain breaking changes; they are called out under **Changed**.
   k8s|cloud-run|ecs|lambda|fly|aca` applies a version with the provider's deploy
   driver and registers it with the gateway. See
   [docs/gateway.md](docs/gateway.md#providers).
+- `Idempotency-Key` for side effects, since execution is at-least-once per
+  node (retries, and the re-run of an in-flight node when a preempted run
+  resumes). `http-request` sends `Idempotency-Key: <run_id>:<exec_id>` on
+  POST, PUT, PATCH and DELETE: the same for every attempt and re-execution of
+  a node execution, different for any other; a workflow-set header wins and
+  `idempotency_key: false` turns it off. Plugins receive the key as
+  `idempotency_key` in `node.run` (process and WebAssembly), exposed by the
+  Rust, Python, TypeScript and WebAssembly guest SDKs.
+  `NodeContext::idempotency_key()` in `graphrt-core` builds it. See
+  [docs/workflow-format.md](docs/workflow-format.md#http-request).
 - `graphrt-provider-fly` (internal crate, feature `provider-fly`): the Fly
   Machines provider of the upcoming `graphrt gateway`. A deployment version is
   a pool of pre-created Machines, woken with `start` (suspended snapshots

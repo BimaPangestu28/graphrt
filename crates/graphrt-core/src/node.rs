@@ -473,6 +473,26 @@ impl fmt::Debug for NodeContext {
 }
 
 impl NodeContext {
+    /// The idempotency key of this node execution's side effects:
+    /// `<run_id>:<exec_id>` (just `exec_id` when the run has no `sys.run_id`).
+    ///
+    /// Execution is at-least-once per node: a node can run again after a retry,
+    /// or after its run was preempted and resumed (the snapshot keeps the
+    /// `exec_id`). The key is the same in all those cases and different for
+    /// every other execution (another run, another loop iteration), so a
+    /// downstream service that dedupes on it applies the effect once. Hosts send
+    /// it as `Idempotency-Key` (the `http-request` node) or hand it to plugins.
+    ///
+    /// @example
+    /// // "run-1a2b:1a20151eb86-997f9542-0"
+    /// let key = ctx.idempotency_key();
+    pub fn idempotency_key(&self) -> String {
+        match self.pool.get(&Selector::of(crate::pool::SYS, "run_id")) {
+            Some(Value::String(run_id)) if !run_id.is_empty() => format!("{run_id}:{}", self.exec_id),
+            _ => self.exec_id.to_string(),
+        }
+    }
+
     /// Construct a context. Used by the engine and by node unit tests.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -787,4 +807,24 @@ pub fn parse_config<T: serde::de::DeserializeOwned>(doc: &NodeDoc) -> Result<T, 
         let error = ConfigError::new(doc, e.to_string());
         if path == "." { error } else { error.at_field(path) }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idempotency_keys_name_the_run_and_the_node_execution() {
+        let mut pool = VariablePool::new();
+        pool.insert(crate::pool::SYS, "run_id", Value::from("run-7"));
+        assert_eq!(NodeContext::for_test("h", pool).idempotency_key(), "run-7:h-exec");
+        // A retry keeps the execution id, so the key.
+        let mut pool = VariablePool::new();
+        pool.insert(crate::pool::SYS, "run_id", Value::from("run-7"));
+        let mut retry = NodeContext::for_test("h", pool);
+        retry.attempt = 3;
+        assert_eq!(retry.idempotency_key(), "run-7:h-exec");
+        // Without a run id (a node run outside a run), the execution id alone.
+        assert_eq!(NodeContext::for_test("h", VariablePool::new()).idempotency_key(), "h-exec");
+    }
 }

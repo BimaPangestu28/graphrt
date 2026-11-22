@@ -209,6 +209,7 @@ impl Node for WasmNode {
                 node_id: self.node_id.clone(),
                 config,
                 attempt: ctx.attempt,
+                idempotency_key: ctx.idempotency_key(),
                 resume,
             };
             let input = serde_json::to_vec(&request)

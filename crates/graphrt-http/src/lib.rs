@@ -105,6 +105,7 @@ pub fn descriptor() -> graphrt_core::catalog::NodeDescriptor {
                 "fail_on_error_status": { "type": "boolean", "default": true },
                 "max_response_bytes": { "type": "integer", "minimum": 0 },
                 "retry_non_idempotent": { "type": "boolean", "default": false },
+                "idempotency_key": { "type": "boolean", "default": true },
                 "parse_json": { "type": "string", "enum": ["lenient", "strict"], "default": "lenient" }
             }),
             &["url"],

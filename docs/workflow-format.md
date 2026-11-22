@@ -459,11 +459,23 @@ timeout: { connect: 5, read: 30, write: 30 }   # seconds
 fail_on_error_status: true       # non-2xx fails the node (5xx / 429 are retryable)
 max_response_bytes: 10485760
 retry_non_idempotent: false
+idempotency_key: true            # Idempotency-Key on POST / PUT / PATCH / DELETE
 ```
 
 JSON bodies insert values JSON-escaped (inside strings) or as typed JSON
 (outside strings); invalid JSON fails the node. Outputs `status_code`, `body`,
 `headers`, `json` (for JSON responses) and `files` (small binary responses).
+
+A node can run more than once: after a retry, and after a run that was
+preempted (a shutdown drain, a lost gateway stream) resumes, when the node
+that was in flight runs again. Execution is **at-least-once per node**. So
+that the receiving service can apply a side effect once, POST, PUT, PATCH and
+DELETE requests carry `Idempotency-Key: <run_id>:<exec_id>`: the same value
+for every attempt of this node execution, including its re-execution after a
+resume, and a different one for any other execution (another run, another loop
+iteration). A header named `Idempotency-Key` in `headers` replaces it;
+`idempotency_key: false` turns it off. Plugins receive the same key as
+`idempotency_key` in `node.run` (see [plugins.md](plugins.md#noderun)).
 
 ### `code`
 

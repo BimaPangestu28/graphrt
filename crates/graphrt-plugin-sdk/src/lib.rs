@@ -56,6 +56,11 @@ pub struct RunRequest {
     pub node_id: String,
     /// 1-based attempt number (increments on retries).
     pub attempt: u32,
+    /// `<run_id>:<exec_id>`: the same for every attempt of this node execution
+    /// and for its re-execution after a preempted run resumes (execution is
+    /// at-least-once per node). Key external side effects on it, e.g. send it as
+    /// `Idempotency-Key`. Empty with hosts older than 0.5.
+    pub idempotency_key: String,
     /// Node configuration with variables already resolved by the host.
     pub config: Value,
     /// Present when the node resumes after pausing.
@@ -572,6 +577,7 @@ impl Plugin {
             kind,
             node_id: params.get("node_id").and_then(Value::as_str).unwrap_or_default().to_owned(),
             attempt: params.get("attempt").and_then(Value::as_u64).and_then(|a| u32::try_from(a).ok()).unwrap_or(1),
+            idempotency_key: params.get("idempotency_key").and_then(Value::as_str).unwrap_or_default().to_owned(),
             config: params.get("config").cloned().unwrap_or(Value::Object(Map::new())),
             resume,
         };

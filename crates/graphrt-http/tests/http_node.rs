@@ -499,3 +499,39 @@ fn inputs_cover_body_and_auth() {
     assert!(names.contains(&"env.K".to_owned()));
     assert!(names.contains(&"b.q".to_owned()));
 }
+
+/// Send one request with `config` and `sys.run_id = run-7`; return the raw request.
+async fn raw_request_with_run_id(config: serde_json::Value) -> String {
+    let (base, mut rx) = serve(vec![Reply::text("200 OK", "text/plain", "ok")]).await;
+    let mut config = config;
+    config["url"] = serde_json::Value::from(format!("{base}/x"));
+    let node = HttpRequestNode::from_doc(&NodeDoc::new("h", KIND, config)).unwrap();
+    let services = Services::new().with(HttpClient::new(EgressPolicy::trusted()).unwrap());
+    let mut pool = pool();
+    pool.insert("sys", "run_id", Value::from("run-7"));
+    let ctx = NodeContext::for_test("h", pool).with_services(Arc::new(services));
+    node.run(ctx).await.unwrap();
+    rx.recv().await.unwrap().to_ascii_lowercase()
+}
+
+#[tokio::test]
+async fn side_effecting_requests_carry_an_idempotency_key() {
+    for method in ["POST", "PUT", "PATCH", "DELETE"] {
+        let raw = raw_request_with_run_id(serde_json::json!({ "method": method })).await;
+        // `<run_id>:<exec_id>`: stable across retries and re-execution after a resume.
+        assert!(raw.contains("idempotency-key: run-7:h-exec\r\n"), "{method}: {raw}");
+    }
+    for method in ["GET", "HEAD", "OPTIONS"] {
+        let raw = raw_request_with_run_id(serde_json::json!({ "method": method })).await;
+        assert!(!raw.contains("idempotency-key"), "{method}: {raw}");
+    }
+}
+
+#[tokio::test]
+async fn the_workflow_can_set_or_disable_the_idempotency_key() {
+    let own = serde_json::json!({ "method": "POST", "headers": [{"key": "Idempotency-Key", "value": "mine"}] });
+    let raw = raw_request_with_run_id(own).await;
+    assert!(raw.contains("idempotency-key: mine\r\n") && !raw.contains("run-7:h-exec"), "{raw}");
+    let off = serde_json::json!({ "method": "POST", "idempotency_key": false });
+    assert!(!raw_request_with_run_id(off).await.contains("idempotency-key"));
+}

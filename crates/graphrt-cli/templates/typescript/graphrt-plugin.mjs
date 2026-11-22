@@ -315,6 +315,7 @@ export class Plugin {
       kind,
       nodeId: params.node_id ?? "",
       attempt: params.attempt ?? 1,
+      idempotencyKey: params.idempotency_key ?? "",
       config: params.config ?? {},
       resume,
     };

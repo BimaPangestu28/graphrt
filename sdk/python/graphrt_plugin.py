@@ -117,6 +117,9 @@ class RunRequest:
     attempt: int
     config: Dict[str, Any]
     resume: Optional[Resume] = None
+    #: ``<run_id>:<exec_id>``: the same for every attempt and re-execution of this
+    #: node execution; key external side effects on it. Empty with older hosts.
+    idempotency_key: str = ""
 
 
 def pause(kind: str, data: Any = None, state: Any = None) -> Dict[str, Any]:
@@ -438,6 +441,7 @@ class Plugin:
             attempt=int(params.get("attempt", 1)),
             config=params.get("config") or {},
             resume=resume,
+            idempotency_key=str(params.get("idempotency_key") or ""),
         )
         ctx = RunContext(self, rid)
         self._contexts[rid] = ctx

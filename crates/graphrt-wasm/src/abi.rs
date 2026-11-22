@@ -55,6 +55,10 @@ pub struct RunRequest {
     pub config: serde_json::Value,
     /// 1-based attempt number.
     pub attempt: u32,
+    /// `<run_id>:<exec_id>`: the same for every attempt and re-execution of
+    /// this node execution; key external side effects on it.
+    #[serde(default)]
+    pub idempotency_key: String,
     /// Present when resuming after the node paused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume: Option<ResumeData>,
