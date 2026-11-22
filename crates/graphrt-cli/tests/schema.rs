@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use graphrt_cli::catalog::{builtin_schema, schema_text};
+use graphrt_cli::catalog::builtin_schema;
 use graphrt_cli::setup;
 
 const SCHEMA_URL: &str = "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json";
@@ -65,7 +65,7 @@ fn example_workflows() -> Vec<PathBuf> {
 ))]
 #[test]
 fn checked_in_schema_matches_the_default_build() {
-    let generated = schema_text(&builtin_schema()).unwrap();
+    let generated = graphrt_cli::catalog::schema_text(&builtin_schema()).unwrap();
     assert!(
         generated == checked_in(),
         "schema/workflow-v1.schema.json is stale; regenerate it with\n  \
