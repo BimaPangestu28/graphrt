@@ -127,12 +127,36 @@ impl AppState {
     /// @throws CliError (usage) - When the config or a judge workflow is invalid.
     #[cfg(feature = "online-eval")]
     pub fn with_evaluators(mut self, path: &Path, options: &ServiceOptions, limits: Limits) -> Result<Self, CliError> {
-        use graphrt_eval::online::{OnlineConfig, OnlineEvaluators};
-        let config = OnlineConfig::load(path).map_err(crate::eval::eval_error)?;
+        let config = graphrt_eval::online::OnlineConfig::load(path).map_err(crate::eval::eval_error)?;
         let served: Vec<&str> = self.workflows.keys().map(String::as_str).collect();
         for pattern in config.unmatched_workflows(&served) {
             eprintln!("warning: evaluators: workflow pattern `{pattern}` matches no served workflow");
         }
+        let evaluators = self.online_evaluators(&config, options, limits)?;
+        eprintln!(
+            "  online evaluation: {} evaluator(s) from {} (concurrency {}, queue {})",
+            config.evaluators.len(),
+            path.display(),
+            config.concurrency,
+            config.queue
+        );
+        let pool =
+            crate::online_eval::OnlineEval::start(&config, evaluators, Arc::clone(&self.scores), self.score_sinks());
+        self.online = Some(pool);
+        Ok(self)
+    }
+
+    /// The evaluators of `config`, with judge workflows compiled on the served
+    /// workflows' node kinds and services.
+    ///
+    /// @throws CliError (usage) - When an evaluator or a judge workflow is invalid.
+    #[cfg(feature = "online-eval")]
+    fn online_evaluators(
+        &self,
+        config: &graphrt_eval::online::OnlineConfig,
+        options: &ServiceOptions,
+        limits: Limits,
+    ) -> Result<graphrt_eval::online::OnlineEvaluators, CliError> {
         let services = match &self.services {
             Some(services) => Arc::clone(services),
             None => Arc::new(graphrt_core::Services::new()),
@@ -146,18 +170,7 @@ impl AppState {
         };
         let mut registry = graphrt_eval::AssertionRegistry::with_builtins();
         graphrt_eval::judge::register(&mut registry, config.base_dir(), judges);
-        let evaluators = OnlineEvaluators::new(&config, registry).map_err(crate::eval::eval_error)?;
-        eprintln!(
-            "  online evaluation: {} evaluator(s) from {} (concurrency {}, queue {})",
-            config.evaluators.len(),
-            path.display(),
-            config.concurrency,
-            config.queue
-        );
-        let pool =
-            crate::online_eval::OnlineEval::start(&config, evaluators, Arc::clone(&self.scores), self.score_sinks());
-        self.online = Some(pool);
-        Ok(self)
+        graphrt_eval::online::OnlineEvaluators::new(config, registry).map_err(crate::eval::eval_error)
     }
 
     /// The online evaluation pool, when `--evaluators` is set.
