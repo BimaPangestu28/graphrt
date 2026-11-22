@@ -17,6 +17,11 @@ releases may contain breaking changes; they are called out under **Changed**.
   `langfuse` stay on by default.
 
 ### Added
+- `graphrt-provider-api` (internal crate): the `Provider` / `DeployDriver`
+  traits, capabilities and error kinds of the upcoming `graphrt gateway`, the
+  shared provider HTTP layer (token bucket per provider API, jittered retry,
+  token cache with one refresh on 401) and the C1–C13 provider conformance
+  harness with a scripted fake HTTP server. No user-visible change yet.
 - Live provider test matrix: `crates/graphrt-llm/tests/live_providers.rs` sends
   tiny streamed chat and tool-call round-trip requests to OpenAI, Anthropic,
   Gemini and Bedrock and a typed question to TypeSafe (opt-in with
