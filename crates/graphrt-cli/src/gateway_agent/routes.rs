@@ -7,12 +7,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Extension, Path as UrlPath, Query, State};
-use axum::http::StatusCode;
+use axum::Json;
+use axum::http::{Method, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
-use axum::{Json, Router};
 use futures::StreamExt;
 use graphrt_core::engine::{ResumeFrom, RunInput};
 use graphrt_core::store::{RunRecord, now_ms, validate_run_id};
@@ -21,35 +19,69 @@ use indexmap::IndexMap;
 use serde::Deserialize;
 
 use super::reclaim::ReclaimGuard;
-use super::{AssemblerSeed, GatewayAgent, GatewayRequest, PROTOCOL_VERSION, protocol_error};
+use super::{AssemblerSeed, GatewayAgent, GatewayRequest, PROTOCOL_VERSION, Verified, protocol_error};
 use crate::serve::{AppState, RunRequest};
 use crate::sse_ids::Cursor;
 use crate::store::live::ActiveRun;
 
-pub(super) fn router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/internal/v1/hello", get(hello))
-        .route("/internal/v1/runs", post(start_run))
-        .route("/internal/v1/runs/{run_id}/stream", get(reattach))
-        .route("/internal/v1/runs/{run_id}/abort", post(abort))
-        .route("/internal/v1/drain", post(drain))
-        .route("/internal/v1/orphans", get(list_orphans))
-        .route("/internal/v1/orphans/{run_id}", delete(release_orphan))
+/// Route a verified `/internal/v1/*` request to its endpoint.
+pub(super) async fn dispatch(state: &Arc<AppState>, agent: &Arc<GatewayAgent>, verified: Verified) -> Response {
+    let Verified { parts, body, request } = verified;
+    let endpoint = parts.uri.path().strip_prefix("/internal/v1/").unwrap_or_default();
+    let segments: Vec<&str> = endpoint.split('/').collect();
+    let method = &parts.method;
+    match segments.as_slice() {
+        ["hello"] if method == Method::GET => hello(state, agent),
+        ["runs"] if method == Method::POST => match parse_json::<InternalRunRequest>(&body) {
+            Ok(run) => start_run(state, agent, &request, traceparent(&parts.headers), run).await,
+            Err(refused) => refused,
+        },
+        ["runs", run_id, "stream"] if method == Method::GET => {
+            let cursor = crate::sse_ids::cursor_of(&parts.headers)
+                .unwrap_or_else(|| Cursor::from_index(query_from(parts.uri.query())));
+            reattach(state, agent, &request, run_id, cursor).await
+        }
+        ["runs", run_id, "abort"] if method == Method::POST => abort(state, agent, &request, run_id),
+        ["drain"] if method == Method::POST => {
+            let deadline_ms = if body.is_empty() {
+                None
+            } else {
+                match parse_json::<DrainRequest>(&body) {
+                    Ok(drain) => drain.deadline_ms,
+                    Err(refused) => return refused,
+                }
+            };
+            drain(state, deadline_ms)
+        }
+        ["orphans"] if method == Method::GET => {
+            Json(serde_json::json!({ "orphans": agent.orphan_list() })).into_response()
+        }
+        ["orphans", run_id] if method == Method::DELETE => release_orphan(agent, &request, run_id),
+        _ => protocol_error(StatusCode::NOT_FOUND, "not_found", "no such gateway endpoint"),
+    }
 }
 
-fn agent_of(state: &AppState) -> Result<Arc<GatewayAgent>, Response> {
-    state
-        .gateway_agent()
-        .cloned()
-        .ok_or_else(|| protocol_error(StatusCode::NOT_FOUND, "not_found", "this server does not trust a gateway"))
+/// A JSON request body, or `400 bad_request`. Parsed like axum's `Json`
+/// extractor (the public resume endpoint uses it), so the snapshot types'
+/// deserializers exist once in the binary, not once per JSON entry point.
+fn parse_json<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Response> {
+    Json::<T>::from_bytes(body).map(|Json(value)| value).map_err(|e| {
+        protocol_error(StatusCode::BAD_REQUEST, "bad_request", &format!("invalid request body: {}", e.body_text()))
+    })
+}
+
+/// `from=N` of a query string (0 when absent or invalid).
+fn query_from(query: Option<&str>) -> u64 {
+    query
+        .unwrap_or_default()
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("from="))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
 }
 
 /// `GET /internal/v1/hello`.
-async fn hello(State(state): State<Arc<AppState>>) -> Response {
-    let agent = match agent_of(&state) {
-        Ok(agent) => agent,
-        Err(refused) => return refused,
-    };
+fn hello(state: &AppState, agent: &GatewayAgent) -> Response {
     let workflows: Vec<serde_json::Value> = state
         .served_workflows()
         .map(|(name, w)| serde_json::json!({ "name": name, "fingerprint": w.engine.graph().fingerprint() }))
@@ -68,8 +100,10 @@ async fn hello(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// Body of `POST /internal/v1/runs`: a run request (`inputs`, `sys`,
-/// `conversation`, `metadata`, `session_id`, `user_id`, `tags`; `stream` and
-/// `async` are ignored, the response is always SSE) plus the gateway's fields.
+/// `conversation`, `metadata`, `session_id`, `user_id`, `tags`; the response
+/// is always SSE) plus the gateway's fields. The fields are listed rather than
+/// `#[serde(flatten)]`ed from [`RunRequest`]: flattening deserializes through a
+/// buffered tree and costs far more code.
 #[derive(Debug, Deserialize)]
 pub struct InternalRunRequest {
     /// Served workflow name.
@@ -88,8 +122,20 @@ pub struct InternalRunRequest {
     /// Resume a paused run from its snapshot instead of starting it.
     #[serde(default)]
     pub resume: Option<InternalResume>,
-    #[serde(flatten)]
-    pub run: RunRequest,
+    #[serde(default)]
+    pub inputs: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub sys: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub conversation: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub metadata: IndexMap<String, String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// `resume` of [`InternalRunRequest`].
@@ -124,16 +170,13 @@ fn to_values(map: serde_json::Map<String, serde_json::Value>) -> IndexMap<String
 /// `Graphrt-Epoch` and stream it. A request for the execution already running
 /// at that epoch attaches to it; another epoch is refused.
 async fn start_run(
-    State(state): State<Arc<AppState>>,
-    Extension(request): Extension<GatewayRequest>,
-    headers: axum::http::HeaderMap,
-    Json(body): Json<InternalRunRequest>,
+    state: &Arc<AppState>,
+    agent: &Arc<GatewayAgent>,
+    request: &GatewayRequest,
+    trace: Option<String>,
+    body: InternalRunRequest,
 ) -> Response {
-    let agent = match agent_of(&state) {
-        Ok(agent) => agent,
-        Err(refused) => return refused,
-    };
-    let (run_id, epoch) = match run_and_epoch(&request) {
+    let (run_id, epoch) = match run_and_epoch(request) {
         Ok(ids) => ids,
         Err(refused) => return refused,
     };
@@ -150,9 +193,9 @@ async fn start_run(
         // it once finished, never execute it twice.
         Some(execution) if execution.epoch == epoch => {
             if active {
-                return attached_stream(&state, &agent, &run_id, epoch, Cursor::ALL).unwrap_or_else(|refused| refused);
+                return attached_stream(state, agent, &run_id, epoch, Cursor::ALL).unwrap_or_else(|refused| refused);
             }
-            return crate::serve::events_response(&state, &run_id, 0, execution.base_index, false).await;
+            return crate::serve::events_response(state, &run_id, 0, execution.base_index, false).await;
         }
         _ if active => {
             return protocol_error(StatusCode::CONFLICT, "epoch_conflict", "the run is executing at another epoch");
@@ -162,8 +205,8 @@ async fn start_run(
     if state.is_draining() {
         return protocol_error(StatusCode::SERVICE_UNAVAILABLE, "draining", "this agent is draining");
     }
-    match prepare(&state, &run_id, epoch, body) {
-        Ok(prepared) => launch_stream(&state, &agent, prepared, traceparent(&headers)).await,
+    match prepare(state, &run_id, epoch, body) {
+        Ok(prepared) => launch_stream(state, agent, prepared, trace).await,
         Err(refused) => refused,
     }
 }
@@ -197,15 +240,22 @@ fn prepare(state: &AppState, run_id: &str, epoch: u64, body: InternalRunRequest)
         return Err(busy);
     }
     let mut record = RunRecord::running(run_id, &body.workflow, fingerprint, now_ms());
-    body.run.apply_context(&mut record).map_err(|m| protocol_error(StatusCode::BAD_REQUEST, "bad_request", &m))?;
+    let context = RunRequest {
+        metadata: body.metadata,
+        session_id: body.session_id,
+        user_id: body.user_id,
+        tags: body.tags,
+        ..RunRequest::default()
+    };
+    context.apply_context(&mut record).map_err(|m| protocol_error(StatusCode::BAD_REQUEST, "bad_request", &m))?;
     record.deployment = state.gateway_agent().map(|agent| agent.deployment().to_owned());
     record.deployment_version = body.deployment_version;
     record.epoch = epoch;
     let mut input = RunInput::new();
     input.run_id = Some(run_id.to_owned());
-    input.inputs = to_values(body.run.inputs);
-    input.sys = to_values(body.run.sys);
-    input.conversation = to_values(body.run.conversation);
+    input.inputs = to_values(body.inputs);
+    input.sys = to_values(body.sys);
+    input.conversation = to_values(body.conversation);
     input.env = workflow.env.clone();
     if let Some(resume) = body.resume {
         if resume.snapshot.run_id != run_id {
@@ -299,60 +349,39 @@ fn stream_execution(
         execution.assembler_seed.assembler(),
         first_index,
         cursor,
-        guard,
+        Box::new(guard),
         crate::serve::EventScope::Full,
     );
     Ok(Sse::new(hello.chain(events)).keep_alive(KeepAlive::default()).into_response())
-}
-
-/// Query of `GET /internal/v1/runs/{id}/stream`.
-#[derive(Debug, Default, Deserialize)]
-struct StreamQuery {
-    /// First global event index to send.
-    #[serde(default)]
-    from: u64,
 }
 
 /// `GET /internal/v1/runs/{id}/stream?from=N` (or `Last-Event-ID`): reattach.
 /// While the execution runs, its events and response text are streamed from
 /// the cursor; once it finished, its stored engine events are.
 async fn reattach(
-    State(state): State<Arc<AppState>>,
-    Extension(request): Extension<GatewayRequest>,
-    UrlPath(run_id): UrlPath<String>,
-    Query(query): Query<StreamQuery>,
-    headers: axum::http::HeaderMap,
+    state: &Arc<AppState>,
+    agent: &Arc<GatewayAgent>,
+    request: &GatewayRequest,
+    run_id: &str,
+    cursor: Cursor,
 ) -> Response {
-    let agent = match agent_of(&state) {
-        Ok(agent) => agent,
-        Err(refused) => return refused,
-    };
-    let Some(execution) = agent.execution(&run_id) else {
+    let Some(execution) = agent.execution(run_id) else {
         return protocol_error(StatusCode::NOT_FOUND, "not_found", "no execution of this run on this agent");
     };
     if request.epoch != Some(execution.epoch) {
         return protocol_error(StatusCode::CONFLICT, "epoch_conflict", "no execution of this run at this epoch");
     }
-    let cursor = crate::sse_ids::cursor_of(&headers).unwrap_or(Cursor::from_index(query.from));
-    if state.active_run(&run_id).is_some() {
-        return attached_stream(&state, &agent, &run_id, execution.epoch, cursor).unwrap_or_else(|refused| refused);
+    if state.active_run(run_id).is_some() {
+        return attached_stream(state, agent, run_id, execution.epoch, cursor).unwrap_or_else(|refused| refused);
     }
     let local_from = cursor.start.saturating_sub(execution.base_index);
-    crate::serve::events_response(&state, &run_id, local_from, execution.base_index, false).await
+    crate::serve::events_response(state, run_id, local_from, execution.base_index, false).await
 }
 
 /// `POST /internal/v1/runs/{id}/abort` (at `Graphrt-Epoch`).
-async fn abort(
-    State(state): State<Arc<AppState>>,
-    Extension(request): Extension<GatewayRequest>,
-    UrlPath(run_id): UrlPath<String>,
-) -> Response {
-    let agent = match agent_of(&state) {
-        Ok(agent) => agent,
-        Err(refused) => return refused,
-    };
-    let current = agent.execution(&run_id).map(|e| e.epoch);
-    match (state.active_run(&run_id), current) {
+fn abort(state: &AppState, agent: &GatewayAgent, request: &GatewayRequest, run_id: &str) -> Response {
+    let current = agent.execution(run_id).map(|e| e.epoch);
+    match (state.active_run(run_id), current) {
         (Some(run), Some(epoch)) if request.epoch == Some(epoch) => {
             run.handle().abort("aborted by the gateway");
             (StatusCode::ACCEPTED, Json(serde_json::json!({ "run_id": run_id, "status": "aborting" }))).into_response()
@@ -378,15 +407,12 @@ const DEFAULT_DRAIN_MS: u64 = 25_000;
 /// the gateway (scale-in): new runs get `503 draining` and every active run
 /// pauses (preempted near the deadline), ending its stream with `run_paused`.
 /// Answers `202` at once; the drain goes on in the background.
-async fn drain(State(state): State<Arc<AppState>>, body: Option<Json<DrainRequest>>) -> Response {
-    if let Err(refused) = agent_of(&state) {
-        return refused;
-    }
-    let deadline_ms = body.and_then(|Json(b)| b.deadline_ms).unwrap_or(DEFAULT_DRAIN_MS);
+fn drain(state: &Arc<AppState>, deadline_ms: Option<u64>) -> Response {
+    let deadline_ms = deadline_ms.unwrap_or(DEFAULT_DRAIN_MS);
     let active = state.active_runs();
     // Refuse new runs before answering, so the gateway sees the drain in effect.
     state.begin_drain();
-    let draining = Arc::clone(&state);
+    let draining = Arc::clone(state);
     tokio::spawn(async move {
         let report = crate::drain::drain(&draining, Duration::from_millis(deadline_ms), "gateway drain", None).await;
         eprintln!("{report}");
@@ -398,28 +424,10 @@ async fn drain(State(state): State<Arc<AppState>>, body: Option<Json<DrainReques
         .into_response()
 }
 
-/// `GET /internal/v1/orphans`: executions whose gateway stream was lost, with
-/// their final event (a paused run's carries its snapshot), for a gateway that
-/// reclaims runs after a restart.
-async fn list_orphans(State(state): State<Arc<AppState>>) -> Response {
-    match agent_of(&state) {
-        Ok(agent) => Json(serde_json::json!({ "orphans": agent.orphan_list() })).into_response(),
-        Err(refused) => refused,
-    }
-}
-
 /// `DELETE /internal/v1/orphans/{id}` (at `Graphrt-Epoch`): the gateway took the run over.
-async fn release_orphan(
-    State(state): State<Arc<AppState>>,
-    Extension(request): Extension<GatewayRequest>,
-    UrlPath(run_id): UrlPath<String>,
-) -> Response {
-    let agent = match agent_of(&state) {
-        Ok(agent) => agent,
-        Err(refused) => return refused,
-    };
+fn release_orphan(agent: &GatewayAgent, request: &GatewayRequest, run_id: &str) -> Response {
     match request.epoch {
-        Some(epoch) if agent.release_orphan(&run_id, epoch) => StatusCode::NO_CONTENT.into_response(),
+        Some(epoch) if agent.release_orphan(run_id, epoch) => StatusCode::NO_CONTENT.into_response(),
         _ => protocol_error(StatusCode::NOT_FOUND, "not_found", "no orphan of this run at this epoch"),
     }
 }

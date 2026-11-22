@@ -7,7 +7,9 @@
 
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+use crate::listen::Connection;
 
 /// Where the gateway listens: `http://host:port[/base]` or `unix:/path/to.sock`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,24 +88,24 @@ pub async fn post_json(
     }
     head.push_str("\r\n");
     let exchange = async {
-        match address {
+        // One connection type for both socket kinds: one copy of the exchange.
+        let stream = match address {
             GatewayAddress::Tcp { authority, .. } => {
-                let stream = tokio::net::TcpStream::connect(authority.as_str()).await.map_err(|e| e.to_string())?;
-                exchange(stream, head.as_bytes(), body).await
+                Connection::Tcp(tokio::net::TcpStream::connect(authority.as_str()).await.map_err(|e| e.to_string())?)
             }
             #[cfg(unix)]
             GatewayAddress::Unix { path } => {
-                let stream = tokio::net::UnixStream::connect(path).await.map_err(|e| e.to_string())?;
-                exchange(stream, head.as_bytes(), body).await
+                Connection::Unix(tokio::net::UnixStream::connect(path).await.map_err(|e| e.to_string())?)
             }
             #[cfg(not(unix))]
-            GatewayAddress::Unix { .. } => Err("Unix sockets are not supported on this platform".to_owned()),
-        }
+            GatewayAddress::Unix { .. } => return Err("Unix sockets are not supported on this platform".to_owned()),
+        };
+        exchange(stream, head.as_bytes(), body).await
     };
     tokio::time::timeout(REQUEST_TIMEOUT, exchange).await.map_err(|_| "gateway did not answer in time".to_owned())?
 }
 
-async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, head: &[u8], body: &[u8]) -> Result<u16, String> {
+async fn exchange(mut stream: Connection, head: &[u8], body: &[u8]) -> Result<u16, String> {
     stream.write_all(head).await.map_err(|e| e.to_string())?;
     stream.write_all(body).await.map_err(|e| e.to_string())?;
     stream.flush().await.map_err(|e| e.to_string())?;

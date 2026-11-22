@@ -607,6 +607,7 @@ pub struct ServeArgs {
     #[cfg(feature = "jwt")]
     #[command(flatten)]
     pub user_auth: UserAuthArgs,
+    #[cfg(feature = "trust-gateway")]
     #[command(flatten)]
     pub gateway: GatewayTrustArgs,
     #[command(flatten)]
@@ -615,6 +616,7 @@ pub struct ServeArgs {
 
 /// Running behind a graphrt gateway (`graphrt serve --trust-gateway`, see
 /// docs/gateway-protocol.md).
+#[cfg(feature = "trust-gateway")]
 #[derive(Debug, Default, Args)]
 pub struct GatewayTrustArgs {
     /// Serve the gateway protocol under `/internal/v1`: requests signed with HMAC-SHA256

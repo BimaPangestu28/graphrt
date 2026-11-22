@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "jwt", "telemetry", "scores", "langfuse"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -69,6 +69,11 @@ mimalloc = ["dep:mimalloc"]
 # `graphrt serve`: HTTP + SSE API, webhook triggers (`--webhooks`). Completion
 # callbacks of webhooks additionally need `http` (they go through its egress policy).
 serve = ["dep:axum", "dep:http-body", "dep:sha2", "tokio/rt-multi-thread", "tokio/net", "tokio/sync"]
+# `serve --trust-gateway`: run as an agent behind a graphrt gateway (signed
+# `/internal/v1` API, reclaim of runs whose gateway stream broke). HMAC on the
+# `sha2` crate `serve` already links and a hand-written HTTP/1.1 client for the
+# reports to the gateway, so it adds no crates. See docs/gateway-protocol.md.
+trust-gateway = ["serve"]
 # End-user JWT verification and per-user rate limits for `serve` (`--verify-jwt`,
 # `--user-rate-limit`): HS256 / ES256 / RS256 with `ring` and a JWKS fetched with
 # `reqwest`, both already linked for TLS, so it adds no new crates.

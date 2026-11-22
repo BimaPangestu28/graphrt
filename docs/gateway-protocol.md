@@ -64,6 +64,12 @@ graphrt serve ./workflows --trust-gateway --deployment shop \
   --listen unix:/run/graphrt/shop-1.sock --gateway-url unix:/run/graphrt/gateway.sock
 ```
 
+The agent side is the cargo feature `trust-gateway` of `graphrt-cli`, on by
+default (release binaries and the container image have it). It adds no crate;
+a slim agent build (`--no-default-features --features
+serve,llm,plugins,trust-gateway`) is about 5.6 MiB on macOS arm64 (`min-size`),
+about 110 KiB more than without the feature.
+
 | Flag | Effect |
 | --- | --- |
 | `--trust-gateway` | Serve the signed `/internal/v1` API |

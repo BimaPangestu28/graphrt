@@ -131,8 +131,8 @@ releases may contain breaking changes; they are called out under **Changed**.
   included), `runs/{id}/abort`, `drain`, and `orphans`. A gateway-started run
   whose stream breaks is preempted after 3 s without a reattach and held for
   `--reclaim-grace-secs` (60) as an orphan, reported to `--gateway-url` (HTTP
-  or Unix socket) and listed for reclaim, instead of being aborted. No new
-  dependency. See [docs/gateway-protocol.md](docs/gateway-protocol.md).
+  or Unix socket) and listed for reclaim, instead of being aborted. Cargo
+  feature `trust-gateway` (default; no new dependency). See [docs/gateway-protocol.md](docs/gateway-protocol.md).
 - `graphrt serve --listen unix:/path` (alias of `--addr`): listen on a Unix
   socket created mode `0600`.
 - `CoordinationStore` in `graphrt-core` (versioned objects written with

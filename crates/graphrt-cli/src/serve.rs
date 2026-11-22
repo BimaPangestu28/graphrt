@@ -112,6 +112,7 @@ pub struct AppState {
     #[cfg(feature = "langfuse")]
     langfuse: Option<Arc<crate::langfuse::LangfuseUploader>>,
     /// The gateway this agent trusts (`--trust-gateway`): `/internal/v1`.
+    #[cfg(feature = "trust-gateway")]
     gateway_agent: Option<Arc<crate::gateway_agent::GatewayAgent>>,
 }
 
@@ -148,47 +149,56 @@ impl AppState {
             online: None,
             #[cfg(feature = "langfuse")]
             langfuse: None,
+            #[cfg(feature = "trust-gateway")]
             gateway_agent: None,
         }
     }
 
     /// Trust a gateway (`--trust-gateway`): serve the signed `/internal/v1` API.
+    #[cfg(feature = "trust-gateway")]
     pub fn with_gateway_agent(mut self, agent: Option<Arc<crate::gateway_agent::GatewayAgent>>) -> Self {
         self.gateway_agent = agent;
         self
     }
 
     /// The gateway agent state, with `--trust-gateway`.
+    #[cfg(feature = "trust-gateway")]
     pub(crate) fn gateway_agent(&self) -> Option<&Arc<crate::gateway_agent::GatewayAgent>> {
         self.gateway_agent.as_ref()
     }
 
     /// Served workflows by name.
+    #[cfg(feature = "trust-gateway")]
     pub(crate) fn served_workflows(&self) -> impl Iterator<Item = (&String, &ServedWorkflow)> {
         self.workflows.iter()
     }
 
     /// The workflow served as `name`.
+    #[cfg(feature = "trust-gateway")]
     pub(crate) fn served_workflow(&self, name: &str) -> Option<&ServedWorkflow> {
         self.workflows.get(name)
     }
 
     /// `--max-active-runs` (0 = unlimited).
+    #[cfg(feature = "trust-gateway")]
     pub(crate) fn max_active_runs(&self) -> usize {
         self.max_active_runs
     }
 
     /// Plugins loaded at startup (their hosts stay up for the server's lifetime).
+    #[cfg(feature = "trust-gateway")]
     pub(crate) fn warm_plugins(&self) -> Vec<String> {
         self.extensions.loaded().map(|plugin| plugin.name.clone()).collect()
     }
 
     /// The `429` to answer when `--max-active-runs` runs are executing.
+    #[cfg(feature = "trust-gateway")]
     pub(crate) fn busy_response(&self) -> Option<Response> {
         self.refuse_if_busy()
     }
 
     /// The executing run `run_id`, if any.
+    #[cfg(feature = "trust-gateway")]
     pub(crate) fn active_run(&self, run_id: &str) -> Option<Arc<ActiveRun>> {
         self.active(run_id)
     }
@@ -636,11 +646,8 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     #[cfg(feature = "telemetry")]
     let counted = counted.layer(middleware::from_fn(crate::telemetry::count_requests));
     // Gateway-signed routes authenticate themselves (HMAC, `--trust-gateway`).
-    let counted = if state.gateway_agent.is_some() {
-        counted.merge(crate::gateway_agent::router(state.clone()))
-    } else {
-        counted
-    };
+    #[cfg(feature = "trust-gateway")]
+    let counted = if state.gateway_agent.is_some() { counted.merge(crate::gateway_agent::router()) } else { counted };
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readiness))
@@ -688,8 +695,9 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let user_auth_line = user_auth.as_ref().map(crate::user_auth::UserAuth::describe);
     #[cfg(feature = "online-eval")]
     let judge_limits = limits.clone();
+    #[cfg(feature = "trust-gateway")]
     let gateway = crate::gateway_agent::GatewayAgentConfig::from_args(&args.gateway, lookup_env, args.max_body_bytes)?;
-    #[cfg(feature = "jwt")]
+    #[cfg(all(feature = "jwt", feature = "trust-gateway"))]
     if gateway.is_some() && user_auth_line.is_some() {
         return Err(CliError::usage(
             "--trust-gateway and --verify-jwt are exclusive: behind a gateway, the gateway verifies end-user tokens",
@@ -702,8 +710,10 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         .with_store_inputs(args.store_inputs)
         .with_max_active_runs(args.max_active_runs)
         .with_webhooks(webhooks)?
-        .with_header_inputs(&args.input_header)?
-        .with_gateway_agent(gateway.map(|config| Arc::new(crate::gateway_agent::GatewayAgent::new(config))));
+        .with_header_inputs(&args.input_header)?;
+    #[cfg(feature = "trust-gateway")]
+    let state =
+        state.with_gateway_agent(gateway.map(|config| Arc::new(crate::gateway_agent::GatewayAgent::new(config))));
     #[cfg(feature = "jwt")]
     let state = state.with_user_auth(user_auth);
     #[cfg(feature = "langfuse")]
@@ -754,6 +764,7 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         format!("http://{}", args.addr)
     };
     eprintln!("graphrt serving {} workflow(s) on {shown_addr}", state.workflows.len());
+    #[cfg(feature = "trust-gateway")]
     if let Some(agent) = state.gateway_agent() {
         eprintln!("  trusting the gateway of deployment `{}` (signed /internal/v1)", agent.deployment());
     }
@@ -1586,7 +1597,7 @@ async fn execute(
             let first_index = active.stored_before;
             let guard = AbortOnDrop(active);
             let cursor = crate::sse_ids::Cursor::ALL;
-            let events = sse_stream(events, stream_assembler, first_index, cursor, guard, reply.scope);
+            let events = sse_stream(events, stream_assembler, first_index, cursor, Box::new(guard), reply.scope);
             Sse::new(events).keep_alive(KeepAlive::default()).into_response()
         }
         Delivery::Blocking => {
@@ -1657,6 +1668,7 @@ fn launch(
     active
 }
 
+#[cfg(feature = "trust-gateway")]
 impl AppState {
     /// Start driving a run in the background and track it as active (for the
     /// gateway protocol). `record` must already exist in the store.
@@ -1733,12 +1745,13 @@ pub(crate) async fn launch_detached(
 /// `cursor` excludes. The assembler sees every event, so the text after a
 /// cursor is exactly what an uninterrupted stream would have sent. `guard`
 /// lives as long as the stream.
-pub(crate) fn sse_stream<G: StreamGuard>(
+pub(crate) fn sse_stream(
     events: impl Stream<Item = live::Followed> + Send + 'static,
     mut assembler: ResponseAssembler,
     first_index: u64,
     cursor: crate::sse_ids::Cursor,
-    guard: G,
+    // Boxed: one copy of this stream in the binary for every kind of guard.
+    guard: Box<dyn StreamGuard>,
     scope: EventScope,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + 'static {
     // `follow` ends right after the terminal event and refills a lagging caller
@@ -1908,7 +1921,7 @@ mod tests {
         let stream = |cursor: crate::sse_ids::Cursor| {
             let state = std::sync::Arc::clone(&state);
             async move {
-                let workflow = state.served_workflow("chat").unwrap();
+                let workflow = state.workflows.get("chat").unwrap();
                 let record = RunRecord::running(state.new_run_id(), "chat", workflow.engine.graph().fingerprint(), 1);
                 state.store.create(record.clone()).await.unwrap();
                 let input = RunInput::new();
@@ -1920,7 +1933,7 @@ mod tests {
                     assembler,
                     7,
                     cursor,
-                    super::AbortOnDrop(active),
+                    Box::new(super::AbortOnDrop(active)),
                     super::EventScope::Full,
                 ));
                 let body = sse.into_response().into_body().collect().await.unwrap().to_bytes();

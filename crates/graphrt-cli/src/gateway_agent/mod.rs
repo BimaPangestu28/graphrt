@@ -34,7 +34,6 @@ use std::time::Duration;
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
-use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use graphrt_core::response::ResponseAssembler;
 use graphrt_core::snapshot::FrameSnapshot;
@@ -259,23 +258,34 @@ fn header_text<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
     headers.get(name).and_then(|v| v.to_str().ok())
 }
 
-/// Middleware of `/internal/v1`: check the protocol version and the request
-/// signature (over the body, which is read here, bounded), refuse other
-/// deployments, and stamp `Graphrt-Protocol` on the response.
-pub(crate) async fn verify_gateway(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
-    let Some(agent) = state.gateway_agent().cloned() else {
-        return protocol_error(StatusCode::NOT_FOUND, "not_found", "this server does not trust a gateway");
-    };
-    let mut response = match verified(&agent, request).await {
-        Ok(request) => next.run(request).await,
-        Err(refused) => refused,
+/// A request whose signature checked out, with its body read.
+pub(crate) struct Verified {
+    pub parts: axum::http::request::Parts,
+    pub body: axum::body::Bytes,
+    pub request: GatewayRequest,
+}
+
+/// The one handler of `/internal/v1/*`: check the protocol version and the
+/// request signature (over the body, read here, bounded), refuse other
+/// deployments, dispatch, and stamp `Graphrt-Protocol` on the response.
+///
+/// A single handler that routes by itself, instead of one axum route per
+/// endpoint behind a middleware, keeps the agent binary small: every axum
+/// handler and extractor is a separate copy of generic code.
+async fn handle(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    let mut response = match state.gateway_agent().cloned() {
+        None => protocol_error(StatusCode::NOT_FOUND, "not_found", "this server does not trust a gateway"),
+        Some(agent) => match verified(&agent, request).await {
+            Ok(verified) => routes::dispatch(&state, &agent, verified).await,
+            Err(refused) => refused,
+        },
     };
     response.headers_mut().insert(PROTOCOL_HEADER, HeaderValue::from(PROTOCOL_VERSION));
     response
 }
 
-async fn verified(agent: &GatewayAgent, request: Request) -> Result<Request, Response> {
-    let (mut parts, body) = request.into_parts();
+async fn verified(agent: &GatewayAgent, request: Request) -> Result<Verified, Response> {
+    let (parts, body) = request.into_parts();
     let protocol = header_text(&parts.headers, PROTOCOL_HEADER);
     if protocol.and_then(|p| p.trim().parse::<u32>().ok()) != Some(PROTOCOL_VERSION) {
         let message =
@@ -313,11 +323,10 @@ async fn verified(agent: &GatewayAgent, request: Request) -> Result<Request, Res
         })?)
     };
     let run_id = (!run_id.is_empty()).then(|| run_id.to_owned());
-    parts.extensions.insert(GatewayRequest { run_id, epoch });
-    Ok(Request::from_parts(parts, axum::body::Body::from(body)))
+    Ok(Verified { request: GatewayRequest { run_id, epoch }, parts, body })
 }
 
 /// The `/internal/v1` routes, signature-checked.
-pub(crate) fn router(state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
-    routes::router().layer(axum::middleware::from_fn_with_state(state, verify_gateway))
+pub(crate) fn router() -> axum::Router<Arc<AppState>> {
+    axum::Router::new().route("/internal/v1/{*endpoint}", axum::routing::any(handle))
 }

@@ -1,7 +1,7 @@
 //! The agent side of the gateway protocol (`serve --trust-gateway`): signed
 //! `/internal/v1` requests, SSE ids, resume via body, drain, orphans, and
 //! gap-free reconnects with `Last-Event-ID`.
-#![cfg(feature = "serve")]
+#![cfg(feature = "trust-gateway")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::path::PathBuf;

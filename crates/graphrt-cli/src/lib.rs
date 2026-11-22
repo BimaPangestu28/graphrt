@@ -16,7 +16,7 @@ pub mod eval;
 pub mod eval_trace;
 pub mod extensions;
 pub mod files;
-#[cfg(feature = "serve")]
+#[cfg(feature = "trust-gateway")]
 pub mod gateway_agent;
 #[cfg(feature = "serve")]
 pub mod header_inputs;
@@ -101,6 +101,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     }
     if cfg!(feature = "serve") {
         features.push("serve");
+    }
+    if cfg!(feature = "trust-gateway") {
+        features.push("trust-gateway");
     }
     if cfg!(feature = "scores") {
         features.push("scores");

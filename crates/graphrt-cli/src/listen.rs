@@ -87,28 +87,132 @@ impl Listener {
     /// wait for the client's delayed ACK (about 40 ms per run on Linux). A Unix
     /// socket file is removed afterwards.
     ///
+    /// Both kinds go through one [`axum::serve`] (one copy of the HTTP stack in
+    /// the binary, not one per socket type).
+    ///
     /// @throws std::io::Error - When the server fails.
     pub async fn serve(
         self,
         app: axum::Router,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> std::io::Result<()> {
-        match self {
-            Self::Tcp(listener) => {
-                let listener = axum::serve::ListenerExt::tap_io(listener, |tcp: &mut tokio::net::TcpStream| {
+        #[cfg(unix)]
+        let socket_file = match &self {
+            Self::Unix { path, .. } => Some(path.clone()),
+            Self::Tcp(_) => None,
+        };
+        let result = axum::serve(self, app).with_graceful_shutdown(shutdown).await;
+        #[cfg(unix)]
+        if let Some(path) = socket_file {
+            let _removed = std::fs::remove_file(&path);
+        }
+        result
+    }
+}
+
+/// An accepted connection of a [`Listener`].
+#[derive(Debug)]
+pub enum Connection {
+    Tcp(tokio::net::TcpStream),
+    #[cfg(unix)]
+    Unix(tokio::net::UnixStream),
+}
+
+/// Pause after an accept error that is not about one connection (out of file
+/// descriptors...), as axum's own listeners do, instead of spinning.
+const ACCEPT_ERROR_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
+
+async fn accept_error(e: std::io::Error) {
+    use std::io::ErrorKind::{ConnectionAborted, ConnectionRefused, ConnectionReset};
+    if !matches!(e.kind(), ConnectionRefused | ConnectionAborted | ConnectionReset) {
+        eprintln!("warning: accept error: {e}");
+        tokio::time::sleep(ACCEPT_ERROR_PAUSE).await;
+    }
+}
+
+impl axum::serve::Listener for Listener {
+    type Io = Connection;
+    type Addr = ();
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            let accepted = match self {
+                Self::Tcp(listener) => tokio::net::TcpListener::accept(listener).await.map(|(tcp, _)| {
                     if let Err(e) = tcp.set_nodelay(true) {
                         eprintln!("warning: cannot set TCP_NODELAY: {e}");
                     }
-                });
-                axum::serve(listener, app).with_graceful_shutdown(shutdown).await
-            }
-            #[cfg(unix)]
-            Self::Unix { listener, path } => {
-                let result = axum::serve(listener, app).with_graceful_shutdown(shutdown).await;
-                let _removed = std::fs::remove_file(&path);
-                result
+                    Connection::Tcp(tcp)
+                }),
+                #[cfg(unix)]
+                Self::Unix { listener, .. } => {
+                    tokio::net::UnixListener::accept(listener).await.map(|(unix, _)| Connection::Unix(unix))
+                }
+            };
+            match accepted {
+                Ok(connection) => return (connection, ()),
+                Err(e) => accept_error(e).await,
             }
         }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        Ok(())
+    }
+}
+
+macro_rules! each_connection {
+    ($self:ident, $stream:ident => $body:expr) => {
+        match $self.get_mut() {
+            Connection::Tcp($stream) => $body,
+            #[cfg(unix)]
+            Connection::Unix($stream) => $body,
+        }
+    };
+}
+
+impl tokio::io::AsyncRead for Connection {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        each_connection!(self, stream => std::pin::Pin::new(stream).poll_read(cx, buf))
+    }
+}
+
+impl tokio::io::AsyncWrite for Connection {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        each_connection!(self, stream => std::pin::Pin::new(stream).poll_write(cx, buf))
+    }
+
+    fn poll_write_vectored(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        each_connection!(self, stream => std::pin::Pin::new(stream).poll_write_vectored(cx, bufs))
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        true
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        each_connection!(self, stream => std::pin::Pin::new(stream).poll_flush(cx))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        each_connection!(self, stream => std::pin::Pin::new(stream).poll_shutdown(cx))
     }
 }
 
