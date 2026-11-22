@@ -105,6 +105,12 @@ pub struct OutboxEntry {
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
+    /// Callers waiting for the connection queue here (FIFO), not on the
+    /// blocking pool: each operation waiting on the `Mutex` inside
+    /// `spawn_blocking` held a pool thread, so under load tokio started one
+    /// thread per waiting write (176 for 200 streams, each with its own
+    /// allocator heap: ~150 MiB of RSS).
+    turn: Arc<tokio::sync::Mutex<()>>,
     writes: Arc<std::sync::atomic::AtomicU64>,
     path: Option<PathBuf>,
     max_events: u64,
@@ -153,6 +159,7 @@ impl SqliteStore {
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            turn: Arc::default(),
             writes: Arc::default(),
             path,
             max_events: DEFAULT_MAX_EVENTS,
@@ -177,6 +184,7 @@ impl SqliteStore {
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> StoreResult<T> + Send + 'static,
     {
+        let _turn = self.turn.lock().await;
         let connection = self.connection.clone();
         graphrt_core::task::spawn_blocking(move || {
             let mut guard = connection.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
