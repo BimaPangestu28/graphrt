@@ -352,6 +352,12 @@ impl AppState {
         self.runs.lock().ok().and_then(|runs| runs.get(run_id).cloned())
     }
 
+    /// The served workflow (and its name) whose compiled graph has `fingerprint`:
+    /// the one a snapshot was taken from.
+    pub(super) fn workflow_with_fingerprint(&self, fingerprint: &str) -> Option<(&String, &ServedWorkflow)> {
+        self.workflows.iter().find(|(_, workflow)| workflow.engine.graph().fingerprint() == fingerprint)
+    }
+
     /// Number of runs currently executing.
     pub fn active_runs(&self) -> usize {
         self.runs.lock().map(|r| r.len()).unwrap_or(0)

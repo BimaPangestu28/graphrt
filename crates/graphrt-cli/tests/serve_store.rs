@@ -12,7 +12,7 @@ use graphrt_cli::serve::{AppState, build_state, discover, router};
 use graphrt_cli::setup::ServiceOptions;
 use graphrt_cli::store::{FileStore, MemoryStore};
 use graphrt_core::engine::Limits;
-use graphrt_core::store::{RunRecord, RunStore};
+use graphrt_core::store::{RunRecord, RunStatus, RunStore};
 use http_body_util::BodyExt;
 use serde_json::{Value as Json, json};
 use tower::ServiceExt;
@@ -180,6 +180,23 @@ async fn resuming_a_run_of_an_unserved_workflow_leaves_it_paused() {
     let run = get_json(&app, &format!("/v1/runs/{run_id}")).await;
     assert_eq!(run["status"], "paused", "{run}");
     let _ = std::fs::remove_dir_all(&other);
+}
+
+/// A paused run whose stored snapshot is gone: the refused resume (409) must
+/// release its claim and leave the run paused.
+#[tokio::test]
+async fn resuming_without_a_stored_snapshot_leaves_the_run_paused() {
+    let wf = workflows_dir("no-snapshot");
+    let store: Arc<dyn RunStore> = Arc::new(MemoryStore::new());
+    let mut record = RunRecord::running("run-lost-snapshot", "approval", "fp", 1);
+    store.create(record.clone()).await.unwrap();
+    record.status = RunStatus::Paused;
+    store.put(record).await.unwrap();
+    let app = router(state_with(&wf, Arc::clone(&store)).await, 1 << 20);
+    let (status, body) = send(&app, post("/v1/runs/run-lost-snapshot/resume", json!({ "inputs": {} }))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("no stored snapshot"), "{body}");
+    assert_eq!(get_json(&app, "/v1/runs/run-lost-snapshot").await["status"], "paused");
 }
 
 #[tokio::test]
