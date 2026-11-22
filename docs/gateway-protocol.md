@@ -65,7 +65,8 @@ graphrt serve ./workflows --trust-gateway --deployment shop \
 ```
 
 The agent side is the cargo feature `trust-gateway` of `graphrt-cli`, on by
-default (release binaries and the container image have it). It adds no crate;
+default (release binaries and the container image have it) and part of the
+`gateway` feature, whose local agents are this same binary. It adds no crate;
 on a slim agent build (`--no-default-features --features
 serve,llm,plugins,trust-gateway`, `--profile min-size`) it adds about 73 KiB on
 Linux musl aarch64 and 89 KiB on x86_64. The CI budget gate checks that cost

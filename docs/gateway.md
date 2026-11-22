@@ -30,9 +30,9 @@ curl -s localhost:8700/v1/deployments/dev/runs -d '{"inputs":{"name":"Ada"}}'
 `--dev` keeps its store in `.graphrt/gateway-dev.db`, generates keys, accepts
 requests without credentials and starts agents of the same binary on demand
 (they stop after 2 idle minutes). Never use it on a network.
-A `--no-default-features` build also needs `trust-gateway` for `--dev`
-(`--features gateway,trust-gateway`): the agents it starts are
-`graphrt serve --trust-gateway` of the same binary.
+The `gateway` feature includes `trust-gateway`: the local agents the gateway
+starts (`--dev`, `kind: local`) are `graphrt serve --trust-gateway` of the same
+binary, so even a `--no-default-features --features gateway` build serves them.
 
 ## Configuration
 
@@ -231,14 +231,14 @@ crate's conformance tests), and real-cloud verification is pending.
 
 | What | Measured | Where |
 | --- | --- | --- |
-| Agent start: exec of `graphrt serve` to first `200 /healthz` | p50 5.6 / p95 5.8 ms, n = 30 (`gateway,trust-gateway` build); p50 1.9 / p95 4.6 ms (`serve,llm,plugins`) | macOS arm64, 2026-11-22; static musl on Linux arm64 ([bench/baseline/linux-musl.md](../bench/baseline/linux-musl.md)); CI budget p95 ≤ 10 ms |
+| Agent start: exec of `graphrt serve` to first `200 /healthz` | p50 5.6 / p95 5.8 ms, n = 30 (`--no-default-features --features gateway` build); p50 1.9 / p95 4.6 ms (`serve,llm,plugins`) | macOS arm64, 2026-11-22; static musl on Linux arm64 ([bench/baseline/linux-musl.md](../bench/baseline/linux-musl.md)); CI budget p95 ≤ 10 ms |
 | Gateway `kill -9` to serving again (versions reloaded from the store) | 350 ms | macOS arm64, gateway core build |
 | Gateway start to first `200 /healthz` (`--dev`, store reopened) | p50 7.2 / p95 10.3 ms, n = 20 | macOS arm64 |
-| First blocking run through `--dev` that wakes a local agent from zero (`examples/hello.yaml`, `curl` included, ~6.8 ms of it is `curl` starting) | p50 17.4 / p95 18.4 ms; warm p50 8.7 ms, n = 20 | macOS arm64, `--features gateway,trust-gateway` |
+| First blocking run through `--dev` that wakes a local agent from zero (`examples/hello.yaml`, `curl` included, ~6.8 ms of it is `curl` starting) | p50 17.4 / p95 18.4 ms; warm p50 8.7 ms, n = 20 | macOS arm64, `--no-default-features --features gateway` |
 | HA takeover after `kill -9` of the active, to first `200 /healthz` | 73 ms (`poll_ms: 200`); 41–53 ms (`poll_ms: 50`) | macOS arm64, [gateway-ha.md](gateway-ha.md) |
 | Kubernetes wake 0 → 1 pod, n = 50 | p50 340 ms, p95 812 ms, max 1.17 s (target ≤ 3 s) | local kind v1.36.1 cluster, [kubernetes-provider.md](kubernetes-provider.md#conformance) |
-| Binary: gateway core (`--no-default-features --features gateway`) | 6.64 MiB (6,961,376 B) | macOS arm64, 2026-11-22 |
-| Binary: every provider and deploy driver (`--features gateway-all`) | 7.32 MiB (7,676,928 B) | macOS arm64, 2026-11-22 |
+| Binary: gateway core (`--no-default-features --features gateway`, local agents included) | 6.69 MiB (7,011,360 B; `trust-gateway` adds 48.8 KiB) | macOS arm64, 2026-11-22 |
+| Binary: every provider and deploy driver (`--no-default-features --features gateway-all`) | 7.40 MiB (7,759,968 B; `trust-gateway` adds 81.1 KiB) | macOS arm64, 2026-11-22 |
 | Binary: agent behind a gateway (`serve,llm,plugins,trust-gateway`) | ≈ 6.2 MiB (agent-slim 6.16 MiB + 73.3 KiB) | static musl, Linux arm64 ([bench/budgets.toml](../bench/budgets.toml)) |
 
 Not measured yet: Linux musl gateway sizes and RSS, cold starts on any real

@@ -91,7 +91,9 @@ langfuse = ["scores", "otel", "http", "tokio/sync"]
 # `graphrt gateway` (always-on front of scale-to-zero agents: SQLite store, auth,
 # limits, webhooks, cron, local-process provider) and `graphrt deploy --target local`.
 # Opt-in; pulls in mimalloc (the gateway build only, decision 10: agents stay without it).
-gateway = ["serve", "dep:graphrt-gateway", "graphrt-gateway/gw-local", "dep:graphrt-provider-api", "mimalloc", "dep:ring"]
+# Includes `trust-gateway`: local-process agents (`--dev`, `kind: local`) are
+# `graphrt serve --trust-gateway` of this same binary (+49 KiB, macOS arm64).
+gateway = ["serve", "trust-gateway", "dep:graphrt-gateway", "graphrt-gateway/gw-local", "dep:graphrt-provider-api", "mimalloc", "dep:ring"]
 # Remote providers of `graphrt gateway` and their `graphrt deploy --target` drivers.
 gateway-k8s = ["gateway", "graphrt-gateway/deploy-k8s"]
 # In-cluster-only Kubernetes provider, without kubeconfig support or the deploy driver (smallest gateway build).

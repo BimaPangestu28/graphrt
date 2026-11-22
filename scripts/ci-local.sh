@@ -7,7 +7,7 @@
 # never fights another build over `target/`.
 #
 # Usage: scripts/ci-local.sh [--skip <job>]... [--keep]
-#   jobs:   fmt, clippy, test, msrv, minimal-core, wasm, size, chatbot-e2e  (all run by default)
+#   jobs:   fmt, clippy, test, msrv, minimal-core, minimal-gateway, wasm, size, chatbot-e2e  (all run by default)
 #   --keep  keep the temporary worktree afterwards (for debugging)
 # Environment: GRAPHRT_CI_TARGET_DIR (default: ~/.cache/graphrt-ci-local/target)
 #
@@ -20,7 +20,7 @@
 set -euo pipefail
 
 MSRV_TOOLCHAIN="1.89"
-ALL_JOBS=(fmt clippy test msrv minimal-core wasm size chatbot-e2e)
+ALL_JOBS=(fmt clippy test msrv minimal-core minimal-gateway wasm size chatbot-e2e)
 skipped_jobs=()
 keep_worktree=false
 while [ $# -gt 0 ]; do
@@ -83,6 +83,7 @@ for job in "${ALL_JOBS[@]}"; do
     test) command=(cargo test --workspace --all-features --no-fail-fast) ;;
     msrv) is_skipped msrv || ensure_toolchain "$MSRV_TOOLCHAIN"; command=(cargo "+$MSRV_TOOLCHAIN" check --workspace) ;;
     minimal-core) command=(cargo test -p graphrt-core --no-default-features --no-fail-fast) ;;
+    minimal-gateway) command=(cargo test -p graphrt-cli --no-default-features --features gateway --test gateway_dev) ;;
     wasm) is_skipped wasm || ensure_wasm_target
       command=(cargo build -p graphrt-core --no-default-features --features yaml,jinja --target wasm32-unknown-unknown) ;;
     size) command=(cargo build -p graphrt-cli --profile min-size) ;;
