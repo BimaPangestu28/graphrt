@@ -20,12 +20,15 @@ already links, no `kube`, no `k8s-openapi`, no HTTP/2.
 
 | Feature | What | Binary size (macOS arm64, `min-size`) |
 | --- | --- | --- |
-| (always) | run-time provider, in-cluster service account auth, readiness watch | ≈ 130 KiB (budget 150 KiB) |
-| `kubeconfig` (default) | kubeconfig files: token, token file, client certificate, exec plugins | ≈ +65 KiB |
+| (always) | run-time provider, in-cluster service account auth, readiness watch | ≈ 130 KiB standalone; **86.8 KiB** in the gateway build (`gw-k8s`, budget 150 KiB) |
+| `kubeconfig` (default) | kubeconfig files: token, token file, client certificate, exec plugins | ≈ +63 KiB: `gw-k8s-kubeconfig` totals **149.6 KiB** in the gateway build |
 | `deploy` (default) | deploy driver: server-side apply of Deployment, Service, Secret | ≈ +49 KiB |
 
 Sizes are measured against a binary that already links the shared provider
-HTTP layer (reqwest, rustls, tokio, serde_json). A gateway running inside the
+HTTP layer (reqwest, rustls, tokio, serde_json); the gateway figures are
+Mach-O section totals against `graphrt-cli --features gateway`. Kubeconfig
+and `ExecCredential` documents are read by walking a `serde_json::Value`
+rather than through per-struct deserializers, which keeps `kubeconfig` small. A gateway running inside the
 cluster can use `default-features = false`.
 
 ## How it maps onto Kubernetes
