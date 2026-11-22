@@ -1,5 +1,5 @@
 //! Run-wide control state shared by every frame of a run: abort / failure
-//! stops, pause requests, external variable updates and pause reasons.
+//! stops, pause and preempt requests, external variable updates and pause reasons.
 //!
 //! Frames wait on [`Control::changed`] alongside their in-flight nodes, so a
 //! command takes effect as soon as it is issued instead of when the next node
@@ -32,6 +32,8 @@ pub(crate) struct Control {
     stopped: AtomicBool,
     stop: Mutex<Option<Stop>>,
     pause_requested: AtomicBool,
+    /// Set with `pause_requested`: in-flight nodes are cancelled instead of awaited.
+    preempt_requested: AtomicBool,
     reasons: Mutex<Vec<PauseReason>>,
     updates: Mutex<Vec<(Selector, Value)>>,
     wakers: Mutex<Vec<Waker>>,
@@ -88,6 +90,22 @@ impl Control {
 
     pub(crate) fn pause_requested(&self) -> bool {
         self.pause_requested.load(Ordering::Acquire)
+    }
+
+    /// Like [`Control::request_pause`], but frames cancel their in-flight nodes
+    /// instead of waiting for them (they run again on resume). Escalates an
+    /// earlier pause request.
+    pub(crate) fn request_preempt(&self, reason: Option<PauseReason>) {
+        if let Some(r) = reason {
+            lock(&self.reasons).push(r);
+        }
+        self.preempt_requested.store(true, Ordering::Release);
+        self.pause_requested.store(true, Ordering::Release);
+        self.notify();
+    }
+
+    pub(crate) fn preempt_requested(&self) -> bool {
+        self.preempt_requested.load(Ordering::Acquire)
     }
 
     /// Record why a node paused (reported in `RunPaused`).

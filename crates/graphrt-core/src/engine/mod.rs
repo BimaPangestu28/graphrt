@@ -73,6 +73,10 @@
 //!
 //! - [`RunHandle::pause`] stops scheduling everywhere, lets in-flight nodes
 //!   finish and then ends with `RunPaused` carrying a [`Snapshot`].
+//! - [`RunHandle::preempt`] does not wait: in-flight nodes are cancelled and
+//!   saved as pending (same `exec_id`), so they run again on resume. Execution
+//!   is at-least-once per node; nodes with side effects should be idempotent on
+//!   `run_id` + `exec_id`.
 //! - A node returning [`NodeOutcome::Paused`](crate::node::NodeOutcome) pauses
 //!   only itself: independent branches keep running until nothing else can make
 //!   progress, then the run pauses.
@@ -288,6 +292,11 @@ impl Engine {
     }
 }
 
+/// The reason [`RunHandle::pause`] and [`RunHandle::preempt`] report.
+fn external_reason(reason: String) -> PauseReason {
+    PauseReason { frame: Arc::from(""), node_id: None, kind: "external".to_owned(), data: Value::from(reason) }
+}
+
 /// Events waiting for the stream's consumer.
 ///
 /// Most events are produced while [`RunStream::poll_next`] polls the driver, on
@@ -401,12 +410,29 @@ impl RunHandle {
     /// Stop scheduling new nodes, let in-flight nodes finish, then end with `RunPaused`
     /// (or `RunSucceeded` if nothing was left to run).
     pub fn pause(&self, reason: impl Into<String>) {
-        self.control.request_pause(Some(PauseReason {
-            frame: Arc::from(""),
-            node_id: None,
-            kind: "external".to_owned(),
-            data: Value::from(reason.into()),
-        }));
+        self.pause_with(external_reason(reason.into()));
+    }
+
+    /// [`RunHandle::pause`] with a caller-chosen reason (reported in `RunPaused`).
+    pub fn pause_with(&self, reason: PauseReason) {
+        self.control.request_pause(Some(reason));
+    }
+
+    /// Stop now: cancel in-flight nodes (dropping their futures), then end with
+    /// `RunPaused`. A cancelled node is saved as pending and runs again on resume,
+    /// with the same `exec_id` and attempt number, so execution is at-least-once
+    /// per node: hosts should key side effects on `run_id` + `exec_id`. Container
+    /// bodies are preempted too and resume where they stopped. Escalates an
+    /// earlier [`RunHandle::pause`]. Use it when the host cannot wait for nodes to
+    /// finish (a shutdown grace period shorter than an LLM call).
+    pub fn preempt(&self, reason: impl Into<String>) {
+        self.preempt_with(Some(external_reason(reason.into())));
+    }
+
+    /// [`RunHandle::preempt`] with a caller-chosen reason, or none to escalate an
+    /// earlier pause without reporting a second reason.
+    pub fn preempt_with(&self, reason: Option<PauseReason>) {
+        self.control.request_preempt(reason);
     }
 
     /// Write a variable into the root frame (applied between node completions).

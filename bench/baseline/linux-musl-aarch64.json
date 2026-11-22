@@ -1,0 +1,23 @@
+{
+  "target": "aarch64-unknown-linux-musl",
+  "profile": "min-size",
+  "builds": {
+    "agent-minimal": {
+      "features": "serve",
+      "binary_bytes": 3897128,
+      "binary_mib": 3.717,
+      "idle_rss_mib": 3.06
+    },
+    "agent-slim": {
+      "features": "serve,llm,plugins",
+      "binary_bytes": 6461976,
+      "binary_mib": 6.163,
+      "idle_rss_mib": 4.9,
+      "healthz_p50_ms": 1.91,
+      "healthz_p95_ms": 4.61,
+      "healthz_samples": 30
+    }
+  },
+  "platform": "aarch64-linux",
+  "host": "Lima VM (vz, 4 vCPU, 4 GiB) on an Apple M3 Pro, Ubuntu 26.04"
+}

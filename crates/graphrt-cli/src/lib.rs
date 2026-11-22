@@ -7,6 +7,8 @@ pub mod body_drain;
 pub mod bundle_cmd;
 pub mod catalog;
 pub mod diagnostics;
+#[cfg(feature = "serve")]
+pub mod drain;
 pub mod error;
 #[cfg(feature = "eval")]
 pub mod eval;
@@ -158,7 +160,10 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
                 .enable_all()
                 .build()
                 .map_err(|e| CliError::failed(format!("cannot start runtime: {e}")))?;
-            runtime.block_on(serve::serve(*args))
+            let result = runtime.block_on(serve::serve(*args));
+            // A node stuck in blocking code must not hold the exit past the drain deadline.
+            runtime.shutdown_timeout(std::time::Duration::from_millis(500));
+            result
         }
     }
 }

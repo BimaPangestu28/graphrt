@@ -3,6 +3,7 @@
 //! | Method | Path | Body | Response |
 //! | --- | --- | --- | --- |
 //! | GET | `/healthz` | – | `ok` (never requires auth) |
+//! | GET | `/readyz` | – | `ready`, or `503 draining` during a shutdown drain (never requires auth) |
 //! | GET | `/v1/workflows` | – | workflow names, inputs and env requirements |
 //! | POST | `/v1/workflows/{name}/runs` | `{inputs, sys, conversation, stream, async}` | SSE stream, JSON result, or `202` + run id when `async` |
 //! | GET | `/v1/runs` | query `workflow`, `status`, `limit`, `cursor` | stored runs, newest first |
@@ -32,7 +33,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{DefaultBodyLimit, Path as UrlPath, Query, Request, State};
@@ -77,6 +78,8 @@ pub struct AppState {
     runs: Mutex<HashMap<String, Arc<ActiveRun>>>,
     /// Cap on `runs` (executing runs); `0` = unlimited.
     max_active_runs: usize,
+    /// Set by a shutdown drain: new and resumed runs are refused with `503`.
+    draining: AtomicBool,
     store: Arc<dyn RunStore>,
     /// Evaluation scores, kept by the same backend as `store`.
     #[cfg(feature = "scores")]
@@ -122,6 +125,7 @@ impl AppState {
             workflows,
             runs: Mutex::new(HashMap::new()),
             max_active_runs: 0,
+            draining: AtomicBool::new(false),
             store: memory.clone(),
             #[cfg(feature = "scores")]
             scores: memory,
@@ -335,7 +339,18 @@ impl AppState {
     /// `429` when the server already executes `max_active_runs` runs. Checked before a
     /// run is created, so a refused request leaves no record behind. The check and the
     /// later insert are not atomic: concurrent requests can overshoot by a few runs.
+    ///
+    /// While the server drains for shutdown, every new or resumed run gets `503`
+    /// with `Retry-After` instead (see [`crate::drain`]).
     fn refuse_if_busy(&self) -> Option<Response> {
+        if self.is_draining() {
+            let mut refused = error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the server is shutting down and accepts no new runs; retry shortly",
+            );
+            refused.headers_mut().insert(header::RETRY_AFTER, axum::http::HeaderValue::from_static(DRAIN_RETRY_AFTER));
+            return Some(refused);
+        }
         if self.max_active_runs == 0 {
             return None;
         }
@@ -425,6 +440,21 @@ impl AppState {
     pub fn active_runs(&self) -> usize {
         self.runs.lock().map(|r| r.len()).unwrap_or(0)
     }
+
+    /// The runs currently executing.
+    pub fn active_list(&self) -> Vec<Arc<ActiveRun>> {
+        self.runs.lock().map(|runs| runs.values().cloned().collect()).unwrap_or_default()
+    }
+
+    /// Stop accepting runs (`503` + `Retry-After`) and report not ready on `/readyz`.
+    pub fn begin_drain(&self) {
+        self.draining.store(true, Ordering::Release);
+    }
+
+    /// Whether [`AppState::begin_drain`] was called.
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::Acquire)
+    }
 }
 
 /// Discover workflow files: a single file, or every `.yaml` / `.yml` / `.json` file in a directory.
@@ -504,6 +534,10 @@ pub const DEFAULT_MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
 /// Default cap on runs executing at once (`--max-active-runs`).
 pub const DEFAULT_MAX_ACTIVE_RUNS: usize = 256;
 
+/// `Retry-After` (seconds) of runs refused while draining: long enough for a
+/// load balancer to route the retry to another replica, or for a restart.
+const DRAIN_RETRY_AFTER: &str = "5";
+
 /// The HTTP router.
 pub fn router(state: Arc<AppState>, max_body_bytes: usize) -> Router {
     router_with_uploads(state, max_body_bytes, DEFAULT_MAX_UPLOAD_BYTES)
@@ -559,6 +593,7 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     let counted = counted.layer(middleware::from_fn(crate::telemetry::count_requests));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/readyz", get(readiness))
         .merge(counted)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         // Outermost: early rejections leave the body unread; drain it so keep-alive clients can reuse the connection.
@@ -567,6 +602,16 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
             crate::body_drain::drain_unread_body,
         ))
         .with_state(state)
+}
+
+/// `GET /readyz`: `200 ready`, or `503 draining` once a shutdown drain began, so
+/// a load balancer stops routing new runs here. `/healthz` stays `200` (liveness).
+async fn readiness(State(state): State<Arc<AppState>>) -> Response {
+    if state.is_draining() {
+        (StatusCode::SERVICE_UNAVAILABLE, "draining").into_response()
+    } else {
+        "ready".into_response()
+    }
 }
 
 /// Execute `graphrt serve`.
@@ -632,6 +677,9 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     }
     let app = router_with_uploads(state.clone(), args.max_body_bytes, args.max_upload_bytes);
 
+    // Before listening: from here on SIGTERM / SIGINT start a drain (as PID 1 of a
+    // container, an unhandled SIGTERM would be ignored until the SIGKILL).
+    let mut signals = crate::drain::ShutdownSignals::install()?;
     let listener = tokio::net::TcpListener::bind(&args.addr)
         .await
         .map_err(|e| CliError::usage(format!("cannot listen on {}: {e}", args.addr)))?;
@@ -676,17 +724,124 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             eprintln!("warning: cannot set TCP_NODELAY: {e}");
         }
     });
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-            eprintln!("shutting down");
-        })
-        .await
-        .map_err(|e| CliError::failed(format!("server error: {e}")))?;
+    let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = axum::serve(listener, app).with_graceful_shutdown(async {
+        let _closed = close_rx.await;
+    });
+    let mut server = tokio::spawn(server.into_future());
+    if !args.no_resume_drained {
+        // After listening, so a store scan never delays the first health check.
+        tokio::spawn(resume_drained_runs(Arc::clone(&state)));
+    }
+    let cause = match futures::future::select(&mut server, std::pin::pin!(signals.recv())).await {
+        futures::future::Either::Left((ended, _)) => return server_ended(ended),
+        futures::future::Either::Right((cause, _)) => cause,
+    };
+    let deadline = std::time::Instant::now() + args.drain_timeout;
+    eprintln!(
+        "received {cause}: draining (no new runs; active runs pause, deadline {:.1} s)",
+        args.drain_timeout.as_secs_f64()
+    );
+    let report = crate::drain::drain(&state, args.drain_timeout, cause, Some(&mut signals)).await;
+    eprintln!("{report}");
+    if report.unfinished > 0 {
+        eprintln!(
+            "warning: {} run(s) did not stop in time; the next start marks them failed (raise --drain-timeout)",
+            report.unfinished
+        );
+    }
+    // Connections still open (idle keep-alives, finished streams) get the rest of
+    // the deadline, at least a moment, to close.
+    let _closing = close_tx.send(());
+    let rest = deadline.saturating_duration_since(std::time::Instant::now()).max(std::time::Duration::from_millis(100));
+    match tokio::time::timeout(rest, &mut server).await {
+        Ok(ended) => {
+            server_ended(ended)?;
+        }
+        Err(_) => {
+            server.abort();
+            eprintln!("warning: closing the remaining connections at the drain deadline");
+        }
+    }
     if let Some(telemetry) = &telemetry {
         telemetry.shutdown().await;
     }
     Ok(EXIT_OK)
+}
+
+/// The result of the HTTP server task.
+fn server_ended(ended: Result<std::io::Result<()>, tokio::task::JoinError>) -> Result<u8, CliError> {
+    match ended {
+        Ok(Ok(())) => Ok(EXIT_OK),
+        Ok(Err(e)) => Err(CliError::failed(format!("server error: {e}"))),
+        Err(e) => Err(CliError::failed(format!("server task failed: {e}"))),
+    }
+}
+
+/// At startup: resume the async and webhook runs a previous shutdown drained
+/// ([`crate::drain::is_auto_resumable`]) in the background. Runs whose workflow
+/// changed, or that need secrets only their caller has, stay paused for a
+/// resume over the API. Returns how many were resumed.
+pub async fn resume_drained_runs(state: Arc<AppState>) -> usize {
+    let mut resumed = 0;
+    let mut cursor = None;
+    loop {
+        let filter = RunFilter { status: Some(RunStatus::Paused), limit: 100, cursor, ..RunFilter::default() };
+        let page = match state.store.list(filter).await {
+            Ok(page) => page,
+            Err(e) => {
+                eprintln!("warning: cannot list drained runs to resume: {e}");
+                return resumed;
+            }
+        };
+        for record in page.runs.iter().filter(|r| crate::drain::is_auto_resumable(r)) {
+            if state.refuse_if_busy().is_some() {
+                eprintln!("warning: not resuming further drained runs: the server is busy or draining");
+                return resumed;
+            }
+            match resume_drained(&state, &record.run_id).await {
+                Ok(()) => resumed += 1,
+                Err(why) => eprintln!("run {}: drained run left paused: {why}", record.run_id),
+            }
+        }
+        cursor = match page.next_cursor {
+            Some(next) => Some(next),
+            None => break,
+        };
+    }
+    if resumed > 0 {
+        eprintln!("resumed {resumed} run(s) drained by the previous shutdown");
+    }
+    resumed
+}
+
+/// Claim and resume one drained run as a detached run.
+async fn resume_drained(state: &Arc<AppState>, run_id: &str) -> Result<(), String> {
+    let record = state.store.claim_resume(run_id, now_ms()).await.map_err(|e| e.to_string())?;
+    let snapshot = match state.store.load_snapshot(run_id).await {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) | Err(_) => {
+            release_claim(state, record).await;
+            return Err("no stored snapshot".to_owned());
+        }
+    };
+    let workflow =
+        state.workflows.get(&record.workflow).filter(|w| w.engine.graph().fingerprint() == snapshot.graph_fingerprint);
+    let Some(workflow) = workflow else {
+        release_claim(state, record).await;
+        return Err("its workflow is not served or changed since".to_owned());
+    };
+    if crate::drain::needs_caller_secrets(&snapshot) {
+        release_claim(state, record).await;
+        return Err("it needs secrets only its caller can supply; resume it over the API".to_owned());
+    }
+    let mut input = RunInput::new();
+    input.run_id = Some(run_id.to_owned());
+    input.env = workflow.env.clone();
+    input.resume = Some(ResumeFrom::new(snapshot, IndexMap::new()));
+    let active = launch(state, &workflow.engine, record, input, None);
+    active.set_detached();
+    Ok(())
 }
 
 /// Reject requests whose `Host` is not a loopback name (DNS rebinding protection for
@@ -1260,37 +1415,26 @@ async fn run_events(
         }
         return Json(all).into_response();
     }
-    let replay = futures::stream::iter(stored.into_iter().map(|json| Ok(stored_sse(&json))));
-    match subscription {
-        None => Sse::new(replay.boxed()).into_response(),
-        Some((_, sub)) => {
-            let backlog = futures::stream::iter(sub.backlog.into_iter().map(|e| Ok(sse_event(&e))));
-            let live = if sub.done { futures::stream::empty().boxed() } else { live_events(sub.live).boxed() };
-            Sse::new(replay.chain(backlog).chain(live)).keep_alive(KeepAlive::default()).into_response()
+    let replay = futures::stream::iter(stored.into_iter().map(|json| Ok::<_, Infallible>(stored_sse(&json))));
+    match (subscription, active) {
+        (Some((_, sub)), Some(run)) => {
+            let live = live::follow(run, sub).map(|followed| {
+                Ok(match followed {
+                    live::Followed::Event(event) => sse_event(&event),
+                    live::Followed::Lagged(skipped) => lagged_sse(skipped),
+                })
+            });
+            Sse::new(replay.chain(live)).keep_alive(KeepAlive::default()).into_response()
         }
+        _ => Sse::new(replay.boxed()).into_response(),
     }
 }
 
-/// Events from a broadcast receiver until the terminal event.
-fn live_events(
-    rx: tokio::sync::broadcast::Receiver<live::SharedEvent>,
-) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + 'static {
-    futures::stream::unfold((rx, false), |(mut rx, finished)| async move {
-        if finished {
-            return None;
-        }
-        match rx.recv().await {
-            Ok(event) => {
-                let terminal = event.is_terminal();
-                Some((Ok(sse_event(&event)), (rx, terminal)))
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                let data = serde_json::json!({ "type": "lagged", "skipped": skipped });
-                Some((Ok(SseEvent::default().event("lagged").data(data.to_string())), (rx, false)))
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
-        }
-    })
+/// The `lagged` SSE event: `skipped` events are gone for this listener (it fell
+/// further behind than the in-memory feed keeps). Fetch them with `?from=` later.
+fn lagged_sse(skipped: u64) -> SseEvent {
+    let data = serde_json::json!({ "type": "lagged", "skipped": skipped });
+    SseEvent::default().event("lagged").data(data.to_string())
 }
 
 /// Aborts the run when a synchronous caller (blocking or streaming) goes away before
@@ -1319,21 +1463,16 @@ async fn execute(
     let run_id = record.run_id.clone();
     let active = launch(state, engine, record, input, traceparent.as_deref());
     match reply.delivery {
-        Delivery::Detached => (
-            StatusCode::ACCEPTED,
-            Json(serde_json::json!({
-                "run_id": run_id,
-                "status": "running",
-                "run": format!("/v1/runs/{run_id}"),
-                "events": format!("/v1/runs/{run_id}/events"),
-            })),
-        )
-            .into_response(),
+        Delivery::Detached => {
+            active.set_detached();
+            detached_response(&run_id)
+        }
         Delivery::Stream => {
             // The subscription's backlog covers events emitted before subscribing.
             let subscription = active.subscribe();
+            let events = live::follow(Arc::clone(&active), subscription);
             let guard = AbortOnDrop(active);
-            let events = sse_stream(subscription, stream_assembler, guard, reply.scope);
+            let events = sse_stream(events, stream_assembler, guard, reply.scope);
             Sse::new(events).keep_alive(KeepAlive::default()).into_response()
         }
         Delivery::Blocking => {
@@ -1343,6 +1482,20 @@ async fn execute(
             result_json(&run_id, outcome, reply.scope)
         }
     }
+}
+
+/// `202 Accepted` for an async run.
+fn detached_response(run_id: &str) -> Response {
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "run_id": run_id,
+            "status": "running",
+            "run": format!("/v1/runs/{run_id}"),
+            "events": format!("/v1/runs/{run_id}/events"),
+        })),
+    )
+        .into_response()
 }
 
 fn new_assembler(engine: &Engine, input: &RunInput) -> ResponseAssembler {
@@ -1441,40 +1594,26 @@ pub(crate) async fn launch_detached(
     input.run_id = Some(run_id);
     input.inputs = inputs;
     input.env = workflow.env.clone();
-    Ok(Launch::Started(launch(state, &workflow.engine, record, input, traceparent.as_deref())))
+    let active = launch(state, &workflow.engine, record, input, traceparent.as_deref());
+    active.set_detached();
+    Ok(Launch::Started(active))
 }
 
 fn sse_stream(
-    subscription: live::Subscription,
+    events: impl Stream<Item = live::Followed> + Send + 'static,
     mut assembler: ResponseAssembler,
     guard: AbortOnDrop,
     scope: EventScope,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + 'static {
-    let backlog = futures::stream::iter(subscription.backlog);
-    let live = futures::stream::unfold(subscription.live, |mut rx| async move {
-        loop {
-            match rx.recv().await {
-                Ok(event) => return Some((event, rx)),
-                // A streaming caller that cannot keep up skips events, like any lagging listener.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
-            }
-        }
-    });
-    let events = if subscription.done { backlog.boxed() } else { backlog.chain(live).boxed() };
-    // End right after the terminal event: the broadcast channel itself stays open
-    // while the run is tracked, so waiting for it to close would hang.
-    let events = futures::stream::unfold((events, false), |(mut events, finished)| async move {
-        if finished {
-            return None;
-        }
-        let event = events.next().await?;
-        let terminal = event.is_terminal();
-        Some((event, (events, terminal)))
-    });
+    // `follow` ends right after the terminal event and refills a lagging caller
+    // from the run's feed, so the answer text stays complete.
     let mut chunks = Vec::new();
-    events.flat_map(move |event| {
+    events.flat_map(move |followed| {
         let _keep_alive = &guard;
+        let event = match followed {
+            live::Followed::Event(event) => event,
+            live::Followed::Lagged(skipped) => return futures::stream::iter(vec![Ok(lagged_sse(skipped))]),
+        };
         let mut out = Vec::new();
         assembler.push_into(&event, &mut chunks);
         for chunk in chunks.drain(..) {

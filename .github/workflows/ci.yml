@@ -88,6 +88,41 @@ jobs:
           ls -l target/min-size/graphrt
           echo "### graphrt binary: $(du -h target/min-size/graphrt | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
 
+  budgets:
+    name: budgets (${{ matrix.target }})
+    # Size, idle RSS and start-up budgets of Linux musl builds (bench/budgets.toml),
+    # plus a SIGTERM drain of graphrt running as PID 1 (scripts/test-pid1.sh).
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: budgets-${{ matrix.target }}
+      - name: Install zig + cargo-zigbuild
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - run: cargo install cargo-zigbuild --locked
+      - name: Check budgets
+        run: |
+          mkdir -p budget-bins
+          python3 scripts/budget-gate.py --target ${{ matrix.target }} --build-cmd "cargo zigbuild" \
+            --keep-bins budget-bins --json budgets-${{ matrix.target }}.json
+      - name: SIGTERM drain as PID 1
+        run: sudo scripts/test-pid1.sh budget-bins/graphrt-agent-slim
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: budgets-${{ matrix.target }}
+          path: budgets-${{ matrix.target }}.json
+
   chatbot-e2e:
     name: chatbot security e2e (PostgREST + Postgres)
     runs-on: ubuntu-24.04

@@ -1,0 +1,17 @@
+{
+  "target": "x86_64-unknown-linux-musl",
+  "profile": "min-size",
+  "builds": {
+    "agent-minimal": {
+      "features": "serve",
+      "binary_bytes": 4590880,
+      "binary_mib": 4.378
+    },
+    "agent-slim": {
+      "features": "serve,llm,plugins",
+      "binary_bytes": 7761440,
+      "binary_mib": 7.402
+    }
+  },
+  "note": "sizes only: run-time measurements need a native x86_64 Linux host (CI job `budgets`); under Rosetta they are not representative"
+}

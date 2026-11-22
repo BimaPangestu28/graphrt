@@ -10,6 +10,13 @@
 #     --dockerfile examples/supabase-chatbot/Dockerfile
 app = "my-supabase-chatbot"
 primary_region = "sin"
+# On shutdown Fly sends SIGINT and kills the Machine `kill_timeout` seconds later.
+# graphrt drains within --drain-timeout (default 4s): new chats get 503, active
+# runs pause and are stored. To let long LLM calls finish instead of being
+# preempted, raise both, e.g. kill_timeout = 30 with "--drain-timeout", "25s" in
+# the image CMD (docs/deploy.md#graceful-shutdown).
+kill_signal = "SIGINT"
+kill_timeout = 10
 
 [http_service]
   internal_port = 8080
