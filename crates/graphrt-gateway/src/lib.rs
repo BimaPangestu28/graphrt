@@ -19,3 +19,7 @@ pub mod pool;
 pub fn install_crypto_provider() {
     let _already_installed = rustls::crypto::ring::default_provider().install_default();
 }
+pub mod agent_client;
+pub mod deployment;
+pub mod metrics;
+pub mod sse;
