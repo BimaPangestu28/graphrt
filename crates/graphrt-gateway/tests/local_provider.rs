@@ -17,7 +17,12 @@ path = next(a[5:] for a in sys.argv if a.startswith("unix:"))
 s = socket.socket(socket.AF_UNIX); s.bind(path); s.listen(16)
 signal.signal(signal.SIGTERM, lambda *_: (os.unlink(path), sys.exit(0)))
 while True:
-    c, _ = s.accept(); c.recv(65536); c.sendall(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}"); c.close()
+    c, _ = s.accept()
+    try:
+        c.recv(65536); c.sendall(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")
+    except OSError:
+        pass
+    c.close()
 "#;
 
 fn python() -> Option<String> {
@@ -80,10 +85,10 @@ async fn local_process_provider_conformance() {
     );
     let target = LocalTarget { provider: provider.clone(), deployment: deployment.clone() };
     // Python starts in tens of milliseconds, slower than the 15 ms target of a
-    // real agent; C2 is measured against 500 ms here and reported.
+    // real agent; C2 is measured against 1.5 s here (loaded CI machines) and reported.
     let config = ConformanceConfig {
         latency_samples: 10,
-        wake_p95_target_ms: Some(500),
+        wake_p95_target_ms: Some(1500),
         poll_interval: Duration::from_millis(20),
         ..ConformanceConfig::default()
     };
@@ -102,5 +107,27 @@ async fn local_process_provider_conformance() {
     restarted.release(&orphans[0].replica, graphrt_provider_api::ReleaseMode::Stop).await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(restarted.list(&deployment).await.unwrap().is_empty());
+    let _cleanup = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn releasing_one_replica_keeps_the_other() {
+    let Some(python) = python() else { return };
+    let dir = std::env::temp_dir().join(format!("gwlq-{}", std::process::id()));
+    let _cleanup = std::fs::remove_dir_all(&dir);
+    let provider = LocalProvider::new(&dir, Duration::from_secs(2)).unwrap();
+    let deployment = DeploymentRef::new("shop", "v1", "local");
+    provider.register(&deployment, LocalVersion { command: vec![python, "-c".into(), AGENT.into()], keys: String::new(), env: Vec::new() });
+    for round in 0..5 {
+        let endpoints = provider.wake(&deployment, 2).await.unwrap();
+        assert_eq!(endpoints.len(), 2, "round {round}");
+        provider.release(&endpoints[0].replica, graphrt_provider_api::ReleaseMode::ScaleIn).await.unwrap();
+        let states = provider.list(&deployment).await.unwrap();
+        assert_eq!(states.len(), 1, "round {round}: {states:?} (endpoints {endpoints:?})");
+        assert_eq!(states[0].replica, endpoints[1].replica, "round {round}");
+        for state in states {
+            provider.release(&state.replica, graphrt_provider_api::ReleaseMode::Stop).await.unwrap();
+        }
+    }
     let _cleanup = std::fs::remove_dir_all(&dir);
 }

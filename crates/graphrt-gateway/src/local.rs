@@ -52,6 +52,10 @@ pub struct LocalProvider {
     versions: Mutex<HashMap<(String, String), LocalVersion>>,
     replicas: Mutex<HashMap<ReplicaRef, LocalReplica>>,
     wake_lock: tokio::sync::Mutex<()>,
+    next_socket: std::sync::atomic::AtomicU64,
+    /// Pids this process released: their pid files stay until they exit, but
+    /// they must not be adopted back as live replicas.
+    released: Mutex<std::collections::HashSet<u32>>,
 }
 
 fn short_hash(text: &str) -> String {
@@ -80,6 +84,8 @@ impl LocalProvider {
             versions: Mutex::new(HashMap::new()),
             replicas: Mutex::new(HashMap::new()),
             wake_lock: tokio::sync::Mutex::new(()),
+            next_socket: std::sync::atomic::AtomicU64::new(0),
+            released: Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -104,9 +110,15 @@ impl LocalProvider {
         let (program, arguments) =
             version.command.split_first().ok_or_else(|| ProviderError::fatal("empty agent command"))?;
         let prefix = version_prefix(deployment);
-        let number =
-            (0..u32::MAX).find(|number| !self.socket_dir.join(format!("{prefix}-{number}.sock")).exists()).unwrap_or(0);
-        let socket = self.socket_dir.join(format!("{prefix}-{number}.sock"));
+        // Concurrent spawns each take their own number; files left by an earlier
+        // gateway process are skipped.
+        let socket = loop {
+            let number = self.next_socket.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let candidate = self.socket_dir.join(format!("{prefix}-{number}.sock"));
+            if !candidate.exists() && !candidate.with_extension("pid").exists() {
+                break candidate;
+            }
+        };
         let mut command = Command::new(program);
         command
             .args(arguments)
@@ -176,6 +188,9 @@ impl LocalProvider {
             }
             let Ok(text) = std::fs::read_to_string(&path) else { continue };
             let Some(pid) = text.lines().next().and_then(|line| line.trim().parse::<u32>().ok()) else { continue };
+            if self.released.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&pid) {
+                continue;
+            }
             let replica = ReplicaRef { deployment: deployment.clone(), id: pid.to_string() };
             let socket = path.with_extension("sock");
             let mut replicas = self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -261,6 +276,7 @@ impl Provider for LocalProvider {
     fn release<'a>(&'a self, replica: &'a ReplicaRef, _mode: ReleaseMode) -> BoxFuture<'a, Result<(), ProviderError>> {
         Box::pin(async move {
             let Some(mut state) = self.forget(replica) else { return Ok(()) };
+            self.released.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(state.pid);
             signal_group(state.pid, "TERM").await;
             let grace = self.grace;
             tokio::spawn(async move {
