@@ -133,6 +133,13 @@ releases may contain breaking changes; they are called out under **Changed**.
   Rust, Python, TypeScript and WebAssembly guest SDKs.
   `NodeContext::idempotency_key()` in `graphrt-core` builds it. See
   [docs/workflow-format.md](docs/workflow-format.md#http-request).
+- `graphrt serve --deployment NAME` (or `$GRAPHRT_DEPLOYMENT`), now a flag of
+  `serve` itself (it was part of `--trust-gateway`): webhook idempotency run
+  ids include the deployment, derived exactly as `graphrt gateway` derives them
+  (`hook-` + first 32 hex digits of `sha256("hook|<deployment>|<hook>|<key>")`),
+  so servers of different deployments can share a store and a delivery maps to
+  one run whichever of the two receives it. Without it, ids are derived as
+  before. See [docs/serving.md](docs/serving.md#idempotency).
 - `graphrt-provider-fly` (internal crate, feature `provider-fly`): the Fly
   Machines provider of the upcoming `graphrt gateway`. A deployment version is
   a pool of pre-created Machines, woken with `start` (suspended snapshots

@@ -303,3 +303,15 @@ fn verify_jwt_needs_an_api_key_on_every_address() {
         assert!(stderr(&out).contains("needs $GRAPHRT_API_KEY"), "{addr}: {}", stderr(&out));
     }
 }
+
+#[test]
+fn serve_refuses_an_invalid_deployment_name() {
+    let path = example("hello.yaml");
+    let out = bin()
+        .args(["serve", path.to_str().expect("utf8"), "--addr", "127.0.0.1:0", "--no-default-plugins"])
+        .args(["--deployment", "shop/eu"])
+        .output()
+        .expect("spawn graphrt");
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("invalid deployment name `shop/eu`"), "{}", stderr(&out));
+}

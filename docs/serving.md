@@ -601,6 +601,14 @@ with `--store`, for as long as the run is kept (`--store-ttl-days`,
 `--max-runs`, `DELETE /v1/runs/{id}`). The key is not compared with the body:
 a different body under a used key also returns the first run.
 
+With `--deployment NAME` (or `$GRAPHRT_DEPLOYMENT`) the run id also includes
+the deployment, derived exactly as a [graphrt gateway](gateway.md) derives it
+(`hook-` and the first 32 hex digits of
+`sha256("hook|<deployment>|<hook>|<key>")`). Servers of different deployments
+can then share one store without colliding, and a delivery maps to the same run
+whether the gateway or the server receives it. Without a deployment the id is
+derived as in earlier versions, so redeliveries across an upgrade still dedupe.
+
 ### Limits and errors
 
 Deliveries share `--max-body-bytes` (default 2 MiB) with the rest of the API:

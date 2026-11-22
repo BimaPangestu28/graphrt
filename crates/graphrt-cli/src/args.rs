@@ -617,6 +617,12 @@ pub struct ServeArgs {
     #[cfg(feature = "jwt")]
     #[command(flatten)]
     pub user_auth: UserAuthArgs,
+    /// Deployment this server belongs to, the namespace of a graphrt gateway
+    /// [default: $GRAPHRT_DEPLOYMENT]. Webhook run ids then include it, derived exactly
+    /// as the gateway derives them, so deployments sharing a store never collide.
+    /// Required by `--trust-gateway`, which refuses signed requests for another one.
+    #[arg(long, value_name = "NAME")]
+    pub deployment: Option<String>,
     #[cfg(feature = "trust-gateway")]
     #[command(flatten)]
     pub gateway: GatewayTrustArgs,
@@ -635,10 +641,6 @@ pub struct GatewayTrustArgs {
     /// for the reclaim grace instead of being aborted.
     #[arg(long)]
     pub trust_gateway: bool,
-    /// Deployment this agent serves; signed requests for another deployment are refused
-    /// [default: $GRAPHRT_DEPLOYMENT].
-    #[arg(long, value_name = "NAME", requires = "trust_gateway")]
-    pub deployment: Option<String>,
     /// Name of the environment variable holding the gateway keys.
     #[arg(long, value_name = "VAR", default_value = crate::gateway_agent::KEYS_ENV)]
     pub gateway_keys_env: String,

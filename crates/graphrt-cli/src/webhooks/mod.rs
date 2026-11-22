@@ -159,8 +159,17 @@ impl Hook {
     }
 
     /// Run id derived from the idempotency key, so a redelivery maps to the same run.
-    fn idempotent_run_id(&self, key: &str) -> String {
-        let digest = Sha256::new().chain_update(self.id.as_bytes()).chain_update([0]).chain_update(key).finalize();
+    ///
+    /// With a deployment it is the gateway's id, `hook-` and the first 32 hex
+    /// digits of `sha256("hook|<deployment>|<hook>|<key>")`: a delivery gets the
+    /// same run id whether the gateway or this server receives it, and
+    /// deployments sharing a store never collide. Without one, the id of
+    /// earlier versions is kept, so redeliveries across an upgrade still dedupe.
+    fn idempotent_run_id(&self, deployment: Option<&str>, key: &str) -> String {
+        let digest = match deployment {
+            Some(deployment) => Sha256::digest(format!("hook|{deployment}|{}|{key}", self.id)),
+            None => Sha256::new().chain_update(self.id.as_bytes()).chain_update([0]).chain_update(key).finalize(),
+        };
         format!("hook-{}", crate::hex::to_hex(digest.get(..16).unwrap_or_default()))
     }
 
@@ -174,6 +183,8 @@ impl Hook {
 #[derive(Debug, Default)]
 pub struct Webhooks {
     hooks: IndexMap<String, Hook>,
+    /// `--deployment`: namespaces idempotent run ids.
+    deployment: Option<String>,
 }
 
 impl Webhooks {
@@ -204,11 +215,22 @@ impl Webhooks {
             let hook = build_hook(&id, spec, vars, allow_private_network).map_err(|e| format!("hook `{id}`: {e}"))?;
             hooks.insert(id, hook);
         }
-        Ok(Self { hooks })
+        Ok(Self { hooks, deployment: None })
     }
 
     pub fn is_empty(&self) -> bool {
         self.hooks.is_empty()
+    }
+
+    /// Namespace idempotent run ids by `deployment` (`--deployment`).
+    pub fn with_deployment(mut self, deployment: Option<String>) -> Self {
+        self.deployment = deployment;
+        self
+    }
+
+    /// The deployment idempotent run ids are namespaced by, if any.
+    pub fn deployment(&self) -> Option<&str> {
+        self.deployment.as_deref()
     }
 
     pub fn hooks(&self) -> impl Iterator<Item = &Hook> {
@@ -351,7 +373,7 @@ pub(crate) async fn receive(
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("body is not valid JSON: {e}")),
     };
     let run_id = match idempotency_key(&headers, &hook.idempotency_header) {
-        Ok(key) => key.map(|key| hook.idempotent_run_id(key)),
+        Ok(key) => key.map(|key| hook.idempotent_run_id(state.webhooks().deployment(), key)),
         Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
     };
     let inputs = hook.map_inputs(&json, &headers);
@@ -467,9 +489,26 @@ mod tests {
         let webhooks = hooks(json!({ "hooks": { "a": { "workflow": "w" }, "b": { "workflow": "w" } } })).unwrap();
         let a = webhooks.get("a").unwrap();
         let b = webhooks.get("b").unwrap();
-        assert_eq!(a.idempotent_run_id("k1"), a.idempotent_run_id("k1"));
-        assert_ne!(a.idempotent_run_id("k1"), a.idempotent_run_id("k2"));
-        assert_ne!(a.idempotent_run_id("k1"), b.idempotent_run_id("k1"));
-        assert!(graphrt_core::store::validate_run_id(&a.idempotent_run_id("k1")).is_ok());
+        for deployment in [None, Some("shop")] {
+            assert_eq!(a.idempotent_run_id(deployment, "k1"), a.idempotent_run_id(deployment, "k1"));
+            assert_ne!(a.idempotent_run_id(deployment, "k1"), a.idempotent_run_id(deployment, "k2"));
+            assert_ne!(a.idempotent_run_id(deployment, "k1"), b.idempotent_run_id(deployment, "k1"));
+            assert!(graphrt_core::store::validate_run_id(&a.idempotent_run_id(deployment, "k1")).is_ok());
+        }
+        // Without a deployment, the id of earlier versions (redeliveries across an upgrade dedupe).
+        assert_eq!(a.idempotent_run_id(None, "k1"), "hook-fb97f2ca0918a2711297b0359b49adeb");
+        // Deployments sharing a store never collide.
+        assert_ne!(a.idempotent_run_id(Some("shop"), "k1"), a.idempotent_run_id(Some("blog"), "k1"));
+        assert_ne!(a.idempotent_run_id(Some("shop"), "k1"), a.idempotent_run_id(None, "k1"));
+    }
+
+    /// The same id `graphrt-gateway` derives (`webhook::hook_run_id`), so a
+    /// delivery maps to one run whichever of the two receives it.
+    #[test]
+    fn namespaced_ids_match_the_gateway() {
+        let webhooks = hooks(json!({ "hooks": { "gh": { "workflow": "w" } } })).unwrap();
+        // `hook_run_id("shop", "gh", "delivery-1")` of the gateway.
+        let gateway = "hook-a76099f62e977ef809c457991ceb5e7a";
+        assert_eq!(webhooks.get("gh").unwrap().idempotent_run_id(Some("shop"), "delivery-1"), gateway);
     }
 }

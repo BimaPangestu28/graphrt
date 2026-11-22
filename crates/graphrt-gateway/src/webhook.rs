@@ -181,4 +181,12 @@ mod tests {
         assert_ne!(hook_run_id("shop", "gh", &key), hook_run_id("blog", "gh", &key));
         assert_eq!(delivery_key(&hook(Scheme::Github), &HeaderMap::new(), b"x"), sha256_hex(b"x"));
     }
+
+    /// `graphrt serve --deployment shop` derives the same id (its webhooks
+    /// test pins the same value), so a delivery maps to one run whichever of
+    /// the two receives it.
+    #[test]
+    fn run_ids_match_graphrt_serve() {
+        assert_eq!(hook_run_id("shop", "gh", "delivery-1"), "hook-a76099f62e977ef809c457991ceb5e7a");
+    }
 }
