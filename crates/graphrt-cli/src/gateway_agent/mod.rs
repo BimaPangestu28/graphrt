@@ -23,7 +23,9 @@
 //! `POST <gateway>/internal/v1/orphans/{id}` when `--gateway-url` is set. See
 //! `docs/gateway-protocol.md`.
 
+pub mod body;
 pub mod client;
+mod json;
 mod reclaim;
 mod routes;
 pub mod signature;
@@ -34,14 +36,13 @@ use std::time::Duration;
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use graphrt_core::response::ResponseAssembler;
 use graphrt_core::snapshot::FrameSnapshot;
 use graphrt_core::{Graph, Selector, Value};
 use indexmap::IndexMap;
 
 pub use self::reclaim::Orphan;
-pub use self::routes::{InternalResume, InternalRunRequest};
 use self::signature::{DEPLOYMENT_HEADER, EPOCH_HEADER, RUN_ID_HEADER, SIGNATURE_HEADER, Signed, Verifier};
 use crate::serve::AppState;
 
@@ -248,10 +249,16 @@ impl GatewayAgent {
     }
 }
 
+/// Run `task` in the background. Every background task of the gateway protocol
+/// goes through here as one boxed type, so the binary holds one copy of
+/// tokio's task code for them instead of one per future type.
+pub(crate) fn spawn_task(runtime: &tokio::runtime::Handle, task: futures::future::BoxFuture<'static, ()>) {
+    drop(runtime.spawn(task));
+}
+
 /// JSON error body `{error, error_type}` with `status`.
 pub(crate) fn protocol_error(status: StatusCode, error_type: &str, message: &str) -> Response {
-    let body = serde_json::json!({ "error": message, "error_type": error_type });
-    (status, axum::Json(body)).into_response()
+    json::response(status, json::Object::new().str("error", message).str("error_type", error_type).finish())
 }
 
 fn header_text<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
@@ -276,7 +283,7 @@ async fn handle(State(state): State<Arc<AppState>>, request: Request) -> Respons
     let mut response = match state.gateway_agent().cloned() {
         None => protocol_error(StatusCode::NOT_FOUND, "not_found", "this server does not trust a gateway"),
         Some(agent) => match verified(&agent, request).await {
-            Ok(verified) => routes::dispatch(&state, &agent, verified).await,
+            Ok(verified) => routes::dispatch(Arc::clone(&state), agent, verified).await,
             Err(refused) => refused,
         },
     };
@@ -288,9 +295,7 @@ async fn verified(agent: &GatewayAgent, request: Request) -> Result<Verified, Re
     let (parts, body) = request.into_parts();
     let protocol = header_text(&parts.headers, PROTOCOL_HEADER);
     if protocol.and_then(|p| p.trim().parse::<u32>().ok()) != Some(PROTOCOL_VERSION) {
-        let message =
-            format!("unsupported Graphrt-Protocol {:?}; this agent speaks {PROTOCOL_VERSION}", protocol.unwrap_or(""));
-        return Err(protocol_error(StatusCode::BAD_REQUEST, "unsupported_protocol", &message));
+        return Err(protocol_error(StatusCode::BAD_REQUEST, "unsupported_protocol", "Graphrt-Protocol must be 1"));
     }
     let body = axum::body::to_bytes(body, agent.config.max_body_bytes)
         .await
@@ -309,11 +314,10 @@ async fn verified(agent: &GatewayAgent, request: Request) -> Result<Verified, Re
         } else {
             StatusCode::UNAUTHORIZED
         };
-        return Err(protocol_error(status, "bad_signature", &e.to_string()));
+        return Err(protocol_error(status, "bad_signature", e.as_str()));
     }
     if deployment != agent.deployment() {
-        let message = format!("this agent serves deployment `{}`, not `{deployment}`", agent.deployment());
-        return Err(protocol_error(StatusCode::FORBIDDEN, "wrong_deployment", &message));
+        return Err(protocol_error(StatusCode::FORBIDDEN, "wrong_deployment", "another deployment"));
     }
     let epoch = if epoch.is_empty() {
         None

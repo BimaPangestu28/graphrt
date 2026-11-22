@@ -66,9 +66,9 @@ graphrt serve ./workflows --trust-gateway --deployment shop \
 
 The agent side is the cargo feature `trust-gateway` of `graphrt-cli`, on by
 default (release binaries and the container image have it). It adds no crate;
-a slim agent build (`--no-default-features --features
-serve,llm,plugins,trust-gateway`) is about 5.6 MiB on macOS arm64 (`min-size`),
-about 110 KiB more than without the feature.
+on a slim agent build (`--no-default-features --features
+serve,llm,plugins,trust-gateway`, `--profile min-size`) it adds about 81 KiB on
+Linux musl aarch64 and 100 KiB on x86_64.
 
 | Flag | Effect |
 | --- | --- |
@@ -125,7 +125,7 @@ gateway (it strips them).
 | --- | --- | --- |
 | GET | `/internal/v1/hello` | `{protocol, version, deployment, workflows: [{name, fingerprint}], max_active_runs, active_runs, warm_plugins, draining}` |
 | POST | `/internal/v1/runs` | Start or resume run `Graphrt-Run-Id` at `Graphrt-Epoch`; the response is the run's SSE stream |
-| GET | `/internal/v1/runs/{id}/stream?from=N` | Reattach after a lost connection (or `Last-Event-ID`) |
+| GET | `/internal/v1/runs/{id}/stream?from=N` | Reattach to a running execution after a lost connection (or `Last-Event-ID`); `409 finished` once it ended |
 | POST | `/internal/v1/runs/{id}/abort` | Abort the execution at `Graphrt-Epoch` |
 | POST | `/internal/v1/drain` | `{deadline_ms}`: the shutdown drain of `serve` (no new runs, active runs pause, preempted near the deadline); answers `202` at once |
 | GET | `/internal/v1/orphans` | Lost executions held for reclaim |
@@ -145,8 +145,10 @@ gateway (it strips them).
 
 Epochs make every start idempotent:
 
-- the same `run_id` and `epoch` again attaches to the running execution, or
-  replays its events once it finished: it is never executed twice;
+- the same `run_id` and `epoch` again attaches to the running execution; once
+  it finished, the request is `409 finished` (it is never executed twice). Its
+  outcome reached the gateway on a stream, or is held as an orphan when every
+  stream broke before the terminal event;
 - an older epoch than one already seen is `409 stale_epoch`;
 - a run executing at another epoch is `409 epoch_conflict`;
 - while draining, starts get `503 draining`.
@@ -188,10 +190,11 @@ restarts:
    `POST <gateway>/internal/v1/orphans/{id}` (signed, retried with backoff up
    to the grace); a gateway can also list orphans with `GET /internal/v1/orphans`
    and release one with `DELETE`;
-4. an orphan nobody took over is dropped at the end of the grace, and the run
-   is recorded in the agent's store as `failed` with `error_type: owner_lost`.
+4. an orphan nobody took over is dropped at the end of the grace. Marking the
+   run `failed{owner_lost}` is the gateway's decision: it owns the run's
+   record, and the agent's store is only a cache of its executions.
 
 The orphan body is `{run_id, epoch, deployment, status, event_count, terminal,
-answer, orphaned_ms}`; events between the gateway's own count and
-`event_count` can be fetched with the reattach stream while the agent still
-holds the execution.
+answer, orphaned_ms}`; `terminal` is the last event as streamed (a
+`run_paused` carries the snapshot), so the gateway can store the outcome and
+resume the run elsewhere.

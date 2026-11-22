@@ -68,7 +68,7 @@ pub(crate) use errors::error_response;
 pub(crate) use errors::store_error;
 pub use events::EventsQuery;
 #[cfg(feature = "trust-gateway")]
-pub(crate) use events::events_response;
+pub(crate) use execute::to_values;
 pub(crate) use execute::{Launch, launch_detached, traceparent};
 pub use resume::{ResumeRequest, resume_drained_runs};
 pub use router::{DEFAULT_MAX_UPLOAD_BYTES, router, router_with_uploads};

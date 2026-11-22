@@ -217,10 +217,14 @@ async fn a_gateway_run_streams_hello_global_ids_and_response_text_and_is_never_e
         .collect();
     assert_eq!(answer, "one two three");
 
-    // A retried start of the same epoch replays the execution instead of running it again.
+    // A retried start of the same, finished epoch is never executed again.
     let (status, _, again) = send(&app, signed("POST", "/internal/v1/runs", Some(("gw-run-1", 1)), &body)).await;
-    assert_eq!(status, StatusCode::OK, "{again}");
-    assert_eq!(engine_ids(&parse_sse(&again)), ids);
+    assert_eq!(status, StatusCode::CONFLICT, "{again}");
+    assert!(again.contains("\"finished\""), "{again}");
+    // Nor reattached to.
+    let uri = "/internal/v1/runs/gw-run-1/stream?from=0";
+    let (status, _, text) = send(&app, signed("GET", uri, Some(("gw-run-1", 1)), &Json::Null)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{text}");
     let (_, _, record) = send(&app, Request::get("/v1/runs/gw-run-1").body(Body::empty()).unwrap()).await;
     let record: Json = serde_json::from_str(&record).unwrap();
     assert_eq!(record["event_count"].as_u64(), Some(ids.len() as u64), "executed once: {record}");
@@ -426,7 +430,7 @@ async fn a_lost_gateway_stream_becomes_an_orphan_reported_to_the_gateway() {
 }
 
 #[tokio::test]
-async fn orphans_are_listed_for_reclaim_and_lost_after_the_grace() {
+async fn orphans_are_listed_for_reclaim_and_dropped_after_the_grace() {
     let app = router(state("orphan-list", Some(config(None, Duration::from_millis(400)))).await, 1 << 20);
     let start = json!({ "workflow": "approval", "inputs": { "amount": 5, "reason": "Tea" } });
     for run_id in ["kept", "lost"] {
@@ -456,13 +460,9 @@ async fn orphans_are_listed_for_reclaim_and_lost_after_the_grace() {
         StatusCode::NOT_FOUND
     );
 
-    // The other one is lost once the grace ran out.
+    // The other one is dropped once the grace ran out; marking the run lost is
+    // the gateway's decision (it owns the run's record).
     tokio::time::sleep(Duration::from_millis(700)).await;
     let (_, _, list) = send(&app, signed("GET", "/internal/v1/orphans", None, &Json::Null)).await;
     assert_eq!(serde_json::from_str::<Json>(&list).unwrap()["orphans"], json!([]));
-    let (_, _, lost) = send(&app, Request::get("/v1/runs/lost").body(Body::empty()).unwrap()).await;
-    let lost: Json = serde_json::from_str(&lost).unwrap();
-    assert_eq!((lost["status"].as_str(), lost["error_type"].as_str()), (Some("failed"), Some("owner_lost")), "{lost}");
-    let (_, _, kept) = send(&app, Request::get("/v1/runs/kept").body(Body::empty()).unwrap()).await;
-    assert_eq!(serde_json::from_str::<Json>(&kept).unwrap()["status"], "paused", "a reclaimed run is left alone");
 }

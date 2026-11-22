@@ -64,62 +64,55 @@ impl GatewayAddress {
     }
 }
 
-/// `POST` `body` (JSON) to `request_path` with extra `headers`, and return the
-/// response status code.
-///
-/// @throws String - On connection, I/O or protocol errors, or after the timeout.
-pub async fn post_json(
-    address: &GatewayAddress,
-    request_path: &str,
-    headers: &[(&str, String)],
-    body: &[u8],
-) -> Result<u16, String> {
-    let mut head = format!(
-        "POST {request_path} HTTP/1.1\r\nhost: {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-         connection: close\r\n",
-        address.host(),
-        body.len()
-    );
-    for (name, value) in headers {
-        if value.contains(['\r', '\n']) {
-            return Err(format!("header `{name}` contains a line break"));
-        }
-        head.push_str(&format!("{name}: {value}\r\n"));
+/// A `POST` of JSON `body` to `request_path` with extra `headers`, as bytes.
+/// Header values must not contain line breaks (callers pass validated ids,
+/// numbers and signatures).
+pub fn request(address: &GatewayAddress, request_path: &str, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(256 + body.len());
+    for part in ["POST ", request_path, " HTTP/1.1\r\nhost: ", address.host(), "\r\ncontent-type: application/json"] {
+        out.extend_from_slice(part.as_bytes());
     }
-    head.push_str("\r\n");
-    let exchange = async {
-        // One connection type for both socket kinds: one copy of the exchange.
-        let stream = match address {
-            GatewayAddress::Tcp { authority, .. } => {
-                Connection::Tcp(tokio::net::TcpStream::connect(authority.as_str()).await.map_err(|e| e.to_string())?)
-            }
-            #[cfg(unix)]
-            GatewayAddress::Unix { path } => {
-                Connection::Unix(tokio::net::UnixStream::connect(path).await.map_err(|e| e.to_string())?)
-            }
-            #[cfg(not(unix))]
-            GatewayAddress::Unix { .. } => return Err("Unix sockets are not supported on this platform".to_owned()),
-        };
-        exchange(stream, head.as_bytes(), body).await
-    };
-    tokio::time::timeout(REQUEST_TIMEOUT, exchange).await.map_err(|_| "gateway did not answer in time".to_owned())?
+    out.extend_from_slice(format!("\r\ncontent-length: {}\r\nconnection: close\r\n", body.len()).as_bytes());
+    for (name, value) in headers {
+        for part in [*name, ": ", *value, "\r\n"] {
+            out.extend_from_slice(part.as_bytes());
+        }
+    }
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(body);
+    out
 }
 
-async fn exchange(mut stream: Connection, head: &[u8], body: &[u8]) -> Result<u16, String> {
-    stream.write_all(head).await.map_err(|e| e.to_string())?;
-    stream.write_all(body).await.map_err(|e| e.to_string())?;
-    stream.flush().await.map_err(|e| e.to_string())?;
-    // Only the status line matters; read until it is complete.
-    let mut buf = Vec::with_capacity(64);
-    let mut chunk = [0u8; 256];
-    while !buf.contains(&b'\n') && buf.len() < 4096 {
-        let n = stream.read(&mut chunk).await.map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
+/// Send `request` (from [`request`]) and return the response status code.
+///
+/// @throws std::io::Error - On connection or I/O errors, a reply without a
+/// status line, or after the timeout.
+pub async fn send(address: &GatewayAddress, request: &[u8]) -> std::io::Result<u16> {
+    let exchange = async {
+        // One connection type for both socket kinds: one copy of the exchange.
+        let mut stream = match address {
+            GatewayAddress::Tcp { authority, .. } => {
+                Connection::Tcp(tokio::net::TcpStream::connect(authority.as_str()).await?)
+            }
+            #[cfg(unix)]
+            GatewayAddress::Unix { path } => Connection::Unix(tokio::net::UnixStream::connect(path).await?),
+            #[cfg(not(unix))]
+            GatewayAddress::Unix { .. } => return Err(std::io::ErrorKind::Unsupported.into()),
+        };
+        stream.write_all(request).await?;
+        // Only the status line matters; read until it is complete.
+        let mut buf = Vec::with_capacity(64);
+        let mut chunk = [0u8; 256];
+        while !buf.contains(&b'\n') && buf.len() < 4096 {
+            let n = stream.read(&mut chunk).await?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(chunk.get(..n).unwrap_or_default());
         }
-        buf.extend_from_slice(chunk.get(..n).unwrap_or_default());
-    }
-    parse_status(&buf).ok_or_else(|| "gateway sent no HTTP status line".to_owned())
+        parse_status(&buf).ok_or_else(|| std::io::ErrorKind::InvalidData.into())
+    };
+    tokio::time::timeout(REQUEST_TIMEOUT, exchange).await.unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()))
 }
 
 fn parse_status(response: &[u8]) -> Option<u16> {
@@ -175,13 +168,11 @@ mod tests {
             String::from_utf8(received).unwrap()
         });
         let address = GatewayAddress::parse(&format!("http://127.0.0.1:{port}")).unwrap();
-        let status = post_json(&address, "/internal/v1/orphans/r1", &[("graphrt-sig", "v1;x".into())], b"{\"ok\":1}")
-            .await
-            .unwrap();
+        let bytes = request(&address, "/internal/v1/orphans/r1", &[("graphrt-sig", "v1;x")], b"{\"ok\":1}");
+        let status = send(&address, &bytes).await.unwrap();
         assert_eq!(status, 202);
-        let request = server.await.unwrap();
-        assert!(request.starts_with("POST /internal/v1/orphans/r1 HTTP/1.1\r\n"), "{request}");
-        assert!(request.contains("graphrt-sig: v1;x\r\n") && request.contains("content-length: 8\r\n"), "{request}");
-        assert!(post_json(&address, "/x", &[("bad", "a\r\nb".into())], b"").await.is_err());
+        let received = server.await.unwrap();
+        assert!(received.starts_with("POST /internal/v1/orphans/r1 HTTP/1.1\r\n"), "{received}");
+        assert!(received.contains("graphrt-sig: v1;x\r\n") && received.contains("content-length: 8\r\n"), "{received}");
     }
 }

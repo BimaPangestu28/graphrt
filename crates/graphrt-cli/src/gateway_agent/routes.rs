@@ -7,67 +7,69 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Json;
 use axum::http::{Method, StatusCode};
-use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use futures::StreamExt;
+use futures::future::BoxFuture;
 use graphrt_core::engine::{ResumeFrom, RunInput};
 use graphrt_core::store::{RunRecord, now_ms, validate_run_id};
-use graphrt_core::{Snapshot, Value};
-use indexmap::IndexMap;
-use serde::Deserialize;
 
+use super::body::RunBody;
+use super::json;
 use super::reclaim::ReclaimGuard;
 use super::{AssemblerSeed, GatewayAgent, GatewayRequest, PROTOCOL_VERSION, Verified, protocol_error};
-use crate::serve::{AppState, RunRequest};
+use crate::serve::{AppState, RunRequest, to_values};
 use crate::sse_ids::Cursor;
 use crate::store::live::ActiveRun;
 
 /// Route a verified `/internal/v1/*` request to its endpoint.
-pub(super) async fn dispatch(state: &Arc<AppState>, agent: &Arc<GatewayAgent>, verified: Verified) -> Response {
+///
+/// Each endpoint's future is boxed on its own: awaited inline, they would make
+/// one state machine holding every endpoint (by far the largest function of the
+/// feature), while separately they cost a fraction of that.
+pub(super) fn dispatch(
+    state: Arc<AppState>,
+    agent: Arc<GatewayAgent>,
+    verified: Verified,
+) -> BoxFuture<'static, Response> {
     let Verified { parts, body, request } = verified;
     let endpoint = parts.uri.path().strip_prefix("/internal/v1/").unwrap_or_default();
     let segments: Vec<&str> = endpoint.split('/').collect();
     let method = &parts.method;
+    let done = |response: Response| -> BoxFuture<'static, Response> { Box::pin(std::future::ready(response)) };
     match segments.as_slice() {
-        ["hello"] if method == Method::GET => hello(state, agent),
-        ["runs"] if method == Method::POST => match parse_json::<InternalRunRequest>(&body) {
-            Ok(run) => start_run(state, agent, &request, traceparent(&parts.headers), run).await,
-            Err(refused) => refused,
+        ["hello"] if method == Method::GET => done(hello(&state, &agent)),
+        ["runs"] if method == Method::POST => match super::body::run(&body) {
+            Ok(run) => {
+                let trace = traceparent(&parts.headers);
+                Box::pin(async move { start_run(&state, &agent, &request, trace, run).await })
+            }
+            Err(message) => done(bad_request(message)),
         },
         ["runs", run_id, "stream"] if method == Method::GET => {
             let cursor = crate::sse_ids::cursor_of(&parts.headers)
                 .unwrap_or_else(|| Cursor::from_index(query_from(parts.uri.query())));
-            reattach(state, agent, &request, run_id, cursor).await
+            done(reattach(&state, &agent, &request, run_id, cursor))
         }
-        ["runs", run_id, "abort"] if method == Method::POST => abort(state, agent, &request, run_id),
+        ["runs", run_id, "abort"] if method == Method::POST => done(abort(&state, &agent, &request, run_id)),
         ["drain"] if method == Method::POST => {
-            let deadline_ms = if body.is_empty() {
-                None
-            } else {
-                match parse_json::<DrainRequest>(&body) {
-                    Ok(drain) => drain.deadline_ms,
-                    Err(refused) => return refused,
-                }
+            let deadline_ms = match super::body::drain_deadline_ms(&body) {
+                Ok(deadline_ms) => deadline_ms,
+                Err(message) => return done(bad_request(message)),
             };
-            drain(state, deadline_ms)
+            done(drain(&state, deadline_ms))
         }
         ["orphans"] if method == Method::GET => {
-            Json(serde_json::json!({ "orphans": agent.orphan_list() })).into_response()
+            let orphans = agent.orphan_list().iter().map(super::reclaim::Orphan::to_json).collect::<Vec<_>>();
+            done(json::response(StatusCode::OK, json::Object::new().raw("orphans", &json::array(orphans)).finish()))
         }
-        ["orphans", run_id] if method == Method::DELETE => release_orphan(agent, &request, run_id),
-        _ => protocol_error(StatusCode::NOT_FOUND, "not_found", "no such gateway endpoint"),
+        ["orphans", run_id] if method == Method::DELETE => done(release_orphan(&agent, &request, run_id)),
+        _ => done(protocol_error(StatusCode::NOT_FOUND, "not_found", "no such gateway endpoint")),
     }
 }
 
-/// A JSON request body, or `400 bad_request`. Parsed like axum's `Json`
-/// extractor (the public resume endpoint uses it), so the snapshot types'
-/// deserializers exist once in the binary, not once per JSON entry point.
-fn parse_json<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Response> {
-    Json::<T>::from_bytes(body).map(|Json(value)| value).map_err(|e| {
-        protocol_error(StatusCode::BAD_REQUEST, "bad_request", &format!("invalid request body: {}", e.body_text()))
-    })
+fn bad_request(message: &str) -> Response {
+    protocol_error(StatusCode::BAD_REQUEST, "bad_request", message)
 }
 
 /// `from=N` of a query string (0 when absent or invalid).
@@ -82,78 +84,25 @@ fn query_from(query: Option<&str>) -> u64 {
 
 /// `GET /internal/v1/hello`.
 fn hello(state: &AppState, agent: &GatewayAgent) -> Response {
-    let workflows: Vec<serde_json::Value> = state
-        .served_workflows()
-        .map(|(name, w)| serde_json::json!({ "name": name, "fingerprint": w.engine.graph().fingerprint() }))
-        .collect();
-    Json(serde_json::json!({
-        "protocol": PROTOCOL_VERSION,
-        "version": env!("CARGO_PKG_VERSION"),
-        "deployment": agent.deployment(),
-        "workflows": workflows,
-        "max_active_runs": state.max_active_runs(),
-        "active_runs": state.active_runs(),
-        "warm_plugins": state.warm_plugins(),
-        "draining": state.is_draining(),
-    }))
-    .into_response()
-}
-
-/// Body of `POST /internal/v1/runs`: a run request (`inputs`, `sys`,
-/// `conversation`, `metadata`, `session_id`, `user_id`, `tags`; the response
-/// is always SSE) plus the gateway's fields. The fields are listed rather than
-/// `#[serde(flatten)]`ed from [`RunRequest`]: flattening deserializes through a
-/// buffered tree and costs far more code.
-#[derive(Debug, Deserialize)]
-pub struct InternalRunRequest {
-    /// Served workflow name.
-    pub workflow: String,
-    /// Expected graph fingerprint; refused with `409 fingerprint_mismatch` when
-    /// this agent serves another version of the workflow.
-    #[serde(default)]
-    pub fingerprint: Option<String>,
-    /// Deployment version, copied to the run record.
-    #[serde(default)]
-    pub deployment_version: Option<String>,
-    /// Global index of this execution's first event (the gateway's event count),
-    /// so SSE ids continue the run's log across executions.
-    #[serde(default)]
-    pub event_index: u64,
-    /// Resume a paused run from its snapshot instead of starting it.
-    #[serde(default)]
-    pub resume: Option<InternalResume>,
-    #[serde(default)]
-    pub inputs: serde_json::Map<String, serde_json::Value>,
-    #[serde(default)]
-    pub sys: serde_json::Map<String, serde_json::Value>,
-    #[serde(default)]
-    pub conversation: serde_json::Map<String, serde_json::Value>,
-    #[serde(default)]
-    pub metadata: IndexMap<String, String>,
-    #[serde(default)]
-    pub session_id: Option<String>,
-    #[serde(default)]
-    pub user_id: Option<String>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    /// Preempt the execution after this many milliseconds (the gateway sets it
-    /// shortly before the platform's request cap, e.g. Cloud Run's 60 minutes):
-    /// the run pauses with reason kind `external` / `request_cap` and the
-    /// gateway re-dispatches it, instead of the platform killing the request.
-    #[serde(default)]
-    pub preempt_after_ms: Option<u64>,
-}
-
-/// `resume` of [`InternalRunRequest`].
-#[derive(Debug, Deserialize)]
-pub struct InternalResume {
-    pub snapshot: Snapshot,
-    /// Input for paused nodes keyed by node id (or `<frame>/<node_id>`).
-    #[serde(default)]
-    pub inputs: serde_json::Map<String, serde_json::Value>,
-    /// Secrets (other than `env.*`) to re-supply, keyed by `namespace.name`.
-    #[serde(default)]
-    pub secrets: IndexMap<String, String>,
+    let workflows = state.served_workflows().map(|(name, w)| {
+        json::Object::new().str("name", name).str("fingerprint", w.engine.graph().fingerprint()).finish()
+    });
+    let plugins = state.warm_plugins().into_iter().map(|name| {
+        let mut text = String::new();
+        json::push_str(&mut text, &name);
+        text
+    });
+    let body = json::Object::new()
+        .num("protocol", PROTOCOL_VERSION.into())
+        .str("version", env!("CARGO_PKG_VERSION"))
+        .str("deployment", agent.deployment())
+        .raw("workflows", &json::array(workflows))
+        .num("max_active_runs", state.max_active_runs() as u64)
+        .num("active_runs", state.active_runs() as u64)
+        .raw("warm_plugins", &json::array(plugins))
+        .bool("draining", state.is_draining())
+        .finish();
+    json::response(StatusCode::OK, body)
 }
 
 fn run_and_epoch(request: &GatewayRequest) -> Result<(String, u64), Response> {
@@ -168,10 +117,6 @@ fn run_and_epoch(request: &GatewayRequest) -> Result<(String, u64), Response> {
     Ok((run_id, epoch))
 }
 
-fn to_values(map: serde_json::Map<String, serde_json::Value>) -> IndexMap<String, Value> {
-    map.into_iter().map(|(k, v)| (k, Value::from_json(v))).collect()
-}
-
 /// `POST /internal/v1/runs`: start or resume run `Graphrt-Run-Id` at epoch
 /// `Graphrt-Epoch` and stream it. A request for the execution already running
 /// at that epoch attaches to it; another epoch is refused.
@@ -180,7 +125,7 @@ async fn start_run(
     agent: &Arc<GatewayAgent>,
     request: &GatewayRequest,
     trace: Option<String>,
-    body: InternalRunRequest,
+    body: RunBody,
 ) -> Response {
     let (run_id, epoch) = match run_and_epoch(request) {
         Ok(ids) => ids,
@@ -195,13 +140,14 @@ async fn start_run(
                 "a newer epoch of this run was dispatched here",
             );
         }
-        // A retried start of the execution already here: attach to it, or replay
-        // it once finished, never execute it twice.
+        // A retried start of the execution already here attaches to it; once it
+        // finished it is never executed twice. Its outcome reached the gateway on
+        // a stream, or is held as an orphan when every stream broke before it.
         Some(execution) if execution.epoch == epoch => {
             if active {
                 return attached_stream(state, agent, &run_id, epoch, Cursor::ALL).unwrap_or_else(|refused| refused);
             }
-            return crate::serve::events_response(state, &run_id, 0, execution.base_index, false).await;
+            return finished();
         }
         _ if active => {
             return protocol_error(StatusCode::CONFLICT, "epoch_conflict", "the run is executing at another epoch");
@@ -226,22 +172,17 @@ struct Prepared {
     preempt_after_ms: Option<u64>,
 }
 
-fn prepare(state: &AppState, run_id: &str, epoch: u64, body: InternalRunRequest) -> Result<Prepared, Response> {
+fn prepare(state: &AppState, run_id: &str, epoch: u64, body: RunBody) -> Result<Prepared, Response> {
     let Some(workflow) = state.served_workflow(&body.workflow) else {
-        return Err(protocol_error(
-            StatusCode::NOT_FOUND,
-            "unknown_workflow",
-            &format!("unknown workflow `{}`", body.workflow),
-        ));
+        return Err(protocol_error(StatusCode::NOT_FOUND, "unknown_workflow", "unknown workflow"));
     };
+    if body.resume.as_ref().is_some_and(|resume| resume.snapshot.run_id != run_id) {
+        return Err(bad_request("snapshot of another run"));
+    }
     let fingerprint = workflow.engine.graph().fingerprint();
     let expected = body.resume.as_ref().map(|r| r.snapshot.graph_fingerprint.as_str()).or(body.fingerprint.as_deref());
     if expected.is_some_and(|expected| expected != fingerprint) {
-        return Err(protocol_error(
-            StatusCode::CONFLICT,
-            "fingerprint_mismatch",
-            "this agent serves another version of the workflow",
-        ));
+        return Err(protocol_error(StatusCode::CONFLICT, "fingerprint_mismatch", "another workflow version"));
     }
     if let Some(busy) = state.busy_response() {
         return Err(busy);
@@ -254,7 +195,7 @@ fn prepare(state: &AppState, run_id: &str, epoch: u64, body: InternalRunRequest)
         tags: body.tags,
         ..RunRequest::default()
     };
-    context.apply_context(&mut record).map_err(|m| protocol_error(StatusCode::BAD_REQUEST, "bad_request", &m))?;
+    context.apply_context(&mut record).map_err(|m| bad_request(&m))?;
     record.deployment = state.gateway_agent().map(|agent| agent.deployment().to_owned());
     record.deployment_version = body.deployment_version;
     record.epoch = epoch;
@@ -265,9 +206,6 @@ fn prepare(state: &AppState, run_id: &str, epoch: u64, body: InternalRunRequest)
     input.conversation = to_values(body.conversation);
     input.env = workflow.env.clone();
     if let Some(resume) = body.resume {
-        if resume.snapshot.run_id != run_id {
-            return Err(protocol_error(StatusCode::BAD_REQUEST, "bad_request", "snapshot belongs to a different run"));
-        }
         let mut from = ResumeFrom::new(resume.snapshot, to_values(resume.inputs));
         for (selector, secret) in resume.secrets {
             from = from.secret(selector, secret);
@@ -318,7 +256,7 @@ async fn launch_stream(
         arm_request_cap(Arc::clone(state), Arc::clone(agent), run_id.clone(), epoch, after_ms);
     }
     // Attached once by `begin`; the stream below owns that attachment.
-    stream_execution(state, agent, active, epoch, Cursor::ALL).unwrap_or_else(|refused| refused)
+    stream_execution(agent, active, epoch, Cursor::ALL).unwrap_or_else(|refused| refused)
 }
 
 /// Reason data of a preemption before the platform's request cap.
@@ -327,15 +265,18 @@ pub const REQUEST_CAP_REASON: &str = "request_cap";
 /// Preempts execution `epoch` of `run_id` after `after_ms` if it still runs
 /// here, so a capped platform request ends with a resumable snapshot.
 fn arm_request_cap(state: Arc<AppState>, agent: Arc<GatewayAgent>, run_id: String, epoch: u64, after_ms: u64) {
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(after_ms)).await;
-        let current = agent.execution(&run_id).map(|execution| execution.epoch);
-        if current == Some(epoch)
-            && let Some(run) = state.active_run(&run_id)
-        {
-            run.handle().preempt(REQUEST_CAP_REASON);
-        }
-    });
+    super::spawn_task(
+        &tokio::runtime::Handle::current(),
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(after_ms)).await;
+            let current = agent.execution(&run_id).map(|execution| execution.epoch);
+            if current == Some(epoch)
+                && let Some(run) = state.active_run(&run_id)
+            {
+                run.handle().preempt(REQUEST_CAP_REASON);
+            }
+        }),
+    );
 }
 
 /// Attach one more stream to a running execution.
@@ -352,14 +293,13 @@ fn attached_stream(
     if agent.attach(run_id, epoch).is_none() {
         return Err(protocol_error(StatusCode::CONFLICT, "epoch_conflict", "no execution of this run at this epoch"));
     }
-    stream_execution(state, agent, active, epoch, cursor)
+    stream_execution(agent, active, epoch, cursor)
 }
 
 /// SSE of an attached execution: `hello`, then events and response text from
 /// `cursor`, with global ids. The stream holds the attachment; when it is
 /// dropped before the run finished, the reclaim grace starts.
 fn stream_execution(
-    state: &Arc<AppState>,
     agent: &Arc<GatewayAgent>,
     active: Arc<ActiveRun>,
     epoch: u64,
@@ -372,11 +312,7 @@ fn stream_execution(
     };
     let events = crate::store::live::follow(Arc::clone(&active), active.subscribe());
     let first_index = execution.base_index + active.stored_before;
-    let guard = ReclaimGuard::new(Arc::clone(agent), Arc::downgrade(state), Arc::clone(&active), run_id, epoch);
-    let hello = serde_json::json!({ "run_id": run_id, "epoch": epoch, "protocol": PROTOCOL_VERSION });
-    let hello = futures::stream::once(async move {
-        Ok::<_, std::convert::Infallible>(SseEvent::default().event("hello").data(hello.to_string()))
-    });
+    let guard = ReclaimGuard::new(Arc::clone(agent), Arc::clone(&active), run_id, epoch);
     let events = crate::serve::sse_stream(
         events,
         execution.assembler_seed.assembler(),
@@ -385,13 +321,19 @@ fn stream_execution(
         Box::new(guard),
         crate::serve::EventScope::Full,
     );
-    Ok(Sse::new(hello.chain(events)).keep_alive(KeepAlive::default()).into_response())
+    Ok(Sse::new(events).keep_alive(KeepAlive::default()).into_response())
 }
 
-/// `GET /internal/v1/runs/{id}/stream?from=N` (or `Last-Event-ID`): reattach.
-/// While the execution runs, its events and response text are streamed from
-/// the cursor; once it finished, its stored engine events are.
-async fn reattach(
+/// `409 finished`: the execution ended; see the orphans for an outcome no
+/// stream delivered.
+fn finished() -> Response {
+    protocol_error(StatusCode::CONFLICT, "finished", "execution finished")
+}
+
+/// `GET /internal/v1/runs/{id}/stream?from=N` (or `Last-Event-ID`): reattach to
+/// a running execution; its events and response text are streamed from the
+/// cursor. A finished one is `409 finished`.
+fn reattach(
     state: &Arc<AppState>,
     agent: &Arc<GatewayAgent>,
     request: &GatewayRequest,
@@ -404,11 +346,10 @@ async fn reattach(
     if request.epoch != Some(execution.epoch) {
         return protocol_error(StatusCode::CONFLICT, "epoch_conflict", "no execution of this run at this epoch");
     }
-    if state.active_run(run_id).is_some() {
-        return attached_stream(state, agent, run_id, execution.epoch, cursor).unwrap_or_else(|refused| refused);
+    if state.active_run(run_id).is_none() {
+        return finished();
     }
-    let local_from = cursor.start.saturating_sub(execution.base_index);
-    crate::serve::events_response(state, run_id, local_from, execution.base_index, false).await
+    attached_stream(state, agent, run_id, execution.epoch, cursor).unwrap_or_else(|refused| refused)
 }
 
 /// `POST /internal/v1/runs/{id}/abort` (at `Graphrt-Epoch`).
@@ -417,20 +358,14 @@ fn abort(state: &AppState, agent: &GatewayAgent, request: &GatewayRequest, run_i
     match (state.active_run(run_id), current) {
         (Some(run), Some(epoch)) if request.epoch == Some(epoch) => {
             run.handle().abort("aborted by the gateway");
-            (StatusCode::ACCEPTED, Json(serde_json::json!({ "run_id": run_id, "status": "aborting" }))).into_response()
+            json::response(
+                StatusCode::ACCEPTED,
+                json::Object::new().str("run_id", run_id).str("status", "aborting").finish(),
+            )
         }
         (Some(_), Some(_)) => protocol_error(StatusCode::CONFLICT, "epoch_conflict", "the run is at another epoch"),
         _ => protocol_error(StatusCode::NOT_FOUND, "not_found", "no active execution of this run"),
     }
-}
-
-/// Body of `POST /internal/v1/drain`.
-#[derive(Debug, Default, Deserialize)]
-struct DrainRequest {
-    /// How long the gateway waits for this agent, in milliseconds: active runs
-    /// pause, and those still running near the deadline are preempted.
-    #[serde(default)]
-    deadline_ms: Option<u64>,
 }
 
 /// Drain deadline when the gateway gives none.
@@ -446,15 +381,20 @@ fn drain(state: &Arc<AppState>, deadline_ms: Option<u64>) -> Response {
     // Refuse new runs before answering, so the gateway sees the drain in effect.
     state.begin_drain();
     let draining = Arc::clone(state);
-    tokio::spawn(async move {
-        let report = crate::drain::drain(&draining, Duration::from_millis(deadline_ms), "gateway drain", None).await;
-        eprintln!("{report}");
-    });
-    (
-        StatusCode::ACCEPTED,
-        Json(serde_json::json!({ "draining": true, "active_runs": active, "deadline_ms": deadline_ms })),
-    )
-        .into_response()
+    super::spawn_task(
+        &tokio::runtime::Handle::current(),
+        Box::pin(async move {
+            let report =
+                crate::drain::drain(&draining, Duration::from_millis(deadline_ms), "gateway drain", None).await;
+            eprintln!("{report}");
+        }),
+    );
+    let body = json::Object::new()
+        .bool("draining", true)
+        .num("active_runs", active as u64)
+        .num("deadline_ms", deadline_ms)
+        .finish();
+    json::response(StatusCode::ACCEPTED, body)
 }
 
 /// `DELETE /internal/v1/orphans/{id}` (at `Graphrt-Epoch`): the gateway took the run over.

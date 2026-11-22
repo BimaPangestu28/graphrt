@@ -31,7 +31,7 @@ fn record_context(record: &RunRecord) -> crate::otel::RunContext {
 }
 
 /// Request JSON values as engine values.
-pub(super) fn to_values(map: serde_json::Map<String, serde_json::Value>) -> IndexMap<String, Value> {
+pub(crate) fn to_values(map: serde_json::Map<String, serde_json::Value>) -> IndexMap<String, Value> {
     map.into_iter().map(|(k, v)| (k, Value::from_json(v))).collect()
 }
 

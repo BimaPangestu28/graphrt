@@ -209,19 +209,24 @@ pub enum SignatureError {
 
 impl std::error::Error for SignatureError {}
 
+impl SignatureError {
+    /// A short, static description (no secret, no request data).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SignatureError::Missing => "missing Graphrt-Sig",
+            SignatureError::Malformed => "malformed Graphrt-Sig",
+            SignatureError::UnknownKey(_) => "unknown key id",
+            SignatureError::Expired(_) => "timestamp outside the +-30 s window",
+            SignatureError::BadMac => "signature mismatch",
+            SignatureError::Replayed => "signature already used",
+            SignatureError::Busy => "replay window full; retry",
+        }
+    }
+}
+
 impl std::fmt::Display for SignatureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SignatureError::Missing => write!(f, "missing Graphrt-Sig header"),
-            SignatureError::Malformed => write!(f, "malformed Graphrt-Sig header"),
-            SignatureError::UnknownKey(kid) => write!(f, "unknown gateway key id `{kid}`"),
-            SignatureError::Expired(skew) => {
-                write!(f, "signature timestamp is {skew} s away from this server's clock (max {MAX_SKEW_SECS} s)")
-            }
-            SignatureError::BadMac => write!(f, "signature does not match"),
-            SignatureError::Replayed => write!(f, "signature was already used"),
-            SignatureError::Busy => write!(f, "too many signed requests in the replay window; retry"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
