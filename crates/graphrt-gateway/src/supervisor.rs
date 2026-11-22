@@ -638,6 +638,12 @@ impl Gateway {
             bump(&self.metrics.store_write_errors);
             eprintln!("gateway: run {}: storing snapshot: {error}", run.run_id);
         }
+        let migrate = record.status == RunStatus::Paused && is_external_pause(event);
+        if migrate {
+            // Not visible as paused: the run is queued for its next execution, and a
+            // restart re-dispatches it from the stored snapshot.
+            record.status = RunStatus::Queued;
+        }
         let callback = run.callback.clone().filter(|_| record.status.is_terminal()).map(|url| {
             let body = serde_json::json!({
                 "run_id": record.run_id, "deployment": record.deployment, "status": record.status,
@@ -649,10 +655,10 @@ impl Gateway {
             bump(&self.metrics.store_write_errors);
             eprintln!("gateway: run {}: storing final status: {error}", run.run_id);
         }
+        if migrate {
+            return snapshot.map(|snapshot| serde_json::json!({ "snapshot": snapshot }));
+        }
         if record.status == RunStatus::Paused {
-            if is_external_pause(event) {
-                return snapshot.map(|snapshot| serde_json::json!({ "snapshot": snapshot }));
-            }
             bump(&self.metrics.runs_paused);
         } else {
             bump(&self.metrics.runs_finished);
@@ -779,7 +785,9 @@ impl Gateway {
             let Ok(version) = deployment.version(record.deployment_version.as_deref().unwrap_or_default(), now_ms()) else { continue };
             let run = LiveRun::new(&record.run_id, deployment.clone(), RunInput::default(), None, self.settings.replay_ring);
             self.register(&run);
-            tokio::spawn(Arc::clone(self).supervise(run, version, record.clone(), None, None));
+            // A queued run with a snapshot was migrating when the gateway stopped.
+            let resume = self.store.load_snapshot(&record.run_id).await?.map(|snapshot| serde_json::json!({ "snapshot": snapshot }));
+            tokio::spawn(Arc::clone(self).supervise(run, version, record.clone(), None, resume));
         }
         let mut waiting = Vec::new();
         for record in &running {
