@@ -54,6 +54,11 @@ releases may contain breaking changes; they are called out under **Changed**.
   (`--verify-jwt`) could keep a safety judge from ever scoring their own runs.
   The cap now counts each source (`human`, `online`) separately. (Low; 0.4.0
   is affected.)
+- `graphrt serve`: `POST /v1/runs/{id}/feedback` parsed the JSON body (and
+  answered `415`/`400`) before checking the API key or user token, so
+  unauthenticated callers could make the server parse up to
+  `--max-body-bytes` of JSON per request. It now authenticates first, like
+  every other route. (Low; 0.4.0 is affected.)
 
 ## [0.4.0] - 2026-11-20
 

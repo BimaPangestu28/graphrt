@@ -23,8 +23,8 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path as UrlPath, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{FromRequest, Path as UrlPath, Request, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures::future::BoxFuture;
 use graphrt_core::store::{RunRecord, StoreResult, now_ms};
@@ -322,13 +322,18 @@ pub async fn get_scores(State(state): State<Arc<AppState>>, UrlPath(run_id): Url
 pub async fn post_feedback(
     State(state): State<Arc<AppState>>,
     UrlPath(run_id): UrlPath<String>,
-    headers: HeaderMap,
-    Json(body): Json<JsonValue>,
+    request: Request,
 ) -> Response {
     // Authorized here rather than by a middleware layer: one handler, less code.
-    let user = match state.authorize_user_or_key(&headers).await {
+    // The body is extracted only afterwards, so unauthenticated callers get a
+    // `401` without the server parsing their JSON, as on every other route.
+    let user = match state.authorize_user_or_key(request.headers()).await {
         Ok(user) => user,
         Err(refused) => return refused,
+    };
+    let body = match Json::<JsonValue>::from_request(request, &()).await {
+        Ok(Json(body)) => body,
+        Err(rejection) => return rejection.into_response(),
     };
     let body = match FeedbackRequest::from_json(&body) {
         Ok(body) => body,

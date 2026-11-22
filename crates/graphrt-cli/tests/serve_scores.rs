@@ -118,6 +118,25 @@ async fn feedback_is_validated_and_needs_the_key() {
 }
 
 #[tokio::test]
+async fn feedback_authenticates_before_reading_the_body() {
+    let app = router(Arc::new(hello_state(Some(API_KEY)).await), 1 << 20);
+    let run_id = start_hello(&app, Some(API_KEY)).await;
+    let feedback = format!("/v1/runs/{run_id}/feedback");
+    // Without a key, neither the content type nor the body may be judged first.
+    let untyped = Request::post(&feedback).body(Body::from("{}")).unwrap();
+    assert_eq!(send(&app, untyped).await.0, StatusCode::UNAUTHORIZED);
+    let malformed = Request::post(&feedback).header("content-type", "application/json").body(Body::from("{")).unwrap();
+    assert_eq!(send(&app, malformed).await.0, StatusCode::UNAUTHORIZED);
+    // With the key, the body is still checked.
+    let keyed = Request::post(&feedback)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {API_KEY}"))
+        .body(Body::from("{"))
+        .unwrap();
+    assert_eq!(send(&app, keyed).await.0, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn the_directory_store_keeps_scores_next_to_the_run() {
     let dir = std::env::temp_dir().join(format!("graphrt-serve-scores-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
