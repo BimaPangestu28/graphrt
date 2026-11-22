@@ -13,6 +13,7 @@ credential chain are hand-rolled on `sha2` + `reqwest`):
 | `auth-aws` | SigV4, credential chain, presigned EKS tokens | shared by the two providers and by the EKS flavour of the Kubernetes provider |
 | `provider-ecs` | **ECS Fargate**, one task per replica, scheduled by the gateway | async, webhook and cron runs; anything that may run longer than 14 minutes |
 | `provider-lambda` | **AWS Lambda** through `InvokeWithResponseStream` + Lambda Web Adapter | short synchronous runs (≤ 14 minutes) that a client waits for |
+| `deploy-ecs`, `deploy-lambda` (`deploy` = both) | the `DeployDriver`s of `graphrt deploy` | deploy time only (CI / operator credentials); the gateway's run-time build leaves them out |
 
 **App Runner is not supported**: it is closed to new customers since
 30 April 2026 (AWS points to ECS Express Mode instead).
@@ -203,6 +204,134 @@ At run time:
 }
 ```
 
+## Deploying (`deploy-ecs`, `deploy-lambda`)
+
+The `DeployDriver`s turn a `DeploymentSpec` into an immutable version the
+providers above can wake. They run with **deploy-time** credentials (CI via
+OIDC, an operator); the gateway's run-time role never needs these
+permissions. Every spec is validated before the first AWS call, and secrets
+are only ever references.
+
+### ECS Fargate: `EcsDeployDriver`
+
+One `RegisterTaskDefinition` per version; the returned `DeploymentRef::target`
+is the task definition ARN that `EcsProvider` starts. No ECS service is
+created: the gateway is the scheduler.
+
+- Fargate, `awsvpc`, Linux, one essential container `agent` with the image,
+  command, port mapping, plain `environment`, and `secrets` as
+  `valueFrom` references (Secrets Manager ARN, optionally `:json-key::`, or an
+  SSM parameter ARN; anything else is rejected, plaintext never reaches AWS).
+  The task execution role resolves them when the task starts.
+- `stopTimeout` = `grace_secs` (default and maximum **120 s**); the agent's
+  `--drain-timeout` must stay at `stopTimeout − 2 s`.
+- CPU / memory: the smallest valid Fargate size for `resources` (default
+  0.5 vCPU / 1 GiB; memory rounded up to what the size accepts).
+- Tags `graphrt:deployment`, `graphrt:version`, `graphrt:workflow`.
+
+| Provider setting | Required | Meaning |
+| --- | --- | --- |
+| `execution_role_arn` | yes | pulls the image, reads the secrets, writes logs |
+| `task_role_arn` | no | role the agent runs as |
+| `family` | no | task definition family (default `graphrt-<name>`) |
+| `container_port` | no | default 8080 |
+| `cpu_architecture` | no | `X86_64` (default) or `ARM64` |
+| `log_group` | no | CloudWatch Logs group (`awslogs`, prefix `graphrt`) |
+
+Re-applying a version registers a new revision of the same family (revisions
+are cheap and immutable); the ref of the latest apply is the one to wake.
+
+### Lambda: `LambdaDeployDriver`
+
+1. Validates: synchronous triggers only, `max_run_secs ≤ 840`, function timeout
+   (default `max_run_secs + 30`, ≤ 900), image from Amazon ECR, version usable
+   as an alias name (`[A-Za-z0-9_-]`, not only digits), no reserved `AWS_*`
+   variables, environment ≤ 4 KB.
+2. Creates the container-image function (`CreateFunction`, `PackageType: Image`),
+   or updates its configuration and then its code, waiting out
+   `LastUpdateStatus: InProgress` between steps. A concurrent create falls back
+   to the update path.
+3. Sets the Lambda Web Adapter environment: `AWS_LWA_INVOKE_MODE=response_stream`,
+   `AWS_LWA_PORT=<container_port>`, `AWS_LWA_READINESS_CHECK_PATH=/healthz`
+   (overridable).
+4. Publishes a version and points an alias named after the deployment version
+   at it. An alias that already points at different code is refused
+   (versions are immutable); re-applying the same spec is a no-op.
+5. Adds a Function URL on the alias with `AuthType: AWS_IAM` and
+   `InvokeMode: RESPONSE_STREAM` (`function_url: false` skips it). The gateway
+   itself invokes through `InvokeWithResponseStream`; the URL is for direct,
+   gateway-less access by IAM principals.
+
+Returned ref: `{name, version: alias, target: function ARN}`.
+
+**Secrets on Lambda.** Lambda environment variables cannot reference Secrets
+Manager or SSM, so a spec with secrets is refused (`Unsupported`) by default.
+With `secrets_mode: resolve-to-env` the driver reads each referenced secret at
+deploy time with the deploy credentials and stores it as an environment
+variable, encrypted at rest with `kms_key_arn` (or the Lambda default key).
+Values are never logged, but they are visible to anyone with
+`lambda:GetFunctionConfiguration` on the function; prefer ECS Fargate when that
+is not acceptable.
+
+Note: a refused apply (e.g. a reused version name) may already have updated the
+function's `$LATEST`; published versions and aliases, which are all the gateway
+invokes, are untouched.
+
+| Provider setting | Required | Meaning |
+| --- | --- | --- |
+| `role_arn` | yes | execution role of the function |
+| `function_name` | no | default `graphrt-<name>` |
+| `triggers` | no | default `["sync"]`; `async`, `webhook`, `cron` are rejected |
+| `max_run_secs` | no | default and maximum 840 |
+| `function_timeout_secs` | no | default `max_run_secs + 30` |
+| `container_port` | no | default 8080 |
+| `architecture` | no | `x86_64` (default) or `arm64` |
+| `function_url` | no | default `true` |
+| `secrets_mode` | no | `reject` (default) or `resolve-to-env` |
+| `kms_key_arn` | no | key encrypting the environment |
+
+### IAM policy for `graphrt deploy` (deploy time)
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": ["ecs:RegisterTaskDefinition", "ecs:TagResource"], "Resource": "*" },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:CreateFunction",
+        "lambda:UpdateFunctionConfiguration", "lambda:UpdateFunctionCode", "lambda:PublishVersion",
+        "lambda:GetAlias", "lambda:CreateAlias", "lambda:CreateFunctionUrlConfig",
+        "lambda:UpdateFunctionUrlConfig", "lambda:TagResource"
+      ],
+      "Resource": "arn:aws:lambda:REGION:ACCOUNT:function:graphrt-*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["iam:PassRole"],
+      "Resource": [
+        "arn:aws:iam::ACCOUNT:role/graphrt-agent-task-role",
+        "arn:aws:iam::ACCOUNT:role/graphrt-agent-execution-role",
+        "arn:aws:iam::ACCOUNT:role/graphrt-*-lambda"
+      ],
+      "Condition": { "StringEquals": { "iam:PassedToService": ["ecs-tasks.amazonaws.com", "lambda.amazonaws.com"] } }
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:SetRepositoryPolicy", "ecr:GetRepositoryPolicy"],
+      "Resource": "arn:aws:ecr:REGION:ACCOUNT:repository/graphrt*"
+    }
+  ]
+}
+```
+
+Only with Lambda `secrets_mode: resolve-to-env`, add
+`secretsmanager:GetSecretValue` / `ssm:GetParameter` (+ `kms:Decrypt`) on the
+referenced secrets, and `kms:Encrypt` / `kms:CreateGrant` on `kms_key_arn`.
+The ECS execution role (not the deployer) needs `secretsmanager:GetSecretValue`
+/ `ssm:GetParameters` on the referenced secrets.
+
 ## Conformance (plan §7)
 
 Every case runs per PR against fake AWS endpoints (ECS JSON 1.1, Lambda event
@@ -230,7 +359,19 @@ and the ±5 min clock window: `cargo test -p graphrt-provider-aws --features pro
 Lambda cold start, 14-minute streams through Lambda Web Adapter with the 15 s
 heartbeat, the real `Sandbox.Timedout` shape, `InvokeWithResponseStream`
 throttling; IRSA, Pod Identity and IMDSv2 on real hosts; the IAM policies above
-(least privilege); the EKS token against a real cluster.
+(least privilege); the EKS token against a real cluster; the deploy drivers
+against real ECS / Lambda (task definition accepted by Fargate, image function
+create/update timings, Lambda Web Adapter readiness on `/healthz`, Function URL
+streaming, KMS-encrypted environment with `resolve-to-env`).
+
+The deploy drivers are tested end to end on the fakes
+(`cargo test -p graphrt-provider-aws --features deploy`): ECS registers a
+revision with secrets as `valueFrom` and `stopTimeout`, and `EcsProvider`
+starts exactly that ARN; Lambda creates, waits out `InProgress`, updates,
+publishes, aliases, adds the streaming IAM Function URL, and `LambdaProvider`
+invokes `function:alias`; re-apply is a no-op, a reused version name with new
+code is refused, a create race falls back to update, secrets are refused
+unless `resolve-to-env`, and invalid specs make no AWS call.
 
 ## Binary size (C13)
 
@@ -246,6 +387,12 @@ gateway has anyway, so the delta is the feature alone.
 | `provider-ecs` | 1,885,952 B | **+81.3 KiB** vs `auth-aws` | 100 KiB (`gw-ecs`) |
 | `provider-lambda` | 1,869,216 B | **+65.0 KiB** vs `auth-aws` | 80 KiB (`gw-lambda`) |
 | `provider-ecs,provider-lambda` | 1,935,776 B | +211.2 KiB vs baseline | 300 KiB (sum) |
+| `deploy-ecs` | 1,902,704 B | +16.4 KiB vs `provider-ecs` | none (deploy CLI only) |
+| `deploy-lambda` | 1,952,464 B | +81.3 KiB vs `provider-lambda` | none (deploy CLI only) |
+| `deploy` (both) | 1,985,840 B | +48.9 KiB vs both providers | none (deploy CLI only) |
+
+The run-time builds (`provider-*`) are byte-identical with and without the
+deploy code in the crate: the drivers are only linked with `deploy-*`.
 
 The Linux musl numbers of the §9 gate are measured by the gateway's size job
 once the gateway binary exists. Nothing here is on the request hot path:

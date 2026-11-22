@@ -343,6 +343,45 @@ impl AwsRestClient {
         serde_json::from_slice(&bytes)
             .map_err(|e| ProviderError::transient(format!("{target}: response is not JSON: {e}")))
     }
+
+    /// Call a REST/JSON API (Lambda control plane): `method path?query` with an
+    /// optional JSON body; an empty response body is `Value::Null`.
+    ///
+    /// `POST` is not retried after a 5xx (it may have created the resource); the
+    /// caller reconciles with a read instead.
+    ///
+    /// @throws `ProviderError` as `send`, or `Transient` when the body is not JSON.
+    pub async fn json_rest(
+        &self,
+        method: &str,
+        path: &str,
+        query: &[(&str, &str)],
+        body: Option<&serde_json::Value>,
+    ) -> Result<serde_json::Value, ProviderError> {
+        let payload = match body {
+            Some(value) => {
+                serde_json::to_vec(value).map_err(|e| ProviderError::fatal(format!("cannot encode request: {e}")))?
+            }
+            None => Vec::new(),
+        };
+        let headers: &[(&str, &str)] = if body.is_some() { &[("content-type", "application/json")] } else { &[] };
+        let request = AwsRequest { method, path, query, headers, body: &payload, idempotent: method != "POST" };
+        let response = self.send(&request).await?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| ProviderError::transient(format!("{} response body: {e}", self.endpoint.service)))?;
+        if bytes.is_empty() {
+            return Ok(serde_json::Value::Null);
+        }
+        serde_json::from_slice(&bytes)
+            .map_err(|e| ProviderError::transient(format!("{method} {path}: response is not JSON: {e}")))
+    }
+}
+
+/// Whether `error` is an AWS `ResourceConflictException` (already exists / update in progress).
+pub fn is_conflict(error: &ProviderError) -> bool {
+    error.message.starts_with("ResourceConflictException") || error.message.starts_with("ResourceInUseException")
 }
 
 /// Why one attempt did not produce a response.

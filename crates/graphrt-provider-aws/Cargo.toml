@@ -21,6 +21,12 @@ auth-aws = ["dep:sha2", "dep:base64", "dep:reqwest", "dep:rustls", "dep:tokio", 
 provider-ecs = ["auth-aws"]
 # AWS Lambda: short synchronous runs through InvokeWithResponseStream + Lambda Web Adapter.
 provider-lambda = ["auth-aws", "dep:futures", "dep:bytes"]
+# Deploy-time drivers (`graphrt deploy`), kept out of the gateway's run-time build.
+# ECS: RegisterTaskDefinition (secrets as Secrets Manager / SSM references, stopTimeout).
+deploy-ecs = ["provider-ecs"]
+# Lambda: create/update the image function, publish a version, alias, Function URL (RESPONSE_STREAM).
+deploy-lambda = ["provider-lambda"]
+deploy = ["deploy-ecs", "deploy-lambda"]
 
 [dependencies]
 graphrt-provider-api.workspace = true

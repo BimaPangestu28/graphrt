@@ -50,8 +50,49 @@ async fn probe() {
     }
     #[cfg(feature = "provider-ecs")]
     probe_ecs(Arc::clone(&chain)).await;
+    #[cfg(feature = "deploy-ecs")]
+    probe_deploy_ecs(Arc::clone(&chain)).await;
+    #[cfg(feature = "deploy-lambda")]
+    probe_deploy_lambda(Arc::clone(&chain)).await;
     #[cfg(feature = "provider-lambda")]
     probe_lambda(chain).await;
+}
+
+#[cfg(any(feature = "deploy-ecs", feature = "deploy-lambda"))]
+fn probe_spec() -> graphrt_provider_aws::api::DeploymentSpec {
+    graphrt_provider_aws::api::DeploymentSpec {
+        name: std::env::args().next().unwrap_or_default(),
+        version: "v1".into(),
+        image: Some("i".into()),
+        command: Vec::new(),
+        env: Default::default(),
+        secrets: Vec::new(),
+        max_active_runs: 1,
+        min_replicas: 0,
+        max_replicas: 1,
+        grace_secs: 0,
+        resources: Default::default(),
+        workflow_fingerprint: String::new(),
+        provider_settings: Default::default(),
+    }
+}
+
+#[cfg(feature = "deploy-ecs")]
+async fn probe_deploy_ecs(chain: std::sync::Arc<graphrt_provider_aws::auth::CredentialChain>) {
+    use graphrt_provider_aws::api::DeployDriver;
+    use graphrt_provider_aws::deploy::ecs::{EcsDeployConfig, EcsDeployDriver};
+
+    let Ok(driver) = EcsDeployDriver::new(chain, EcsDeployConfig::new("eu-west-1")) else { return };
+    println!("{:?}", driver.apply(&probe_spec()).await.err());
+}
+
+#[cfg(feature = "deploy-lambda")]
+async fn probe_deploy_lambda(chain: std::sync::Arc<graphrt_provider_aws::auth::CredentialChain>) {
+    use graphrt_provider_aws::api::DeployDriver;
+    use graphrt_provider_aws::deploy::lambda::{LambdaDeployConfig, LambdaDeployDriver};
+
+    let Ok(driver) = LambdaDeployDriver::new(chain, LambdaDeployConfig::new("eu-west-1")) else { return };
+    println!("{:?}", driver.apply(&probe_spec()).await.err());
 }
 
 #[cfg(feature = "provider-ecs")]
