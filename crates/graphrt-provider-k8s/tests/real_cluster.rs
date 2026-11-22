@@ -16,27 +16,29 @@
 
 use std::time::{Duration, Instant};
 
+use graphrt_provider_api::{DeployDriver, DeploymentRef, DeploymentSpec, Provider, ReleaseMode, ReplicaPhase, Resources};
 use graphrt_provider_k8s::auth::{KubeconfigOptions, kubeconfig_from_env};
-use graphrt_provider_k8s::{
-    ClientOptions, DeployDriver, DeploymentRef, DeploymentSpec, K8sDeployDriver, K8sProvider, K8sProviderConfig,
-    KubeClient, Provider, ReleaseMode, ReplicaPhase,
-};
+use graphrt_provider_k8s::{ClientOptions, K8sDeployDriver, K8sProvider, K8sProviderConfig, KubeClient};
 
-fn spec(deployment: &DeploymentRef) -> DeploymentSpec {
+fn spec() -> DeploymentSpec {
     DeploymentSpec {
-        deployment: deployment.clone(),
-        image: std::env::var("GRAPHRT_K8S_E2E_IMAGE").unwrap_or_else(|_| "alpine:3.22".into()),
-        args: vec![
+        name: "graphrt-e2e".into(),
+        version: "v1".into(),
+        image: Some(std::env::var("GRAPHRT_K8S_E2E_IMAGE").unwrap_or_else(|_| "alpine:3.22".into())),
+        command: vec![
             "sh".into(),
             "-c".into(),
             "mkdir -p /tmp/www && echo ok > /tmp/www/healthz && exec httpd -f -p 8080 -h /tmp/www".into(),
         ],
-        port: 8080,
-        env: vec![],
+        env: Default::default(),
         secrets: vec![],
+        max_active_runs: 1,
+        min_replicas: 0,
+        max_replicas: 3,
         grace_secs: 5,
-        cpu: Some("10m".into()),
-        memory: Some("16Mi".into()),
+        resources: Resources { cpu_millis: 10, memory_mib: 16 },
+        workflow_fingerprint: "e2e".into(),
+        provider_settings: Default::default(),
     }
 }
 
@@ -44,7 +46,7 @@ async fn wait_for_zero(provider: &K8sProvider, deployment: &DeploymentRef) {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let live = provider.list(deployment).await.unwrap();
-        if live.iter().all(|replica| replica.phase == ReplicaPhase::Terminating) {
+        if live.iter().all(|replica| replica.phase != ReplicaPhase::Ready && replica.phase != ReplicaPhase::Starting) {
             return;
         }
         assert!(Instant::now() < deadline, "replicas still live: {live:?}");
@@ -62,8 +64,7 @@ async fn real_cluster_wake_scale_in_and_readiness() {
     let namespace = std::env::var("GRAPHRT_K8S_E2E_NAMESPACE").unwrap_or_else(|_| "default".into());
     let cluster = kubeconfig_from_env(&KubeconfigOptions { path: None, context: Some(context) }).unwrap();
     let client = KubeClient::new(&cluster, ClientOptions::default()).unwrap();
-    let deployment = DeploymentRef::new("graphrt-e2e", "v1");
-    K8sDeployDriver::new(client.clone(), &namespace).apply(&spec(&deployment)).await.unwrap();
+    let deployment: DeploymentRef = K8sDeployDriver::new(client.clone(), &namespace).apply(&spec()).await.unwrap();
     let mut config = K8sProviderConfig::new(&namespace);
     config.wake_timeout = Duration::from_secs(120);
     let provider = K8sProvider::new(client, config);
@@ -90,7 +91,7 @@ async fn real_cluster_wake_scale_in_and_readiness() {
     assert_eq!(endpoints.len(), 3);
     let victim = endpoints[1].replica.clone();
     provider.release(&victim, ReleaseMode::ScaleIn).await.unwrap();
-    let mut tracker = provider.readiness(&deployment);
+    let mut tracker = provider.readiness(&deployment).unwrap();
     let gone = tracker
         .wait_until(tokio::time::Instant::now() + Duration::from_secs(30), |ready| {
             ready.len() == 2 && ready.iter().all(|address| address.pod != victim.id)

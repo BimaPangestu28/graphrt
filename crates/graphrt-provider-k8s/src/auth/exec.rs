@@ -2,17 +2,19 @@
 //! `aws eks get-token`, `gke-gcloud-auth-plugin`, `kubelogin`.
 //!
 //! The plugin runs non-interactively with a timeout; its `ExecCredential`
-//! token is cached until `expirationTimestamp - REFRESH_MARGIN` by
-//! [`super::CachingTokenSource`]. Client certificates returned by a plugin are
+//! token is cached until `expirationTimestamp - REFRESH_MARGIN` by the shared
+//! [`super::TokenCache`]. Client certificates returned by a plugin are
 //! not supported (a TLS identity cannot be swapped on a live client): use the
 //! kubeconfig's `client-certificate-data` instead.
 
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 
-use super::{AccessToken, AuthError, SecretString, TokenFuture, TokenSource, parse_rfc3339};
+use graphrt_provider_api::{BoxFuture, ProviderError};
+
+use super::{AccessToken, AuthError, SecretString, TokenFetcher, UNKNOWN_EXPIRY, parse_rfc3339};
 
 /// How long a plugin may run before it is killed.
 const EXEC_TIMEOUT: Duration = Duration::from_secs(60);
@@ -31,11 +33,11 @@ pub struct ExecConfig {
 
 /// Runs an exec plugin to obtain bearer tokens.
 #[derive(Debug)]
-pub struct ExecTokenSource {
+pub struct ExecTokenFetcher {
     config: ExecConfig,
 }
 
-impl ExecTokenSource {
+impl ExecTokenFetcher {
     /// Validate a plugin config.
     ///
     /// @throws AuthError::Exec - unknown `apiVersion` or empty command
@@ -84,9 +86,9 @@ impl ExecTokenSource {
     }
 }
 
-impl TokenSource for ExecTokenSource {
-    fn fetch(&self) -> TokenFuture<'_> {
-        Box::pin(self.run())
+impl TokenFetcher for ExecTokenFetcher {
+    fn fetch(&self) -> BoxFuture<'_, Result<AccessToken, ProviderError>> {
+        Box::pin(async move { Ok(self.run().await?) })
     }
 }
 
@@ -121,14 +123,14 @@ fn parse_exec_credential(stdout: &[u8]) -> Result<AccessToken, AuthError> {
         };
         return Err(AuthError::Unsupported(reason.into()));
     };
-    let expires_at = match status.expiration_timestamp {
-        Some(timestamp) => Some(
-            parse_rfc3339(&timestamp)
-                .ok_or_else(|| AuthError::Exec(format!("bad expirationTimestamp {timestamp:?}")))?,
-        ),
-        None => None,
+    let expires_in = match status.expiration_timestamp {
+        Some(timestamp) => parse_rfc3339(&timestamp)
+            .ok_or_else(|| AuthError::Exec(format!("bad expirationTimestamp {timestamp:?}")))?
+            .duration_since(SystemTime::now())
+            .unwrap_or_default(),
+        None => UNKNOWN_EXPIRY,
     };
-    Ok(AccessToken { token: SecretString::new(token), expires_at })
+    Ok(AccessToken { value: SecretString::new(token), expires_in })
 }
 
 #[cfg(test)]
@@ -138,13 +140,16 @@ mod tests {
     #[test]
     fn parses_tokens_with_and_without_expiry() {
         let token = parse_exec_credential(
-            br#"{"kind":"ExecCredential","apiVersion":"client.authentication.k8s.io/v1","status":{"token":"k8s-aws-v1.abc","expirationTimestamp":"2026-11-22T10:15:30Z"}}"#,
+            br#"{"kind":"ExecCredential","apiVersion":"client.authentication.k8s.io/v1","status":{"token":"k8s-aws-v1.abc","expirationTimestamp":"2999-01-01T00:00:00Z"}}"#,
         )
         .unwrap();
-        assert_eq!(token.token.expose(), "k8s-aws-v1.abc");
-        assert_eq!(token.expires_at, parse_rfc3339("2026-11-22T10:15:30Z"));
+        assert_eq!(token.value.expose(), "k8s-aws-v1.abc");
+        assert!(token.expires_in > Duration::from_secs(3600));
+        // Already expired (clock skew): zero lifetime, re-fetched on next use.
+        let expired = parse_exec_credential(br#"{"status":{"token":"t","expirationTimestamp":"2001-01-01T00:00:00Z"}}"#).unwrap();
+        assert_eq!(expired.expires_in, Duration::ZERO);
         let forever = parse_exec_credential(br#"{"status":{"token":"t"}}"#).unwrap();
-        assert_eq!(forever.expires_at, None);
+        assert_eq!(forever.expires_in, UNKNOWN_EXPIRY);
     }
 
     #[test]
@@ -168,7 +173,7 @@ mod tests {
             env: vec![],
             cluster_server: None,
         };
-        assert!(ExecTokenSource::new(config).is_err());
+        assert!(ExecTokenFetcher::new(config).is_err());
     }
 
     #[cfg(unix)]
@@ -176,7 +181,7 @@ mod tests {
     async fn runs_the_plugin_with_exec_info() {
         // The plugin echoes the apiVersion it was given in KUBERNETES_EXEC_INFO back as the token.
         let script = r#"info="$KUBERNETES_EXEC_INFO"; case "$info" in *'"interactive":false'*) ;; *) exit 3;; esac; printf '{"kind":"ExecCredential","status":{"token":"%s"}}' "$GREETING""#;
-        let source = ExecTokenSource::new(ExecConfig {
+        let source = ExecTokenFetcher::new(ExecConfig {
             api_version: "client.authentication.k8s.io/v1".into(),
             command: "sh".into(),
             args: vec!["-c".into(), script.into()],
@@ -184,8 +189,8 @@ mod tests {
             cluster_server: Some("https://k8s".into()),
         })
         .unwrap();
-        assert_eq!(source.fetch().await.unwrap().token.expose(), "from-plugin");
-        let failing = ExecTokenSource::new(ExecConfig {
+        assert_eq!(source.fetch().await.unwrap().value.expose(), "from-plugin");
+        let failing = ExecTokenFetcher::new(ExecConfig {
             api_version: "client.authentication.k8s.io/v1".into(),
             command: "sh".into(),
             args: vec!["-c".into(), "echo nope >&2; exit 7".into()],

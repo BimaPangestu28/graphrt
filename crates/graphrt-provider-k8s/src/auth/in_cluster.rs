@@ -2,9 +2,7 @@
 //! from `KUBERNETES_SERVICE_HOST` / `KUBERNETES_SERVICE_PORT`.
 
 use std::path::Path;
-use std::sync::Arc;
-
-use super::{AuthError, ClusterConfig, TokenFile};
+use super::{AuthError, ClusterConfig, TokenFile, cached};
 
 /// Where Kubernetes mounts the service account of a pod.
 pub const IN_CLUSTER_DIR: &str = "/var/run/secrets/kubernetes.io/serviceaccount";
@@ -47,7 +45,7 @@ pub fn in_cluster_config_from(
         server: format!("https://{host}:{port}"),
         ca_pem: Some(ca_pem),
         client_identity_pem: None,
-        token_source: Some(Arc::new(TokenFile(token_path))),
+        token_source: Some(cached(TokenFile(token_path))),
         namespace,
     })
 }
@@ -71,8 +69,8 @@ mod tests {
         let config = in_cluster_config_from(Some("10.96.0.1"), Some("443"), &dir).unwrap();
         assert_eq!(config.server, "https://10.96.0.1:443");
         assert_eq!(config.namespace.as_deref(), Some("agents"));
-        let token = config.token_source.unwrap().fetch().await.unwrap();
-        assert_eq!(token.token.expose(), "sa-token");
+        let token = config.token_source.unwrap().token(false).await.unwrap();
+        assert_eq!(token.expose(), "sa-token");
         let ipv6 = in_cluster_config_from(Some("fd00::1"), Some("443"), &dir).unwrap();
         assert_eq!(ipv6.server, "https://[fd00::1]:443");
         std::fs::remove_dir_all(dir).unwrap();

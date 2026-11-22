@@ -5,14 +5,19 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use graphrt_provider_api::{ProviderError, ProviderErrorKind};
 use tokio::time::Instant;
 
-use crate::client::{KubeClient, KubeError, WatchEvent};
+use crate::client::{KubeClient, WatchEvent, http_status};
 use crate::names::encode_query;
 use crate::resources::{EndpointSlice, ObjectList, ReadyAddress, SERVICE_NAME_LABEL};
 
 /// Longest single watch request; the server closes it and we resume.
 const WATCH_CHUNK: Duration = Duration::from_secs(60);
+/// A watch that ends this fast without a change is not reopened at once
+/// (servers or proxies that close watches early must not be hammered).
+const SHORT_WATCH: Duration = Duration::from_secs(1);
+const SHORT_WATCH_PAUSE: Duration = Duration::from_millis(50);
 
 /// Ready addresses of one Service, kept current from a watch.
 #[derive(Debug)]
@@ -45,7 +50,7 @@ impl ReadinessTracker {
     }
 
     /// Replace the state with a fresh LIST.
-    pub async fn relist(&mut self) -> Result<(), KubeError> {
+    pub async fn relist(&mut self) -> Result<(), ProviderError> {
         let path = format!("{}?labelSelector={}", self.collection_path, self.selector);
         let list: ObjectList<EndpointSlice> = self.client.get(&path).await?;
         self.slices =
@@ -57,7 +62,7 @@ impl ReadinessTracker {
     /// Watch until `done(ready)` holds or `deadline` passes.
     ///
     /// @returns `true` when the condition held, `false` on deadline
-    pub async fn wait_until<F>(&mut self, deadline: Instant, mut done: F) -> Result<bool, KubeError>
+    pub async fn wait_until<F>(&mut self, deadline: Instant, mut done: F) -> Result<bool, ProviderError>
     where
         F: FnMut(&[ReadyAddress]) -> bool,
     {
@@ -72,9 +77,13 @@ impl ReadinessTracker {
             if remaining.is_zero() {
                 return Ok(false);
             }
+            let started = Instant::now();
             match tokio::time::timeout_at(deadline, self.watch_once(remaining.min(WATCH_CHUNK), &mut done)).await {
                 Err(_elapsed) => return Ok(done(&self.ready())),
                 Ok(Ok(true)) => return Ok(true),
+                Ok(Ok(false)) if started.elapsed() < SHORT_WATCH => {
+                    tokio::time::sleep_until(deadline.min(Instant::now() + SHORT_WATCH_PAUSE)).await;
+                }
                 Ok(Ok(false)) => {}
                 Ok(Err(error)) if is_gone(&error) => self.relist().await?,
                 Ok(Err(error)) => return Err(error),
@@ -85,7 +94,7 @@ impl ReadinessTracker {
     /// Follow changes forever, calling `on_change` with the full ready set after
     /// each change (the gateway's replica-death detector, conformance C5).
     /// Returns only on an error that a relist cannot fix.
-    pub async fn follow<F>(&mut self, mut on_change: F) -> Result<(), KubeError>
+    pub async fn follow<F>(&mut self, mut on_change: F) -> Result<(), ProviderError>
     where
         F: FnMut(&[ReadyAddress]),
     {
@@ -100,13 +109,15 @@ impl ReadinessTracker {
                 }
                 false
             };
+            let started = Instant::now();
             match self.watch_once(WATCH_CHUNK, &mut changed).await {
+                Ok(_) if started.elapsed() < SHORT_WATCH => tokio::time::sleep(SHORT_WATCH_PAUSE).await,
                 Ok(_) => {}
                 Err(error) if is_gone(&error) => {
                     self.relist().await?;
                     changed(&self.ready());
                 }
-                Err(error) if matches!(error, KubeError::Transport { .. }) => {
+                Err(error) if error.kind == ProviderErrorKind::Transient => {
                     tracing::debug!(%error, "endpointslice watch dropped, resuming");
                     tokio::time::sleep(Duration::from_millis(200)).await;
                 }
@@ -116,7 +127,7 @@ impl ReadinessTracker {
     }
 
     /// One watch request; `true` as soon as `done` holds.
-    async fn watch_once<F>(&mut self, timeout: Duration, done: &mut F) -> Result<bool, KubeError>
+    async fn watch_once<F>(&mut self, timeout: Duration, done: &mut F) -> Result<bool, ProviderError>
     where
         F: FnMut(&[ReadyAddress]) -> bool,
     {
@@ -138,21 +149,17 @@ impl ReadinessTracker {
         Ok(false)
     }
 
-    fn apply(&mut self, event: WatchEvent<serde_json::Value>, path: &str) -> Result<(), KubeError> {
+    fn apply(&mut self, event: WatchEvent<serde_json::Value>, path: &str) -> Result<(), ProviderError> {
         if event.kind == "ERROR" {
+            // A Status object; keep the `HTTP <code>:` convention so `http_status` reads it.
             let code = event.object.get("code").and_then(serde_json::Value::as_u64).unwrap_or(500);
             let message = event.object.get("message").and_then(serde_json::Value::as_str).unwrap_or_default();
-            return Err(KubeError::Status {
-                method: "WATCH".into(),
-                path: path.to_owned(),
-                code: u16::try_from(code).unwrap_or(500),
-                reason: event.object.get("reason").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned(),
-                message: message.to_owned(),
-                retry_after: None,
-            });
+            let code = u16::try_from(code).unwrap_or(500);
+            let kind = ProviderError::kind_for_status(code);
+            return Err(ProviderError::new(kind, format!("HTTP {code}: {message} (WATCH {path})")));
         }
         let slice: EndpointSlice = serde_json::from_value(event.object)
-            .map_err(|error| KubeError::Decode { path: path.to_owned(), message: error.to_string() })?;
+            .map_err(|error| ProviderError::fatal(format!("decode watch event of {path}: {error}")))?;
         if !slice.metadata.resource_version.is_empty() {
             self.resource_version = Some(slice.metadata.resource_version.clone());
         }
@@ -169,6 +176,6 @@ impl ReadinessTracker {
     }
 }
 
-fn is_gone(error: &KubeError) -> bool {
-    error.status_code() == Some(410) || error.reason() == Some("Expired")
+fn is_gone(error: &ProviderError) -> bool {
+    http_status(error) == Some(410)
 }

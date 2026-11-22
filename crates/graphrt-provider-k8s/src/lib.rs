@@ -9,23 +9,25 @@
 //!   client certificate, exec plugin) and the [`auth::TokenSource`] hook for
 //!   EKS / GKE / AKS cluster tokens.
 //!
-//! Hand-rolled REST on the reqwest + rustls stack graphrt already links: no
+//! The traits and types are `graphrt-provider-api`'s. Hand-rolled REST on the
+//! shared `ProviderHttp` layer (reqwest + rustls, already linked): no
 //! `kube`, no `k8s-openapi`, no `h2` (plan §9).
 //!
 //! ```no_run
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! use graphrt_provider_k8s::{ClientOptions, DeploymentRef, K8sProvider, K8sProviderConfig, KubeClient, Provider};
+//! use graphrt_provider_api::{DeploymentRef, Provider};
+//! use graphrt_provider_k8s::{ClientOptions, K8sProvider, K8sProviderConfig, KubeClient};
 //!
 //! let cluster = graphrt_provider_k8s::auth::infer_cluster_config()?;
 //! let namespace = cluster.namespace.clone().unwrap_or_else(|| "default".into());
-//! let provider = K8sProvider::new(KubeClient::new(&cluster, ClientOptions::default())?, K8sProviderConfig::new(namespace));
-//! let endpoints = provider.wake(&DeploymentRef::new("support-bot", "v3"), 1).await?;
+//! let provider = K8sProvider::new(KubeClient::new(&cluster, ClientOptions::default())?, K8sProviderConfig::new(&namespace));
+//! let version = DeploymentRef::new("support-bot", "v3", format!("{namespace}/support-bot-v3"));
+//! let endpoints = provider.wake(&version, 1).await?;
 //! # drop(endpoints);
 //! # Ok(())
 //! # }
 //! ```
 
-pub mod api;
 pub mod auth;
 mod client;
 pub mod deploy;
@@ -36,10 +38,6 @@ mod provider;
 pub mod readiness;
 pub mod resources;
 
-pub use api::{
-    Addressing, Capabilities, DeployDriver, DeployError, DeploymentRef, DeploymentSpec, Endpoint, Provider,
-    ProviderError, ReleaseMode, ReplicaPhase, ReplicaRef, ReplicaState, Scaler, SecretRef,
-};
-pub use client::{ClientOptions, KubeClient, KubeError, RequestBody, WatchEvent, WatchStream};
+pub use client::{ClientOptions, KubeClient, RequestBody, WatchEvent, WatchStream, http_status};
 pub use deploy::K8sDeployDriver;
 pub use provider::{GATEWAY_FIELD_MANAGER, K8sProvider, K8sProviderConfig};

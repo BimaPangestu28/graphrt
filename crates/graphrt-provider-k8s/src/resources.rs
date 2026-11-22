@@ -71,6 +71,19 @@ pub struct ScaleSpec {
     pub replicas: u32,
 }
 
+/// Only the status conditions of an `apps/v1` Deployment.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DeploymentStatusOnly {
+    #[serde(default)]
+    pub status: DeploymentStatus,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DeploymentStatus {
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub conditions: Vec<PodCondition>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Pod {
     #[serde(default)]

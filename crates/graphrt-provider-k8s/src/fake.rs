@@ -22,6 +22,7 @@ use std::time::Duration;
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::Response;
+use graphrt_provider_api::conformance::{FakeHandler, FakeResponse, RecordedRequest as ScriptedRequest};
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -34,13 +35,16 @@ pub struct FakeOptions {
     pub ready_delay: Duration,
     /// Pods beyond this many (cluster-wide) stay Pending/Unschedulable.
     pub capacity: Option<usize>,
+    /// Pods beyond this many (cluster-wide) are never created, as with an
+    /// exhausted ResourceQuota: the Deployment gets `ReplicaFailure=True`.
+    pub quota: Option<usize>,
     /// Accepted bearer tokens; `None` accepts any request.
     pub accepted_tokens: Option<HashSet<String>>,
 }
 
 impl Default for FakeOptions {
     fn default() -> Self {
-        Self { ready_delay: Duration::from_millis(20), capacity: None, accepted_tokens: None }
+        Self { ready_delay: Duration::from_millis(20), capacity: None, quota: None, accepted_tokens: None }
     }
 }
 
@@ -74,6 +78,7 @@ struct FakeDeployment {
     pod_labels: BTreeMap<String, String>,
     port: u16,
     manifest: Value,
+    replica_failure: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,7 +136,23 @@ impl FakeApiServer {
         let state = shared.clone();
         let router = axum::Router::new().fallback(move |method: Method, uri: Uri, headers: HeaderMap, body: Bytes| {
             let state = state.clone();
-            async move { handle(&state, &method, &uri, &headers, &body) }
+            async move {
+                let bearer = headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("Bearer "))
+                    .map(str::to_owned);
+                let request = RecordedRequest {
+                    method: method.to_string(),
+                    path: uri.path().to_owned(),
+                    query: uri.query().unwrap_or_default().to_owned(),
+                    bearer,
+                };
+                match handle(&state, request, &body) {
+                    Handled::Reply(reply) => into_axum(reply),
+                    Handled::Watch { namespace, service, query } => watch_slices(&state, &namespace, &service, &query),
+                }
+            }
         });
         tokio::spawn(async move {
             let serve = axum::serve(listener, router).with_graceful_shutdown(async {
@@ -142,6 +163,32 @@ impl FakeApiServer {
             }
         });
         Ok(Self { address, shared, _shutdown: shutdown })
+    }
+
+    /// The same emulated cluster as a handler for the shared conformance
+    /// harness's `FakeServer` (one request per connection: a watch answers
+    /// its backlog and closes, and the provider re-watches).
+    pub fn scripted_handler(&self) -> FakeHandler {
+        let shared = self.shared.clone();
+        Arc::new(move |request: &ScriptedRequest| {
+            let (path, query) = request.path.split_once('?').unwrap_or((request.path.as_str(), ""));
+            let bearer = request.header("authorization").and_then(|value| value.strip_prefix("Bearer ")).map(str::to_owned);
+            let recorded =
+                RecordedRequest { method: request.method.clone(), path: path.to_owned(), query: query.to_owned(), bearer };
+            let reply = match handle(&shared, recorded, &request.body) {
+                Handled::Reply(reply) => reply,
+                Handled::Watch { namespace, service, query } => {
+                    let lines = watch_backlog(&shared, &namespace, &service, watch_since(&query)).unwrap_or_else(|gone| vec![gone]);
+                    Reply { status: 200, body: lines.concat(), retry_after: None }
+                }
+            };
+            let mut response = FakeResponse { status: reply.status, headers: Vec::new(), body: reply.body };
+            response.headers.push(("content-type".into(), "application/json".into()));
+            if let Some(seconds) = reply.retry_after {
+                response.headers.push(("retry-after".into(), seconds.to_string()));
+            }
+            response
+        })
     }
 
     /// Base URL (`http://127.0.0.1:<port>`).
@@ -163,7 +210,7 @@ impl FakeApiServer {
         let resource_version = cluster.bump();
         cluster.deployments.insert(
             (namespace.into(), name.into()),
-            FakeDeployment { replicas: 0, resource_version, pod_labels, port, manifest: Value::Null },
+            FakeDeployment { replicas: 0, resource_version, pod_labels, port, manifest: Value::Null, replica_failure: None },
         );
         cluster.publish_slice(&self.shared, namespace, name);
     }
@@ -249,9 +296,21 @@ impl Cluster {
             .map(|((_, pod_name), pod)| (pod_name.clone(), pod.clone()))
             .collect();
         let wanted = usize::try_from(deployment.replicas).unwrap_or(usize::MAX);
+        let mut failure = None;
         while owned.len() < wanted {
+            if shared.options.quota.is_some_and(|quota| self.pods.len() >= quota) {
+                failure = Some(format!(
+                    "pods \"{name}-x\" is forbidden: exceeded quota: compute, requested: pods=1, used: pods={}, limited: pods={}",
+                    self.pods.len(),
+                    self.pods.len()
+                ));
+                break;
+            }
             let pod = self.create_pod(shared, namespace, name, &deployment);
             owned.push(pod);
+        }
+        if let Some(entry) = self.deployments.get_mut(&(namespace.into(), name.into())) {
+            entry.replica_failure = failure;
         }
         if owned.len() > wanted {
             // Not-ready first, then lowest deletion cost, then newest (ReplicaSet ranking).
@@ -386,16 +445,40 @@ fn pod_json(name: &str, pod: &FakePod) -> Value {
     })
 }
 
-fn respond(status: StatusCode, body: &Value) -> Response {
-    let mut response = Response::new(Body::from(body.to_string()));
-    *response.status_mut() = status;
-    response.headers_mut().insert("content-type", axum::http::HeaderValue::from_static("application/json"));
-    response
+/// A non-streaming answer of the emulated API.
+#[derive(Debug)]
+struct Reply {
+    status: u16,
+    body: Vec<u8>,
+    retry_after: Option<u64>,
 }
 
-fn status_response(code: u16, reason: &str, message: &str) -> Response {
+/// What a request resolves to: an answer, or a watch to serve.
+#[derive(Debug)]
+enum Handled {
+    Reply(Reply),
+    Watch { namespace: String, service: String, query: String },
+}
+
+fn respond(status: StatusCode, body: &Value) -> Reply {
+    Reply { status: status.as_u16(), body: body.to_string().into_bytes(), retry_after: None }
+}
+
+fn status_response(code: u16, reason: &str, message: &str) -> Reply {
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     respond(status, &json!({ "kind": "Status", "status": "Failure", "code": code, "reason": reason, "message": message }))
+}
+
+fn into_axum(reply: Reply) -> Response {
+    let mut response = Response::new(Body::from(reply.body));
+    *response.status_mut() = StatusCode::from_u16(reply.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    response.headers_mut().insert("content-type", axum::http::HeaderValue::from_static("application/json"));
+    if let Some(seconds) = reply.retry_after
+        && let Ok(value) = axum::http::HeaderValue::from_str(&seconds.to_string())
+    {
+        response.headers_mut().insert("retry-after", value);
+    }
+    response
 }
 
 fn query_param(query: &str, key: &str) -> Option<String> {
@@ -432,37 +515,42 @@ fn selector_matches(selector: &str, labels: &BTreeMap<String, String>) -> bool {
     })
 }
 
-fn handle(shared: &Arc<Shared>, method: &Method, uri: &Uri, headers: &HeaderMap, body: &Bytes) -> Response {
-    let path = uri.path().to_owned();
-    let query = uri.query().unwrap_or_default().to_owned();
-    let bearer = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .map(str::to_owned);
+fn handle(shared: &Arc<Shared>, request: RecordedRequest, body: &[u8]) -> Handled {
+    let RecordedRequest { method, path, query, bearer } = request.clone();
     let mut cluster = lock(shared);
-    cluster.requests.push(RecordedRequest { method: method.to_string(), path: path.clone(), query: query.clone(), bearer: bearer.clone() });
+    cluster.requests.push(request);
     if let Some(accepted) = &cluster.accepted_tokens
         && !bearer.as_ref().is_some_and(|token| accepted.contains(token))
     {
-        return status_response(401, "Unauthorized", "Unauthorized");
+        return Handled::Reply(status_response(401, "Unauthorized", "Unauthorized"));
     }
     if let Some((code, retry_after)) = cluster.faults.pop_front() {
-        let mut response = status_response(code, "Injected", "injected fault");
-        if let Some(seconds) = retry_after
-            && let Ok(value) = axum::http::HeaderValue::from_str(&seconds.to_string())
-        {
-            response.headers_mut().insert("retry-after", value);
-        }
-        return response;
+        return Handled::Reply(Reply { retry_after, ..status_response(code, "Injected", "injected fault") });
     }
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    match (method.as_str(), segments.as_slice()) {
+    let reply = match (method.as_str(), segments.as_slice()) {
         ("GET", ["apis", "apps", "v1", "namespaces", namespace, "deployments", name, "scale"]) => {
             get_scale(&cluster, namespace, name)
         }
         ("PATCH", ["apis", "apps", "v1", "namespaces", namespace, "deployments", name, "scale"]) => {
             patch_scale(&mut cluster, shared, namespace, name, body)
+        }
+        ("GET", ["apis", "apps", "v1", "namespaces", namespace, "deployments", name]) => {
+            match cluster.deployments.get(&((*namespace).into(), (*name).into())) {
+                Some(deployment) => {
+                    let conditions: Vec<Value> = deployment
+                        .replica_failure
+                        .iter()
+                        .map(|message| json!({ "type": "ReplicaFailure", "status": "True", "reason": "FailedCreate", "message": message }))
+                        .collect();
+                    respond(StatusCode::OK, &json!({
+                        "metadata": { "name": name, "namespace": namespace },
+                        "spec": { "replicas": deployment.replicas },
+                        "status": { "conditions": conditions },
+                    }))
+                }
+                None => status_response(404, "NotFound", &format!("deployments.apps \"{name}\" not found")),
+            }
         }
         ("PATCH", ["apis", "apps", "v1", "namespaces", namespace, "deployments", name]) => {
             apply_deployment(&mut cluster, shared, namespace, name, body)
@@ -492,18 +580,18 @@ fn handle(shared: &Arc<Shared>, method: &Method, uri: &Uri, headers: &HeaderMap,
             let selector = query_param(&query, "labelSelector").unwrap_or_default();
             let service = selector.strip_prefix("kubernetes.io/service-name=").unwrap_or_default().to_owned();
             if query_param(&query, "watch").as_deref() == Some("1") {
-                drop(cluster);
-                return watch_slices(shared, namespace, &service, &query);
+                return Handled::Watch { namespace: (*namespace).to_owned(), service, query };
             }
             let items: Vec<Value> = cluster.slices.get(&((*namespace).into(), service)).cloned().into_iter().collect();
             let resource_version = cluster.resource_version.to_string();
             respond(StatusCode::OK, &json!({ "kind": "EndpointSliceList", "metadata": { "resourceVersion": resource_version }, "items": items }))
         }
         _ => status_response(404, "NotFound", &format!("fake API server: no route for {method} {path}")),
-    }
+    };
+    Handled::Reply(reply)
 }
 
-fn get_scale(cluster: &Cluster, namespace: &str, name: &str) -> Response {
+fn get_scale(cluster: &Cluster, namespace: &str, name: &str) -> Reply {
     match cluster.deployments.get(&(namespace.into(), name.into())) {
         Some(deployment) => respond(
             StatusCode::OK,
@@ -517,7 +605,7 @@ fn get_scale(cluster: &Cluster, namespace: &str, name: &str) -> Response {
     }
 }
 
-fn patch_scale(cluster: &mut Cluster, shared: &Arc<Shared>, namespace: &str, name: &str, body: &Bytes) -> Response {
+fn patch_scale(cluster: &mut Cluster, shared: &Arc<Shared>, namespace: &str, name: &str, body: &[u8]) -> Reply {
     let Ok(patch) = serde_json::from_slice::<Value>(body) else {
         return status_response(400, "BadRequest", "invalid merge patch");
     };
@@ -546,7 +634,7 @@ fn patch_scale(cluster: &mut Cluster, shared: &Arc<Shared>, namespace: &str, nam
     get_scale(cluster, namespace, name)
 }
 
-fn apply_deployment(cluster: &mut Cluster, shared: &Arc<Shared>, namespace: &str, name: &str, body: &Bytes) -> Response {
+fn apply_deployment(cluster: &mut Cluster, shared: &Arc<Shared>, namespace: &str, name: &str, body: &[u8]) -> Reply {
     let Ok(manifest) = serde_json::from_slice::<Value>(body) else {
         return status_response(400, "BadRequest", "invalid apply patch");
     };
@@ -569,6 +657,7 @@ fn apply_deployment(cluster: &mut Cluster, shared: &Arc<Shared>, namespace: &str
         pod_labels: pod_labels.clone(),
         port,
         manifest: Value::Null,
+        replica_failure: None,
     });
     entry.replicas = replicas.unwrap_or(entry.replicas);
     entry.resource_version = resource_version;
@@ -580,7 +669,7 @@ fn apply_deployment(cluster: &mut Cluster, shared: &Arc<Shared>, namespace: &str
     respond(StatusCode::OK, &manifest)
 }
 
-fn apply_object(cluster: &mut Cluster, namespace: &str, kind: &str, name: &str, body: &Bytes) -> Response {
+fn apply_object(cluster: &mut Cluster, namespace: &str, kind: &str, name: &str, body: &[u8]) -> Reply {
     let Ok(manifest) = serde_json::from_slice::<Value>(body) else {
         return status_response(400, "BadRequest", "invalid apply patch");
     };
@@ -589,7 +678,7 @@ fn apply_object(cluster: &mut Cluster, namespace: &str, kind: &str, name: &str, 
     respond(StatusCode::OK, &manifest)
 }
 
-fn patch_pod(cluster: &mut Cluster, namespace: &str, name: &str, body: &Bytes) -> Response {
+fn patch_pod(cluster: &mut Cluster, namespace: &str, name: &str, body: &[u8]) -> Reply {
     let Ok(patch) = serde_json::from_slice::<Value>(body) else {
         return status_response(400, "BadRequest", "invalid merge patch");
     };
@@ -609,30 +698,51 @@ fn patch_pod(cluster: &mut Cluster, namespace: &str, name: &str, body: &Bytes) -
     respond(StatusCode::OK, &pod_json(name, pod))
 }
 
+/// Watch history after `resourceVersion` (or a `410 Gone`), then a bookmark.
+/// `Err` carries the 410 line.
+fn watch_backlog(shared: &Shared, namespace: &str, service: &str, since: u64) -> Result<Vec<Bytes>, Bytes> {
+    let cluster = lock(shared);
+    if since != 0 && since < cluster.compacted_below {
+        let gone = json!({ "type": "ERROR", "object": {
+            "kind": "Status", "status": "Failure", "code": 410, "reason": "Expired",
+            "message": format!("too old resource version: {since}"),
+        }});
+        return Err(Bytes::from(format!("{gone}\n")));
+    }
+    let mut lines: Vec<Bytes> = cluster
+        .history
+        .iter()
+        .filter(|event| event.resource_version > since && event.namespace == namespace && event.service == service)
+        .map(event_line)
+        .collect();
+    let bookmark = json!({ "type": "BOOKMARK", "object": {
+        "kind": "EndpointSlice", "metadata": { "resourceVersion": cluster.resource_version.to_string() },
+    }});
+    lines.push(Bytes::from(format!("{bookmark}\n")));
+    Ok(lines)
+}
+
+fn watch_since(query: &str) -> u64 {
+    query_param(query, "resourceVersion").and_then(|value| value.parse().ok()).unwrap_or(0)
+}
+
+/// A streaming watch: backlog, then live events until `timeoutSeconds`.
 fn watch_slices(shared: &Arc<Shared>, namespace: &str, service: &str, query: &str) -> Response {
-    let since: u64 = query_param(query, "resourceVersion").and_then(|value| value.parse().ok()).unwrap_or(0);
+    let since = watch_since(query);
     let timeout = Duration::from_secs(query_param(query, "timeoutSeconds").and_then(|value| value.parse().ok()).unwrap_or(30));
     let (sender, receiver) = mpsc::unbounded_channel::<Bytes>();
+    // Subscribe before reading the backlog so no event falls between the two.
     let mut live = shared.events.subscribe();
-    {
-        let cluster = lock(shared);
-        if since != 0 && since < cluster.compacted_below {
-            let gone = json!({ "type": "ERROR", "object": {
-                "kind": "Status", "status": "Failure", "code": 410, "reason": "Expired",
-                "message": format!("too old resource version: {since}"),
-            }});
-            let _closed = sender.send(Bytes::from(format!("{gone}\n")));
-            return stream_response(receiver);
-        }
-        for event in cluster.history.iter().filter(|event| event.resource_version > since) {
-            if event.namespace == namespace && event.service == service {
-                let _closed = sender.send(event_line(event));
+    match watch_backlog(shared, namespace, service, since) {
+        Ok(lines) => {
+            for line in lines {
+                let _closed = sender.send(line);
             }
         }
-        let bookmark = json!({ "type": "BOOKMARK", "object": {
-            "kind": "EndpointSlice", "metadata": { "resourceVersion": cluster.resource_version.to_string() },
-        }});
-        let _closed = sender.send(Bytes::from(format!("{bookmark}\n")));
+        Err(gone) => {
+            let _closed = sender.send(gone);
+            return stream_response(receiver);
+        }
     }
     let namespace = namespace.to_owned();
     let service = service.to_owned();
