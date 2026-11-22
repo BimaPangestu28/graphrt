@@ -625,22 +625,19 @@ impl AgentNode {
         self.record(state, tools, call, ToolOutput::error(text));
     }
 
-    /// A tool result's text as the model sees it: the tool's context masked,
-    /// then cut to `max_tool_output_chars`.
+    /// A tool result as the model, the `tool_calls` output and the captured
+    /// `tool_result` progress all see it: the tool's context masked, cut to
+    /// `max_tool_output_chars`, and a note in place of images that fail
+    /// [`check_images`].
     ///
     /// A tool may echo its context (e.g. an upstream error repeating the JWT):
     /// the model, the outputs and the progress events must never see it. Masking
     /// comes first so a cut through the secret cannot leave its prefix behind.
-    fn visible_result_text(&self, tools: &[BoundTool], call: &ToolCall, text: &str) -> String {
+    /// Every consumer takes the text from here, so none can skip the masking.
+    fn visible_result(&self, tools: &[BoundTool], call: &ToolCall, output: ToolOutput) -> VisibleResult {
         let bound = tools.iter().find(|t| t.exposed == call.name);
-        let scrubbed = bound.map_or(Cow::Borrowed(text), |b| scrub_context(text, b.context()));
-        truncate(&scrubbed, self.config.max_tool_output_chars)
-    }
-
-    /// Append a tool result to the conversation and the log.
-    fn record(&self, state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, output: ToolOutput) {
-        let bound = tools.iter().find(|t| t.exposed == call.name);
-        let mut text = self.visible_result_text(tools, call, &output.text);
+        let scrubbed = bound.map_or(Cow::Borrowed(output.text.as_str()), |b| scrub_context(&output.text, b.context()));
+        let mut text = truncate(&scrubbed, self.config.max_tool_output_chars);
         let images = match check_images(&output.images) {
             Ok(()) => output.images,
             Err(e) => {
@@ -649,22 +646,13 @@ impl AgentNode {
                 Vec::new()
             }
         };
-        let image_count = images.len();
-        state.messages.push(Message::tool_with_images(
-            call.id.clone(),
-            text.clone(),
-            images.iter().map(ToolImage::to_url),
-        ));
-        state.log.push(ToolLogEntry {
-            id: call.id.clone(),
-            name: call.name.clone(),
-            provider: bound.map(|b| b.provider.clone()).unwrap_or_default(),
-            tool: bound.map(|b| b.name.clone()).unwrap_or_default(),
-            arguments: log_arguments(call, tools),
-            result: text,
-            is_error: output.is_error,
-            images: image_count,
-        });
+        VisibleResult { text, images, is_error: output.is_error }
+    }
+
+    /// Append a tool result to the conversation and the log.
+    fn record(&self, state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, output: ToolOutput) {
+        let result = self.visible_result(tools, call, output);
+        push_result(state, tools, call, result);
     }
 
     async fn run_calls(&self, ctx: &NodeContext, state: &mut AgentState, tools: &[BoundTool], calls: Vec<ToolCall>) {
@@ -677,28 +665,60 @@ impl AgentNode {
                 Value::from_json(json!({"id": call.id, "name": call.name, "arguments": log_arguments(call, tools)})),
             );
         }
-        let outputs: Vec<ToolOutput> = if self.config.parallel_tool_calls {
-            futures::future::join_all(calls.iter().map(|c| call_tool(tools, c))).await
-        } else {
-            let mut out = Vec::with_capacity(calls.len());
-            for c in &calls {
-                out.push(call_tool(tools, c).await);
-            }
-            out
-        };
+        let outputs = self.call_tools(tools, &calls).await;
         let capture = ctx.captures_content();
         for (call, output) in calls.iter().zip(outputs) {
+            // The tool's own image count, including images the result drops.
+            let offered_images = output.images.len();
+            let result = self.visible_result(tools, call, output);
             let mut data =
-                json!({"id": call.id, "name": call.name, "is_error": output.is_error, "images": output.images.len()});
+                json!({"id": call.id, "name": call.name, "is_error": result.is_error, "images": offered_images});
             if capture && let Some(fields) = data.as_object_mut() {
-                // Same text the model and the `tool_calls` output see.
-                let result = self.visible_result_text(tools, call, &output.text);
-                fields.insert("result".to_owned(), Json::String(result));
+                fields.insert("result".to_owned(), Json::String(result.text.clone()));
             }
             ctx.progress("tool_result", Value::from_json(data));
-            self.record(state, tools, call, output);
+            push_result(state, tools, call, result);
         }
     }
+
+    /// Run `calls` concurrently or one after another, per `parallel_tool_calls`.
+    async fn call_tools(&self, tools: &[BoundTool], calls: &[ToolCall]) -> Vec<ToolOutput> {
+        if self.config.parallel_tool_calls {
+            return futures::future::join_all(calls.iter().map(|c| call_tool(tools, c))).await;
+        }
+        let mut outputs = Vec::with_capacity(calls.len());
+        for call in calls {
+            outputs.push(call_tool(tools, call).await);
+        }
+        outputs
+    }
+}
+
+/// A tool result after [`AgentNode::visible_result`]: safe to show to the model and the host.
+struct VisibleResult {
+    text: String,
+    images: Vec<ToolImage>,
+    is_error: bool,
+}
+
+/// Append a visible tool result to the conversation and the log.
+fn push_result(state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, result: VisibleResult) {
+    let bound = tools.iter().find(|t| t.exposed == call.name);
+    state.messages.push(Message::tool_with_images(
+        call.id.clone(),
+        result.text.clone(),
+        result.images.iter().map(ToolImage::to_url),
+    ));
+    state.log.push(ToolLogEntry {
+        id: call.id.clone(),
+        name: call.name.clone(),
+        provider: bound.map(|b| b.provider.clone()).unwrap_or_default(),
+        tool: bound.map(|b| b.name.clone()).unwrap_or_default(),
+        arguments: log_arguments(call, tools),
+        result: result.text,
+        is_error: result.is_error,
+        images: result.images.len(),
+    });
 }
 
 /// How one model turn streams.
@@ -1330,6 +1350,20 @@ mod tests {
             "{}",
             result.text()
         );
+    }
+
+    #[tokio::test]
+    async fn captured_tool_result_text_matches_what_the_model_sees() {
+        let s = setup(vec![MockModel::tool_calls(&[("c1", "bad_image", "{}")]), MockModel::text("ok")]);
+        let base = ctx(&s);
+        let services = (*base.services).clone().with(graphrt_core::node::CaptureContent);
+        let out = completed(agent(json!({"tools": ["screen/*"]})).run(base.with_services(Arc::new(services))).await);
+        let seen_by_model = s.model.requests()[1].messages[3].text();
+        assert!(seen_by_model.contains("[images dropped:"), "{seen_by_model}");
+        let reported = tool_results(&s)[0].get_path(&["result"]);
+        assert_eq!(reported, Some(Value::from(seen_by_model.clone())), "progress event");
+        let log = out.outputs["tool_calls"].as_array().unwrap().to_vec();
+        assert_eq!(log[0].get_path(&["result"]), Some(Value::from(seen_by_model)), "tool_calls output");
     }
 
     #[tokio::test]
