@@ -75,6 +75,12 @@ releases may contain breaking changes; they are called out under **Changed**.
   the Windows `.exe` links the C runtime statically (no `VCRUNTIME140.dll`).
 
 ### Fixed
+- Telemetry: `DO_NOT_TRACK=` (empty) and values such as `yes`/`no` now turn
+  telemetry off, as documented ("anything but `0`/`false`"); only `0` and
+  `false` leave it alone. A build with a telemetry endpoint that the user did
+  not opt into no longer creates the config directory and `telemetry.lock` on
+  every `run` / `serve`; only the `telemetry` command, or telemetry being on,
+  writes there.
 - `--langfuse-scores` posted to `.../api/public/otel/v1/traces/api/public/scores`
   when `LANGFUSE_BASE_URL` already named the OTLP traces endpoint (which the
   preset accepts). Preset base URLs now drop the traces path.

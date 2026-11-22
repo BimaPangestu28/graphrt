@@ -19,7 +19,7 @@ Telemetry is **always off**, whatever you enabled, when:
 
 | Condition | Detected by |
 | --- | --- |
-| You asked not to be tracked | `DO_NOT_TRACK` set (to anything but `0`/`false`) |
+| You asked not to be tracked | `DO_NOT_TRACK` set to anything but `0`/`false`, including an empty value (`DO_NOT_TRACK=`) |
 | It runs in CI | `CI`, `CONTINUOUS_INTEGRATION`, `BUILD_NUMBER`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`, `BUILDKITE`, `BUILDKITE_BUILD_ID`, `JENKINS_URL`, `TEAMCITY_VERSION`, `TF_BUILD`, `BITBUCKET_BUILD_NUMBER`, `CODEBUILD_BUILD_ID`, `DRONE`, `APPVEYOR`, `SEMAPHORE` |
 | No endpoint is configured | neither the build-time nor the run-time `GRAPHRT_TELEMETRY_URL` is set (an empty run-time value also counts as none) |
 | The endpoint is not `https://` | plain `http://` is accepted only for `localhost` (testing a collector) |
@@ -28,7 +28,10 @@ Without an endpoint telemetry is fully inert: nothing is counted to disk,
 written or sent. Release builds get the endpoint at build time
 (`GRAPHRT_TELEMETRY_URL=https://... cargo build`, read with `option_env!`);
 `GRAPHRT_TELEMETRY_URL` at run time overrides it, e.g. to point at your own
-collector.
+collector. With an endpoint but telemetry off (not opted in, or any reason
+above), `run` and `serve` only read the state file if it exists: they never
+create the config directory, `telemetry.json` or `telemetry.lock`. Only
+`graphrt telemetry enable|disable` writes them while telemetry is off.
 
 Official release binaries, the Homebrew formula and the container image from
 graphrt 0.3.2 on report to `https://graphrt-telemetry.bimapangestu280.workers.dev/v1/report`, the
