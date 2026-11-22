@@ -188,9 +188,13 @@ They honour standard proxy environment variables, except the OTel exporter and
   may start runs without the API key; an invalid token is `401` even next to a
   valid key. The token opens only `POST /v1/workflows/{name}/runs` of workflows
   that declare the verified input (others are `403`) and
-  `POST /v1/runs/{id}/feedback` on runs whose `user_id` is its `sub`; the server
-  refuses to start on a non-loopback address without an API key, so the rest
-  of the API stays closed. `--user-rate-limit` caps runs per `sub`. See
+  `POST /v1/runs/{id}/feedback` on runs started with that user's token; the server
+  refuses to start without an API key, on loopback too (a same-host reverse
+  proxy would otherwise expose the API), so the rest of the API stays closed.
+  A user-token response carries only the answer stream, the final result and
+  pause prompts, never node inputs, outputs, tool results, rendered prompts or
+  the snapshot (`--user-events all` opts out). `--user-rate-limit` caps runs
+  per `sub`. See
   [serving.md](serving.md#verifying-end-user-jwts).
 - **CORS.** None. Browsers get no `Access-Control-Allow-Origin`, and JSON
   bodies force a preflight.
@@ -203,6 +207,9 @@ They honour standard proxy environment variables, except the OTel exporter and
     `--store-ttl-days`.
   - Live event feeds and per-run event logs are bounded.
   - Knowledge `top_k` is capped at 100.
+- **Files on disk.** The `--store` directory (records, events, snapshots,
+  scores), replay cassettes and `graphrt eval` reports are created owner-only
+  on Unix (`0600` files, `0700` directories); existing files keep their mode.
 - **Identifiers.** Run ids and dataset ids are validated (`[A-Za-z0-9._-]`, no
   leading dot) before any path is built. Workflow names and document ids are
   only lookup keys.
@@ -227,7 +234,9 @@ They honour standard proxy environment variables, except the OTel exporter and
     (or the full environment with `inherit_env`);
   - optional checksums are verified before every start;
   - each call has a timeout and a message-size cap (at most 256 MiB);
-  - the whole process group is killed on drop.
+  - the whole process group is killed on drop;
+  - the manifest's `cwd` must stay inside the plugin directory, and a relative
+    `command` may not climb out of it with `..`.
 
   Treat installing one like installing any program: the manifest's own
   requests are honoured, and only plaintext secrets and bearer tokens need
@@ -239,8 +248,10 @@ They honour standard proxy environment variables, except the OTel exporter and
     a signature from your keys. Without it, an unsigned bundle is accepted
     and is exactly as trusted as a workflow file plus a providers file.
   - **Extraction:** archives are checked for path traversal, absolute paths,
-    symlinks, duplicates, entry count, size and compression ratio. Configs are
-    extracted into a fresh owner-only directory.
+    symlinks, duplicates, entry count, size and compression ratio. Windows
+    device names (`CON`, `nul.txt`, `COM1`...) and names that differ only in
+    case are refused before anything is written. Configs are extracted into a
+    fresh owner-only directory.
 
 ## Hardening checklist for deployers
 

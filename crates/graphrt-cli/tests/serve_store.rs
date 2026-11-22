@@ -157,6 +157,31 @@ async fn concurrent_resumes_only_one_wins() {
     assert_eq!(wait_settled(&app, &run_id).await["status"], "succeeded");
 }
 
+/// A paused run of a workflow the server no longer serves: the refused resume
+/// must leave it paused, not `running` until the next restart.
+#[tokio::test]
+async fn resuming_a_run_of_an_unserved_workflow_leaves_it_paused() {
+    let wf = workflows_dir("unserved");
+    let store: Arc<dyn RunStore> = Arc::new(MemoryStore::new());
+    let app = router(state_with(&wf, Arc::clone(&store)).await, 1 << 20);
+    let run_id = start_async(&app, "approval", json!({ "amount": 9, "reason": "Taxi" })).await;
+    assert_eq!(wait_settled(&app, &run_id).await["status"], "paused");
+
+    // The same store served with only an unrelated workflow (approval was retired).
+    let other = std::env::temp_dir().join(format!("graphrt-serve-store-wf-unserved-only-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&other);
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::copy(wf.join("secretive.yaml"), other.join("secretive.yaml")).unwrap();
+    let app = router(state_with(&other, Arc::clone(&store)).await, 1 << 20);
+    let resume = json!({ "inputs": { "review": { "action": "approve", "values": { "note": "ok" } } } });
+    let (status, body) = send(&app, post(&format!("/v1/runs/{run_id}/resume"), resume)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert!(body.contains("is not served"), "{body}");
+    let run = get_json(&app, &format!("/v1/runs/{run_id}")).await;
+    assert_eq!(run["status"], "paused", "{run}");
+    let _ = std::fs::remove_dir_all(&other);
+}
+
 #[tokio::test]
 async fn file_store_survives_restart() {
     let wf = workflows_dir("restart");

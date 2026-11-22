@@ -105,6 +105,12 @@ fn offline_examples_pass_and_write_reports() {
         let xml = std::fs::read_to_string(&junit).unwrap();
         assert_eq!(xml.matches("<testcase ").count() as u64, total, "{xml}");
         assert!(xml.contains("failures=\"0\" errors=\"0\""), "{xml}");
+        #[cfg(unix)]
+        for report in [&json, &junit] {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(report).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "reports hold test inputs and answers: {}", report.display());
+        }
     }
     let report: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.join("retrieval-retrieval.json")).unwrap()).unwrap();

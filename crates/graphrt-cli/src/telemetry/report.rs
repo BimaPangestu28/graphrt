@@ -86,11 +86,12 @@ fn is_local_http(url: &reqwest::Url) -> bool {
 ///
 /// @throws String - When the URL does not parse or uses another scheme.
 pub fn parse_endpoint(raw: &str) -> Result<reqwest::Url, String> {
-    let url = reqwest::Url::parse(raw).map_err(|e| format!("invalid telemetry endpoint `{raw}`: {e}"))?;
+    let shown = graphrt_core::urls::redact_userinfo(raw);
+    let url = reqwest::Url::parse(raw).map_err(|e| format!("invalid telemetry endpoint `{shown}`: {e}"))?;
     if url.scheme() == "https" || is_local_http(&url) {
         Ok(url)
     } else {
-        Err(format!("telemetry endpoint `{raw}` must use https"))
+        Err(format!("telemetry endpoint `{shown}` must use https"))
     }
 }
 

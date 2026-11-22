@@ -127,18 +127,9 @@ fn apply_bundle_configs(bundle: &graphrt_bundle::Bundle, options: &mut ServiceOp
 /// redirect writes or swap `providers.json` between extraction and use.
 #[cfg(feature = "bundle")]
 fn create_private_dir(label: &str) -> Result<std::path::PathBuf, CliError> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos =
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
-    let unique = format!("{}-{}-{nanos}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
-    let dir = std::env::temp_dir().join(format!("graphrt-bundle-{label}-{unique}"));
-    #[cfg_attr(not(unix), allow(unused_mut))] // only mutated by the Unix mode below
-    let mut builder = std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(&dir).map_err(|e| CliError::failed(format!("cannot create `{}`: {e}", dir.display())))?;
-    Ok(dir)
+    let prefix = format!("graphrt-bundle-{label}");
+    graphrt_core::private_fs::create_fresh_temp_dir(&prefix)
+        .map_err(|e| CliError::failed(format!("cannot create a `{prefix}` temp directory: {e}")))
 }
 
 /// Execute `graphrt bundle ...`.

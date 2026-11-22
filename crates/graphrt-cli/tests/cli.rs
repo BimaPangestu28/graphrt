@@ -283,20 +283,23 @@ fn supabase_chatbot_declares_its_contract() {
     }
 }
 
-/// User tokens only open run starts, so a public `--verify-jwt` server must have
-/// an API key closing everything else.
+/// User tokens only open run starts and feedback, so a `--verify-jwt` server must
+/// have an API key closing everything else, on loopback too: a same-host reverse
+/// proxy would make a keyless loopback server public.
 #[cfg(feature = "jwt")]
 #[test]
-fn verify_jwt_on_a_public_address_needs_an_api_key() {
+fn verify_jwt_needs_an_api_key_on_every_address() {
     let path = example("supabase-chatbot/agent.yaml");
-    let out = bin()
-        .args(["serve", path.to_str().expect("utf8"), "--addr", "0.0.0.0:0", "--no-default-plugins"])
-        .args(["--input-header", "user_jwt=X-User-Authorization", "--verify-jwt", "user_jwt"])
-        .args(["--jwt-secret-env", "TEST_JWT_SECRET"])
-        .env("TEST_JWT_SECRET", "a-secret-for-the-startup-check-only")
-        .env_remove("GRAPHRT_API_KEY")
-        .output()
-        .expect("spawn graphrt");
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
-    assert!(stderr(&out).contains("needs $GRAPHRT_API_KEY"), "{}", stderr(&out));
+    for addr in ["0.0.0.0:0", "127.0.0.1:0"] {
+        let out = bin()
+            .args(["serve", path.to_str().expect("utf8"), "--addr", addr, "--no-default-plugins"])
+            .args(["--input-header", "user_jwt=X-User-Authorization", "--verify-jwt", "user_jwt"])
+            .args(["--jwt-secret-env", "TEST_JWT_SECRET"])
+            .env("TEST_JWT_SECRET", "a-secret-for-the-startup-check-only")
+            .env_remove("GRAPHRT_API_KEY")
+            .output()
+            .expect("spawn graphrt");
+        assert_eq!(out.status.code(), Some(2), "{addr}: {}", stderr(&out));
+        assert!(stderr(&out).contains("needs $GRAPHRT_API_KEY"), "{addr}: {}", stderr(&out));
+    }
 }

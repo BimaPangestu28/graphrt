@@ -12,22 +12,24 @@
 //!
 //! Records and snapshots are written to a unique temporary file, fsynced, renamed
 //! over the target and the directory fsynced, so a crash leaves either the old or
-//! the new version. Every operation holds an OS file lock on `<dir>/.lock`, which
-//! serializes access from threads and from other processes sharing the directory.
+//! the new version. Directories are created `0700` and files `0600` on Unix,
+//! because records, events, snapshots and scores hold prompts and answers.
+//! Every operation holds an OS file lock on `<dir>/.lock`, which serializes
+//! access from threads and from other processes sharing the directory.
 //! Listing reads every record, so it is meant for thousands of runs, not millions.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::future::BoxFuture;
-use graphrt_core::Snapshot;
 use graphrt_core::store::{
     RunFilter, RunPage, RunRecord, RunStore, StoreError, StoreResult, StoredEvent, page_of, sort_newest_first,
     validate_run_id,
 };
+use graphrt_core::{Snapshot, private_fs};
 
 use super::memory::{DEFAULT_MAX_EVENTS, MAX_PAGE, claim, mark_interrupted, purgeable};
 use crate::error::CliError;
@@ -54,7 +56,7 @@ pub struct FileStore {
 impl FileStore {
     /// Open (creating if needed) a store directory.
     pub fn open(dir: &Path) -> Result<Self, CliError> {
-        fs::create_dir_all(dir.join("runs"))
+        private_fs::create_dir_all(&dir.join("runs"))
             .map_err(|e| CliError::usage(format!("cannot create run store `{}`: {e}", dir.display())))?;
         Ok(Self {
             inner: Arc::new(Inner {
@@ -109,12 +111,7 @@ impl Drop for LockGuard {
 
 impl Inner {
     fn lock(&self) -> StoreResult<LockGuard> {
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(self.root.join(".lock"))
-            .map_err(|e| io("cannot open store lock", &e))?;
+        let file = private_fs::append_file(&self.root.join(".lock")).map_err(|e| io("cannot open store lock", &e))?;
         file.lock().map_err(|e| io("cannot lock store", &e))?;
         Ok(LockGuard(file))
     }
@@ -146,11 +143,11 @@ impl Inner {
     }
 
     fn atomic_write(&self, dir: &Path, name: &str, bytes: &[u8]) -> StoreResult<()> {
-        fs::create_dir_all(dir).map_err(|e| io("cannot create run directory", &e))?;
+        private_fs::create_dir_all(dir).map_err(|e| io("cannot create run directory", &e))?;
         let n = self.tmp_counter.fetch_add(1, Ordering::Relaxed);
         let tmp = dir.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
         let result = (|| {
-            let mut file = File::create(&tmp).map_err(|e| io("cannot create temporary file", &e))?;
+            let mut file = private_fs::create_file(&tmp).map_err(|e| io("cannot create temporary file", &e))?;
             file.write_all(bytes).map_err(|e| io("cannot write temporary file", &e))?;
             file.sync_all().map_err(|e| io("cannot sync temporary file", &e))?;
             fs::rename(&tmp, dir.join(name)).map_err(|e| io("cannot replace file", &e))?;
@@ -307,11 +304,7 @@ impl RunStore for FileStore {
                 buf.push(b'\n');
             }
             if !buf.is_empty() {
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                    .map_err(|e| io("cannot open events", &e))?;
+                let mut file = private_fs::append_file(&path).map_err(|e| io("cannot open events", &e))?;
                 file.write_all(&buf).map_err(|e| io("cannot append events", &e))?;
                 file.sync_data().map_err(|e| io("cannot sync events", &e))?;
             }
@@ -460,6 +453,7 @@ mod tests {
         record.metadata.insert("tenant".into(), "acme".into());
         record.session_id = Some("s".into());
         record.user_id = Some("u".into());
+        record.user_verified = true;
         record.tags = vec!["t".into()];
         store.create(record.clone()).await.unwrap();
         drop(store);
@@ -467,6 +461,7 @@ mod tests {
         assert_eq!(store.get("e1").await.unwrap(), Some(record.clone()));
         let claimed = store.claim_resume("e1", 2).await.unwrap();
         assert_eq!((claimed.inputs, claimed.metadata, claimed.tags), (record.inputs, record.metadata, record.tags));
+        assert!(claimed.user_verified, "a resumed run keeps its verified owner");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -496,6 +491,48 @@ mod tests {
         assert_eq!(store.purge_before(u64::MAX).await.unwrap(), 1);
         assert!(matches!(store.scores("s1").await, Err(StoreError::NotFound(_))));
         assert!(!dir.join("runs/s1").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A score stored while its run is being deleted either fails with
+    /// `NotFound` or lands before the delete: never a `scores.json` left in a
+    /// run directory without a record (both operations hold the store lock).
+    #[cfg(feature = "scores")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_deletes_leave_no_orphan_scores() {
+        use crate::scores::{Score, ScoreSource, ScoreStore, ScoreValue};
+        let dir = temp_dir("orphan-scores");
+        let store = FileStore::open(&dir).unwrap();
+        for round in 0..20 {
+            let run_id = format!("o{round}");
+            let mut record = RunRecord::running(&run_id, "wf", "fp", 1);
+            record.status = RunStatus::Succeeded;
+            store.create(record).await.unwrap();
+            let score = Score::new(&run_id, "judge", ScoreValue::Number(1.0), ScoreSource::Online, None);
+            let (stored, deleted) = tokio::join!(store.put_scores(&run_id, vec![score]), store.delete(&run_id));
+            assert!(deleted.unwrap());
+            assert!(stored.is_ok() || matches!(stored, Err(StoreError::NotFound(_))), "{stored:?}");
+            assert!(!dir.join("runs").join(&run_id).exists(), "round {round}: orphan run directory");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn store_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("modes");
+        let store = FileStore::open(&dir).unwrap();
+        let mut record = RunRecord::running("m1", "wf", "fp", 1);
+        record.status = RunStatus::Paused;
+        store.create(record).await.unwrap();
+        store.append_events("m1", crate::store::raw(&[r#"{"a":1}"#])).await.unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir.join("runs")), 0o700);
+        assert_eq!(mode(&dir.join("runs/m1")), 0o700);
+        for file in [".lock", "runs/m1/record.json", "runs/m1/events.jsonl"] {
+            assert_eq!(mode(&dir.join(file)), 0o600, "{file}");
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -175,6 +175,7 @@ curl -N http://localhost:8080/v1/workflows/chat/runs -H 'Content-Type: applicati
 | `--jwt-issuer ISS` | Required `iss`. Env fallback: `GRAPHRT_JWT_ISSUER` |
 | `--jwt-audience AUD` | Required `aud` (a string, or one entry of an array; Supabase uses `authenticated`). Env fallback: `GRAPHRT_JWT_AUDIENCE` |
 | `--user-rate-limit N` | Runs per minute per verified user (`sub`), bursts of up to N; `0` (default) = unlimited |
+| `--user-events answer\|all` | What a user-token request sees of its run (below). `answer` (default) or `all` (every engine event, as with the API key) |
 
 The env fallbacks let a container without a shell take project-specific values
 from its environment.
@@ -193,6 +194,18 @@ What a request gets:
   is valid, so a bad token never reaches a tool.
 - **No token**: the API key rules apply as before (and a required input still
   answers `401`).
+- **What the response contains** (`--user-events answer`, the default): a
+  streamed run sends only `response` events (the answer text), `run_started`
+  and the terminal event: `run_succeeded` (the end node's `outputs` and
+  `usage`), `run_failed` (`error_type` and `usage`, not the error text, which
+  can quote internal URLs or upstream bodies), `run_aborted`, or `run_paused`
+  with its `reasons` (the human-input form to show) and no snapshot. A
+  blocking run returns `run_id`, `status`, `outputs`, `answer`, `usage`,
+  `reasons`, `error_type`, `reason` and `elapsed_ms` only. Node events (inputs,
+  outputs, retrieved documents, tool results, rendered prompts) never reach
+  the client. `--user-events all` restores the full stream and result for
+  trusted clients. Requests authorized by the API key always get everything,
+  and every endpoint that reads or resumes runs takes only the API key.
 - **Over the rate limit**: `429` with `Retry-After` (seconds). Refused requests
   do not use up the quota. The limit is per process; with several instances
   each one counts separately.
@@ -203,8 +216,9 @@ so internal workflows served next to the chat stay key-only), plus
 [feedback](#scores-and-feedback) on the user's own runs. Every other endpoint
 (run lists, events, resume, abort, validate, knowledge) still needs the API key,
 so users cannot read each other's runs; for the same reason the server refuses
-to start with `--verify-jwt` on a non-loopback address unless the API key is
-set. Verification is in memory (measured: +7 µs per request for `HS256`, +44 µs
+to start with `--verify-jwt` unless the API key is set, also on a loopback
+address (a reverse proxy on the same host would otherwise make the whole API
+public). Verification is in memory (measured: +7 µs per request for `HS256`, +44 µs
 for `ES256`). A complete example, with a Supabase schema and container, is
 [examples/supabase-chatbot](../examples/supabase-chatbot/).
 
@@ -268,6 +282,7 @@ Run records gain these fields, all omitted when empty:
 | Field | Meaning |
 | --- | --- |
 | `metadata`, `session_id`, `user_id`, `tags` | From the request (`user_id` is the token's `sub` when `--verify-jwt` verified one) |
+| `user_verified` | `true` when `user_id` is the verified `sub` of a user token (kept on resume); omitted otherwise |
 | `trace_id`, `span_id` | OpenTelemetry trace id and root (`invoke_workflow`) span id of the latest execution, when tracing is on; lets later evaluation scores join the same trace |
 | `inputs` | The run's inputs as the start node accepted them, with `secret`-typed inputs stored as `******`. Only with `graphrt serve --store-inputs` |
 
@@ -348,12 +363,11 @@ idempotent.
 
 **Auth.** Both endpoints take the API key. With
 [`--verify-jwt`](#verifying-end-user-jwts), feedback also accepts the end
-user's token, for the user's **own** runs only: the run's `user_id` must be the
-token's `sub` (runs started with a user token have it; runs started with the
-API key have no owner and refuse user tokens with `403`, unless the caller set
-the body's `user_id`, which the server cannot tell from a verified one: send a
-`user_id` with the API key only for runs that user may rate), and the score's
-`user` is the verified `sub`, whatever the body says. Reading scores stays an
+user's token, for the user's **own** runs only: runs started with that user's
+token (the record has `user_verified: true` and `user_id` equal to the token's
+`sub`). Runs started with the API key refuse user tokens with `403`, even when
+the body set `user_id`: that is a label, not proof of who the user is. The
+score's `user` is the verified `sub`, whatever the body says. Reading scores stays an
 API-key endpoint. An invalid token is `401`, and feedback with a user token counts
 against that user's `--user-rate-limit` like a run start.
 
@@ -387,7 +401,9 @@ graphrt serve flows/ --otel-preset langfuse --evaluators evaluators.yaml --langf
 Credentials and URL are those of the [`langfuse` preset](observability.md#vendor-presets)
 (environment or `--env-file`, never flags). Uploads go through the egress
 policy: a self-hosted Langfuse on a private or loopback address needs
-`--allow-private-network`. They run on one background task from a queue of
+`--allow-private-network`, and the keys are never sent over plain `http://`
+to another machine (startup fails; use `https://` or a loopback address).
+`LANGFUSE_BASE_URL` may be the base or the full OTLP traces URL. They run on one background task from a queue of
 1024; a full queue drops the upload, and `408` / `429` / `5xx` / network
 errors are retried four times with backoff. Runs without a trace id (served
 without OpenTelemetry) are not uploaded, so pair it with `--otel-preset langfuse`.

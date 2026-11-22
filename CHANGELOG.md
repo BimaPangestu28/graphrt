@@ -7,6 +7,44 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Changed (Breaking)
+- `graphrt serve --verify-jwt` refuses to start without an API key on every
+  address, loopback included. A reverse proxy on the same host forwards the
+  internet to a loopback port (and one that rewrites `Host` also passes the
+  DNS-rebinding check), which made run lists, events and resume of every user
+  public. **Migration:** set `GRAPHRT_API_KEY` (or `--api-key-env VAR`) next to
+  `--verify-jwt`; user tokens keep working without it on the client side.
+- `graphrt serve --verify-jwt`: a run started with a user token streams only
+  `response` (answer) events, `run_started` and the terminal event, and its
+  blocking result only `run_id`, `status`, `outputs`, `answer`, `usage`,
+  `reasons`, `error_type`, `reason` and `elapsed_ms`. Node events (inputs,
+  outputs, tool results, retrieved documents, rendered prompts when capture
+  is on), `run_failed`'s error text and the pause snapshot are no longer sent
+  to end users. API-key callers are unchanged; resume and run reads still take
+  only the API key. **Migration:** clients that read `node_chunk` should read
+  `response` events instead; to keep the old behaviour for trusted clients,
+  pass `--user-events all`.
+- OpenTelemetry presets (`--otel-preset`, `GRAPHRT_OTEL_PRESET`) refuse to
+  start when the preset's credential header (`Authorization`, `x-api-key`)
+  would go to a host other than the preset's, because an explicit
+  `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or a pushed
+  `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` points elsewhere, or over plain
+  `http://` to a non-loopback host. `--langfuse-scores` refuses plain `http://`
+  to a non-loopback host too. **Migration:** point the preset at its backend
+  with its base URL variable (`LANGFUSE_BASE_URL`, `PHOENIX_COLLECTOR_ENDPOINT`,
+  ...), use `https://` for a self-hosted backend on another machine, or set
+  the credentials yourself in `OTEL_EXPORTER_OTLP_HEADERS` when exporting
+  through a collector.
+- `POST /v1/runs/{id}/feedback` with a user token (`--verify-jwt`) accepts
+  only runs started with a token of the same user. Run records gain
+  `user_verified` (`true` when `user_id` is a verified `sub`, kept on resume,
+  `false` for records written before this release). A run started with the
+  API key and a body `user_id` is no longer rateable by that user's token: the
+  body value is an unverified label, so a key holder could make any run
+  rateable by anyone. **Migration:** let end users start the runs they rate
+  with their own token; API-key callers can still post feedback for any run,
+  with `user` in the body.
+
 ### Changed
 - The `eval` and `online-eval` cargo features of `graphrt-cli` are no longer
   on by default (`online-eval` needs `eval`), so `cargo install graphrt-cli`
@@ -37,6 +75,18 @@ releases may contain breaking changes; they are called out under **Changed**.
   the Windows `.exe` links the C runtime statically (no `VCRUNTIME140.dll`).
 
 ### Fixed
+- Telemetry: `DO_NOT_TRACK=` (empty) and values such as `yes`/`no` now turn
+  telemetry off, as documented ("anything but `0`/`false`"); only `0` and
+  `false` leave it alone. A build with a telemetry endpoint that the user did
+  not opt into no longer creates the config directory and `telemetry.lock` on
+  every `run` / `serve`; only the `telemetry` command, or telemetry being on,
+  writes there.
+- `--langfuse-scores` posted to `.../api/public/otel/v1/traces/api/public/scores`
+  when `LANGFUSE_BASE_URL` already named the OTLP traces endpoint (which the
+  preset accepts). Preset base URLs now drop the traces path.
+- `graphrt serve`: resuming a paused run whose workflow is no longer served
+  answered `404` but left the run `running` until the next restart, so it
+  could not be resumed or deleted. It stays `paused` now.
 - Windows: plugin manifests no longer accept rooted paths such as `/etc/x` or
   `\x` for `module`, checksums or the entrypoint (they are not "absolute" on
   Windows, yet escaped the plugin directory when joined).
@@ -49,6 +99,29 @@ releases may contain breaking changes; they are called out under **Changed**.
   which CPython cannot start (the Unix default `PATH` does not exist there).
 
 ### Security
+- Plugin manifests: a process plugin's `cwd` must be a relative path inside
+  the plugin directory, and a relative `command` must not contain `..`, so a
+  manifest cannot point the process at files outside its directory. Bare
+  names on `PATH` (`python3`) and absolute system paths stay allowed.
+  **Migration:** move a `cwd` such as `../shared` inside the plugin, or start
+  the process through a script in the plugin directory, as the
+  `rust-text-stats` example now does (`run.sh`).
+- Bundles: extraction refuses Windows device names (`CON`, `PRN`, `AUX`,
+  `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, with any extension) in any path
+  component, and paths that differ only in case, which overwrite each other
+  on case-insensitive file systems so a verified file could be swapped.
+- URLs are shown without `user:password@` userinfo in startup lines, errors
+  and `Debug` output: `OtelConfig`, the preset's resolved settings, the
+  Langfuse uploader, JWKS, webhook callback and telemetry endpoints.
+- Run data written to disk is owner-only on Unix (`0600` files, `0700`
+  directories): the `serve --store` directory (records, events, snapshots,
+  `scores.json`, `.lock`), replay cassettes, and `graphrt eval -o` / `--junit`
+  reports. They hold prompts, answers and user data and were created with the
+  umask, so usually world-readable. Existing files keep their mode; run
+  `chmod -R go= <store-dir>` once to tighten an existing store. The four
+  "fresh owner-only temp directory" implementations (bundle configs, the
+  Python runner, catalog and git plugin installs) now share
+  `graphrt_core::private_fs`. (Low; 0.4.0 is affected.)
 - `graphrt serve`: human feedback could fill a run's 256-score cap and make
   every later online-evaluator score of that run fail to store, so an end user
   (`--verify-jwt`) could keep a safety judge from ever scoring their own runs.

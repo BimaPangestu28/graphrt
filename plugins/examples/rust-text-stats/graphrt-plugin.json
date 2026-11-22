@@ -4,7 +4,7 @@
   "description": "Text statistics (Rust SDK example). Build first: cargo build --release -p graphrt-plugin-sdk --example text_stats",
   "license": "Apache-2.0",
   "runtime": "process",
-  "command": "../../../target/release/examples/text_stats",
+  "command": "./run.sh",
   "limits": { "timeout_ms": 5000 },
   "nodes": [
     {

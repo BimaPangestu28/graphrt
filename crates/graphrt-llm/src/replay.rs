@@ -294,13 +294,14 @@ fn write_cassette(recording: Recording, response: Vec<CassetteDelta>) -> Result<
     let Recording { path, key, request } = recording;
     let cassette = Cassette { version: CASSETTE_VERSION, key, request, response };
     let io = |e: std::io::Error| LlmError::Config(format!("replay: cannot write cassette `{}`: {e}", path.display()));
+    // Cassettes hold prompts and answers: owner-only, like every run artifact.
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(io)?;
+        graphrt_core::private_fs::create_dir_all(dir).map_err(io)?;
     }
     let mut text = serde_json::to_string_pretty(&cassette).map_err(|e| LlmError::Config(e.to_string()))?;
     text.push('\n');
     let temp = path.with_extension(format!("json.{}.{:?}.tmp", std::process::id(), std::thread::current().id()));
-    std::fs::write(&temp, text).map_err(io)?;
+    graphrt_core::private_fs::write(&temp, text).map_err(io)?;
     std::fs::rename(&temp, &path).map_err(|e| {
         let _cleanup = std::fs::remove_file(&temp);
         io(e)
@@ -368,6 +369,15 @@ mod tests {
         assert_eq!(block_on(ask(&auto, "a")).unwrap().text, "one", "second call is served from the cassette");
         assert_eq!(block_on(ask(&auto, "b")).unwrap().text, "two");
         assert_eq!(upstream.requests().len(), 2);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&dir), 0o700, "cassette directory");
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                assert_eq!(mode(&entry.unwrap().path()), 0o600, "cassettes hold prompts and answers");
+            }
+        }
         let _cleanup = std::fs::remove_dir_all(&dir);
     }
 

@@ -47,7 +47,7 @@
       "default": false
     },
     "cwd": {
-      "description": "runtime process: working directory, relative to the plugin directory. Default: the plugin directory.",
+      "description": "runtime process: working directory, relative to the plugin directory and without `..` segments. Default: the plugin directory.",
       "type": ["string", "null"],
       "default": null
     },

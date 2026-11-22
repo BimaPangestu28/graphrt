@@ -194,12 +194,14 @@ fn write_outputs(report: &EvalReport, args: &EvalArgs) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Write a report owner-only: it holds test inputs and model answers.
 fn write_file(path: &Path, text: &str) -> Result<(), CliError> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir)
+        graphrt_core::private_fs::create_dir_all(dir)
             .map_err(|e| CliError::failed(format!("cannot create `{}`: {e}", dir.display())))?;
     }
-    std::fs::write(path, text).map_err(|e| CliError::failed(format!("cannot write `{}`: {e}", path.display())))
+    graphrt_core::private_fs::write(path, text)
+        .map_err(|e| CliError::failed(format!("cannot write `{}`: {e}", path.display())))
 }
 
 pub(crate) fn eval_error(error: EvalError) -> CliError {

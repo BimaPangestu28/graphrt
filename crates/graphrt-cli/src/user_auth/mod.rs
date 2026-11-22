@@ -18,14 +18,21 @@
 //! - `--user-rate-limit N` allows each `sub` N runs per minute (bursts of N);
 //!   more answer `429` with `Retry-After`.
 //! - `POST /v1/runs/{id}/feedback` (feature `scores`) accepts the token too, for
-//!   runs whose `user_id` is the token's `sub` only.
+//!   runs started with a token of the same `sub` only (`user_verified` on the
+//!   record; a body `user_id` from an API-key caller does not count).
+//! - A user-token request sees only the answer stream, the final result and
+//!   pause prompts of its run ([`events`]); `--user-events all` shows every
+//!   engine event, as API-key callers get.
 //! - Every other endpoint (run lists, events, scores, resume, knowledge...) still
-//!   needs the API key, so users cannot read each other's runs.
+//!   needs the API key, so users cannot read each other's runs. The server
+//!   refuses to start with `--verify-jwt` unless an API key is set
+//!   ([`require_api_key`]).
 //!
 //! Keys come from a JWKS URL (`ES256`/`RS256`, fetched at startup and kept fresh)
 //! and/or an `HS256` shared secret named by `--jwt-secret-env`. Verification is
 //! in memory: no network round trip per request. See `docs/serving.md`.
 
+pub(crate) mod events;
 pub mod jwks;
 pub mod rate_limit;
 pub mod token;
@@ -36,7 +43,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use crate::args::UserAuthArgs;
+use crate::args::{UserAuthArgs, UserEvents};
 use crate::error::CliError;
 use crate::header_inputs::{HeaderInputSpec, strip_bearer};
 use crate::serve::error_response;
@@ -72,6 +79,8 @@ pub struct UserAuth {
     remote_keys: Option<Arc<RemoteKeySet>>,
     rules: ClaimRules,
     limiter: Option<UserRateLimiter>,
+    /// What a user-token request sees of its run (`--user-events`).
+    events: UserEvents,
 }
 
 impl UserAuth {
@@ -119,7 +128,15 @@ impl UserAuth {
             leeway_secs: LEEWAY_SECS,
         };
         let limiter = (args.user_rate_limit > 0).then(|| UserRateLimiter::per_minute(args.user_rate_limit));
-        Ok(Some(Self { input: input.clone(), header, local_keys, remote_keys, rules, limiter }))
+        Ok(Some(Self {
+            input: input.clone(),
+            header,
+            local_keys,
+            remote_keys,
+            rules,
+            limiter,
+            events: args.user_events,
+        }))
     }
 
     /// Verify `spec`'s header with fixed keys only (tests and embedders).
@@ -132,7 +149,19 @@ impl UserAuth {
             remote_keys: None,
             rules,
             limiter,
+            events: UserEvents::Answer,
         }
+    }
+
+    /// Show user-token requests `events` of their runs (default: [`UserEvents::Answer`]).
+    pub fn with_events(mut self, events: UserEvents) -> Self {
+        self.events = events;
+        self
+    }
+
+    /// What a user-token request sees of its run.
+    pub fn events(&self) -> UserEvents {
+        self.events
     }
 
     /// The start input whose header is verified.
@@ -154,8 +183,12 @@ impl UserAuth {
         if self.remote_keys.is_some() {
             sources.push("JWKS");
         }
-        let limit = self.limiter.as_ref().map_or(String::new(), |_| ", per-user rate limit on".to_owned());
-        format!("user JWTs in `{}` verified ({}){limit}", self.header, sources.join(" + "))
+        let limit = self.limiter.as_ref().map_or("", |_| ", per-user rate limit on");
+        let events = match self.events {
+            UserEvents::Answer => "answer and result only",
+            UserEvents::All => "all events",
+        };
+        format!("user JWTs in `{}` verified ({}){limit}; users see {events}", self.header, sources.join(" + "))
     }
 
     /// Check the token in `headers`, then its user's rate limit.
@@ -190,6 +223,29 @@ impl UserAuth {
         }
         parsed.verify(&keys, &self.rules, now)
     }
+}
+
+/// Refuse `--verify-jwt` without an API key, on every address.
+///
+/// User tokens open only run starts and feedback; without a key every other
+/// endpoint (run lists, events, resume, knowledge) is public. Binding loopback
+/// is no protection: a reverse proxy on the same host forwards the internet to
+/// a loopback port, and one that rewrites `Host` also passes the DNS-rebinding
+/// check of keyless servers.
+///
+/// @param verify_jwt - Whether `--verify-jwt` is set.
+/// @param has_api_key - Whether the API key variable holds a key.
+/// @param api_key_env - Name of that variable, for the message.
+/// @throws CliError (usage) - When `--verify-jwt` is set without a key.
+pub fn require_api_key(verify_jwt: bool, has_api_key: bool, api_key_env: &str) -> Result<(), CliError> {
+    if !verify_jwt || has_api_key {
+        return Ok(());
+    }
+    Err(CliError::usage(format!(
+        "--verify-jwt needs ${api_key_env} too: user tokens only authorize POST /v1/workflows/{{name}}/runs \
+         and feedback, and without an API key every other endpoint (run lists, events, resume) would be \
+         public, even on a loopback address behind a reverse proxy"
+    )))
 }
 
 fn unauthorized(header: &HeaderName, error: &TokenError) -> Response {

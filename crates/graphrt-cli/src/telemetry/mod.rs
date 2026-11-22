@@ -118,6 +118,16 @@ pub struct Environment {
     paths: Option<Paths>,
 }
 
+/// `DO_NOT_TRACK` as <https://consoledonottrack.com> and docs/telemetry.md
+/// define it: set to anything but `0` or `false`, including the empty string
+/// (`DO_NOT_TRACK=` still says "do not track").
+fn is_do_not_track(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        let value = value.trim();
+        value != "0" && !value.eq_ignore_ascii_case("false")
+    })
+}
+
 fn flag(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "" => None,
@@ -131,7 +141,7 @@ impl Environment {
     pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Self {
         let set = |name: &str| lookup(name).and_then(|v| flag(&v)).unwrap_or(false);
         Self {
-            do_not_track: set("DO_NOT_TRACK"),
+            do_not_track: is_do_not_track(lookup("DO_NOT_TRACK").as_deref()),
             ci: CI_VARS.iter().copied().find(|name| set(name)),
             endpoint: lookup(URL_ENV).or_else(|| BUILD_URL.map(str::to_owned)).filter(|url| !url.trim().is_empty()),
             opt_in: lookup(OPT_IN_ENV).and_then(|v| flag(&v)),
@@ -175,6 +185,14 @@ impl Environment {
             return Err(reason);
         }
         if self.opt_in == Some(true) || state.enabled { Ok(()) } else { Err(OffReason::NotOptedIn) }
+    }
+
+    /// Whether telemetry is on, judged without touching the disk beyond
+    /// reading the state file. A build with an endpoint that the user never
+    /// opted into must not create the config directory or `telemetry.lock`.
+    fn is_on(&self) -> bool {
+        let Some(paths) = &self.paths else { return false };
+        self.decide(&state::read(paths)).is_ok()
     }
 
     fn endpoint_url(&self) -> Option<reqwest::Url> {
@@ -260,6 +278,9 @@ fn run_background(environment: &Environment, first_round: mpsc::Sender<()>) {
 /// Move the in-memory counts into today's entry of the state file (when on).
 fn save_counts(environment: &Environment) {
     let Some(paths) = &environment.paths else { return };
+    if !environment.is_on() {
+        return;
+    }
     let counts =
         DayCounts { runs: RUNS.swap(0, Ordering::Relaxed), serve_requests: SERVE_REQUESTS.swap(0, Ordering::Relaxed) };
     if counts == DayCounts::default() {
@@ -281,6 +302,9 @@ fn save_counts(environment: &Environment) {
 /// Send today's report if none was sent yet. Returns whether telemetry is still on.
 fn send_daily_report(environment: &Environment) -> bool {
     let (Some(paths), Some(url)) = (&environment.paths, environment.endpoint_url()) else { return false };
+    if !environment.is_on() {
+        return false;
+    }
     let today = state::today();
     let claimed = state::update(paths, |state| {
         if environment.decide(state).is_err() {
@@ -317,7 +341,7 @@ fn status_json(environment: &Environment) -> serde_json::Value {
     serde_json::json!({
         "enabled": decision.is_ok(),
         "reason": decision.err().map(|reason| reason.to_string()),
-        "endpoint": environment.endpoint,
+        "endpoint": environment.endpoint.as_deref().map(graphrt_core::urls::redact_userinfo),
         "state_file": environment.paths.as_ref().map(|p| p.file.display().to_string()),
         "last_sent_day": state.last_sent_day,
         "next_report": Report::new(install_id, &days),
@@ -430,5 +454,35 @@ mod tests {
         }
         let plain_http = environment(&[(URL_ENV, "http://example.com/r"), (state::CONFIG_DIR_ENV, "/tmp/x")]);
         assert!(matches!(plain_http.decide(&enabled()), Err(OffReason::InvalidEndpoint(_))));
+    }
+
+    #[test]
+    fn do_not_track_is_set_by_any_value_but_0_or_false() {
+        for value in ["1", "true", "", " ", "yes", "no", "off"] {
+            assert_eq!(with(&[("DO_NOT_TRACK", value)]).decide(&enabled()), Err(OffReason::DoNotTrack), "{value:?}");
+        }
+        for value in ["0", "false", "FALSE", " 0 "] {
+            assert_eq!(with(&[("DO_NOT_TRACK", value)]).decide(&enabled()), Ok(()), "{value:?}");
+        }
+    }
+
+    /// A build with an endpoint, run without opting in: counting and the
+    /// background round leave no config directory or lock file behind.
+    #[test]
+    fn nothing_touches_disk_unless_telemetry_is_on() {
+        let dir = std::env::temp_dir().join(format!("graphrt-telemetry-no-disk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config_dir = dir.to_string_lossy().into_owned();
+        let map: HashMap<String, String> = [
+            (URL_ENV.to_owned(), "https://telemetry.example.com/v1/report".to_owned()),
+            (state::CONFIG_DIR_ENV.to_owned(), config_dir),
+        ]
+        .into();
+        let environment = Environment::from_lookup(&|name| map.get(name).cloned());
+        assert!(!environment.is_on());
+        count_run();
+        save_counts(&environment);
+        assert!(!send_daily_report(&environment));
+        assert!(!dir.exists(), "telemetry off must not create {}", dir.display());
     }
 }

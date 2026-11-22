@@ -241,17 +241,9 @@ mod installer {
         /// local user able to write here (a shared `/tmp` under a permissive
         /// umask) could swap a file between the two.
         fn create() -> Result<Self, CliError> {
-            let nanos =
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-            let path = std::env::temp_dir().join(format!("graphrt-catalog-{}-{nanos}", std::process::id()));
-            #[cfg_attr(not(unix), allow(unused_mut))] // only mutated by the Unix mode below
-            let mut builder = std::fs::DirBuilder::new();
-            #[cfg(unix)]
-            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-            builder
-                .create(&path)
-                .map_err(|error| CliError::failed(format!("cannot create {}: {error}", path.display())))?;
-            Ok(Self(path))
+            graphrt_core::private_fs::create_fresh_temp_dir("graphrt-catalog")
+                .map(Self)
+                .map_err(|error| CliError::failed(format!("cannot create a catalog scratch directory: {error}")))
         }
 
         fn path(&self) -> &Path {

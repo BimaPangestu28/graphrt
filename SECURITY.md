@@ -74,7 +74,11 @@ graphrt should hold these guarantees against untrusted input:
    or request cannot crash the process (abort, stack overflow, panic across
    the API) or grow memory without bound.
 5. **Server.** With an API key set, no `/v1/*` route is reachable without it.
-   Identifiers taken from requests cannot traverse paths.
+   An end-user token (`--verify-jwt`, which requires the key) reaches only
+   run starts and feedback on runs started with that user's token, and
+   receives only the answer, the final result and pause prompts unless the
+   operator passes `--user-events all`. Identifiers taken from requests cannot
+   traverse paths.
 6. **Bundles.** When trusted keys are configured, a bundle that is unsigned,
    signed by another key or modified is refused. Extraction never writes
    outside its directory.

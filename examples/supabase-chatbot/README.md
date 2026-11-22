@@ -189,7 +189,7 @@ the user asks it to.
 | Variable | Where | Meaning |
 | --- | --- | --- |
 | `OPENAI_API_KEY` | server | The model key. Change `model` in `agent.yaml` for another [provider](../../docs/providers.md) (e.g. `anthropic` + `ANTHROPIC_API_KEY`). |
-| `GRAPHRT_API_KEY` | server | Admin key for every endpoint except starting a run. **Required** when listening on a non-loopback address with `--verify-jwt`; no client has it. |
+| `GRAPHRT_API_KEY` | server | Admin key for every endpoint except starting a run. **Required** with `--verify-jwt` (on every address, loopback included); no client has it. |
 | `SUPABASE_URL`, `SUPABASE_KEY` | server | Project URL and **publishable** key (never `service_role` / `sb_secret_`). |
 | `GRAPHRT_JWT_JWKS_URL` | server | `https://<ref>.supabase.co/auth/v1/.well-known/jwks.json` |
 | `GRAPHRT_JWT_ISSUER` | server | `https://<ref>.supabase.co/auth/v1` |
@@ -234,10 +234,10 @@ instance, the built-in limit is enough.
 - Only add functions to the allowlist that are safe for any signed-in user to
   call with any arguments. Never add a dynamic-SQL helper such as `exec_sql`.
   A `SECURITY DEFINER` function bypasses RLS and must check `auth.uid()` itself.
-- Keep `GRAPHRT_API_KEY` set in production: it closes `/v1/runs`, run events
-  and the rest of the admin API, which would otherwise show every user's chats.
-  `graphrt serve` refuses to start with `--verify-jwt` on a public address
-  without it.
+- Keep `GRAPHRT_API_KEY` set: it closes `/v1/runs`, run events and the rest
+  of the admin API, which would otherwise show every user's chats.
+  `graphrt serve` refuses to start with `--verify-jwt` without it, on loopback
+  too.
 
 ## Container
 

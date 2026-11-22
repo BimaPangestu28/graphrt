@@ -121,8 +121,8 @@ Node.js; every secret is an environment variable. Ready-made notes for
 [Fly.io, Cloud Run and a VPS behind Caddy](../examples/supabase-chatbot/README.md#deploy-notes).
 Keep:
 
-- `GRAPHRT_API_KEY` set (the server refuses `--verify-jwt` on a public address
-  without it);
+- `GRAPHRT_API_KEY` set (the server refuses `--verify-jwt` without it, on
+  every address);
 - SSE unbuffered at the proxy (`flush_interval -1` in Caddy,
   `proxy_buffering off` in nginx) and the request timeout above the agent's
   `timeout_ms`;
