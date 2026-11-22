@@ -61,6 +61,10 @@ pub(super) struct AbortOnDrop(pub(super) Arc<ActiveRun>);
 pub(crate) trait StreamGuard: Send + 'static {
     /// The run's terminal event was handed to the response.
     fn terminal_sent(&self) {}
+    /// An event to send before the run's events (the gateway protocol's `hello`).
+    fn first_event(&self) -> Option<axum::response::sse::Event> {
+        None
+    }
 }
 
 impl StreamGuard for AbortOnDrop {}

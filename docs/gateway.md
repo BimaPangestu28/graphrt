@@ -91,8 +91,8 @@ executions); response text chunks are `id: N.k`. A reconnect with
 | --- | --- |
 | Cold start | The request holds; one wake per pool (singleflight); waiters queue up to `max_queued` / `queue_timeout`, then `503 Retry-After` |
 | Agent drains (SIGTERM, scale-down) | The agent pauses or preempts the run; the gateway re-dispatches it at once to another replica with the snapshot and the request's inputs, which it keeps **in memory only** |
-| Stream breaks | Reattach within 3 s; otherwise the agent reports the run as an orphan (`POST /internal/v1/orphans/{id}`, HMAC) within 60 s and the gateway re-dispatches it; no report → `failed{owner_lost}` |
-| Gateway restarts | Queued runs are re-dispatched, running ones are reclaimed from the agents' orphan reports. Request inputs (secrets, `user_jwt`) are not persisted, so a run that needs them stays resumable by the client with fresh credentials |
+| Stream breaks | Reattach within 3 s; otherwise the agent preempts the run and holds it as an orphan, the gateway polls the replicas' `GET /internal/v1/orphans` (backoff to 2 s) for up to 60 s and re-dispatches it; none → `failed{owner_lost}` |
+| Gateway restarts | Queued runs are re-dispatched, running ones are reclaimed from the orphans polled from the agents. Request inputs (secrets, `user_jwt`) are not persisted, so a run that needs them stays resumable by the client with fresh credentials |
 | Platform without grace (Lambda) | No preemption; a run past the platform limit fails with `platform_timeout` |
 
 Nodes can therefore run more than once (at-least-once per node); `http-request`

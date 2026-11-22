@@ -31,6 +31,22 @@ features = "serve,llm,plugins"
 binary_mib = { x86_64-linux = 7.6, aarch64-linux = 6.35, default = 5.6 }
 idle_rss_mib = 6.0
 
+# The slim agent behind a graphrt gateway: what `trust-gateway` costs on top of
+# agent-slim (`delta_of`), so the budget holds however the base grows.
+#
+# The plan's +64 KiB is not reachable without removing protocol logic: what is
+# left is the signed request dispatch, the start/resume/reattach paths, the
+# reclaim task and their unwind tables (min-size keeps panic = unwind). Measured
+# 2026-11-22 (min-size, after the orphan push was dropped for gateway pull):
+# +73.3 KiB aarch64-linux, +89.0 KiB x86_64-linux; the budgets are that plus
+# about 5 %. macOS grows in 16 KiB __TEXT pages (+48.9 KiB measured), so its
+# default allows up to the next page boundary instead.
+[[build]]
+name = "agent-slim-gateway"
+features = "serve,llm,plugins,trust-gateway"
+delta_of = "agent-slim"
+delta_kib = { x86_64-linux = 94, aarch64-linux = 77, default = 65 }
+
 # Time from exec of `graphrt serve` to its first `200` on GET /healthz, p95 over
 # `samples` starts (measured on the agent-slim build).
 [startup]

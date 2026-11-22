@@ -642,11 +642,6 @@ pub struct GatewayTrustArgs {
     /// Name of the environment variable holding the gateway keys.
     #[arg(long, value_name = "VAR", default_value = crate::gateway_agent::KEYS_ENV)]
     pub gateway_keys_env: String,
-    /// Where to report runs whose gateway stream broke: `http://host:port` (private
-    /// network) or `unix:/path/to.sock` [default: $GRAPHRT_GATEWAY_URL; none: the gateway
-    /// lists them with `GET /internal/v1/orphans`].
-    #[arg(long, value_name = "URL", requires = "trust_gateway")]
-    pub gateway_url: Option<String>,
     /// How long the outcome of a run whose gateway stream broke is kept for the gateway
     /// to reclaim before the run is marked failed (`owner_lost`).
     #[arg(long, value_name = "SECS", default_value_t = crate::gateway_agent::DEFAULT_RECLAIM_GRACE_SECS)]

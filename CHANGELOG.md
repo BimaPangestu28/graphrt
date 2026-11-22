@@ -46,6 +46,23 @@ releases may contain breaking changes; they are called out under **Changed**.
   with `user` in the body.
 
 ### Changed
+- The `trust-gateway` feature is about 40 % smaller (slim agent, `min-size`:
+  +73 KiB instead of +126 KiB on Linux musl aarch64, +89 instead of +150 KiB
+  on x86_64), with a budget in the CI gate (`agent-slim-gateway`, measured +
+  about 5 %; `budget-gate.py` gained `delta_of` / `delta_kib`). Agents no
+  longer report orphans (`--gateway-url` is gone): the gateway pulls them with
+  `GET /internal/v1/orphans` after a lost stream as after a restart, so an agent
+  never calls the gateway. One handler routes `/internal/v1` and boxes each endpoint's
+  future, background tasks share one boxed task type, the gateway stream uses
+  the public stream's type (its `hello` comes from the guard), request bodies
+  are read from a JSON tree with the snapshot decoder of the run store, and
+  responses are written as text. Behavior changes on the agent side of the
+  (unreleased) gateway protocol: a start or reattach for an execution that
+  already finished is `409 finished` instead of a replay of its stored events
+  (its outcome reached the gateway on a stream or is held as an orphan), and
+  the agent no longer rewrites an unreclaimed run as `failed{owner_lost}` in
+  its own store (the gateway owns that decision). Refusals carry short, static
+  messages.
 - **Breaking (`graphrt-core` store API, 0.5.0).** `RunRecord` is
   `#[non_exhaustive]` (build it with `RunRecord::running` or the new
   `RunRecord::queued`) and gains `deployment`, `deployment_version`, `epoch`
@@ -170,12 +187,12 @@ releases may contain breaking changes; they are called out under **Changed**.
   nonce and the body hash,
   key ids from `$GRAPHRT_GATEWAY_KEYS` for rotation, ±30 s window, replays
   refused) `/internal/v1` routes: `hello`, `runs` (start, or resume with the
-  snapshot in the body; same epoch attaches or replays, never re-executes),
-  `runs/{id}/stream` (reattach from any `Last-Event-ID`, response text
-  included), `runs/{id}/abort`, `drain`, and `orphans`. A gateway-started run
+  snapshot in the body; same epoch attaches, never re-executes),
+  `runs/{id}/stream` (reattach to a running execution from any
+  `Last-Event-ID`, response text included), `runs/{id}/abort`, `drain`, and `orphans`. A gateway-started run
   whose stream breaks is preempted after 3 s without a reattach and held for
-  `--reclaim-grace-secs` (60) as an orphan, reported to `--gateway-url` (HTTP
-  or Unix socket) and listed for reclaim, instead of being aborted. Cargo
+  `--reclaim-grace-secs` (60) as an orphan that the gateway pulls
+  (`GET /internal/v1/orphans`), instead of being aborted. Cargo
   feature `trust-gateway` (default; no new dependency). See [docs/gateway-protocol.md](docs/gateway-protocol.md).
 - `graphrt serve --listen unix:/path` (alias of `--addr`): listen on a Unix
   socket created mode `0600`.

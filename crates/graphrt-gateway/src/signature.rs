@@ -9,8 +9,8 @@
 //! ```
 //!
 //! The gateway signs every `/internal/v1/*` request with the deployment's
-//! first key and verifies the agents' orphan reports with any of its keys
-//! (two are active during a rotation). Replays are refused for as long as a
+//! first key; agents verify with any of their keys (two are active during a
+//! rotation). Replays are refused for as long as a
 //! timestamp can stay inside the ±30 s window.
 
 use std::collections::{HashSet, VecDeque};

@@ -10,14 +10,13 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use graphrt_cli::gateway_agent::signature::{self, GatewayKey, Signed, Verifier};
-use graphrt_cli::gateway_agent::{GatewayAgent, GatewayAgentConfig, client::GatewayAddress};
+use graphrt_cli::gateway_agent::signature::{self, GatewayKey, Signed};
+use graphrt_cli::gateway_agent::{GatewayAgent, GatewayAgentConfig};
 use graphrt_cli::serve::{AppState, build_state, discover, router};
 use graphrt_cli::setup::ServiceOptions;
 use graphrt_core::engine::Limits;
 use http_body_util::BodyExt;
 use serde_json::{Value as Json, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
 
 const SECRET: [u8; 32] = [0x42; 32];
@@ -54,11 +53,10 @@ fn key() -> GatewayKey {
     GatewayKey::new("k1", &SECRET).unwrap()
 }
 
-fn config(gateway: Option<GatewayAddress>, grace: Duration) -> GatewayAgentConfig {
+fn config(grace: Duration) -> GatewayAgentConfig {
     GatewayAgentConfig {
         deployment: DEPLOYMENT.to_owned(),
         keys: vec![key()],
-        gateway,
         reclaim_grace: grace,
         reattach_window: Duration::from_millis(50),
         max_body_bytes: 1 << 20,
@@ -76,7 +74,7 @@ async fn state(tag: &str, agent: Option<GatewayAgentConfig>) -> Arc<AppState> {
 }
 
 async fn app(tag: &str) -> axum::Router {
-    router(state(tag, Some(config(None, Duration::from_secs(60)))).await, 1 << 20)
+    router(state(tag, Some(config(Duration::from_secs(60)))).await, 1 << 20)
 }
 
 /// A request signed for `deployment` like a gateway would send it.
@@ -217,10 +215,14 @@ async fn a_gateway_run_streams_hello_global_ids_and_response_text_and_is_never_e
         .collect();
     assert_eq!(answer, "one two three");
 
-    // A retried start of the same epoch replays the execution instead of running it again.
+    // A retried start of the same, finished epoch is never executed again.
     let (status, _, again) = send(&app, signed("POST", "/internal/v1/runs", Some(("gw-run-1", 1)), &body)).await;
-    assert_eq!(status, StatusCode::OK, "{again}");
-    assert_eq!(engine_ids(&parse_sse(&again)), ids);
+    assert_eq!(status, StatusCode::CONFLICT, "{again}");
+    assert!(again.contains("\"finished\""), "{again}");
+    // Nor reattached to.
+    let uri = "/internal/v1/runs/gw-run-1/stream?from=0";
+    let (status, _, text) = send(&app, signed("GET", uri, Some(("gw-run-1", 1)), &Json::Null)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{text}");
     let (_, _, record) = send(&app, Request::get("/v1/runs/gw-run-1").body(Body::empty()).unwrap()).await;
     let record: Json = serde_json::from_str(&record).unwrap();
     assert_eq!(record["event_count"].as_u64(), Some(ids.len() as u64), "executed once: {record}");
@@ -353,81 +355,41 @@ async fn a_gateway_drain_refuses_new_runs() {
     assert!(body.contains("draining"), "{body}");
 }
 
-/// A minimal gateway that answers one `POST /internal/v1/orphans/{id}`.
-async fn fake_gateway() -> (GatewayAddress, tokio::task::JoinHandle<(String, Vec<(String, String)>, Vec<u8>)>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = GatewayAddress::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
-    let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut received = Vec::new();
-        let mut chunk = [0u8; 4096];
-        loop {
-            let n = socket.read(&mut chunk).await.unwrap();
-            received.extend_from_slice(&chunk[..n]);
-            let text = String::from_utf8_lossy(&received).into_owned();
-            if let Some(end) = text.find("\r\n\r\n") {
-                let length = text[..end]
-                    .lines()
-                    .find_map(|l| l.strip_prefix("content-length: "))
-                    .and_then(|v| v.trim().parse::<usize>().ok())
-                    .unwrap_or(0);
-                if received.len() >= end + 4 + length {
-                    let head = text[..end].to_owned();
-                    let body = received[end + 4..end + 4 + length].to_vec();
-                    socket.write_all(b"HTTP/1.1 202 Accepted\r\ncontent-length: 0\r\n\r\n").await.unwrap();
-                    let mut lines = head.lines();
-                    let request_line = lines.next().unwrap().to_owned();
-                    let headers =
-                        lines.filter_map(|l| l.split_once(": ").map(|(k, v)| (k.to_owned(), v.to_owned()))).collect();
-                    return (request_line, headers, body);
-                }
-            }
-        }
-    });
-    (address, server)
-}
-
+/// A lost gateway stream becomes an orphan the gateway pulls: the agent never
+/// calls the gateway. The orphan carries the terminal event with the snapshot.
 #[tokio::test]
-async fn a_lost_gateway_stream_becomes_an_orphan_reported_to_the_gateway() {
-    let (address, gateway) = fake_gateway().await;
-    let app = router(state("orphan-report", Some(config(Some(address), Duration::from_secs(5)))).await, 1 << 20);
+async fn a_lost_gateway_stream_becomes_an_orphan_the_gateway_pulls() {
+    let app = router(state("orphan-pull", Some(config(Duration::from_secs(5)))).await, 1 << 20);
     let start = json!({ "workflow": "approval", "inputs": { "amount": 5, "reason": "Tea" } });
     let response =
         app.clone().oneshot(signed("POST", "/internal/v1/runs", Some(("gw-lost", 3)), &start)).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     // The gateway goes away before reading the stream.
     drop(response);
-
-    let (request_line, headers, body) = tokio::time::timeout(Duration::from_secs(10), gateway).await.unwrap().unwrap();
-    assert_eq!(request_line, "POST /internal/v1/orphans/gw-lost HTTP/1.1");
-    let header = |name: &str| headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str()).unwrap_or("");
-    assert_eq!((header("graphrt-run-id"), header("graphrt-epoch"), header("graphrt-protocol")), ("gw-lost", "3", "1"));
-    // Signed both ways with the same scheme: the gateway can verify it.
-    let parts = Signed {
-        deployment: DEPLOYMENT,
-        method: "POST",
-        path: "/internal/v1/orphans/gw-lost",
-        run_id: "gw-lost",
-        epoch: "3",
-        body: &body,
-    };
-    let verifier = Verifier::new(vec![key()]);
-    assert_eq!(verifier.verify(Some(header("graphrt-sig")), &parts, signature::unix_now()), Ok(()));
-    let orphan: Json = serde_json::from_slice(&body).unwrap();
-    assert_eq!((orphan["status"].as_str(), orphan["epoch"].as_u64()), (Some("paused"), Some(3)));
+    let mut orphan = Json::Null;
+    for _ in 0..200 {
+        let (_, _, list) = send(&app, signed("GET", "/internal/v1/orphans", None, &Json::Null)).await;
+        orphan = serde_json::from_str::<Json>(&list).unwrap()["orphans"][0].clone();
+        if !orphan.is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!((orphan["run_id"].as_str(), orphan["epoch"].as_u64()), (Some("gw-lost"), Some(3)), "{orphan}");
+    assert_eq!((orphan["status"].as_str(), orphan["deployment"].as_str()), (Some("paused"), Some(DEPLOYMENT)));
     assert_eq!(orphan["terminal"]["type"], "run_paused");
     assert!(orphan["terminal"]["snapshot"].is_object(), "the snapshot travels with the orphan: {orphan}");
     assert!(orphan["event_count"].as_u64().unwrap() > 0);
-
-    // Accepted by the gateway: no longer held.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Released by the gateway once it took the run over.
+    let release = signed("DELETE", "/internal/v1/orphans/gw-lost", Some(("gw-lost", 3)), &Json::Null);
+    assert_eq!(send(&app, release).await.0, StatusCode::NO_CONTENT);
     let (_, _, list) = send(&app, signed("GET", "/internal/v1/orphans", None, &Json::Null)).await;
     assert_eq!(serde_json::from_str::<Json>(&list).unwrap()["orphans"], json!([]));
 }
 
 #[tokio::test]
-async fn orphans_are_listed_for_reclaim_and_lost_after_the_grace() {
-    let app = router(state("orphan-list", Some(config(None, Duration::from_millis(400)))).await, 1 << 20);
+async fn orphans_are_listed_for_reclaim_and_dropped_after_the_grace() {
+    let app = router(state("orphan-list", Some(config(Duration::from_millis(400)))).await, 1 << 20);
     let start = json!({ "workflow": "approval", "inputs": { "amount": 5, "reason": "Tea" } });
     for run_id in ["kept", "lost"] {
         let response =
@@ -456,13 +418,9 @@ async fn orphans_are_listed_for_reclaim_and_lost_after_the_grace() {
         StatusCode::NOT_FOUND
     );
 
-    // The other one is lost once the grace ran out.
+    // The other one is dropped once the grace ran out; marking the run lost is
+    // the gateway's decision (it owns the run's record).
     tokio::time::sleep(Duration::from_millis(700)).await;
     let (_, _, list) = send(&app, signed("GET", "/internal/v1/orphans", None, &Json::Null)).await;
     assert_eq!(serde_json::from_str::<Json>(&list).unwrap()["orphans"], json!([]));
-    let (_, _, lost) = send(&app, Request::get("/v1/runs/lost").body(Body::empty()).unwrap()).await;
-    let lost: Json = serde_json::from_str(&lost).unwrap();
-    assert_eq!((lost["status"].as_str(), lost["error_type"].as_str()), (Some("failed"), Some("owner_lost")), "{lost}");
-    let (_, _, kept) = send(&app, Request::get("/v1/runs/kept").body(Body::empty()).unwrap()).await;
-    assert_eq!(serde_json::from_str::<Json>(&kept).unwrap()["status"], "paused", "a reclaimed run is left alone");
 }

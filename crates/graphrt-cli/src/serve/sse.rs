@@ -61,9 +61,11 @@ pub(crate) fn sse_stream(
     scope: EventScope,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + 'static {
     // `follow` ends right after the terminal event and refills a lagging caller
-    // from the run's feed, so the answer text stays complete.
+    // from the run's feed, so the answer text stays complete. The first event
+    // comes from the guard, so every caller gets one and the same stream type.
+    let first = futures::stream::iter(guard.first_event().map(Ok));
     let mut chunks = Vec::new();
-    numbered(events, first_index).flat_map(move |item| {
+    first.chain(numbered(events, first_index).flat_map(move |item| {
         let (event, index) = match item {
             Numbered::Event(event, index) => (event, index),
             Numbered::Lagged(skipped) => return futures::stream::iter(vec![Ok(lagged_sse(skipped))]),
@@ -84,7 +86,7 @@ pub(crate) fn sse_stream(
             }
         }
         futures::stream::iter(out)
-    })
+    }))
 }
 
 /// The `lagged` SSE event: `skipped` events are gone for this listener (it fell

@@ -11,8 +11,9 @@
 //!   ├ paused(hitl)   → snapshot + put_if(paused); inputs stay in memory until the token expires
 //!   ├ paused(external: drained / preempted / gateway_disconnected)
 //!   │                → re-dispatch at once with the snapshot and the in-memory inputs
-//!   └ stream broke   → Replica: reattach ≤ 3 s; else wait ≤ reclaim_grace for the
-//!                      agent's orphan report → re-dispatch / finish; none → failed{owner_lost}
+//!   └ stream broke   → Replica: reattach ≤ 3 s; else poll the agents' orphans
+//!                      (`GET /internal/v1/orphans`, backoff to 2 s) ≤ reclaim_grace
+//!                      → re-dispatch / finish; none → failed{owner_lost}
 //! ```
 //!
 //! Request bodies (which carry secret inputs and `user_jwt`) live only in
@@ -39,7 +40,7 @@ use crate::store::SqliteStore;
 /// Timing knobs of the supervisor.
 #[derive(Debug, Clone)]
 pub struct SupervisorSettings {
-    /// How long the agent's orphan report is awaited after a lost stream (plan: 60 s).
+    /// How long an orphan is polled for after a lost stream (plan: 60 s).
     pub reclaim_grace: Duration,
     /// How long a broken `Replica` stream may be reattached (plan: 3 s).
     pub reattach_window: Duration,
@@ -179,12 +180,12 @@ impl LiveRun {
         receiver
     }
 
-    /// Whether a supervisor waits for this run's orphan report.
+    /// Whether a supervisor waits for this run's orphan.
     fn awaits_orphan(&self) -> bool {
         self.orphan.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
     }
 
-    /// Hands an orphan report to the waiting supervisor. Returns whether one was waiting.
+    /// Hands a pulled orphan to the waiting supervisor. Returns whether one was waiting.
     pub fn deliver_orphan(&self, orphan: Json) -> bool {
         match self.orphan.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
             Some(sender) => sender.send(orphan).is_ok(),
@@ -768,7 +769,7 @@ impl Gateway {
         None
     }
 
-    /// Waits for the agent's orphan report after a lost stream.
+    /// Waits for the run's orphan (pulled by [`Self::keep_polling_orphans`]).
     async fn await_orphan(&self, run: &LiveRun, receiver: oneshot::Receiver<Json>, epoch: u64) -> Option<Json> {
         let orphan = tokio::time::timeout(self.settings.reclaim_grace, receiver).await.ok()?.ok()?;
         (orphan.get("epoch").and_then(Json::as_u64) == Some(epoch)).then_some(orphan).filter(|_| !run.run_id.is_empty())
@@ -895,6 +896,8 @@ impl Gateway {
                 }
                 Outcome::Broken(reason) => {
                     let receiver = run.expect_orphan();
+                    // Agents never call the gateway: pull the orphan from them.
+                    tokio::spawn(Arc::clone(&self).keep_polling_orphans(vec![run.run_id.clone()]));
                     if let Some(broken) = lease.take() {
                         self.agents.forget(&broken.endpoint.address);
                         broken.release_broken();
@@ -905,14 +908,14 @@ impl Gateway {
                                 &run,
                                 record,
                                 "owner_lost",
-                                &format!("executor lost ({reason}) and no orphan report within the reclaim grace"),
+                                &format!("executor lost ({reason}) and no orphan within the reclaim grace"),
                             )
                             .await;
                     };
                     let terminal: Option<Event> =
                         orphan.get("terminal").and_then(|terminal| serde_json::from_value(terminal.clone()).ok());
                     let Some(event) = terminal else {
-                        return self.fail(&run, record, "owner_lost", "orphan report without a terminal event").await;
+                        return self.fail(&run, record, "owner_lost", "orphan without a terminal event").await;
                     };
                     match self.finish(&run, record.clone(), &event).await {
                         Some(next) => {
@@ -956,7 +959,7 @@ impl Gateway {
         None
     }
 
-    /// Accepts an agent's orphan report (`POST /internal/v1/orphans/{id}`, verified by the caller).
+    /// Accepts an orphan pulled from an agent (`GET /internal/v1/orphans`).
     /// Returns whether a supervisor was waiting for it.
     pub fn accept_orphan(&self, run_id: &str, orphan: Json) -> bool {
         self.live_run(run_id).is_some_and(|run| run.deliver_orphan(orphan))
@@ -1009,10 +1012,12 @@ impl Gateway {
         Ok((queued.len(), running.len()))
     }
 
-    /// An agent notices a lost stream only some milliseconds after the gateway
-    /// died, so a gateway that comes back quickly (an active/passive takeover
-    /// takes tens of milliseconds) polls again with backoff, for the runs still
-    /// waiting, until the reclaim grace ends.
+    /// Polls the agents for the orphans of `waiting` with backoff (100 ms
+    /// doubling to 2 s) until each is taken or the reclaim grace ends. Used after
+    /// a lost stream (the agent turns the run into an orphan once its reattach
+    /// window passed) and after a restart (an agent notices the lost stream only
+    /// some milliseconds after the gateway died, and an active/passive takeover
+    /// takes tens of milliseconds).
     async fn keep_polling_orphans(self: Arc<Self>, mut waiting: Vec<String>) {
         let deadline = tokio::time::Instant::now() + self.settings.reclaim_grace;
         let mut delay = Duration::from_millis(100);
@@ -1036,7 +1041,7 @@ impl Gateway {
         let Some(event) =
             orphan.get("terminal").and_then(|terminal| serde_json::from_value::<Event>(terminal.clone()).ok())
         else {
-            return self.fail(&run, record, "owner_lost", "orphan report without a terminal event").await;
+            return self.fail(&run, record, "owner_lost", "orphan without a terminal event").await;
         };
         let Ok(version) = run.deployment.version(record.deployment_version.as_deref().unwrap_or_default(), now_ms())
         else {
