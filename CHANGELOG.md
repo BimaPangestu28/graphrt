@@ -58,6 +58,9 @@ releases may contain breaking changes; they are called out under **Changed**.
   inference walked the whole value). Assigner inputs read from a variable are
   now limited to 1,000,000 values and 128 levels of nesting, and type
   inference no longer descends into nested arrays.
+- `template-transform` checked its 1 MiB output limit only after rendering,
+  so a short loop over a large string could render gigabytes first. The
+  render now writes into a capped buffer and stops at the limit.
 
 ## [0.4.0] - 2026-11-20
 
