@@ -10,11 +10,12 @@ all-features = true
 yanked = "deny"
 ignore = [
     # Unmaintained (no vulnerability), transitive, no maintained replacement yet.
-    # Re-check on every dependency update.
-    { id = "RUSTSEC-2026-0374", reason = "basic-toml via uniffi_bindgen (graphrt-ffi build tooling only)" },
-    { id = "RUSTSEC-2026-0543", reason = "chrono via rmcp/schemars (graphrt-mcp); no maintained drop-in yet" },
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser via lopdf/pdf-extract (graphrt-doc `pdf` feature)" },
-    { id = "RUSTSEC-2024-0436", reason = "paste (proc-macro, build time only) via gemm/candle (graphrt-rag `local-embed` feature)" },
+    # Re-check on every dependency update and at the latest by 2027-03-01
+    # (cargo-deny has no expiry field, so the date lives in the reason).
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml via uniffi_bindgen (graphrt-ffi build tooling only; parses only our own UDL/TOML); review by 2027-03-01" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono via rmcp/schemars (graphrt-mcp); no maintained drop-in yet; only formats/parses timestamps from operator-configured MCP servers; review by 2027-03-01" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser via lopdf/pdf-extract (graphrt-doc `pdf` feature); parses embedded fonts of untrusted PDFs, so extraction runs behind a panic boundary and size caps; review by 2027-03-01" },
+    { id = "RUSTSEC-2024-0436", reason = "paste (proc-macro, build time only) via gemm/candle (graphrt-rag `local-embed` feature); no runtime code; review by 2027-03-01" },
 ]
 
 [licenses]

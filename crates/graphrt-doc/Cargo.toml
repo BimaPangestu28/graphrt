@@ -17,7 +17,7 @@ default = ["pdf", "office", "spreadsheet", "epub", "email", "tokio"]
 # Run extraction on Tokio's blocking pool when a Tokio runtime is present.
 tokio = ["dep:tokio", "tokio/rt"]
 # PDF text extraction (pure Rust).
-pdf = ["dep:pdf-extract", "dep:flate2"]
+pdf = ["dep:pdf-extract", "dep:flate2", "dep:weezl"]
 # DOCX and PPTX (zip + XML).
 office = ["zip-formats"]
 # EPUB (zip + XHTML).
@@ -39,8 +39,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 encoding_rs = "0.8"
 pdf-extract = { version = "0.12", optional = true }
-# Already used by the PDF parser; used here to pre-check stream sizes.
+# The PDF parser's zlib and LZW decoders; used here to pre-check stream sizes.
 flate2 = { version = "1", optional = true }
+weezl = { version = "0.1.12", optional = true }
 calamine = { version = "0.38", default-features = false, optional = true }
 zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
 quick-xml = { version = "0.42", optional = true }
@@ -48,6 +49,7 @@ mail-parser = { version = "0.11", default-features = false, optional = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
+weezl = "0.1.12"
 futures = { workspace = true, features = ["executor"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }

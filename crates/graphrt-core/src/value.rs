@@ -212,9 +212,14 @@ impl Value {
             Value::Array(items) => {
                 let mut kind: Option<ValueType> = None;
                 for item in items.iter() {
-                    let t = match item.infer_type() {
-                        ValueType::Integer | ValueType::Float => ValueType::Number,
-                        other => other,
+                    let t = match item {
+                        // Any nested array makes this an `ArrayAny`, so its own
+                        // elements need not be visited. Recursing here was
+                        // exponential on arrays that share themselves through
+                        // `Arc` (a loop appending a variable to itself).
+                        Value::Array(_) => return ValueType::ArrayAny,
+                        Value::Int(_) | Value::Float(_) => ValueType::Number,
+                        scalar => scalar.infer_type(),
                     };
                     match kind {
                         None => kind = Some(t),
@@ -232,6 +237,41 @@ impl Value {
                 }
             }
         }
+    }
+
+    /// Whether this value holds at most `max_nodes` values in total (itself
+    /// included) and nests at most `max_depth` levels below itself (`[1]` is one
+    /// level, `[[1]]` two; empty containers do not add a level).
+    ///
+    /// Arrays and objects are reference-counted, so a value can share one child
+    /// many times: a loop that appends a variable to itself doubles its logical
+    /// size every round while its memory barely grows, and serializing it is
+    /// then exponential. The walk stops as soon as a limit is crossed, so it
+    /// costs at most `max_nodes` steps, and it uses no recursion.
+    pub fn fits_shape(&self, max_nodes: usize, max_depth: usize) -> bool {
+        let mut pending: Vec<(&Value, usize)> = vec![(self, 0)];
+        // Values seen so far, counted when queued so the queue stays bounded too.
+        let mut seen = 1usize;
+        while let Some((value, depth)) = pending.pop() {
+            let children = match value {
+                Value::Array(items) => items.len(),
+                Value::Object(map) => map.len(),
+                _ => continue,
+            };
+            if children == 0 {
+                continue;
+            }
+            seen = seen.saturating_add(children);
+            if seen > max_nodes || depth >= max_depth {
+                return false;
+            }
+            match value {
+                Value::Array(items) => pending.extend(items.iter().map(|item| (item, depth + 1))),
+                Value::Object(map) => pending.extend(map.values().map(|item| (item, depth + 1))),
+                _ => {}
+            }
+        }
+        seen <= max_nodes
     }
 
     pub fn is_null(&self) -> bool {
@@ -752,6 +792,55 @@ fn enum_name<T: Serialize>(v: &T) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An array that contains itself `rounds` times over: logically 2^rounds
+    /// values, in O(rounds) memory.
+    fn self_sharing_array(rounds: usize) -> Value {
+        let mut value = Value::array(Vec::new());
+        for _ in 0..rounds {
+            let mut items = value.as_array().map(<[Value]>::to_vec).unwrap_or_default();
+            items.push(value.clone());
+            value = Value::array(items);
+        }
+        value
+    }
+
+    #[test]
+    fn infer_type_does_not_walk_nested_arrays() {
+        // 2^200 logical values: finishes only if nested arrays are not visited.
+        let shared = self_sharing_array(200);
+        assert_eq!(shared.infer_type(), ValueType::ArrayAny);
+        assert_eq!(Value::from_json(serde_json::json!([[1], [2]])).infer_type(), ValueType::ArrayAny);
+        assert_eq!(Value::from_json(serde_json::json!([1, 2.5])).infer_type(), ValueType::ArrayNumber);
+        assert_eq!(Value::from_json(serde_json::json!([{"a": 1}])).infer_type(), ValueType::ArrayObject);
+    }
+
+    #[test]
+    fn fits_shape_counts_values_and_depth() {
+        let value = Value::from_json(serde_json::json!({"a": [1, 2], "b": {"c": []}}));
+        // root, a, 1, 2, b, c
+        assert!(value.fits_shape(6, 2));
+        assert!(!value.fits_shape(5, 2));
+        assert!(!value.fits_shape(6, 1));
+        assert!(Value::Int(1).fits_shape(1, 0));
+        assert!(Value::array(Vec::new()).fits_shape(1, 0));
+    }
+
+    #[test]
+    fn fits_shape_stops_early_on_shared_values() {
+        assert!(!self_sharing_array(200).fits_shape(1_000_000, 1_000));
+        let mut deep = Value::Int(0);
+        for _ in 0..100_000 {
+            deep = Value::array(vec![deep]);
+        }
+        assert!(!deep.fits_shape(usize::MAX, 128));
+        assert!(deep.fits_shape(usize::MAX, 100_000));
+        // Dropping 100k nested `Arc`s recursively would overflow the stack; take
+        // it apart iteratively.
+        while let Value::Array(items) = deep {
+            deep = Arc::try_unwrap(items).ok().and_then(|mut v| v.pop()).unwrap_or(Value::Null);
+        }
+    }
 
     #[test]
     fn integer_rejects_fractional_float() {

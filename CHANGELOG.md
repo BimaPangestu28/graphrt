@@ -102,6 +102,33 @@ releases may contain breaking changes; they are called out under **Changed**.
   in the jobs that produce the release binaries, is pinned to 0.24.1, and no
   release job keeps checkout credentials.
 
+- Dependencies: `wasmi` 2.0.1 (yanked) is updated to 2.0.2. The remaining
+  `cargo deny` ignores (unmaintained, no vulnerability) carry a reason and a
+  review date.
+- A workflow could grow a variable exponentially: an `assigner` in a loop that
+  appends or extends a variable with itself doubled it every round (memory
+  with `extend`; CPU through shared children with `append`, where type
+  inference walked the whole value). Assigner inputs read from a variable are
+  now limited to 1,000,000 values and 128 levels of nesting, and type
+  inference no longer descends into nested arrays.
+- `template-transform` checked its 1 MiB output limit only after rendering,
+  so a short loop over a large string could render gigabytes first. The
+  render now writes into a capped buffer and stops at the limit.
+- PDF extraction: the decompression budget (`max_decompressed_bytes`) could be
+  bypassed, letting a small uploaded PDF make the parser allocate gigabytes.
+  Only `FlateDecode` streams were measured, by a text scan that missed a
+  stream whose dictionary held a nested `DecodeParms` dictionary after
+  `/Filter`, or had whitespace before `stream`, or had a bad zlib header
+  (the parser then retries as raw deflate). `LZWDecode`, filter chains,
+  PNG-predictor row buffers (sized from `/Columns`) and encrypted documents
+  were not measured at all. Streams are now decoded the way the parser
+  decodes them, with every filter it supports, both before loading and on
+  the parsed document before text is extracted.
+- `{{#…#}}` variable templates parsed in quadratic time: every `{{#` searched
+  the rest of the text for `#}}`, so a 900 KB string of `{{#` took minutes
+  (in a workflow document, or at run time in conditions and list filters).
+  The search now stops at the longest possible placeholder.
+
 
 ## [0.4.0] - 2026-11-20
 

@@ -105,6 +105,33 @@ fn sandboxed_env() -> Environment<'static> {
     env
 }
 
+/// Render target that refuses to grow past [`MAX_OUTPUT_BYTES`].
+///
+/// Fuel counts instructions, not bytes: one instruction can emit a 100 MB
+/// string, so a short loop could render gigabytes before a size check on the
+/// finished string ran. Failing the write stops the render at the limit.
+#[derive(Default)]
+struct CappedOutput {
+    bytes: Vec<u8>,
+    /// Set when a write was refused; minijinja reports only a generic I/O error.
+    overflowed: bool,
+}
+
+impl std::io::Write for CappedOutput {
+    fn write(&mut self, chunk: &[u8]) -> std::io::Result<usize> {
+        if self.bytes.len().saturating_add(chunk.len()) > MAX_OUTPUT_BYTES {
+            self.overflowed = true;
+            return Err(std::io::ErrorKind::FileTooLarge.into());
+        }
+        self.bytes.extend_from_slice(chunk);
+        Ok(chunk.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Name of the node's only template inside its private environment.
 const TEMPLATE_NAME: &str = "template";
 
@@ -126,17 +153,20 @@ impl Node for TemplateTransformNode {
         Box::pin(async move {
             let context =
                 minijinja::Value::from_object(TemplateVars { variables: Arc::clone(&self.variables), pool: ctx.pool });
-            let output = self
-                .env
+            let mut output = CappedOutput::default();
+            self.env
                 .get_template(TEMPLATE_NAME)
-                .and_then(|template| template.render(context))
-                .map_err(|e| NodeError::fatal("template", e.to_string()))?;
-            if output.len() > MAX_OUTPUT_BYTES {
-                return Err(NodeError::fatal(
-                    "template",
-                    format!("output is {} bytes, limit is {MAX_OUTPUT_BYTES}", output.len()),
-                ));
-            }
+                .and_then(|template| template.render_captured_to(context, &mut output))
+                .map_err(|e| {
+                    let message = if output.overflowed {
+                        format!("output exceeds the limit of {MAX_OUTPUT_BYTES} bytes")
+                    } else {
+                        e.to_string()
+                    };
+                    NodeError::fatal("template", message)
+                })?;
+            let output = String::from_utf8(output.bytes)
+                .map_err(|_| NodeError::fatal("template", "rendered output is not valid UTF-8"))?;
             Ok(NodeOutput::new().with("output", output).into())
         })
     }
@@ -161,6 +191,26 @@ mod tests {
 
     async fn render(cfg: serde_json::Value, pool: VariablePool) -> NodeResult {
         node(cfg).unwrap().run(NodeContext::for_test("t", pool)).await
+    }
+
+    #[tokio::test]
+    async fn output_limit_stops_the_render_early() {
+        // 100 GB if rendered to the end; only the writer's cap stops it.
+        let started = std::time::Instant::now();
+        let r = render(
+            json!({"template": "{% for i in range(100000) %}{{ 'x' * 1000000 }}{% endfor %}"}),
+            VariablePool::new(),
+        )
+        .await;
+        let error = r.unwrap_err();
+        assert!(error.message.contains("limit"), "{error:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "took {:?}", started.elapsed());
+        // Right at the limit is fine.
+        let exact = format!("{{{{ 'x' * {MAX_OUTPUT_BYTES} }}}}");
+        let NodeOutcome::Completed(o) = render(json!({"template": exact}), VariablePool::new()).await.unwrap() else {
+            panic!()
+        };
+        assert_eq!(o.outputs.get("output").and_then(Value::as_str).map(str::len), Some(MAX_OUTPUT_BYTES));
     }
 
     #[tokio::test]

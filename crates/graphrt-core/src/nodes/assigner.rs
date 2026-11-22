@@ -150,6 +150,30 @@ fn err(target: &Selector, message: impl Into<String>) -> NodeError {
     NodeError::fatal("assign", format!("`{target}`: {}", message.into()))
 }
 
+/// Most values an assigned variable may hold, nested ones included.
+pub const MAX_ASSIGNED_VALUES: usize = 1_000_000;
+/// Deepest nesting an assigned variable may have (serde_json's parse limit).
+pub const MAX_ASSIGNED_DEPTH: usize = 128;
+
+/// Reject an input read from another variable when it is too large or too deep.
+///
+/// The assigner is the only node that feeds a variable back into itself (a
+/// loop variable, a conversation variable). Values share their children, so
+/// `append xs to xs` or `extend xs with xs` in a loop doubles the logical size
+/// every round in almost no memory, and anything that later walks the value
+/// (serializing events, the store, SSE) takes exponential time or overflows the
+/// stack. Bounding every input bounds each round's growth. The check stops
+/// after `MAX_ASSIGNED_VALUES` steps, so a typical input costs a few steps.
+fn bounded_input(target: &Selector, input: Value) -> Result<Value, NodeError> {
+    if input.fits_shape(MAX_ASSIGNED_VALUES, MAX_ASSIGNED_DEPTH) {
+        return Ok(input);
+    }
+    Err(err(
+        target,
+        format!("input holds more than {MAX_ASSIGNED_VALUES} values or nests deeper than {MAX_ASSIGNED_DEPTH} levels"),
+    ))
+}
+
 /// The declared type a new value must satisfy, derived from the current value.
 fn target_type(current: &Value) -> ValueType {
     match current.infer_type() {
@@ -299,7 +323,7 @@ impl AssignerNode {
             let input = match &item.input {
                 Input::None => None,
                 Input::Constant(v) => Some(v.clone()),
-                Input::Selector(sel) => Some(scratch.get_or_null(sel)),
+                Input::Selector(sel) => Some(bounded_input(&item.target, scratch.get_or_null(sel))?),
             };
             let Some(new) = apply(item, &current, input)? else { continue };
             scratch.set_path(&item.target, new.clone()).map_err(|e| NodeError::invalid_input(e.to_string()))?;
@@ -376,6 +400,24 @@ mod tests {
         assert_eq!(w[0].1, Value::Int(30));
         assert_eq!(w[1].1, Value::from_json(json!(["a", "hello"])));
         assert_eq!(w[2].1, Value::from("hello"));
+    }
+
+    #[tokio::test]
+    async fn rejects_inputs_beyond_the_shape_limits() {
+        let mut p = pool();
+        let wide = Value::array(vec![Value::Int(0); MAX_ASSIGNED_VALUES]);
+        p.insert("conversation", "wide", wide);
+        let mut deep = Value::Int(0);
+        for _ in 0..=MAX_ASSIGNED_DEPTH {
+            deep = Value::array(vec![deep]);
+        }
+        p.insert("conversation", "deep", deep);
+        for source in ["wide", "deep"] {
+            let n = node(json!({"items": [{"variable_selector": ["conversation", "list"], "input_type": "variable",
+                "operation": "over-write", "value": ["conversation", source]}]}));
+            let e = writes(&n, p.clone()).await.unwrap_err();
+            assert!(e.message.contains("more than"), "{source}: {e:?}");
+        }
     }
 
     #[tokio::test]
