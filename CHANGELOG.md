@@ -315,6 +315,18 @@ releases may contain breaking changes; they are called out under **Changed**.
   (`scripts/smoke-release-binary.sh`; x86_64 macOS is cross-built only), and
   the Windows `.exe` links the C runtime statically (no `VCRUNTIME140.dll`).
 
+### Documentation
+- `docs/gateway.md` has a "Measured so far" table: agent exec → `/healthz`,
+  gateway restart, gateway start, a first run that wakes a local agent from
+  zero (p50 17.4 ms with `curl`), HA takeover, Kubernetes (kind) wake p95
+  812 ms and the gateway binary sizes (core 6.64 MiB, `gateway-all`
+  7.32 MiB, macOS arm64). It states that Cloud Run, Container Apps, ECS,
+  Lambda and Fly are tested against API fakes only. The quick start installs
+  from git until the gateway is released, and notes that a
+  `--no-default-features` build needs `trust-gateway` for `--dev`. The kind
+  measurement is in `docs/kubernetes-provider.md`, the README row names
+  `graphrt deploy --target`, and the docs index groups the gateway guides.
+
 ### Fixed
 - `graphrt gateway` no longer loses a run without a checkpoint when the gateway
   restarts. Each accepted run request is written to the store in the

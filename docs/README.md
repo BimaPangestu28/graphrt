@@ -18,14 +18,14 @@ Start with the [project README](../README.md) for install and a first workflow.
 - [The `graphrt` CLI](cli.md): every command and flag
 - [Serving workflows](serving.md): HTTP API, SSE, run store, per-user tokens (`--verify-jwt`), webhooks, knowledge base
 - [Deploying graphrt](deploy.md): container, Fly.io, Cloud Run, systemd
-- [Gateway on Cloud Run](gateway-cloud-run.md): GCP auth, the Cloud Run provider and deploy driver, IAM roles, billing caveats
-- [Kubernetes provider (gateway)](kubernetes-provider.md): scale-to-zero of agent Deployments, RBAC, cluster auth (in-cluster, kubeconfig, exec plugins), optional KEDA
+- [Gateway](gateway.md) (preview): always-on front of scale-to-zero agents, SQLite store, auth, limits, webhooks, cron, `graphrt deploy --target local|k8s|cloud-run|aca|ecs|lambda|fly`, measured cold starts
+- [Gateway active/passive](gateway-ha.md) (preview): on-prem HA on a shared volume, fenced lease, systemd units, volumes not to use
 - [Gateway protocol](gateway-protocol.md): `serve --trust-gateway`, signed `/internal/v1` API, run store contract (epochs, idempotent appends, coordination store), SSE ids and `Last-Event-ID`
-- [Gateway on AWS](gateway-aws.md): ECS Fargate and Lambda targets of the upcoming gateway, credentials, IAM policies, limits
-- [Gateway](gateway.md) (preview): always-on front of scale-to-zero agents, SQLite store, auth, limits, webhooks, cron, `graphrt deploy`
+- [Kubernetes provider (gateway)](kubernetes-provider.md): scale-to-zero of agent Deployments, RBAC, cluster auth (in-cluster, kubeconfig, exec plugins), optional KEDA
+- [Gateway on Cloud Run](gateway-cloud-run.md): GCP auth, the Cloud Run provider and deploy driver, IAM roles, billing caveats
+- [Gateway on AWS](gateway-aws.md): ECS Fargate and Lambda targets of the gateway, credentials, IAM policies, limits
 - [Fly Machines provider of the gateway](gateway-fly.md): Machine pools, suspend/stop, 6PN, Fly secrets, `kill_timeout` (preview)
 - [Azure Container Apps and Entra ID](deploy-azure.md): the gateway's Azure provider (`graphrt-provider-azure`), auth, RBAC, ingress timeouts, conformance
-- [Gateway active/passive](gateway-ha.md) (preview): on-prem HA on a shared volume, fenced lease, systemd units, volumes not to use
 - [Bundles (`.grt`)](bundles.md)
 - [Observability](observability.md): OpenTelemetry traces and metrics, GenAI semantic conventions, presets for Langfuse, LangSmith, Braintrust, Opik, Phoenix and MLflow
 - [Usage telemetry](telemetry.md)
