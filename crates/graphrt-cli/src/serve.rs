@@ -293,9 +293,7 @@ impl AppState {
     /// verified user token and `--user-events` is `answer` (the default).
     fn event_scope(&self, user_token: bool) -> EventScope {
         #[cfg(feature = "jwt")]
-        if user_token
-            && self.user_auth.as_ref().is_some_and(|auth| auth.events() == crate::args::UserEvents::Answer)
-        {
+        if user_token && self.user_auth.as_ref().is_some_and(|auth| auth.events() == crate::args::UserEvents::Answer) {
             return EventScope::Answer;
         }
         let _ = user_token;

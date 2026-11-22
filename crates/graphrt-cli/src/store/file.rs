@@ -25,11 +25,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::future::BoxFuture;
-use graphrt_core::{Snapshot, private_fs};
 use graphrt_core::store::{
     RunFilter, RunPage, RunRecord, RunStore, StoreError, StoreResult, StoredEvent, page_of, sort_newest_first,
     validate_run_id,
 };
+use graphrt_core::{Snapshot, private_fs};
 
 use super::memory::{DEFAULT_MAX_EVENTS, MAX_PAGE, claim, mark_interrupted, purgeable};
 use crate::error::CliError;
@@ -111,8 +111,7 @@ impl Drop for LockGuard {
 
 impl Inner {
     fn lock(&self) -> StoreResult<LockGuard> {
-        let file = private_fs::append_file(&self.root.join(".lock"))
-            .map_err(|e| io("cannot open store lock", &e))?;
+        let file = private_fs::append_file(&self.root.join(".lock")).map_err(|e| io("cannot open store lock", &e))?;
         file.lock().map_err(|e| io("cannot lock store", &e))?;
         Ok(LockGuard(file))
     }
