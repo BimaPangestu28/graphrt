@@ -329,7 +329,7 @@ impl Cluster {
         let port = deployment.port;
         let key = (namespace.to_owned(), service.to_owned());
         let previous = self.slices.get(&key).cloned();
-        if previous.as_ref().is_some_and(|slice| slice.get("endpoints") == Some(&json!(endpoints))) {
+        if previous.as_ref().is_some_and(|slice| slice.get("endpoints") == Some(&if endpoints.is_empty() { Value::Null } else { json!(endpoints) })) {
             return;
         }
         let resource_version = self.bump();
@@ -344,7 +344,8 @@ impl Cluster {
             },
             "addressType": "IPv4",
             "ports": [{ "name": "http", "port": port, "protocol": "TCP" }],
-            "endpoints": endpoints,
+            // A real API server sends `null`, not `[]`, for a slice without endpoints.
+            "endpoints": if endpoints.is_empty() { Value::Null } else { json!(endpoints) },
         });
         self.slices.insert(key, slice.clone());
         let event = SliceEvent {

@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 /// Annotation the ReplicaSet controller orders scale-in victims by (lowest first).
 pub const POD_DELETION_COST: &str = "controller.kubernetes.io/pod-deletion-cost";
@@ -15,6 +15,16 @@ pub const DEPLOYMENT_LABEL: &str = "graphrt.dev/deployment";
 pub const VERSION_LABEL: &str = "graphrt.dev/version";
 pub const MANAGED_BY_LABEL: &str = "app.kubernetes.io/managed-by";
 
+/// Kubernetes sends `null` for empty lists and maps (e.g. `endpoints: null` in
+/// an EndpointSlice without pods): decode it like a missing field.
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectMeta {
@@ -23,9 +33,9 @@ pub struct ObjectMeta {
     #[serde(default)]
     pub resource_version: String,
     pub deletion_timestamp: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub annotations: BTreeMap<String, String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub labels: BTreeMap<String, String>,
 }
 
@@ -38,10 +48,11 @@ pub struct ListMeta {
 
 /// `{kind}List`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
 pub struct ObjectList<T> {
     #[serde(default)]
     pub metadata: ListMeta,
-    #[serde(default = "Vec::new")]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub items: Vec<T>,
 }
 
@@ -72,13 +83,13 @@ pub struct Pod {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PodSpec {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub containers: Vec<Container>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Container {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub ports: Vec<ContainerPort>,
 }
 
@@ -95,9 +106,9 @@ pub struct PodStatus {
     pub phase: Option<String>,
     #[serde(rename = "podIP")]
     pub pod_ip: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub conditions: Vec<PodCondition>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub container_statuses: Vec<ContainerStatus>,
 }
 
@@ -174,7 +185,7 @@ impl Pod {
 pub struct EndpointSlice {
     #[serde(default)]
     pub metadata: ObjectMeta,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub endpoints: Vec<SliceEndpoint>,
     #[serde(default)]
     pub ports: Option<Vec<SlicePort>>,
@@ -183,7 +194,7 @@ pub struct EndpointSlice {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SliceEndpoint {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub addresses: Vec<String>,
     #[serde(default)]
     pub conditions: EndpointConditions,
@@ -263,6 +274,19 @@ mod tests {
                 ReadyAddress { pod: "p5".into(), address: "[fd00::5]:8080".parse().unwrap() },
             ]
         );
+    }
+
+    #[test]
+    fn null_lists_decode_as_empty() {
+        let slice: EndpointSlice = serde_json::from_value(serde_json::json!({
+            "metadata": {"name": "svc-abc", "labels": null, "annotations": null},
+            "ports": null,
+            "endpoints": null
+        }))
+        .unwrap();
+        assert!(slice.ready_addresses().is_empty());
+        let list: ObjectList<Pod> = serde_json::from_value(serde_json::json!({"metadata": {}, "items": null})).unwrap();
+        assert!(list.items.is_empty());
     }
 
     #[test]
