@@ -44,6 +44,16 @@ pub enum Command {
     /// Opt in to or out of anonymous usage telemetry, or show exactly what it sends.
     #[cfg(feature = "telemetry")]
     Telemetry(TelemetryArgs),
+    /// Run the gateway: the always-on front of scale-to-zero agents (store,
+    /// auth, limits, webhooks, cron, wake/scale). `--dev <workflow>` for a
+    /// zero-config local setup.
+    #[cfg(feature = "gateway")]
+    Gateway(Box<crate::gateway_cmd::GatewayArgs>),
+    /// Deploy a new immutable version of a deployment (`--target local`).
+    // `--version` names the deployment version here, not the binary's.
+    #[cfg(feature = "gateway")]
+    #[command(disable_version_flag = true)]
+    Deploy(Box<crate::gateway_cmd::DeployArgs>),
     /// Print version and enabled features.
     Version,
 }

@@ -88,6 +88,10 @@ online-eval = ["scores", "eval", "tokio/sync"]
 # Upload online and human scores to Langfuse (`serve --langfuse-scores`), through
 # the `http` egress policy, with the `langfuse` OTel preset's credentials.
 langfuse = ["scores", "otel", "http", "tokio/sync"]
+# `graphrt gateway` (always-on front of scale-to-zero agents: SQLite store, auth,
+# limits, webhooks, cron, local-process provider) and `graphrt deploy --target local`.
+# Opt-in; pulls in mimalloc (the gateway build only, decision 10: agents stay without it).
+gateway = ["serve", "dep:graphrt-gateway", "graphrt-gateway/gw-local", "dep:graphrt-provider-api", "mimalloc", "dep:ring"]
 # Opt-in anonymous usage telemetry of the CLI binary (`graphrt telemetry`). Off
 # by default and inert unless an endpoint is configured; see docs/telemetry.md.
 telemetry = ["http", "dep:getrandom"]
@@ -106,6 +110,8 @@ graphrt-wasm = { workspace = true, optional = true }
 graphrt-otel = { workspace = true, optional = true, features = ["http"] }
 graphrt-bundle = { workspace = true, optional = true }
 graphrt-eval = { workspace = true, optional = true }
+graphrt-gateway = { workspace = true, optional = true }
+graphrt-provider-api = { workspace = true, optional = true }
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 tokio = { workspace = true, features = ["rt", "time", "signal", "fs", "io-util"] }
 futures.workspace = true
