@@ -104,7 +104,8 @@ releases may contain breaking changes; they are called out under **Changed**.
   manifest cannot point the process at files outside its directory. Bare
   names on `PATH` (`python3`) and absolute system paths stay allowed.
   **Migration:** move a `cwd` such as `../shared` inside the plugin, or start
-  the process through a script in the plugin directory.
+  the process through a script in the plugin directory, as the
+  `rust-text-stats` example now does (`run.sh`).
 - Bundles: extraction refuses Windows device names (`CON`, `PRN`, `AUX`,
   `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, with any extension) in any path
   component, and paths that differ only in case, which overwrite each other

@@ -46,4 +46,6 @@ graph:
 ```
 
 The Rust example must be built first:
-`cargo build --release -p graphrt-plugin-sdk --example text_stats`.
+`cargo build --release -p graphrt-plugin-sdk --example text_stats`. Its
+manifest starts `run.sh`, which execs the binary from the workspace `target/`
+directory (a manifest `command` may not leave the plugin directory with `..`).
