@@ -16,7 +16,6 @@ use std::time::Duration;
 use graphrt_provider_api::http::{ProviderHttp, RetryPolicy, TokenBucket, TokenSource};
 use graphrt_provider_api::{ProviderError, ProviderErrorKind};
 use reqwest::Method;
-use serde::de::DeserializeOwned;
 
 use crate::auth::ClusterConfig;
 
@@ -179,8 +178,8 @@ impl KubeClient {
         Ok(bytes.to_vec())
     }
 
-    /// `GET` and decode the JSON body.
-    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ProviderError> {
+    /// `GET` and parse the JSON body.
+    pub async fn get(&self, path: &str) -> Result<serde_json::Value, ProviderError> {
         let bytes = self.send(Method::GET, path, None).await?;
         serde_json::from_slice(&bytes).map_err(|error| ProviderError::fatal(format!("decode {path}: {error}")))
     }
@@ -193,11 +192,11 @@ impl KubeClient {
 }
 
 /// One event of a watch stream.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct WatchEvent<T> {
-    #[serde(rename = "type")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct WatchEvent {
+    /// `ADDED`, `MODIFIED`, `DELETED`, `BOOKMARK` or `ERROR`.
     pub kind: String,
-    pub object: T,
+    pub object: serde_json::Value,
 }
 
 /// Newline-delimited JSON watch events, read chunk by chunk.
@@ -210,7 +209,7 @@ pub struct WatchStream {
 
 impl WatchStream {
     /// The next event, or `None` when the server closed the watch.
-    pub async fn next<T: DeserializeOwned>(&mut self) -> Result<Option<WatchEvent<T>>, ProviderError> {
+    pub async fn next(&mut self) -> Result<Option<WatchEvent>, ProviderError> {
         loop {
             if let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') {
                 let line: Vec<u8> = self.buffer.drain(..=newline).collect();
@@ -218,9 +217,11 @@ impl WatchStream {
                 if line.is_empty() {
                     continue;
                 }
-                return serde_json::from_slice(line)
-                    .map(Some)
-                    .map_err(|error| ProviderError::fatal(format!("decode watch {}: {error}", self.path)));
+                let mut event: serde_json::Value = serde_json::from_slice(line)
+                    .map_err(|error| ProviderError::fatal(format!("decode watch {}: {error}", self.path)))?;
+                let kind = event.get("type").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+                let object = event.get_mut("object").map(serde_json::Value::take).unwrap_or_default();
+                return Ok(Some(WatchEvent { kind, object }));
             }
             match self.response.chunk().await {
                 Ok(Some(chunk)) => self.buffer.extend_from_slice(&chunk),
@@ -240,7 +241,10 @@ mod tests {
     #[test]
     fn classifies_kubernetes_statuses() {
         assert_eq!(classify(409, ""), ProviderErrorKind::Fatal, "CAS conflicts are the caller's to retry");
-        assert_eq!(classify(403, r#"{"message":"pods \"x\" is forbidden: exceeded quota: q"}"#), ProviderErrorKind::Capacity);
+        assert_eq!(
+            classify(403, r#"{"message":"pods \"x\" is forbidden: exceeded quota: q"}"#),
+            ProviderErrorKind::Capacity
+        );
         assert_eq!(classify(403, "forbidden"), ProviderErrorKind::Auth);
         assert_eq!(classify(429, ""), ProviderErrorKind::RateLimited);
         assert_eq!(classify(503, ""), ProviderErrorKind::Transient);

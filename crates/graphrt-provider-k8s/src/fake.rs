@@ -172,13 +172,19 @@ impl FakeApiServer {
         let shared = self.shared.clone();
         Arc::new(move |request: &ScriptedRequest| {
             let (path, query) = request.path.split_once('?').unwrap_or((request.path.as_str(), ""));
-            let bearer = request.header("authorization").and_then(|value| value.strip_prefix("Bearer ")).map(str::to_owned);
-            let recorded =
-                RecordedRequest { method: request.method.clone(), path: path.to_owned(), query: query.to_owned(), bearer };
+            let bearer =
+                request.header("authorization").and_then(|value| value.strip_prefix("Bearer ")).map(str::to_owned);
+            let recorded = RecordedRequest {
+                method: request.method.clone(),
+                path: path.to_owned(),
+                query: query.to_owned(),
+                bearer,
+            };
             let reply = match handle(&shared, recorded, &request.body) {
                 Handled::Reply(reply) => reply,
                 Handled::Watch { namespace, service, query } => {
-                    let lines = watch_backlog(&shared, &namespace, &service, watch_since(&query)).unwrap_or_else(|gone| vec![gone]);
+                    let lines = watch_backlog(&shared, &namespace, &service, watch_since(&query))
+                        .unwrap_or_else(|gone| vec![gone]);
                     Reply { status: 200, body: lines.concat(), retry_after: None }
                 }
             };
@@ -210,7 +216,14 @@ impl FakeApiServer {
         let resource_version = cluster.bump();
         cluster.deployments.insert(
             (namespace.into(), name.into()),
-            FakeDeployment { replicas: 0, resource_version, pod_labels, port, manifest: Value::Null, replica_failure: None },
+            FakeDeployment {
+                replicas: 0,
+                resource_version,
+                pod_labels,
+                port,
+                manifest: Value::Null,
+                replica_failure: None,
+            },
         );
         cluster.publish_slice(&self.shared, namespace, name);
     }
@@ -332,7 +345,10 @@ impl Cluster {
         self.pod_serial += 1;
         let serial = self.pod_serial;
         let pod_name = format!("{name}-{serial:05}");
-        let scheduled = shared.options.capacity.is_none_or(|capacity| self.pods.values().filter(|pod| pod.scheduled).count() < capacity);
+        let scheduled = shared
+            .options
+            .capacity
+            .is_none_or(|capacity| self.pods.values().filter(|pod| pod.scheduled).count() < capacity);
         let resource_version = self.bump();
         let pod = FakePod {
             namespace: namespace.into(),
@@ -371,7 +387,9 @@ impl Cluster {
         let mut endpoints: Vec<(u64, Value)> = self
             .pods
             .iter()
-            .filter(|((pod_namespace, _), pod)| pod_namespace == namespace && pod.deployment == service && pod.scheduled)
+            .filter(|((pod_namespace, _), pod)| {
+                pod_namespace == namespace && pod.deployment == service && pod.scheduled
+            })
             .map(|((_, pod_name), pod)| {
                 (
                     pod.serial,
@@ -388,7 +406,9 @@ impl Cluster {
         let port = deployment.port;
         let key = (namespace.to_owned(), service.to_owned());
         let previous = self.slices.get(&key).cloned();
-        if previous.as_ref().is_some_and(|slice| slice.get("endpoints") == Some(&if endpoints.is_empty() { Value::Null } else { json!(endpoints) })) {
+        if previous.as_ref().is_some_and(|slice| {
+            slice.get("endpoints") == Some(&if endpoints.is_empty() { Value::Null } else { json!(endpoints) })
+        }) {
             return;
         }
         let resource_version = self.bump();
@@ -466,7 +486,10 @@ fn respond(status: StatusCode, body: &Value) -> Reply {
 
 fn status_response(code: u16, reason: &str, message: &str) -> Reply {
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    respond(status, &json!({ "kind": "Status", "status": "Failure", "code": code, "reason": reason, "message": message }))
+    respond(
+        status,
+        &json!({ "kind": "Status", "status": "Failure", "code": code, "reason": reason, "message": message }),
+    )
 }
 
 fn into_axum(reply: Reply) -> Response {
@@ -543,11 +566,14 @@ fn handle(shared: &Arc<Shared>, request: RecordedRequest, body: &[u8]) -> Handle
                         .iter()
                         .map(|message| json!({ "type": "ReplicaFailure", "status": "True", "reason": "FailedCreate", "message": message }))
                         .collect();
-                    respond(StatusCode::OK, &json!({
-                        "metadata": { "name": name, "namespace": namespace },
-                        "spec": { "replicas": deployment.replicas },
-                        "status": { "conditions": conditions },
-                    }))
+                    respond(
+                        StatusCode::OK,
+                        &json!({
+                            "metadata": { "name": name, "namespace": namespace },
+                            "spec": { "replicas": deployment.replicas },
+                            "status": { "conditions": conditions },
+                        }),
+                    )
                 }
                 None => status_response(404, "NotFound", &format!("deployments.apps \"{name}\" not found")),
             }
@@ -563,11 +589,16 @@ fn handle(shared: &Arc<Shared>, request: RecordedRequest, body: &[u8]) -> Handle
             let items: Vec<Value> = cluster
                 .pods
                 .iter()
-                .filter(|((pod_namespace, _), pod)| pod_namespace == namespace && selector_matches(&selector, &pod.labels))
+                .filter(|((pod_namespace, _), pod)| {
+                    pod_namespace == namespace && selector_matches(&selector, &pod.labels)
+                })
                 .map(|((_, name), pod)| pod_json(name, pod))
                 .collect();
             let resource_version = cluster.resource_version.to_string();
-            respond(StatusCode::OK, &json!({ "kind": "PodList", "metadata": { "resourceVersion": resource_version }, "items": items }))
+            respond(
+                StatusCode::OK,
+                &json!({ "kind": "PodList", "metadata": { "resourceVersion": resource_version }, "items": items }),
+            )
         }
         ("GET", ["api", "v1", "namespaces", namespace, "pods", name]) => {
             match cluster.pods.get(&((*namespace).into(), (*name).into())) {
@@ -575,7 +606,9 @@ fn handle(shared: &Arc<Shared>, request: RecordedRequest, body: &[u8]) -> Handle
                 None => status_response(404, "NotFound", &format!("pods \"{name}\" not found")),
             }
         }
-        ("PATCH", ["api", "v1", "namespaces", namespace, "pods", name]) => patch_pod(&mut cluster, namespace, name, body),
+        ("PATCH", ["api", "v1", "namespaces", namespace, "pods", name]) => {
+            patch_pod(&mut cluster, namespace, name, body)
+        }
         ("GET", ["apis", "discovery.k8s.io", "v1", "namespaces", namespace, "endpointslices"]) => {
             let selector = query_param(&query, "labelSelector").unwrap_or_default();
             let service = selector.strip_prefix("kubernetes.io/service-name=").unwrap_or_default().to_owned();
@@ -584,7 +617,10 @@ fn handle(shared: &Arc<Shared>, request: RecordedRequest, body: &[u8]) -> Handle
             }
             let items: Vec<Value> = cluster.slices.get(&((*namespace).into(), service)).cloned().into_iter().collect();
             let resource_version = cluster.resource_version.to_string();
-            respond(StatusCode::OK, &json!({ "kind": "EndpointSliceList", "metadata": { "resourceVersion": resource_version }, "items": items }))
+            respond(
+                StatusCode::OK,
+                &json!({ "kind": "EndpointSliceList", "metadata": { "resourceVersion": resource_version }, "items": items }),
+            )
         }
         _ => status_response(404, "NotFound", &format!("fake API server: no route for {method} {path}")),
     };
@@ -620,9 +656,14 @@ fn patch_scale(cluster: &mut Cluster, shared: &Arc<Shared>, namespace: &str, nam
     if let Some(expected) = patch.pointer("/metadata/resourceVersion").and_then(Value::as_str)
         && expected != deployment.resource_version.to_string()
     {
-        return status_response(409, "Conflict", "the object has been modified; please apply your changes to the latest version");
+        return status_response(
+            409,
+            "Conflict",
+            "the object has been modified; please apply your changes to the latest version",
+        );
     }
-    let Some(replicas) = patch.pointer("/spec/replicas").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok())
+    let Some(replicas) =
+        patch.pointer("/spec/replicas").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok())
     else {
         return status_response(422, "Invalid", "spec.replicas missing");
     };
@@ -648,7 +689,8 @@ fn apply_deployment(cluster: &mut Cluster, shared: &Arc<Shared>, namespace: &str
         .and_then(Value::as_u64)
         .and_then(|port| u16::try_from(port).ok())
         .unwrap_or(8080);
-    let replicas = manifest.pointer("/spec/replicas").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok());
+    let replicas =
+        manifest.pointer("/spec/replicas").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok());
     let resource_version = cluster.bump();
     let key = (namespace.to_owned(), name.to_owned());
     let entry = cluster.deployments.entry(key).or_insert_with(|| FakeDeployment {
@@ -729,7 +771,8 @@ fn watch_since(query: &str) -> u64 {
 /// A streaming watch: backlog, then live events until `timeoutSeconds`.
 fn watch_slices(shared: &Arc<Shared>, namespace: &str, service: &str, query: &str) -> Response {
     let since = watch_since(query);
-    let timeout = Duration::from_secs(query_param(query, "timeoutSeconds").and_then(|value| value.parse().ok()).unwrap_or(30));
+    let timeout =
+        Duration::from_secs(query_param(query, "timeoutSeconds").and_then(|value| value.parse().ok()).unwrap_or(30));
     let (sender, receiver) = mpsc::unbounded_channel::<Bytes>();
     // Subscribe before reading the backlog so no event falls between the two.
     let mut live = shared.events.subscribe();
@@ -750,7 +793,9 @@ fn watch_slices(shared: &Arc<Shared>, namespace: &str, service: &str, query: &st
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             match tokio::time::timeout_at(deadline, live.recv()).await {
-                Ok(Ok(event)) if event.namespace == namespace && event.service == service && event.resource_version > since => {
+                Ok(Ok(event))
+                    if event.namespace == namespace && event.service == service && event.resource_version > since =>
+                {
                     if sender.send(event_line(&event)).is_err() {
                         return;
                     }

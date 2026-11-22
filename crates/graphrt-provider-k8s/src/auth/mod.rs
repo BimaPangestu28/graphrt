@@ -9,9 +9,12 @@
 //! provide their own `TokenSource` from the `auth-aws` / `auth-gcp` /
 //! `auth-azure` modules and set it with [`ClusterConfig::with_token_source`].
 
+#[cfg(feature = "kubeconfig")]
 mod exec;
 mod in_cluster;
+#[cfg(feature = "kubeconfig")]
 mod kubeconfig;
+#[cfg(feature = "kubeconfig")]
 mod time;
 
 use std::fmt;
@@ -24,9 +27,12 @@ pub use graphrt_provider_api::http::{
 };
 use graphrt_provider_api::{BoxFuture, ProviderError};
 
+#[cfg(feature = "kubeconfig")]
 pub use exec::{ExecConfig, ExecTokenFetcher};
 pub use in_cluster::{IN_CLUSTER_DIR, in_cluster_config, in_cluster_config_from};
+#[cfg(feature = "kubeconfig")]
 pub use kubeconfig::{KubeconfigOptions, kubeconfig_from_env, kubeconfig_from_str};
+#[cfg(feature = "kubeconfig")]
 pub use time::parse_rfc3339;
 
 /// How often token files are re-read: the kubelet rotates projected service
@@ -34,6 +40,7 @@ pub use time::parse_rfc3339;
 pub const TOKEN_FILE_MAX_AGE: Duration = Duration::from_secs(60);
 
 /// Lifetime given to tokens without a known expiry, before they are re-fetched.
+#[cfg(feature = "kubeconfig")]
 const UNKNOWN_EXPIRY: Duration = Duration::from_secs(24 * 3600);
 
 /// Errors while resolving cluster credentials.
@@ -125,7 +132,8 @@ impl fmt::Debug for ClusterConfig {
 }
 
 /// In-cluster config when running in a pod, else the kubeconfig from
-/// `$KUBECONFIG` / `~/.kube/config` (the order client-go uses).
+/// `$KUBECONFIG` / `~/.kube/config` (the order client-go uses). Feature `kubeconfig`.
+#[cfg(feature = "kubeconfig")]
 pub fn infer_cluster_config() -> Result<ClusterConfig, AuthError> {
     match in_cluster_config() {
         Ok(config) => Ok(config),

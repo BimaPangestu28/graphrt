@@ -15,6 +15,18 @@ It implements the `Provider` and `DeployDriver` traits of
 `ProviderHttp` layer: hand-rolled REST over the reqwest + rustls stack graphrt
 already links, no `kube`, no `k8s-openapi`, no HTTP/2.
 
+## Cargo features and size
+
+| Feature | What | Binary size (macOS arm64, `min-size`) |
+| --- | --- | --- |
+| (always) | run-time provider, in-cluster service account auth, readiness watch | ≈ 130 KiB (budget 150 KiB) |
+| `kubeconfig` (default) | kubeconfig files: token, token file, client certificate, exec plugins | ≈ +65 KiB |
+| `deploy` (default) | deploy driver: server-side apply of Deployment, Service, Secret | ≈ +49 KiB |
+
+Sizes are measured against a binary that already links the shared provider
+HTTP layer (reqwest, rustls, tokio, serde_json). A gateway running inside the
+cluster can use `default-features = false`.
+
 ## How it maps onto Kubernetes
 
 | Gateway operation | Kubernetes API |

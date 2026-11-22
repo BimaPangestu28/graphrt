@@ -127,7 +127,12 @@ pub fn kubeconfig_from_str(text: &str, base_dir: &Path, context: Option<&str>) -
 }
 
 fn parse(text: &str, origin: &Path) -> Result<KubeconfigFile, AuthError> {
-    serde_saphyr::from_str(text).map_err(|error| AuthError::Kubeconfig(format!("{}: {error}", origin.display())))
+    // YAML -> JSON value -> structs: the YAML deserializer is instantiated once
+    // (for `Value`, shared with the rest of the binary) instead of once per
+    // kubeconfig struct, which keeps this feature ~100 KiB smaller.
+    let invalid = |error: String| AuthError::Kubeconfig(format!("{}: {error}", origin.display()));
+    let value: serde_json::Value = serde_saphyr::from_str(text).map_err(|error| invalid(error.to_string()))?;
+    serde_json::from_value(value).map_err(|error| invalid(error.to_string()))
 }
 
 fn kubeconfig_paths(options: &KubeconfigOptions) -> Result<Vec<PathBuf>, AuthError> {
@@ -225,7 +230,9 @@ fn find<'a, T>(entries: &'a [Named<T>], name: &str, kind: &str) -> Result<&'a T,
 
 fn check_cluster_options(cluster: &ClusterEntry) -> Result<(), AuthError> {
     if cluster.insecure_skip_tls_verify {
-        return Err(AuthError::Unsupported("insecure-skip-tls-verify: set certificate-authority(-data) instead".into()));
+        return Err(AuthError::Unsupported(
+            "insecure-skip-tls-verify: set certificate-authority(-data) instead".into(),
+        ));
     }
     if cluster.tls_server_name.is_some() {
         return Err(AuthError::Unsupported("tls-server-name".into()));

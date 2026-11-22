@@ -70,9 +70,8 @@ impl ExecTokenFetcher {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let child = command
-            .spawn()
-            .map_err(|error| AuthError::Exec(format!("spawn {:?}: {error}", self.config.command)))?;
+        let child =
+            command.spawn().map_err(|error| AuthError::Exec(format!("spawn {:?}: {error}", self.config.command)))?;
         let output = tokio::time::timeout(EXEC_TIMEOUT, child.wait_with_output())
             .await
             .map_err(|_| AuthError::Exec(format!("{:?} did not finish within {EXEC_TIMEOUT:?}", self.config.command)))?
@@ -80,7 +79,12 @@ impl ExecTokenFetcher {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let excerpt: String = stderr.chars().take(512).collect();
-            return Err(AuthError::Exec(format!("{:?} exited with {}: {}", self.config.command, output.status, excerpt.trim())));
+            return Err(AuthError::Exec(format!(
+                "{:?} exited with {}: {}",
+                self.config.command,
+                output.status,
+                excerpt.trim()
+            )));
         }
         parse_exec_credential(&output.stdout)
     }
@@ -109,8 +113,8 @@ struct ExecCredentialStatus {
 /// Parse the plugin's stdout (an `ExecCredential` object).
 fn parse_exec_credential(stdout: &[u8]) -> Result<AccessToken, AuthError> {
     // The error never echoes stdout: it carries the credential.
-    let credential: ExecCredential =
-        serde_json::from_slice(stdout).map_err(|_| AuthError::Exec("output is not an ExecCredential JSON object".into()))?;
+    let credential: ExecCredential = serde_json::from_slice(stdout)
+        .map_err(|_| AuthError::Exec("output is not an ExecCredential JSON object".into()))?;
     if credential.kind.as_deref().is_some_and(|kind| kind != "ExecCredential") {
         return Err(AuthError::Exec("output kind is not ExecCredential".into()));
     }
@@ -146,7 +150,8 @@ mod tests {
         assert_eq!(token.value.expose(), "k8s-aws-v1.abc");
         assert!(token.expires_in > Duration::from_secs(3600));
         // Already expired (clock skew): zero lifetime, re-fetched on next use.
-        let expired = parse_exec_credential(br#"{"status":{"token":"t","expirationTimestamp":"2001-01-01T00:00:00Z"}}"#).unwrap();
+        let expired =
+            parse_exec_credential(br#"{"status":{"token":"t","expirationTimestamp":"2001-01-01T00:00:00Z"}}"#).unwrap();
         assert_eq!(expired.expires_in, Duration::ZERO);
         let forever = parse_exec_credential(br#"{"status":{"token":"t"}}"#).unwrap();
         assert_eq!(forever.expires_in, UNKNOWN_EXPIRY);

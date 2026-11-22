@@ -11,7 +11,9 @@ pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
     if bytes.len() < 20 || bytes.get(4) != Some(&b'-') || bytes.get(7) != Some(&b'-') {
         return None;
     }
-    if !matches!(bytes.get(10), Some(b'T' | b't' | b' ')) || bytes.get(13) != Some(&b':') || bytes.get(16) != Some(&b':')
+    if !matches!(bytes.get(10), Some(b'T' | b't' | b' '))
+        || bytes.get(13) != Some(&b':')
+        || bytes.get(16) != Some(&b':')
     {
         return None;
     }
@@ -93,7 +95,16 @@ mod tests {
 
     #[test]
     fn rejects_malformed_timestamps() {
-        for text in ["", "2026-11-22", "2026-13-01T00:00:00Z", "2026-11-22T10:15:30", "2026-11-22T10:15:30+0700", "x026-11-22T10:15:30Z", "2026-11-22T10:15:30.Z", "1969-12-31T23:59:59Z"] {
+        for text in [
+            "",
+            "2026-11-22",
+            "2026-13-01T00:00:00Z",
+            "2026-11-22T10:15:30",
+            "2026-11-22T10:15:30+0700",
+            "x026-11-22T10:15:30Z",
+            "2026-11-22T10:15:30.Z",
+            "1969-12-31T23:59:59Z",
+        ] {
             assert_eq!(parse_rfc3339(text), None, "{text}");
         }
     }
