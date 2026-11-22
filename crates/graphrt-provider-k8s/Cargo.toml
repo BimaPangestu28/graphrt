@@ -17,7 +17,7 @@ default = []
 # In-process fake Kubernetes API server (Deployments + scale, ReplicaSet-like pod
 # lifecycle, EndpointSlice watch, server-side apply, fault injection) for the
 # conformance suite. Test-only: never enable it in a shipped binary.
-fake-api-server = ["dep:axum", "tokio/net", "tokio/macros"]
+fake-api-server = ["dep:axum", "dep:futures", "tokio/net"]
 
 [dependencies]
 # The HTTP client, TLS and crypto every other graphrt crate already links:
@@ -33,8 +33,10 @@ thiserror.workspace = true
 tracing.workspace = true
 base64 = "0.22"
 axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio"] }
+futures = { workspace = true, optional = true }
 
 [dev-dependencies]
+graphrt-provider-k8s = { path = ".", features = ["fake-api-server"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "sync"] }
 
 [lints]
