@@ -1084,7 +1084,10 @@ async fn resume_run(
         .get_key_value(&record.workflow)
         .or_else(|| state.workflows.iter().find(|(_, w)| w.engine.graph().fingerprint() == snapshot.graph_fingerprint));
     let Some((name, workflow)) = workflow else {
-        return error_response(StatusCode::NOT_FOUND, &format!("workflow `{}` is not served", record.workflow));
+        let message = format!("workflow `{}` is not served", record.workflow);
+        // The claim above marked the run `running`; without a release it would stay so until a restart.
+        release_claim(&state, record).await;
+        return error_response(StatusCode::NOT_FOUND, &message);
     };
     let mut secrets = body.secrets;
     if let Some(bindings) = state.header_inputs.get(name)

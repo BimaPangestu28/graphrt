@@ -45,6 +45,9 @@ releases may contain breaking changes; they are called out under **Changed**.
   the Windows `.exe` links the C runtime statically (no `VCRUNTIME140.dll`).
 
 ### Fixed
+- `graphrt serve`: resuming a paused run whose workflow is no longer served
+  answered `404` but left the run `running` until the next restart, so it
+  could not be resumed or deleted. It stays `paused` now.
 - Windows: plugin manifests no longer accept rooted paths such as `/etc/x` or
   `\x` for `module`, checksums or the entrypoint (they are not "absolute" on
   Windows, yet escaped the plugin directory when joined).
