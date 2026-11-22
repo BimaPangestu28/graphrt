@@ -71,9 +71,12 @@ On SIGTERM or SIGINT (Ctrl-C) the server **drains** before it exits, within
    balancer stops routing here; `GET /healthz` stays `200`.
 2. Every active run (async, streaming and blocking) is paused: no further node
    starts, nodes already running may finish.
-3. Shortly before the deadline (a reserve of a quarter of the timeout, 0.5–2 s,
-   plus 10 ms per active run), runs that are still busy are **preempted**:
-   their in-flight nodes are cancelled and saved as pending.
+3. Shortly before the deadline, runs that are still busy are **preempted**:
+   their in-flight nodes are cancelled and saved as pending. The reserve is a
+   quarter of the timeout (0.5–2 s) plus, per active run, three times the
+   store's recent write latency (at least 10 ms): a `--store` directory takes
+   one lock per write and syncs to disk, so on a busy disk ten runs stopping at
+   once need ten times their final writes.
 4. Once every run stored its final state, open connections close and the
    process exits `0`. A second signal preempts at once.
 
