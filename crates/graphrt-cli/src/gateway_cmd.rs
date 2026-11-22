@@ -7,6 +7,8 @@
 //! - `graphrt gateway key new` / `key hmac`: a client API key (and the digest
 //!   for `api_keys:`) / an agent HMAC key for `keys_env`.
 //! - `graphrt gateway import --from <serve store dir> --store gateway.db --deployment <d>`.
+//! - `graphrt gateway ha status|promote --config gateway.yaml`: active/passive
+//!   lease (see `docs/gateway-ha.md`).
 //! - `graphrt deploy --target local --deployment <d> --version <v> <workflow>`:
 //!   registers a new immutable version with a running gateway.
 
@@ -37,6 +39,9 @@ pub struct GatewayArgs {
     /// Listen address (overrides the config).
     #[arg(long, value_name = "HOST:PORT")]
     pub listen: Option<String>,
+    /// Active/passive node id (overrides `ha.node_id`; needs an `ha:` section).
+    #[arg(long, value_name = "ID")]
+    pub ha_node: Option<String>,
 }
 
 /// Subcommands of `graphrt gateway`.
@@ -59,11 +64,33 @@ pub enum GatewayCommand {
         #[arg(long)]
         deployment: String,
     },
+    /// Active/passive: show the lease or request a takeover.
+    Ha {
+        #[command(subcommand)]
+        action: HaAction,
+        /// Gateway configuration file (YAML); default `$GRAPHRT_GATEWAY_CONFIG`.
+        #[arg(long, value_name = "FILE", global = true)]
+        config: Option<PathBuf>,
+    },
     /// Validate a configuration file and print a summary.
     Check {
         /// Configuration file.
         #[arg(value_name = "FILE")]
         config: PathBuf,
+    },
+}
+
+/// Active/passive actions.
+#[derive(Debug, Subcommand)]
+pub enum HaAction {
+    /// Print the lease (holder, token, heartbeat) as JSON.
+    Status,
+    /// Ask a passive to take over now (the holder is killed first when it
+    /// provably still runs on that passive's host).
+    Promote {
+        /// Node id of the passive to promote (default: any passive).
+        #[arg(long)]
+        node: Option<String>,
     },
 }
 
@@ -171,25 +198,62 @@ pub fn gateway(args: GatewayArgs) -> Result<u8, CliError> {
             return Ok(EXIT_OK);
         }
         Some(GatewayCommand::Import { from, store, deployment }) => return import(&from, &store, &deployment),
+        Some(GatewayCommand::Ha { action, config }) => return ha(&action, config.or(args.config.clone())),
         None => {}
     }
-    let config_path = args
-        .config
-        .clone()
-        .or_else(|| std::env::var_os("GRAPHRT_GATEWAY_CONFIG").filter(|value| !value.is_empty()).map(PathBuf::from));
+    let config_path = config_path_or_env(args.config.clone());
     let (mut config, versions) = match (&config_path, &args.dev) {
-        (Some(path), None) => {
-            let text = std::fs::read_to_string(path)
-                .map_err(|error| CliError::invalid(format!("{}: {error}", path.display())))?;
-            (GatewayConfig::from_yaml(&text).map_err(CliError::invalid)?, Vec::new())
-        }
+        (Some(path), None) => (read_config(path)?, Vec::new()),
         (None, Some(workflow)) => dev_config(workflow)?,
         _ => return Err(CliError::usage("graphrt gateway needs --config <file> or --dev <workflow>")),
     };
     if let Some(listen) = args.listen {
         config.listen = listen;
     }
+    if let Some(node) = args.ha_node {
+        let ha = config.ha.as_mut().ok_or_else(|| CliError::usage("--ha-node needs an `ha:` section in the config"))?;
+        ha.node_id = Some(node);
+        ha.validate(&config.store).map_err(CliError::invalid)?;
+    }
     runtime()?.block_on(graphrt_gateway::app::serve_with(config, versions)).map_err(CliError::failed)?;
+    Ok(EXIT_OK)
+}
+
+fn config_path_or_env(path: Option<PathBuf>) -> Option<PathBuf> {
+    path.or_else(|| std::env::var_os("GRAPHRT_GATEWAY_CONFIG").filter(|value| !value.is_empty()).map(PathBuf::from))
+}
+
+fn read_config(path: &std::path::Path) -> Result<GatewayConfig, CliError> {
+    let text =
+        std::fs::read_to_string(path).map_err(|error| CliError::invalid(format!("{}: {error}", path.display())))?;
+    GatewayConfig::from_yaml(&text).map_err(CliError::invalid)
+}
+
+/// `graphrt gateway ha status|promote`.
+fn ha(action: &HaAction, config: Option<PathBuf>) -> Result<u8, CliError> {
+    use graphrt_gateway::ha::lease::FileLease;
+    let path = config_path_or_env(config).ok_or_else(|| CliError::usage("graphrt gateway ha needs --config <file>"))?;
+    let config = read_config(&path)?;
+    let ha = config.ha.as_ref().ok_or_else(|| CliError::invalid(format!("{}: no `ha:` section", path.display())))?;
+    let dir = ha.lease_dir_for(&config.store);
+    match action {
+        HaAction::Status => {
+            let lease =
+                FileLease::peek(&dir).map_err(|error| CliError::failed(format!("{}: {error}", dir.display())))?;
+            let tenure = FileLease::tenure_held(&dir).map_err(|error| CliError::failed(error.to_string()))?;
+            let status = serde_json::json!({
+                "lease_dir": dir.display().to_string(),
+                "lease": lease,
+                "tenure_lock_held": tenure,
+            });
+            print(&serde_json::to_string_pretty(&status).map_err(|error| CliError::failed(error.to_string()))?)?;
+        }
+        HaAction::Promote { node } => {
+            FileLease::request_promotion(&dir, node.as_deref())
+                .map_err(|error| CliError::failed(format!("{}: {error}", dir.display())))?;
+            print(&format!("promotion requested for {}", node.as_deref().unwrap_or("any passive")))?;
+        }
+    }
     Ok(EXIT_OK)
 }
 

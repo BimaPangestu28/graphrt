@@ -137,6 +137,10 @@ graphrt gateway import --from ./runs --store /var/lib/graphrt/gateway.db --deplo
 Idle deployments cause no store writes and no provider calls besides a
 reconciliation `list` at most once a minute.
 
+On-prem high availability: two gateways on one store with an `ha:` section,
+active/passive with a fenced lease (takeover in tens of milliseconds after a
+crash, `stale_after_ms` after a freeze). See [gateway-ha.md](gateway-ha.md).
+
 ## Security notes
 
 - Agent addresses come only from the provider (or a socket path the gateway

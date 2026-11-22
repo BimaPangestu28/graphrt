@@ -9,6 +9,7 @@
 //! admin_token_env: GRAPHRT_GATEWAY_ADMIN_TOKEN
 //! per_ip: { per_second: 20, burst: 40 }
 //! socket_dir: /run/graphrt
+//! ha: { node_id: gw-a, takeover: auto }      # active/passive, see docs/gateway-ha.md
 //! deployments:
 //!   - name: shop
 //!     keys_env: SHOP_GATEWAY_KEYS          # kid:hex[,kid:hex], shared with the agents
@@ -220,6 +221,9 @@ pub struct GatewayConfig {
     /// Seconds an agent may take to report an orphan after a lost stream.
     #[serde(default = "default_reclaim")]
     pub reclaim_grace_secs: u64,
+    /// Active/passive on a shared volume (F3); absent: a single gateway.
+    #[serde(default)]
+    pub ha: Option<crate::ha::HaConfig>,
     /// Deployments.
     #[serde(default)]
     pub deployments: Vec<DeploymentConfig>,
@@ -265,6 +269,9 @@ impl GatewayConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.store_ttl_days < 3 {
             return Err("store_ttl_days must be at least 3 (webhook senders retry for days)".to_owned());
+        }
+        if let Some(ha) = &self.ha {
+            ha.validate(&self.store)?;
         }
         let mut names = std::collections::HashSet::new();
         for deployment in &self.deployments {

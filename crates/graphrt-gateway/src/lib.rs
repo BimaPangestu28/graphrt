@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod cron;
+pub mod ha;
 pub mod hex;
 pub mod limiter;
 pub mod pool;

@@ -206,6 +206,20 @@ releases may contain breaking changes; they are called out under **Changed**.
   restart; `/metrics`; `graphrt gateway --dev`, `key`, `import`, `check`;
   local-process provider; `graphrt deploy --target local`. The gateway build
   uses mimalloc, agents do not. See [docs/gateway.md](docs/gateway.md).
+- Gateway active/passive for on-prem (`ha:` section, store tier T1-AP): two
+  `graphrt gateway` processes share the SQLite store and a lease on one volume
+  (one host, or DRBD / a SAN LUN). A passive opens nothing and does not listen;
+  it takes over when the active exits (`flock` released), releases on SIGTERM,
+  or (`takeover: auto`) stops heartbeating for `stale_after_ms`, killing a
+  frozen holder on the same host. Every take raises a fencing token that each
+  store write checks inside its SQLite transaction, so a superseded active can
+  never commit again (I8); a self-fence stops an unconfirmed active even
+  earlier. Takeover verifies the store (`quick_check`) and restores the newest
+  backup when it is missing or corrupt, then reclaims runs as after a restart;
+  cron and webhook run ids keep fires and deliveries single across failovers.
+  `graphrt gateway --ha-node`, `graphrt gateway ha status|promote`. Docs with
+  systemd units and unsupported volumes (NFS, SMB, RWX) in
+  [docs/gateway-ha.md](docs/gateway-ha.md).
 - `graphrt-provider-api` (internal crate): the `Provider` / `DeployDriver`
   traits, capabilities and error kinds of the upcoming `graphrt gateway`, the
   shared provider HTTP layer (token bucket per provider API, jittered retry,
