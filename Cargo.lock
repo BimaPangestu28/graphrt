@@ -1665,6 +1665,7 @@ dependencies = [
  "graphrt-gcp",
  "graphrt-provider-api",
  "graphrt-provider-aws",
+ "graphrt-provider-azure",
  "graphrt-provider-fly",
  "graphrt-provider-k8s",
  "http-body-util",

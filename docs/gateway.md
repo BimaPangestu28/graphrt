@@ -8,7 +8,7 @@ drained, preempted or killed, and survives a restart of the gateway itself.
 
 > Status: preview. Build with `--features gateway` (local-process agents) and
 > add the providers you run on: `gateway-k8s`, `gateway-cloud-run`,
-> `gateway-ecs`, `gateway-lambda`, `gateway-fly`, or `gateway-all`
+> `gateway-ecs`, `gateway-lambda`, `gateway-fly`, `gateway-aca`, or `gateway-all`
 > (see [Providers](#providers)).
 
 ```text
@@ -127,6 +127,7 @@ providers:
   tasks:    { kind: ecs, region: eu-west-1, deployments: { shop: { cluster: agents, task_definition_family: shop, subnets: [subnet-1], security_groups: [sg-1] } } }
   fn:       { kind: lambda, region: eu-west-1, functions: { faq: graphrt-faq } }      # AWS credential chain of the gateway
   machines: { kind: fly, apps: { graphrt-chat: { token_env: FLY_API_TOKEN } } }
+  apps:     { kind: aca, subscription_id: 00000000-…, resource_group: agents }  # managed / workload identity, or AZURE_CLIENT_*
 deployments:
   - { name: shop, provider: tasks, keys_env: SHOP_KEYS, api_keys: [...] }
   - { name: chat, provider: machines, keys_env: CHAT_KEYS, api_keys: [...] }
@@ -140,6 +141,7 @@ deployments:
 | `ecs` | `gateway-ecs` | per task | the gateway starts and stops Fargate tasks; [AWS guide](gateway-aws.md) |
 | `lambda` | `gateway-lambda` | `lambda://` | requests go through `InvokeWithResponseStream`; sync runs only, a run past the function timeout fails with `platform_timeout` |
 | `fly` | `gateway-fly` | per Machine (6PN) | pre-created pool, start / suspend; [Fly guide](gateway-fly.md) |
+| `aca` | `gateway-aca` | one label URL per version | Azure Container Apps on the internal ingress ([Azure guide](deploy-azure.md)); `ingress: standard` (240 s), `standard_idle_verified` or `premium` (+ `request_idle_timeout_minutes`) |
 
 A kind whose feature is not in the build fails at start-up with a message
 naming the feature. Every provider runs the C1–C13 conformance suite and the
@@ -148,7 +150,7 @@ pool, idle release) against fake cloud APIs in
 `crates/graphrt-gateway/tests/provider_harness.rs`.
 
 Known gap: on platforms with a request cap *and* a grace period (Cloud Run's
-60 minutes), the gateway does not yet preempt a run shortly before the cap;
+60 minutes, Container Apps' standard ingress 240 s), the gateway does not yet preempt a run shortly before the cap;
 such a run is cut by the platform and reclaimed like a lost stream.
 
 ## Deploying versions
@@ -176,6 +178,7 @@ graphrt deploy --target cloud-run --config gateway.yaml --deployment shop --vers
 graphrt deploy --target ecs       --config gateway.yaml --deployment shop --version v8 --image 1234.dkr.ecr.eu-west-1.amazonaws.com/shop:8 agent.yaml
 graphrt deploy --target lambda    --config gateway.yaml --deployment faq  --version v8 --image 1234.dkr.ecr.eu-west-1.amazonaws.com/faq:8 agent.yaml
 graphrt deploy --target fly       --config gateway.yaml --deployment chat --version v8 --image registry.fly.io/graphrt-chat:8 --set app=graphrt-chat agent.yaml
+graphrt deploy --target aca       --config gateway.yaml --deployment shop --version v8 --image acme.azurecr.io/shop:8 agent.yaml
 ```
 
 `--set KEY=VALUE` passes provider settings (see each guide), `--env` plain

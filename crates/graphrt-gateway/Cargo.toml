@@ -29,12 +29,15 @@ gw-ecs = ["dep:graphrt-provider-aws", "graphrt-provider-aws/provider-ecs"]
 gw-lambda = ["dep:graphrt-provider-aws", "graphrt-provider-aws/provider-lambda"]
 # Fly Machines: pre-created pool, start / suspend.
 gw-fly = ["dep:graphrt-provider-fly"]
+# Azure Container Apps: platform scaling behind per-version label URLs, managed identity / Entra auth.
+gw-aca = ["dep:graphrt-provider-azure", "graphrt-provider-azure/provider-aca"]
 # Deploy drivers of `graphrt deploy --target ...` (deploy-time credentials, never used by the gateway itself).
 deploy-k8s = ["gw-k8s-kubeconfig", "graphrt-provider-k8s/deploy"]
 deploy-cloud-run = ["gw-cloud-run", "graphrt-gcp/deploy-cloud-run"]
 deploy-ecs = ["gw-ecs", "graphrt-provider-aws/deploy-ecs"]
 deploy-lambda = ["gw-lambda", "graphrt-provider-aws/deploy-lambda"]
 deploy-fly = ["gw-fly", "graphrt-provider-fly/deploy"]
+deploy-aca = ["gw-aca", "graphrt-provider-azure/deploy-aca"]
 
 [dependencies]
 graphrt-core = { workspace = true, features = ["tokio"] }
@@ -58,6 +61,7 @@ graphrt-provider-k8s = { workspace = true, optional = true }
 graphrt-gcp = { workspace = true, optional = true }
 graphrt-provider-aws = { workspace = true, optional = true }
 graphrt-provider-fly = { workspace = true, optional = true }
+graphrt-provider-azure = { workspace = true, optional = true }
 
 [dev-dependencies]
 graphrt-core = { workspace = true, features = ["tokio", "store-conformance"] }

@@ -155,6 +155,27 @@ pub struct FlyConfig {
     pub max_machines_per_version: Option<u32>,
 }
 
+/// Azure Container Apps settings.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct AcaProviderConfig {
+    /// Subscription id.
+    pub subscription_id: String,
+    /// Resource group of the container apps.
+    pub resource_group: String,
+    /// ARM endpoint (default `https://management.azure.com`; sovereign clouds differ).
+    #[serde(default)]
+    pub arm_endpoint: Option<String>,
+    /// `standard` (default: 240 s, preempt planned), `standard_idle_verified`, or `premium`.
+    #[serde(default)]
+    pub ingress: Option<String>,
+    /// Premium ingress `requestIdleTimeout` in minutes (4-30).
+    #[serde(default)]
+    pub request_idle_timeout_minutes: Option<u32>,
+    /// Seconds `wake` waits for the revision (default 60).
+    #[serde(default)]
+    pub wake_timeout_secs: Option<u64>,
+}
+
 /// One named provider.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -171,6 +192,8 @@ pub enum ProviderConfig {
     Lambda(LambdaProviderConfig),
     /// Fly Machines (`gw-fly`).
     Fly(FlyConfig),
+    /// Azure Container Apps (`gw-aca`).
+    Aca(AcaProviderConfig),
 }
 
 impl ProviderConfig {
@@ -183,6 +206,7 @@ impl ProviderConfig {
             Self::Ecs(_) => "ecs",
             Self::Lambda(_) => "lambda",
             Self::Fly(_) => "fly",
+            Self::Aca(_) => "aca",
         }
     }
 
@@ -195,6 +219,7 @@ impl ProviderConfig {
             Self::Ecs(_) => "gw-ecs",
             Self::Lambda(_) => "gw-lambda",
             Self::Fly(_) => "gw-fly",
+            Self::Aca(_) => "gw-aca",
         }
     }
 }
@@ -220,6 +245,9 @@ pub fn compiled_kinds() -> Vec<&'static str> {
     if cfg!(feature = "gw-fly") {
         kinds.push("fly");
     }
+    if cfg!(feature = "gw-aca") {
+        kinds.push("aca");
+    }
     kinds
 }
 
@@ -239,6 +267,7 @@ pub fn build_remote(config: &ProviderConfig) -> Result<Arc<dyn Provider>, String
         ProviderConfig::Ecs(settings) => build_ecs(settings).ok_or_else(|| not_built(config))?,
         ProviderConfig::Lambda(settings) => build_lambda(settings).ok_or_else(|| not_built(config))?,
         ProviderConfig::Fly(settings) => build_fly(settings).ok_or_else(|| not_built(config))?,
+        ProviderConfig::Aca(settings) => build_aca(settings).ok_or_else(|| not_built(config))?,
     }
 }
 
@@ -252,7 +281,8 @@ type Built = Option<Result<Arc<dyn Provider>, String>>;
 #[cfg(feature = "gw-k8s")]
 pub fn k8s_client(settings: &K8sConfig) -> Result<graphrt_provider_k8s::KubeClient, String> {
     let cluster = k8s_cluster(settings)?;
-    graphrt_provider_k8s::KubeClient::new(&cluster, graphrt_provider_k8s::ClientOptions::default()).map_err(|error| error.to_string())
+    graphrt_provider_k8s::KubeClient::new(&cluster, graphrt_provider_k8s::ClientOptions::default())
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(feature = "gw-k8s-kubeconfig")]
@@ -270,7 +300,8 @@ fn k8s_cluster(settings: &K8sConfig) -> Result<graphrt_provider_k8s::auth::Clust
     if settings.kubeconfig.is_some() || settings.context.is_some() {
         return Err("kubeconfig / context need the `gw-k8s-kubeconfig` feature (this build only uses the in-cluster service account)".to_owned());
     }
-    graphrt_provider_k8s::auth::in_cluster_config().map_err(|error| format!("kubernetes in-cluster credentials: {error}"))
+    graphrt_provider_k8s::auth::in_cluster_config()
+        .map_err(|error| format!("kubernetes in-cluster credentials: {error}"))
 }
 
 #[cfg(feature = "gw-k8s")]
@@ -501,6 +532,7 @@ pub fn build_deploy_driver(config: &ProviderConfig) -> Result<Box<dyn graphrt_pr
         ProviderConfig::Ecs(settings) => deploy_ecs(settings).ok_or_else(missing)?,
         ProviderConfig::Lambda(settings) => deploy_lambda(settings).ok_or_else(missing)?,
         ProviderConfig::Fly(settings) => deploy_fly(settings).ok_or_else(missing)?,
+        ProviderConfig::Aca(settings) => deploy_aca(settings).ok_or_else(missing)?,
     }
 }
 
@@ -585,6 +617,76 @@ fn deploy_fly(_settings: &FlyConfig) -> BuiltDriver {
     None
 }
 
+/// ACA config and ARM client from the operator settings and the process's
+/// Azure credential (managed identity, workload identity, client secret / certificate).
+///
+/// # Errors
+/// Missing credentials or invalid settings.
+#[cfg(feature = "gw-aca")]
+pub fn aca_parts(
+    settings: &AcaProviderConfig,
+) -> Result<(graphrt_provider_azure::arm::ArmClient, graphrt_provider_azure::aca::AcaConfig), String> {
+    use graphrt_provider_azure::aca::{AcaConfig, IngressMode};
+    use graphrt_provider_azure::arm::{ArmClient, ArmConfig};
+    use graphrt_provider_azure::auth::{AuthEndpoints, AzureCredential, TokenProvider};
+    let lookup = |name: &str| std::env::var(name).ok();
+    let credential = AzureCredential::from_env(&lookup, &AuthEndpoints::default())
+        .map_err(|error| format!("azure credentials: {error}"))?;
+    let tokens = Arc::new(TokenProvider::new(credential).map_err(|error| format!("azure credentials: {error}"))?);
+    let mut arm = ArmConfig::default();
+    if let Some(endpoint) = &settings.arm_endpoint {
+        arm.endpoint.clone_from(endpoint);
+    }
+    let arm = ArmClient::new(arm, tokens).map_err(|error| error.to_string())?;
+    let mut config = AcaConfig::new(&settings.subscription_id, &settings.resource_group);
+    config.ingress = match (settings.ingress.as_deref(), settings.request_idle_timeout_minutes) {
+        (None | Some("standard"), _) => IngressMode::Standard,
+        (Some("standard_idle_verified"), _) => IngressMode::StandardIdleVerified,
+        (Some("premium"), Some(minutes)) => IngressMode::Premium { request_idle_timeout_minutes: minutes },
+        (Some("premium"), None) => return Err("aca: premium ingress needs request_idle_timeout_minutes".to_owned()),
+        (Some(other), _) => {
+            return Err(format!("aca.ingress must be standard, standard_idle_verified or premium, not `{other}`"));
+        }
+    };
+    if let Some(secs) = settings.wake_timeout_secs {
+        config.wake_timeout = std::time::Duration::from_secs(secs);
+    }
+    config.validate().map_err(|error| error.to_string())?;
+    Ok((arm, config))
+}
+
+#[cfg(feature = "gw-aca")]
+fn build_aca(settings: &AcaProviderConfig) -> Built {
+    let build = || -> Result<Arc<dyn Provider>, String> {
+        let (arm, config) = aca_parts(settings)?;
+        Ok(Arc::new(graphrt_provider_azure::aca::AcaProvider::new(arm, config).map_err(|error| error.to_string())?))
+    };
+    Some(build())
+}
+#[cfg(not(feature = "gw-aca"))]
+fn build_aca(_settings: &AcaProviderConfig) -> Built {
+    None
+}
+
+#[cfg(feature = "deploy-aca")]
+fn deploy_aca(settings: &AcaProviderConfig) -> BuiltDriver {
+    let build = || -> Result<Box<dyn graphrt_provider_api::DeployDriver>, String> {
+        let (arm, config) = aca_parts(settings)?;
+        let driver = graphrt_provider_azure::aca::AcaDeployDriver::new(
+            arm,
+            config,
+            graphrt_provider_azure::keyvault::KeyVaultConfig::default(),
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Box::new(driver))
+    };
+    Some(build())
+}
+#[cfg(not(feature = "deploy-aca"))]
+fn deploy_aca(_settings: &AcaProviderConfig) -> BuiltDriver {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,10 +699,11 @@ run: { kind: cloud_run, project: acme, region: europe-west1 }
 tasks: { kind: ecs, region: eu-west-1, deployments: { shop: { cluster: agents, task_definition_family: shop } } }
 fn: { kind: lambda, region: eu-west-1, functions: { faq: graphrt-faq } }
 machines: { kind: fly, apps: { graphrt-chat: { token_env: FLY_API_TOKEN } } }
+apps: { kind: aca, subscription_id: sub, resource_group: rg }
 dev: { kind: local }
 "#;
         let providers: BTreeMap<String, ProviderConfig> = serde_saphyr::from_str(yaml).unwrap();
-        assert_eq!(providers.len(), 6);
+        assert_eq!(providers.len(), 7);
         assert_eq!(
             providers["tasks"],
             ProviderConfig::Ecs(EcsProviderConfig {

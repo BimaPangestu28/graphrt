@@ -1,7 +1,7 @@
 //! Every provider in the loop: the gateway (supervisor, pool, SSE proxy)
 //! drives the real provider implementation against its crate's fake cloud API
 //! (K8s API server, Cloud Run Admin API + metadata server, ECS JSON 1.1, Fly
-//! Machines, and a Lambda `InvokeWithResponseStream` fake defined here), and
+//! Machines, Azure ARM + managed identity, and a Lambda `InvokeWithResponseStream` fake defined here), and
 //! the C1–C13 harness runs with the gateway cases C3, C6, C7, C11, C12.
 //!
 //! The fake platforms report private addresses (pod / task / 6PN IPs) the test
@@ -11,9 +11,16 @@
 //! requests go through `Provider::invoke` to the fake, which forwards them to
 //! the agent and streams the reply back as `vnd.amazon.eventstream`.
 //!
-//! Run with `--features deploy-k8s,deploy-cloud-run,deploy-ecs,deploy-lambda,deploy-fly`.
+//! Run with `--features deploy-k8s,deploy-cloud-run,deploy-ecs,deploy-lambda,deploy-fly,deploy-aca`.
 
-#![cfg(any(feature = "gw-k8s", feature = "deploy-cloud-run", feature = "gw-ecs", feature = "gw-lambda", feature = "gw-fly"))]
+#![cfg(any(
+    feature = "gw-k8s",
+    feature = "deploy-cloud-run",
+    feature = "gw-ecs",
+    feature = "gw-lambda",
+    feature = "gw-fly",
+    feature = "gw-aca"
+))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::print_stdout)]
 
 mod common;
@@ -290,7 +297,9 @@ async fn check(
         poll_interval: Duration::from_millis(20),
         ..ConformanceConfig::default()
     };
-    let report = run_conformance(&target, &config).await;
+    let report = tokio::time::timeout(Duration::from_secs(120), run_conformance(&target, &config))
+        .await
+        .unwrap_or_else(|_| panic!("{name}: conformance hung"));
     println!("{report}");
     for result in &report.results {
         let expected_failure = failing_by_design.contains(&result.id);
@@ -539,4 +548,72 @@ async fn lambda_behind_the_gateway() {
     let provider: Arc<dyn Provider> = Arc::new(LambdaProvider::new(credentials.chain(), config).unwrap());
     check("lambda (fake InvokeWithResponseStream)", world.clone(), provider, "", true, &[]).await;
     assert!(!world.bodies.lock().unwrap().is_empty(), "runs reached the agent through Provider::invoke");
+}
+
+/// Managed identity, ARM (`GET app`, replicas of `shop--v1`) and the ingress
+/// `/healthz` of one container app, like the azure crate's own harness.
+#[cfg(feature = "gw-aca")]
+fn aca_fake(
+    request: &graphrt_provider_api::conformance::RecordedRequest,
+) -> graphrt_provider_api::conformance::FakeResponse {
+    use graphrt_provider_api::conformance::FakeResponse;
+    let path = request.path.split('?').next().unwrap_or("");
+    if path == "/msi/token" {
+        let expires_on = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3600;
+        return FakeResponse::json(200, &json!({ "access_token": "aca-token", "expires_on": expires_on.to_string() }));
+    }
+    if path == "/healthz" {
+        return FakeResponse::status(200);
+    }
+    if request.header("authorization") != Some("Bearer aca-token") {
+        return FakeResponse::status(401);
+    }
+    let app = "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/containerApps/shop";
+    if path == app {
+        return FakeResponse::json(
+            200,
+            &json!({ "properties": { "latestRevisionName": "shop--v2", "configuration": { "ingress": {
+            "fqdn": "shop.internal.fake-env.westeurope.azurecontainerapps.io",
+            "traffic": [{ "revisionName": "shop--v1", "weight": 0, "label": "v1" }, { "revisionName": "shop--v2", "weight": 100, "label": "v2" }] } } } }),
+        );
+    }
+    if path.starts_with(&format!("{app}/revisions/")) && path.ends_with("/replicas") {
+        return FakeResponse::json(
+            200,
+            &json!({ "value": [{ "name": "shop--v1-abc", "properties": { "runningState": "Running", "createdTime": "2026-11-22T00:00:00Z" } }] }),
+        );
+    }
+    FakeResponse::status(404)
+}
+
+#[cfg(feature = "gw-aca")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn azure_container_apps_behind_the_gateway() {
+    use graphrt_provider_api::conformance::FakeServer;
+    use graphrt_provider_api::http::{RetryPolicy, SecretString};
+    use graphrt_provider_azure::aca::{AcaConfig, AcaProvider};
+    use graphrt_provider_azure::arm::{ArmClient, ArmConfig};
+    use graphrt_provider_azure::auth::{AzureCredential, TokenProvider};
+    let (world, agent_url, _agent) = agent().await;
+    let server = FakeServer::start(Arc::new(aca_fake)).await.unwrap();
+    let credential = AzureCredential::AppServiceIdentity {
+        endpoint: format!("{}/msi/token", server.base_url()),
+        header: SecretString::new("identity-header"),
+        client_id: None,
+    };
+    let tokens = Arc::new(TokenProvider::new(credential).unwrap());
+    let retry =
+        RetryPolicy { max_attempts: 4, base_delay: Duration::from_millis(5), max_delay: Duration::from_millis(20) };
+    let arm = ArmClient::new(ArmConfig { endpoint: server.base_url(), retry, ..ArmConfig::default() }, tokens).unwrap();
+    let mut config = AcaConfig::new("sub", "rg");
+    config.invoke_scheme = "http".into();
+    let address = server.base_url().trim_start_matches("http://").parse().unwrap();
+    config.resolve_overrides = ["v1", "v2"]
+        .iter()
+        .map(|label| (format!("shop---{label}.internal.fake-env.westeurope.azurecontainerapps.io"), address))
+        .collect();
+    let inner: Arc<dyn Provider> = Arc::new(AcaProvider::new(arm, config).unwrap());
+    let provider: Arc<dyn Provider> = Arc::new(Routed { inner, agent_url });
+    // C7 fails by design: standard ingress caps a request at 240 s and planned preemption is a known gap.
+    check("azure container apps (fake ARM)", world, provider, "shop", false, &[CaseId::C7]).await;
 }

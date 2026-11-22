@@ -123,6 +123,8 @@ pub enum DeployTarget {
     Lambda,
     /// Fly app and Machine pool (feature `gateway-fly`).
     Fly,
+    /// Azure Container App revision (feature `gateway-aca`).
+    Aca,
 }
 
 impl DeployTarget {
@@ -134,6 +136,7 @@ impl DeployTarget {
             Self::Ecs => "ecs",
             Self::Lambda => "lambda",
             Self::Fly => "fly",
+            Self::Aca => "aca",
         }
     }
 }
