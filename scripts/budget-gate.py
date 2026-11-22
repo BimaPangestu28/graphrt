@@ -5,7 +5,8 @@ For every [[build]] in the budgets file this builds graphrt-cli with
 `--profile min-size --no-default-features --features <features>` (or takes a
 prebuilt binary from --bin-dir), then measures:
 
-- binary size;
+- binary size, and for a build with `delta_of`, its size minus that earlier
+  build's (`delta_kib`: what a feature costs, independent of the base growing);
 - idle RSS of `graphrt serve` one second after it became healthy;
 - exec -> first 200 on GET /healthz, p95 over [startup].samples starts;
 - that SIGTERM makes the server exit 0 (the drain path; a PID-1 run is covered
@@ -191,6 +192,15 @@ def main() -> int:
             size = binary.stat().st_size
             entry = {"features": spec["features"], "binary_bytes": size, "binary_mib": round(size / MIB, 3)}
             check(results, spec["name"], "binary", size / MIB, budget_for(spec.get("binary_mib"), key), "MiB")
+            if "delta_of" in spec:
+                base = results["builds"].get(spec["delta_of"])
+                if base is None:
+                    print(f"budget-gate: {spec['name']}: delta_of `{spec['delta_of']}` must come earlier", file=sys.stderr)
+                    return 2
+                delta = (size - base["binary_bytes"]) / 1024
+                entry["delta_kib"] = round(delta, 1)
+                entry["delta_of"] = spec["delta_of"]
+                check(results, spec["name"], f"size over {spec['delta_of']}", delta, budget_for(spec.get("delta_kib"), key), "KiB")
             if not args.skip_run and runs_here(binary):
                 timed = spec["name"] == startup.get("build")
                 samples = int(startup.get("samples", 30)) if timed else 1
@@ -252,8 +262,11 @@ def report(results: dict, args: argparse.Namespace) -> None:
         budget = {k: budget_for(v, key) for k, v in budgets.get(name, {}).items()}
         rss = entry.get("idle_rss_mib", "–")
         startup = f"{entry['healthz_p50_ms']} / {entry['healthz_p95_ms']}" if "healthz_p95_ms" in entry else "–"
+        size_budget = budget.get("binary_mib", "–")
+        if "delta_kib" in entry:
+            size_budget = f"+{entry['delta_kib']} KiB over {entry['delta_of']} (budget +{budget.get('delta_kib', '–')})"
         lines.append(
-            f"| {name} | `{entry['features']}` | {entry['binary_mib']} | {budget.get('binary_mib', '–')} "
+            f"| {name} | `{entry['features']}` | {entry['binary_mib']} | {size_budget} "
             f"| {rss} | {budget.get('idle_rss_mib', '–')} | {startup} |"
         )
     if "banned_dependencies" in results:

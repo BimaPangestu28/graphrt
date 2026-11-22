@@ -46,9 +46,13 @@ releases may contain breaking changes; they are called out under **Changed**.
   with `user` in the body.
 
 ### Changed
-- The `trust-gateway` feature is about 30 % smaller (slim agent, `min-size`:
-  +81 KiB instead of +115 KiB on Linux musl aarch64, +100 instead of +140 KiB
-  on x86_64): one handler routes `/internal/v1` and boxes each endpoint's
+- The `trust-gateway` feature is about 40 % smaller (slim agent, `min-size`:
+  +73 KiB instead of +126 KiB on Linux musl aarch64, +89 instead of +150 KiB
+  on x86_64), with a budget in the CI gate (`agent-slim-gateway`, measured +
+  about 5 %; `budget-gate.py` gained `delta_of` / `delta_kib`). Agents no
+  longer report orphans (`--gateway-url` is gone): the gateway pulls them with
+  `GET /internal/v1/orphans` after a lost stream as after a restart, so an agent
+  never calls the gateway. One handler routes `/internal/v1` and boxes each endpoint's
   future, background tasks share one boxed task type, the gateway stream uses
   the public stream's type (its `hello` comes from the guard), request bodies
   are read from a JSON tree with the snapshot decoder of the run store, and
