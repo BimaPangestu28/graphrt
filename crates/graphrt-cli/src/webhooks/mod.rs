@@ -343,16 +343,8 @@ pub(crate) async fn receive(
         Ok(body) => body,
         Err(rejection) => return error_response(rejection.status(), &rejection.body_text()),
     };
-    match &hook.verifier {
-        Some(verifier) => {
-            if let Err(e) = verifier.verify(&headers, &body, unix_now_secs()) {
-                return error_response(StatusCode::UNAUTHORIZED, &e.to_string());
-            }
-        }
-        None if !state.authorized(&headers) => {
-            return error_response(StatusCode::UNAUTHORIZED, "missing or invalid bearer token");
-        }
-        None => {}
+    if let Some(refused) = refuse_unauthenticated_delivery(&state, hook, &headers, &body) {
+        return refused;
     }
     let json: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(json) => json,
@@ -387,6 +379,19 @@ pub(crate) async fn receive(
         "events": format!("/v1/runs/{run_id}/events"),
     });
     (StatusCode::ACCEPTED, Json(body)).into_response()
+}
+
+/// `401` unless the delivery carries a valid signature (hooks with a
+/// `signature`) or the bearer API key (the others).
+fn refuse_unauthenticated_delivery(
+    state: &AppState,
+    hook: &Hook,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Option<Response> {
+    let Some(verifier) = &hook.verifier else { return state.refuse_without_api_key(headers) };
+    let refusal = verifier.verify(headers, body, unix_now_secs()).err()?;
+    Some(error_response(StatusCode::UNAUTHORIZED, &refusal.to_string()))
 }
 
 /// The delivery's idempotency key, if it sent one.

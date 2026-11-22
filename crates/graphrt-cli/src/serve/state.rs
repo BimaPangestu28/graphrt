@@ -212,7 +212,7 @@ impl AppState {
 
     /// Whether workflow `name` maps request header input `input` (`--input-header`).
     #[cfg(feature = "jwt")]
-    pub(crate) fn takes_header_input(&self, name: &str, input: &str) -> bool {
+    pub(super) fn takes_header_input(&self, name: &str, input: &str) -> bool {
         self.header_inputs.get(name).is_some_and(|bindings| bindings.maps(input))
     }
 

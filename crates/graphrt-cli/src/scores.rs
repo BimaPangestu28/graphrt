@@ -31,7 +31,7 @@ use graphrt_core::store::{RunRecord, StoreResult, now_ms};
 use serde_json::{Map, Value as JsonValue};
 use sha2::{Digest, Sha256};
 
-use crate::serve::{AppState, error_response};
+use crate::serve::{AppState, Caller, error_response};
 
 /// Scores kept per run and per [`ScoreSource`]; a new score beyond this is
 /// refused (`409`). Counted per source so feedback, which end users can send
@@ -327,8 +327,8 @@ pub async fn post_feedback(
     // Authorized here rather than by a middleware layer: one handler, less code.
     // The body is extracted only afterwards, so unauthenticated callers get a
     // `401` without the server parsing their JSON, as on every other route.
-    let user = match state.authorize_user_or_key(request.headers()).await {
-        Ok(user) => user,
+    let caller = match state.authenticate_user_or_key(request.headers()).await {
+        Ok(caller) => caller,
         Err(refused) => return refused,
     };
     let body = match Json::<JsonValue>::from_request(request, &()).await {
@@ -344,14 +344,15 @@ pub async fn post_feedback(
         Ok(None) => return error_response(StatusCode::NOT_FOUND, "unknown run"),
         Err(e) => return crate::serve::store_error(&e),
     };
-    let author = match user {
-        Some(subject) => {
-            if !is_verified_owner(&record, &subject) {
-                return error_response(StatusCode::FORBIDDEN, "this run does not belong to the authenticated user");
-            }
-            Some(subject)
-        }
-        None => body.user,
+    #[cfg(feature = "jwt")]
+    if let Some(refused) = refuse_unowned_run(&caller, &record) {
+        return refused;
+    }
+    // A verified end user rates as themselves; an API-key caller may name any `user` (a label).
+    let author = match caller {
+        Caller::ApiKey => body.user,
+        #[cfg(feature = "jwt")]
+        Caller::User(subject) => Some(subject),
     };
     let mut score = Score::new(&run_id, body.name.trim(), body.value, ScoreSource::Human, author);
     score.comment = body.comment.filter(|c| !c.is_empty());
@@ -362,10 +363,22 @@ pub async fn post_feedback(
     (StatusCode::CREATED, Json(score.to_json())).into_response()
 }
 
+/// `403` when a verified end user rates a run they do not own; API-key callers
+/// may rate any run.
+#[cfg(feature = "jwt")]
+fn refuse_unowned_run(caller: &Caller, record: &RunRecord) -> Option<Response> {
+    let Caller::User(subject) = caller else { return None };
+    if is_verified_owner(record, subject) {
+        return None;
+    }
+    Some(error_response(StatusCode::FORBIDDEN, "this run does not belong to the authenticated user"))
+}
+
 /// Whether the user `subject` of a verified token owns `record`'s run: the run
 /// was started with that user's token. A `user_id` an API-key caller put in the
 /// request body is only a label (anyone holding the key can write any value),
 /// so it never makes a run rateable by that user.
+#[cfg(feature = "jwt")]
 fn is_verified_owner(record: &RunRecord, subject: &str) -> bool {
     record.user_verified && record.user_id.as_deref() == Some(subject)
 }

@@ -54,6 +54,8 @@ mod state;
 mod workflows;
 
 pub use auth::AuthenticatedUser;
+#[cfg(feature = "scores")]
+pub(crate) use auth::Caller;
 pub(crate) use auth::constant_time_eq;
 pub use build::{build_state, discover};
 pub(crate) use errors::error_response;
