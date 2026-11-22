@@ -137,6 +137,10 @@ pub struct Request {
     /// Node config with placeholders resolved by the host.
     pub config: Value,
     pub attempt: u32,
+    /// `<run_id>:<exec_id>`: the same for every attempt and re-execution of this
+    /// node execution; key external side effects on it. Empty with older hosts.
+    #[serde(default)]
+    pub idempotency_key: String,
     #[serde(default)]
     pub resume: Option<Resume>,
 }

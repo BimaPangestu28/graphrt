@@ -156,9 +156,15 @@ node palette exactly like built-in ones. `handles` of kind `fixed` or
   "node_id": "slug",
   "config": {"text": "Hello World", "separator": "-"},
   "attempt": 1,
+  "idempotency_key": "run-18c2f0a1d3e-4b1f0c2a-7:18c2f0a1d40-4b1f0c2a-9",
   "resume": {"state": {}, "input": {}}
 }
 ```
+
+`idempotency_key` (`<run_id>:<exec_id>`) is the same for every attempt of a
+node execution and for its re-execution after a preempted run resumes; key
+external side effects on it (see [plugins.md](plugins.md#noderun)). The guest
+crate exposes it as `Request::idempotency_key`.
 
 `config` is the node's config from the workflow document after host-side
 resolution:

@@ -154,10 +154,20 @@ Messages are [JSON-RPC 2.0](https://www.jsonrpc.org/specification).
   "kind":"acme.sentiment",
   "node_id":"mood",
   "attempt":1,
+  "idempotency_key":"run-18c2f0a1d3e-4b1f0c2a-7:18c2f0a1d40-4b1f0c2a-9",
   "config":{"text":"I love it","text_raw":"{{#start.review#}}"},
   "resume":null
 }}
 ```
+
+`idempotency_key` is `<run_id>:<exec_id>`. A node can run more than once: on a
+retry (`attempt` increments) and when a run that was preempted (a shutdown
+drain, a lost gateway stream) resumes and runs the in-flight node again.
+Execution is at-least-once per node, and the key is the same in all those
+cases and different for every other execution, so key external side effects
+on it (send it as an `Idempotency-Key` header, or use it as a unique id). The
+SDKs expose it as `RunRequest.idempotency_key` (Rust, Python) and
+`idempotencyKey` (TypeScript); it is empty with hosts older than 0.5.
 
 `config` is the node's configuration **with variables already resolved**:
 

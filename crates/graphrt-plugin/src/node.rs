@@ -142,6 +142,8 @@ impl Node for PluginNode {
                 "kind": self.kind,
                 "node_id": ctx.node_id.as_ref(),
                 "attempt": ctx.attempt,
+                // Same for every attempt and re-execution of this node execution.
+                "idempotency_key": ctx.idempotency_key(),
                 "config": config,
                 "resume": resume,
             });

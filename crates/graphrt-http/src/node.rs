@@ -199,6 +199,9 @@ struct HttpConfig {
     retry_non_idempotent: bool,
     #[serde(default)]
     parse_json: ParseJson,
+    /// Send `Idempotency-Key` on POST, PUT, PATCH and DELETE (default on).
+    #[serde(default = "yes")]
+    idempotency_key: bool,
 }
 
 /// How a JSON response body that fails to parse is handled.
@@ -253,6 +256,7 @@ pub struct HttpRequestNode {
     max_response_bytes: Option<usize>,
     retry_non_idempotent: bool,
     parse_json: ParseJson,
+    idempotency_key: bool,
     default_client: OnceLock<Result<HttpClient, String>>,
 }
 
@@ -308,6 +312,7 @@ impl HttpRequestNode {
             max_response_bytes: cfg.max_response_bytes,
             retry_non_idempotent: cfg.retry_non_idempotent,
             parse_json: cfg.parse_json,
+            idempotency_key: cfg.idempotency_key,
             default_client: OnceLock::new(),
         })
     }
@@ -360,6 +365,14 @@ impl HttpRequestNode {
             }
             insert_header(&mut headers, &name, &exposed)?;
             shown_headers.insert(name, Value::from(shown));
+        }
+        // Side effects are at-least-once per node (retries, re-execution after a
+        // preempted run resumes): the key is the same each time, so the server can
+        // apply the request once. A header set by the workflow wins.
+        if self.idempotency_key && has_side_effects(&self.method) && !headers.contains_key(IDEMPOTENCY_KEY) {
+            let key = ctx.idempotency_key();
+            insert_header(&mut headers, IDEMPOTENCY_KEY, &key)?;
+            shown_headers.insert(IDEMPOTENCY_KEY.to_owned(), Value::from(key));
         }
         if let Some(auth) = &self.auth {
             let key = auth.api_key.render_exposed(pool);
@@ -723,6 +736,14 @@ fn parse_method(method: &str) -> Option<Method> {
         "OPTIONS" => Method::OPTIONS,
         _ => return None,
     })
+}
+
+/// Header carrying [`NodeContext::idempotency_key`].
+const IDEMPOTENCY_KEY: &str = "idempotency-key";
+
+/// Methods that change server state (RFC 9110 "unsafe" methods).
+fn has_side_effects(method: &Method) -> bool {
+    matches!(*method, Method::POST | Method::PUT | Method::PATCH | Method::DELETE)
 }
 
 fn is_idempotent(method: &Method) -> bool {
