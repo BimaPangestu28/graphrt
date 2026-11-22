@@ -443,7 +443,12 @@ impl Gateway {
         let version = deployment.current()?;
         let run_id = options.run_id.clone().unwrap_or_else(new_run_id);
         graphrt_core::store::validate_run_id(&run_id).map_err(|error| StartError::Conflict(error.to_string()))?;
-        if let Some(existing) = self.store.get(&run_id).await? {
+        // Only a caller-chosen id (webhook, cron, Idempotency-Key) can already
+        // exist; a fresh random one skips the read (one store round trip less
+        // before the first byte). `create` still refuses a duplicate.
+        if options.run_id.is_some()
+            && let Some(existing) = self.store.get(&run_id).await?
+        {
             return Ok(Started::Duplicate(Box::new(existing)));
         }
         let lease = if options.interactive { Some(version.pool.acquire().await?) } else { None };
@@ -467,6 +472,15 @@ impl Gateway {
         // restart re-dispatches a run that has no checkpoint from it.
         let header_inputs: Vec<&str> = deployment.input_headers.iter().map(|mapping| mapping.input.as_str()).collect();
         let stored = StoredRequest::strip(&input, version.info.secret_inputs.as_deref(), &header_inputs);
+        // With a replica already leased (interactive runs), the record is created
+        // claimed for it: the same state `claim_dispatch` would write next, in the
+        // create transaction instead of a second one before the first byte.
+        let claimed = lease.is_some();
+        if let Some(lease) = &lease {
+            record.status = RunStatus::Running;
+            record.epoch = record.epoch.saturating_add(1);
+            record.owner = Some(lease.endpoint.replica.id.clone());
+        }
         match self.store.create_with_request(record.clone(), serde_json::to_string(&stored).ok()).await {
             Ok(()) => {}
             Err(StoreError::Conflict(_)) => {
@@ -483,7 +497,13 @@ impl Gateway {
         self.register(&run);
         let gateway = Arc::clone(self);
         let supervised = run.clone();
-        graphrt_core::task::spawn(async move { gateway.supervise(supervised, version, record, lease, None).await });
+        if claimed {
+            graphrt_core::task::spawn(async move {
+                gateway.supervise_claimed(supervised, version, record, lease, None).await;
+            });
+        } else {
+            graphrt_core::task::spawn(async move { gateway.supervise(supervised, version, record, lease, None).await });
+        }
         Ok(Started::New(run))
     }
 
