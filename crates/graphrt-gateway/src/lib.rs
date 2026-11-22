@@ -5,6 +5,8 @@
 //! (`graphrt serve --trust-gateway`) stay stateless.
 
 pub mod auth;
+#[cfg(feature = "gw-cloud-run")]
+pub mod cloud_run;
 pub mod cron;
 pub mod ha;
 pub mod hex;

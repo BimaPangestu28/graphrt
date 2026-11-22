@@ -18,7 +18,9 @@ gw-local = []
 # Kubernetes (self-hosted, GKE, EKS, AKS): scale subresource + EndpointSlices, in-cluster or kubeconfig auth.
 gw-k8s = ["dep:graphrt-provider-k8s", "graphrt-provider-k8s/kubeconfig"]
 # Cloud Run: platform scaling behind one URL, ID-token invoke.
-gw-cloud-run = ["dep:graphrt-gcp", "graphrt-gcp/provider-cloud-run"]
+gw-cloud-run = ["dep:graphrt-gcp", "graphrt-gcp/provider-cloud-run", "provider-cloud-run"]
+# Same name as graphrt-gcp's feature, so its fake Google APIs (shared with tests/provider_harness.rs) compile here.
+provider-cloud-run = []
 # ECS Fargate: the gateway starts and stops tasks.
 gw-ecs = ["dep:graphrt-provider-aws", "graphrt-provider-aws/provider-ecs"]
 # Lambda: sync runs through InvokeWithResponseStream (`lambda://` endpoints, Provider::invoke).
@@ -62,6 +64,9 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time
 tower = { version = "0.5", default-features = false, features = ["util"] }
 http-body-util = "0.1"
 reqwest = { workspace = true, features = ["rustls-no-provider", "json"] }
+# Fake cloud APIs of the provider crates for tests/provider_harness.rs.
+graphrt-provider-k8s = { workspace = true, features = ["fake-api-server"] }
+bytes = "1"
 
 [lints]
 workspace = true

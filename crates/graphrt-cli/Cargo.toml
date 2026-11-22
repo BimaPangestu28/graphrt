@@ -92,6 +92,14 @@ langfuse = ["scores", "otel", "http", "tokio/sync"]
 # limits, webhooks, cron, local-process provider) and `graphrt deploy --target local`.
 # Opt-in; pulls in mimalloc (the gateway build only, decision 10: agents stay without it).
 gateway = ["serve", "dep:graphrt-gateway", "graphrt-gateway/gw-local", "dep:graphrt-provider-api", "mimalloc", "dep:ring"]
+# Remote providers of `graphrt gateway` and their `graphrt deploy --target` drivers.
+gateway-k8s = ["gateway", "graphrt-gateway/deploy-k8s"]
+gateway-cloud-run = ["gateway", "graphrt-gateway/deploy-cloud-run"]
+gateway-ecs = ["gateway", "graphrt-gateway/deploy-ecs"]
+gateway-lambda = ["gateway", "graphrt-gateway/deploy-lambda"]
+gateway-fly = ["gateway", "graphrt-gateway/deploy-fly"]
+# Every provider (plan §9 budget: ≤ 9 MiB).
+gateway-all = ["gateway-k8s", "gateway-cloud-run", "gateway-ecs", "gateway-lambda", "gateway-fly"]
 # Opt-in anonymous usage telemetry of the CLI binary (`graphrt telemetry`). Off
 # by default and inert unless an endpoint is configured; see docs/telemetry.md.
 telemetry = ["http", "dep:getrandom"]

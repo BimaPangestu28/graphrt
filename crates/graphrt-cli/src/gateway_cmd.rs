@@ -109,9 +109,33 @@ pub enum KeyKind {
 
 /// Deploy targets of this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
 pub enum DeployTarget {
     /// local-process agents managed by the gateway.
     Local,
+    /// Kubernetes Deployment (feature `gateway-k8s`).
+    K8s,
+    /// Cloud Run service (feature `gateway-cloud-run`).
+    CloudRun,
+    /// ECS Fargate task definition (feature `gateway-ecs`).
+    Ecs,
+    /// Lambda function version (feature `gateway-lambda`).
+    Lambda,
+    /// Fly app and Machine pool (feature `gateway-fly`).
+    Fly,
+}
+
+impl DeployTarget {
+    fn kind(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::K8s => "k8s",
+            Self::CloudRun => "cloud_run",
+            Self::Ecs => "ecs",
+            Self::Lambda => "lambda",
+            Self::Fly => "fly",
+        }
+    }
 }
 
 /// Options of `graphrt deploy`.
@@ -135,9 +159,63 @@ pub struct DeployArgs {
     /// Environment variable holding the admin token.
     #[arg(long, default_value = "GRAPHRT_GATEWAY_ADMIN_TOKEN")]
     pub token_env: String,
-    /// Extra arguments for `graphrt serve` (e.g. `--providers providers.yaml`).
+    /// Gateway configuration with the operator's `providers:` (remote targets).
+    #[arg(long, value_name = "FILE")]
+    pub config: Option<PathBuf>,
+    /// Entry under `providers:` (default: the only one of the target's kind).
+    #[arg(long)]
+    pub provider: Option<String>,
+    /// Container image (container targets).
+    #[arg(long)]
+    pub image: Option<String>,
+    /// Provider setting `KEY=VALUE` (JSON values allowed), repeatable.
+    #[arg(long = "set", value_name = "KEY=VALUE")]
+    pub settings: Vec<String>,
+    /// Plain environment `NAME=VALUE` of the agents, repeatable (never secrets).
+    #[arg(long = "env", value_name = "NAME=VALUE")]
+    pub env: Vec<String>,
+    /// Secret `ENV=REFERENCE` (secret store reference, never a value), repeatable.
+    #[arg(long = "secret", value_name = "ENV=REFERENCE")]
+    pub secrets: Vec<String>,
+    /// Concurrent runs per replica.
+    #[arg(long, default_value_t = 8)]
+    pub max_active_runs: u32,
+    /// Warm replicas.
+    #[arg(long, default_value_t = 0)]
+    pub min_replicas: u32,
+    /// Upper bound of replicas.
+    #[arg(long, default_value_t = 4)]
+    pub max_replicas: u32,
+    /// SIGTERM → SIGKILL grace set on the platform.
+    #[arg(long, default_value_t = 30)]
+    pub grace_secs: u64,
+    /// Extra arguments for `graphrt serve` (local), or the container command (remote targets).
     #[arg(last = true)]
     pub serve_args: Vec<String>,
+}
+
+fn split_pair<'a>(text: &'a str, what: &str) -> Result<(&'a str, &'a str), CliError> {
+    text.split_once('=').filter(|(key, _)| !key.is_empty()).ok_or_else(|| CliError::usage(format!("{what} must be KEY=VALUE, got `{text}`")))
+}
+
+/// The operator's provider entry for `target` from `--config` / `--provider`.
+fn provider_entry(args: &DeployArgs) -> Result<graphrt_gateway::providers::ProviderConfig, CliError> {
+    let path = args.config.clone().or_else(|| std::env::var_os("GRAPHRT_GATEWAY_CONFIG").filter(|value| !value.is_empty()).map(PathBuf::from));
+    let path = path.ok_or_else(|| CliError::usage("remote targets need --config <gateway.yaml> with the provider under providers:"))?;
+    let text = std::fs::read_to_string(&path).map_err(|error| CliError::invalid(format!("{}: {error}", path.display())))?;
+    let config = GatewayConfig::from_yaml(&text).map_err(CliError::invalid)?;
+    let kind = args.target.kind();
+    let mut matching = config.providers.into_iter().filter(|(_, entry)| entry.kind() == kind);
+    match &args.provider {
+        Some(name) => matching.find(|(entry_name, _)| entry_name == name).map(|(_, entry)| entry).ok_or_else(|| CliError::usage(format!("no `{kind}` provider named `{name}` in {}", path.display()))),
+        None => {
+            let first = matching.next().ok_or_else(|| CliError::usage(format!("no `{kind}` provider in {}", path.display())))?;
+            if matching.next().is_some() {
+                return Err(CliError::usage(format!("several `{kind}` providers in {}: pick one with --provider", path.display())));
+            }
+            Ok(first.1)
+        }
+    }
 }
 
 fn random_hex(bytes: usize) -> Result<String, CliError> {
@@ -300,23 +378,39 @@ fn import(from: &std::path::Path, store: &std::path::Path, deployment: &str) -> 
 /// # Errors
 /// Missing token, unreachable gateway, refused spec.
 pub fn deploy(args: DeployArgs) -> Result<u8, CliError> {
-    let DeployTarget::Local = args.target;
     let token = std::env::var(&args.token_env)
         .map_err(|_| CliError::usage(format!("set {} to the gateway's admin token", args.token_env)))?;
     let version = args.version.clone().unwrap_or_else(|| format!("v{}", graphrt_core::store::now_ms() / 1000));
     let mut provider_settings = BTreeMap::new();
     provider_settings.insert("workflow".to_owned(), serde_json::Value::from(workflow_name(&args.workflow)));
+    for setting in &args.settings {
+        let (key, value) = split_pair(setting, "--set")?;
+        let value = serde_json::from_str(value).unwrap_or_else(|_| serde_json::Value::from(value));
+        provider_settings.insert(key.to_owned(), value);
+    }
+    let mut env = BTreeMap::new();
+    for pair in &args.env {
+        let (name, value) = split_pair(pair, "--env")?;
+        env.insert(name.to_owned(), value.to_owned());
+    }
+    let mut secrets = Vec::new();
+    for pair in &args.secrets {
+        let (name, reference) = split_pair(pair, "--secret")?;
+        secrets.push(graphrt_provider_api::SecretRef { env: name.to_owned(), reference: reference.to_owned() });
+    }
+    let local = args.target == DeployTarget::Local;
+    let command = if local { agent_command(&args.workflow, &args.serve_args)? } else { args.serve_args.clone() };
     let spec = DeploymentSpec {
         name: args.deployment.clone(),
         version: version.clone(),
-        image: None,
-        command: agent_command(&args.workflow, &args.serve_args)?,
-        env: BTreeMap::new(),
-        secrets: Vec::new(),
-        max_active_runs: 8,
-        min_replicas: 0,
-        max_replicas: 4,
-        grace_secs: 30,
+        image: args.image.clone(),
+        command,
+        env,
+        secrets,
+        max_active_runs: args.max_active_runs,
+        min_replicas: args.min_replicas,
+        max_replicas: args.max_replicas,
+        grace_secs: args.grace_secs,
         resources: Resources::default(),
         workflow_fingerprint: String::new(),
         provider_settings,
@@ -327,8 +421,15 @@ pub fn deploy(args: DeployArgs) -> Result<u8, CliError> {
         .clone()
         .or_else(|| std::env::var("GRAPHRT_GATEWAY_URL").ok())
         .unwrap_or_else(|| "http://127.0.0.1:8700".to_owned());
-    let driver = graphrt_gateway::deploy::LocalDeployDriver::new(&gateway, &token);
+    let registrar = graphrt_gateway::deploy::LocalDeployDriver::new(&gateway, &token);
+    let driver: Box<dyn DeployDriver> = if local {
+        Box::new(registrar)
+    } else {
+        let entry = provider_entry(&args)?;
+        let platform = graphrt_gateway::providers::build_deploy_driver(&entry).map_err(CliError::usage)?;
+        Box::new(graphrt_gateway::deploy::RegisteringDriver::new(platform, registrar))
+    };
     let deployed = runtime()?.block_on(driver.apply(&spec)).map_err(|error| CliError::failed(error.to_string()))?;
-    print(&format!("deployed {}@{} (target local)", deployed.name, deployed.version))?;
+    print(&format!("deployed {}@{} (target {}, {})", deployed.name, deployed.version, args.target.kind(), deployed.target))?;
     Ok(EXIT_OK)
 }

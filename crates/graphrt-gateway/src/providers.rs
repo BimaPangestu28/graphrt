@@ -304,7 +304,7 @@ fn build_cloud_run(settings: &CloudRunProviderConfig) -> Built {
     let build = || -> Result<Arc<dyn Provider>, String> {
         let auth = graphrt_gcp::auth::GcpAuth::from_env().map_err(|error| format!("gcp credentials: {error}"))?;
         let provider = graphrt_gcp::cloud_run::CloudRunProvider::new(cloud_run_config(settings)?, auth).map_err(|error| error.to_string())?;
-        Ok(Arc::new(provider))
+        Ok(Arc::new(crate::cloud_run::CloudRunGatewayProvider::new(provider).map_err(|error| error.to_string())?))
     };
     Some(build())
 }
