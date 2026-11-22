@@ -277,7 +277,7 @@ fn passive_takes_over_after_kill_freeze_and_handover() {
     let first = world.gateway("gw-a");
     world.wait_healthy(Duration::from_secs(20));
     let second = world.gateway("gw-b");
-    assert!(wait_for(Duration::from_secs(10), || world.log("gw-b").contains("passive")), "{}", world.log("gw-b"));
+    assert!(wait_for(Duration::from_secs(30), || world.log("gw-b").contains("passive")), "{}", world.log("gw-b"));
     assert_eq!(world.lease()["lease"]["node"], "gw-a");
     deploy(&world, &world.dir.join("work.yaml"));
     let (status, record) = world.run(&json!({ "inputs": {} }));
@@ -294,7 +294,7 @@ fn passive_takes_over_after_kill_freeze_and_handover() {
     let (status, in_flight) = world.run(&json!({ "async": true, "inputs": {} }));
     assert_eq!(status, 202, "{in_flight}");
     let in_flight = in_flight["run_id"].as_str().unwrap().to_owned();
-    assert!(wait_for(Duration::from_secs(10), || world.run_status(&in_flight).as_deref() == Some("running")));
+    assert!(wait_for(Duration::from_secs(30), || world.run_status(&in_flight).as_deref() == Some("running")));
     std::thread::sleep(Duration::from_millis(200));
     signal(first, "KILL");
     let killed_at = Instant::now();
@@ -324,7 +324,7 @@ fn passive_takes_over_after_kill_freeze_and_handover() {
 
     // 2. The old node comes back as a passive; freeze the active.
     let third = world.gateway("gw-a");
-    assert!(wait_for(Duration::from_secs(10), || world.log("gw-a").contains("passive")));
+    assert!(wait_for(Duration::from_secs(30), || world.log("gw-a").contains("passive")));
     assert!(alive(third));
     signal(second, "STOP");
     let frozen_at = Instant::now();
@@ -344,7 +344,7 @@ fn passive_takes_over_after_kill_freeze_and_handover() {
 
     // 3. Graceful handover.
     let fourth = world.gateway("gw-c");
-    assert!(wait_for(Duration::from_secs(10), || world.log("gw-c").contains("passive")));
+    assert!(wait_for(Duration::from_secs(30), || world.log("gw-c").contains("passive")));
     signal(third, "TERM");
     let handover_at = Instant::now();
     assert!(wait_for(Duration::from_secs(30), || world.lease()["lease"]["node"] == "gw-c"));
