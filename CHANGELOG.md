@@ -56,6 +56,10 @@ releases may contain breaking changes; they are called out under **Changed**.
   Unicode bidirectional formatting characters (U+202E and friends) replaced,
   and plugin manifests refuse control characters in node kinds and tool
   names, which `plugin install`, `list` and `info` print. Affects 0.4.0.
+- `graphrt plugin install <name>` extracts into an owner-only (`0700`)
+  scratch directory. It used the umask, so under a permissive one (`000`) in a
+  shared `/tmp` another local user could replace a file between the checksum
+  check and the copy into the plugin directory. Affects 0.4.0.
 - `install.sh` refuses a `--version` / `GRAPHRT_VERSION` with characters other
   than those of a release tag: a `/` could point the archive and its
   `SHA256SUMS` at another repository's release

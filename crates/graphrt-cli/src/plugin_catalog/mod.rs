@@ -236,11 +236,20 @@ mod installer {
     struct ScratchDir(PathBuf);
 
     impl ScratchDir {
+        /// A new directory, never an existing one, owner-only on Unix: the
+        /// extracted files are checksum-verified and then copied, so another
+        /// local user able to write here (a shared `/tmp` under a permissive
+        /// umask) could swap a file between the two.
         fn create() -> Result<Self, CliError> {
             let nanos =
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
             let path = std::env::temp_dir().join(format!("graphrt-catalog-{}-{nanos}", std::process::id()));
-            std::fs::create_dir(&path)
+            #[cfg_attr(not(unix), allow(unused_mut))] // only mutated by the Unix mode below
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+            builder
+                .create(&path)
                 .map_err(|error| CliError::failed(format!("cannot create {}: {error}", path.display())))?;
             Ok(Self(path))
         }
@@ -255,6 +264,20 @@ mod installer {
             if let Err(error) = std::fs::remove_dir_all(&self.0) {
                 eprintln!("warning: cannot remove {}: {error}", self.0.display());
             }
+        }
+    }
+
+    #[cfg(all(test, unix))]
+    mod tests {
+        use std::os::unix::fs::PermissionsExt;
+
+        use super::ScratchDir;
+
+        #[test]
+        fn scratch_directories_are_owner_only() {
+            let scratch = ScratchDir::create().expect("scratch dir");
+            let mode = std::fs::metadata(scratch.path()).expect("metadata").permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
         }
     }
 }
