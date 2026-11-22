@@ -17,6 +17,7 @@ members = [
     "crates/graphrt-provider-api",
     "crates/graphrt-ffi",
     "crates/graphrt-gcp",
+    "crates/graphrt-provider-k8s",
     "crates/graphrt-cli",
 ]
 

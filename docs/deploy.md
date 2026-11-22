@@ -55,6 +55,9 @@ readinessProbe:
   httpGet: { path: /healthz, port: 8080 }
 ```
 
+To scale agents between zero and N behind the graphrt gateway on Kubernetes,
+see the [Kubernetes provider](kubernetes-provider.md).
+
 ### Multi-arch images
 
 The builder compiles natively inside each platform's container, so buildx with
