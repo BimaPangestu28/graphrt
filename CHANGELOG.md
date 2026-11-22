@@ -48,6 +48,11 @@ releases may contain breaking changes; they are called out under **Changed**.
 - Windows: the Python code node keeps the host `PATH` and `SYSTEMROOT`, without
   which CPython cannot start (the Unix default `PATH` does not exist there).
 
+### Security
+- Dependencies: `wasmi` 2.0.1 (yanked) is updated to 2.0.2. The remaining
+  `cargo deny` ignores (unmaintained, no vulnerability) carry a reason and a
+  review date.
+
 ## [0.4.0] - 2026-11-20
 
 Evaluation. `graphrt eval` runs datasets against a workflow with deterministic,
