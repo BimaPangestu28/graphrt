@@ -27,6 +27,7 @@ fn assert_fast<T>(what: &str, f: impl FnOnce() -> T) -> T {
 }
 
 /// A minimal valid document with `extra` spliced in as a top-level YAML key.
+#[cfg(feature = "yaml")]
 fn yaml_doc_with(extra: &str) -> String {
     format!("graph:\n  nodes: []\n  edges: []\n{extra}")
 }
