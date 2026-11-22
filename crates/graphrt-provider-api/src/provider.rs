@@ -9,6 +9,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::error::{DeployError, ProviderError};
+use crate::invoke::{InvokeRequest, InvokeResponse};
 use crate::types::{Capabilities, DeploymentRef, DeploymentSpec, Endpoint, ReleaseMode, ReplicaRef, ReplicaState};
 
 /// A boxed `Send` future, the return type of every async trait method here.
@@ -45,6 +46,17 @@ pub trait Provider: Send + Sync {
 
     /// Lists the replicas of a deployment version for reconciliation.
     fn list<'a>(&'a self, deployment: &'a DeploymentRef) -> BoxFuture<'a, Result<Vec<ReplicaState>, ProviderError>>;
+
+    /// Sends a gateway → agent request through the platform instead of HTTP
+    /// (see [`crate::invoke`]). `None` (the default) means the endpoint is
+    /// reached over HTTP at its address.
+    fn invoke<'a>(
+        &'a self,
+        _endpoint: &'a Endpoint,
+        _request: InvokeRequest,
+    ) -> Option<BoxFuture<'a, Result<InvokeResponse, ProviderError>>> {
+        None
+    }
 }
 
 /// Creates or updates a deployment version (`graphrt deploy --target <t>`).
@@ -71,5 +83,12 @@ impl<P: Provider + ?Sized> Provider for std::sync::Arc<P> {
     }
     fn list<'a>(&'a self, deployment: &'a DeploymentRef) -> BoxFuture<'a, Result<Vec<ReplicaState>, ProviderError>> {
         (**self).list(deployment)
+    }
+    fn invoke<'a>(
+        &'a self,
+        endpoint: &'a Endpoint,
+        request: InvokeRequest,
+    ) -> Option<BoxFuture<'a, Result<InvokeResponse, ProviderError>>> {
+        (**self).invoke(endpoint, request)
     }
 }

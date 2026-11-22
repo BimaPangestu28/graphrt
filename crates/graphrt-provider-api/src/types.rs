@@ -40,7 +40,10 @@ pub struct Capabilities {
     pub max_request_secs: Option<u64>,
     /// Ingress idle timeout the 15 s heartbeat must beat (ACA 240). `None` = none.
     pub idle_timeout_secs: Option<u64>,
-    /// Time between SIGTERM and SIGKILL (Cloud Run 10, ECS 120).
+    /// Time between SIGTERM and SIGKILL (Cloud Run 10, ECS 120). `0` means
+    /// the platform gives no grace at all (Lambda): no planned preemption is
+    /// possible, the gateway holds the stream and a run past
+    /// `max_request_secs` fails explicitly (`failed{platform_timeout}`).
     pub max_grace_secs: u64,
     /// Whether the replica keeps CPU between requests (false on Lambda).
     pub background_cpu: bool,
@@ -48,6 +51,14 @@ pub struct Capabilities {
     pub supports_suspend: bool,
     /// Wake p95 target from plan §5, checked by conformance case C2.
     pub wake_p95_target_ms: u64,
+}
+
+impl Capabilities {
+    /// Whether the gateway can preempt a run before a platform limit
+    /// (`max_grace_secs > 0`).
+    pub fn can_preempt(&self) -> bool {
+        self.max_grace_secs > 0
+    }
 }
 
 /// How a replica is given back.

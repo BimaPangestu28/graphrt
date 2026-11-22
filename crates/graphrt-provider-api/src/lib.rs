@@ -29,10 +29,12 @@
 pub mod conformance;
 mod error;
 pub mod http;
+pub mod invoke;
 mod provider;
 mod types;
 
 pub use error::{DeployError, DeployErrorKind, ProviderError, ProviderErrorKind};
+pub use invoke::{ByteStream, InvokeRequest, InvokeResponse};
 pub use provider::{BoxFuture, DeployDriver, Provider};
 pub use types::{
     Addressing, Capabilities, DeploymentRef, DeploymentSpec, Endpoint, EndpointAddress, ReleaseMode, ReplicaPhase,
