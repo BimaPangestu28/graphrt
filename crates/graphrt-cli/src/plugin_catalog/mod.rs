@@ -91,10 +91,18 @@ mod installer {
         require_confirmation(entry, request.assume_yes)?;
         let tarball = download_verified_tarball(entry, &index_location)?;
         let scratch = ScratchDir::create()?;
-        extract_tar_gz(&tarball, scratch.path(), EXTRACT_LIMITS)
-            .map_err(|error| CliError::failed(format!("{} {}: {error}", entry.name, entry.version)))?;
+        let label = format!("{} {}", entry.name, entry.version);
+        extract_tar_gz(&tarball, scratch.path(), EXTRACT_LIMITS).map_err(|error| tarball_failure(&label, error))?;
         let plugin_dir = staged_plugin_dir(scratch.path(), entry)?;
-        graphrt_plugin::install_from_dir(&plugin_dir, install_root).map_err(|error| CliError::failed(error.to_string()))
+        graphrt_plugin::install_from_dir(&plugin_dir, install_root).map_err(|error| tarball_failure(&label, error))
+    }
+
+    /// A failure whose message may quote the tarball's contents (entry paths,
+    /// manifest fields). The sha256 only proves the tarball is the one the
+    /// index lists, not that its author is benign, so the message is made
+    /// printable like every index string.
+    fn tarball_failure(label: &str, error: impl std::fmt::Display) -> CliError {
+        CliError::failed(printable(&format!("{label}: {error}")))
     }
 
     /// Print the latest version of every catalog plugin matching `query`.
@@ -206,10 +214,11 @@ mod installer {
     fn staged_plugin_dir(scratch: &Path, entry: &CatalogEntry) -> Result<PathBuf, CliError> {
         let plugin_dir = scratch.join(&entry.name);
         let staged = graphrt_plugin::LoadedManifest::from_dir(&plugin_dir).map_err(|error| {
-            CliError::failed(format!(
-                "{} {}: the tarball has no usable top-level `{}/` plugin directory: {error}",
-                entry.name, entry.version, entry.name
-            ))
+            let label = format!("{} {}", entry.name, entry.version);
+            tarball_failure(
+                &label,
+                format!("the tarball has no usable top-level `{}/` plugin directory: {error}", entry.name),
+            )
         })?;
         if staged.manifest.name != entry.name || staged.manifest.version != entry.version {
             return Err(CliError::failed(format!(

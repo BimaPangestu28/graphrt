@@ -48,6 +48,15 @@ releases may contain breaking changes; they are called out under **Changed**.
 - Windows: the Python code node keeps the host `PATH` and `SYSTEMROOT`, without
   which CPython cannot start (the Unix default `PATH` does not exist there).
 
+### Security
+- `graphrt plugin install <name>`: errors that quote a catalog tarball's
+  contents (a refused entry path, a manifest field) no longer print its
+  control characters, so a published plugin cannot send terminal escape
+  sequences (OSC 52 clipboard writes, screen clears). Catalog text also has
+  Unicode bidirectional formatting characters (U+202E and friends) replaced,
+  and plugin manifests refuse control characters in node kinds and tool
+  names, which `plugin install`, `list` and `info` print. Affects 0.4.0.
+
 ## [0.4.0] - 2026-11-20
 
 Evaluation. `graphrt eval` runs datasets against a workflow with deterministic,

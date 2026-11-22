@@ -122,10 +122,18 @@ impl CatalogEntry {
     }
 }
 
-/// `text` with every control character (C0, DEL, C1, so ESC and BEL too)
-/// replaced by `?`, so index strings cannot drive the terminal when printed.
+/// `text` with every control character (C0, DEL, C1, so ESC and BEL too) and
+/// every bidirectional formatting character replaced by `?`, so catalog and
+/// tarball strings cannot drive the terminal or visually reorder what is
+/// printed around them (U+202E can make `hgih` read as `high`).
 pub fn printable(text: &str) -> String {
-    text.chars().map(|c| if c.is_control() { '?' } else { c }).collect()
+    text.chars().map(|c| if c.is_control() || is_bidi_formatting(c) { '?' } else { c }).collect()
+}
+
+/// The Unicode bidirectional formatting characters: marks, embeddings,
+/// overrides and isolates (the "Trojan Source" set).
+fn is_bidi_formatting(c: char) -> bool {
+    matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 /// A label trimmed and lowercased; `None` when missing or blank.
@@ -428,6 +436,13 @@ mod tests {
     fn replaces_control_characters() {
         assert_eq!(printable("a\u{1b}]52;c;x\u{7}b\u{9b}c\u{7f}d\te\nf"), "a?]52;c;x?b?c?d?e?f");
         assert_eq!(printable("plain text, ünïcödé"), "plain text, ünïcödé");
+    }
+
+    #[test]
+    fn replaces_bidirectional_formatting_characters() {
+        // U+202E shows `hgih` as `high`; U+2066-U+2069 isolate and reorder runs.
+        let reordered = "risk \u{202e}hgih\u{202c} \u{2066}x\u{2069}\u{200f}\u{61c}";
+        assert_eq!(printable(reordered), "risk ?hgih? ?x???");
     }
 
     #[test]

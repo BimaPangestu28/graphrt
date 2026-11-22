@@ -200,9 +200,9 @@ After parsing, a manifest is rejected when:
 2. `protocol_version` is not the host's version (`1`);
 3. `limits.max_concurrency` is 0, `limits.timeout_ms` is 0, or
    `limits.max_message_bytes` is below 1024;
-4. a node `kind` is empty or contains whitespace, breaks the
+4. a node `kind` is empty or contains whitespace or control characters, breaks the
    [prefix rule](#node-kinds), is a `container`, or is a duplicate;
-5. a tool `name` is blank or a duplicate;
+5. a tool `name` is blank, contains control characters or is a duplicate;
 6. a process `command` is blank; an http `url` is not `http(s)://`, or breaks
    the https / `permissions.env` rules for credentials; a wasm `module` is
    blank or not a [relative path](#relative-paths);

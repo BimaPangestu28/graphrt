@@ -481,8 +481,10 @@ How a name is resolved and installed:
    ask for a prerelease with `name@1.1.0-rc.1`.
    Entries with an invalid plugin name or a non-semver version are skipped,
    and every index string graphrt prints (descriptions, labels, reasons,
-   warnings, URLs) has its control characters replaced by `?`, so a catalog
-   cannot send terminal escape sequences.
+   warnings, URLs) has its control and bidirectional formatting characters
+   replaced by `?`, as do install errors that quote the tarball (entry paths,
+   manifest fields), so a catalog cannot send terminal escape sequences or
+   visually reorder a line.
 4. The plugin's `status` and `tos_risk` are printed (trimmed and lowercased;
    `unknown` when the catalog predates the labels), plus the README warning
    when there is one. The gate fails closed: only status `stable` or `beta`
