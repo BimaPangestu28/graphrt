@@ -171,6 +171,9 @@ pub struct DeploymentConfig {
     /// Accept requests without credentials (only `--dev`).
     #[serde(default)]
     pub open: bool,
+    /// Agent keys given programmatically (`--dev`) instead of `keys_env`.
+    #[serde(skip)]
+    pub inline_keys: Option<String>,
 }
 
 impl DeploymentConfig {
@@ -220,6 +223,9 @@ pub struct GatewayConfig {
     /// Deployments.
     #[serde(default)]
     pub deployments: Vec<DeploymentConfig>,
+    /// Admin token given programmatically (`--dev`) instead of `admin_token_env`.
+    #[serde(skip)]
+    pub inline_admin_token: Option<String>,
 }
 
 fn default_listen() -> String {

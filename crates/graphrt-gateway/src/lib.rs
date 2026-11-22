@@ -33,3 +33,4 @@ pub mod server;
 #[cfg(feature = "gw-local")]
 pub mod app;
 pub mod config;
+pub mod deploy;

@@ -42,8 +42,15 @@ fn env_value(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|_| format!("environment variable {name} is not set"))
 }
 
+fn keys_of(config: &DeploymentConfig) -> Result<String, String> {
+    match &config.inline_keys {
+        Some(keys) => Ok(keys.clone()),
+        None => env_value(&config.keys_env),
+    }
+}
+
 fn build_deployment(config: &DeploymentConfig, provider: Arc<LocalProvider>, client: &reqwest::Client) -> Result<Deployment, String> {
-    let keys_text = env_value(&config.keys_env)?;
+    let keys_text = keys_of(config)?;
     let keys = parse_keys(&keys_text).map_err(|error| format!("{}: {error}", config.name))?;
     let auth = DeploymentAuth::new(config.api_keys.clone(), config.jwt.clone(), client).map_err(|error| format!("{}: {error}", config.name))?;
     let mut deployment = Deployment::new(&config.name, auth, keys, provider, config.pool_config());
@@ -71,7 +78,7 @@ pub async fn build(config: &GatewayConfig) -> Result<Built, String> {
     let mut keys_by_deployment = HashMap::new();
     for deployment_config in &config.deployments {
         let deployment = Arc::new(build_deployment(deployment_config, provider.clone(), &client)?);
-        keys_by_deployment.insert(deployment.name.clone(), env_value(&deployment_config.keys_env)?);
+        keys_by_deployment.insert(deployment.name.clone(), keys_of(deployment_config)?);
         if let Some(name) = &deployment_config.callback_secret_env {
             callback_secrets.insert(deployment.name.clone(), env_value(name)?.into_bytes());
         }
@@ -92,7 +99,11 @@ pub async fn build(config: &GatewayConfig) -> Result<Built, String> {
         gateway.add_deployment(deployment);
     }
     app.ip_limiter = config.per_ip.map(|limit| Gcra::new(limit.into(), 200_000));
-    app.admin_token_hash = config.admin_token_env.as_deref().map(env_value).transpose()?.map(|token| crate::hex::sha256_hex(token.as_bytes()));
+    let admin_token = match &config.inline_admin_token {
+        Some(token) => Some(token.clone()),
+        None => config.admin_token_env.as_deref().map(env_value).transpose()?,
+    };
+    app.admin_token_hash = admin_token.map(|token| crate::hex::sha256_hex(token.as_bytes()));
     let local = provider.clone();
     let hook: VersionHook = Arc::new(move |deployment: &Deployment, info: &VersionInfo| {
         let keys = keys_by_deployment.get(&deployment.name).cloned().unwrap_or_default();
@@ -156,8 +167,26 @@ pub fn spawn_background(built: &Built) {
 /// # Errors
 /// Bind failures and build errors.
 pub async fn serve(config: GatewayConfig) -> Result<(), String> {
+    serve_with(config, Vec::new()).await
+}
+
+/// [`serve`], registering `versions` (deployment, version) first if they are new (`--dev`).
+///
+/// # Errors
+/// Bind failures and build errors.
+pub async fn serve_with(config: GatewayConfig, versions: Vec<(String, VersionInfo)>) -> Result<(), String> {
     let started = tokio::time::Instant::now();
     let built = build(&config).await?;
+    for (name, info) in versions {
+        let Some(deployment) = built.app.gateway.deployment(&name) else { continue };
+        if deployment.versions().iter().any(|entry| entry.info.version == info.version) {
+            continue;
+        }
+        if let Some(hook) = &built.app.on_version {
+            hook(&deployment, &info);
+        }
+        deployment.add_version(info, now_ms());
+    }
     let (queued, running) = built.app.gateway.recover().await.map_err(|error| error.to_string())?;
     spawn_background(&built);
     let listener = tokio::net::TcpListener::bind(&config.listen).await.map_err(|error| format!("binding {}: {error}", config.listen))?;
