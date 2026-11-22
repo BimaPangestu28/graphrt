@@ -50,7 +50,9 @@ pub enum Command {
     #[cfg(feature = "gateway")]
     Gateway(Box<crate::gateway_cmd::GatewayArgs>),
     /// Deploy a new immutable version of a deployment (`--target local`).
+    // `--version` names the deployment version here, not the binary's.
     #[cfg(feature = "gateway")]
+    #[command(disable_version_flag = true)]
     Deploy(Box<crate::gateway_cmd::DeployArgs>),
     /// Print version and enabled features.
     Version,
