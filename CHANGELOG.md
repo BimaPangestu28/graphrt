@@ -315,7 +315,28 @@ releases may contain breaking changes; they are called out under **Changed**.
   (`scripts/smoke-release-binary.sh`; x86_64 macOS is cross-built only), and
   the Windows `.exe` links the C runtime statically (no `VCRUNTIME140.dll`).
 
+### Documentation
+- `docs/gateway.md` has a "Measured so far" table: agent exec → `/healthz`,
+  gateway restart, gateway start, a first run that wakes a local agent from
+  zero (p50 17.4 ms with `curl`), HA takeover, Kubernetes (kind) wake p95
+  812 ms and the gateway binary sizes (core 6.69 MiB, `gateway-all`
+  7.40 MiB, macOS arm64). It states that Cloud Run, Container Apps, ECS,
+  Lambda and Fly are tested against API fakes only. The quick start installs
+  from git until the gateway is released. The kind
+  measurement is in `docs/kubernetes-provider.md`, the README row names
+  `graphrt deploy --target`, and the docs index groups the gateway guides.
+
 ### Fixed
+- The `gateway` feature includes `trust-gateway`. A
+  `--no-default-features --features gateway` build answered every run of
+  `graphrt gateway --dev` (and of `kind: local` deployments) with
+  `agent exited during start-up (exit status: 2)`: its local agents are
+  `graphrt serve --trust-gateway` of the same binary, which that build could
+  not run. Costs 48.8 KiB on the gateway core build (macOS arm64, `min-size`:
+  6,961,376 → 7,011,360 B) and 81.1 KiB on `gateway-all`. New test
+  `crates/graphrt-cli/tests/gateway_dev.rs`, run by the new CI job
+  `gateway without default features` (and `scripts/ci-local.sh` job
+  `minimal-gateway`).
 - `graphrt gateway` no longer loses a run without a checkpoint when the gateway
   restarts. Each accepted run request is written to the store in the
   transaction that creates the run (no extra write), without the start inputs

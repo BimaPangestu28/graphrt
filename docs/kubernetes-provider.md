@@ -218,3 +218,8 @@ kind load docker-image alpine:3.22 --name graphrt-k8s
 GRAPHRT_K8S_E2E_CONTEXT=kind-graphrt-k8s \
   cargo test -p graphrt-provider-k8s --test real_cluster -- --ignored --nocapture
 ```
+
+Measured on kind v1.36.1 (client-certificate kubeconfig): wake 0 → 1 with
+n = 50, p50 340 ms, p95 812 ms, max 1.17 s (target ≤ 3 s); scale-in removed
+exactly the released pod. Managed clusters (GKE, EKS, AKS) have not been
+measured yet.
