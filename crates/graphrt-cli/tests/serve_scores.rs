@@ -279,6 +279,14 @@ graph:
         let internal_feedback = format!("/v1/runs/{internal}/feedback");
         let (status, _) = send(&app, with_token(post(&internal_feedback, None, &body), &alice)).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+        // An API-key run labelled with a body `user_id` belongs to that user:
+        // the record cannot tell a claimed user from a verified one.
+        let (status, labelled) =
+            send(&app, post("/v1/workflows/chat/runs", Some(API_KEY), &json!({ "user_id": "alice" }))).await;
+        assert_eq!(status, StatusCode::OK, "{labelled}");
+        let labelled_feedback = format!("/v1/runs/{}/feedback", labelled["run_id"].as_str().unwrap());
+        assert_eq!(send(&app, with_token(post(&labelled_feedback, None, &body), &alice)).await.0, StatusCode::CREATED);
+        assert_eq!(send(&app, with_token(post(&labelled_feedback, None, &body), &bob)).await.0, StatusCode::FORBIDDEN);
         // The API key still rates any run, with the body's user.
         let (status, keyed) = send(&app, post(&internal_feedback, Some(API_KEY), &body)).await;
         assert_eq!((status, keyed["user"].as_str()), (StatusCode::CREATED, Some("mallory")));

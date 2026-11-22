@@ -350,7 +350,9 @@ idempotent.
 [`--verify-jwt`](#verifying-end-user-jwts), feedback also accepts the end
 user's token, for the user's **own** runs only: the run's `user_id` must be the
 token's `sub` (runs started with a user token have it; runs started with the
-API key have no owner and refuse user tokens with `403`), and the score's
+API key have no owner and refuse user tokens with `403`, unless the caller set
+the body's `user_id`, which the server cannot tell from a verified one: send a
+`user_id` with the API key only for runs that user may rate), and the score's
 `user` is the verified `sub`, whatever the body says. Reading scores stays an
 API-key endpoint. An invalid token is `401`, and feedback with a user token counts
 against that user's `--user-rate-limit` like a run start.
