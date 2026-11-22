@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only token: no job here writes to the repository.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -15,11 +19,14 @@ jobs:
     name: fmt + clippy + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features
       - run: cargo test --workspace --all-features
@@ -28,38 +35,53 @@ jobs:
     name: MSRV (1.89, every crate)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.89
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.89"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo check --workspace
 
   minimal-core:
     name: core without default features
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test -p graphrt-core --no-default-features
 
   wasm:
     name: core on wasm32
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build -p graphrt-core --no-default-features --features yaml,jinja --target wasm32-unknown-unknown
 
   size:
     name: binary size
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo build -p graphrt-cli --profile min-size
       - name: Report binary size
         run: |
@@ -71,19 +93,30 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       POSTGREST_VERSION: v16.6
+      # sha256 of postgrest-v16.6-linux-static-x86-64.tar.xz (the digest GitHub
+      # lists for the release asset); update it together with the version.
+      POSTGREST_SHA256: 335ea29f00145705fb569b1268b9c8e53d062f8f6f9188192e92ea3781d2dca1
       # ubuntu-24.04 images ship PostgreSQL 16 (service stopped; the test starts its own cluster).
       PG_BIN: /usr/lib/postgresql/16/bin
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - name: Install PostgREST
+        # Verified before it is unpacked into /usr/local/bin as root.
         run: |
-          curl -fsSL "https://github.com/PostgREST/postgrest/releases/download/${POSTGREST_VERSION}/postgrest-${POSTGREST_VERSION}-linux-static-x86-64.tar.xz" \
-            | sudo tar -xJ -C /usr/local/bin postgrest
+          archive="postgrest-${POSTGREST_VERSION}-linux-static-x86-64.tar.xz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/PostgREST/postgrest/releases/download/${POSTGREST_VERSION}/${archive}"
+          echo "${POSTGREST_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          sudo tar -xJf "$RUNNER_TEMP/$archive" -C /usr/local/bin postgrest
           postgrest --version
       # The features of the chatbot container image.
       - run: cargo build -p graphrt-cli --no-default-features --features llm,serve,jwt,plugins

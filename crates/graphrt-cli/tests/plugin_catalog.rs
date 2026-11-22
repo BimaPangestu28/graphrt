@@ -596,3 +596,45 @@ fn unreadable_or_unsupported_indexes_fail_clearly() {
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
     assert!(stderr(&output).contains("https"), "{}", stderr(&output));
 }
+
+/// The entries of [`plugin_entries`] with `edit` applied to the manifest.
+fn entries_with_manifest(name: &str, version: &str, edit: impl Fn(&mut serde_json::Value)) -> Vec<TarEntry> {
+    let mut entries = plugin_entries(name, version);
+    let manifest_path = format!("{name}/graphrt-plugin.json");
+    for entry in entries.iter_mut().filter(|entry| entry.path == manifest_path) {
+        let mut manifest: serde_json::Value = serde_json::from_slice(&entry.content).unwrap();
+        edit(&mut manifest);
+        entry.content = manifest.to_string().into_bytes();
+    }
+    entries
+}
+
+#[test]
+fn tarball_strings_are_printed_without_control_characters() {
+    let home = scratch("tarball-escapes");
+    // A refused entry path is quoted in the error.
+    let mut hostile_path = plugin_entries("demo", "1.0.0");
+    hostile_path.push(TarEntry::file("demo/\u{1b}]52;c;SGVsbG8=\u{7}/../x", b"x"));
+    // Manifest fields end up in validation errors and in the "installed" line.
+    let hostile_kind = entries_with_manifest("kinds", "1.0.0", |manifest| {
+        manifest["nodes"][0]["kind"] = format!("kinds.echo{TERMINAL_ESCAPES}").into();
+    });
+    let hostile_field = entries_with_manifest("fields", "1.0.0", |manifest| {
+        manifest[format!("x{TERMINAL_ESCAPES}")] = true.into();
+    });
+    let index = write_catalog(
+        &home.join("catalog"),
+        &[
+            FixturePlugin::with_entries("demo", "1.0.0", &hostile_path),
+            FixturePlugin::with_entries("kinds", "1.0.0", &hostile_kind),
+            FixturePlugin::with_entries("fields", "1.0.0", &hostile_field),
+        ],
+    );
+    for name in ["demo", "kinds", "fields"] {
+        let output = install(&home, name, &index, &[]);
+        assert_eq!(output.status.code(), Some(1), "{name}: {}", stderr(&output));
+        assert_no_control_characters(&format!("{name} stdout"), &stdout(&output));
+        assert_no_control_characters(&format!("{name} stderr"), &stderr(&output));
+    }
+    assert_eq!(installed_files(&home), 0);
+}

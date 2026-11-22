@@ -165,17 +165,30 @@ fn clone_and_install(
     if url.starts_with('-') || rev.is_some_and(|r| r.starts_with('-')) {
         return Err(PluginError::Install("invalid git url or revision".into()));
     }
-    let checkout = std::env::temp_dir().join(format!(
-        "graphrt-plugin-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
-    ));
+    let scratch = create_private_temp_dir()?;
+    let checkout = scratch.join("repository");
     let result = clone_repository(url, rev, &checkout).and_then(|()| match subdir {
         Some(relative) => resolve_subdir(&checkout, relative).and_then(|dir| install_from_dir(&dir, dest_root)),
         None => install_from_dir(&checkout, dest_root),
     });
-    let _cleanup = std::fs::remove_dir_all(&checkout);
+    let _cleanup = std::fs::remove_dir_all(&scratch);
     result
+}
+
+/// A new temporary directory, owner-only (`0700`) on Unix, to clone into.
+/// `git clone` creates the checkout with the umask's mode, and its files are
+/// checksum-verified and then copied, so no other local user may be able to
+/// write there in between (a shared `/tmp` under a permissive umask).
+#[cfg(feature = "git")]
+fn create_private_temp_dir() -> Result<PathBuf, PluginError> {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("graphrt-plugin-{}-{nanos}", std::process::id()));
+    #[cfg_attr(not(unix), allow(unused_mut))] // only mutated by the Unix mode below
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&dir).map_err(|e| PluginError::Io { path: dir.clone(), message: e.to_string() })?;
+    Ok(dir)
 }
 
 #[cfg(feature = "git")]
@@ -320,6 +333,16 @@ mod tests {
         let bad = LoadedManifest::from_dir(&root.join("bad")).unwrap();
         assert!(matches!(verify_checksums(&bad), Err(PluginError::Checksum { .. })));
         assert!(install_from_dir(&root.join("bad"), &temp("dest-bad")).is_err());
+    }
+
+    #[cfg(all(feature = "git", unix))]
+    #[test]
+    fn git_checkouts_go_into_an_owner_only_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = create_private_temp_dir().unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(mode & 0o777, 0o700);
     }
 
     /// Run `git` in `dir`, with an identity so commits work on any machine.

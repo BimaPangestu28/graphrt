@@ -68,6 +68,40 @@ releases may contain breaking changes; they are called out under **Changed**.
   it is cut to `max_tool_output_chars` so no prefix of the secret survives.
   Affects 0.4.0 with capture on.
 
+- `graphrt plugin install <name>`: errors that quote a catalog tarball's
+  contents (a refused entry path, a manifest field) no longer print its
+  control characters, so a published plugin cannot send terminal escape
+  sequences (OSC 52 clipboard writes, screen clears). Catalog text also has
+  Unicode bidirectional formatting characters (U+202E and friends) replaced,
+  and plugin manifests refuse control characters in node kinds and tool
+  names, which `plugin install`, `list` and `info` print. Affects 0.4.0.
+- `graphrt plugin install <name>` extracts into, and `plugin install
+  <git-url>` clones into, an owner-only (`0700`) scratch directory. Both used
+  the umask, so under a permissive one (`000`) in a
+  shared `/tmp` another local user could replace a file between the checksum
+  check and the copy into the plugin directory. Affects 0.4.0.
+- `install.sh` refuses a `--version` / `GRAPHRT_VERSION` with characters other
+  than those of a release tag: a `/` could point the archive and its
+  `SHA256SUMS` at another repository's release
+  (`v1/../../../../other/repo/releases/download/v1`). `GRAPHRT_DOWNLOAD_BASE`
+  must be `https://` or `file://`; with wget, an `http://` mirror was fetched
+  without TLS. Affects the 0.4.0 installer.
+- `packaging/homebrew/render-formula.sh` accepts only a semver version and
+  64-hex digests, which it pastes into Ruby that `brew` evaluates, and no
+  longer prints a formula with an empty `sha256` when an archive is missing
+  from `SHA256SUMS`.
+- CI: `ci.yml` and `live-providers.yml` pin every third-party action by
+  commit SHA (a moved `@v4` / `@stable` tag could have run new code next to
+  the live provider API keys), `ci.yml` runs with a read-only token and
+  without persisted checkout credentials, and the PostgREST binary the
+  chatbot e2e job installs as root is checked against its sha256.
+- Release workflow: a manual run's `tag` input must name an existing `v*`
+  tag, and every job checks out `refs/tags/<tag>`, so a branch with the same
+  name can no longer be built and published as that release (the input was
+  used unchecked as the ref and the release tag). `cargo-zigbuild`, which runs
+  in the jobs that produce the release binaries, is pinned to 0.24.1, and no
+  release job keeps checkout credentials.
+
 
 ## [0.4.0] - 2026-11-20
 

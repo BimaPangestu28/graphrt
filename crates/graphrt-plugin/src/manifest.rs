@@ -359,11 +359,14 @@ impl PluginManifest {
         if self.limits.max_message_bytes > MAX_MESSAGE_BYTES_CEILING {
             return bad(format!("limits.max_message_bytes must be at most {MAX_MESSAGE_BYTES_CEILING}"));
         }
+        // Kinds and tool names are printed by `plugin install`, `list` and `info`:
+        // a control character in one could drive the operator's terminal, so it
+        // is refused (and shown escaped in the error).
         let prefix = format!("{}.", self.name);
         let mut seen = std::collections::HashSet::new();
         for node in &self.nodes {
-            if node.kind.trim().is_empty() || node.kind.chars().any(char::is_whitespace) {
-                return bad(format!("invalid node kind `{}`", node.kind));
+            if node.kind.trim().is_empty() || node.kind.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                return bad(format!("invalid node kind `{}`", node.kind.escape_debug()));
             }
             if !node.kind.starts_with(&prefix) {
                 if !self.allow_unprefixed_kinds {
@@ -387,8 +390,9 @@ impl PluginManifest {
         }
         let mut tool_names = std::collections::HashSet::new();
         for tool in &self.tools {
-            if tool.name.trim().is_empty() || !tool_names.insert(tool.name.as_str()) {
-                return bad(format!("invalid or duplicate tool name `{}`", tool.name));
+            let has_control = tool.name.chars().any(char::is_control);
+            if tool.name.trim().is_empty() || has_control || !tool_names.insert(tool.name.as_str()) {
+                return bad(format!("invalid or duplicate tool name `{}`", tool.name.escape_debug()));
             }
         }
         match &self.runtime {
@@ -558,6 +562,18 @@ mod tests {
         let mut v = base();
         v["name"] = "Acme Corp".into();
         assert!(PluginManifest::from_json(&v.to_string()).is_err());
+    }
+
+    #[test]
+    fn rejects_control_characters_in_kinds_and_tool_names() {
+        // Kinds and tool names are printed by `plugin install`, `list` and `info`.
+        let mut v = base();
+        v["nodes"][0]["kind"] = "acme.x\u{1b}]52;c;SGVsbG8=\u{7}".into();
+        assert!(PluginManifest::from_json(&v.to_string()).is_err());
+        let mut v = base();
+        v["tools"] = serde_json::json!([{"name": "lookup\u{1b}[2J", "description": "x", "parameters": {}}]);
+        let error = PluginManifest::from_json(&v.to_string()).unwrap_err().to_string();
+        assert!(error.contains("tool name"), "{error}");
     }
 
     #[test]

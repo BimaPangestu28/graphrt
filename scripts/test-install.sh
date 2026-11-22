@@ -36,6 +36,26 @@ if GRAPHRT_DOWNLOAD_BASE="file://$work/release" sh "$root/install.sh" --dir "$wo
     exit 1
 fi
 
+# A --version with a path in it would point the download at another repository's
+# release (`v1/../../../../other/repo/releases/download/v1`); a plain-http mirror
+# would be fetched without TLS by wget. Both are refused before any download.
+expect_refusal() {
+    reason="$1"
+    shift
+    if output=$("$@" 2>&1); then
+        echo "install.sh accepted $reason" >&2
+        exit 1
+    fi
+    case "$output" in
+        *downloading*) echo "install.sh started a download for $reason: $output" >&2; exit 1 ;;
+    esac
+}
+expect_refusal "a version with a path" \
+    sh "$root/install.sh" --dir "$work/bin3" --version "v1/../../../../other/repo/releases/download/v1"
+expect_refusal "a version with a query" env GRAPHRT_VERSION="v1?x=1" sh "$root/install.sh" --dir "$work/bin3"
+expect_refusal "a plain-http mirror" env GRAPHRT_DOWNLOAD_BASE="http://127.0.0.1:9/release" \
+    sh "$root/install.sh" --dir "$work/bin3"
+
 sh "$root/install.sh" --uninstall --dir "$work/bin"
 [ ! -e "$work/bin/graphrt" ] || { echo "uninstall left the binary" >&2; exit 1; }
 echo "install.sh: all checks passed"
