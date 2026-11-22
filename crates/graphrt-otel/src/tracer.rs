@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use graphrt_core::event::{Event, PauseReason, Usage};
 use graphrt_core::graph::Graph;
+use graphrt_core::pool::Selector;
 use graphrt_core::value::Value;
 use graphrt_core::variables::Variables;
 use serde_json::Value as Json;
@@ -113,6 +114,31 @@ struct Content {
     limit: usize,
 }
 
+/// Where a captured value lands: a span's attributes and/or the content event
+/// waiting to be added to that span when it ends.
+struct ContentTarget<'a> {
+    span: &'a mut Span,
+    pending: &'a mut Attributes,
+}
+
+/// A semconv content attribute plus the Langfuse attribute that mirrors it
+/// (see [`Content::put_langfuse`]).
+#[derive(Clone, Copy)]
+struct ContentKeys {
+    semconv: &'static str,
+    langfuse: &'static str,
+}
+
+impl ContentKeys {
+    const fn input(semconv: &'static str) -> Self {
+        Self { semconv, langfuse: langfuse::OBSERVATION_INPUT }
+    }
+
+    const fn output(semconv: &'static str) -> Self {
+        Self { semconv, langfuse: langfuse::OBSERVATION_OUTPUT }
+    }
+}
+
 impl Content {
     fn on(self) -> bool {
         self.mode.is_enabled()
@@ -120,22 +146,39 @@ impl Content {
 
     /// Record `value` under `key`: as an attribute and/or on the pending
     /// content event, depending on the mode.
-    fn put(self, span: &mut Span, pending: &mut Attributes, key: &str, value: AttrValue) {
+    fn put(self, target: &mut ContentTarget<'_>, key: &str, value: AttrValue) {
         match (self.mode.on_span(), self.mode.on_event()) {
             (true, true) => {
-                pending.push((key.to_owned(), value.clone()));
-                span.set(key, value);
+                target.pending.push((key.to_owned(), value.clone()));
+                target.span.set(key, value);
             }
-            (true, false) => span.set(key, value),
-            (false, true) => pending.push((key.to_owned(), value)),
+            (true, false) => target.span.set(key, value),
+            (false, true) => target.pending.push((key.to_owned(), value)),
             (false, false) => {}
         }
     }
 
-    /// Langfuse reads input/output from attributes only.
-    fn put_langfuse(self, span: &mut Span, key: &str, json: &Json) {
+    /// Record `text` under both `keys` (the Langfuse mirror and the semconv attribute carry the same value).
+    fn put_text(self, target: &mut ContentTarget<'_>, keys: ContentKeys, text: &str) {
+        let value = self.text(text);
         if self.mode.on_span() {
-            span.set(key, self.text(&json_string(json)));
+            target.span.set(keys.langfuse, value.clone());
+        }
+        self.put(target, keys.semconv, value);
+    }
+
+    /// Record `json` as a structured semconv attribute, mirrored to Langfuse as JSON text.
+    fn put_structured(self, target: &mut ContentTarget<'_>, keys: ContentKeys, json: Json) {
+        if self.mode.on_span() {
+            self.put_langfuse(target, keys.langfuse, &json_string(&json));
+        }
+        self.put(target, keys.semconv, self.structured(json));
+    }
+
+    /// Langfuse reads input/output from attributes only, so its mirror is skipped in event-only modes.
+    fn put_langfuse(self, target: &mut ContentTarget<'_>, key: &str, text: &str) {
+        if self.mode.on_span() {
+            target.span.set(key, self.text(text));
         }
     }
 
@@ -173,11 +216,15 @@ fn json_string(json: &Json) -> String {
     }
 }
 
+/// Maximum bytes of an error message recorded on a span event.
+const ERROR_MESSAGE_LIMIT: usize = 1024;
+
 #[derive(Debug)]
 struct OpenNode {
     span: Span,
     frame: String,
     node_id: Arc<str>,
+    exec_id: Arc<str>,
     kind: Arc<str>,
     role: NodeRole,
     chunks: u64,
@@ -185,10 +232,22 @@ struct OpenNode {
     content: Attributes,
 }
 
+impl OpenNode {
+    fn target(&mut self) -> ContentTarget<'_> {
+        ContentTarget { span: &mut self.span, pending: &mut self.content }
+    }
+}
+
 #[derive(Debug)]
 struct OpenTool {
     span: Span,
     content: Attributes,
+}
+
+impl OpenTool {
+    fn target(&mut self) -> ContentTarget<'_> {
+        ContentTarget { span: &mut self.span, pending: &mut self.content }
+    }
 }
 
 /// Builds spans for one run. Feed it every event with [`EventTracer::on_event`];
@@ -220,8 +279,6 @@ pub struct EventTracer {
     nodes: HashMap<Arc<str>, OpenNode>,
     /// Open tool spans by `(execution id, tool call id)`.
     tools: HashMap<(Arc<str>, String), OpenTool>,
-    /// Latest execution id per `(frame, node id)`, used to find container spans.
-    by_node: HashMap<(String, Arc<str>), Arc<str>>,
     /// Container node span ids by `(frame, node id)` (kept after the node ends).
     containers: HashMap<(String, Arc<str>), SpanId>,
     /// Open container body (frame) spans by frame id.
@@ -251,7 +308,6 @@ impl EventTracer {
             preset_root_id: None,
             nodes: HashMap::new(),
             tools: HashMap::new(),
-            by_node: HashMap::new(),
             containers: HashMap::new(),
             frames: HashMap::new(),
             finished: false,
@@ -362,167 +418,201 @@ impl EventTracer {
         }
         let now = now_unix_nanos();
         match event {
-            Event::RunStarted { run_id, resumed } => {
-                let root = self.ensure_root(now);
-                root.set("graphrt.run.id", run_id.as_str());
-                root.set("graphrt.run.resumed", *resumed);
-            }
-            Event::NodeStarted { frame, node_id, exec_id, kind, title, attempt } => {
-                self.ensure_root(now);
-                if let Some(open) = self.nodes.get_mut(exec_id) {
-                    open.span.set("graphrt.node.attempt", *attempt);
-                    return;
-                }
-                let parent = self.parent_for_frame(frame, now);
-                let role = NodeRole::of(kind);
-                let mut span = Span::new(self.trace_id, Some(parent), String::new(), now);
-                span.set("graphrt.node.id", node_id.as_ref());
-                span.set("graphrt.node.kind", kind.as_ref());
-                span.set("graphrt.node.exec_id", exec_id.as_ref());
-                span.set("graphrt.node.attempt", *attempt);
-                if !frame.is_empty() {
-                    span.set("graphrt.frame", frame.as_ref());
-                }
-                let label = if title.is_empty() { kind.as_ref() } else { title.as_ref() };
-                span.name = self.genai_attributes(&mut span, role, node_id, kind, label);
-                let key = (frame.to_string(), node_id.clone());
-                self.by_node.insert(key.clone(), exec_id.clone());
-                if self.is_container(node_id) {
-                    self.containers.insert(key, span.span_id);
-                }
-                let open = OpenNode {
-                    span,
-                    frame: frame.to_string(),
-                    node_id: node_id.clone(),
-                    kind: kind.clone(),
-                    role,
-                    chunks: 0,
-                    content: Vec::new(),
-                };
-                self.nodes.insert(exec_id.clone(), open);
-            }
-            Event::NodeChunk { exec_id, .. } => {
-                if let Some(open) = self.nodes.get_mut(exec_id) {
-                    open.chunks += 1;
-                }
-            }
+            Event::RunStarted { run_id, resumed } => self.on_run_started(run_id, *resumed, now),
+            Event::NodeStarted { .. } => self.on_node_started(event, now),
+            Event::NodeChunk { exec_id, .. } => self.on_node_chunk(exec_id),
             Event::NodeProgress { exec_id, name, data, .. } => self.on_progress(exec_id, name, data, now),
             Event::NodeRetry { exec_id, attempt, error, delay_ms, .. } => {
-                if let Some(open) = self.nodes.get_mut(exec_id) {
-                    open.span.add_event(
-                        "retry",
-                        now,
-                        vec![
-                            ("graphrt.retry.attempt".to_owned(), AttrValue::from(*attempt)),
-                            ("graphrt.retry.delay_ms".to_owned(), AttrValue::from(*delay_ms)),
-                            (general::ERROR_MESSAGE.to_owned(), AttrValue::Str(truncate(error, 1024))),
-                        ],
-                    );
-                }
+                self.on_node_retry(exec_id, *attempt, error, *delay_ms, now);
             }
-            Event::NodeSucceeded { frame, exec_id, outputs, branch, usage, metadata, elapsed_ms, .. } => {
-                let Some(mut open) = self.nodes.remove(exec_id) else { return };
-                if let Some(branch) = branch {
-                    open.span.set("graphrt.node.branch", branch.as_str());
-                }
-                if matches!(open.role, NodeRole::Chat | NodeRole::Agent) {
-                    model_from_metadata(&mut open.span, open.role, metadata);
-                }
-                if let Some(usage) = usage {
-                    self.usage_attributes(&mut open.span, usage);
-                }
-                if self.content.on() {
-                    self.node_content(&mut open, outputs, metadata);
-                    if frame.is_empty() && open.kind.as_ref() == "start" {
-                        self.root_input(outputs, now);
-                    }
-                }
-                if open.role == NodeRole::Chat
-                    && let Some(reason) = outputs.get("finish_reason").and_then(Value::as_str)
-                {
-                    open.span.set(gen_ai::RESPONSE_FINISH_REASONS, string_array(&[reason.to_owned()]));
-                }
-                self.finish_node(open, "succeeded", *elapsed_ms, now);
-            }
-            Event::NodeFailed { exec_id, error, error_type, handled, outputs, elapsed_ms, .. } => {
-                let Some(mut open) = self.nodes.remove(exec_id) else { return };
-                open.span.set(general::ERROR_TYPE, error_type.as_str());
-                open.span.set("graphrt.node.handled", *handled);
-                open.span.add_event(
-                    "exception",
-                    now,
-                    vec![
-                        (general::EXCEPTION_TYPE.to_owned(), AttrValue::from(error_type.as_str())),
-                        (general::EXCEPTION_MESSAGE.to_owned(), AttrValue::Str(truncate(error, 1024))),
-                    ],
-                );
-                open.span.error(error);
-                if self.content.on() && !outputs.is_empty() {
-                    let value = self.content.text(&serde_json::to_string(outputs).unwrap_or_default());
-                    self.content.put(&mut open.span, &mut open.content, "graphrt.node.outputs", value);
-                }
-                let status = if *handled { "handled_error" } else { "failed" };
-                self.finish_node(open, status, *elapsed_ms, now);
-            }
-            Event::NodeSkipped { frame, node_id } => {
-                let root = self.ensure_root(now);
-                let mut attrs = vec![("graphrt.node.id".to_owned(), AttrValue::from(node_id.as_ref()))];
-                if !frame.is_empty() {
-                    attrs.push(("graphrt.frame".to_owned(), AttrValue::from(frame.as_ref())));
-                }
-                root.add_event("node_skipped", now, attrs);
-            }
-            Event::NodePaused { exec_id, reason, .. } => {
-                let Some(mut open) = self.nodes.remove(exec_id) else { return };
-                open.span.set("graphrt.node.paused", true);
-                open.span.set("graphrt.pause.kind", reason.kind.as_str());
-                let elapsed = now.saturating_sub(open.span.start_unix_nano) / 1_000_000;
-                self.finish_node(open, "paused", elapsed, now);
-            }
-            Event::VariableUpdated { node_id, selector, .. } => {
-                let exec = self.nodes.values_mut().find(|n| &n.node_id == node_id);
-                if let Some(open) = exec {
-                    open.span.add_event(
-                        "variable_updated",
-                        now,
-                        vec![("graphrt.variable".to_owned(), AttrValue::Str(selector.to_string()))],
-                    );
-                }
-            }
-            Event::RunSucceeded { outputs, usage, handled_errors, elapsed_ms } => {
-                if self.content.on() {
-                    self.root_output(outputs, now);
-                }
-                let root = self.ensure_root(now);
-                root.set(gr::RUN_STATUS, "succeeded");
-                root.set("graphrt.run.handled_errors", *handled_errors);
-                set_usage(root, usage);
-                self.finish_run("succeeded", *elapsed_ms, now);
-            }
+            Event::NodeSucceeded { .. } => self.on_node_succeeded(event, now),
+            Event::NodeFailed { .. } => self.on_node_failed(event, now),
+            Event::NodeSkipped { frame, node_id } => self.on_node_skipped(frame, node_id, now),
+            Event::NodePaused { exec_id, reason, .. } => self.on_node_paused(exec_id, reason, now),
+            Event::VariableUpdated { node_id, selector, .. } => self.on_variable_updated(node_id, selector, now),
+            Event::RunSucceeded { .. } => self.on_run_succeeded(event, now),
             Event::RunFailed { error, error_type, usage, elapsed_ms } => {
-                let root = self.ensure_root(now);
-                root.set(gr::RUN_STATUS, "failed");
-                root.set(general::ERROR_TYPE, error_type.as_str());
-                root.error(error);
-                set_usage(root, usage);
-                self.finish_run("failed", *elapsed_ms, now);
+                self.on_run_failed(error, error_type, usage, *elapsed_ms, now);
             }
-            Event::RunAborted { reason, elapsed_ms } => {
-                let root = self.ensure_root(now);
-                root.set(gr::RUN_STATUS, "aborted");
-                root.error(&format!("aborted: {reason}"));
-                self.finish_run("aborted", *elapsed_ms, now);
-            }
-            Event::RunPaused { reasons, snapshot } => {
-                let root = self.ensure_root(now);
-                root.set(gr::RUN_STATUS, "paused");
-                root.set("graphrt.run.paused", true);
-                root.set("graphrt.pause.kinds", pause_kinds(reasons));
-                let elapsed = snapshot.elapsed_ms;
-                self.finish_run("paused", elapsed, now);
-            }
+            Event::RunAborted { reason, elapsed_ms } => self.on_run_aborted(reason, *elapsed_ms, now),
+            Event::RunPaused { reasons, snapshot } => self.on_run_paused(reasons, snapshot.elapsed_ms, now),
             _ => {}
         }
+    }
+
+    fn on_run_started(&mut self, run_id: &str, resumed: bool, now: u64) {
+        let root = self.ensure_root(now);
+        root.set("graphrt.run.id", run_id);
+        root.set("graphrt.run.resumed", resumed);
+    }
+
+    /// Opens a node span, or records the new attempt on a node already open
+    /// (retries reuse their execution's span).
+    fn on_node_started(&mut self, event: &Event, now: u64) {
+        let Event::NodeStarted { frame, node_id, exec_id, kind, title, attempt } = event else { return };
+        self.ensure_root(now);
+        if let Some(open) = self.nodes.get_mut(exec_id) {
+            open.span.set("graphrt.node.attempt", *attempt);
+            return;
+        }
+        let parent = self.parent_for_frame(frame, now);
+        let role = NodeRole::of(kind);
+        let mut span = Span::new(self.trace_id, Some(parent), String::new(), now);
+        span.set("graphrt.node.id", node_id.as_ref());
+        span.set("graphrt.node.kind", kind.as_ref());
+        span.set("graphrt.node.exec_id", exec_id.as_ref());
+        span.set("graphrt.node.attempt", *attempt);
+        if !frame.is_empty() {
+            span.set("graphrt.frame", frame.as_ref());
+        }
+        let label = if title.is_empty() { kind.as_ref() } else { title.as_ref() };
+        span.name = self.genai_attributes(&mut span, role, node_id, kind, label);
+        // Body frames of this container find their parent span here, even after it ends.
+        if self.is_container(node_id) {
+            self.containers.insert((frame.to_string(), node_id.clone()), span.span_id);
+        }
+        let open = OpenNode {
+            span,
+            frame: frame.to_string(),
+            node_id: node_id.clone(),
+            exec_id: exec_id.clone(),
+            kind: kind.clone(),
+            role,
+            chunks: 0,
+            content: Vec::new(),
+        };
+        self.nodes.insert(exec_id.clone(), open);
+    }
+
+    fn on_node_chunk(&mut self, exec_id: &Arc<str>) {
+        if let Some(open) = self.nodes.get_mut(exec_id) {
+            open.chunks += 1;
+        }
+    }
+
+    fn on_node_retry(&mut self, exec_id: &Arc<str>, attempt: u32, error: &str, delay_ms: u64, now: u64) {
+        let Some(open) = self.nodes.get_mut(exec_id) else { return };
+        open.span.add_event(
+            "retry",
+            now,
+            vec![
+                ("graphrt.retry.attempt".to_owned(), AttrValue::from(attempt)),
+                ("graphrt.retry.delay_ms".to_owned(), AttrValue::from(delay_ms)),
+                (general::ERROR_MESSAGE.to_owned(), AttrValue::Str(truncate(error, ERROR_MESSAGE_LIMIT))),
+            ],
+        );
+    }
+
+    fn on_node_succeeded(&mut self, event: &Event, now: u64) {
+        let Event::NodeSucceeded { frame, exec_id, outputs, branch, usage, metadata, elapsed_ms, .. } = event else {
+            return;
+        };
+        let Some(mut open) = self.nodes.remove(exec_id) else { return };
+        if let Some(branch) = branch {
+            open.span.set("graphrt.node.branch", branch.as_str());
+        }
+        if matches!(open.role, NodeRole::Chat | NodeRole::Agent) {
+            model_from_metadata(&mut open.span, open.role, metadata);
+        }
+        if let Some(usage) = usage {
+            self.usage_attributes(&mut open.span, usage);
+        }
+        if self.content.on() {
+            self.node_content(&mut open, outputs, metadata);
+            if frame.is_empty() && open.kind.as_ref() == "start" {
+                self.root_input(outputs, now);
+            }
+        }
+        if open.role == NodeRole::Chat
+            && let Some(reason) = outputs.get("finish_reason").and_then(Value::as_str)
+        {
+            open.span.set(gen_ai::RESPONSE_FINISH_REASONS, string_array(&[reason.to_owned()]));
+        }
+        self.finish_node(open, "succeeded", *elapsed_ms, now);
+    }
+
+    fn on_node_failed(&mut self, event: &Event, now: u64) {
+        let Event::NodeFailed { exec_id, error, error_type, handled, outputs, elapsed_ms, .. } = event else { return };
+        let Some(mut open) = self.nodes.remove(exec_id) else { return };
+        open.span.set(general::ERROR_TYPE, error_type.as_str());
+        open.span.set("graphrt.node.handled", *handled);
+        open.span.add_event(
+            "exception",
+            now,
+            vec![
+                (general::EXCEPTION_TYPE.to_owned(), AttrValue::from(error_type.as_str())),
+                (general::EXCEPTION_MESSAGE.to_owned(), AttrValue::Str(truncate(error, ERROR_MESSAGE_LIMIT))),
+            ],
+        );
+        open.span.error(error);
+        if self.content.on() {
+            self.node_outputs(&mut open, outputs);
+        }
+        let status = if *handled { "handled_error" } else { "failed" };
+        self.finish_node(open, status, *elapsed_ms, now);
+    }
+
+    /// A skipped node never gets a span; it is a `node_skipped` event on the root.
+    fn on_node_skipped(&mut self, frame: &str, node_id: &str, now: u64) {
+        let root = self.ensure_root(now);
+        let mut attrs = vec![("graphrt.node.id".to_owned(), AttrValue::from(node_id))];
+        if !frame.is_empty() {
+            attrs.push(("graphrt.frame".to_owned(), AttrValue::from(frame)));
+        }
+        root.add_event("node_skipped", now, attrs);
+    }
+
+    fn on_node_paused(&mut self, exec_id: &Arc<str>, reason: &PauseReason, now: u64) {
+        let Some(mut open) = self.nodes.remove(exec_id) else { return };
+        open.span.set("graphrt.node.paused", true);
+        open.span.set("graphrt.pause.kind", reason.kind.as_str());
+        let elapsed = elapsed_ms_since(&open.span, now);
+        self.finish_node(open, "paused", elapsed, now);
+    }
+
+    fn on_variable_updated(&mut self, node_id: &Arc<str>, selector: &Selector, now: u64) {
+        let Some(open) = self.nodes.values_mut().find(|n| &n.node_id == node_id) else { return };
+        open.span.add_event(
+            "variable_updated",
+            now,
+            vec![("graphrt.variable".to_owned(), AttrValue::Str(selector.to_string()))],
+        );
+    }
+
+    fn on_run_succeeded(&mut self, event: &Event, now: u64) {
+        let Event::RunSucceeded { outputs, usage, handled_errors, elapsed_ms } = event else { return };
+        if self.content.on() {
+            self.root_output(outputs, now);
+        }
+        let root = self.ensure_root(now);
+        root.set(gr::RUN_STATUS, "succeeded");
+        root.set("graphrt.run.handled_errors", *handled_errors);
+        set_usage(root, usage);
+        self.finish_run("succeeded", *elapsed_ms, now);
+    }
+
+    fn on_run_failed(&mut self, error: &str, error_type: &str, usage: &Usage, elapsed_ms: u64, now: u64) {
+        let root = self.ensure_root(now);
+        root.set(gr::RUN_STATUS, "failed");
+        root.set(general::ERROR_TYPE, error_type);
+        root.error(error);
+        set_usage(root, usage);
+        self.finish_run("failed", elapsed_ms, now);
+    }
+
+    fn on_run_aborted(&mut self, reason: &str, elapsed_ms: u64, now: u64) {
+        let root = self.ensure_root(now);
+        root.set(gr::RUN_STATUS, "aborted");
+        root.error(&format!("aborted: {reason}"));
+        self.finish_run("aborted", elapsed_ms, now);
+    }
+
+    fn on_run_paused(&mut self, reasons: &[PauseReason], elapsed_ms: u64, now: u64) {
+        let root = self.ensure_root(now);
+        root.set(gr::RUN_STATUS, "paused");
+        root.set("graphrt.run.paused", true);
+        root.set("graphrt.pause.kinds", pause_kinds(reasons));
+        self.finish_run("paused", elapsed_ms, now);
     }
 
     fn on_progress(&mut self, exec_id: &Arc<str>, name: &str, data: &Value, now: u64) {
@@ -534,18 +624,20 @@ impl EventTracer {
                 self.tool_call(exec_id, data, now);
                 self.close_tool(exec_id, data, Some(("tool_denied", "the user did not approve this tool call")), now);
             }
-            _ => {
-                let capture = self.content.on();
-                if let Some(open) = self.nodes.get_mut(exec_id) {
-                    let mut attrs = Vec::new();
-                    if capture {
-                        let text = truncate(&serde_json::to_string(data).unwrap_or_default(), self.content.limit);
-                        attrs.push(("graphrt.progress.data".to_owned(), AttrValue::Str(text)));
-                    }
-                    open.span.add_event(name, now, attrs);
-                }
-            }
+            _ => self.generic_progress(exec_id, name, data, now),
         }
+    }
+
+    /// Any other progress becomes a span event named after it (its data only with content capture).
+    fn generic_progress(&mut self, exec_id: &Arc<str>, name: &str, data: &Value, now: u64) {
+        let content = self.content;
+        let Some(open) = self.nodes.get_mut(exec_id) else { return };
+        let mut attrs = Vec::new();
+        if content.on() {
+            let data = content.text(&serde_json::to_string(data).unwrap_or_default());
+            attrs.push(("graphrt.progress.data".to_owned(), data));
+        }
+        open.span.add_event(name, now, attrs);
     }
 
     /// Rendered request messages of a model node (content capture only).
@@ -556,14 +648,12 @@ impl EventTracer {
         }
         let Some(open) = self.nodes.get_mut(exec_id) else { return };
         let (system, messages) = semconv_messages(&data.to_json());
+        let mut target = open.target();
         if !system.is_empty() {
             let value = content.structured(Json::Array(system));
-            content.put(&mut open.span, &mut open.content, gen_ai::SYSTEM_INSTRUCTIONS, value);
+            content.put(&mut target, gen_ai::SYSTEM_INSTRUCTIONS, value);
         }
-        let messages = Json::Array(messages);
-        content.put_langfuse(&mut open.span, langfuse::OBSERVATION_INPUT, &messages);
-        let value = content.structured(messages);
-        content.put(&mut open.span, &mut open.content, gen_ai::INPUT_MESSAGES, value);
+        content.put_structured(&mut target, ContentKeys::input(gen_ai::INPUT_MESSAGES), Json::Array(messages));
     }
 
     fn tool_call(&mut self, exec_id: &Arc<str>, data: &Value, now: u64) {
@@ -585,20 +675,18 @@ impl EventTracer {
         if let Some(AttrValue::Str(agent)) = open.span.attr(gen_ai::AGENT_NAME) {
             span.set(gen_ai::AGENT_NAME, agent.clone());
         }
-        let mut content = Vec::new();
+        let mut tool = OpenTool { span, content: Vec::new() };
         if self.content.on()
-            && let Some(arguments) = data.as_object().and_then(|m| m.get("arguments"))
+            && let Some(arguments) = field(data, "arguments")
         {
-            let json = arguments.to_json();
-            self.content.put_langfuse(&mut span, langfuse::OBSERVATION_INPUT, &json);
-            let value = self.content.text(&json_string(&json));
-            self.content.put(&mut span, &mut content, gen_ai::TOOL_CALL_ARGUMENTS, value);
+            let keys = ContentKeys::input(gen_ai::TOOL_CALL_ARGUMENTS);
+            self.content.put_text(&mut tool.target(), keys, &json_string(&arguments.to_json()));
         }
-        self.tools.insert((exec_id.clone(), call_id), OpenTool { span, content });
+        self.tools.insert((exec_id.clone(), call_id), tool);
     }
 
     fn tool_result(&mut self, exec_id: &Arc<str>, data: &Value, now: u64) {
-        let is_error = data.as_object().and_then(|m| m.get("is_error")).and_then(Value::as_bool).unwrap_or(false);
+        let is_error = field(data, "is_error").and_then(Value::as_bool).unwrap_or(false);
         let error = is_error.then_some(("tool_error", "the tool reported an error"));
         self.close_tool(exec_id, data, error, now);
     }
@@ -611,114 +699,118 @@ impl EventTracer {
             tool.span.error(message);
         }
         if self.content.on()
-            && let Some(result) = data.as_object().and_then(|m| m.get("result"))
+            && let Some(result) = field(data, "result")
         {
-            let json = result.to_json();
-            self.content.put_langfuse(&mut tool.span, langfuse::OBSERVATION_OUTPUT, &json);
-            let value = self.content.text(&json_string(&json));
-            self.content.put(&mut tool.span, &mut tool.content, gen_ai::TOOL_CALL_RESULT, value);
+            let keys = ContentKeys::output(gen_ai::TOOL_CALL_RESULT);
+            self.content.put_text(&mut tool.target(), keys, &json_string(&result.to_json()));
         }
-        tool.span.end_unix_nano = now;
-        self.emit_with_content(tool.span, tool.content, now);
+        self.emit_tool(tool, now);
     }
 
     /// Captured content of a finished node: outputs, output messages, retrieval documents.
     fn node_content(&self, open: &mut OpenNode, outputs: &Variables, metadata: &graphrt_core::IndexMap<String, Value>) {
-        let content = self.content;
-        if !outputs.is_empty() {
-            let value = content.text(&serde_json::to_string(outputs).unwrap_or_default());
-            content.put(&mut open.span, &mut open.content, "graphrt.node.outputs", value);
-        }
+        self.node_outputs(open, outputs);
         match open.role {
-            NodeRole::Chat | NodeRole::Agent => {
-                let Some(text) = outputs.get("text").and_then(Value::as_str) else { return };
-                let reason = outputs.get("finish_reason").and_then(Value::as_str).unwrap_or("stop");
-                let message = serde_json::json!([{
-                    "role": "assistant",
-                    "parts": [{"type": "text", "content": text}],
-                    "finish_reason": reason,
-                }]);
-                content.put_langfuse(&mut open.span, langfuse::OBSERVATION_OUTPUT, &Json::String(text.to_owned()));
-                let value = content.structured(message);
-                content.put(&mut open.span, &mut open.content, gen_ai::OUTPUT_MESSAGES, value);
-            }
-            NodeRole::Retrieval => {
-                if let Some(query) = metadata.get("query").and_then(Value::as_str) {
-                    content.put_langfuse(&mut open.span, langfuse::OBSERVATION_INPUT, &Json::String(query.to_owned()));
-                    let value = content.text(query);
-                    content.put(&mut open.span, &mut open.content, gen_ai::RETRIEVAL_QUERY_TEXT, value);
-                }
-                let documents: Vec<Json> = outputs
-                    .get("result")
-                    .and_then(Value::as_array)
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(Value::as_object)
-                    .map(|hit| {
-                        let id = hit.get("id").map(Value::to_json).unwrap_or(Json::Null);
-                        let score = hit.get("score").and_then(Value::as_f64).unwrap_or(0.0);
-                        serde_json::json!({"id": id, "score": score})
-                    })
-                    .collect();
-                let documents = Json::Array(documents);
-                content.put_langfuse(&mut open.span, langfuse::OBSERVATION_OUTPUT, &documents);
-                let value = content.structured(documents);
-                content.put(&mut open.span, &mut open.content, gen_ai::RETRIEVAL_DOCUMENTS, value);
-            }
+            NodeRole::Chat | NodeRole::Agent => self.output_messages(open, outputs),
+            NodeRole::Retrieval => self.retrieval_content(open, outputs, metadata),
             NodeRole::Plain => {}
         }
+    }
+
+    /// `graphrt.node.outputs` (nothing for a node without outputs).
+    fn node_outputs(&self, open: &mut OpenNode, outputs: &Variables) {
+        if outputs.is_empty() {
+            return;
+        }
+        let value = self.content.text(&serde_json::to_string(outputs).unwrap_or_default());
+        self.content.put(&mut open.target(), "graphrt.node.outputs", value);
+    }
+
+    /// The model's answer as a semconv output message (Langfuse shows the plain text).
+    fn output_messages(&self, open: &mut OpenNode, outputs: &Variables) {
+        let Some(text) = outputs.get("text").and_then(Value::as_str) else { return };
+        let reason = outputs.get("finish_reason").and_then(Value::as_str).unwrap_or("stop");
+        let message = serde_json::json!([{
+            "role": "assistant",
+            "parts": [{"type": "text", "content": text}],
+            "finish_reason": reason,
+        }]);
+        let mut target = open.target();
+        self.content.put_langfuse(&mut target, langfuse::OBSERVATION_OUTPUT, text);
+        self.content.put(&mut target, gen_ai::OUTPUT_MESSAGES, self.content.structured(message));
+    }
+
+    /// The retrieval query and the ids and scores of the documents found.
+    fn retrieval_content(
+        &self,
+        open: &mut OpenNode,
+        outputs: &Variables,
+        metadata: &graphrt_core::IndexMap<String, Value>,
+    ) {
+        let content = self.content;
+        let mut target = open.target();
+        if let Some(query) = metadata.get("query").and_then(Value::as_str) {
+            content.put_text(&mut target, ContentKeys::input(gen_ai::RETRIEVAL_QUERY_TEXT), query);
+        }
+        let documents = Json::Array(retrieval_documents(outputs));
+        content.put_structured(&mut target, ContentKeys::output(gen_ai::RETRIEVAL_DOCUMENTS), documents);
     }
 
     /// The run input (the root start node's validated outputs) on the root span.
     fn root_input(&mut self, outputs: &Variables, now: u64) {
         let json = serde_json::to_value(outputs).unwrap_or(Json::Null);
-        self.put_root_content(gr::RUN_INPUT, langfuse::OBSERVATION_INPUT, &json, now);
+        self.put_root_content(ContentKeys::input(gr::RUN_INPUT), &json, now);
     }
 
     fn root_output(&mut self, outputs: &graphrt_core::IndexMap<String, Value>, now: u64) {
         let json = serde_json::to_value(outputs).unwrap_or(Json::Null);
-        self.put_root_content(gr::RUN_OUTPUT, langfuse::OBSERVATION_OUTPUT, &json, now);
+        self.put_root_content(ContentKeys::output(gr::RUN_OUTPUT), &json, now);
     }
 
-    fn put_root_content(&mut self, key: &str, langfuse_key: &str, json: &Json, now: u64) {
+    fn put_root_content(&mut self, keys: ContentKeys, json: &Json, now: u64) {
         let content = self.content;
         let mut pending = std::mem::take(&mut self.root_content);
         let root = self.ensure_root(now);
-        content.put_langfuse(root, langfuse_key, json);
-        content.put(root, &mut pending, key, content.text(&json_string(json)));
+        content.put_text(&mut ContentTarget { span: root, pending: &mut pending }, keys, &json_string(json));
         self.root_content = pending;
     }
 
+    /// The run's root span, created on first use.
     fn ensure_root(&mut self, now: u64) -> &mut Span {
         if self.root.is_none() {
-            let parent = self.parent.map(|p| p.span_id);
-            let name = semconv::span_name(operation::INVOKE_WORKFLOW, Some(&self.workflow_name));
-            let mut span = Span::new(self.trace_id, parent, name, now);
-            if let Some(id) = self.preset_root_id {
-                span.span_id = id;
-            }
-            for (key, value) in &self.root_extra {
-                span.set(key, value.clone());
-            }
-            // A run continuing a remote caller's trace serves that request.
-            span.kind = if parent.is_some() { SpanKind::Server } else { SpanKind::Internal };
-            span.set(gen_ai::OPERATION_NAME, operation::INVOKE_WORKFLOW);
-            span.set(gen_ai::AGENT_NAME, self.workflow_name.as_str());
-            span.set(gr::WORKFLOW_NAME, self.workflow_name.as_str());
-            if let Some(graph) = &self.graph {
-                span.set("graphrt.workflow.fingerprint", graph.fingerprint());
-            }
-            if !self.context.tags.is_empty() {
-                span.set(gr::RUN_TAGS, string_array(&self.context.tags));
-            }
-            for (key, value) in &self.context.metadata {
-                span.set(&format!("{}{key}", gr::RUN_METADATA_PREFIX), value.as_str());
-            }
+            let span = self.new_root_span(now);
             self.root_id = Some(span.span_id);
             self.root = Some(span);
         }
         // Just ensured above; the fallback is never taken.
         self.root.get_or_insert_with(|| Span::new(TraceId([0; 16]), None, String::new(), now))
+    }
+
+    fn new_root_span(&self, now: u64) -> Span {
+        let parent = self.parent.map(|p| p.span_id);
+        let name = semconv::span_name(operation::INVOKE_WORKFLOW, Some(&self.workflow_name));
+        let mut span = Span::new(self.trace_id, parent, name, now);
+        if let Some(id) = self.preset_root_id {
+            span.span_id = id;
+        }
+        for (key, value) in &self.root_extra {
+            span.set(key, value.clone());
+        }
+        // A run continuing a remote caller's trace serves that request.
+        span.kind = if parent.is_some() { SpanKind::Server } else { SpanKind::Internal };
+        span.set(gen_ai::OPERATION_NAME, operation::INVOKE_WORKFLOW);
+        span.set(gen_ai::AGENT_NAME, self.workflow_name.as_str());
+        span.set(gr::WORKFLOW_NAME, self.workflow_name.as_str());
+        if let Some(graph) = &self.graph {
+            span.set("graphrt.workflow.fingerprint", graph.fingerprint());
+        }
+        if !self.context.tags.is_empty() {
+            span.set(gr::RUN_TAGS, string_array(&self.context.tags));
+        }
+        for (key, value) in &self.context.metadata {
+            span.set(&format!("{}{key}", gr::RUN_METADATA_PREFIX), value.as_str());
+        }
+        span
     }
 
     fn is_container(&self, node_id: &str) -> bool {
@@ -736,27 +828,20 @@ impl EventTracer {
         if let Some(span) = self.frames.get(frame) {
             return span.span_id;
         }
-        let (parent_frame, segment) = match frame.rsplit_once('/') {
-            Some((p, s)) => (p.to_owned(), s),
-            None => (String::new(), frame),
-        };
-        let (owner, index) = match segment.split_once('[') {
-            Some((owner, rest)) => (owner.to_owned(), rest.trim_end_matches(']').to_owned()),
-            None => (segment.to_owned(), String::new()),
-        };
-        let parent = match self.containers.get(&(parent_frame.clone(), Arc::from(owner.as_str()))) {
+        let path = FramePath::parse(frame);
+        let parent = match self.containers.get(&(path.parent.to_owned(), Arc::from(path.owner))) {
             Some(id) => *id,
-            None => self.parent_for_frame(&parent_frame, now),
+            None => self.parent_for_frame(path.parent, now),
         };
         let kind = self
             .graph
             .as_ref()
-            .and_then(|g| g.node_by_id(&owner).map(|n| n.kind.to_string()))
+            .and_then(|g| g.node_by_id(path.owner).map(|n| n.kind.to_string()))
             .unwrap_or_else(|| "frame".to_owned());
-        let mut span = Span::new(self.trace_id, Some(parent), format!("{kind} {segment}"), now);
+        let mut span = Span::new(self.trace_id, Some(parent), format!("{kind} {}", path.segment), now);
         span.set("graphrt.frame", frame);
-        span.set("graphrt.container.id", owner.as_str());
-        if let Ok(i) = index.parse::<u64>() {
+        span.set("graphrt.container.id", path.owner);
+        if let Ok(i) = path.index.parse::<u64>() {
             span.set("graphrt.frame.index", i);
         }
         let id = span.span_id;
@@ -783,20 +868,7 @@ impl EventTracer {
                 model_config(span, config.and_then(|c| c.get("model")));
                 semconv::span_name(operation::INVOKE_AGENT, Some(label))
             }
-            _ => {
-                span.set(gen_ai::OPERATION_NAME, operation::CHAT);
-                match kind {
-                    "system-one" => span.set(gr::OPERATION_KIND, "classify"),
-                    "question-classifier" => span.set(gr::OPERATION_KIND, "classify"),
-                    "parameter-extractor" => span.set(gr::OPERATION_KIND, "extract"),
-                    _ => {}
-                }
-                model_config(span, config.and_then(|c| c.get("model")));
-                if kind == "system-one" && span.attr(gen_ai::PROVIDER_NAME).is_none() {
-                    set_provider(span, "typesafe");
-                }
-                semconv::span_name(operation::CHAT, model_name(span))
-            }
+            _ => chat_attributes(span, kind, config.and_then(|c| c.get("model"))),
         }
     }
 
@@ -818,7 +890,7 @@ impl EventTracer {
             metrics.record_node(&open.kind, status, elapsed_ms);
         }
         if open.role == NodeRole::Agent {
-            self.close_open_tools(&open, now);
+            self.close_open_tools(&open.exec_id, now);
         }
         // Container body spans of this node end with it.
         let prefix = if open.frame.is_empty() {
@@ -826,57 +898,30 @@ impl EventTracer {
         } else {
             format!("{}/{}[", open.frame, open.node_id)
         };
-        let children: Vec<String> = self.frames.keys().filter(|f| f.starts_with(&prefix)).cloned().collect();
-        for frame in children {
-            if let Some(mut span) = self.frames.remove(&frame) {
-                span.end_unix_nano = now;
-                self.emit(span);
-            }
-        }
+        self.close_frames(|frame| frame.starts_with(&prefix), now);
         self.emit_with_content(open.span, open.content, now);
     }
 
     /// Tool calls still open when their agent node ends (paused, failed, interrupted).
-    fn close_open_tools(&mut self, open: &OpenNode, now: u64) {
-        let exec = open.span.attr("graphrt.node.exec_id").and_then(|v| match v {
-            AttrValue::Str(s) => Some(s.as_str()),
-            _ => None,
-        });
-        let Some(exec) = exec else { return };
-        let keys: Vec<(Arc<str>, String)> = self.tools.keys().filter(|(e, _)| e.as_ref() == exec).cloned().collect();
-        for key in keys {
-            if let Some(mut tool) = self.tools.remove(&key) {
-                tool.span.set("graphrt.tool.interrupted", true);
-                tool.span.end_unix_nano = now;
-                self.emit_with_content(tool.span, tool.content, now);
-            }
+    fn close_open_tools(&mut self, exec_id: &Arc<str>, now: u64) {
+        for mut tool in self.take_tools(|exec| exec == exec_id) {
+            tool.span.set("graphrt.tool.interrupted", true);
+            self.emit_tool(tool, now);
         }
     }
 
     fn finish_run(&mut self, status: &str, elapsed_ms: u64, now: u64) {
         // Close whatever is still open (dropped nodes after an abort or failure).
-        let open: Vec<Arc<str>> = self.nodes.keys().cloned().collect();
-        for exec in open {
-            if let Some(mut node) = self.nodes.remove(&exec) {
-                node.span.set("graphrt.node.interrupted", true);
-                let elapsed = now.saturating_sub(node.span.start_unix_nano) / 1_000_000;
-                self.finish_node(node, "interrupted", elapsed, now);
-            }
+        let interrupted: Vec<OpenNode> = self.nodes.drain().map(|(_, node)| node).collect();
+        for mut node in interrupted {
+            node.span.set("graphrt.node.interrupted", true);
+            let elapsed = elapsed_ms_since(&node.span, now);
+            self.finish_node(node, "interrupted", elapsed, now);
         }
-        let tools: Vec<(Arc<str>, String)> = self.tools.keys().cloned().collect();
-        for key in tools {
-            if let Some(mut tool) = self.tools.remove(&key) {
-                tool.span.end_unix_nano = now;
-                self.emit_with_content(tool.span, tool.content, now);
-            }
+        for tool in self.take_tools(|_| true) {
+            self.emit_tool(tool, now);
         }
-        let frames: Vec<String> = self.frames.keys().cloned().collect();
-        for frame in frames {
-            if let Some(mut span) = self.frames.remove(&frame) {
-                span.end_unix_nano = now;
-                self.emit(span);
-            }
-        }
+        self.close_frames(|_| true, now);
         if let Some(mut root) = self.root.take() {
             root.end_unix_nano = now;
             root.set("graphrt.run.elapsed_ms", elapsed_ms);
@@ -887,6 +932,25 @@ impl EventTracer {
             metrics.record_run(&self.workflow_name, status, elapsed_ms);
         }
         self.finished = true;
+    }
+
+    /// Remove the open tool spans whose execution id matches `belongs`.
+    fn take_tools(&mut self, belongs: impl Fn(&Arc<str>) -> bool) -> Vec<OpenTool> {
+        self.tools.extract_if(|(exec, _), _| belongs(exec)).map(|(_, tool)| tool).collect()
+    }
+
+    /// End and export the open container body spans whose frame id matches `belongs`.
+    fn close_frames(&mut self, belongs: impl Fn(&str) -> bool, now: u64) {
+        let closed: Vec<Span> = self.frames.extract_if(|frame, _| belongs(frame)).map(|(_, span)| span).collect();
+        for mut span in closed {
+            span.end_unix_nano = now;
+            self.emit(span);
+        }
+    }
+
+    fn emit_tool(&self, mut tool: OpenTool, now: u64) {
+        tool.span.end_unix_nano = now;
+        self.emit_with_content(tool.span, tool.content, now);
     }
 
     fn emit_with_content(&self, mut span: Span, content: Attributes, now: u64) {
@@ -921,7 +985,7 @@ impl EventTracer {
             return;
         }
         let now = now_unix_nanos();
-        let elapsed = self.root.as_ref().map(|r| now.saturating_sub(r.start_unix_nano) / 1_000_000).unwrap_or(0);
+        let elapsed = self.root.as_ref().map(|root| elapsed_ms_since(root, now)).unwrap_or(0);
         if let Some(root) = self.root.as_mut() {
             root.set(gr::RUN_STATUS, "abandoned");
             root.error("run ended without a terminal event (consumer dropped the stream)");
@@ -936,8 +1000,71 @@ impl Drop for EventTracer {
     }
 }
 
+fn field<'a>(data: &'a Value, key: &str) -> Option<&'a Value> {
+    data.as_object().and_then(|m| m.get(key))
+}
+
 fn field_str<'a>(data: &'a Value, key: &str) -> Option<&'a str> {
-    data.as_object().and_then(|m| m.get(key)).and_then(Value::as_str)
+    field(data, key).and_then(Value::as_str)
+}
+
+/// Milliseconds from `span`'s start to `now`, for events that carry no elapsed time.
+fn elapsed_ms_since(span: &Span, now: u64) -> u64 {
+    now.saturating_sub(span.start_unix_nano) / 1_000_000
+}
+
+/// A container body frame id (`<parent frame>/<owner>[<index>]`) split into its parts.
+struct FramePath<'a> {
+    /// Frame the owning container runs in (empty at the top level).
+    parent: &'a str,
+    /// Last path segment, `<owner>[<index>]`.
+    segment: &'a str,
+    /// Node id of the owning container.
+    owner: &'a str,
+    /// Body run index, empty when the segment has none.
+    index: &'a str,
+}
+
+impl<'a> FramePath<'a> {
+    fn parse(frame: &'a str) -> Self {
+        let (parent, segment) = frame.rsplit_once('/').unwrap_or(("", frame));
+        let (owner, index) = match segment.split_once('[') {
+            Some((owner, rest)) => (owner, rest.trim_end_matches(']')),
+            None => (segment, ""),
+        };
+        Self { parent, segment, owner, index }
+    }
+}
+
+/// Chat attributes (operation, kind, model, provider) of a model node; returns the span name.
+fn chat_attributes(span: &mut Span, kind: &str, model: Option<&Json>) -> String {
+    span.set(gen_ai::OPERATION_NAME, operation::CHAT);
+    match kind {
+        "system-one" | "question-classifier" => span.set(gr::OPERATION_KIND, "classify"),
+        "parameter-extractor" => span.set(gr::OPERATION_KIND, "extract"),
+        _ => {}
+    }
+    model_config(span, model);
+    if kind == "system-one" && span.attr(gen_ai::PROVIDER_NAME).is_none() {
+        set_provider(span, "typesafe");
+    }
+    semconv::span_name(operation::CHAT, model_name(span))
+}
+
+/// `{id, score}` of each hit in a knowledge-retrieval node's `result` output.
+fn retrieval_documents(outputs: &Variables) -> Vec<Json> {
+    outputs
+        .get("result")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|hit| {
+            let id = hit.get("id").map(Value::to_json).unwrap_or(Json::Null);
+            let score = hit.get("score").and_then(Value::as_f64).unwrap_or(0.0);
+            serde_json::json!({"id": id, "score": score})
+        })
+        .collect()
 }
 
 fn model_name(span: &Span) -> Option<&str> {
@@ -1009,29 +1136,14 @@ fn retrieval_config(span: &mut Span, config: Option<&serde_json::Map<String, Jso
 fn semconv_messages(data: &Json) -> (Vec<Json>, Vec<Json>) {
     let mut system = Vec::new();
     let mut messages = Vec::new();
-    let items = data.get("messages").and_then(Json::as_array).map(Vec::as_slice).unwrap_or_default();
-    for message in items {
+    for message in json_items(data, "messages") {
         let role = message.get("role").and_then(Json::as_str).unwrap_or("user");
-        let mut parts: Vec<Json> = message
-            .get("content")
-            .and_then(Json::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
-            .map(semconv_part)
-            .collect();
+        let mut parts: Vec<Json> = json_items(message, "content").iter().map(semconv_part).collect();
         if role == "system" {
             system.append(&mut parts);
             continue;
         }
-        for call in message.get("tool_calls").and_then(Json::as_array).map(Vec::as_slice).unwrap_or_default() {
-            parts.push(serde_json::json!({
-                "type": "tool_call",
-                "id": call.get("id").cloned().unwrap_or(Json::Null),
-                "name": call.get("name").cloned().unwrap_or(Json::Null),
-                "arguments": call.get("arguments").cloned().unwrap_or(Json::Null),
-            }));
-        }
+        parts.extend(json_items(message, "tool_calls").iter().map(semconv_tool_call));
         if role == "tool" {
             let response = parts.iter().filter_map(|p| p.get("content").and_then(Json::as_str)).collect::<String>();
             let id = message.get("tool_call_id").cloned().unwrap_or(Json::Null);
@@ -1040,6 +1152,16 @@ fn semconv_messages(data: &Json) -> (Vec<Json>, Vec<Json>) {
         messages.push(serde_json::json!({"role": role, "parts": parts}));
     }
     (system, messages)
+}
+
+/// The array under `key`, or nothing when it is missing or not an array.
+fn json_items<'a>(json: &'a Json, key: &str) -> &'a [Json] {
+    json.get(key).and_then(Json::as_array).map(Vec::as_slice).unwrap_or_default()
+}
+
+fn semconv_tool_call(call: &Json) -> Json {
+    let field = |key| call.get(key).cloned().unwrap_or(Json::Null);
+    serde_json::json!({"type": "tool_call", "id": field("id"), "name": field("name"), "arguments": field("arguments")})
 }
 
 fn semconv_part(part: &Json) -> Json {
@@ -1081,6 +1203,26 @@ mod tests {
         };
         assert_eq!(json[0]["a"], "0123456789…");
         assert_eq!(json[1]["b"], "…");
+    }
+
+    #[test]
+    fn langfuse_mirror_follows_the_capture_mode() {
+        let keys = ContentKeys::input("semconv.key");
+        for mode in [CaptureMode::NoContent, CaptureMode::SpanOnly, CaptureMode::EventOnly, CaptureMode::SpanAndEvent] {
+            let content = Content { mode, limit: 64 };
+            let mut span = Span::new(TraceId([1; 16]), None, String::new(), 0);
+            let mut pending = Vec::new();
+            let mut target = ContentTarget { span: &mut span, pending: &mut pending };
+            content.put_text(&mut target, keys, "text");
+            content.put_structured(&mut target, ContentKeys::output("semconv.json"), serde_json::json!({"a": 1}));
+            let mirrored = |key| span.attr(key).is_some();
+            assert_eq!(mirrored(langfuse::OBSERVATION_INPUT), mode.on_span(), "{mode:?}");
+            assert_eq!(mirrored(langfuse::OBSERVATION_OUTPUT), mode.on_span(), "{mode:?}");
+            assert_eq!(mirrored("semconv.key"), mode.on_span(), "{mode:?}");
+            let on_event: Vec<&str> = pending.iter().map(|(key, _)| key.as_str()).collect();
+            let expected: &[&str] = if mode.on_event() { &["semconv.key", "semconv.json"] } else { &[] };
+            assert_eq!(on_event, expected, "{mode:?}");
+        }
     }
 
     #[test]

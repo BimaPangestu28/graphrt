@@ -9,9 +9,9 @@ Until 1.0, the two most recent minor releases receive security fixes.
 
 | Version | Supported |
 | --- | --- |
-| 0.3.x | yes |
-| 0.2.x | yes (security fixes only) |
-| < 0.2 | no |
+| 0.4.x | yes |
+| 0.3.x | yes (security fixes only) |
+| < 0.3 | no |
 
 ## Reporting a vulnerability
 

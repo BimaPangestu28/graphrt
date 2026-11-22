@@ -131,16 +131,7 @@ impl TracedTarget {
         for assertion in &result.assertions {
             let mut evaluation = EvaluationResult::new(assertion.metric_name());
             evaluation.score = Some(assertion.score);
-            evaluation.label = Some(
-                if assertion.excluded {
-                    "unknown"
-                } else if assertion.pass {
-                    "pass"
-                } else {
-                    "fail"
-                }
-                .to_owned(),
-            );
+            evaluation.label = Some(assertion.verdict().as_str().to_owned());
             evaluation.explanation = Some(assertion.reason.clone());
             evaluation.source = Some("offline".to_owned());
             evaluation.kind = Some(assertion.kind.clone());

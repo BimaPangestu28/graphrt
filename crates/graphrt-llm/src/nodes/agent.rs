@@ -332,15 +332,7 @@ impl AgentNode {
                 listings.insert(provider.clone(), specs);
             }
             let specs = listings.get(provider).map(Vec::as_slice).unwrap_or_default();
-            let selected: Vec<&ToolSpec> = if name == "*" {
-                specs.iter().collect()
-            } else {
-                let spec = specs.iter().find(|s| &s.name == name).ok_or_else(|| {
-                    NodeError::fatal("tool_not_found", format!("provider `{provider}` has no tool `{name}`"))
-                })?;
-                vec![spec]
-            };
-            for spec in selected {
+            for spec in select_specs(specs, provider, name)? {
                 if bound.iter().any(|b| &b.provider == provider && b.name == spec.name) {
                     continue;
                 }
@@ -403,7 +395,7 @@ impl AgentNode {
     }
 
     fn call_needs_approval(&self, tools: &[BoundTool], call: &ToolCall) -> bool {
-        tools.iter().any(|t| t.exposed == call.name && self.needs_approval(t))
+        bound_tool(tools, call).is_some_and(|t| self.needs_approval(t))
     }
 
     fn initial_state(&self, ctx: &NodeContext) -> Result<AgentState, NodeError> {
@@ -457,10 +449,8 @@ impl AgentNode {
     }
 
     async fn execute(&self, ctx: NodeContext) -> NodeResult {
-        let cfg = &self.config;
         let tools = self.bind_tools(&ctx).await?;
-        let model = model_for(&ctx, &cfg.model)?;
-
+        let model = model_for(&ctx, &self.config.model)?;
         let mut state = match &ctx.resume {
             Some(resume) => {
                 let mut state: AgentState = serde_json::from_value(resume.state.clone())
@@ -474,124 +464,127 @@ impl AgentNode {
             }
             None => self.initial_state(&ctx)?,
         };
-
         let (final_text, stop) = loop {
             state.iteration += 1;
-            let final_turn = state.iteration >= cfg.max_iterations;
-            let offer_tools = !tools.is_empty();
-            let can_call_tools = offer_tools && !final_turn;
-            if let Some(keep) = cfg.keep_tool_images {
-                prune_tool_images(&mut state.messages, keep);
+            let offer =
+                TurnTools { offered: !tools.is_empty(), final_turn: state.iteration >= self.config.max_iterations };
+            let turn = self.model_turn(&ctx, model.as_ref(), &mut state, &tools, offer).await?;
+            if !offer.callable() || turn.response.tool_calls.is_empty() {
+                break self.answer_turn(&ctx, &mut state, turn, offer);
             }
-            let mut request = cfg.model.request(state.messages.clone(), &ctx.pool)?;
-            if offer_tools {
-                // Tools stay declared on the final turn: the history may contain tool calls,
-                // which providers only accept alongside tool definitions.
-                request.tools = tools.iter().map(|t| t.spec.clone()).collect();
-                request.tool_choice = Some(if can_call_tools { ToolChoice::Auto } else { ToolChoice::None });
-            }
-            ctx.progress(
-                "agent_step",
-                Value::from_json(json!({"iteration": state.iteration, "tools_enabled": can_call_tools})),
-            );
-
-            let plan = TurnPlan {
-                live: cfg.stream_tool_turns || !can_call_tools,
-                stop_at_tool_call: can_call_tools,
-                separate: !state.answer.is_empty(),
-            };
-            let (response, mut streamed) = stream_turn(&ctx, model.as_ref(), request, plan).await?;
-            state.usage.add(&response.usage);
-            // A content-filtered or malformed turn is an error, never an empty "completed" answer.
-            let finish = check_finish(&response)?;
-
-            if !can_call_tools || response.tool_calls.is_empty() {
-                if !plan.live && !response.text.is_empty() {
-                    ctx.chunk_shared(StreamField::Text.shared(), response.text.clone());
-                    streamed = response.text.len();
-                }
-                let stop = if response.finish_reason == Some(FinishReason::Length) {
-                    StopReason::Length
-                } else if let FinishCheck::Unknown(reason) = finish {
-                    StopReason::Unrecognized(reason)
-                } else if offer_tools && final_turn {
-                    StopReason::MaxIterations
-                } else {
-                    StopReason::Completed
-                };
-                state.messages.push(Message::assistant(response.text.clone()));
-                break (final_answer(std::mem::take(&mut state.answer), response.text, streamed), stop);
-            }
-
-            if !response.text.trim().is_empty() {
-                ctx.progress(
-                    "agent_thought",
-                    Value::from_json(
-                        json!({"iteration": state.iteration, "text": response.text, "streamed": streamed > 0}),
-                    ),
-                );
-            }
-            commit_preamble(&mut state.answer, &response.text, streamed);
-            // Malformed arguments are never replayed to the provider: the history keeps `{}`
-            // and the tool result explains the problem to the model.
-            let mut assistant = response.to_message();
-            for call in &mut assistant.tool_calls {
-                if call.arguments_json().is_err() {
-                    call.arguments = "{}".to_owned();
-                }
-            }
-            state.messages.push(assistant);
-
-            let mut calls = response.tool_calls;
-            if let Some(limit) = cfg.max_tool_calls_per_turn
-                && calls.len() > limit
-            {
-                for call in calls.split_off(limit) {
-                    self.record(
-                        &mut state,
-                        &tools,
-                        &call,
-                        ToolOutput::error("rejected: too many tool calls in one turn"),
-                    );
-                }
-            }
-            let mut runnable = Vec::with_capacity(calls.len());
-            for call in calls {
-                match call.arguments_json() {
-                    Ok(_) => runnable.push(call),
-                    Err(e) => {
-                        let message = format!("error: {e}. Call the tool again with a valid JSON object.");
-                        self.record(&mut state, &tools, &call, ToolOutput::error(message));
-                    }
-                }
-            }
-            let (gated, free): (Vec<ToolCall>, Vec<ToolCall>) =
-                runnable.into_iter().partition(|c| self.call_needs_approval(&tools, c));
-            self.run_calls(&ctx, &mut state, &tools, free).await;
-            if !gated.is_empty() {
-                state.pending = gated;
+            self.tool_turn(&ctx, &mut state, &tools, turn).await;
+            if !state.pending.is_empty() {
                 return self.pause(&state, &tools);
             }
         };
+        Ok(agent_outputs(state, final_text, &stop))
+    }
 
-        let log: Vec<Value> = state
-            .log
-            .iter()
-            .map(|e| {
-                Value::from_json(json!({
-                    "name": e.name, "provider": e.provider, "tool": e.tool,
-                    "arguments": e.arguments, "result": e.result, "is_error": e.is_error, "images": e.images,
-                }))
-            })
-            .collect();
-        Ok(NodeOutput::new()
-            .with("text", final_text)
-            .with("tool_calls", Value::from(log))
-            .with("iterations", i64::from(state.iteration))
-            .with("stopped_reason", stop.as_str())
-            .with("usage", usage_value(&state.usage))
-            .usage(state.usage)
-            .into())
+    /// Ask the model for the next turn (streaming per `stream_tool_turns`) and
+    /// add its usage to the state.
+    async fn model_turn(
+        &self,
+        ctx: &NodeContext,
+        model: &dyn ChatModel,
+        state: &mut AgentState,
+        tools: &[BoundTool],
+        offer: TurnTools,
+    ) -> Result<Turn, NodeError> {
+        let cfg = &self.config;
+        if let Some(keep) = cfg.keep_tool_images {
+            prune_tool_images(&mut state.messages, keep);
+        }
+        let mut request = cfg.model.request(state.messages.clone(), &ctx.pool)?;
+        if offer.offered {
+            // Tools stay declared on the final turn: the history may contain tool calls,
+            // which providers only accept alongside tool definitions.
+            request.tools = tools.iter().map(|t| t.spec.clone()).collect();
+            request.tool_choice = Some(if offer.callable() { ToolChoice::Auto } else { ToolChoice::None });
+        }
+        ctx.progress(
+            "agent_step",
+            Value::from_json(json!({"iteration": state.iteration, "tools_enabled": offer.callable()})),
+        );
+        let plan = TurnPlan {
+            live: cfg.stream_tool_turns || !offer.callable(),
+            stop_at_tool_call: offer.callable(),
+            separate: !state.answer.is_empty(),
+        };
+        let (response, streamed) = stream_turn(ctx, model, request, plan).await?;
+        state.usage.add(&response.usage);
+        // A content-filtered or malformed turn is an error, never an empty "completed" answer.
+        let finish = check_finish(&response)?;
+        Ok(Turn { response, streamed, finish, live: plan.live })
+    }
+
+    /// A turn without tool calls ends the loop: its text completes the answer.
+    fn answer_turn(
+        &self,
+        ctx: &NodeContext,
+        state: &mut AgentState,
+        mut turn: Turn,
+        offer: TurnTools,
+    ) -> (String, StopReason) {
+        let response = turn.response;
+        if !turn.live && !response.text.is_empty() {
+            ctx.chunk_shared(StreamField::Text.shared(), response.text.clone());
+            turn.streamed = response.text.len();
+        }
+        let stop = if response.finish_reason == Some(FinishReason::Length) {
+            StopReason::Length
+        } else if let FinishCheck::Unknown(reason) = turn.finish {
+            StopReason::Unrecognized(reason)
+        } else if offer.offered && offer.final_turn {
+            StopReason::MaxIterations
+        } else {
+            StopReason::Completed
+        };
+        state.messages.push(Message::assistant(response.text.clone()));
+        (final_answer(std::mem::take(&mut state.answer), response.text, turn.streamed), stop)
+    }
+
+    /// A turn with tool calls: keep its preamble, then reject, run or hold
+    /// (in `state.pending`, for approval) each call.
+    async fn tool_turn(&self, ctx: &NodeContext, state: &mut AgentState, tools: &[BoundTool], turn: Turn) {
+        let response = turn.response;
+        if !response.text.trim().is_empty() {
+            ctx.progress(
+                "agent_thought",
+                Value::from_json(
+                    json!({"iteration": state.iteration, "text": response.text, "streamed": turn.streamed > 0}),
+                ),
+            );
+        }
+        commit_preamble(&mut state.answer, &response.text, turn.streamed);
+        state.messages.push(replayable_message(&response));
+        let runnable = self.runnable_calls(state, tools, response.tool_calls);
+        let (gated, free): (Vec<ToolCall>, Vec<ToolCall>) =
+            runnable.into_iter().partition(|c| self.call_needs_approval(tools, c));
+        self.run_calls(ctx, state, tools, free).await;
+        state.pending = gated;
+    }
+
+    /// The calls that can run. Calls past `max_tool_calls_per_turn` and calls
+    /// with malformed arguments get an error result for the model instead.
+    fn runnable_calls(&self, state: &mut AgentState, tools: &[BoundTool], mut calls: Vec<ToolCall>) -> Vec<ToolCall> {
+        if let Some(limit) = self.config.max_tool_calls_per_turn
+            && calls.len() > limit
+        {
+            for call in calls.split_off(limit) {
+                self.record(state, tools, &call, ToolOutput::error("rejected: too many tool calls in one turn"));
+            }
+        }
+        let mut runnable = Vec::with_capacity(calls.len());
+        for call in calls {
+            match call.arguments_json() {
+                Ok(_) => runnable.push(call),
+                Err(e) => {
+                    let message = format!("error: {e}. Call the tool again with a valid JSON object.");
+                    self.record(state, tools, &call, ToolOutput::error(message));
+                }
+            }
+        }
+        runnable
     }
 
     fn pause(&self, state: &AgentState, tools: &[BoundTool]) -> NodeResult {
@@ -625,22 +618,19 @@ impl AgentNode {
         self.record(state, tools, call, ToolOutput::error(text));
     }
 
-    /// A tool result's text as the model sees it: the tool's context masked,
-    /// then cut to `max_tool_output_chars`.
+    /// A tool result as the model, the `tool_calls` output and the captured
+    /// `tool_result` progress all see it: the tool's context masked, cut to
+    /// `max_tool_output_chars`, and a note in place of images that fail
+    /// [`check_images`].
     ///
     /// A tool may echo its context (e.g. an upstream error repeating the JWT):
     /// the model, the outputs and the progress events must never see it. Masking
     /// comes first so a cut through the secret cannot leave its prefix behind.
-    fn visible_result_text(&self, tools: &[BoundTool], call: &ToolCall, text: &str) -> String {
-        let bound = tools.iter().find(|t| t.exposed == call.name);
-        let scrubbed = bound.map_or(Cow::Borrowed(text), |b| scrub_context(text, b.context()));
-        truncate(&scrubbed, self.config.max_tool_output_chars)
-    }
-
-    /// Append a tool result to the conversation and the log.
-    fn record(&self, state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, output: ToolOutput) {
-        let bound = tools.iter().find(|t| t.exposed == call.name);
-        let mut text = self.visible_result_text(tools, call, &output.text);
+    /// Every consumer takes the text from here, so none can skip the masking.
+    fn visible_result(&self, tools: &[BoundTool], call: &ToolCall, output: ToolOutput) -> VisibleResult {
+        let bound = bound_tool(tools, call);
+        let scrubbed = bound.map_or(Cow::Borrowed(output.text.as_str()), |b| scrub_context(&output.text, b.context()));
+        let mut text = truncate(&scrubbed, self.config.max_tool_output_chars);
         let images = match check_images(&output.images) {
             Ok(()) => output.images,
             Err(e) => {
@@ -649,22 +639,13 @@ impl AgentNode {
                 Vec::new()
             }
         };
-        let image_count = images.len();
-        state.messages.push(Message::tool_with_images(
-            call.id.clone(),
-            text.clone(),
-            images.iter().map(ToolImage::to_url),
-        ));
-        state.log.push(ToolLogEntry {
-            id: call.id.clone(),
-            name: call.name.clone(),
-            provider: bound.map(|b| b.provider.clone()).unwrap_or_default(),
-            tool: bound.map(|b| b.name.clone()).unwrap_or_default(),
-            arguments: log_arguments(call, tools),
-            result: text,
-            is_error: output.is_error,
-            images: image_count,
-        });
+        VisibleResult { text, images, is_error: output.is_error }
+    }
+
+    /// Append a tool result to the conversation and the log.
+    fn record(&self, state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, output: ToolOutput) {
+        let result = self.visible_result(tools, call, output);
+        push_result(state, tools, call, result);
     }
 
     async fn run_calls(&self, ctx: &NodeContext, state: &mut AgentState, tools: &[BoundTool], calls: Vec<ToolCall>) {
@@ -677,28 +658,136 @@ impl AgentNode {
                 Value::from_json(json!({"id": call.id, "name": call.name, "arguments": log_arguments(call, tools)})),
             );
         }
-        let outputs: Vec<ToolOutput> = if self.config.parallel_tool_calls {
-            futures::future::join_all(calls.iter().map(|c| call_tool(tools, c))).await
-        } else {
-            let mut out = Vec::with_capacity(calls.len());
-            for c in &calls {
-                out.push(call_tool(tools, c).await);
-            }
-            out
-        };
+        let outputs = self.call_tools(tools, &calls).await;
         let capture = ctx.captures_content();
         for (call, output) in calls.iter().zip(outputs) {
+            // The tool's own image count, including images the result drops.
+            let offered_images = output.images.len();
+            let result = self.visible_result(tools, call, output);
             let mut data =
-                json!({"id": call.id, "name": call.name, "is_error": output.is_error, "images": output.images.len()});
+                json!({"id": call.id, "name": call.name, "is_error": result.is_error, "images": offered_images});
             if capture && let Some(fields) = data.as_object_mut() {
-                // Same text the model and the `tool_calls` output see.
-                let result = self.visible_result_text(tools, call, &output.text);
-                fields.insert("result".to_owned(), Json::String(result));
+                fields.insert("result".to_owned(), Json::String(result.text.clone()));
             }
             ctx.progress("tool_result", Value::from_json(data));
-            self.record(state, tools, call, output);
+            push_result(state, tools, call, result);
         }
     }
+
+    /// Run `calls` concurrently or one after another, per `parallel_tool_calls`.
+    async fn call_tools(&self, tools: &[BoundTool], calls: &[ToolCall]) -> Vec<ToolOutput> {
+        if self.config.parallel_tool_calls {
+            return futures::future::join_all(calls.iter().map(|c| call_tool(tools, c))).await;
+        }
+        let mut outputs = Vec::with_capacity(calls.len());
+        for call in calls {
+            outputs.push(call_tool(tools, call).await);
+        }
+        outputs
+    }
+}
+
+/// A tool result after [`AgentNode::visible_result`]: safe to show to the model and the host.
+struct VisibleResult {
+    text: String,
+    images: Vec<ToolImage>,
+    is_error: bool,
+}
+
+/// Append a visible tool result to the conversation and the log.
+fn push_result(state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, result: VisibleResult) {
+    let bound = bound_tool(tools, call);
+    state.messages.push(Message::tool_with_images(
+        call.id.clone(),
+        result.text.clone(),
+        result.images.iter().map(ToolImage::to_url),
+    ));
+    state.log.push(ToolLogEntry {
+        id: call.id.clone(),
+        name: call.name.clone(),
+        provider: bound.map(|b| b.provider.clone()).unwrap_or_default(),
+        tool: bound.map(|b| b.name.clone()).unwrap_or_default(),
+        arguments: log_arguments(call, tools),
+        result: result.text,
+        is_error: result.is_error,
+        images: result.images.len(),
+    });
+}
+
+/// Whether a turn offers tools, and whether it is the last one the iteration limit allows.
+#[derive(Clone, Copy, Debug)]
+struct TurnTools {
+    offered: bool,
+    final_turn: bool,
+}
+
+impl TurnTools {
+    /// The model may call tools: they are offered and this is not the forced final turn.
+    fn callable(self) -> bool {
+        self.offered && !self.final_turn
+    }
+}
+
+/// One model turn: the response, how many leading bytes of its text were
+/// already streamed, its finish check, and whether it streamed live.
+struct Turn {
+    response: ChatResponse,
+    streamed: usize,
+    finish: FinishCheck,
+    live: bool,
+}
+
+/// The assistant message of a tool turn as it is kept in the history. Malformed
+/// arguments are never replayed to the provider: the history keeps `{}` and
+/// the tool result explains the problem to the model.
+fn replayable_message(response: &ChatResponse) -> Message {
+    let mut assistant = response.to_message();
+    for call in &mut assistant.tool_calls {
+        if call.arguments_json().is_err() {
+            call.arguments = "{}".to_owned();
+        }
+    }
+    assistant
+}
+
+/// The node outputs of a finished loop.
+fn agent_outputs(state: AgentState, final_text: String, stop: &StopReason) -> NodeOutcome {
+    let log: Vec<Value> = state
+        .log
+        .iter()
+        .map(|e| {
+            Value::from_json(json!({
+                "name": e.name, "provider": e.provider, "tool": e.tool,
+                "arguments": e.arguments, "result": e.result, "is_error": e.is_error, "images": e.images,
+            }))
+        })
+        .collect();
+    NodeOutput::new()
+        .with("text", final_text)
+        .with("tool_calls", Value::from(log))
+        .with("iterations", i64::from(state.iteration))
+        .with("stopped_reason", stop.as_str())
+        .with("usage", usage_value(&state.usage))
+        .usage(state.usage)
+        .into()
+}
+
+/// The tools a `provider/name` reference selects from the provider's listing:
+/// all of them for `*`, else the one named (an error when it is missing).
+fn select_specs<'a>(specs: &'a [ToolSpec], provider: &str, name: &str) -> Result<Vec<&'a ToolSpec>, NodeError> {
+    if name == "*" {
+        return Ok(specs.iter().collect());
+    }
+    let spec = specs
+        .iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| NodeError::fatal("tool_not_found", format!("provider `{provider}` has no tool `{name}`")))?;
+    Ok(vec![spec])
+}
+
+/// The bound tool a call names (by its exposed, possibly de-duplicated name).
+fn bound_tool<'a>(tools: &'a [BoundTool], call: &ToolCall) -> Option<&'a BoundTool> {
+    tools.iter().find(|t| t.exposed == call.name)
 }
 
 /// How one model turn streams.
@@ -797,7 +886,7 @@ fn log_arguments(call: &ToolCall, tools: &[BoundTool]) -> Json {
         Ok(map) => Json::Object(map),
         Err(_) => Json::String(call.arguments.clone()),
     };
-    if let Some(tool) = tools.iter().find(|t| t.exposed == call.name)
+    if let Some(tool) = bound_tool(tools, call)
         && !tool.context().is_empty()
     {
         scrub_json(&mut arguments, tool.context());
@@ -829,7 +918,7 @@ fn scrub_json(value: &mut Json, context: &ToolCallContext) {
 }
 
 async fn call_tool(tools: &[BoundTool], call: &ToolCall) -> ToolOutput {
-    let Some(tool) = tools.iter().find(|t| t.exposed == call.name) else {
+    let Some(tool) = bound_tool(tools, call) else {
         return ToolOutput::error(format!("error: unknown tool `{}`", call.name));
     };
     let arguments = match call.arguments_json() {
@@ -1330,6 +1419,20 @@ mod tests {
             "{}",
             result.text()
         );
+    }
+
+    #[tokio::test]
+    async fn captured_tool_result_text_matches_what_the_model_sees() {
+        let s = setup(vec![MockModel::tool_calls(&[("c1", "bad_image", "{}")]), MockModel::text("ok")]);
+        let base = ctx(&s);
+        let services = (*base.services).clone().with(graphrt_core::node::CaptureContent);
+        let out = completed(agent(json!({"tools": ["screen/*"]})).run(base.with_services(Arc::new(services))).await);
+        let seen_by_model = s.model.requests()[1].messages[3].text();
+        assert!(seen_by_model.contains("[images dropped:"), "{seen_by_model}");
+        let reported = tool_results(&s)[0].get_path(&["result"]);
+        assert_eq!(reported, Some(Value::from(seen_by_model.clone())), "progress event");
+        let log = out.outputs["tool_calls"].as_array().unwrap().to_vec();
+        assert_eq!(log[0].get_path(&["result"]), Some(Value::from(seen_by_model)), "tool_calls output");
     }
 
     #[tokio::test]

@@ -32,14 +32,6 @@ fn guarded<T>(format: &'static str, f: impl FnOnce() -> Result<T, DocError>) -> 
     }
 }
 
-/// Characters still available in the output budget.
-#[cfg(feature = "spreadsheet")]
-fn remaining_budget(opts: &Options, used: usize) -> Options {
-    let mut sheet = opts.clone();
-    sheet.max_output_chars = opts.max_output_chars.saturating_sub(used);
-    sheet
-}
-
 /// Spreadsheet (XLSX, ODS, and XLS with the `xls` feature): every sheet as a
 /// table, preceded by its name.
 #[cfg(feature = "spreadsheet")]
@@ -68,12 +60,40 @@ fn check_sheet_count(count: usize, opts: &Options) -> Result<(), DocError> {
     Ok(())
 }
 
+/// Rendered sheet sections and the output characters they use, so later sheets
+/// get only what is left of [`Options::max_output_chars`].
+#[cfg(feature = "spreadsheet")]
+#[derive(Default)]
+struct SheetSections {
+    parts: Vec<String>,
+    used: usize,
+}
+
+#[cfg(feature = "spreadsheet")]
+impl SheetSections {
+    /// The options for the next sheet: the output budget minus what earlier sheets used.
+    fn remaining_budget(&self, opts: &Options) -> Options {
+        let mut sheet = opts.clone();
+        sheet.max_output_chars = opts.max_output_chars.saturating_sub(self.used);
+        sheet
+    }
+
+    /// Add a section; `false` once the output budget is spent and no further sheet fits.
+    fn push(&mut self, part: String, opts: &Options) -> bool {
+        self.used = self.used.saturating_add(part.chars().count());
+        self.parts.push(part);
+        self.used <= opts.max_output_chars
+    }
+
+    fn finish(self) -> String {
+        self.parts.join("\n\n")
+    }
+}
+
 /// XLSX through calamine's streaming cell reader: only non-empty cells are kept,
 /// so a sheet declaring a huge used range cannot force a dense allocation.
 #[cfg(feature = "spreadsheet")]
 fn xlsx(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
-    use std::collections::BTreeMap;
-
     use calamine::Reader;
 
     crate::zipfmt::SafeZip::open(bytes, opts)?.check_total_size()?;
@@ -82,77 +102,117 @@ fn xlsx(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
             .map_err(|e: calamine::XlsxError| DocError::malformed("spreadsheet", e))?;
         let names = workbook.sheet_names();
         check_sheet_count(names.len(), opts)?;
-        let max_rows = u32::try_from(opts.max_rows).unwrap_or(u32::MAX);
-        let max_cols = u32::try_from(opts.max_cols).unwrap_or(u32::MAX);
-        let mut parts: Vec<String> = Vec::new();
-        let mut used = 0usize;
+        let mut sections = SheetSections::default();
         for name in names {
-            let mut rows: BTreeMap<u32, BTreeMap<u32, String>> = BTreeMap::new();
-            let (mut min_col, mut max_col) = (u32::MAX, 0u32);
-            let mut cells = 0usize;
-            {
-                let mut reader =
-                    workbook.worksheet_cells_reader(&name).map_err(|e| DocError::malformed("spreadsheet", e))?;
-                while let Some(cell) = reader.next_cell().map_err(|e| DocError::malformed("spreadsheet", e))? {
-                    let text = calamine::Data::from(cell.get_value().clone()).to_string();
-                    if text.is_empty() {
-                        continue;
-                    }
-                    let (row, col) = cell.get_position();
-                    if row >= max_rows {
-                        return Err(DocError::LimitExceeded(format!(
-                            "sheet `{name}` uses row {} (limit {})",
-                            u64::from(row) + 1,
-                            opts.max_rows
-                        )));
-                    }
-                    if col >= max_cols {
-                        return Err(DocError::LimitExceeded(format!(
-                            "sheet `{name}` uses column {} (limit {})",
-                            u64::from(col) + 1,
-                            opts.max_cols
-                        )));
-                    }
-                    cells += 1;
-                    if cells > opts.max_cells {
-                        return Err(DocError::LimitExceeded(format!(
-                            "sheet `{name}` has more than {} non-empty cells",
-                            opts.max_cells
-                        )));
-                    }
-                    min_col = min_col.min(col);
-                    max_col = max_col.max(col);
-                    rows.entry(row).or_default().insert(col, text);
-                }
-            }
-            if rows.is_empty() {
-                continue;
-            }
-            let width = usize::try_from(max_col.saturating_sub(min_col)).unwrap_or(usize::MAX).saturating_add(1);
-            let mut table = crate::text::TableWriter::new(width, &remaining_budget(opts, used))?;
-            for columns in rows.values() {
-                let row = (min_col..=max_col).map(|c| columns.get(&c).map_or("", String::as_str));
-                if !table.row(row) {
-                    break;
-                }
-            }
-            let part = format!("{}\n{}", sheet_heading(&name, opts), table.finish());
-            used = used.saturating_add(part.chars().count());
-            parts.push(part);
-            if used > opts.max_output_chars {
+            let sheet = read_sparse_sheet(&mut workbook, &name, opts)?;
+            let Some(part) = sheet.render(&name, &sections.remaining_budget(opts))? else { continue };
+            if !sections.push(part, opts) {
                 break;
             }
         }
-        Ok(parts.join("\n\n"))
+        Ok(sections.finish())
     })
+}
+
+/// Stream the non-empty cells of one XLSX sheet, enforcing the row, column and cell limits.
+#[cfg(feature = "spreadsheet")]
+fn read_sparse_sheet(
+    workbook: &mut calamine::Xlsx<std::io::Cursor<&[u8]>>,
+    name: &str,
+    opts: &Options,
+) -> Result<SparseSheet, DocError> {
+    let mut sheet = SparseSheet::default();
+    let mut reader = workbook.worksheet_cells_reader(name).map_err(|e| DocError::malformed("spreadsheet", e))?;
+    while let Some(cell) = reader.next_cell().map_err(|e| DocError::malformed("spreadsheet", e))? {
+        let text = calamine::Data::from(cell.get_value().clone()).to_string();
+        if text.is_empty() {
+            continue;
+        }
+        let (row, col) = cell.get_position();
+        sheet.insert(name, (row, col), text, opts)?;
+    }
+    Ok(sheet)
+}
+
+/// Non-empty cells of a sheet by row and column, plus the column span they cover.
+#[cfg(feature = "spreadsheet")]
+struct SparseSheet {
+    rows: std::collections::BTreeMap<u32, std::collections::BTreeMap<u32, String>>,
+    min_col: u32,
+    max_col: u32,
+    cells: usize,
+}
+
+#[cfg(feature = "spreadsheet")]
+impl Default for SparseSheet {
+    fn default() -> Self {
+        Self { rows: std::collections::BTreeMap::new(), min_col: u32::MAX, max_col: 0, cells: 0 }
+    }
+}
+
+#[cfg(feature = "spreadsheet")]
+impl SparseSheet {
+    /// Add a cell of sheet `name` at zero-based `(row, col)`, failing once the sheet
+    /// goes past the row, column or non-empty cell limit.
+    fn insert(&mut self, name: &str, (row, col): (u32, u32), text: String, opts: &Options) -> Result<(), DocError> {
+        check_cell_position(name, row, col, opts)?;
+        self.cells += 1;
+        if self.cells > opts.max_cells {
+            return Err(DocError::LimitExceeded(format!(
+                "sheet `{name}` has more than {} non-empty cells",
+                opts.max_cells
+            )));
+        }
+        self.min_col = self.min_col.min(col);
+        self.max_col = self.max_col.max(col);
+        self.rows.entry(row).or_default().insert(col, text);
+        Ok(())
+    }
+
+    /// The sheet as a section (`None` when it has no non-empty cell). Empty rows
+    /// and the columns left of the first used one are not rendered.
+    fn render(&self, name: &str, opts: &Options) -> Result<Option<String>, DocError> {
+        if self.rows.is_empty() {
+            return Ok(None);
+        }
+        let width = usize::try_from(self.max_col.saturating_sub(self.min_col)).unwrap_or(usize::MAX).saturating_add(1);
+        let mut table = crate::text::TableWriter::new(width, opts)?;
+        for columns in self.rows.values() {
+            let row = (self.min_col..=self.max_col).map(|c| columns.get(&c).map_or("", String::as_str));
+            if !table.row(row) {
+                break;
+            }
+        }
+        Ok(Some(format!("{}\n{}", sheet_heading(name, opts), table.finish())))
+    }
+}
+
+/// Fail when a zero-based cell position lies past the row or column limit.
+#[cfg(feature = "spreadsheet")]
+fn check_cell_position(name: &str, row: u32, col: u32, opts: &Options) -> Result<(), DocError> {
+    // Cell positions are u32; a limit past u32::MAX caps at the last position.
+    let beyond = |index: u32, limit: usize| index >= u32::try_from(limit).unwrap_or(u32::MAX);
+    if beyond(row, opts.max_rows) {
+        return Err(DocError::LimitExceeded(format!(
+            "sheet `{name}` uses row {} (limit {})",
+            u64::from(row) + 1,
+            opts.max_rows
+        )));
+    }
+    if beyond(col, opts.max_cols) {
+        return Err(DocError::LimitExceeded(format!(
+            "sheet `{name}` uses column {} (limit {})",
+            u64::from(col) + 1,
+            opts.max_cols
+        )));
+    }
+    Ok(())
 }
 
 /// ODS: dimensions (with repeated rows/columns) are checked on `content.xml`
 /// before calamine builds its dense per-sheet grid.
 #[cfg(feature = "spreadsheet")]
 fn ods(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
-    use calamine::Reader;
-
     crate::zipfmt::SafeZip::open(bytes, opts)?.check_total_size()?;
     let content = crate::zipfmt::SafeZip::open(bytes, opts)?
         .read_text("content.xml")?
@@ -160,23 +220,9 @@ fn ods(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
     crate::zipfmt::check_ods_dimensions(&content, opts)?;
     drop(content);
     guarded("spreadsheet", || {
-        let mut workbook = calamine::Ods::new(std::io::Cursor::new(bytes))
+        let workbook = <calamine::Ods<_> as calamine::Reader<_>>::new(std::io::Cursor::new(bytes))
             .map_err(|e: calamine::OdsError| DocError::malformed("spreadsheet", e))?;
-        let names = workbook.sheet_names();
-        check_sheet_count(names.len(), opts)?;
-        let mut parts = Vec::new();
-        let mut used = 0usize;
-        for name in names {
-            let range = workbook.worksheet_range(&name).map_err(|e| DocError::malformed("spreadsheet", e))?;
-            if let Some(part) = render_range(&name, &range, opts, used)? {
-                used = used.saturating_add(part.chars().count());
-                parts.push(part);
-                if used > opts.max_output_chars {
-                    break;
-                }
-            }
-        }
-        Ok(parts.join("\n\n"))
+        dense_workbook(workbook, opts)
     })
 }
 
@@ -187,26 +233,10 @@ fn ods(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
 fn xls(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
     #[cfg(feature = "xls")]
     {
-        use calamine::Reader;
-
         guarded("spreadsheet", || {
-            let mut workbook = calamine::Xls::new(std::io::Cursor::new(bytes))
+            let workbook = <calamine::Xls<_> as calamine::Reader<_>>::new(std::io::Cursor::new(bytes))
                 .map_err(|e: calamine::XlsError| DocError::malformed("spreadsheet", e))?;
-            let names = workbook.sheet_names();
-            check_sheet_count(names.len(), opts)?;
-            let mut parts = Vec::new();
-            let mut used = 0usize;
-            for name in names {
-                let range = workbook.worksheet_range(&name).map_err(|e| DocError::malformed("spreadsheet", e))?;
-                if let Some(part) = render_range(&name, &range, opts, used)? {
-                    used = used.saturating_add(part.chars().count());
-                    parts.push(part);
-                    if used > opts.max_output_chars {
-                        break;
-                    }
-                }
-            }
-            Ok(parts.join("\n\n"))
+            dense_workbook(workbook, opts)
         })
     }
     #[cfg(not(feature = "xls"))]
@@ -216,18 +246,40 @@ fn xls(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
     }
 }
 
-/// Render a dense calamine range as one sheet section (`None` when the sheet is empty).
+/// Every sheet of a workbook whose reader loads dense ranges (ODS, XLS).
+#[cfg(feature = "spreadsheet")]
+fn dense_workbook<RS, R>(mut workbook: R, opts: &Options) -> Result<String, DocError>
+where
+    RS: std::io::Read + std::io::Seek,
+    R: calamine::Reader<RS>,
+    R::Error: std::fmt::Display,
+{
+    let names = workbook.sheet_names();
+    check_sheet_count(names.len(), opts)?;
+    let mut sections = SheetSections::default();
+    for name in names {
+        let range = workbook.worksheet_range(&name).map_err(|e| DocError::malformed("spreadsheet", e))?;
+        let Some(part) = render_range(&name, &range, opts, &sections.remaining_budget(opts))? else { continue };
+        if !sections.push(part, opts) {
+            break;
+        }
+    }
+    Ok(sections.finish())
+}
+
+/// Render a dense calamine range as one sheet section (`None` when the sheet is
+/// empty). `opts` sets the dimension limits, `budget` the output still available.
 #[cfg(feature = "spreadsheet")]
 fn render_range(
     name: &str,
     range: &calamine::Range<calamine::Data>,
     opts: &Options,
-    used: usize,
+    budget: &Options,
 ) -> Result<Option<String>, DocError> {
     let rows = u64::try_from(range.height()).unwrap_or(u64::MAX);
     let cols = u64::try_from(range.width()).unwrap_or(u64::MAX);
     crate::zipfmt::check_sheet_dimensions(rows, cols, opts)?;
-    let mut table = crate::text::TableWriter::new(range.width(), &remaining_budget(opts, used))?;
+    let mut table = crate::text::TableWriter::new(range.width(), budget)?;
     let mut any = false;
     for row in range.rows() {
         let cells: Vec<String> = row.iter().map(ToString::to_string).collect();

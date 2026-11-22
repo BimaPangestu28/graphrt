@@ -232,16 +232,7 @@ fn run_inputs(record: &RunRecord, events: &[Event]) -> Map<String, Json> {
 /// An assertion result as an `online` score of `run_id`.
 fn score_of(run_id: &str, name: &str, result: AssertionResult) -> Score {
     let mut score = Score::new(run_id, name, ScoreValue::Number(result.score), ScoreSource::Online, None);
-    score.label = Some(
-        if result.excluded {
-            "unknown"
-        } else if result.pass {
-            "pass"
-        } else {
-            "fail"
-        }
-        .to_owned(),
-    );
+    score.label = Some(result.verdict().as_str().to_owned());
     score.comment = Some(result.reason).filter(|r| !r.is_empty());
     score.kind = Some(result.kind);
     score.judge = result.judge.and_then(|judge| serde_json::to_value(judge).ok());

@@ -4,20 +4,13 @@
 #![cfg(all(feature = "pdf", feature = "office", feature = "spreadsheet", feature = "epub", feature = "email"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod support;
+
 use std::io::{Cursor, Write};
 use std::time::{Duration, Instant};
 
 use graphrt_doc::{DocError, Format, Options, OutputFormat, extract, extract_detailed};
-
-fn zip_of(entries: &[(&str, &str)]) -> Vec<u8> {
-    let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let opts = zip::write::SimpleFileOptions::default();
-    for (name, body) in entries {
-        w.start_file(*name, opts).unwrap();
-        w.write_all(body.as_bytes()).unwrap();
-    }
-    w.finish().unwrap().into_inner()
-}
+use support::{pdf_with_content_stream, pdf_with_flate_stream, zip_of, zlib};
 
 fn xlsx_with_sheet(sheet: &str) -> Vec<u8> {
     zip_of(&[
@@ -170,54 +163,9 @@ fn table_padding_stops_at_the_output_budget() {
     assert!(start.elapsed() < Duration::from_secs(5));
 }
 
-fn zlib(raw: &[u8]) -> Vec<u8> {
-    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
-    encoder.write_all(raw).unwrap();
-    encoder.finish().unwrap()
-}
-
 /// LZW as the PDF parser decodes it by default (`EarlyChange 1`).
 fn lzw(raw: &[u8]) -> Vec<u8> {
     weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(raw).unwrap()
-}
-
-/// A one-page PDF whose content stream is `FlateDecode`-compressed.
-fn pdf_with_flate_stream(raw: &[u8]) -> Vec<u8> {
-    pdf_with_content_stream("/Filter /FlateDecode", &zlib(raw))
-}
-
-/// A one-page PDF whose content stream has `dict_entries` and `data`.
-fn pdf_with_content_stream(dict_entries: &str, data: &[u8]) -> Vec<u8> {
-    let mut out = b"%PDF-1.4\n".to_vec();
-    let mut offsets = Vec::new();
-    let objects: Vec<Vec<u8>> = vec![
-        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
-            .to_vec(),
-        {
-            let mut body = format!("<< /Length {} {dict_entries} >>\nstream\n", data.len()).into_bytes();
-            body.extend_from_slice(data);
-            body.extend_from_slice(b"\nendstream");
-            body
-        },
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
-    ];
-    for (i, body) in objects.iter().enumerate() {
-        offsets.push(out.len());
-        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
-        out.extend_from_slice(body);
-        out.extend_from_slice(b"\nendobj\n");
-    }
-    let xref = out.len();
-    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
-    for off in offsets {
-        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
-    }
-    out.extend_from_slice(
-        format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).as_bytes(),
-    );
-    out
 }
 
 /// Every way the PDF parser can expand a stream must count against the budget.
