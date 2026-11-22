@@ -74,6 +74,30 @@ Secrets:
   operate. The URL is operator-configured and allowed to be private. Isolation is
   that service's job.
 
+## Parsing untrusted input
+
+- **Workflow documents.** JSON nests at most 128 levels (serde_json). YAML
+  runs under serde-saphyr's default budget: 64 levels of nesting, 250,000
+  nodes, 64 MiB of scalar text including alias replays, and an
+  alias-to-anchor ratio check, so "billion laughs" documents are refused.
+- **Templates.** `template-transform` (Jinja) has a fuel limit, a recursion
+  limit of 64 and stops rendering at 1 MiB of output. Fuel counts
+  instructions, not bytes, and minijinja does not cap intermediate strings:
+  `{% set s = s ~ s %}` doubles a string in a handful of instructions, so a
+  hostile template can still exhaust memory. Treat `template-transform` in
+  untrusted workflows as a known gap. `{{#…#}}` placeholders parse in
+  linear time.
+- **Variables.** An `assigner` refuses an input variable that holds more than
+  1,000,000 values or nests deeper than 128 levels, so a loop that feeds a
+  variable into itself cannot double it every round.
+- **Documents.** Zip containers are read with entry-count and
+  decompressed-size limits. PDF streams are decoded with every filter the
+  parser supports (Flate, LZW, ASCII85, chains, PNG predictor rows) against
+  `max_decompressed_bytes` (256 MiB) before the document is loaded and again
+  before text is extracted. Encrypted object streams are inflated by the
+  parser while it loads, before graphrt can measure them. Parser panics are
+  caught; CPU time is not bounded, so run extraction under a timeout.
+
 ## Network egress
 
 Every URL that a workflow controls goes through `graphrt_http::HttpClient` and its
