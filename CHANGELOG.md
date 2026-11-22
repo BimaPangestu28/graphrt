@@ -84,6 +84,14 @@ releases may contain breaking changes; they are called out under **Changed**.
   `langfuse` stay on by default.
 
 ### Added
+- `graphrt gateway` preempts runs shortly before a platform's request cap
+  (Cloud Run 60 min, Container Apps standard ingress 240 s) and re-dispatches
+  them, so long runs continue across the cap: the gateway sends
+  `preempt_after_ms` and `serve --trust-gateway` preempts the execution itself.
+  Versions past the 7-day pool are retired on the platform too (Cloud Run
+  traffic tags, Container Apps revisions, Fly Machine pools), with retry.
+- The `kubeconfig` feature of `graphrt-provider-k8s` reads kubeconfig files
+  without per-struct deserializers, so `gw-k8s-kubeconfig` is smaller.
 - `graphrt gateway` runs deployments on Kubernetes, Cloud Run, ECS Fargate,
   Lambda, Fly and Azure Container Apps, besides local processes: cargo
   features `gateway-k8s` (`gateway-k8s-in-cluster` without kubeconfig),

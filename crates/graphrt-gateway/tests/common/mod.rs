@@ -73,6 +73,8 @@ pub struct AgentWorld {
     /// Bodies the agents received (to check that secrets reach the agent but nothing else).
     pub bodies: Mutex<Vec<Json>>,
     pub starts: AtomicU32,
+    /// `preempt_after_ms` of every run start.
+    pub preempt_after: Mutex<Vec<Option<u64>>>,
 }
 
 struct AgentState {
@@ -147,7 +149,14 @@ async fn start_run(State(state): State<Arc<AgentState>>, headers: HeaderMap, bod
     };
     let inputs = request["inputs"].clone();
     let mode = inputs["mode"].as_str().unwrap_or("ok").to_owned();
-    let count = inputs["events"].as_u64().unwrap_or(2);
+    let resumed_run = request.get("resume").is_some();
+    // `resume_events`: how many events a resumed execution still has to emit.
+    let count = match inputs["resume_events"].as_u64() {
+        Some(remaining) if resumed_run => remaining,
+        _ => inputs["events"].as_u64().unwrap_or(2),
+    };
+    let preempt_after = request["preempt_after_ms"].as_u64().map(Duration::from_millis);
+    state.world.preempt_after.lock().unwrap().push(request["preempt_after_ms"].as_u64());
     let delay = Duration::from_millis(inputs["delay_ms"].as_u64().unwrap_or(0));
     let base = request["event_index"].as_u64().unwrap_or(0);
     let resumed = request.get("resume").is_some();
@@ -164,8 +173,16 @@ async fn start_run(State(state): State<Arc<AgentState>>, headers: HeaderMap, bod
         };
         let started = emit(json!({ "type": "run_started", "run_id": run_id, "resumed": resumed }));
         let _ = sender.send(frame(&started.0, Some(started.1.to_string()), &started.2)).await;
+        let execution_started = tokio::time::Instant::now();
         for step in 0..count {
             tokio::time::sleep(delay).await;
+            // Like `serve --trust-gateway`: preempt itself before the platform's request cap.
+            if preempt_after.is_some_and(|after| execution_started.elapsed() >= after) {
+                let paused = json!({ "type": "run_paused", "reasons": [{ "frame": "", "node_id": null, "kind": "external", "data": "request_cap" }], "snapshot": snapshot(&run_id) });
+                let id = index;
+                let _ = sender.send(frame("run_paused", Some(id.to_string()), &paused)).await;
+                return;
+            }
             let (kind, id, data) = emit(json!({ "type": "node_succeeded", "step": step, "execution": previous }));
             let _ = sender
                 .send(frame("response", Some(format!("{id}.0")), &json!({ "text": format!("chunk{step}") })))

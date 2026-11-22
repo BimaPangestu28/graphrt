@@ -527,3 +527,50 @@ async fn remote_deploy_applies_on_the_platform_then_registers_the_target() {
         ("v2", "ns/shop-v2", "agent")
     );
 }
+
+/// Records retirements; fails the first call when asked to.
+struct RecordingRetirer {
+    calls: std::sync::Mutex<Vec<Vec<String>>>,
+    fail_first: std::sync::atomic::AtomicBool,
+}
+
+impl graphrt_gateway::retire::VersionRetirer for RecordingRetirer {
+    fn retire<'a>(
+        &'a self,
+        versions: &'a [graphrt_provider_api::DeploymentRef],
+    ) -> graphrt_provider_api::BoxFuture<'a, Result<String, String>> {
+        self.calls.lock().unwrap().push(versions.iter().map(|version| version.version.clone()).collect());
+        let fail = self.fail_first.swap(false, Ordering::SeqCst);
+        Box::pin(async move { if fail { Err("platform unavailable".to_owned()) } else { Ok("ok".to_owned()) } })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expired_versions_are_retired_on_the_platform_with_retry() {
+    let day = 24 * 3600 * 1000;
+    let now = graphrt_core::store::now_ms();
+    let world = Arc::new(AgentWorld::default());
+    let provider = Arc::new(common::FakeAgentProvider::new(world));
+    let auth = graphrt_gateway::auth::DeploymentAuth::default();
+    let mut deployment = graphrt_gateway::deployment::Deployment::new(
+        "shop",
+        auth,
+        vec![common::key()],
+        provider,
+        PoolConfig::default(),
+    );
+    let retirer =
+        Arc::new(RecordingRetirer { calls: Default::default(), fail_first: std::sync::atomic::AtomicBool::new(true) });
+    deployment.retirer = Some(retirer.clone());
+    deployment.add_version(common::version("v1"), now - 9 * day);
+    deployment.add_version(common::version("v2"), now - 8 * day);
+    // Day 8 after v2: v1 is past its 7-day pool. The first platform call fails.
+    graphrt_gateway::app::retire_expired(&deployment, now).await;
+    assert!(deployment.version("v1", now).is_err(), "v1 left the gateway (resumes get 410)");
+    assert_eq!(deployment.current().unwrap().info.version, "v2");
+    // The failed retirement is retried on the next maintenance pass.
+    graphrt_gateway::app::retire_expired(&deployment, now).await;
+    assert_eq!(*retirer.calls.lock().unwrap(), vec![vec!["v1".to_owned()], vec!["v1".to_owned()]]);
+    graphrt_gateway::app::retire_expired(&deployment, now).await;
+    assert_eq!(retirer.calls.lock().unwrap().len(), 2, "nothing left to retire");
+}

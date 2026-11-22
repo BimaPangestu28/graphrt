@@ -141,6 +141,7 @@ gateway (it strips them).
 | `deployment_version` | Copied to the run record |
 | `event_index` | Global index of this execution's first event (the gateway's event count), so ids continue the run's log |
 | `resume` | `{snapshot, inputs, secrets}`: resume a paused run from the snapshot in the body; the agent never reads a store |
+| `preempt_after_ms` | Optional: the agent preempts this execution after that many milliseconds (shortly before the platform's request cap); the stream ends with `run_paused` (`kind: external`, `data: "request_cap"`) and the gateway re-dispatches the run |
 
 Epochs make every start idempotent:
 

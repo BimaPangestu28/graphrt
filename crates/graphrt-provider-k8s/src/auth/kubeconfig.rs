@@ -7,10 +7,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use base64::Engine as _;
-use serde::Deserialize;
-
 use super::{AuthError, ClusterConfig, ExecConfig, ExecTokenFetcher, SecretString, StaticToken, TokenFile, cached};
+use base64::Engine as _;
 
 /// Which kubeconfig and context to use.
 #[derive(Debug, Clone, Default)]
@@ -21,89 +19,150 @@ pub struct KubeconfigOptions {
     pub context: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default)]
 struct KubeconfigFile {
-    #[serde(default)]
     clusters: Vec<Named<ClusterEntry>>,
-    #[serde(default)]
     users: Vec<Named<UserEntry>>,
-    #[serde(default)]
     contexts: Vec<Named<ContextEntry>>,
-    #[serde(rename = "current-context")]
     current_context: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct Named<T> {
     name: String,
-    #[serde(alias = "cluster", alias = "user", alias = "context")]
     value: Option<T>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default)]
 struct ClusterEntry {
     server: Option<String>,
-    #[serde(rename = "certificate-authority")]
     certificate_authority: Option<String>,
-    #[serde(rename = "certificate-authority-data")]
     certificate_authority_data: Option<String>,
-    #[serde(rename = "insecure-skip-tls-verify", default)]
     insecure_skip_tls_verify: bool,
-    #[serde(rename = "tls-server-name")]
     tls_server_name: Option<String>,
-    #[serde(rename = "proxy-url")]
     proxy_url: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default)]
 struct UserEntry {
     token: Option<String>,
-    #[serde(rename = "tokenFile")]
     token_file: Option<String>,
-    #[serde(rename = "client-certificate")]
     client_certificate: Option<String>,
-    #[serde(rename = "client-certificate-data")]
     client_certificate_data: Option<String>,
-    #[serde(rename = "client-key")]
     client_key: Option<String>,
-    #[serde(rename = "client-key-data")]
     client_key_data: Option<String>,
     exec: Option<ExecEntry>,
-    #[serde(rename = "auth-provider")]
     auth_provider: Option<AuthProviderEntry>,
     username: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct AuthProviderEntry {
     name: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default)]
 struct ExecEntry {
     api_version: String,
     command: String,
-    #[serde(default)]
     args: Vec<String>,
-    #[serde(default)]
-    env: Vec<ExecEnv>,
-    #[serde(default)]
+    env: Vec<(String, String)>,
     provide_cluster_info: bool,
     interactive_mode: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ExecEnv {
-    name: String,
-    value: String,
-}
-
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default)]
 struct ContextEntry {
     cluster: String,
     user: Option<String>,
     namespace: Option<String>,
+}
+
+// The kubeconfig is read by walking a `serde_json::Value` instead of deriving
+// `Deserialize` for each struct: one generic instantiation (the YAML
+// deserializer into `Value`, which the gateway already links for its own
+// config) instead of one per struct keeps the feature small (plan §9).
+type Json = serde_json::Value;
+
+fn text(value: &Json, key: &str) -> Option<String> {
+    value.get(key).and_then(Json::as_str).map(str::to_owned)
+}
+
+fn texts(value: &Json, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Json::as_array)
+        .map(|items| items.iter().filter_map(Json::as_str).map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+fn flag(value: &Json, key: &str) -> bool {
+    value.get(key).and_then(Json::as_bool).unwrap_or(false)
+}
+
+/// `[{name, <inner>: {...}}]` lists; entries without a name are invalid.
+fn named<T>(root: &Json, list: &str, inner: &str, parse: fn(&Json) -> T) -> Result<Vec<Named<T>>, String> {
+    let Some(items) = root.get(list).filter(|items| !items.is_null()) else { return Ok(Vec::new()) };
+    let items = items.as_array().ok_or_else(|| format!("{list} must be a list"))?;
+    items
+        .iter()
+        .map(|item| {
+            let name = text(item, "name").ok_or_else(|| format!("an entry of {list} has no name"))?;
+            Ok(Named { name, value: item.get(inner).filter(|value| value.is_object()).map(parse) })
+        })
+        .collect()
+}
+
+fn cluster_entry(value: &Json) -> ClusterEntry {
+    ClusterEntry {
+        server: text(value, "server"),
+        certificate_authority: text(value, "certificate-authority"),
+        certificate_authority_data: text(value, "certificate-authority-data"),
+        insecure_skip_tls_verify: flag(value, "insecure-skip-tls-verify"),
+        tls_server_name: text(value, "tls-server-name"),
+        proxy_url: text(value, "proxy-url"),
+    }
+}
+
+fn exec_entry(value: &Json) -> ExecEntry {
+    let env = value
+        .get("env")
+        .and_then(Json::as_array)
+        .map(|items| items.iter().filter_map(|item| Some((text(item, "name")?, text(item, "value")?))).collect())
+        .unwrap_or_default();
+    ExecEntry {
+        api_version: text(value, "apiVersion").unwrap_or_default(),
+        command: text(value, "command").unwrap_or_default(),
+        args: texts(value, "args"),
+        env,
+        provide_cluster_info: flag(value, "provideClusterInfo"),
+        interactive_mode: text(value, "interactiveMode"),
+    }
+}
+
+fn user_entry(value: &Json) -> UserEntry {
+    UserEntry {
+        token: text(value, "token"),
+        token_file: text(value, "tokenFile"),
+        client_certificate: text(value, "client-certificate"),
+        client_certificate_data: text(value, "client-certificate-data"),
+        client_key: text(value, "client-key"),
+        client_key_data: text(value, "client-key-data"),
+        exec: value.get("exec").filter(|exec| exec.is_object()).map(exec_entry),
+        auth_provider: value
+            .get("auth-provider")
+            .filter(|provider| provider.is_object())
+            .map(|provider| AuthProviderEntry { name: text(provider, "name").unwrap_or_default() }),
+        username: text(value, "username"),
+    }
+}
+
+fn context_entry(value: &Json) -> ContextEntry {
+    ContextEntry {
+        cluster: text(value, "cluster").unwrap_or_default(),
+        user: text(value, "user"),
+        namespace: text(value, "namespace"),
+    }
 }
 
 /// Load the kubeconfig named by `options`, `$KUBECONFIG` or `~/.kube/config`.
@@ -126,13 +185,21 @@ pub fn kubeconfig_from_str(text: &str, base_dir: &Path, context: Option<&str>) -
     resolve(parse(text, base_dir)?, base_dir, context)
 }
 
-fn parse(text: &str, origin: &Path) -> Result<KubeconfigFile, AuthError> {
-    // YAML -> JSON value -> structs: the YAML deserializer is instantiated once
-    // (for `Value`, shared with the rest of the binary) instead of once per
-    // kubeconfig struct, which keeps this feature ~100 KiB smaller.
+fn parse(source: &str, origin: &Path) -> Result<KubeconfigFile, AuthError> {
     let invalid = |error: String| AuthError::Kubeconfig(format!("{}: {error}", origin.display()));
-    let value: serde_json::Value = serde_saphyr::from_str(text).map_err(|error| invalid(error.to_string()))?;
-    serde_json::from_value(value).map_err(|error| invalid(error.to_string()))
+    let root: Json = serde_saphyr::from_str(source).map_err(|error| invalid(error.to_string()))?;
+    if root.is_null() {
+        return Ok(KubeconfigFile::default());
+    }
+    if !root.is_object() {
+        return Err(invalid("not a kubeconfig mapping".to_owned()));
+    }
+    Ok(KubeconfigFile {
+        clusters: named(&root, "clusters", "cluster", cluster_entry).map_err(invalid)?,
+        users: named(&root, "users", "user", user_entry).map_err(invalid)?,
+        contexts: named(&root, "contexts", "context", context_entry).map_err(invalid)?,
+        current_context: text(&root, "current-context"),
+    })
 }
 
 fn kubeconfig_paths(options: &KubeconfigOptions) -> Result<Vec<PathBuf>, AuthError> {
@@ -277,6 +344,9 @@ fn apply_user(config: &mut ClusterConfig, user: &UserEntry, server: &str) -> Res
 }
 
 fn exec_fetcher(exec: &ExecEntry, server: &str) -> Result<ExecTokenFetcher, AuthError> {
+    if exec.command.is_empty() || exec.api_version.is_empty() {
+        return Err(AuthError::Kubeconfig("exec plugin needs apiVersion and command".into()));
+    }
     if exec.interactive_mode.as_deref() == Some("Always") {
         return Err(AuthError::Unsupported("exec plugin with interactiveMode: Always (the gateway has no TTY)".into()));
     }
@@ -284,7 +354,7 @@ fn exec_fetcher(exec: &ExecEntry, server: &str) -> Result<ExecTokenFetcher, Auth
         api_version: exec.api_version.clone(),
         command: exec.command.clone(),
         args: exec.args.clone(),
-        env: exec.env.iter().map(|env| (env.name.clone(), env.value.clone())).collect(),
+        env: exec.env.clone(),
         cluster_server: exec.provide_cluster_info.then(|| server.to_owned()),
     })
 }
