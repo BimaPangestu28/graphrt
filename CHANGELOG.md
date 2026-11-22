@@ -214,6 +214,18 @@ releases may contain breaking changes; they are called out under **Changed**.
   platform without an HTTP address (Lambda) carry the gateway's requests, and
   `max_grace_secs = 0` marks a platform where no preemption is possible.
   No user-visible change yet.
+- `graphrt-provider-azure` (internal crate): the Azure provider family of the
+  upcoming gateway, without an Azure SDK. `auth-azure`: Entra ID tokens from
+  managed identity (`IDENTITY_ENDPOINT`, IMDS), client secret, PS256
+  certificate assertion and workload identity federation, cached until
+  `exp - 5 min`. `provider-aca`: Azure Container Apps provider
+  (scale-to-zero HTTP rule, one label URL per deployment version, single-flight
+  warm-up). `deploy-aca`: deploy driver over ARM REST with revision labels,
+  7-day retention of old versions and Key Vault secret references. Passes the
+  shared conformance harness against fake servers; +48.8 KiB (`auth-azure`)
+  and +48.8 KiB (`provider-aca`) on macOS arm64. See
+  [docs/deploy-azure.md](docs/deploy-azure.md), including what still needs a
+  real subscription and the RBAC roles.
 - Live provider test matrix: `crates/graphrt-llm/tests/live_providers.rs` sends
   tiny streamed chat and tool-call round-trip requests to OpenAI, Anthropic,
   Gemini and Bedrock and a typed question to TypeSafe (opt-in with

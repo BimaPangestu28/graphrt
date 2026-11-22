@@ -1,0 +1,60 @@
+[package]
+name = "graphrt-provider-azure"
+description = "Azure provider family for the graphrt gateway: Entra ID / managed identity auth, and Azure Container Apps (scale-to-zero, revisions, Key Vault secret references) over hand-rolled ARM REST."
+readme = "README.md"
+homepage = "https://github.com/BimaPangestu28/graphrt"
+keywords = ["azure", "container-apps", "entra", "managed-identity", "graphrt"]
+categories = ["api-bindings", "asynchronous"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Depends on the internal graphrt-provider-api; not on crates.io until F2 settles.
+publish = false
+
+[features]
+default = []
+# Entra ID access tokens without an SDK: managed identity (Container Apps /
+# App Service `IDENTITY_ENDPOINT`, VM IMDS), client credentials (secret or
+# PS256 certificate assertion) and workload identity federation, cached until
+# `exp - 5 min`. Uses the `ring` and `reqwest`/`rustls` the workspace already links.
+auth-azure = ["dep:reqwest", "dep:rustls", "dep:ring", "dep:base64", "dep:tokio", "dep:serde_json", "graphrt-provider-api/http"]
+# Run-time Azure Container Apps provider over ARM REST
+# (`Microsoft.App/containerApps`): label URLs per deployment version, warm-up,
+# replica listing and retirement of old versions.
+provider-aca = ["auth-azure"]
+# Deploy-time half for `graphrt deploy`: the `DeployDriver` (createOrUpdate,
+# revision labels, retirement) and Key Vault secret references / set-secret.
+# Not needed in the gateway binary.
+deploy-aca = ["provider-aca"]
+
+[dependencies]
+graphrt-provider-api.workspace = true
+thiserror.workspace = true
+serde_json = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+ring = { version = "0.17", optional = true, default-features = false, features = ["alloc"] }
+base64 = { version = "0.22", optional = true }
+tokio = { workspace = true, optional = true, features = ["time", "sync", "fs"] }
+
+[dev-dependencies]
+graphrt-provider-api = { workspace = true, features = ["http", "conformance"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+futures = { workspace = true }
+# The size probe's baseline links what the gateway already has (reqwest/rustls/ring/serde_json).
+reqwest = { workspace = true, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+ring = { version = "0.17", default-features = false, features = ["alloc"] }
+serde_json = { workspace = true }
+serde = { workspace = true }
+
+# C13: `crates/graphrt-provider-azure/measure-size.sh` builds this with and without
+# `provider-aca` and reports the binary delta.
+[[example]]
+name = "size_probe"
+
+[lints]
+workspace = true
