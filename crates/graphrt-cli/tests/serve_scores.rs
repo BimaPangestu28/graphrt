@@ -279,14 +279,22 @@ graph:
         let internal_feedback = format!("/v1/runs/{internal}/feedback");
         let (status, _) = send(&app, with_token(post(&internal_feedback, None, &body), &alice)).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
-        // An API-key run labelled with a body `user_id` belongs to that user:
-        // the record cannot tell a claimed user from a verified one.
+        // An API-key run labelled with a body `user_id` is not that user's run:
+        // the label is unverified, so no user token may rate it.
         let (status, labelled) =
             send(&app, post("/v1/workflows/chat/runs", Some(API_KEY), &json!({ "user_id": "alice" }))).await;
         assert_eq!(status, StatusCode::OK, "{labelled}");
-        let labelled_feedback = format!("/v1/runs/{}/feedback", labelled["run_id"].as_str().unwrap());
-        assert_eq!(send(&app, with_token(post(&labelled_feedback, None, &body), &alice)).await.0, StatusCode::CREATED);
-        assert_eq!(send(&app, with_token(post(&labelled_feedback, None, &body), &bob)).await.0, StatusCode::FORBIDDEN);
+        let labelled_id = labelled["run_id"].as_str().unwrap();
+        let labelled_feedback = format!("/v1/runs/{labelled_id}/feedback");
+        for token in [&alice, &bob] {
+            let (status, _) = send(&app, with_token(post(&labelled_feedback, None, &body), token)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        }
+        // The record says which owner was verified.
+        let (_, record) = send(&app, get(&format!("/v1/runs/{run_id}"), Some(API_KEY))).await;
+        assert_eq!((record["user_id"].as_str(), record["user_verified"].as_bool()), (Some("alice"), Some(true)));
+        let (_, record) = send(&app, get(&format!("/v1/runs/{labelled_id}"), Some(API_KEY))).await;
+        assert_eq!((record["user_id"].as_str(), record.get("user_verified")), (Some("alice"), None));
         // The API key still rates any run, with the body's user.
         let (status, keyed) = send(&app, post(&internal_feedback, Some(API_KEY), &body)).await;
         assert_eq!((status, keyed["user"].as_str()), (StatusCode::CREATED, Some("mallory")));

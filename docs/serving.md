@@ -269,6 +269,7 @@ Run records gain these fields, all omitted when empty:
 | Field | Meaning |
 | --- | --- |
 | `metadata`, `session_id`, `user_id`, `tags` | From the request (`user_id` is the token's `sub` when `--verify-jwt` verified one) |
+| `user_verified` | `true` when `user_id` is the verified `sub` of a user token (kept on resume); omitted otherwise |
 | `trace_id`, `span_id` | OpenTelemetry trace id and root (`invoke_workflow`) span id of the latest execution, when tracing is on; lets later evaluation scores join the same trace |
 | `inputs` | The run's inputs as the start node accepted them, with `secret`-typed inputs stored as `******`. Only with `graphrt serve --store-inputs` |
 
@@ -349,12 +350,11 @@ idempotent.
 
 **Auth.** Both endpoints take the API key. With
 [`--verify-jwt`](#verifying-end-user-jwts), feedback also accepts the end
-user's token, for the user's **own** runs only: the run's `user_id` must be the
-token's `sub` (runs started with a user token have it; runs started with the
-API key have no owner and refuse user tokens with `403`, unless the caller set
-the body's `user_id`, which the server cannot tell from a verified one: send a
-`user_id` with the API key only for runs that user may rate), and the score's
-`user` is the verified `sub`, whatever the body says. Reading scores stays an
+user's token, for the user's **own** runs only: runs started with that user's
+token (the record has `user_verified: true` and `user_id` equal to the token's
+`sub`). Runs started with the API key refuse user tokens with `403`, even when
+the body set `user_id`: that is a label, not proof of who the user is. The
+score's `user` is the verified `sub`, whatever the body says. Reading scores stays an
 API-key endpoint. An invalid token is `401`, and feedback with a user token counts
 against that user's `--user-rate-limit` like a run start.
 

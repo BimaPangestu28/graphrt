@@ -18,7 +18,8 @@
 //! - `--user-rate-limit N` allows each `sub` N runs per minute (bursts of N);
 //!   more answer `429` with `Retry-After`.
 //! - `POST /v1/runs/{id}/feedback` (feature `scores`) accepts the token too, for
-//!   runs whose `user_id` is the token's `sub` only.
+//!   runs started with a token of the same `sub` only (`user_verified` on the
+//!   record; a body `user_id` from an API-key caller does not count).
 //! - Every other endpoint (run lists, events, scores, resume, knowledge...) still
 //!   needs the API key, so users cannot read each other's runs. The server
 //!   refuses to start with `--verify-jwt` unless an API key is set

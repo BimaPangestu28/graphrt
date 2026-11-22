@@ -454,6 +454,7 @@ mod tests {
         record.metadata.insert("tenant".into(), "acme".into());
         record.session_id = Some("s".into());
         record.user_id = Some("u".into());
+        record.user_verified = true;
         record.tags = vec!["t".into()];
         store.create(record.clone()).await.unwrap();
         drop(store);
@@ -461,6 +462,7 @@ mod tests {
         assert_eq!(store.get("e1").await.unwrap(), Some(record.clone()));
         let claimed = store.claim_resume("e1", 2).await.unwrap();
         assert_eq!((claimed.inputs, claimed.metadata, claimed.tags), (record.inputs, record.metadata, record.tags));
+        assert!(claimed.user_verified, "a resumed run keeps its verified owner");
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -99,6 +99,11 @@ pub struct RunRecord {
     /// Caller's end-user id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
+    /// Whether `user_id` is the verified subject of an end-user token (the
+    /// host checked its signature) rather than a label the caller sent. Only
+    /// a verified owner may act on the run as that user (rate it, for example).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub user_verified: bool,
     /// Caller-supplied tags.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -133,6 +138,7 @@ impl RunRecord {
             metadata: IndexMap::new(),
             session_id: None,
             user_id: None,
+            user_verified: false,
             tags: Vec::new(),
         }
     }

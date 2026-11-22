@@ -188,7 +188,7 @@ They honour standard proxy environment variables, except the OTel exporter and
   may start runs without the API key; an invalid token is `401` even next to a
   valid key. The token opens only `POST /v1/workflows/{name}/runs` of workflows
   that declare the verified input (others are `403`) and
-  `POST /v1/runs/{id}/feedback` on runs whose `user_id` is its `sub`; the server
+  `POST /v1/runs/{id}/feedback` on runs started with that user's token; the server
   refuses to start without an API key, on loopback too (a same-host reverse
   proxy would otherwise expose the API), so the rest of the API stays closed.
   `--user-rate-limit` caps runs per `sub`. See

@@ -346,8 +346,7 @@ pub async fn post_feedback(
     };
     let author = match user {
         Some(subject) => {
-            // A user token may only rate the user's own runs: those it started.
-            if record.user_id.as_deref() != Some(subject.as_str()) {
+            if !is_verified_owner(&record, &subject) {
                 return error_response(StatusCode::FORBIDDEN, "this run does not belong to the authenticated user");
             }
             Some(subject)
@@ -361,6 +360,14 @@ pub async fn post_feedback(
     }
     state.score_sinks().publish(&record, &score, None);
     (StatusCode::CREATED, Json(score.to_json())).into_response()
+}
+
+/// Whether the user `subject` of a verified token owns `record`'s run: the run
+/// was started with that user's token. A `user_id` an API-key caller put in the
+/// request body is only a label (anyone holding the key can write any value),
+/// so it never makes a run rateable by that user.
+fn is_verified_owner(record: &RunRecord, subject: &str) -> bool {
+    record.user_verified && record.user_id.as_deref() == Some(subject)
 }
 
 /// When an evaluation ran, in Unix nanoseconds, for its span (`None`: now).

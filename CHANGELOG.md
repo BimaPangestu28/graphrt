@@ -14,6 +14,15 @@ releases may contain breaking changes; they are called out under **Changed**.
   DNS-rebinding check), which made run lists, events and resume of every user
   public. **Migration:** set `GRAPHRT_API_KEY` (or `--api-key-env VAR`) next to
   `--verify-jwt`; user tokens keep working without it on the client side.
+- `POST /v1/runs/{id}/feedback` with a user token (`--verify-jwt`) accepts
+  only runs started with a token of the same user. Run records gain
+  `user_verified` (`true` when `user_id` is a verified `sub`, kept on resume,
+  `false` for records written before this release). A run started with the
+  API key and a body `user_id` is no longer rateable by that user's token: the
+  body value is an unverified label, so a key holder could make any run
+  rateable by anyone. **Migration:** let end users start the runs they rate
+  with their own token; API-key callers can still post feedback for any run,
+  with `user` in the body.
 
 ### Changed
 - The `eval` and `online-eval` cargo features of `graphrt-cli` are no longer
