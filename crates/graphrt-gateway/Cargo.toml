@@ -41,6 +41,7 @@ graphrt-provider-api = { workspace = true, features = ["conformance"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "test-util"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 http-body-util = "0.1"
+reqwest = { workspace = true, features = ["rustls-no-provider", "json"] }
 
 [lints]
 workspace = true
