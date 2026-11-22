@@ -234,13 +234,13 @@ async fn provider_invoke_carries_gateway_requests_over_lambda() {
         assert_eq!(state.lambda_requests[0]["headers"]["graphrt-sig"], "v1;kid=k");
     }
 
-    // A platform timeout surfaces as a Fatal error tagged platform_timeout.
+    // A platform timeout surfaces as its own error kind (never retried, never re-dispatched).
     set(&fake, LambdaBehavior::Timeout { chunks: 1 });
     let response = provider.invoke(&endpoints[0], request.clone()).unwrap().await.unwrap();
     let items: Vec<_> = response.body.collect().await;
     let error = items.into_iter().find_map(Result::err).expect("timeout error");
-    assert_eq!(error.kind, ProviderErrorKind::Fatal);
-    assert!(error.message.starts_with(graphrt_provider_aws::lambda::PLATFORM_TIMEOUT_PREFIX), "{error}");
+    assert_eq!(error.kind, ProviderErrorKind::PlatformTimeout, "{error}");
+    assert!(!error.kind.is_retryable());
 
     // HTTP endpoints are not Lambda's: the gateway uses plain HTTP for them.
     let http = Endpoint {

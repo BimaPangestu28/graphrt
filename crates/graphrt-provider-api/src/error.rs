@@ -5,7 +5,10 @@ use std::fmt;
 use std::time::Duration;
 
 /// What kind of failure a provider call hit.
+///
+/// `#[non_exhaustive]`: match with a wildcard arm, new kinds may be added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ProviderErrorKind {
     /// No capacity (quota, region full, Fargate capacity). The gateway falls
     /// back: another replica / region, or `stop` → cold start.
@@ -20,6 +23,10 @@ pub enum ProviderErrorKind {
     Transient,
     /// Anything else (bad request, invalid config). Not retried.
     Fatal,
+    /// The platform cut the request at its hard time limit and no preemption
+    /// was possible (Lambda, `max_grace_secs = 0`). Not retried: the gateway
+    /// records the run as `failed{error_type: platform_timeout}`.
+    PlatformTimeout,
 }
 
 impl ProviderErrorKind {
@@ -37,6 +44,7 @@ impl ProviderErrorKind {
             Self::NotFound => "not_found",
             Self::Transient => "transient",
             Self::Fatal => "fatal",
+            Self::PlatformTimeout => "platform_timeout",
         }
     }
 }
@@ -96,6 +104,10 @@ impl ProviderError {
     pub fn fatal(message: impl Into<String>) -> Self {
         Self::new(ProviderErrorKind::Fatal, message)
     }
+    /// See [`ProviderErrorKind::PlatformTimeout`].
+    pub fn platform_timeout(message: impl Into<String>) -> Self {
+        Self::new(ProviderErrorKind::PlatformTimeout, message)
+    }
 
     /// Classifies an HTTP status of a provider API. Providers refine the
     /// result with their own error codes (e.g. a 403 `RESOURCE_EXHAUSTED` is
@@ -146,5 +158,20 @@ impl DeployError {
 impl From<ProviderError> for DeployError {
     fn from(error: ProviderError) -> Self {
         Self { kind: DeployErrorKind::Provider(error.kind), message: error.message }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn platform_timeout_is_its_own_non_retryable_kind() {
+        let error = ProviderError::platform_timeout("Lambda cut the run after 840 s");
+        assert_eq!(error.kind, ProviderErrorKind::PlatformTimeout);
+        assert!(!error.kind.is_retryable());
+        assert_eq!(error.kind.as_str(), "platform_timeout");
+        assert_eq!(error.to_string(), "platform_timeout: Lambda cut the run after 840 s");
+        assert_eq!(DeployError::from(error).kind, DeployErrorKind::Provider(ProviderErrorKind::PlatformTimeout));
     }
 }

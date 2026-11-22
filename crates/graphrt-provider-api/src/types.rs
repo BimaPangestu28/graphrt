@@ -43,7 +43,8 @@ pub struct Capabilities {
     /// Time between SIGTERM and SIGKILL (Cloud Run 10, ECS 120). `0` means
     /// the platform gives no grace at all (Lambda): no planned preemption is
     /// possible, the gateway holds the stream and a run past
-    /// `max_request_secs` fails explicitly (`failed{platform_timeout}`).
+    /// `max_request_secs` fails explicitly with
+    /// [`crate::ProviderErrorKind::PlatformTimeout`] (`failed{platform_timeout}`).
     pub max_grace_secs: u64,
     /// Whether the replica keeps CPU between requests (false on Lambda).
     pub background_cpu: bool,
