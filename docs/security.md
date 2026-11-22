@@ -191,7 +191,10 @@ They honour standard proxy environment variables, except the OTel exporter and
   `POST /v1/runs/{id}/feedback` on runs started with that user's token; the server
   refuses to start without an API key, on loopback too (a same-host reverse
   proxy would otherwise expose the API), so the rest of the API stays closed.
-  `--user-rate-limit` caps runs per `sub`. See
+  A user-token response carries only the answer stream, the final result and
+  pause prompts, never node inputs, outputs, tool results, rendered prompts or
+  the snapshot (`--user-events all` opts out). `--user-rate-limit` caps runs
+  per `sub`. See
   [serving.md](serving.md#verifying-end-user-jwts).
 - **CORS.** None. Browsers get no `Access-Control-Allow-Origin`, and JSON
   bodies force a preflight.

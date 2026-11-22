@@ -289,6 +289,19 @@ impl AppState {
         constant_time_eq(provided.as_bytes(), expected.as_bytes())
     }
 
+    /// What a request receives of its run: everything, unless it came with a
+    /// verified user token and `--user-events` is `answer` (the default).
+    fn event_scope(&self, user_token: bool) -> EventScope {
+        #[cfg(feature = "jwt")]
+        if user_token
+            && self.user_auth.as_ref().is_some_and(|auth| auth.events() == crate::args::UserEvents::Answer)
+        {
+            return EventScope::Answer;
+        }
+        let _ = user_token;
+        EventScope::Full
+    }
+
     /// Serve this knowledge base under `/v1/knowledge`.
     #[cfg(feature = "rag")]
     /// `config` is the knowledge config path; datasets created over the API are saved next to it.
@@ -954,6 +967,23 @@ impl Delivery {
     }
 }
 
+/// How much of a run the caller receives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventScope {
+    /// Every engine event and the full result (API-key callers, `--user-events all`).
+    Full,
+    /// The answer stream, the final result and pause prompts (end users by default).
+    #[cfg(feature = "jwt")]
+    Answer,
+}
+
+/// How the caller receives a run: the delivery mode and the event scope.
+#[derive(Clone, Copy, Debug)]
+struct Reply {
+    delivery: Delivery,
+    scope: EventScope,
+}
+
 fn to_values(map: serde_json::Map<String, serde_json::Value>) -> IndexMap<String, Value> {
     map.into_iter().map(|(k, v)| (k, Value::from_json(v))).collect()
 }
@@ -997,6 +1027,7 @@ async fn start_run(
     {
         return refused.into_response();
     }
+    let user_token = user.is_some();
     if let Some(axum::Extension(AuthenticatedUser(subject))) = &user {
         // A verified end user (`--verify-jwt`) is the run's user, whatever the body said.
         record.user_id = Some(subject.clone());
@@ -1015,8 +1046,8 @@ async fn start_run(
     }
     input.conversation = to_values(body.conversation);
     input.env = workflow.env.clone();
-    execute(&state, &workflow.engine, record, input, Delivery::of(body.stream, body.run_async), traceparent(&headers))
-        .await
+    let reply = Reply { delivery: Delivery::of(body.stream, body.run_async), scope: state.event_scope(user_token) };
+    execute(&state, &workflow.engine, record, input, reply, traceparent(&headers)).await
 }
 
 /// W3C `traceparent` of the incoming request, continued by the run's trace.
@@ -1105,8 +1136,9 @@ async fn resume_run(
         resume = resume.secret(selector, secret);
     }
     input.resume = Some(resume);
-    execute(&state, &workflow.engine, record, input, Delivery::of(body.stream, body.run_async), traceparent(&headers))
-        .await
+    // Resume takes the API key only, so its caller gets every event.
+    let reply = Reply { delivery: Delivery::of(body.stream, body.run_async), scope: EventScope::Full };
+    execute(&state, &workflow.engine, record, input, reply, traceparent(&headers)).await
 }
 
 /// Undo a resume claim so a refused resume leaves the run visible as paused.
@@ -1280,7 +1312,7 @@ async fn execute(
     engine: &Engine,
     record: RunRecord,
     input: RunInput,
-    delivery: Delivery,
+    reply: Reply,
     traceparent: Option<String>,
 ) -> Response {
     // The launched run's assembler records the answer in the store; a second one,
@@ -1288,7 +1320,7 @@ async fn execute(
     let stream_assembler = new_assembler(engine, &input);
     let run_id = record.run_id.clone();
     let active = launch(state, engine, record, input, traceparent.as_deref());
-    match delivery {
+    match reply.delivery {
         Delivery::Detached => (
             StatusCode::ACCEPTED,
             Json(serde_json::json!({
@@ -1303,13 +1335,14 @@ async fn execute(
             // The subscription's backlog covers events emitted before subscribing.
             let subscription = active.subscribe();
             let guard = AbortOnDrop(active);
-            Sse::new(sse_stream(subscription, stream_assembler, guard)).keep_alive(KeepAlive::default()).into_response()
+            let events = sse_stream(subscription, stream_assembler, guard, reply.scope);
+            Sse::new(events).keep_alive(KeepAlive::default()).into_response()
         }
         Delivery::Blocking => {
             let guard = AbortOnDrop(Arc::clone(&active));
             let outcome = active.wait().await;
             drop(guard);
-            result_json(&run_id, outcome)
+            result_json(&run_id, outcome, reply.scope)
         }
     }
 }
@@ -1417,6 +1450,7 @@ fn sse_stream(
     subscription: live::Subscription,
     mut assembler: ResponseAssembler,
     guard: AbortOnDrop,
+    scope: EventScope,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + 'static {
     let backlog = futures::stream::iter(subscription.backlog);
     let live = futures::stream::unfold(subscription.live, |mut rx| async move {
@@ -1449,9 +1483,20 @@ fn sse_stream(
             let data = serde_json::json!({ "node_id": chunk.node_id, "text": chunk.text, "is_final": chunk.is_final });
             out.push(Ok(SseEvent::default().event("response").data(data.to_string())));
         }
-        out.push(Ok(sse_event(&event)));
+        if let Some(message) = scoped_sse_event(&event, scope) {
+            out.push(Ok(message));
+        }
         futures::stream::iter(out)
     })
+}
+
+/// The SSE message for `event` within `scope`; `None` when the caller does not see it.
+fn scoped_sse_event(event: &Event, scope: EventScope) -> Option<SseEvent> {
+    match scope {
+        EventScope::Full => Some(sse_event(event)),
+        #[cfg(feature = "jwt")]
+        EventScope::Answer => crate::user_auth::events::sse_event(event),
+    }
 }
 
 /// A live event; unlike stored ones, `run_paused` keeps its snapshot here.
@@ -1470,7 +1515,7 @@ fn stored_sse(event: &StoredEvent) -> SseEvent {
 }
 
 /// The JSON body returned to blocking callers.
-fn result_json(run_id: &str, outcome: live::Outcome) -> Response {
+fn result_json(run_id: &str, outcome: live::Outcome, scope: EventScope) -> Response {
     let answer = outcome.answer;
     let body = match outcome.terminal {
         Some(Event::RunSucceeded { outputs, usage, handled_errors, elapsed_ms }) => serde_json::json!({
@@ -1489,7 +1534,11 @@ fn result_json(run_id: &str, outcome: live::Outcome) -> Response {
         }),
         _ => return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run ended without a terminal event"),
     };
-    Json(body).into_response()
+    match scope {
+        EventScope::Full => Json(body).into_response(),
+        #[cfg(feature = "jwt")]
+        EventScope::Answer => Json(crate::user_auth::events::result(body)).into_response(),
+    }
 }
 
 /// Delete runs older than `days` (any status except running), hourly.

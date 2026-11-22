@@ -137,7 +137,8 @@ graphrt serve <workflow-file|directory> [--addr 127.0.0.1:8080] [--api-key-env G
               [--providers FILE] [--model PROVIDER/NAME] [--allow-python-subprocess]
               [--timeout-ms] [--max-steps] [--input-header INPUT=HEADER]...
               [--verify-jwt INPUT [--jwt-jwks-url URL] [--jwt-secret-env VAR]
-               [--jwt-issuer ISS] [--jwt-audience AUD] [--user-rate-limit N]]
+               [--jwt-issuer ISS] [--jwt-audience AUD] [--user-rate-limit N]
+               [--user-events answer|all]]
               [--evaluators FILE] [--otel | --otel-preset NAME]
 ```
 
@@ -156,7 +157,9 @@ a missing header for a required input is `401`. See
 `--jwt-audience`) and lets a valid token start runs without the API key; an
 invalid one is `401`. It needs an API key (the server refuses to start without
 one). `--user-rate-limit N` caps runs per minute per token
-`sub` (`429` with `Retry-After`). See
+`sub` (`429` with `Retry-After`). A user-token response carries only the
+answer, the final result and pause prompts; `--user-events all` streams every
+event. See
 [serving.md](serving.md#verifying-end-user-jwts).
 
 `--evaluators evaluators.yaml` scores a deterministic sample of finished runs

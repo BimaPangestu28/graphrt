@@ -14,6 +14,16 @@ releases may contain breaking changes; they are called out under **Changed**.
   DNS-rebinding check), which made run lists, events and resume of every user
   public. **Migration:** set `GRAPHRT_API_KEY` (or `--api-key-env VAR`) next to
   `--verify-jwt`; user tokens keep working without it on the client side.
+- `graphrt serve --verify-jwt`: a run started with a user token streams only
+  `response` (answer) events, `run_started` and the terminal event, and its
+  blocking result only `run_id`, `status`, `outputs`, `answer`, `usage`,
+  `reasons`, `error_type`, `reason` and `elapsed_ms`. Node events (inputs,
+  outputs, tool results, retrieved documents, rendered prompts when capture
+  is on), `run_failed`'s error text and the pause snapshot are no longer sent
+  to end users. API-key callers are unchanged; resume and run reads still take
+  only the API key. **Migration:** clients that read `node_chunk` should read
+  `response` events instead; to keep the old behaviour for trusted clients,
+  pass `--user-events all`.
 - `POST /v1/runs/{id}/feedback` with a user token (`--verify-jwt`) accepts
   only runs started with a token of the same user. Run records gain
   `user_verified` (`true` when `user_id` is a verified `sub`, kept on resume,

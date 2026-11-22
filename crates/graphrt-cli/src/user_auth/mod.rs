@@ -20,6 +20,9 @@
 //! - `POST /v1/runs/{id}/feedback` (feature `scores`) accepts the token too, for
 //!   runs started with a token of the same `sub` only (`user_verified` on the
 //!   record; a body `user_id` from an API-key caller does not count).
+//! - A user-token request sees only the answer stream, the final result and
+//!   pause prompts of its run ([`events`]); `--user-events all` shows every
+//!   engine event, as API-key callers get.
 //! - Every other endpoint (run lists, events, scores, resume, knowledge...) still
 //!   needs the API key, so users cannot read each other's runs. The server
 //!   refuses to start with `--verify-jwt` unless an API key is set
@@ -29,6 +32,7 @@
 //! and/or an `HS256` shared secret named by `--jwt-secret-env`. Verification is
 //! in memory: no network round trip per request. See `docs/serving.md`.
 
+pub(crate) mod events;
 pub mod jwks;
 pub mod rate_limit;
 pub mod token;
@@ -39,7 +43,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use crate::args::UserAuthArgs;
+use crate::args::{UserAuthArgs, UserEvents};
 use crate::error::CliError;
 use crate::header_inputs::{HeaderInputSpec, strip_bearer};
 use crate::serve::error_response;
@@ -75,6 +79,8 @@ pub struct UserAuth {
     remote_keys: Option<Arc<RemoteKeySet>>,
     rules: ClaimRules,
     limiter: Option<UserRateLimiter>,
+    /// What a user-token request sees of its run (`--user-events`).
+    events: UserEvents,
 }
 
 impl UserAuth {
@@ -122,7 +128,15 @@ impl UserAuth {
             leeway_secs: LEEWAY_SECS,
         };
         let limiter = (args.user_rate_limit > 0).then(|| UserRateLimiter::per_minute(args.user_rate_limit));
-        Ok(Some(Self { input: input.clone(), header, local_keys, remote_keys, rules, limiter }))
+        Ok(Some(Self {
+            input: input.clone(),
+            header,
+            local_keys,
+            remote_keys,
+            rules,
+            limiter,
+            events: args.user_events,
+        }))
     }
 
     /// Verify `spec`'s header with fixed keys only (tests and embedders).
@@ -135,7 +149,19 @@ impl UserAuth {
             remote_keys: None,
             rules,
             limiter,
+            events: UserEvents::Answer,
         }
+    }
+
+    /// Show user-token requests `events` of their runs (default: [`UserEvents::Answer`]).
+    pub fn with_events(mut self, events: UserEvents) -> Self {
+        self.events = events;
+        self
+    }
+
+    /// What a user-token request sees of its run.
+    pub fn events(&self) -> UserEvents {
+        self.events
     }
 
     /// The start input whose header is verified.
@@ -157,8 +183,12 @@ impl UserAuth {
         if self.remote_keys.is_some() {
             sources.push("JWKS");
         }
-        let limit = self.limiter.as_ref().map_or(String::new(), |_| ", per-user rate limit on".to_owned());
-        format!("user JWTs in `{}` verified ({}){limit}", self.header, sources.join(" + "))
+        let limit = self.limiter.as_ref().map_or("", |_| ", per-user rate limit on");
+        let events = match self.events {
+            UserEvents::Answer => "answer and result only",
+            UserEvents::All => "all events",
+        };
+        format!("user JWTs in `{}` verified ({}){limit}; users see {events}", self.header, sources.join(" + "))
     }
 
     /// Check the token in `headers`, then its user's rate limit.

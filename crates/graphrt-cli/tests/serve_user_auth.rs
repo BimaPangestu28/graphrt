@@ -12,6 +12,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use graphrt_cli::args::UserEvents;
 use graphrt_cli::header_inputs::HeaderInputSpec;
 use graphrt_cli::serve::{build_state, discover, router};
 use graphrt_cli::setup::ServiceOptions;
@@ -69,6 +70,28 @@ graph:
 "#,
     )
     .unwrap();
+    // A chat that pauses for the user to confirm.
+    std::fs::write(
+        flows.join("confirm.yaml"),
+        r#"version: "1"
+name: confirm
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: user_jwt, type: secret, required: true }
+    - id: ask
+      type: human-input
+      prompt: "Send it?"
+      actions: [{ id: "yes", title: "Yes" }]
+    - { id: done, type: answer, answer: "sent" }
+  edges:
+    - { source: start, target: ask }
+    - { source: ask, target: done, handle: "yes" }
+"#,
+    )
+    .unwrap();
     // A workflow not built for end users (no `user_jwt` input).
     let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     std::fs::copy(examples.join("hello.yaml"), flows.join("internal.yaml")).unwrap();
@@ -76,6 +99,10 @@ graph:
 }
 
 async fn app(dir: &TempDir, per_minute: u32) -> axum::Router {
+    app_with_events(dir, per_minute, UserEvents::Answer).await
+}
+
+async fn app_with_events(dir: &TempDir, per_minute: u32, events: UserEvents) -> axum::Router {
     let flows = write_workflow(dir);
     let files = discover(&flows).expect("discover");
     let options = ServiceOptions {
@@ -84,7 +111,8 @@ async fn app(dir: &TempDir, per_minute: u32) -> axum::Router {
     };
     let specs: Vec<HeaderInputSpec> = vec![format!("user_jwt={HEADER}").parse().unwrap()];
     let rules = ClaimRules { issuer: Some(ISSUER.into()), audience: Some("authenticated".into()), leeway_secs: 30 };
-    let user_auth = UserAuth::with_keys(&specs[0], vec![VerifyKey::hs256(SECRET)], rules, per_minute);
+    let user_auth =
+        UserAuth::with_keys(&specs[0], vec![VerifyKey::hs256(SECRET)], rules, per_minute).with_events(events);
     let state = build_state(&files, &options, Limits::default(), Some(API_KEY.into()))
         .await
         .expect("state")
@@ -340,6 +368,76 @@ async fn user_tokens_only_start_workflows_that_take_them() {
         .body(Body::from(json!({ "inputs": { "name": "Ada" } }).to_string()))
         .unwrap();
     assert_eq!(send(&app, req).await.0, StatusCode::OK);
+}
+
+// ---------------------------------------------------------------- least-privilege events
+
+/// A run start of `workflow` with this body, authorized by a user token or the API key.
+fn start_as(workflow: &str, user_token: Option<&str>, api_key: Option<&str>, body: &Json) -> Request<Body> {
+    let mut req = Request::post(format!("/v1/workflows/{workflow}/runs")).header("content-type", "application/json");
+    if let Some(token) = user_token {
+        req = req.header(HEADER, format!("Bearer {token}"));
+    }
+    if let Some(key) = api_key {
+        req = req.header("authorization", format!("Bearer {key}"));
+    }
+    req.body(Body::from(body.to_string())).unwrap()
+}
+
+/// SSE event names of a streamed response, in order.
+fn event_names(sse: &str) -> Vec<&str> {
+    sse.lines().filter_map(|line| line.strip_prefix("event: ")).collect()
+}
+
+#[tokio::test]
+async fn user_streams_carry_only_the_answer_and_run_events() {
+    let dir = TempDir::new("user-stream");
+    let app = app(&dir, 0).await;
+    let token = token_for("user-123", SECRET, 3600);
+    let (status, _, sse) = send(&app, start_as("chat", Some(&token), None, &json!({ "stream": true }))).await;
+    assert_eq!(status, StatusCode::OK, "{sse}");
+    let names = event_names(&sse);
+    assert_eq!(names.first(), Some(&"run_started"), "{sse}");
+    assert!(names.contains(&"response") && names.last() == Some(&"run_succeeded"), "{sse}");
+    assert!(names.iter().all(|name| !name.starts_with("node_")), "internal events leaked: {names:?}");
+    assert!(sse.contains("user=user-123"), "{sse}");
+}
+
+#[tokio::test]
+async fn user_pauses_show_the_prompt_without_the_snapshot() {
+    let dir = TempDir::new("user-pause");
+    let app = app(&dir, 0).await;
+    let token = token_for("user-123", SECRET, 3600);
+    let (status, _, sse) = send(&app, start_as("confirm", Some(&token), None, &json!({ "stream": true }))).await;
+    assert_eq!(status, StatusCode::OK, "{sse}");
+    assert_eq!(event_names(&sse), ["run_started", "run_paused"], "{sse}");
+    assert!(sse.contains("Send it?") && !sse.contains("snapshot"), "{sse}");
+
+    let (status, _, text) = send(&app, start_as("confirm", Some(&token), None, &json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let result: Json = serde_json::from_str(&text).unwrap();
+    assert_eq!(result["status"], "paused", "{result}");
+    assert_eq!(result["reasons"][0]["kind"], "human_input", "{result}");
+    assert!(result.get("snapshot").is_none(), "{result}");
+}
+
+#[tokio::test]
+async fn user_events_all_and_api_keys_get_every_event() {
+    let token = token_for("user-123", SECRET, 3600);
+    let dir = TempDir::new("user-all");
+    let full = app_with_events(&dir, 0, UserEvents::All).await;
+    let (_, _, sse) = send(&full, start_as("chat", Some(&token), None, &json!({ "stream": true }))).await;
+    assert!(event_names(&sse).contains(&"node_succeeded"), "{sse}");
+    let (_, _, text) = send(&full, start_as("confirm", Some(&token), None, &json!({}))).await;
+    assert!(serde_json::from_str::<Json>(&text).unwrap()["snapshot"].is_object(), "{text}");
+
+    // API-key callers are unchanged.
+    let dir = TempDir::new("user-key");
+    let app = app(&dir, 0).await;
+    let body = json!({ "stream": true, "inputs": { "name": "Ada" } });
+    let (status, _, sse) = send(&app, start_as("internal", None, Some(API_KEY), &body)).await;
+    assert_eq!(status, StatusCode::OK, "{sse}");
+    assert!(event_names(&sse).contains(&"node_succeeded"), "{sse}");
 }
 
 // ---------------------------------------------------------------- keep-alive after early rejections

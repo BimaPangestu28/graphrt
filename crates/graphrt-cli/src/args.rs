@@ -626,4 +626,21 @@ pub struct UserAuthArgs {
     /// more get `429 Too Many Requests` with `Retry-After` (0 = unlimited).
     #[arg(long, value_name = "N", default_value_t = 0, requires = "verify_jwt")]
     pub user_rate_limit: u32,
+    /// What a user-token request sees of its run: `answer` (default) streams only the
+    /// answer text and the final result (outputs, answer, status, usage, pause prompts);
+    /// `all` streams every engine event (node inputs and outputs, tool results, rendered
+    /// prompts, the pause snapshot), as API-key callers get.
+    #[arg(long, value_name = "SCOPE", value_enum, default_value_t = UserEvents::Answer, requires = "verify_jwt")]
+    pub user_events: UserEvents,
+}
+
+/// `--user-events`: how much of a run a verified end user receives.
+#[cfg(feature = "jwt")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum UserEvents {
+    /// Answer chunks, the final result and pause prompts.
+    #[default]
+    Answer,
+    /// Every engine event, as for API-key callers.
+    All,
 }

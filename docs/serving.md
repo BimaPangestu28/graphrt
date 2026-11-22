@@ -175,6 +175,7 @@ curl -N http://localhost:8080/v1/workflows/chat/runs -H 'Content-Type: applicati
 | `--jwt-issuer ISS` | Required `iss`. Env fallback: `GRAPHRT_JWT_ISSUER` |
 | `--jwt-audience AUD` | Required `aud` (a string, or one entry of an array; Supabase uses `authenticated`). Env fallback: `GRAPHRT_JWT_AUDIENCE` |
 | `--user-rate-limit N` | Runs per minute per verified user (`sub`), bursts of up to N; `0` (default) = unlimited |
+| `--user-events answer\|all` | What a user-token request sees of its run (below). `answer` (default) or `all` (every engine event, as with the API key) |
 
 The env fallbacks let a container without a shell take project-specific values
 from its environment.
@@ -193,6 +194,18 @@ What a request gets:
   is valid, so a bad token never reaches a tool.
 - **No token**: the API key rules apply as before (and a required input still
   answers `401`).
+- **What the response contains** (`--user-events answer`, the default): a
+  streamed run sends only `response` events (the answer text), `run_started`
+  and the terminal event: `run_succeeded` (the end node's `outputs` and
+  `usage`), `run_failed` (`error_type` and `usage`, not the error text, which
+  can quote internal URLs or upstream bodies), `run_aborted`, or `run_paused`
+  with its `reasons` (the human-input form to show) and no snapshot. A
+  blocking run returns `run_id`, `status`, `outputs`, `answer`, `usage`,
+  `reasons`, `error_type`, `reason` and `elapsed_ms` only. Node events (inputs,
+  outputs, retrieved documents, tool results, rendered prompts) never reach
+  the client. `--user-events all` restores the full stream and result for
+  trusted clients. Requests authorized by the API key always get everything,
+  and every endpoint that reads or resumes runs takes only the API key.
 - **Over the rate limit**: `429` with `Retry-After` (seconds). Refused requests
   do not use up the quota. The limit is per process; with several instances
   each one counts separately.
