@@ -625,13 +625,22 @@ impl AgentNode {
         self.record(state, tools, call, ToolOutput::error(text));
     }
 
+    /// A tool result's text as the model sees it: the tool's context masked,
+    /// then cut to `max_tool_output_chars`.
+    ///
+    /// A tool may echo its context (e.g. an upstream error repeating the JWT):
+    /// the model, the outputs and the progress events must never see it. Masking
+    /// comes first so a cut through the secret cannot leave its prefix behind.
+    fn visible_result_text(&self, tools: &[BoundTool], call: &ToolCall, text: &str) -> String {
+        let bound = tools.iter().find(|t| t.exposed == call.name);
+        let scrubbed = bound.map_or(Cow::Borrowed(text), |b| scrub_context(text, b.context()));
+        truncate(&scrubbed, self.config.max_tool_output_chars)
+    }
+
     /// Append a tool result to the conversation and the log.
     fn record(&self, state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, output: ToolOutput) {
         let bound = tools.iter().find(|t| t.exposed == call.name);
-        // A tool may echo its context (e.g. an upstream error repeating the JWT): the
-        // model, the outputs and the progress events must never see it.
-        let scrubbed = bound.map_or(Cow::Borrowed(output.text.as_str()), |b| scrub_context(&output.text, b.context()));
-        let mut text = truncate(&scrubbed, self.config.max_tool_output_chars);
+        let mut text = self.visible_result_text(tools, call, &output.text);
         let images = match check_images(&output.images) {
             Ok(()) => output.images,
             Err(e) => {
@@ -683,7 +692,7 @@ impl AgentNode {
                 json!({"id": call.id, "name": call.name, "is_error": output.is_error, "images": output.images.len()});
             if capture && let Some(fields) = data.as_object_mut() {
                 // Same text the model and the `tool_calls` output see.
-                let result = truncate(&output.text, self.config.max_tool_output_chars);
+                let result = self.visible_result_text(tools, call, &output.text);
                 fields.insert("result".to_owned(), Json::String(result));
             }
             ctx.progress("tool_result", Value::from_json(data));
@@ -1195,6 +1204,35 @@ mod tests {
         // Registered with the run so later node errors are scrubbed too.
         assert_eq!(secrets.scrub(&format!("bad {JWT}")), "bad ******");
         assert!(node.inputs().iter().any(|sel| sel.to_string() == "start.user_jwt"));
+    }
+
+    #[tokio::test]
+    async fn captured_tool_results_never_carry_the_tool_context() {
+        let s = setup(vec![MockModel::tool_calls(&[("c1", "whoami", "{}")]), MockModel::text("done")]);
+        let vault = VaultTools::new(true);
+        let base = vault_ctx(&s, &vault);
+        let services = (*base.services).clone().with(graphrt_core::node::CaptureContent);
+        completed(vault_agent(json!({})).run(base.with_services(Arc::new(services))).await);
+        assert_eq!(tool_results(&s)[0].get_path(&["result"]), Some(Value::from("rejected token ******")));
+        let events = serde_json::to_string(&*s.events.lock().unwrap()).unwrap();
+        assert!(!events.contains(JWT), "{events}");
+    }
+
+    #[tokio::test]
+    async fn tool_results_are_masked_before_they_are_cut() {
+        let s = setup(vec![MockModel::tool_calls(&[("c1", "whoami", "{}")]), MockModel::text("done")]);
+        let vault = VaultTools::new(true);
+        let base = vault_ctx(&s, &vault);
+        let services = (*base.services).clone().with(graphrt_core::node::CaptureContent);
+        // The cut falls inside the echoed token: masking afterwards would miss its prefix.
+        let limit = "rejected token ".len() + 12;
+        let node = vault_agent(json!({"max_tool_output_chars": limit}));
+        completed(node.run(base.with_services(Arc::new(services))).await);
+        let token_prefix = &JWT[..12];
+        let events = serde_json::to_string(&*s.events.lock().unwrap()).unwrap();
+        assert!(!events.contains(token_prefix), "{events}");
+        let requests = s.model.requests();
+        assert!(!format!("{:?}", requests[1].messages).contains(token_prefix));
     }
 
     #[tokio::test]
