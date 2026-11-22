@@ -17,6 +17,16 @@ releases may contain breaking changes; they are called out under **Changed**.
   `langfuse` stay on by default.
 
 ### Added
+- `graphrt-provider-fly` (internal crate, feature `provider-fly`): the Fly
+  Machines provider of the upcoming `graphrt gateway`. A deployment version is
+  a pool of pre-created Machines, woken with `start` (suspended snapshots
+  first), released with `suspend` falling back to `stop`, addressed over 6PN.
+  Its `deploy` driver (`graphrt deploy --target fly`) creates the app, writes
+  Fly app secrets from `env:`/`fly:` references and creates the stopped pool
+  with `kill_timeout` = `grace_secs` (≤ 300 s). Hand-rolled Machines REST
+  client, no Fly SDK; passes the provider conformance suite against a fake
+  Machines API. Not wired into a binary yet. See
+  [docs/gateway-fly.md](docs/gateway-fly.md).
 - `graphrt-provider-api` (internal crate): the `Provider` / `DeployDriver`
   traits, capabilities and error kinds of the upcoming `graphrt gateway`, the
   shared provider HTTP layer (token bucket per provider API, jittered retry,
