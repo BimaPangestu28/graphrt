@@ -65,6 +65,9 @@ otel = ["dep:graphrt-otel"]
 # default for small devices: the static musl `serve` build idles at ~12 MiB RSS
 # with it instead of ~4.4 MiB and is OOM-killed in a 16 MiB container under
 # load; it also adds ~140 KiB to the binary.
+# Built with `no_thp`: mimalloc otherwise asks for transparent huge pages on
+# its arenas, and every touched 2 MiB page counts in full towards RSS (the
+# gateway idled at 20 MiB and held 156 MiB with 1,000 streams; 8 / 79 without).
 mimalloc = ["dep:mimalloc"]
 # `graphrt serve`: HTTP + SSE API, webhook triggers (`--webhooks`). Completion
 # callbacks of webhooks additionally need `http` (they go through its egress policy).
@@ -111,7 +114,7 @@ telemetry = ["http", "dep:getrandom"]
 
 [dependencies]
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }
-mimalloc = { version = "0.1.52", optional = true, default-features = false }
+mimalloc = { version = "0.1.52", optional = true, default-features = false, features = ["no_thp"] }
 graphrt-llm = { workspace = true, optional = true, features = ["openai", "anthropic", "gemini", "bedrock", "typesafe"] }
 graphrt-http = { workspace = true, optional = true }
 graphrt-code = { workspace = true, optional = true, features = ["js", "tokio"] }
