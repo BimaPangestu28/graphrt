@@ -59,7 +59,10 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # One cache per OS, shared by PR, main and release runs.
+          # One cache per OS (rust-cache adds the runner OS to the key). GitHub
+          # scopes caches by ref: PR and tag (release) runs can restore main's
+          # cache, but what they save stays with their own ref, so only main
+          # runs refresh the cache the others start from.
           shared-key: cross-platform
       # Plugin and code-node tests start `python3`; Windows images only ship `python.exe`.
       - name: Provide python3 on Windows
