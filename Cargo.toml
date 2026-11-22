@@ -16,6 +16,7 @@ members = [
     "crates/graphrt-eval",
     "crates/graphrt-ffi",
     "crates/graphrt-cli",
+    "crates/graphrt-provider-azure",
 ]
 
 [workspace.package]
