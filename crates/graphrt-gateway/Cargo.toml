@@ -15,8 +15,10 @@ publish = false
 default = ["gw-local"]
 # local-process provider: one `graphrt serve --trust-gateway` process per replica on a Unix socket.
 gw-local = []
-# Kubernetes (self-hosted, GKE, EKS, AKS): scale subresource + EndpointSlices, in-cluster or kubeconfig auth.
-gw-k8s = ["dep:graphrt-provider-k8s", "graphrt-provider-k8s/kubeconfig"]
+# Kubernetes (self-hosted, GKE, EKS, AKS): scale subresource + EndpointSlices, in-cluster service account auth.
+gw-k8s = ["dep:graphrt-provider-k8s"]
+# Kubernetes from outside the cluster: kubeconfig files (token, client cert, exec plugins); ≈ +65 KiB.
+gw-k8s-kubeconfig = ["gw-k8s", "graphrt-provider-k8s/kubeconfig"]
 # Cloud Run: platform scaling behind one URL, ID-token invoke.
 gw-cloud-run = ["dep:graphrt-gcp", "graphrt-gcp/provider-cloud-run", "provider-cloud-run"]
 # Same name as graphrt-gcp's feature, so its fake Google APIs (shared with tests/provider_harness.rs) compile here.
@@ -28,7 +30,7 @@ gw-lambda = ["dep:graphrt-provider-aws", "graphrt-provider-aws/provider-lambda"]
 # Fly Machines: pre-created pool, start / suspend.
 gw-fly = ["dep:graphrt-provider-fly"]
 # Deploy drivers of `graphrt deploy --target ...` (deploy-time credentials, never used by the gateway itself).
-deploy-k8s = ["gw-k8s", "graphrt-provider-k8s/deploy"]
+deploy-k8s = ["gw-k8s-kubeconfig", "graphrt-provider-k8s/deploy"]
 deploy-cloud-run = ["gw-cloud-run", "graphrt-gcp/deploy-cloud-run"]
 deploy-ecs = ["gw-ecs", "graphrt-provider-aws/deploy-ecs"]
 deploy-lambda = ["gw-lambda", "graphrt-provider-aws/deploy-lambda"]

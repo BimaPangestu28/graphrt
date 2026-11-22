@@ -244,22 +244,33 @@ pub fn build_remote(config: &ProviderConfig) -> Result<Arc<dyn Provider>, String
 
 type Built = Option<Result<Arc<dyn Provider>, String>>;
 
-/// The K8s cluster settings (in-cluster, else kubeconfig).
+/// The K8s cluster settings: kubeconfig when configured (feature
+/// `gw-k8s-kubeconfig`), else the in-cluster service account.
+///
+/// # Errors
+/// Missing credentials, or a kubeconfig asked for without the feature.
 #[cfg(feature = "gw-k8s")]
 pub fn k8s_client(settings: &K8sConfig) -> Result<graphrt_provider_k8s::KubeClient, String> {
+    let cluster = k8s_cluster(settings)?;
+    graphrt_provider_k8s::KubeClient::new(&cluster, graphrt_provider_k8s::ClientOptions::default()).map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "gw-k8s-kubeconfig")]
+fn k8s_cluster(settings: &K8sConfig) -> Result<graphrt_provider_k8s::auth::ClusterConfig, String> {
     use graphrt_provider_k8s::auth::{KubeconfigOptions, infer_cluster_config, kubeconfig_from_env};
-    let cluster = match &settings.kubeconfig {
-        Some(path) => {
-            kubeconfig_from_env(&KubeconfigOptions { path: Some(path.clone()), context: settings.context.clone() })
-        }
-        None if settings.context.is_some() => {
-            kubeconfig_from_env(&KubeconfigOptions { path: None, context: settings.context.clone() })
-        }
-        None => infer_cluster_config(),
+    match (&settings.kubeconfig, &settings.context) {
+        (None, None) => infer_cluster_config(),
+        (path, context) => kubeconfig_from_env(&KubeconfigOptions { path: path.clone(), context: context.clone() }),
     }
-    .map_err(|error| format!("kubernetes credentials: {error}"))?;
-    graphrt_provider_k8s::KubeClient::new(&cluster, graphrt_provider_k8s::ClientOptions::default())
-        .map_err(|error| error.to_string())
+    .map_err(|error| format!("kubernetes credentials: {error}"))
+}
+
+#[cfg(all(feature = "gw-k8s", not(feature = "gw-k8s-kubeconfig")))]
+fn k8s_cluster(settings: &K8sConfig) -> Result<graphrt_provider_k8s::auth::ClusterConfig, String> {
+    if settings.kubeconfig.is_some() || settings.context.is_some() {
+        return Err("kubeconfig / context need the `gw-k8s-kubeconfig` feature (this build only uses the in-cluster service account)".to_owned());
+    }
+    graphrt_provider_k8s::auth::in_cluster_config().map_err(|error| format!("kubernetes in-cluster credentials: {error}"))
 }
 
 #[cfg(feature = "gw-k8s")]

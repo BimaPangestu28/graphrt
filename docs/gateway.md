@@ -135,7 +135,7 @@ deployments:
 | Kind | Cargo feature (`graphrt-cli`) | Addressing | Notes |
 | --- | --- | --- | --- |
 | `local` | `gateway` | per replica (Unix socket) | default when a deployment names no provider |
-| `k8s` | `gateway-k8s` | per pod | scale subresource + EndpointSlices; [Kubernetes guide](kubernetes-provider.md) |
+| `k8s` | `gateway-k8s` (`gateway-k8s-in-cluster`: in-cluster service account only, no kubeconfig, no deploy driver) | per pod | scale subresource + EndpointSlices; [Kubernetes guide](kubernetes-provider.md) |
 | `cloud_run` | `gateway-cloud-run` | one URL | the gateway adds `X-Serverless-Authorization` (ID token) to every request; [Cloud Run guide](gateway-cloud-run.md) |
 | `ecs` | `gateway-ecs` | per task | the gateway starts and stops Fargate tasks; [AWS guide](gateway-aws.md) |
 | `lambda` | `gateway-lambda` | `lambda://` | requests go through `InvokeWithResponseStream`; sync runs only, a run past the function timeout fails with `platform_timeout` |

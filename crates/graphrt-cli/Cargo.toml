@@ -94,6 +94,8 @@ langfuse = ["scores", "otel", "http", "tokio/sync"]
 gateway = ["serve", "dep:graphrt-gateway", "graphrt-gateway/gw-local", "dep:graphrt-provider-api", "mimalloc", "dep:ring"]
 # Remote providers of `graphrt gateway` and their `graphrt deploy --target` drivers.
 gateway-k8s = ["gateway", "graphrt-gateway/deploy-k8s"]
+# In-cluster-only Kubernetes provider, without kubeconfig support or the deploy driver (smallest gateway build).
+gateway-k8s-in-cluster = ["gateway", "graphrt-gateway/gw-k8s"]
 gateway-cloud-run = ["gateway", "graphrt-gateway/deploy-cloud-run"]
 gateway-ecs = ["gateway", "graphrt-gateway/deploy-ecs"]
 gateway-lambda = ["gateway", "graphrt-gateway/deploy-lambda"]
