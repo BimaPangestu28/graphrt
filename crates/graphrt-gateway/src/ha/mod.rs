@@ -15,7 +15,7 @@
 //!
 //! After a takeover the new active does what a restarted T1 gateway does
 //! ([`crate::supervisor::Gateway::recover`]): SQLite replays its WAL, runs
-//! that were `running` wait for their agents' orphan reports (polled from the
+//! that were `running` wait for their agents' orphans (polled from the
 //! provider's replicas, which the local-process provider adopts from their
 //! pid files), cron resumes from its stored last fire (deterministic run ids:
 //! a repeated fire is a duplicate) and webhook markers dedupe redeliveries.

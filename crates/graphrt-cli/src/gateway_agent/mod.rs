@@ -18,13 +18,12 @@
 //!
 //! When the gateway's stream of a run breaks, the run is not aborted (as a
 //! public streaming request's would be): the agent waits a few seconds for a
-//! reattach, then pauses the run and holds the result as an *orphan* for the
-//! reclaim grace (`--reclaim-grace-secs`, 60 s), reporting it with
-//! `POST <gateway>/internal/v1/orphans/{id}` when `--gateway-url` is set. See
+//! reattach, then preempts the run and holds the result as an *orphan* for the
+//! reclaim grace (`--reclaim-grace-secs`, 60 s), until the gateway pulls it with
+//! `GET /internal/v1/orphans`. The agent never calls the gateway. See
 //! `docs/gateway-protocol.md`.
 
 pub mod body;
-pub mod client;
 mod json;
 mod reclaim;
 mod routes;
@@ -66,8 +65,6 @@ pub struct GatewayAgentConfig {
     /// The deployment this agent serves (`--deployment`).
     pub deployment: String,
     pub keys: Vec<signature::GatewayKey>,
-    /// Where orphans are reported (`--gateway-url`).
-    pub gateway: Option<client::GatewayAddress>,
     pub reclaim_grace: Duration,
     /// How long a broken stream may be reattached before the run is paused.
     pub reattach_window: Duration,
@@ -162,15 +159,9 @@ impl GatewayAgentConfig {
         })?;
         let keys = signature::parse_keys(&keys_text)
             .map_err(|e| CliError::usage(format!("${}: {e}", args.gateway_keys_env)))?;
-        let gateway =
-            match args.gateway_url.clone().or_else(|| lookup_env("GRAPHRT_GATEWAY_URL")).filter(|u| !u.is_empty()) {
-                Some(url) => Some(client::GatewayAddress::parse(&url).map_err(CliError::usage)?),
-                None => None,
-            };
         Ok(Some(Self {
             deployment,
             keys,
-            gateway,
             reclaim_grace: Duration::from_secs(args.reclaim_grace_secs),
             reattach_window: DEFAULT_REATTACH_WINDOW,
             max_body_bytes,

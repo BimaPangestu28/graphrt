@@ -1,5 +1,5 @@
-//! Public HTTP API of the gateway (HTTP/1.1, axum), the agent-facing orphan
-//! endpoint and the admin API used by `graphrt deploy`.
+//! Public HTTP API of the gateway (HTTP/1.1, axum) and the admin API used by
+//! `graphrt deploy`. Agents never call the gateway: it pulls their orphans.
 //!
 //! | Method | Path | |
 //! | --- | --- | --- |
@@ -9,7 +9,6 @@
 //! | POST | `/v1/deployments/{d}/runs/{id}/resume` | resume a paused run (`inputs`, `secrets`) |
 //! | POST | `/v1/deployments/{d}/runs/{id}/abort` | abort |
 //! | POST | `/v1/deployments/{d}/hooks/{hook}` | webhook ingress |
-//! | POST | `/internal/v1/orphans/{id}` | agent orphan report (HMAC) |
 //! | POST | `/admin/v1/deployments/{d}/versions` | register a version (admin token) |
 //! | GET | `/metrics`, `/healthz` | |
 //!
@@ -43,7 +42,7 @@ use crate::deployment::{Deployment, VersionError, VersionInfo};
 use crate::limiter::{Decision, Gcra};
 use crate::metrics::{DeploymentGauges, bump};
 use crate::pool::ActivateError;
-use crate::signature::{DEPLOYMENT_HEADER, EPOCH_HEADER, RUN_ID_HEADER, SIGNATURE_HEADER, Signed, unix_now};
+use crate::signature::unix_now;
 use crate::sse::{Frame, is_after, resume_point};
 use crate::supervisor::{Gateway, LiveRun, RunInput, Settled, StartError, StartOptions, Started};
 use crate::webhook::{HookConfig, delivery_key, hook_run_id, verify};
@@ -105,7 +104,6 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/deployments/{deployment}/runs/{run_id}/resume", post(resume_run))
         .route("/v1/deployments/{deployment}/runs/{run_id}/abort", post(abort_run))
         .route("/v1/deployments/{deployment}/hooks/{hook}", post(webhook))
-        .route("/internal/v1/orphans/{run_id}", post(orphan))
         .route("/admin/v1/deployments/{deployment}/versions", post(add_version))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app)
@@ -601,41 +599,6 @@ async fn webhook(
                 .into_response()
         }
         Err(failure) => start_error(&app, failure),
-    }
-}
-
-async fn orphan(State(app): State<Arc<App>>, Path(run_id): Path<String>, headers: HeaderMap, body: Bytes) -> Response {
-    let Some(name) = header(&headers, DEPLOYMENT_HEADER) else {
-        return error(StatusCode::BAD_REQUEST, "bad_request", "Graphrt-Deployment header required");
-    };
-    let Some(deployment) = app.gateway.deployment(name) else {
-        return error(StatusCode::UNAUTHORIZED, "unauthorized", "unknown deployment");
-    };
-    let path = format!("/internal/v1/orphans/{run_id}");
-    let signed = Signed {
-        deployment: name,
-        method: "POST",
-        path: &path,
-        run_id: header(&headers, RUN_ID_HEADER).unwrap_or_default(),
-        epoch: header(&headers, EPOCH_HEADER).unwrap_or_default(),
-        body: &body,
-    };
-    if let Err(failure) = deployment.verifier().verify(header(&headers, SIGNATURE_HEADER), &signed, unix_now()) {
-        return error(StatusCode::UNAUTHORIZED, "unauthorized", &failure.to_string());
-    }
-    if signed.run_id != run_id {
-        return error(StatusCode::BAD_REQUEST, "bad_request", "run id mismatch");
-    }
-    let Ok(report) = serde_json::from_slice::<Json>(&body) else {
-        return error(StatusCode::BAD_REQUEST, "bad_request", "invalid orphan report");
-    };
-    if report.get("deployment").and_then(Json::as_str).is_some_and(|reported| reported != name) {
-        return error(StatusCode::FORBIDDEN, "forbidden", "orphan of another deployment");
-    }
-    if app.gateway.accept_orphan(&run_id, report) {
-        StatusCode::ACCEPTED.into_response()
-    } else {
-        error(StatusCode::NOT_FOUND, "not_found", "no execution of this run is awaiting an orphan")
     }
 }
 

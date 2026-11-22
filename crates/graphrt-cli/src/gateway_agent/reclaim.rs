@@ -11,22 +11,20 @@
 //!    again on resume: at-least-once per node) and keeps the outcome, a
 //!    `run_paused` with reason `preempted` and the snapshot, as an [`Orphan`]
 //!    for the reclaim grace;
-//! 3. with `--gateway-url`, it reports the orphan to the gateway
-//!    (`POST /internal/v1/orphans/{id}`, signed), retrying with backoff;
-//!    a gateway can also list orphans (`GET /internal/v1/orphans`);
+//! 3. the gateway pulls the orphan (`GET /internal/v1/orphans`, then
+//!    `DELETE /internal/v1/orphans/{id}`): the agent never calls the gateway,
+//!    so it needs no gateway address and no HTTP client;
 //! 4. an orphan nobody took over within the grace is dropped. Deciding that the
 //!    run is lost (`failed{owner_lost}`) is the gateway's job, which owns the
 //!    run's record; this agent's store is only a cache of its executions.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use graphrt_core::store::now_ms;
 use serde::Serialize;
 
-use super::signature::{self, DEPLOYMENT_HEADER, EPOCH_HEADER, RUN_ID_HEADER, SIGNATURE_HEADER, Signed};
-use super::{GatewayAgent, PROTOCOL_HEADER};
+use super::GatewayAgent;
 use crate::store::live::ActiveRun;
 
 /// Pause reason kind of a run preempted because its gateway stream broke.
@@ -162,11 +160,9 @@ impl Reclaim {
         }
         let Some(orphan) = self.orphan(outcome) else { return };
         self.agent.orphans().insert(self.run_id.clone(), orphan.clone());
-        let deadline = tokio::time::Instant::now() + self.agent.config.reclaim_grace;
-        if self.report(&orphan, deadline).await {
-            self.agent.release_orphan(&self.run_id, self.epoch);
-        }
-        tokio::time::sleep_until(deadline).await;
+        // The gateway pulls it (`GET /internal/v1/orphans`) and releases it with
+        // `DELETE`; one nobody took over is dropped at the end of the grace.
+        tokio::time::sleep(self.agent.config.reclaim_grace).await;
         self.agent.release_orphan(&self.run_id, self.epoch);
     }
 
@@ -195,50 +191,5 @@ impl Reclaim {
             answer: outcome.answer,
             orphaned_ms: now_ms(),
         })
-    }
-
-    /// Report `orphan` to the gateway until it accepts it or `deadline`.
-    /// Returns whether the gateway took it.
-    async fn report(&self, orphan: &Orphan, deadline: tokio::time::Instant) -> bool {
-        let (Some(address), Some(key)) = (&self.agent.config.gateway, self.agent.verifier.signing_key()) else {
-            return false;
-        };
-        let body = orphan.to_json();
-        let path = address.path_of(&format!("/internal/v1/orphans/{}", self.run_id));
-        let epoch = self.epoch.to_string();
-        let deployment = self.agent.deployment();
-        let mut backoff = Duration::from_millis(500);
-        while tokio::time::Instant::now() < deadline {
-            let signed = Signed {
-                deployment,
-                method: "POST",
-                path: &path,
-                run_id: &self.run_id,
-                epoch: &epoch,
-                body: body.as_bytes(),
-            };
-            let signature = signature::sign(key, signature::unix_now(), &signed);
-            let headers = [
-                (PROTOCOL_HEADER, "1"),
-                (SIGNATURE_HEADER, signature.as_str()),
-                (DEPLOYMENT_HEADER, deployment),
-                (RUN_ID_HEADER, self.run_id.as_str()),
-                (EPOCH_HEADER, epoch.as_str()),
-            ];
-            match super::client::send(address, &super::client::request(address, &path, &headers, body.as_bytes())).await
-            {
-                Ok(status) if (200..300).contains(&status) => return true,
-                // The gateway refuses it for good (it no longer owns the run, bad key...).
-                Ok(status) if (400..500).contains(&status) && status != 429 => {
-                    eprintln!("warning: run {}: orphan report refused ({status})", self.run_id);
-                    return false;
-                }
-                Ok(status) => eprintln!("warning: run {}: orphan report got {status}", self.run_id),
-                Err(e) => eprintln!("warning: run {}: orphan report failed: {e}", self.run_id),
-            }
-            tokio::time::sleep(backoff.min(deadline.saturating_duration_since(tokio::time::Instant::now()))).await;
-            backoff = (backoff * 2).min(Duration::from_secs(8));
-        }
-        false
     }
 }

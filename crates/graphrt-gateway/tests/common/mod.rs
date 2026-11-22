@@ -33,7 +33,7 @@ use graphrt_gateway::deployment::{Deployment, VersionInfo};
 use graphrt_gateway::pool::PoolConfig;
 use graphrt_gateway::server::{App, router};
 use graphrt_gateway::signature::{
-    DEPLOYMENT_HEADER, EPOCH_HEADER, GatewayKey, RUN_ID_HEADER, SIGNATURE_HEADER, Signed, Verifier, sign, unix_now,
+    DEPLOYMENT_HEADER, EPOCH_HEADER, GatewayKey, RUN_ID_HEADER, SIGNATURE_HEADER, Signed, Verifier, unix_now,
 };
 use graphrt_gateway::store::SqliteStore;
 use graphrt_gateway::supervisor::{Gateway, SupervisorSettings};
@@ -66,8 +66,8 @@ fn snapshot(run_id: &str) -> Snapshot {
 /// Shared knobs of all fake agents.
 #[derive(Default)]
 pub struct AgentWorld {
-    /// Where agents report orphans.
-    pub gateway_url: Mutex<Option<String>>,
+    /// Orphans each replica holds for the gateway to pull: (replica, orphan).
+    pub orphans: Mutex<Vec<(String, Json)>>,
     /// Executions started, per run id.
     pub executions: Mutex<HashMap<String, Vec<u64>>>,
     /// Bodies the agents received (to check that secrets reach the agent but nothing else).
@@ -103,33 +103,11 @@ fn verify(state: &AgentState, method: &str, path: &str, headers: &HeaderMap, bod
         .map_err(|error| (StatusCode::UNAUTHORIZED, error.to_string()).into_response())
 }
 
-fn orphan_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
-}
-
-async fn post_orphan(world: &AgentWorld, run_id: &str, epoch: u64, terminal: Json, event_count: u64) {
-    let Some(url) = world.gateway_url.lock().unwrap().clone() else { return };
-    let body = serde_json::to_vec(&json!({ "run_id": run_id, "epoch": epoch, "deployment": DEPLOYMENT, "status": "paused", "event_count": event_count, "terminal": terminal, "answer": "", "orphaned_ms": 0 })).unwrap();
-    let path = format!("/internal/v1/orphans/{run_id}");
-    let epoch_text = epoch.to_string();
-    let signed =
-        Signed { deployment: DEPLOYMENT, method: "POST", path: &path, run_id, epoch: &epoch_text, body: &body };
-    for _ in 0..50 {
-        let response = orphan_client()
-            .post(format!("{url}{path}"))
-            .header(SIGNATURE_HEADER, sign(&key(), unix_now(), &signed))
-            .header(DEPLOYMENT_HEADER, DEPLOYMENT)
-            .header(RUN_ID_HEADER, run_id)
-            .header(EPOCH_HEADER, &epoch_text)
-            .body(body.clone())
-            .send()
-            .await;
-        if response.is_ok_and(|response| response.status().is_success()) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+/// Hold an orphan on `replica`, as an agent does after a lost stream, for the
+/// gateway to pull with `GET /internal/v1/orphans`.
+fn hold_orphan(world: &AgentWorld, replica: &str, run_id: &str, epoch: u64, terminal: Json, event_count: u64) {
+    let orphan = json!({ "run_id": run_id, "epoch": epoch, "deployment": DEPLOYMENT, "status": "paused", "event_count": event_count, "terminal": terminal, "answer": "", "orphaned_ms": 0 });
+    world.orphans.lock().unwrap().push((replica.to_owned(), orphan));
 }
 
 async fn start_run(State(state): State<Arc<AgentState>>, headers: HeaderMap, body: Bytes) -> Response {
@@ -162,6 +140,7 @@ async fn start_run(State(state): State<Arc<AgentState>>, headers: HeaderMap, bod
     let resumed = request.get("resume").is_some();
     let (mut sender, receiver) = futures::channel::mpsc::channel::<Bytes>(16);
     let world = state.world.clone();
+    let replica = state.replica.clone();
     tokio::spawn(async move {
         use futures::SinkExt as _;
         let mut index = base;
@@ -200,11 +179,11 @@ async fn start_run(State(state): State<Arc<AgentState>>, headers: HeaderMap, bod
                 json!({ "type": "run_paused", "reasons": [{ "frame": "", "node_id": null, "kind": "external", "data": "drained" }], "snapshot": snapshot(&run_id) })
             }
             "break_once" if first_execution => {
-                // The stream breaks; the agent preempts and reports the orphan.
+                // The stream breaks; the agent preempts and holds the orphan.
                 drop(sender);
                 let terminal = json!({ "type": "run_paused", "reasons": [{ "frame": "", "node_id": null, "kind": "external", "data": "gateway_disconnected" }], "snapshot": snapshot(&run_id) });
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                post_orphan(&world, &run_id, epoch, terminal, index).await;
+                hold_orphan(&world, &replica, &run_id, epoch, terminal, index);
                 return;
             }
             "vanish" => {
@@ -243,7 +222,30 @@ async fn orphans(State(state): State<Arc<AgentState>>, headers: HeaderMap) -> Re
     if let Err(refused) = verify(&state, "GET", "/internal/v1/orphans", &headers, b"") {
         return refused;
     }
-    axum::Json(json!({ "orphans": [] })).into_response()
+    let orphans: Vec<Json> = state
+        .world
+        .orphans
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(replica, _)| *replica == state.replica)
+        .map(|(_, orphan)| orphan.clone())
+        .collect();
+    axum::Json(json!({ "orphans": orphans })).into_response()
+}
+
+async fn release_orphan(
+    State(state): State<Arc<AgentState>>,
+    axum::extract::Path(run_id): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(refused) = verify(&state, "DELETE", &format!("/internal/v1/orphans/{run_id}"), &headers, b"") {
+        return refused;
+    }
+    let mut orphans = state.world.orphans.lock().unwrap();
+    let before = orphans.len();
+    orphans.retain(|(replica, orphan)| !(*replica == state.replica && orphan["run_id"] == run_id.as_str()));
+    if orphans.len() < before { StatusCode::NO_CONTENT.into_response() } else { StatusCode::NOT_FOUND.into_response() }
 }
 
 /// One fake protocol-1 agent on a loopback port.
@@ -253,6 +255,7 @@ pub async fn serve_agent(world: Arc<AgentWorld>, id: &str) -> (SocketAddr, tokio
         .route("/internal/v1/runs", post(start_run))
         .route("/internal/v1/hello", get(hello))
         .route("/internal/v1/orphans", get(orphans))
+        .route("/internal/v1/orphans/{run_id}", axum::routing::delete(release_orphan))
         // Platform readiness probes (Cloud Run wake) hit the agent's /healthz.
         .route("/healthz", get(|| async { "ok" }))
         .with_state(state);
@@ -450,7 +453,6 @@ pub async fn start_gateway(options: Options) -> TestGateway {
     let app = Arc::new(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    *options.world.gateway_url.lock().unwrap() = Some(url.clone());
     let service = router(app.clone()).into_make_service_with_connect_info::<SocketAddr>();
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, service).await;

@@ -216,8 +216,8 @@ They honour standard proxy environment variables, except the OTel exporter and
   another `--deployment` get `403`. The private network between gateway and
   agents is not assumed to be a trust boundary (Fly's private network spans an
   organization, pod networks are flat): add NetworkPolicy or an internal
-  ingress on top. Agent reports to the gateway are signed the same way and only
-  go to the operator-configured `--gateway-url`. `--trust-gateway` and
+  ingress on top. Agents never call the gateway (it pulls orphans from them),
+  so an agent needs no gateway address and no outbound access. `--trust-gateway` and
   `--verify-jwt` are exclusive. See [gateway-protocol.md](gateway-protocol.md#signatures).
 - **Unix sockets.** `--listen unix:/path` creates the socket mode `0600`.
 - **Resume with a client snapshot.** `POST /v1/runs/{id}/resume` accepts a

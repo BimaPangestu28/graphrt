@@ -60,7 +60,7 @@ Files in `ha.lease_dir` (default: the store's directory):
   does: SQLite replays the WAL, `PRAGMA quick_check` verifies the store (a
   failed check or a missing file restores the newest backup and keeps the
   failed file as `gateway.db.corrupt-<ms>`), queued runs are re-dispatched,
-  running runs wait for their agents' orphan reports (the local-process
+  running runs poll their agents for orphans (the local-process
   provider adopts the agents through their pid files in `socket_dir`), cron
   continues from its stored last fire (a repeated fire has the same run id and
   is a duplicate; `catchup:` decides about fires missed during the takeover),

@@ -61,7 +61,7 @@ graphrt_core::store_conformance::coordination_suite(&store).await;
 ```sh
 export GRAPHRT_GATEWAY_KEYS="k2026a:$(openssl rand -hex 32)"
 graphrt serve ./workflows --trust-gateway --deployment shop \
-  --listen unix:/run/graphrt/shop-1.sock --gateway-url unix:/run/graphrt/gateway.sock
+  --listen unix:/run/graphrt/shop-1.sock
 ```
 
 The agent side is the cargo feature `trust-gateway` of `graphrt-cli`, on by
@@ -75,7 +75,6 @@ Linux musl aarch64 and 100 KiB on x86_64.
 | `--trust-gateway` | Serve the signed `/internal/v1` API |
 | `--deployment NAME` (or `$GRAPHRT_DEPLOYMENT`) | The only deployment this agent accepts requests for |
 | `--gateway-keys-env VAR` | Variable holding the keys (default `GRAPHRT_GATEWAY_KEYS`): `kid:hexsecret`, comma-separated, 32 bytes or more each. The first signs, all verify, so two can be active during a rotation |
-| `--gateway-url URL` (or `$GRAPHRT_GATEWAY_URL`) | Where lost runs are reported: `http://host:port` (private network) or `unix:/path` |
 | `--reclaim-grace-secs N` | How long a lost run's outcome waits to be reclaimed (default 60) |
 | `--listen unix:/path` | Listen on a Unix socket (mode `0600`) instead of TCP; `--listen` is an alias of `--addr` |
 
@@ -186,10 +185,11 @@ restarts:
 2. it then preempts the run (in-flight nodes are cancelled and run again on
    resume: at-least-once per node) and holds the outcome, a `run_paused` event
    with the snapshot, as an orphan for the reclaim grace (60 s);
-3. with `--gateway-url`, it reports the orphan with
-   `POST <gateway>/internal/v1/orphans/{id}` (signed, retried with backoff up
-   to the grace); a gateway can also list orphans with `GET /internal/v1/orphans`
-   and release one with `DELETE`;
+3. the gateway pulls it: after a lost stream (and after its own restart) it
+   polls `GET /internal/v1/orphans` on the deployment's replicas, backing off
+   from 100 ms to 2 s, and releases a taken orphan with `DELETE`. The agent
+   never calls the gateway, so it needs no gateway address, no HTTP client and
+   no outbound network access;
 4. an orphan nobody took over is dropped at the end of the grace. Marking the
    run `failed{owner_lost}` is the gateway's decision: it owns the run's
    record, and the agent's store is only a cache of its executions.

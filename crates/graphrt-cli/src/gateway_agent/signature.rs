@@ -13,8 +13,8 @@
 //! `deployment`, `run_id` and `epoch` come from the `Graphrt-Deployment`,
 //! `Graphrt-Run-Id` and `Graphrt-Epoch` headers (empty when absent), so a
 //! signature binds the request to one deployment, one run execution and one
-//! body. The same scheme signs both directions (gateway → agent requests and
-//! the agent's orphan reports to the gateway).
+//! body. Only the gateway signs: agents never call it (it pulls their orphans).
+//! [`sign`] is the gateway's side, kept here for tests and other signers.
 //!
 //! A verifier accepts signatures within ±[`MAX_SKEW_SECS`] of its clock, from
 //! any configured key id (two can be active during a rotation), and refuses a

@@ -71,7 +71,6 @@ graph:
     let config = GatewayAgentConfig {
         deployment: "shop".to_owned(),
         keys: vec![GatewayKey::new("k1", &SECRET).unwrap()],
-        gateway: None,
         reclaim_grace: Duration::from_secs(60),
         reattach_window: Duration::from_millis(50),
         max_body_bytes: 1 << 20,
