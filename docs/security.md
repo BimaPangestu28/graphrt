@@ -185,17 +185,12 @@ They honour standard proxy environment variables, except the OTel exporter and
   image binds `0.0.0.0`, so always set a key there.
 - **End-user JWTs.** With `--verify-jwt`, a request whose mapped header holds a
   valid JWT (JWKS or HS256 signature, `exp`, optional `iss` / `aud`, a `sub`)
-  may start runs without the API key; an invalid token is `401` even next to a
-  valid key. The token opens only `POST /v1/workflows/{name}/runs` of workflows
-  that declare the verified input (others are `403`) and
-  `POST /v1/runs/{id}/feedback` on runs started with that user's token; the server
-  refuses to start without an API key, on loopback too (a same-host reverse
-  proxy would otherwise expose the API), so the rest of the API stays closed.
-  A user-token response carries only the answer stream, the final result and
-  pause prompts, never node inputs, outputs, tool results, rendered prompts or
-  the snapshot (`--user-events all` opts out). `--user-rate-limit` caps runs
-  per `sub`. See
-  [serving.md](serving.md#verifying-end-user-jwts).
+  replaces the API key on two routes only: run starts of workflows that
+  declare the verified input, and feedback on the user's own runs. The server
+  refuses `--verify-jwt` without an API key, the responses are filtered
+  (`--user-events`), and `--user-rate-limit` caps requests per `sub`. The
+  rules are in
+  [serving.md](serving.md#what-a-user-token-may-do).
 - **CORS.** None. Browsers get no `Access-Control-Allow-Origin`, and JSON
   bodies force a preflight.
 - **Limits.**
