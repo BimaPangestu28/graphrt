@@ -51,7 +51,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::error::CliError;
-use crate::serve::{AppState, Launch, error_response, launch_detached};
+use crate::serve::{AppState, Launch, error_response, launch_detached, traceparent};
 pub use signature::{SignatureScheme, Verifier};
 
 /// Default header carrying the sender's idempotency key.
@@ -355,11 +355,17 @@ pub(crate) async fn receive(
         Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
     };
     let inputs = hook.map_inputs(&json, &headers);
-    let traceparent = headers.get("traceparent").and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let launch = match launch_detached(&state, &hook.workflow, run_id, inputs, traceparent).await {
-        Ok(launch) => launch,
-        Err(response) => return response,
-    };
+    match launch_detached(&state, &hook.workflow, run_id, inputs, traceparent(&headers)).await {
+        Ok(launch) => accepted_delivery(hook, launch),
+        Err(response) => response,
+    }
+}
+
+/// `202` for a delivery: the new run (whose completion callback starts now),
+/// or the existing run of a redelivery.
+fn accepted_delivery(hook: &Hook, launch: Launch) -> Response {
+    #[cfg(not(feature = "http"))]
+    let _ = hook;
     let (run_id, status, duplicate) = match launch {
         Launch::Started(active) => {
             let run_id = active.run_id.clone();

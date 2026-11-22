@@ -35,7 +35,7 @@ pub(super) fn to_values(map: serde_json::Map<String, serde_json::Value>) -> Inde
 }
 
 /// W3C `traceparent` of the incoming request, continued by the run's trace.
-pub(super) fn traceparent(headers: &axum::http::HeaderMap) -> Option<String> {
+pub(crate) fn traceparent(headers: &axum::http::HeaderMap) -> Option<String> {
     headers.get("traceparent").and_then(|v| v.to_str().ok()).map(str::to_owned)
 }
 

@@ -62,7 +62,7 @@ pub(crate) use errors::error_response;
 #[cfg(feature = "scores")]
 pub(crate) use errors::store_error;
 pub use events::EventsQuery;
-pub(crate) use execute::{Launch, launch_detached};
+pub(crate) use execute::{Launch, launch_detached, traceparent};
 pub use resume::ResumeRequest;
 pub use router::{DEFAULT_MAX_UPLOAD_BYTES, router, router_with_uploads};
 pub use runs::ListQuery;
