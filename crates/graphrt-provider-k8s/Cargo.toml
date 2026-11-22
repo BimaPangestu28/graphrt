@@ -1,0 +1,41 @@
+[package]
+name = "graphrt-provider-k8s"
+description = "Kubernetes provider of the graphrt gateway: scale agent Deployments 0<->N over a minimal REST client (no kube-rs)."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-provider-k8s"
+homepage = "https://github.com/BimaPangestu28/graphrt"
+keywords = ["kubernetes", "scale-to-zero", "gateway", "workflow", "agent"]
+categories = ["network-programming", "development-tools"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# In-process fake Kubernetes API server (Deployments + scale, ReplicaSet-like pod
+# lifecycle, EndpointSlice watch, server-side apply, fault injection) for the
+# conformance suite. Test-only: never enable it in a shipped binary.
+fake-api-server = ["dep:axum", "tokio/net", "tokio/macros"]
+
+[dependencies]
+# The HTTP client, TLS and crypto every other graphrt crate already links:
+# reqwest + rustls with the ring provider. No `json`/`stream` reqwest features,
+# watch streams are read with `Response::chunk`.
+reqwest = { workspace = true, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { workspace = true, features = ["rt", "time", "sync", "fs", "process", "io-util"] }
+serde.workspace = true
+serde_json.workspace = true
+serde-saphyr.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+base64 = "0.22"
+axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "sync"] }
+
+[lints]
+workspace = true
