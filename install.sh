@@ -85,11 +85,22 @@ case "$os" in
     *) die "unsupported OS: $os (Windows: download the .zip from the releases page)" ;;
 esac
 
+# The tag becomes part of the download URL, and SHA256SUMS comes from the same
+# place as the archive: a `/`, `?` or `#` in it could point both at another
+# repository's release. Allow only the characters of a semver tag.
+case "$version" in
+    "" | *[!0-9A-Za-z.+-]*) die "invalid --version \`$version\` (expected a release tag such as v0.4.0)" ;;
+esac
+
 if [ -n "${GRAPHRT_DOWNLOAD_BASE:-}" ]; then
     # Testing / mirrors: a directory URL holding the archive and SHA256SUMS.
+    # https:// only (wget's --https-only does not apply to single downloads),
+    # or file:// for local tests.
     base="$GRAPHRT_DOWNLOAD_BASE"
     case "$base" in
         file://*) fetch() { cp "${1#file://}" "$2"; } ;;
+        https://*) ;;
+        *) die "GRAPHRT_DOWNLOAD_BASE must be an https:// or file:// URL, got \`$base\`" ;;
     esac
 elif [ "$version" = "latest" ]; then
     base="https://github.com/${REPO}/releases/latest/download"

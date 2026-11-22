@@ -56,6 +56,16 @@ releases may contain breaking changes; they are called out under **Changed**.
   Unicode bidirectional formatting characters (U+202E and friends) replaced,
   and plugin manifests refuse control characters in node kinds and tool
   names, which `plugin install`, `list` and `info` print. Affects 0.4.0.
+- `install.sh` refuses a `--version` / `GRAPHRT_VERSION` with characters other
+  than those of a release tag: a `/` could point the archive and its
+  `SHA256SUMS` at another repository's release
+  (`v1/../../../../other/repo/releases/download/v1`). `GRAPHRT_DOWNLOAD_BASE`
+  must be `https://` or `file://`; with wget, an `http://` mirror was fetched
+  without TLS. Affects the 0.4.0 installer.
+- `packaging/homebrew/render-formula.sh` accepts only a semver version and
+  64-hex digests, which it pastes into Ruby that `brew` evaluates, and no
+  longer prints a formula with an empty `sha256` when an archive is missing
+  from `SHA256SUMS`.
 
 ## [0.4.0] - 2026-11-20
 
