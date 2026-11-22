@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use graphrt_provider_api::EndpointAddress;
+use graphrt_provider_api::{Endpoint, EndpointAddress, InvokeRequest, Provider};
 
 use crate::signature::{DEPLOYMENT_HEADER, EPOCH_HEADER, GatewayKey, PROTOCOL_HEADER, PROTOCOL_VERSION, RUN_ID_HEADER, SIGNATURE_HEADER, Signed, sign, unix_now};
 use crate::sse::{Frame, Parser, SseError};
@@ -52,28 +52,47 @@ pub struct AgentClient {
     clients: Mutex<HashMap<EndpointAddress, reqwest::Client>>,
 }
 
-/// An SSE stream from an agent.
-#[derive(Debug)]
+enum StreamSource {
+    Http(reqwest::Response),
+    Invoke(graphrt_provider_api::ByteStream),
+}
+
+/// An SSE stream from an agent (over HTTP, or a provider's own transport).
 pub struct AgentStream {
-    response: reqwest::Response,
+    source: StreamSource,
     parser: Parser,
     pending: std::collections::VecDeque<Frame>,
 }
 
+impl std::fmt::Debug for AgentStream {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("AgentStream").finish_non_exhaustive()
+    }
+}
+
 impl AgentStream {
+    fn http(response: reqwest::Response) -> Self {
+        Self { source: StreamSource::Http(response), parser: Parser::default(), pending: Default::default() }
+    }
+
     /// The next frame; `Ok(None)` when the agent closed the stream.
     ///
     /// # Errors
     /// [`AgentError::Stream`] on a broken connection or oversized event.
     pub async fn next_frame(&mut self) -> Result<Option<Frame>, AgentError> {
+        use futures::StreamExt as _;
         loop {
             if let Some(frame) = self.pending.pop_front() {
                 return Ok(Some(frame));
             }
-            match self.response.chunk().await {
+            let chunk = match &mut self.source {
+                StreamSource::Http(response) => response.chunk().await.map(|chunk| chunk.map(|bytes| bytes.to_vec())).map_err(|error| error.to_string()),
+                StreamSource::Invoke(stream) => stream.next().await.transpose().map_err(|error| error.to_string()),
+            };
+            match chunk {
                 Ok(Some(chunk)) => self.pending.extend(self.parser.feed(&chunk)?),
                 Ok(None) => return Ok(None),
-                Err(error) => return Err(AgentError::Stream(error.to_string())),
+                Err(error) => return Err(AgentError::Stream(error)),
             }
         }
     }
@@ -144,7 +163,36 @@ impl AgentClient {
     pub async fn start_run(&self, address: &EndpointAddress, key: &GatewayKey, deployment: &str, scope: RunScope<'_>, body: &serde_json::Value) -> Result<AgentStream, AgentError> {
         let bytes = serde_json::to_vec(body).map_err(|error| AgentError::Stream(error.to_string()))?;
         let response = self.send(address, key, deployment, reqwest::Method::POST, "/internal/v1/runs", scope, bytes).await?;
-        Ok(AgentStream { response, parser: Parser::default(), pending: Default::default() })
+        Ok(AgentStream::http(response))
+    }
+
+    /// `POST /internal/v1/runs` through `provider`'s own transport when it has
+    /// one ([`Provider::invoke`], e.g. Lambda), else over HTTP.
+    ///
+    /// # Errors
+    /// See [`AgentError`].
+    pub async fn start_run_on(&self, provider: &dyn Provider, endpoint: &Endpoint, key: &GatewayKey, deployment: &str, scope: RunScope<'_>, body: &serde_json::Value) -> Result<AgentStream, AgentError> {
+        let bytes = serde_json::to_vec(body).map_err(|error| AgentError::Stream(error.to_string()))?;
+        let path = "/internal/v1/runs";
+        let epoch = scope.epoch.map(|epoch| epoch.to_string()).unwrap_or_default();
+        let signed = Signed { deployment, method: "POST", path, run_id: scope.run_id, epoch: &epoch, body: &bytes };
+        let headers = vec![
+            (PROTOCOL_HEADER.to_owned(), PROTOCOL_VERSION.to_string()),
+            (SIGNATURE_HEADER.to_owned(), sign(key, unix_now(), &signed)),
+            (DEPLOYMENT_HEADER.to_owned(), deployment.to_owned()),
+            (RUN_ID_HEADER.to_owned(), scope.run_id.to_owned()),
+            (EPOCH_HEADER.to_owned(), epoch.clone()),
+            ("content-type".to_owned(), "application/json".to_owned()),
+        ];
+        let request = InvokeRequest { method: "POST".into(), path: path.into(), headers, body: bytes };
+        let Some(invocation) = provider.invoke(endpoint, request) else {
+            return self.start_run(&endpoint.address, key, deployment, scope, body).await;
+        };
+        let response = invocation.await.map_err(|error| AgentError::Unreachable(error.to_string()))?;
+        if !(200..300).contains(&response.status) {
+            return Err(AgentError::Refused { status: response.status, body: String::new() });
+        }
+        Ok(AgentStream { source: StreamSource::Invoke(response.body), parser: Parser::default(), pending: Default::default() })
     }
 
     /// `GET /internal/v1/runs/{id}/stream?from=N`: reattach after a lost connection.
@@ -154,7 +202,7 @@ impl AgentClient {
     pub async fn reattach(&self, address: &EndpointAddress, key: &GatewayKey, deployment: &str, scope: RunScope<'_>, from: u64) -> Result<AgentStream, AgentError> {
         let path = format!("/internal/v1/runs/{}/stream?from={from}", scope.run_id);
         let response = self.send(address, key, deployment, reqwest::Method::GET, &path, scope, Vec::new()).await?;
-        Ok(AgentStream { response, parser: Parser::default(), pending: Default::default() })
+        Ok(AgentStream::http(response))
     }
 
     /// `POST /internal/v1/runs/{id}/abort`.

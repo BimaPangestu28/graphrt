@@ -600,7 +600,7 @@ impl Gateway {
             };
             let body = self.dispatch_body(version, record, run.input().as_ref(), resume);
             let scope = RunScope { run_id: &run.run_id, epoch: Some(record.epoch) };
-            match self.agents.start_run(&current.endpoint.address, key, &deployment.name, scope, &body).await {
+            match self.agents.start_run_on(deployment.provider.as_ref(), &current.endpoint, key, &deployment.name, scope, &body).await {
                 Ok(stream) => {
                     *run.current.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((current.endpoint.address.clone(), record.epoch));
                     *lease = Some(current);
@@ -714,8 +714,18 @@ impl Gateway {
                 Ok(stream) => stream,
                 Err(message) => return self.fail(&run, record, "dispatch_failed", &message).await,
             };
+            let capabilities = version.pool.capabilities().clone();
+            let request_cap = capabilities.max_request_secs.filter(|_| !capabilities.can_preempt()).map(Duration::from_secs);
             let outcome = loop {
-                match self.pump(&run, &mut stream, &mut record).await {
+                let pumped = match request_cap {
+                    // No grace, no preemption (Lambda): the platform kills the run at its cap.
+                    Some(cap) => match tokio::time::timeout(cap, self.pump(&run, &mut stream, &mut record)).await {
+                        Ok(outcome) => outcome,
+                        Err(_) => return self.fail(&run, record, "platform_timeout", "run exceeded the platform's request limit").await,
+                    },
+                    None => self.pump(&run, &mut stream, &mut record).await,
+                };
+                match pumped {
                     Outcome::Finished(event) => break Outcome::Finished(event),
                     Outcome::Broken(reason) => match self.reattach(&run, &version, &record, lease.as_ref()).await {
                         Some(reattached) => stream = reattached,

@@ -242,3 +242,59 @@ async fn streamed_hitl_run_ends_its_stream_at_the_pause() {
     let ids: Vec<String> = replay.iter().filter_map(|(id, _, _)| id.clone()).filter(|id| !id.contains('.')).collect();
     assert_eq!(ids.first().map(String::as_str), Some("3"), "{ids:?}");
 }
+
+/// A Lambda-like provider: no HTTP address for the gateway, requests go
+/// through `invoke`; no grace (no preemption) and a request cap.
+struct InvokeOnly(Arc<common::FakeAgentProvider>, std::sync::atomic::AtomicU32);
+
+impl graphrt_provider_api::Provider for InvokeOnly {
+    fn capabilities(&self) -> graphrt_provider_api::Capabilities {
+        graphrt_provider_api::Capabilities { max_grace_secs: 0, max_request_secs: Some(1), ..self.0.capabilities() }
+    }
+    fn wake<'a>(&'a self, deployment: &'a graphrt_provider_api::DeploymentRef, replicas: u32) -> graphrt_provider_api::BoxFuture<'a, Result<Vec<graphrt_provider_api::Endpoint>, graphrt_provider_api::ProviderError>> {
+        self.0.wake(deployment, replicas)
+    }
+    fn release<'a>(&'a self, replica: &'a graphrt_provider_api::ReplicaRef, mode: graphrt_provider_api::ReleaseMode) -> graphrt_provider_api::BoxFuture<'a, Result<(), graphrt_provider_api::ProviderError>> {
+        self.0.release(replica, mode)
+    }
+    fn list<'a>(&'a self, deployment: &'a graphrt_provider_api::DeploymentRef) -> graphrt_provider_api::BoxFuture<'a, Result<Vec<graphrt_provider_api::ReplicaState>, graphrt_provider_api::ProviderError>> {
+        self.0.list(deployment)
+    }
+    fn invoke<'a>(&'a self, endpoint: &'a graphrt_provider_api::Endpoint, request: graphrt_provider_api::InvokeRequest) -> Option<graphrt_provider_api::BoxFuture<'a, Result<graphrt_provider_api::InvokeResponse, graphrt_provider_api::ProviderError>>> {
+        self.1.fetch_add(1, Ordering::SeqCst);
+        let graphrt_provider_api::EndpointAddress::Http(base) = &endpoint.address else { return None };
+        let url = format!("{base}{}", request.path);
+        Some(Box::pin(async move {
+            let mut builder = reqwest::Client::new().post(url).body(request.body);
+            for (name, value) in request.headers {
+                builder = builder.header(name, value);
+            }
+            let response = builder.send().await.map_err(|error| graphrt_provider_api::ProviderError::transient(error.to_string()))?;
+            let status = response.status().as_u16();
+            let body = futures::stream::unfold(response, |mut response| async move {
+                match response.chunk().await {
+                    Ok(Some(chunk)) => Some((Ok(chunk.to_vec()), response)),
+                    Ok(None) => None,
+                    Err(error) => Some((Err(graphrt_provider_api::ProviderError::transient(error.to_string())), response)),
+                }
+            });
+            Ok(graphrt_provider_api::InvokeResponse { status, body: Box::pin(body) })
+        }))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn invoke_transport_and_platform_timeout() {
+    let base = start_gateway(Options::default()).await;
+    let provider = Arc::new(InvokeOnly(base.provider.clone(), std::sync::atomic::AtomicU32::new(0)));
+    let auth = graphrt_gateway::auth::DeploymentAuth::new(vec![graphrt_gateway::hex::sha256_hex(API_KEY.as_bytes())], None, &reqwest::Client::new()).unwrap();
+    let lambda = Arc::new(graphrt_gateway::deployment::Deployment::new("lambda", auth, vec![common::key()], provider.clone(), PoolConfig::default()));
+    lambda.add_version(common::version("v1"), graphrt_core::store::now_ms());
+    base.gateway.add_deployment(lambda);
+    let (_, record) = base.post("/v1/deployments/lambda/runs", json!({ "inputs": { "text": "via invoke" } })).await;
+    assert_eq!(record["outputs"]["echo"], "via invoke", "{record}");
+    assert_eq!(provider.1.load(Ordering::SeqCst), 1, "the request went through Provider::invoke");
+    let (_, record) = base.post("/v1/deployments/lambda/runs", json!({ "inputs": { "events": 5, "delay_ms": 400 } })).await;
+    assert_eq!(record["status"], "failed");
+    assert_eq!(record["error_type"], "platform_timeout");
+}
