@@ -189,8 +189,9 @@ They honour standard proxy environment variables, except the OTel exporter and
   valid key. The token opens only `POST /v1/workflows/{name}/runs` of workflows
   that declare the verified input (others are `403`) and
   `POST /v1/runs/{id}/feedback` on runs whose `user_id` is its `sub`; the server
-  refuses to start on a non-loopback address without an API key, so the rest
-  of the API stays closed. `--user-rate-limit` caps runs per `sub`. See
+  refuses to start without an API key, on loopback too (a same-host reverse
+  proxy would otherwise expose the API), so the rest of the API stays closed.
+  `--user-rate-limit` caps runs per `sub`. See
   [serving.md](serving.md#verifying-end-user-jwts).
 - **CORS.** None. Browsers get no `Access-Control-Allow-Origin`, and JSON
   bodies force a preflight.

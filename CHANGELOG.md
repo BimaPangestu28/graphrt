@@ -7,6 +7,14 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Changed (Breaking)
+- `graphrt serve --verify-jwt` refuses to start without an API key on every
+  address, loopback included. A reverse proxy on the same host forwards the
+  internet to a loopback port (and one that rewrites `Host` also passes the
+  DNS-rebinding check), which made run lists, events and resume of every user
+  public. **Migration:** set `GRAPHRT_API_KEY` (or `--api-key-env VAR`) next to
+  `--verify-jwt`; user tokens keep working without it on the client side.
+
 ### Changed
 - The `eval` and `online-eval` cargo features of `graphrt-cli` are no longer
   on by default (`online-eval` needs `eval`), so `cargo install graphrt-cli`

@@ -20,7 +20,9 @@
 //! - `POST /v1/runs/{id}/feedback` (feature `scores`) accepts the token too, for
 //!   runs whose `user_id` is the token's `sub` only.
 //! - Every other endpoint (run lists, events, scores, resume, knowledge...) still
-//!   needs the API key, so users cannot read each other's runs.
+//!   needs the API key, so users cannot read each other's runs. The server
+//!   refuses to start with `--verify-jwt` unless an API key is set
+//!   ([`require_api_key`]).
 //!
 //! Keys come from a JWKS URL (`ES256`/`RS256`, fetched at startup and kept fresh)
 //! and/or an `HS256` shared secret named by `--jwt-secret-env`. Verification is
@@ -190,6 +192,29 @@ impl UserAuth {
         }
         parsed.verify(&keys, &self.rules, now)
     }
+}
+
+/// Refuse `--verify-jwt` without an API key, on every address.
+///
+/// User tokens open only run starts and feedback; without a key every other
+/// endpoint (run lists, events, resume, knowledge) is public. Binding loopback
+/// is no protection: a reverse proxy on the same host forwards the internet to
+/// a loopback port, and one that rewrites `Host` also passes the DNS-rebinding
+/// check of keyless servers.
+///
+/// @param verify_jwt - Whether `--verify-jwt` is set.
+/// @param has_api_key - Whether the API key variable holds a key.
+/// @param api_key_env - Name of that variable, for the message.
+/// @throws CliError (usage) - When `--verify-jwt` is set without a key.
+pub fn require_api_key(verify_jwt: bool, has_api_key: bool, api_key_env: &str) -> Result<(), CliError> {
+    if !verify_jwt || has_api_key {
+        return Ok(());
+    }
+    Err(CliError::usage(format!(
+        "--verify-jwt needs ${api_key_env} too: user tokens only authorize POST /v1/workflows/{{name}}/runs \
+         and feedback, and without an API key every other endpoint (run lists, events, resume) would be \
+         public, even on a loopback address behind a reverse proxy"
+    )))
 }
 
 fn unauthorized(header: &HeaderName, error: &TokenError) -> Response {

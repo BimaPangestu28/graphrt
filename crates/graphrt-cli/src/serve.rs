@@ -567,6 +567,8 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     };
     let api_key = lookup_env(&args.api_key_env).filter(|k| !k.is_empty());
     #[cfg(feature = "jwt")]
+    crate::user_auth::require_api_key(args.user_auth.verify_jwt.is_some(), api_key.is_some(), &args.api_key_env)?;
+    #[cfg(feature = "jwt")]
     let user_auth = crate::user_auth::UserAuth::from_args(&args.user_auth, &args.input_header, lookup_env).await?;
     let limits = setup::limits(args.services.timeout_ms, args.services.max_steps);
     let telemetry = crate::otel::Telemetry::from_args(&args.services, &options.all_vars())?;
@@ -623,17 +625,6 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         .await
         .map_err(|e| CliError::usage(format!("cannot listen on {}: {e}", args.addr)))?;
     let loopback = listener.local_addr().map(|a| a.ip().is_loopback()).unwrap_or(false);
-    // User tokens only open run starts; without a key every other endpoint, including
-    // the run list and events of all users' chats, would be public.
-    #[cfg(feature = "jwt")]
-    if user_auth_line.is_some() && api_key.is_none() && !loopback {
-        return Err(CliError::usage(format!(
-            "--verify-jwt on a non-loopback address needs ${} too: user tokens only authorize \
-             POST /v1/workflows/{{name}}/runs, and without an API key every other endpoint \
-             (run lists, events) would be public",
-            args.api_key_env
-        )));
-    }
     // Without an API key, a loopback server is reachable from any web page through DNS
     // rebinding (the page's own host name resolving to 127.0.0.1). Such requests carry
     // that foreign host name, so only local `Host` values are accepted.

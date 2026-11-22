@@ -154,7 +154,8 @@ a missing header for a required input is `401`. See
 `--verify-jwt user_jwt` also verifies that header as a JWT (JWKS with
 `--jwt-jwks-url`, or an HS256 secret with `--jwt-secret-env`; `--jwt-issuer`,
 `--jwt-audience`) and lets a valid token start runs without the API key; an
-invalid one is `401`. `--user-rate-limit N` caps runs per minute per token
+invalid one is `401`. It needs an API key (the server refuses to start without
+one). `--user-rate-limit N` caps runs per minute per token
 `sub` (`429` with `Retry-After`). See
 [serving.md](serving.md#verifying-end-user-jwts).
 

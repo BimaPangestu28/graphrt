@@ -203,8 +203,9 @@ so internal workflows served next to the chat stay key-only), plus
 [feedback](#scores-and-feedback) on the user's own runs. Every other endpoint
 (run lists, events, resume, abort, validate, knowledge) still needs the API key,
 so users cannot read each other's runs; for the same reason the server refuses
-to start with `--verify-jwt` on a non-loopback address unless the API key is
-set. Verification is in memory (measured: +7 µs per request for `HS256`, +44 µs
+to start with `--verify-jwt` unless the API key is set, also on a loopback
+address (a reverse proxy on the same host would otherwise make the whole API
+public). Verification is in memory (measured: +7 µs per request for `HS256`, +44 µs
 for `ES256`). A complete example, with a Supabase schema and container, is
 [examples/supabase-chatbot](../examples/supabase-chatbot/).
 
