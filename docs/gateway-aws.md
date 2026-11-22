@@ -1,8 +1,9 @@
 # AWS targets for the graphrt gateway: ECS Fargate and Lambda
 
-> Status: provider crates for the upcoming `graphrt gateway` (plan F2). The
-> gateway binary that uses them is not released yet; nothing here changes
-> `graphrt serve` today.
+> Status: preview. `graphrt gateway` uses these providers with
+> `--features gateway-ecs` / `gateway-lambda` (`kind: ecs` / `kind: lambda`
+> under `providers:`), and `graphrt deploy --target ecs|lambda` deploys
+> versions. See [docs/gateway.md](gateway.md#providers).
 
 The crate `graphrt-provider-aws` implements the `graphrt-provider-api`
 `Provider` trait for two AWS targets, without the AWS SDK (SigV4 and the

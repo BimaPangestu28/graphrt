@@ -15,6 +15,29 @@ publish = false
 default = ["gw-local"]
 # local-process provider: one `graphrt serve --trust-gateway` process per replica on a Unix socket.
 gw-local = []
+# Kubernetes (self-hosted, GKE, EKS, AKS): scale subresource + EndpointSlices, in-cluster service account auth.
+gw-k8s = ["dep:graphrt-provider-k8s"]
+# Kubernetes from outside the cluster: kubeconfig files (token, client cert, exec plugins); ≈ +65 KiB.
+gw-k8s-kubeconfig = ["gw-k8s", "graphrt-provider-k8s/kubeconfig"]
+# Cloud Run: platform scaling behind one URL, ID-token invoke.
+gw-cloud-run = ["dep:graphrt-gcp", "graphrt-gcp/provider-cloud-run", "provider-cloud-run"]
+# Same name as graphrt-gcp's feature, so its fake Google APIs (shared with tests/provider_harness.rs) compile here.
+provider-cloud-run = []
+# ECS Fargate: the gateway starts and stops tasks.
+gw-ecs = ["dep:graphrt-provider-aws", "graphrt-provider-aws/provider-ecs"]
+# Lambda: sync runs through InvokeWithResponseStream (`lambda://` endpoints, Provider::invoke).
+gw-lambda = ["dep:graphrt-provider-aws", "graphrt-provider-aws/provider-lambda"]
+# Fly Machines: pre-created pool, start / suspend.
+gw-fly = ["dep:graphrt-provider-fly"]
+# Azure Container Apps: platform scaling behind per-version label URLs, managed identity / Entra auth.
+gw-aca = ["dep:graphrt-provider-azure", "graphrt-provider-azure/provider-aca"]
+# Deploy drivers of `graphrt deploy --target ...` (deploy-time credentials, never used by the gateway itself).
+deploy-k8s = ["gw-k8s-kubeconfig", "graphrt-provider-k8s/deploy"]
+deploy-cloud-run = ["gw-cloud-run", "graphrt-gcp/deploy-cloud-run"]
+deploy-ecs = ["gw-ecs", "graphrt-provider-aws/deploy-ecs"]
+deploy-lambda = ["gw-lambda", "graphrt-provider-aws/deploy-lambda"]
+deploy-fly = ["gw-fly", "graphrt-provider-fly/deploy"]
+deploy-aca = ["gw-aca", "graphrt-provider-azure/deploy-aca"]
 
 [dependencies]
 graphrt-core = { workspace = true, features = ["tokio"] }
@@ -34,6 +57,11 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 sha2 = { version = "0.11", default-features = false }
 ring = { version = "0.17", default-features = false, features = ["alloc"] }
 base64 = "0.22"
+graphrt-provider-k8s = { workspace = true, optional = true }
+graphrt-gcp = { workspace = true, optional = true }
+graphrt-provider-aws = { workspace = true, optional = true }
+graphrt-provider-fly = { workspace = true, optional = true }
+graphrt-provider-azure = { workspace = true, optional = true }
 
 [dev-dependencies]
 graphrt-core = { workspace = true, features = ["tokio", "store-conformance"] }
@@ -42,6 +70,9 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time
 tower = { version = "0.5", default-features = false, features = ["util"] }
 http-body-util = "0.1"
 reqwest = { workspace = true, features = ["rustls-no-provider", "json"] }
+# Fake cloud APIs of the provider crates for tests/provider_harness.rs.
+graphrt-provider-k8s = { workspace = true, features = ["fake-api-server"] }
+bytes = "1"
 
 [lints]
 workspace = true

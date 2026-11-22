@@ -1,9 +1,10 @@
 # Gateway on Google Cloud Run
 
-> Status: provider library for the upcoming `graphrt gateway` (plan F2). The
-> crate `graphrt-gcp` ships the GCP auth module and the Cloud Run provider and
-> deploy driver; the `graphrt gateway` / `graphrt deploy --target cloud-run`
-> commands that use them land with the gateway itself.
+> Status: preview. The crate `graphrt-gcp` ships the GCP auth module and the
+> Cloud Run provider and deploy driver; `graphrt gateway` uses them with
+> `--features gateway-cloud-run` (`kind: cloud_run` under `providers:`) and
+> `graphrt deploy --target cloud-run` deploys versions. See
+> [docs/gateway.md](gateway.md#providers).
 
 The gateway is the only always-on process. Agents (`graphrt serve
 --trust-gateway`) run as a Cloud Run service with **min instances 0**: Cloud

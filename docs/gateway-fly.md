@@ -1,10 +1,10 @@
 # Fly Machines provider (`provider-fly`)
 
-> Status: provider crate and deploy driver are done and pass the provider
-> conformance suite against a fake Machines API. They are not wired into a
-> released `graphrt gateway` / `graphrt deploy` binary yet. That wiring comes
-> with the gateway core (see [ROADMAP.md](../ROADMAP.md)). This page describes
-> how the Fly target behaves and how to set it up.
+> Status: preview. `graphrt gateway` uses this provider with
+> `--features gateway-fly` (`kind: fly` under `providers:`) and
+> `graphrt deploy --target fly` deploys versions; both pass the conformance
+> suite against a fake Machines API. See [docs/gateway.md](gateway.md#providers).
+> This page describes how the Fly target behaves and how to set it up.
 
 The `graphrt gateway` stays on all the time and wakes agents
 (`graphrt serve --trust-gateway`) only when there is work. On Fly, each

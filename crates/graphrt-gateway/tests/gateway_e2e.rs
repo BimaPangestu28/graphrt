@@ -480,3 +480,50 @@ async fn platform_timeout_from_invoke_fails_without_redispatch() {
     assert_eq!(record["error_type"], "platform_timeout");
     assert_eq!(provider.1.load(Ordering::SeqCst), 1, "not re-dispatched");
 }
+
+/// A platform driver that records the spec it got and returns a target name.
+struct RecordingPlatform(Arc<std::sync::Mutex<Option<graphrt_provider_api::DeploymentSpec>>>);
+
+impl graphrt_provider_api::DeployDriver for RecordingPlatform {
+    fn apply<'a>(
+        &'a self,
+        spec: &'a graphrt_provider_api::DeploymentSpec,
+    ) -> graphrt_provider_api::BoxFuture<
+        'a,
+        Result<graphrt_provider_api::DeploymentRef, graphrt_provider_api::DeployError>,
+    > {
+        *self.0.lock().unwrap() = Some(spec.clone());
+        Box::pin(async move { Ok(graphrt_provider_api::DeploymentRef::new(&spec.name, &spec.version, "ns/shop-v2")) })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_deploy_applies_on_the_platform_then_registers_the_target() {
+    use graphrt_provider_api::DeployDriver as _;
+    let options = Options {
+        configure_app: Some(Box::new(|app| app.admin_token_hash = Some(graphrt_gateway::hex::sha256_hex(b"admin")))),
+        ..Options::default()
+    };
+    let gateway = start_gateway(options).await;
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let driver = graphrt_gateway::deploy::RegisteringDriver::new(
+        Box::new(RecordingPlatform(seen.clone())),
+        graphrt_gateway::deploy::LocalDeployDriver::new(&gateway.url, "admin"),
+    );
+    let spec: graphrt_provider_api::DeploymentSpec = serde_json::from_value(json!({
+        "name": DEPLOYMENT, "version": "v2", "image": "ghcr.io/acme/shop:2", "command": [], "max_active_runs": 8,
+        "min_replicas": 0, "max_replicas": 4, "grace_secs": 30, "workflow_fingerprint": "",
+        "provider_settings": { "workflow": "agent", "port": 9000 }
+    }))
+    .unwrap();
+    let deployed = driver.apply(&spec).await.unwrap();
+    assert_eq!(deployed.target, "ns/shop-v2");
+    let platform_spec = seen.lock().unwrap().clone().unwrap();
+    assert!(!platform_spec.provider_settings.contains_key("workflow"), "gateway-only setting stripped");
+    assert_eq!(platform_spec.provider_settings["port"], 9000);
+    let current = gateway.deployment.current().unwrap();
+    assert_eq!(
+        (current.info.version.as_str(), current.info.target.as_str(), current.info.workflow.as_str()),
+        ("v2", "ns/shop-v2", "agent")
+    );
+}

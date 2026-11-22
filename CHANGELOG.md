@@ -84,6 +84,20 @@ releases may contain breaking changes; they are called out under **Changed**.
   `langfuse` stay on by default.
 
 ### Added
+- `graphrt gateway` runs deployments on Kubernetes, Cloud Run, ECS Fargate,
+  Lambda, Fly and Azure Container Apps, besides local processes: cargo
+  features `gateway-k8s` (`gateway-k8s-in-cluster` without kubeconfig),
+  `gateway-cloud-run`, `gateway-ecs`, `gateway-lambda`, `gateway-fly`,
+  `gateway-aca` and `gateway-all` of `graphrt-cli` (`gw-*` / `deploy-*` of
+  `graphrt-gateway`).
+  Providers are named under `providers:` in `gateway.yaml` and picked per
+  deployment (`provider:`); endpoints and credentials come only from that
+  operator configuration. Cloud Run requests carry the invoker ID token
+  (`X-Serverless-Authorization`); Lambda runs go through
+  `InvokeWithResponseStream`. `graphrt deploy --target
+  k8s|cloud-run|ecs|lambda|fly|aca` applies a version with the provider's deploy
+  driver and registers it with the gateway. See
+  [docs/gateway.md](docs/gateway.md#providers).
 - `graphrt-provider-fly` (internal crate, feature `provider-fly`): the Fly
   Machines provider of the upcoming `graphrt gateway`. A deployment version is
   a pool of pre-created Machines, woken with `start` (suspended snapshots

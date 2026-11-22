@@ -2,7 +2,9 @@
 
 The `graphrt-provider-azure` crate is the Azure family of the graphrt gateway
 providers (see the gateway plan: one always-on gateway, stateless agents that
-scale 0→N). It has three cargo features:
+scale 0→N). `graphrt gateway` uses it with `--features gateway-aca`
+(`kind: aca` under `providers:`), and `graphrt deploy --target aca` deploys
+versions; see [docs/gateway.md](gateway.md#providers). It has three cargo features:
 
 | Feature | What it adds | Budget (plan §9) |
 | --- | --- | --- |

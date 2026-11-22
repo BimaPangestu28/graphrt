@@ -229,6 +229,24 @@ async fn orphans(State(state): State<Arc<AgentState>>, headers: HeaderMap) -> Re
     axum::Json(json!({ "orphans": [] })).into_response()
 }
 
+/// One fake protocol-1 agent on a loopback port.
+pub async fn serve_agent(world: Arc<AgentWorld>, id: &str) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let state = Arc::new(AgentState { world, verifier: Verifier::new(vec![key()]), replica: id.to_owned() });
+    let app = Router::new()
+        .route("/internal/v1/runs", post(start_run))
+        .route("/internal/v1/hello", get(hello))
+        .route("/internal/v1/orphans", get(orphans))
+        // Platform readiness probes (Cloud Run wake) hit the agent's /healthz.
+        .route("/healthz", get(|| async { "ok" }))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (address, task)
+}
+
 /// A provider whose replicas are fake agents on loopback.
 #[derive(Default)]
 pub struct FakeAgentProvider {
@@ -246,21 +264,7 @@ impl FakeAgentProvider {
 
     async fn spawn_agent(&self, deployment: &DeploymentRef) -> (ReplicaRef, SocketAddr) {
         let id = format!("agent-{}", self.next.fetch_add(1, Ordering::SeqCst) + 1);
-        let state = Arc::new(AgentState {
-            world: self.world.clone(),
-            verifier: Verifier::new(vec![key()]),
-            replica: id.clone(),
-        });
-        let app = Router::new()
-            .route("/internal/v1/runs", post(start_run))
-            .route("/internal/v1/hello", get(hello))
-            .route("/internal/v1/orphans", get(orphans))
-            .with_state(state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let task = tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        });
+        let (address, task) = serve_agent(self.world.clone(), &id).await;
         let replica = ReplicaRef { deployment: deployment.clone(), id };
         self.replicas.lock().unwrap().insert(replica.clone(), (address, task));
         (replica, address)
@@ -384,6 +388,10 @@ pub struct Options {
     pub pool: PoolConfig,
     pub reclaim_grace: Duration,
     pub configure_app: Option<Box<dyn FnOnce(&mut App) + Send>>,
+    /// Run the deployment on this provider instead of the fake-agent provider.
+    pub provider: Option<Arc<dyn Provider>>,
+    /// `DeploymentRef::target` of version v1.
+    pub target: String,
 }
 
 impl Default for Options {
@@ -394,6 +402,8 @@ impl Default for Options {
             pool: PoolConfig::default(),
             reclaim_grace: Duration::from_secs(5),
             configure_app: None,
+            provider: None,
+            target: "fake".into(),
         }
     }
 }
@@ -407,11 +417,14 @@ pub async fn start_gateway(options: Options) -> TestGateway {
     };
     let gateway = Gateway::new(options.store, settings);
     let provider = Arc::new(FakeAgentProvider::new(options.world.clone()));
+    let chosen: Arc<dyn Provider> = options.provider.clone().unwrap_or_else(|| provider.clone());
     let auth =
         DeploymentAuth::new(vec![graphrt_gateway::hex::sha256_hex(API_KEY.as_bytes())], None, &reqwest::Client::new())
             .unwrap();
-    let deployment = Arc::new(Deployment::new(DEPLOYMENT, auth, vec![key()], provider.clone(), options.pool));
-    deployment.add_version(version("v1"), graphrt_core::store::now_ms());
+    let deployment = Arc::new(Deployment::new(DEPLOYMENT, auth, vec![key()], chosen, options.pool));
+    let mut first = version("v1");
+    first.target = options.target.clone();
+    deployment.add_version(first, graphrt_core::store::now_ms());
     gateway.add_deployment(deployment.clone());
     let mut app = App::new(gateway.clone());
     if let Some(configure) = options.configure_app {

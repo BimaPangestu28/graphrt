@@ -51,7 +51,7 @@ fn keys_of(config: &DeploymentConfig) -> Result<String, String> {
 
 fn build_deployment(
     config: &DeploymentConfig,
-    provider: Arc<LocalProvider>,
+    provider: Arc<dyn graphrt_provider_api::Provider>,
     client: &reqwest::Client,
 ) -> Result<Deployment, String> {
     let keys_text = keys_of(config)?;
@@ -111,9 +111,26 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
     let mut crons = Vec::new();
     let mut callback_secrets = HashMap::new();
     let mut keys_by_deployment = HashMap::new();
+    // Remote providers are built once per name and shared by their deployments.
+    let mut remote: HashMap<String, Arc<dyn graphrt_provider_api::Provider>> = HashMap::new();
+    for (name, provider_config) in &config.providers {
+        if !matches!(provider_config, crate::providers::ProviderConfig::Local) {
+            let built =
+                crate::providers::build_remote(provider_config).map_err(|error| format!("provider {name}: {error}"))?;
+            remote.insert(name.clone(), built);
+        }
+    }
     for deployment_config in &config.deployments {
-        let deployment = Arc::new(build_deployment(deployment_config, provider.clone(), &client)?);
-        keys_by_deployment.insert(deployment.name.clone(), keys_of(deployment_config)?);
+        let provider_name = deployment_config.provider.as_deref().unwrap_or("local");
+        let chosen: Arc<dyn graphrt_provider_api::Provider> = match remote.get(provider_name) {
+            Some(remote_provider) => remote_provider.clone(),
+            None => {
+                // Only deployments on the local provider get local agents.
+                keys_by_deployment.insert(deployment_config.name.clone(), keys_of(deployment_config)?);
+                provider.clone()
+            }
+        };
+        let deployment = Arc::new(build_deployment(deployment_config, chosen, &client)?);
         if let Some(name) = &deployment_config.callback_secret_env {
             callback_secrets.insert(deployment.name.clone(), env_value(name)?.into_bytes());
         }
@@ -141,7 +158,7 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
     app.admin_token_hash = admin_token.map(|token| crate::hex::sha256_hex(token.as_bytes()));
     let local = provider.clone();
     let hook: VersionHook = Arc::new(move |deployment: &Deployment, info: &VersionInfo| {
-        let keys = keys_by_deployment.get(&deployment.name).cloned().unwrap_or_default();
+        let Some(keys) = keys_by_deployment.get(&deployment.name).cloned() else { return };
         local.register(
             &info.reference(&deployment.name),
             LocalVersion { command: info.command.clone(), keys, env: Vec::new() },
