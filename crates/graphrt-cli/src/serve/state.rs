@@ -27,6 +27,7 @@ use crate::header_inputs::{HeaderBindings, HeaderInputSpec};
 use crate::setup::ServiceOptions;
 use crate::store::MemoryStore;
 use crate::store::live::ActiveRun;
+use crate::store::timed::{TimedStore, WriteLatency};
 
 /// Default cap on runs executing at once (`--max-active-runs`).
 pub const DEFAULT_MAX_ACTIVE_RUNS: usize = 256;
@@ -52,7 +53,10 @@ pub struct AppState {
     pub(super) max_active_runs: usize,
     /// Set by a shutdown drain: new and resumed runs are refused with `503`.
     pub(super) draining: AtomicBool,
+    /// The run store, wrapped in a [`TimedStore`] recording into `store_writes`.
     pub(super) store: Arc<dyn RunStore>,
+    /// Recent write latency of `store` (the drain sizes its reserve with it).
+    pub(super) store_writes: Arc<WriteLatency>,
     /// Evaluation scores, kept by the same backend as `store`.
     #[cfg(feature = "scores")]
     pub(super) scores: Arc<dyn crate::scores::ScoreStore>,
@@ -92,12 +96,14 @@ impl AppState {
     /// Create state from compiled engines.
     pub fn new(workflows: IndexMap<String, ServedWorkflow>, api_key: Option<String>) -> Self {
         let memory = Arc::new(MemoryStore::new());
+        let store_writes = Arc::new(WriteLatency::default());
         Self {
             workflows,
             runs: Mutex::new(HashMap::new()),
             max_active_runs: 0,
             draining: AtomicBool::new(false),
-            store: memory.clone(),
+            store: Arc::new(TimedStore::new(memory.clone(), Arc::clone(&store_writes))),
+            store_writes,
             #[cfg(feature = "scores")]
             scores: memory,
             api_key,
@@ -314,13 +320,13 @@ impl AppState {
     /// Only the run store: scores stay in the previous store, so prefer
     /// [`AppState::with_stores`] when serving scores.
     pub fn with_store(mut self, store: Arc<dyn RunStore>) -> Self {
-        self.store = store;
+        self.store = Arc::new(TimedStore::new(store, Arc::clone(&self.store_writes)));
         self
     }
 
     /// Record runs, and their scores, in these stores.
     pub fn with_stores(mut self, stores: crate::store::Stores) -> Self {
-        self.store = stores.runs;
+        self.store = Arc::new(TimedStore::new(stores.runs, Arc::clone(&self.store_writes)));
         #[cfg(feature = "scores")]
         {
             self.scores = stores.scores;
@@ -397,6 +403,12 @@ impl AppState {
     /// The runs currently executing.
     pub fn active_list(&self) -> Vec<Arc<ActiveRun>> {
         self.runs.lock().map(|runs| runs.values().cloned().collect()).unwrap_or_default()
+    }
+
+    /// Recent duration of one store write (a decaying maximum, see
+    /// [`WriteLatency`]).
+    pub fn store_write_estimate(&self) -> std::time::Duration {
+        self.store_writes.estimate()
     }
 
     /// Stop accepting runs (`503` + `Retry-After`) and report not ready on `/readyz`.

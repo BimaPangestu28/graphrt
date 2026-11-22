@@ -74,20 +74,35 @@ pub fn parse_duration(text: &str) -> Result<Duration, String> {
     Duration::try_from_secs_f64(seconds * scale).map_err(|e| format!("invalid duration `{text}`: {e}"))
 }
 
-/// Time each active run adds to the reserve: stopping it and storing its final
-/// state (a durable directory store syncs three files per run).
+/// Least time each active run adds to the reserve: stopping it and storing its
+/// final state.
 const RESERVE_PER_RUN: Duration = Duration::from_millis(10);
+
+/// Store writes a stopped run makes: its last events, its snapshot, its record.
+const FINAL_WRITES_PER_RUN: u32 = 3;
+
+/// Reserve one active run needs at the end of a drain, given the store's recent
+/// write latency. Stores may serialise writes ([`crate::store::FileStore`] holds
+/// one lock per write), so the runs' final writes are counted one after another;
+/// at least [`RESERVE_PER_RUN`].
+///
+/// @param write_latency - Recent duration of one store write (`Duration`)
+/// @returns Reserve per run (`Duration`)
+pub fn reserve_per_run(write_latency: Duration) -> Duration {
+    write_latency.saturating_mul(FINAL_WRITES_PER_RUN).max(RESERVE_PER_RUN)
+}
 
 /// When the drain stops waiting for in-flight nodes and preempts them: the end of
 /// the timeout minus a reserve for cancelling and storing the runs (a quarter of
-/// the timeout, between 0.5 s and 2 s, plus [`RESERVE_PER_RUN`] per active run,
-/// never more than the timeout itself).
+/// the timeout, between 0.5 s and 2 s, plus `per_run` per active run, never more
+/// than the timeout itself).
 ///
 /// @param timeout - The drain timeout (`Duration`)
-/// @param runs - Active runs when the drain began (`usize`)
+/// @param runs - Active runs (`usize`)
+/// @param per_run - Reserve per run, see [`reserve_per_run`] (`Duration`)
 /// @returns Offset from the drain's start (`Duration`)
-pub fn preempt_at(timeout: Duration, runs: usize) -> Duration {
-    let per_runs = RESERVE_PER_RUN.saturating_mul(u32::try_from(runs).unwrap_or(u32::MAX));
+pub fn preempt_at(timeout: Duration, runs: usize, per_run: Duration) -> Duration {
+    let per_runs = per_run.saturating_mul(u32::try_from(runs).unwrap_or(u32::MAX));
     let reserve = (timeout / 4).clamp(Duration::from_millis(500), Duration::from_secs(2)).saturating_add(per_runs);
     timeout.saturating_sub(reserve.min(timeout))
 }
@@ -226,7 +241,12 @@ pub async fn drain(
     let started = Instant::now();
     let deadline = started + timeout;
     state.begin_drain();
-    let mut preempt_deadline = started + preempt_at(timeout, state.active_runs());
+    // Recomputed every poll: runs that finish on their own leave less to store,
+    // writes made meanwhile refine the latency estimate.
+    let preempt_deadline_now =
+        || started + preempt_at(timeout, state.active_runs(), reserve_per_run(state.store_write_estimate()));
+    let mut preempt_deadline = preempt_deadline_now();
+    let mut forced = false;
     let mut seen: Vec<Arc<crate::store::live::ActiveRun>> = Vec::new();
     let mut preempted = false;
     loop {
@@ -245,6 +265,9 @@ pub async fn drain(
         if state.active_runs() == 0 || now >= deadline {
             break;
         }
+        if !forced {
+            preempt_deadline = preempt_deadline_now();
+        }
         if !preempted && now >= preempt_deadline {
             preempted = true;
             for run in &seen {
@@ -259,6 +282,7 @@ pub async fn drain(
                 if let Either::Right((name, _)) = futures::future::select(std::pin::pin!(tick), again).await {
                     eprintln!("received {name} again: preempting active runs now");
                     preempt_deadline = Instant::now();
+                    forced = true;
                 }
             }
             None => tick.await,
@@ -301,13 +325,24 @@ mod tests {
 
     #[test]
     fn preemption_leaves_a_reserve_before_the_deadline() {
-        assert_eq!(preempt_at(Duration::from_secs(4), 0), Duration::from_secs(3));
-        assert_eq!(preempt_at(Duration::from_secs(4), 10), Duration::from_millis(2900));
-        assert_eq!(preempt_at(Duration::from_secs(25), 0), Duration::from_secs(23));
-        assert_eq!(preempt_at(Duration::from_secs(1), 0), Duration::from_millis(500));
-        assert_eq!(preempt_at(Duration::from_millis(300), 0), Duration::ZERO);
-        assert_eq!(preempt_at(Duration::ZERO, 5), Duration::ZERO);
-        assert_eq!(preempt_at(Duration::from_secs(2), 1_000), Duration::ZERO);
+        let fast = reserve_per_run(Duration::from_micros(50));
+        assert_eq!(fast, RESERVE_PER_RUN, "a fast store costs the minimum");
+        assert_eq!(preempt_at(Duration::from_secs(4), 0, fast), Duration::from_secs(3));
+        assert_eq!(preempt_at(Duration::from_secs(4), 10, fast), Duration::from_millis(2900));
+        assert_eq!(preempt_at(Duration::from_secs(25), 0, fast), Duration::from_secs(23));
+        assert_eq!(preempt_at(Duration::from_secs(1), 0, fast), Duration::from_millis(500));
+        assert_eq!(preempt_at(Duration::from_millis(300), 0, fast), Duration::ZERO);
+        assert_eq!(preempt_at(Duration::ZERO, 5, fast), Duration::ZERO);
+        assert_eq!(preempt_at(Duration::from_secs(2), 1_000, fast), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_slow_store_moves_preemption_earlier() {
+        // 40 ms per write, 3 writes per run: 10 runs need 1.2 s after the preemption.
+        let slow = reserve_per_run(Duration::from_millis(40));
+        assert_eq!(slow, Duration::from_millis(120));
+        assert_eq!(preempt_at(Duration::from_secs(3), 10, slow), Duration::from_millis(1050));
+        assert_eq!(preempt_at(Duration::from_secs(3), 30, slow), Duration::ZERO, "never before the drain began");
     }
 
     #[test]

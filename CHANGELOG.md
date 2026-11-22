@@ -260,6 +260,14 @@ releases may contain breaking changes; they are called out under **Changed**.
   the Windows `.exe` links the C runtime statically (no `VCRUNTIME140.dll`).
 
 ### Fixed
+- `graphrt serve` drain: runs could be left `running` at the drain deadline (and
+  marked failed by the next start) when the store was slow. The preemption
+  reserve assumed 10 ms per active run, but a `--store` directory serialises
+  writes behind one lock and syncs several files per write, so on a busy disk
+  the final writes of many runs stopped at once overran it (seen as 8 of 10
+  runs paused under load). The reserve now uses the store's measured recent
+  write latency (three writes per run, at least 10 ms) and is recomputed while
+  the drain waits.
 - Telemetry: `DO_NOT_TRACK=` (empty) and values such as `yes`/`no` now turn
   telemetry off, as documented ("anything but `0`/`false`"); only `0` and
   `false` leave it alone. A build with a telemetry endpoint that the user did

@@ -387,3 +387,130 @@ fn http(addr: &str, method: &str, path: &str, body: &str) -> (u16, String) {
     let body = response.split_once("\r\n\r\n").map(|(_, body)| body.to_owned()).unwrap_or_default();
     (status, body)
 }
+
+/// A store whose writes are serialised and slow, like [`FileStore`] (one store
+/// lock, several fsyncs per write) on a disk busy with other work.
+#[derive(Debug)]
+struct SlowStore {
+    inner: graphrt_cli::store::MemoryStore,
+    lock: tokio::sync::Mutex<()>,
+    write: Duration,
+}
+
+impl SlowStore {
+    async fn slowly<T>(&self, write: impl std::future::Future<Output = T>) -> T {
+        let _serialised = self.lock.lock().await;
+        tokio::time::sleep(self.write).await;
+        write.await
+    }
+}
+
+impl RunStore for SlowStore {
+    fn create(
+        &self,
+        record: graphrt_core::store::RunRecord,
+    ) -> futures::future::BoxFuture<'_, graphrt_core::store::StoreResult<()>> {
+        Box::pin(self.slowly(self.inner.create(record)))
+    }
+    fn put(
+        &self,
+        record: graphrt_core::store::RunRecord,
+    ) -> futures::future::BoxFuture<'_, graphrt_core::store::StoreResult<()>> {
+        Box::pin(self.slowly(self.inner.put(record)))
+    }
+    fn put_if(
+        &self,
+        record: graphrt_core::store::RunRecord,
+        expected_epoch: u64,
+    ) -> futures::future::BoxFuture<'_, graphrt_core::store::StoreResult<()>> {
+        Box::pin(self.slowly(self.inner.put_if(record, expected_epoch)))
+    }
+    fn get<'a>(
+        &'a self,
+        run_id: &'a str,
+    ) -> futures::future::BoxFuture<'a, graphrt_core::store::StoreResult<Option<graphrt_core::store::RunRecord>>> {
+        self.inner.get(run_id)
+    }
+    fn list(
+        &self,
+        filter: graphrt_core::store::RunFilter,
+    ) -> futures::future::BoxFuture<'_, graphrt_core::store::StoreResult<graphrt_core::store::RunPage>> {
+        self.inner.list(filter)
+    }
+    fn delete<'a>(&'a self, run_id: &'a str) -> futures::future::BoxFuture<'a, graphrt_core::store::StoreResult<bool>> {
+        Box::pin(self.slowly(self.inner.delete(run_id)))
+    }
+    fn append_events<'a>(
+        &'a self,
+        run_id: &'a str,
+        first_index: u64,
+        events: &'a [graphrt_core::store::StoredEvent],
+    ) -> futures::future::BoxFuture<'a, graphrt_core::store::StoreResult<u64>> {
+        Box::pin(self.slowly(self.inner.append_events(run_id, first_index, events)))
+    }
+    fn events<'a>(
+        &'a self,
+        run_id: &'a str,
+        from: u64,
+    ) -> futures::future::BoxFuture<'a, graphrt_core::store::StoreResult<Vec<graphrt_core::store::StoredEvent>>> {
+        self.inner.events(run_id, from)
+    }
+    fn save_snapshot<'a>(
+        &'a self,
+        run_id: &'a str,
+        snapshot: &'a graphrt_core::Snapshot,
+    ) -> futures::future::BoxFuture<'a, graphrt_core::store::StoreResult<()>> {
+        Box::pin(self.slowly(self.inner.save_snapshot(run_id, snapshot)))
+    }
+    fn load_snapshot<'a>(
+        &'a self,
+        run_id: &'a str,
+    ) -> futures::future::BoxFuture<'a, graphrt_core::store::StoreResult<Option<graphrt_core::Snapshot>>> {
+        self.inner.load_snapshot(run_id)
+    }
+    fn claim_resume<'a>(
+        &'a self,
+        run_id: &'a str,
+        now_ms: u64,
+    ) -> futures::future::BoxFuture<'a, graphrt_core::store::StoreResult<graphrt_core::store::RunRecord>> {
+        Box::pin(self.slowly(self.inner.claim_resume(run_id, now_ms)))
+    }
+    fn recover_interrupted(
+        &self,
+        now_ms: u64,
+    ) -> futures::future::BoxFuture<'_, graphrt_core::store::StoreResult<usize>> {
+        self.inner.recover_interrupted(now_ms)
+    }
+    fn purge_before(&self, cutoff_ms: u64) -> futures::future::BoxFuture<'_, graphrt_core::store::StoreResult<usize>> {
+        self.inner.purge_before(cutoff_ms)
+    }
+}
+
+/// Ten runs stopped at once each store their final state through one store
+/// lock: on a slow disk that takes longer than a fixed reserve, so the drain
+/// must preempt early enough for the store it actually has (no run left
+/// `running` at the deadline, which a restart would mark failed).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn drain_leaves_time_for_a_slow_serialised_store() {
+    let (upstream, port) = start_upstream().await;
+    let wf = workflows_dir("slow-store", port);
+    let store = SlowStore {
+        inner: graphrt_cli::store::MemoryStore::new(),
+        lock: tokio::sync::Mutex::new(()),
+        write: Duration::from_millis(40),
+    };
+    let state = state_with(&wf, Arc::new(store)).await;
+    let app = router(Arc::clone(&state), 1 << 20);
+    for _ in 0..10 {
+        let (status, _, body) = send(&app, post("/v1/workflows/work/runs", json!({ "async": true }))).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    }
+    wait_until("10 upstream calls", || upstream.calls.load(Ordering::SeqCst) == 10).await;
+
+    let timeout = Duration::from_secs(3);
+    let report = drain(&state, timeout, "SIGTERM", None).await;
+    assert!(report.elapsed <= timeout + Duration::from_millis(250), "{report}");
+    assert_eq!((report.runs, report.paused, report.failed, report.unfinished), (10, 10, 0, 0), "{report}");
+    assert!(report.preempted, "{report}");
+    let _ = std::fs::remove_dir_all(&wf);
+}

@@ -3,6 +3,7 @@
 mod file;
 pub mod live;
 mod memory;
+pub mod timed;
 
 use std::path::PathBuf;
 use std::sync::Arc;
