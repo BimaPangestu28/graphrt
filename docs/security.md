@@ -203,6 +203,9 @@ They honour standard proxy environment variables, except the OTel exporter and
     `--store-ttl-days`.
   - Live event feeds and per-run event logs are bounded.
   - Knowledge `top_k` is capped at 100.
+- **Files on disk.** The `--store` directory (records, events, snapshots,
+  scores), replay cassettes and `graphrt eval` reports are created owner-only
+  on Unix (`0600` files, `0700` directories); existing files keep their mode.
 - **Identifiers.** Run ids and dataset ids are validated (`[A-Za-z0-9._-]`, no
   leading dot) before any path is built. Workflow names and document ids are
   only lookup keys.

@@ -19,7 +19,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -79,8 +78,6 @@ except BaseException as _e:
     _emit({"error": "".join(_tb[-3:]).strip(), "kind": "code_error"})
     sys.exit(1)
 "#;
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Runs `python3` code in a local subprocess. Register as `Arc<dyn RemoteSandbox>`.
 #[derive(Clone, Debug)]
@@ -326,22 +323,11 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn create() -> Result<Self, NodeError> {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!("graphrt-py-{}-{n}-{nanos}", std::process::id()));
         // A fresh directory only: never adopt one (or a symlink) another local user
         // created at the predictable name. Owner-only on Unix.
-        #[cfg_attr(not(unix), allow(unused_mut))] // only mutated by the Unix mode below
-        let mut builder = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        builder
-            .create(&dir)
-            .map_err(|e| NodeError::new("sandbox", format!("cannot create a working directory: {e}")))?;
-        Ok(Self(dir))
+        graphrt_core::private_fs::create_fresh_temp_dir("graphrt-py")
+            .map(Self)
+            .map_err(|e| NodeError::new("sandbox", format!("cannot create a working directory: {e}")))
     }
 
     fn path(&self) -> &Path {

@@ -49,6 +49,15 @@ releases may contain breaking changes; they are called out under **Changed**.
   which CPython cannot start (the Unix default `PATH` does not exist there).
 
 ### Security
+- Run data written to disk is owner-only on Unix (`0600` files, `0700`
+  directories): the `serve --store` directory (records, events, snapshots,
+  `scores.json`, `.lock`), replay cassettes, and `graphrt eval -o` / `--junit`
+  reports. They hold prompts, answers and user data and were created with the
+  umask, so usually world-readable. Existing files keep their mode; run
+  `chmod -R go= <store-dir>` once to tighten an existing store. The four
+  "fresh owner-only temp directory" implementations (bundle configs, the
+  Python runner, catalog and git plugin installs) now share
+  `graphrt_core::private_fs`. (Low; 0.4.0 is affected.)
 - `graphrt serve`: human feedback could fill a run's 256-score cap and make
   every later online-evaluator score of that run fail to store, so an end user
   (`--verify-jwt`) could keep a safety judge from ever scoring their own runs.

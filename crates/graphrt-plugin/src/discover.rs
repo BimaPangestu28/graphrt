@@ -181,14 +181,8 @@ fn clone_and_install(
 /// write there in between (a shared `/tmp` under a permissive umask).
 #[cfg(feature = "git")]
 fn create_private_temp_dir() -> Result<PathBuf, PluginError> {
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("graphrt-plugin-{}-{nanos}", std::process::id()));
-    #[cfg_attr(not(unix), allow(unused_mut))] // only mutated by the Unix mode below
-    let mut builder = std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(&dir).map_err(|e| PluginError::Io { path: dir.clone(), message: e.to_string() })?;
-    Ok(dir)
+    graphrt_core::private_fs::create_fresh_temp_dir("graphrt-plugin")
+        .map_err(|e| PluginError::Io { path: std::env::temp_dir(), message: e.to_string() })
 }
 
 #[cfg(feature = "git")]
