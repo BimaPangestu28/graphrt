@@ -249,12 +249,17 @@ type Built = Option<Result<Arc<dyn Provider>, String>>;
 pub fn k8s_client(settings: &K8sConfig) -> Result<graphrt_provider_k8s::KubeClient, String> {
     use graphrt_provider_k8s::auth::{KubeconfigOptions, infer_cluster_config, kubeconfig_from_env};
     let cluster = match &settings.kubeconfig {
-        Some(path) => kubeconfig_from_env(&KubeconfigOptions { path: Some(path.clone()), context: settings.context.clone() }),
-        None if settings.context.is_some() => kubeconfig_from_env(&KubeconfigOptions { path: None, context: settings.context.clone() }),
+        Some(path) => {
+            kubeconfig_from_env(&KubeconfigOptions { path: Some(path.clone()), context: settings.context.clone() })
+        }
+        None if settings.context.is_some() => {
+            kubeconfig_from_env(&KubeconfigOptions { path: None, context: settings.context.clone() })
+        }
         None => infer_cluster_config(),
     }
     .map_err(|error| format!("kubernetes credentials: {error}"))?;
-    graphrt_provider_k8s::KubeClient::new(&cluster, graphrt_provider_k8s::ClientOptions::default()).map_err(|error| error.to_string())
+    graphrt_provider_k8s::KubeClient::new(&cluster, graphrt_provider_k8s::ClientOptions::default())
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(feature = "gw-k8s")]
@@ -303,7 +308,8 @@ pub fn cloud_run_config(settings: &CloudRunProviderConfig) -> Result<graphrt_gcp
 fn build_cloud_run(settings: &CloudRunProviderConfig) -> Built {
     let build = || -> Result<Arc<dyn Provider>, String> {
         let auth = graphrt_gcp::auth::GcpAuth::from_env().map_err(|error| format!("gcp credentials: {error}"))?;
-        let provider = graphrt_gcp::cloud_run::CloudRunProvider::new(cloud_run_config(settings)?, auth).map_err(|error| error.to_string())?;
+        let provider = graphrt_gcp::cloud_run::CloudRunProvider::new(cloud_run_config(settings)?, auth)
+            .map_err(|error| error.to_string())?;
         Ok(Arc::new(crate::cloud_run::CloudRunGatewayProvider::new(provider).map_err(|error| error.to_string())?))
     };
     Some(build())
@@ -362,7 +368,8 @@ pub fn ecs_config(settings: &EcsProviderConfig) -> graphrt_provider_aws::ecs::Ec
 #[cfg(feature = "gw-ecs")]
 fn build_ecs(settings: &EcsProviderConfig) -> Built {
     let build = || -> Result<Arc<dyn Provider>, String> {
-        let provider = graphrt_provider_aws::ecs::EcsProvider::new(aws_chain(&settings.region)?, ecs_config(settings)).map_err(|error| error.to_string())?;
+        let provider = graphrt_provider_aws::ecs::EcsProvider::new(aws_chain(&settings.region)?, ecs_config(settings))
+            .map_err(|error| error.to_string())?;
         Ok(Arc::new(provider))
     };
     Some(build())
@@ -382,7 +389,10 @@ pub fn lambda_config(settings: &LambdaProviderConfig) -> graphrt_provider_aws::l
         config.max_run_secs = secs;
     }
     for (deployment, function) in &settings.functions {
-        config.functions.insert(deployment.clone(), graphrt_provider_aws::lambda::LambdaFunction { function_name: function.clone() });
+        config.functions.insert(
+            deployment.clone(),
+            graphrt_provider_aws::lambda::LambdaFunction { function_name: function.clone() },
+        );
     }
     config
 }
@@ -390,7 +400,9 @@ pub fn lambda_config(settings: &LambdaProviderConfig) -> graphrt_provider_aws::l
 #[cfg(feature = "gw-lambda")]
 fn build_lambda(settings: &LambdaProviderConfig) -> Built {
     let build = || -> Result<Arc<dyn Provider>, String> {
-        let provider = graphrt_provider_aws::lambda::LambdaProvider::new(aws_chain(&settings.region)?, lambda_config(settings)).map_err(|error| error.to_string())?;
+        let provider =
+            graphrt_provider_aws::lambda::LambdaProvider::new(aws_chain(&settings.region)?, lambda_config(settings))
+                .map_err(|error| error.to_string())?;
         Ok(Arc::new(provider))
     };
     Some(build())
@@ -444,7 +456,8 @@ pub fn fly_config(settings: &FlyConfig) -> Result<graphrt_provider_fly::FlyProvi
 #[cfg(feature = "gw-fly")]
 fn build_fly(settings: &FlyConfig) -> Built {
     let build = || -> Result<Arc<dyn Provider>, String> {
-        let provider = graphrt_provider_fly::FlyProvider::new(fly_config(settings)?).map_err(|error| error.to_string())?;
+        let provider =
+            graphrt_provider_fly::FlyProvider::new(fly_config(settings)?).map_err(|error| error.to_string())?;
         Ok(Arc::new(provider))
     };
     Some(build())
@@ -463,7 +476,13 @@ fn build_fly(_settings: &FlyConfig) -> Built {
 /// # Errors
 /// The kind's deploy feature is not compiled in, or its settings / credentials are invalid.
 pub fn build_deploy_driver(config: &ProviderConfig) -> Result<Box<dyn graphrt_provider_api::DeployDriver>, String> {
-    let missing = || format!("deploying to `{}` is not in this build (rebuild with `deploy-{}`)", config.kind(), config.feature().trim_start_matches("gw-"));
+    let missing = || {
+        format!(
+            "deploying to `{}` is not in this build (rebuild with `deploy-{}`)",
+            config.kind(),
+            config.feature().trim_start_matches("gw-")
+        )
+    };
     match config {
         ProviderConfig::Local => Err("use LocalDeployDriver for the local target".to_owned()),
         ProviderConfig::K8s(settings) => deploy_k8s(settings).ok_or_else(missing)?,
@@ -478,7 +497,10 @@ type BuiltDriver = Option<Result<Box<dyn graphrt_provider_api::DeployDriver>, St
 
 #[cfg(feature = "deploy-k8s")]
 fn deploy_k8s(settings: &K8sConfig) -> BuiltDriver {
-    Some(k8s_client(settings).map(|client| Box::new(graphrt_provider_k8s::K8sDeployDriver::new(client, &settings.namespace)) as Box<dyn graphrt_provider_api::DeployDriver>))
+    Some(k8s_client(settings).map(|client| {
+        Box::new(graphrt_provider_k8s::K8sDeployDriver::new(client, &settings.namespace))
+            as Box<dyn graphrt_provider_api::DeployDriver>
+    }))
 }
 #[cfg(not(feature = "deploy-k8s"))]
 fn deploy_k8s(_settings: &K8sConfig) -> BuiltDriver {
@@ -489,7 +511,8 @@ fn deploy_k8s(_settings: &K8sConfig) -> BuiltDriver {
 fn deploy_cloud_run(settings: &CloudRunProviderConfig) -> BuiltDriver {
     let build = || -> Result<Box<dyn graphrt_provider_api::DeployDriver>, String> {
         let auth = graphrt_gcp::auth::GcpAuth::from_env().map_err(|error| format!("gcp credentials: {error}"))?;
-        let driver = graphrt_gcp::cloud_run::CloudRunDeployDriver::new(cloud_run_config(settings)?, &auth).map_err(|error| error.to_string())?;
+        let driver = graphrt_gcp::cloud_run::CloudRunDeployDriver::new(cloud_run_config(settings)?, &auth)
+            .map_err(|error| error.to_string())?;
         Ok(Box::new(driver))
     };
     Some(build())
@@ -504,7 +527,8 @@ fn deploy_ecs(settings: &EcsProviderConfig) -> BuiltDriver {
     let build = || -> Result<Box<dyn graphrt_provider_api::DeployDriver>, String> {
         let mut config = graphrt_provider_aws::deploy::ecs::EcsDeployConfig::new(&settings.region);
         config.endpoint = aws_endpoint("ecs", &settings.region, settings.endpoint.as_ref());
-        let driver = graphrt_provider_aws::deploy::ecs::EcsDeployDriver::new(aws_chain(&settings.region)?, config).map_err(|error| error.to_string())?;
+        let driver = graphrt_provider_aws::deploy::ecs::EcsDeployDriver::new(aws_chain(&settings.region)?, config)
+            .map_err(|error| error.to_string())?;
         Ok(Box::new(driver))
     };
     Some(build())
@@ -519,7 +543,9 @@ fn deploy_lambda(settings: &LambdaProviderConfig) -> BuiltDriver {
     let build = || -> Result<Box<dyn graphrt_provider_api::DeployDriver>, String> {
         let mut config = graphrt_provider_aws::deploy::lambda::LambdaDeployConfig::new(&settings.region);
         config.lambda = aws_endpoint("lambda", &settings.region, settings.endpoint.as_ref());
-        let driver = graphrt_provider_aws::deploy::lambda::LambdaDeployDriver::new(aws_chain(&settings.region)?, config).map_err(|error| error.to_string())?;
+        let driver =
+            graphrt_provider_aws::deploy::lambda::LambdaDeployDriver::new(aws_chain(&settings.region)?, config)
+                .map_err(|error| error.to_string())?;
         Ok(Box::new(driver))
     };
     Some(build())
@@ -532,7 +558,10 @@ fn deploy_lambda(_settings: &LambdaProviderConfig) -> BuiltDriver {
 #[cfg(feature = "deploy-fly")]
 fn deploy_fly(settings: &FlyConfig) -> BuiltDriver {
     let config = graphrt_provider_fly::FlyDeployConfig {
-        api_base_url: settings.api_base_url.clone().unwrap_or_else(|| graphrt_provider_fly::PUBLIC_API_BASE_URL.to_owned()),
+        api_base_url: settings
+            .api_base_url
+            .clone()
+            .unwrap_or_else(|| graphrt_provider_fly::PUBLIC_API_BASE_URL.to_owned()),
         // Deploy-time token (may create apps and set secrets), from the CLI's environment.
         token_origin: graphrt_provider_fly::TokenOrigin::Env(graphrt_provider_fly::FLY_API_TOKEN_ENV.to_owned()),
         client_policy: graphrt_provider_fly::ClientPolicy::default(),
@@ -561,12 +590,26 @@ dev: { kind: local }
 "#;
         let providers: BTreeMap<String, ProviderConfig> = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(providers.len(), 6);
-        assert_eq!(providers["tasks"], ProviderConfig::Ecs(EcsProviderConfig {
-            region: "eu-west-1".into(),
-            endpoint: None,
-            deployments: BTreeMap::from([("shop".into(), EcsTaskConfig { cluster: "agents".into(), task_definition_family: "shop".into(), subnets: vec![], security_groups: vec![], assign_public_ip: false, container_port: 8080, capacity_provider: None })]),
-            wake_timeout_secs: None,
-        }));
+        assert_eq!(
+            providers["tasks"],
+            ProviderConfig::Ecs(EcsProviderConfig {
+                region: "eu-west-1".into(),
+                endpoint: None,
+                deployments: BTreeMap::from([(
+                    "shop".into(),
+                    EcsTaskConfig {
+                        cluster: "agents".into(),
+                        task_definition_family: "shop".into(),
+                        subnets: vec![],
+                        security_groups: vec![],
+                        assign_public_ip: false,
+                        container_port: 8080,
+                        capacity_provider: None
+                    }
+                )]),
+                wake_timeout_secs: None,
+            })
+        );
         for config in providers.values().filter(|config| !matches!(config, ProviderConfig::Local)) {
             if !compiled_kinds().contains(&config.kind())
                 && let Err(error) = build_remote(config)

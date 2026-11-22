@@ -79,10 +79,13 @@ impl LocalDeployDriver {
             "target": registration.target, "command": registration.command,
         });
         let url = format!("{}/admin/v1/deployments/{}/versions", self.gateway_url, registration.deployment);
-        let response = self.client.post(url).bearer_auth(&self.admin_token).json_body(&body).send().await.map_err(|error| DeployError {
-            kind: DeployErrorKind::Provider(ProviderErrorKind::Transient),
-            message: format!("gateway unreachable: {error}"),
-        })?;
+        let response =
+            self.client.post(url).bearer_auth(&self.admin_token).json_body(&body).send().await.map_err(|error| {
+                DeployError {
+                    kind: DeployErrorKind::Provider(ProviderErrorKind::Transient),
+                    message: format!("gateway unreachable: {error}"),
+                }
+            })?;
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
             let text = response.text().await.unwrap_or_default();
@@ -137,9 +140,20 @@ impl RegisteringDriver {
 impl DeployDriver for RegisteringDriver {
     fn apply<'a>(&'a self, spec: &'a DeploymentSpec) -> BoxFuture<'a, Result<DeploymentRef, DeployError>> {
         Box::pin(async move {
-            let workflow = spec.provider_settings.get("workflow").and_then(serde_json::Value::as_str).filter(|name| !name.is_empty());
-            let workflow = workflow.ok_or_else(|| DeployError::invalid("provider_settings.workflow (the served workflow name) is required"))?.to_owned();
-            let deployed = self.platform.apply(spec).await?;
+            let workflow = spec
+                .provider_settings
+                .get("workflow")
+                .and_then(serde_json::Value::as_str)
+                .filter(|name| !name.is_empty());
+            let workflow = workflow
+                .ok_or_else(|| {
+                    DeployError::invalid("provider_settings.workflow (the served workflow name) is required")
+                })?
+                .to_owned();
+            // `workflow` is the gateway's; platform drivers refuse settings they do not know.
+            let mut platform_spec = spec.clone();
+            platform_spec.provider_settings.remove("workflow");
+            let deployed = self.platform.apply(&platform_spec).await?;
             self.gateway
                 .register(VersionRegistration {
                     deployment: &spec.name,

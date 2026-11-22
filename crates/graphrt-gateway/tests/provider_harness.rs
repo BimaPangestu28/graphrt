@@ -13,6 +13,7 @@
 //!
 //! Run with `--features deploy-k8s,deploy-cloud-run,deploy-ecs,deploy-lambda,deploy-fly`.
 
+#![cfg(any(feature = "gw-k8s", feature = "deploy-cloud-run", feature = "gw-ecs", feature = "gw-lambda", feature = "gw-fly"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::print_stdout)]
 
 mod common;
@@ -22,10 +23,12 @@ use std::time::Duration;
 
 use common::{AgentWorld, DEPLOYMENT, Options, TestGateway, serve_agent, start_gateway, version};
 use graphrt_core::store::now_ms;
-use graphrt_provider_api::conformance::{CaseId, CaseOutcome, ConformanceConfig, ConformanceTarget, GatewayHarness, HookResult, run_conformance};
+use graphrt_provider_api::conformance::{
+    CaseId, CaseOutcome, ConformanceConfig, ConformanceTarget, GatewayHarness, HookResult, run_conformance,
+};
 use graphrt_provider_api::{
-    Addressing, BoxFuture, Capabilities, DeploymentRef, Endpoint, EndpointAddress, InvokeRequest, InvokeResponse, Provider, ProviderError,
-    ReleaseMode, ReplicaRef, ReplicaState,
+    Addressing, BoxFuture, Capabilities, DeploymentRef, Endpoint, EndpointAddress, InvokeRequest, InvokeResponse,
+    Provider, ProviderError, ReleaseMode, ReplicaRef, ReplicaState,
 };
 use serde_json::json;
 
@@ -40,7 +43,9 @@ struct Routed {
 impl Routed {
     fn rewrite(&self, address: EndpointAddress) -> EndpointAddress {
         match address {
-            EndpointAddress::Http(url) if !url.starts_with("lambda://") => EndpointAddress::Http(self.agent_url.clone()),
+            EndpointAddress::Http(url) if !url.starts_with("lambda://") => {
+                EndpointAddress::Http(self.agent_url.clone())
+            }
             other => other,
         }
     }
@@ -50,10 +55,17 @@ impl Provider for Routed {
     fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
     }
-    fn wake<'a>(&'a self, deployment: &'a DeploymentRef, replicas: u32) -> BoxFuture<'a, Result<Vec<Endpoint>, ProviderError>> {
+    fn wake<'a>(
+        &'a self,
+        deployment: &'a DeploymentRef,
+        replicas: u32,
+    ) -> BoxFuture<'a, Result<Vec<Endpoint>, ProviderError>> {
         Box::pin(async move {
             let endpoints = self.inner.wake(deployment, replicas).await?;
-            Ok(endpoints.into_iter().map(|endpoint| Endpoint { address: self.rewrite(endpoint.address), replica: endpoint.replica }).collect())
+            Ok(endpoints
+                .into_iter()
+                .map(|endpoint| Endpoint { address: self.rewrite(endpoint.address), replica: endpoint.replica })
+                .collect())
         })
     }
     fn release<'a>(&'a self, replica: &'a ReplicaRef, mode: ReleaseMode) -> BoxFuture<'a, Result<(), ProviderError>> {
@@ -62,10 +74,17 @@ impl Provider for Routed {
     fn list<'a>(&'a self, deployment: &'a DeploymentRef) -> BoxFuture<'a, Result<Vec<ReplicaState>, ProviderError>> {
         Box::pin(async move {
             let rows = self.inner.list(deployment).await?;
-            Ok(rows.into_iter().map(|row| ReplicaState { address: row.address.map(|address| self.rewrite(address)), ..row }).collect())
+            Ok(rows
+                .into_iter()
+                .map(|row| ReplicaState { address: row.address.map(|address| self.rewrite(address)), ..row })
+                .collect())
         })
     }
-    fn invoke<'a>(&'a self, endpoint: &'a Endpoint, request: InvokeRequest) -> Option<BoxFuture<'a, Result<InvokeResponse, ProviderError>>> {
+    fn invoke<'a>(
+        &'a self,
+        endpoint: &'a Endpoint,
+        request: InvokeRequest,
+    ) -> Option<BoxFuture<'a, Result<InvokeResponse, ProviderError>>> {
         self.inner.invoke(endpoint, request)
     }
 }
@@ -88,7 +107,8 @@ impl Harness {
         if !self.provider.capabilities().can_preempt() {
             return Ok("no grace on this platform: runs are never preempted (C7 covers the cap)".into());
         }
-        let (_, record) = self.gateway.post(&runs(), json!({ "inputs": { "mode": "preempt_once", "events": 3 } })).await;
+        let (_, record) =
+            self.gateway.post(&runs(), json!({ "inputs": { "mode": "preempt_once", "events": 3 } })).await;
         if record["status"] != "succeeded" || record["outputs"]["executions"] != 2 {
             return Err(format!("drained run not continued: {record}"));
         }
@@ -117,9 +137,17 @@ impl Harness {
         let p95 = graphrt_provider_api::conformance::percentile(&gaps, 95.0);
         let first = arrivals.first().copied().unwrap_or_default();
         if arrivals.len() < 30 || first > Duration::from_millis(1500) || p95 > Duration::from_millis(75) {
-            return Err(format!("{} chunks, first after {first:?}, inter-event p95 {p95:?}: buffered or slow", arrivals.len()));
+            return Err(format!(
+                "{} chunks, first after {first:?}, inter-event p95 {p95:?}: buffered or slow",
+                arrivals.len()
+            ));
         }
-        Ok(format!("{} chunks, inter-event p95 {:.1} ms vs 25 ms emitted, first after {:.0} ms", arrivals.len(), p95.as_secs_f64() * 1000.0, first.as_secs_f64() * 1000.0))
+        Ok(format!(
+            "{} chunks, inter-event p95 {:.1} ms vs 25 ms emitted, first after {:.0} ms",
+            arrivals.len(),
+            p95.as_secs_f64() * 1000.0,
+            first.as_secs_f64() * 1000.0
+        ))
     }
 
     async fn request_cap(&self) -> HookResult {
@@ -127,14 +155,19 @@ impl Harness {
         match capabilities.max_request_secs {
             None => Ok("no request cap on this platform".into()),
             Some(_) if self.expects_platform_timeout => {
-                let (_, record) = self.gateway.post(&runs(), json!({ "inputs": { "events": 5, "delay_ms": 400 } })).await;
+                let (_, record) =
+                    self.gateway.post(&runs(), json!({ "inputs": { "events": 5, "delay_ms": 400 } })).await;
                 if record["error_type"] != "platform_timeout" {
                     return Err(format!("expected failed{{platform_timeout}}: {record}"));
                 }
                 Ok("run past the platform cap → failed{platform_timeout}, no silent kill, no re-dispatch".into())
             }
-            Some(cap) if !capabilities.can_preempt() => Err(format!("cap {cap} s without grace and no platform timeout seen")),
-            Some(cap) => Err(format!("planned preemption before the {cap} s request cap is not implemented in the gateway yet")),
+            Some(cap) if !capabilities.can_preempt() => {
+                Err(format!("cap {cap} s without grace and no platform timeout seen"))
+            }
+            Some(cap) => {
+                Err(format!("planned preemption before the {cap} s request cap is not implemented in the gateway yet"))
+            }
         }
     }
 
@@ -165,7 +198,16 @@ impl Harness {
             version.pool.release_idle().await;
             version.pool.reconcile().await.map_err(|error| error.to_string())?;
         }
-        let live = |rows: Vec<ReplicaState>| rows.iter().filter(|row| matches!(row.phase, graphrt_provider_api::ReplicaPhase::Ready | graphrt_provider_api::ReplicaPhase::Starting)).count();
+        let live = |rows: Vec<ReplicaState>| {
+            rows.iter()
+                .filter(|row| {
+                    matches!(
+                        row.phase,
+                        graphrt_provider_api::ReplicaPhase::Ready | graphrt_provider_api::ReplicaPhase::Starting
+                    )
+                })
+                .count()
+        };
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
             let remaining = live(self.provider.list(&self.reference).await.map_err(|error| error.to_string())?);
@@ -219,12 +261,35 @@ impl ConformanceTarget for Target {
 }
 
 /// Runs the suite for `provider` behind a gateway and checks the gateway cases.
-async fn check(name: &str, world: Arc<AgentWorld>, provider: Arc<dyn Provider>, target: &str, expects_platform_timeout: bool, failing_by_design: &[CaseId]) {
-    let pool = graphrt_gateway::pool::PoolConfig { idle_timeout: Duration::from_millis(300), max_active_runs: 16, ..Default::default() };
-    let gateway = start_gateway(Options { pool, world, provider: Some(provider.clone()), target: target.to_owned(), ..Options::default() }).await;
+async fn check(
+    name: &str,
+    world: Arc<AgentWorld>,
+    provider: Arc<dyn Provider>,
+    target: &str,
+    expects_platform_timeout: bool,
+    failing_by_design: &[CaseId],
+) {
+    let pool = graphrt_gateway::pool::PoolConfig {
+        idle_timeout: Duration::from_millis(300),
+        max_active_runs: 16,
+        ..Default::default()
+    };
+    let gateway = start_gateway(Options {
+        pool,
+        world,
+        provider: Some(provider.clone()),
+        target: target.to_owned(),
+        ..Options::default()
+    })
+    .await;
     let reference = DeploymentRef::new(DEPLOYMENT, "v1", target);
-    let target = Target { name: name.to_owned(), harness: Harness { gateway, provider, reference, expects_platform_timeout } };
-    let config = ConformanceConfig { latency_samples: 5, poll_interval: Duration::from_millis(20), ..ConformanceConfig::default() };
+    let target =
+        Target { name: name.to_owned(), harness: Harness { gateway, provider, reference, expects_platform_timeout } };
+    let config = ConformanceConfig {
+        latency_samples: 5,
+        poll_interval: Duration::from_millis(20),
+        ..ConformanceConfig::default()
+    };
     let report = run_conformance(&target, &config).await;
     println!("{report}");
     for result in &report.results {
@@ -259,7 +324,13 @@ async fn kubernetes_behind_the_gateway() {
     let reference = DeploymentRef::new(DEPLOYMENT, "v1", "");
     let object = graphrt_provider_k8s::names::object_name(&reference);
     fake.add_deployment("agents", &object, DEPLOYMENT, "v1", 8080);
-    fake.add_deployment("agents", &graphrt_provider_k8s::names::object_name(&DeploymentRef::new(DEPLOYMENT, "v2", "")), DEPLOYMENT, "v2", 8080);
+    fake.add_deployment(
+        "agents",
+        &graphrt_provider_k8s::names::object_name(&DeploymentRef::new(DEPLOYMENT, "v2", "")),
+        DEPLOYMENT,
+        "v2",
+        8080,
+    );
     let mut config = K8sProviderConfig::new("agents");
     config.wake_timeout = Duration::from_secs(3);
     let client = KubeClient::new(&ClusterConfig::new(fake.url()), ClientOptions::default()).unwrap();
@@ -288,7 +359,8 @@ async fn cloud_run_behind_the_gateway() {
     let mut config = google.config();
     config.warm_window = Duration::ZERO;
     let inner = CloudRunProvider::new(config, google.metadata_auth()).unwrap();
-    let provider: Arc<dyn Provider> = Arc::new(graphrt_gateway::cloud_run::CloudRunGatewayProvider::new(inner).unwrap());
+    let provider: Arc<dyn Provider> =
+        Arc::new(graphrt_gateway::cloud_run::CloudRunGatewayProvider::new(inner).unwrap());
     let target = gcp_support::service_resource(DEPLOYMENT);
     // C7 fails by design: planned preemption before Cloud Run's 3600 s cap is a known gap.
     check("cloud run (fake Google APIs)", world.clone(), provider, &target, false, &[CaseId::C7]).await;
@@ -348,7 +420,10 @@ async fn fly_behind_the_gateway() {
             fake.seed_machine(DEPLOYMENT, version_id, index, "created", 512);
         }
     }
-    let mut config = FlyProviderConfig::single_app(fly_support::APP, TokenOrigin::Fixed(FlyToken::parse(fly_support::TOKEN).unwrap()));
+    let mut config = FlyProviderConfig::single_app(
+        fly_support::APP,
+        TokenOrigin::Fixed(FlyToken::parse(fly_support::TOKEN).unwrap()),
+    );
     config.api_base_url = fake.server.base_url();
     config.max_machines_per_version = 3;
     config.start_timeout = Duration::from_secs(5);
@@ -372,7 +447,10 @@ async fn fake_lambda(agent_url: String, cap: Duration) -> String {
     use graphrt_provider_aws::lambda::eventstream::encode;
 
     fn frame(kind: &str, payload: &[u8]) -> Bytes {
-        Bytes::from(encode(&[(":event-type", kind), (":message-type", "event"), (":content-type", "application/octet-stream")], payload))
+        Bytes::from(encode(
+            &[(":event-type", kind), (":message-type", "event"), (":content-type", "application/octet-stream")],
+            payload,
+        ))
     }
 
     async fn invoke(State((agent_url, cap)): State<(String, Duration)>, body: Bytes) -> Response {
@@ -380,8 +458,11 @@ async fn fake_lambda(agent_url: String, cap: Duration) -> String {
         let path = event["rawPath"].as_str().unwrap().to_owned();
         let query = event["rawQueryString"].as_str().unwrap_or_default();
         let url = if query.is_empty() { format!("{agent_url}{path}") } else { format!("{agent_url}{path}?{query}") };
-        let payload = base64::engine::general_purpose::STANDARD.decode(event["body"].as_str().unwrap_or_default()).unwrap();
-        let method = reqwest::Method::from_bytes(event["requestContext"]["http"]["method"].as_str().unwrap().as_bytes()).unwrap();
+        let payload =
+            base64::engine::general_purpose::STANDARD.decode(event["body"].as_str().unwrap_or_default()).unwrap();
+        let method =
+            reqwest::Method::from_bytes(event["requestContext"]["http"]["method"].as_str().unwrap().as_bytes())
+                .unwrap();
         let mut request = reqwest::Client::new().request(method, url).body(payload);
         for (name, value) in event["headers"].as_object().unwrap() {
             request = request.header(name.as_str(), value.as_str().unwrap());
@@ -389,7 +470,10 @@ async fn fake_lambda(agent_url: String, cap: Duration) -> String {
         let mut reply = request.send().await.unwrap();
         let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
         tokio::spawn(async move {
-            let mut prelude = serde_json::to_vec(&json!({ "statusCode": reply.status().as_u16(), "headers": { "content-type": "text/event-stream" } })).unwrap();
+            let mut prelude = serde_json::to_vec(
+                &json!({ "statusCode": reply.status().as_u16(), "headers": { "content-type": "text/event-stream" } }),
+            )
+            .unwrap();
             prelude.extend_from_slice(&[0u8; 8]);
             let _ = sender.send(Ok(frame("PayloadChunk", &prelude))).await;
             let deadline = tokio::time::Instant::now() + cap;
@@ -410,11 +494,19 @@ async fn fake_lambda(agent_url: String, cap: Duration) -> String {
             }
             let _ = sender.send(Ok(frame("InvokeComplete", b"{}"))).await;
         });
-        let stream = futures::stream::unfold(receiver, |mut receiver| async move { receiver.recv().await.map(|item| (item, receiver)) });
-        Response::builder().status(200).header("content-type", "application/vnd.amazon.eventstream").body(Body::from_stream(stream)).unwrap()
+        let stream = futures::stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|item| (item, receiver))
+        });
+        Response::builder()
+            .status(200)
+            .header("content-type", "application/vnd.amazon.eventstream")
+            .body(Body::from_stream(stream))
+            .unwrap()
     }
 
-    let app = axum::Router::new().route("/2021-11-15/functions/{function}/response-streaming-invocations", axum::routing::post(invoke)).with_state((agent_url, cap));
+    let app = axum::Router::new()
+        .route("/2021-11-15/functions/{function}/response-streaming-invocations", axum::routing::post(invoke))
+        .with_state((agent_url, cap));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -434,7 +526,11 @@ async fn lambda_behind_the_gateway() {
     let lambda_url = fake_lambda(agent_url, Duration::from_millis(1500)).await;
     let credentials = aws_support::start().await;
     let config = LambdaConfig {
-        endpoint: graphrt_provider_aws::rest::ServiceEndpoint { base_url: lambda_url, region: "eu-west-1".into(), service: "lambda".into() },
+        endpoint: graphrt_provider_aws::rest::ServiceEndpoint {
+            base_url: lambda_url,
+            region: "eu-west-1".into(),
+            service: "lambda".into(),
+        },
         limits: aws_support::fast_retry(),
         functions: HashMap::from([(DEPLOYMENT.to_owned(), LambdaFunction { function_name: "graphrt-shop".into() })]),
         max_run_secs: 840,

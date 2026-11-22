@@ -6,9 +6,10 @@ picks which replica goes away on scale-in, and reports which replicas are
 ready. It works with any conformant cluster: self-hosted, kind, k3d/k3s, GKE,
 EKS and AKS. Only cluster authentication differs between them.
 
-> Status: the provider and its conformance suite are in the repository; the
-> `graphrt gateway` binary that loads it (cargo feature `provider-k8s`) lands
-> with the gateway MVP. Until then the crate is a library.
+> Status: preview. `graphrt gateway` loads this provider with
+> `--features gateway-k8s` (`kind: k8s` under `providers:`, see
+> [docs/gateway.md](gateway.md#providers)), and `graphrt deploy --target k8s`
+> applies versions with its deploy driver.
 
 It implements the `Provider` and `DeployDriver` traits of
 `graphrt-provider-api` and talks to the API server through the shared

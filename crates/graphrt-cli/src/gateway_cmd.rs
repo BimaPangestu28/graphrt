@@ -195,23 +195,39 @@ pub struct DeployArgs {
 }
 
 fn split_pair<'a>(text: &'a str, what: &str) -> Result<(&'a str, &'a str), CliError> {
-    text.split_once('=').filter(|(key, _)| !key.is_empty()).ok_or_else(|| CliError::usage(format!("{what} must be KEY=VALUE, got `{text}`")))
+    text.split_once('=')
+        .filter(|(key, _)| !key.is_empty())
+        .ok_or_else(|| CliError::usage(format!("{what} must be KEY=VALUE, got `{text}`")))
 }
 
 /// The operator's provider entry for `target` from `--config` / `--provider`.
 fn provider_entry(args: &DeployArgs) -> Result<graphrt_gateway::providers::ProviderConfig, CliError> {
-    let path = args.config.clone().or_else(|| std::env::var_os("GRAPHRT_GATEWAY_CONFIG").filter(|value| !value.is_empty()).map(PathBuf::from));
-    let path = path.ok_or_else(|| CliError::usage("remote targets need --config <gateway.yaml> with the provider under providers:"))?;
-    let text = std::fs::read_to_string(&path).map_err(|error| CliError::invalid(format!("{}: {error}", path.display())))?;
+    let path = args
+        .config
+        .clone()
+        .or_else(|| std::env::var_os("GRAPHRT_GATEWAY_CONFIG").filter(|value| !value.is_empty()).map(PathBuf::from));
+    let path = path.ok_or_else(|| {
+        CliError::usage("remote targets need --config <gateway.yaml> with the provider under providers:")
+    })?;
+    let text =
+        std::fs::read_to_string(&path).map_err(|error| CliError::invalid(format!("{}: {error}", path.display())))?;
     let config = GatewayConfig::from_yaml(&text).map_err(CliError::invalid)?;
     let kind = args.target.kind();
     let mut matching = config.providers.into_iter().filter(|(_, entry)| entry.kind() == kind);
     match &args.provider {
-        Some(name) => matching.find(|(entry_name, _)| entry_name == name).map(|(_, entry)| entry).ok_or_else(|| CliError::usage(format!("no `{kind}` provider named `{name}` in {}", path.display()))),
+        Some(name) => matching
+            .find(|(entry_name, _)| entry_name == name)
+            .map(|(_, entry)| entry)
+            .ok_or_else(|| CliError::usage(format!("no `{kind}` provider named `{name}` in {}", path.display()))),
         None => {
-            let first = matching.next().ok_or_else(|| CliError::usage(format!("no `{kind}` provider in {}", path.display())))?;
+            let first = matching
+                .next()
+                .ok_or_else(|| CliError::usage(format!("no `{kind}` provider in {}", path.display())))?;
             if matching.next().is_some() {
-                return Err(CliError::usage(format!("several `{kind}` providers in {}: pick one with --provider", path.display())));
+                return Err(CliError::usage(format!(
+                    "several `{kind}` providers in {}: pick one with --provider",
+                    path.display()
+                )));
             }
             Ok(first.1)
         }
@@ -430,6 +446,12 @@ pub fn deploy(args: DeployArgs) -> Result<u8, CliError> {
         Box::new(graphrt_gateway::deploy::RegisteringDriver::new(platform, registrar))
     };
     let deployed = runtime()?.block_on(driver.apply(&spec)).map_err(|error| CliError::failed(error.to_string()))?;
-    print(&format!("deployed {}@{} (target {}, {})", deployed.name, deployed.version, args.target.kind(), deployed.target))?;
+    print(&format!(
+        "deployed {}@{} (target {}, {})",
+        deployed.name,
+        deployed.version,
+        args.target.kind(),
+        deployed.target
+    ))?;
     Ok(EXIT_OK)
 }

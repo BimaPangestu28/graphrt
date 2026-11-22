@@ -14,8 +14,8 @@ use std::time::Duration;
 use futures::StreamExt as _;
 use graphrt_gcp::cloud_run::CloudRunProvider;
 use graphrt_provider_api::{
-    BoxFuture, Capabilities, DeploymentRef, Endpoint, EndpointAddress, InvokeRequest, InvokeResponse, Provider, ProviderError,
-    ReleaseMode, ReplicaRef, ReplicaState,
+    BoxFuture, Capabilities, DeploymentRef, Endpoint, EndpointAddress, InvokeRequest, InvokeResponse, Provider,
+    ProviderError, ReleaseMode, ReplicaRef, ReplicaState,
 };
 
 /// [`CloudRunProvider`] with ID-token invocations.
@@ -41,8 +41,15 @@ impl CloudRunGatewayProvider {
         Ok(Self { inner: Arc::new(inner), client })
     }
 
-    async fn send(&self, base_url: &str, deployment: &DeploymentRef, request: &InvokeRequest, force_refresh: bool) -> Result<reqwest::Response, ProviderError> {
-        let method = reqwest::Method::from_bytes(request.method.as_bytes()).map_err(|error| ProviderError::fatal(error.to_string()))?;
+    async fn send(
+        &self,
+        base_url: &str,
+        deployment: &DeploymentRef,
+        request: &InvokeRequest,
+        force_refresh: bool,
+    ) -> Result<reqwest::Response, ProviderError> {
+        let method = reqwest::Method::from_bytes(request.method.as_bytes())
+            .map_err(|error| ProviderError::fatal(error.to_string()))?;
         let mut builder = self.client.request(method, format!("{}{}", base_url.trim_end_matches('/'), request.path));
         for (name, value) in &request.headers {
             builder = builder.header(name.as_str(), value.as_str());
@@ -50,7 +57,11 @@ impl CloudRunGatewayProvider {
         if let Some((header, value)) = self.inner.invoke_authorization(deployment, force_refresh).await? {
             builder = builder.header(header, value.expose());
         }
-        builder.body(request.body.clone()).send().await.map_err(|error| ProviderError::transient(format!("cloud run invoke: {}", error.without_url())))
+        builder
+            .body(request.body.clone())
+            .send()
+            .await
+            .map_err(|error| ProviderError::transient(format!("cloud run invoke: {}", error.without_url())))
     }
 }
 
@@ -59,7 +70,11 @@ impl Provider for CloudRunGatewayProvider {
         self.inner.capabilities()
     }
 
-    fn wake<'a>(&'a self, deployment: &'a DeploymentRef, replicas: u32) -> BoxFuture<'a, Result<Vec<Endpoint>, ProviderError>> {
+    fn wake<'a>(
+        &'a self,
+        deployment: &'a DeploymentRef,
+        replicas: u32,
+    ) -> BoxFuture<'a, Result<Vec<Endpoint>, ProviderError>> {
         self.inner.wake(deployment, replicas)
     }
 
@@ -71,7 +86,11 @@ impl Provider for CloudRunGatewayProvider {
         self.inner.list(deployment)
     }
 
-    fn invoke<'a>(&'a self, endpoint: &'a Endpoint, request: InvokeRequest) -> Option<BoxFuture<'a, Result<InvokeResponse, ProviderError>>> {
+    fn invoke<'a>(
+        &'a self,
+        endpoint: &'a Endpoint,
+        request: InvokeRequest,
+    ) -> Option<BoxFuture<'a, Result<InvokeResponse, ProviderError>>> {
         let EndpointAddress::Http(base_url) = &endpoint.address else { return None };
         Some(Box::pin(async move {
             let deployment = &endpoint.replica.deployment;

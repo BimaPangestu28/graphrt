@@ -6,9 +6,10 @@ nothing and can be stopped at any time. Every run (sync, streaming, async,
 webhook, cron) is a stream the gateway holds, so a run survives the agent being
 drained, preempted or killed, and survives a restart of the gateway itself.
 
-> Status: preview (phase F1). Build with `--features gateway`. The agent side
-> of the protocol (`serve --trust-gateway`, F0b) and the cloud providers (F2)
-> ship separately; the local-process provider is built in.
+> Status: preview. Build with `--features gateway` (local-process agents) and
+> add the providers you run on: `gateway-k8s`, `gateway-cloud-run`,
+> `gateway-ecs`, `gateway-lambda`, `gateway-fly`, or `gateway-all`
+> (see [Providers](#providers)).
 
 ```text
 clients / webhooks / cron ──▶ graphrt gateway (SQLite store, auth, limits, wake/scale)
@@ -111,6 +112,45 @@ fire happens once; a fire in a DST gap is skipped and logged, or with
 none` logs the missed fires, `latest` runs the last one, `all` runs up to
 `max_catchup`. Jitter is deterministic per fire.
 
+## Providers
+
+Each deployment runs on one provider, chosen by the **operator** in
+`gateway.yaml`. Endpoints, regions, namespaces, allowed apps and credentials
+live only there; what `graphrt deploy` sends the gateway is a target *name*
+the provider checks against this configuration, so a deployment can never
+point the gateway at another host.
+
+```yaml
+providers:
+  cluster:  { kind: k8s, namespace: agents }                 # in-cluster SA, else kubeconfig (kubeconfig:, context:)
+  run:      { kind: cloud_run, project: acme, region: europe-west1 }   # metadata server or GOOGLE_APPLICATION_CREDENTIALS
+  tasks:    { kind: ecs, region: eu-west-1, deployments: { shop: { cluster: agents, task_definition_family: shop, subnets: [subnet-1], security_groups: [sg-1] } } }
+  fn:       { kind: lambda, region: eu-west-1, functions: { faq: graphrt-faq } }      # AWS credential chain of the gateway
+  machines: { kind: fly, apps: { graphrt-chat: { token_env: FLY_API_TOKEN } } }
+deployments:
+  - { name: shop, provider: tasks, keys_env: SHOP_KEYS, api_keys: [...] }
+  - { name: chat, provider: machines, keys_env: CHAT_KEYS, api_keys: [...] }
+```
+
+| Kind | Cargo feature (`graphrt-cli`) | Addressing | Notes |
+| --- | --- | --- | --- |
+| `local` | `gateway` | per replica (Unix socket) | default when a deployment names no provider |
+| `k8s` | `gateway-k8s` | per pod | scale subresource + EndpointSlices; [Kubernetes guide](kubernetes-provider.md) |
+| `cloud_run` | `gateway-cloud-run` | one URL | the gateway adds `X-Serverless-Authorization` (ID token) to every request; [Cloud Run guide](gateway-cloud-run.md) |
+| `ecs` | `gateway-ecs` | per task | the gateway starts and stops Fargate tasks; [AWS guide](gateway-aws.md) |
+| `lambda` | `gateway-lambda` | `lambda://` | requests go through `InvokeWithResponseStream`; sync runs only, a run past the function timeout fails with `platform_timeout` |
+| `fly` | `gateway-fly` | per Machine (6PN) | pre-created pool, start / suspend; [Fly guide](gateway-fly.md) |
+
+A kind whose feature is not in the build fails at start-up with a message
+naming the feature. Every provider runs the C1–C13 conformance suite and the
+gateway cases (drain and re-dispatch, long stream, request cap, 7-day version
+pool, idle release) against fake cloud APIs in
+`crates/graphrt-gateway/tests/provider_harness.rs`.
+
+Known gap: on platforms with a request cap *and* a grace period (Cloud Run's
+60 minutes), the gateway does not yet preempt a run shortly before the cap;
+such a run is cut by the platform and reclaimed like a lost stream.
+
 ## Deploying versions
 
 Versions are immutable. `graphrt deploy` registers a new one and makes it
@@ -121,6 +161,25 @@ its paused runs can still resume.
 export GRAPHRT_GATEWAY_ADMIN_TOKEN=…
 graphrt deploy --target local --deployment shop --version v7 agent.yaml -- --providers providers.yaml
 ```
+
+For the other targets `graphrt deploy` applies the version on the platform
+with the deploy driver of the provider (with the **deploy-time** credentials
+of the machine running the CLI, never the gateway's), then registers it with
+the gateway under the target name the platform returned. The provider entry
+comes from the same `gateway.yaml` (`--config`, `--provider` when several of
+one kind exist):
+
+```sh
+graphrt deploy --target k8s       --config gateway.yaml --deployment shop --version v8 --image ghcr.io/acme/shop:8 agent.yaml
+graphrt deploy --target cloud-run --config gateway.yaml --deployment shop --version v8 --image europe-docker.pkg.dev/acme/graphrt/shop:8 \
+  --secret OPENAI_API_KEY=projects/acme/secrets/openai/versions/3 agent.yaml
+graphrt deploy --target ecs       --config gateway.yaml --deployment shop --version v8 --image 1234.dkr.ecr.eu-west-1.amazonaws.com/shop:8 agent.yaml
+graphrt deploy --target lambda    --config gateway.yaml --deployment faq  --version v8 --image 1234.dkr.ecr.eu-west-1.amazonaws.com/faq:8 agent.yaml
+graphrt deploy --target fly       --config gateway.yaml --deployment chat --version v8 --image registry.fly.io/graphrt-chat:8 --set app=graphrt-chat agent.yaml
+```
+
+`--set KEY=VALUE` passes provider settings (see each guide), `--env` plain
+environment, `--secret ENV=REFERENCE` secret-store references (never values).
 
 ## Store
 

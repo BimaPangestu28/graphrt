@@ -115,7 +115,8 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
     let mut remote: HashMap<String, Arc<dyn graphrt_provider_api::Provider>> = HashMap::new();
     for (name, provider_config) in &config.providers {
         if !matches!(provider_config, crate::providers::ProviderConfig::Local) {
-            let built = crate::providers::build_remote(provider_config).map_err(|error| format!("provider {name}: {error}"))?;
+            let built =
+                crate::providers::build_remote(provider_config).map_err(|error| format!("provider {name}: {error}"))?;
             remote.insert(name.clone(), built);
         }
     }
