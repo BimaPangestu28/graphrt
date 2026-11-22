@@ -1,0 +1,45 @@
+[package]
+name = "graphrt-provider-fly"
+description = "Fly Machines provider of the graphrt gateway: a pool of pre-created Machines woken with start, released with suspend (falling back to stop), addressed over 6PN."
+readme = "README.md"
+keywords = ["workflow", "agent", "gateway", "fly", "scale-to-zero"]
+categories = ["development-tools"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Internal to the gateway until the provider API has settled through F2.
+publish = false
+
+[features]
+default = ["deploy"]
+# `FlyDeployDriver` (`graphrt deploy --target fly`): app creation, Fly secrets,
+# pool creation. Off in a gateway-only build, which needs only `FlyProvider`.
+deploy = []
+
+[dependencies]
+graphrt-provider-api = { workspace = true, features = ["http"] }
+# Hand-rolled Machines REST client: reqwest + rustls the binary already links,
+# no Fly SDK. The binary installs the rustls crypto provider (ring).
+reqwest = { workspace = true, features = ["rustls-no-provider"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["time", "sync"] }
+
+[dev-dependencies]
+graphrt-provider-api = { workspace = true, features = ["http", "conformance"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "sync"] }
+# Installs the ring crypto provider reqwest needs in tests (the binary does it in main).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+[lints]
+workspace = true
+
+[[example]]
+name = "size_fly"
+required-features = ["deploy"]
+
+[[test]]
+name = "fly_pool"
+required-features = ["deploy"]
