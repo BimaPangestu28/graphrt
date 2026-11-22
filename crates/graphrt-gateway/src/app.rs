@@ -113,7 +113,13 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
     let mut keys_by_deployment = HashMap::new();
     // Remote providers are built once per name and shared by their deployments.
     let mut remote: HashMap<String, Arc<dyn graphrt_provider_api::Provider>> = HashMap::new();
+    let mut retirers: HashMap<String, Arc<dyn crate::retire::VersionRetirer>> = HashMap::new();
     for (name, provider_config) in &config.providers {
+        if let Some(retirer) =
+            crate::providers::build_retirer(provider_config).map_err(|error| format!("provider {name}: {error}"))?
+        {
+            retirers.insert(name.clone(), retirer);
+        }
         if !matches!(provider_config, crate::providers::ProviderConfig::Local) {
             let built =
                 crate::providers::build_remote(provider_config).map_err(|error| format!("provider {name}: {error}"))?;
@@ -130,7 +136,9 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
                 provider.clone()
             }
         };
-        let deployment = Arc::new(build_deployment(deployment_config, chosen, &client)?);
+        let mut deployment = build_deployment(deployment_config, chosen, &client)?;
+        deployment.retirer = retirers.get(provider_name).cloned();
+        let deployment = Arc::new(deployment);
         if let Some(name) = &deployment_config.callback_secret_env {
             callback_secrets.insert(deployment.name.clone(), env_value(name)?.into_bytes());
         }
@@ -180,6 +188,39 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
     })
 }
 
+/// Retires versions whose 7-day pool expired: closes their pool (replicas
+/// released, new resumes get `410`) and frees their platform objects with the
+/// deployment's retirer, retrying failed retirements on the next call.
+pub async fn retire_expired(deployment: &Deployment, now: u64) {
+    let mut versions =
+        std::mem::take(&mut *deployment.pending_retirement.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    for retired in deployment.take_retired(now) {
+        eprintln!(
+            "{{\"audit\":\"version_retired\",\"deployment\":\"{}\",\"version\":\"{}\"}}",
+            deployment.name, retired.info.version
+        );
+        retired.pool.close().await;
+        versions.push(retired.info.reference(&deployment.name));
+    }
+    let Some(retirer) = &deployment.retirer else { return };
+    if versions.is_empty() {
+        return;
+    }
+    if let Err(error) = retirer.retire(&versions).await {
+        eprintln!(
+            "gateway: retiring old versions of {} on the platform failed (retried next hour): {error}",
+            deployment.name
+        );
+        deployment.pending_retirement.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend(versions);
+    } else {
+        let names: Vec<&str> = versions.iter().map(|version| version.version.as_str()).collect();
+        eprintln!(
+            "{{\"audit\":\"version_retired_on_platform\",\"deployment\":\"{}\",\"versions\":{names:?}}}",
+            deployment.name
+        );
+    }
+}
+
 /// Idle release every 5 s, reconciliation every minute (I7: at most one
 /// `list` per minute per pool), retirement of 7-day-old versions, TTL purge hourly.
 pub async fn maintenance(gateway: Arc<Gateway>, ttl: Duration) {
@@ -197,13 +238,7 @@ pub async fn maintenance(gateway: Arc<Gateway>, ttl: Duration) {
                 }
             }
             if tick.is_multiple_of(720) {
-                for retired in deployment.take_retired(now_ms()) {
-                    eprintln!(
-                        "{{\"audit\":\"version_retired\",\"deployment\":\"{}\",\"version\":\"{}\"}}",
-                        deployment.name, retired.info.version
-                    );
-                    retired.pool.close().await;
-                }
+                retire_expired(&deployment, now_ms()).await;
             }
         }
         if tick % 720 == 1 {

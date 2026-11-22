@@ -99,6 +99,10 @@ pub struct Deployment {
     pub input_headers: Vec<InputHeader>,
     /// Whether requests without credentials are accepted (`--dev` only).
     pub open: bool,
+    /// Frees platform resources of versions past the 7-day pool (Cloud Run, ACA, Fly).
+    pub retirer: Option<Arc<dyn crate::retire::VersionRetirer>>,
+    /// Retired versions whose platform retirement failed (retried hourly).
+    pub pending_retirement: std::sync::Mutex<Vec<DeploymentRef>>,
     versions: RwLock<Vec<VersionEntry>>,
 }
 
@@ -130,6 +134,8 @@ impl Deployment {
             principal_limiter: None,
             input_headers: Vec::new(),
             open: false,
+            retirer: None,
+            pending_retirement: std::sync::Mutex::new(Vec::new()),
             versions: RwLock::new(Vec::new()),
         }
     }

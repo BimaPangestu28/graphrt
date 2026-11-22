@@ -687,6 +687,72 @@ fn deploy_aca(_settings: &AcaProviderConfig) -> BuiltDriver {
     None
 }
 
+/// The retirer of a provider kind, when it has platform objects to free and
+/// its deploy feature is built (see [`crate::retire`]). `Ok(None)` otherwise.
+///
+/// # Errors
+/// Credentials or settings of a retirer that should exist are invalid.
+pub fn build_retirer(config: &ProviderConfig) -> Result<Option<Arc<dyn crate::retire::VersionRetirer>>, String> {
+    match config {
+        ProviderConfig::CloudRun(settings) => cloud_run_retirer(settings),
+        ProviderConfig::Aca(settings) => aca_retirer(settings),
+        ProviderConfig::Fly(settings) => fly_retirer(settings),
+        ProviderConfig::Local | ProviderConfig::K8s(_) | ProviderConfig::Ecs(_) | ProviderConfig::Lambda(_) => Ok(None),
+    }
+}
+
+type BuiltRetirer = Result<Option<Arc<dyn crate::retire::VersionRetirer>>, String>;
+
+#[cfg(feature = "deploy-cloud-run")]
+fn cloud_run_retirer(settings: &CloudRunProviderConfig) -> BuiltRetirer {
+    let auth = graphrt_gcp::auth::GcpAuth::from_env().map_err(|error| format!("gcp credentials: {error}"))?;
+    let driver = graphrt_gcp::cloud_run::CloudRunDeployDriver::new(cloud_run_config(settings)?, &auth)
+        .map_err(|error| error.to_string())?;
+    Ok(Some(Arc::new(crate::retire::CloudRunRetirer(driver))))
+}
+#[cfg(not(feature = "deploy-cloud-run"))]
+fn cloud_run_retirer(_settings: &CloudRunProviderConfig) -> BuiltRetirer {
+    eprintln!("gateway: cloud run tags of retired versions stay (build with deploy-cloud-run to drop them)");
+    Ok(None)
+}
+
+#[cfg(feature = "deploy-aca")]
+fn aca_retirer(settings: &AcaProviderConfig) -> BuiltRetirer {
+    let (arm, config) = aca_parts(settings)?;
+    let provider = graphrt_provider_azure::aca::AcaProvider::new(arm, config).map_err(|error| error.to_string())?;
+    Ok(Some(Arc::new(crate::retire::AcaRetirer(provider))))
+}
+#[cfg(not(feature = "deploy-aca"))]
+fn aca_retirer(_settings: &AcaProviderConfig) -> BuiltRetirer {
+    eprintln!(
+        "gateway: container app revisions of retired versions stay active (build with deploy-aca to deactivate them)"
+    );
+    Ok(None)
+}
+
+#[cfg(feature = "deploy-fly")]
+fn fly_retirer(settings: &FlyConfig) -> BuiltRetirer {
+    let mut drivers = BTreeMap::new();
+    for (app, token) in &settings.apps {
+        let config = graphrt_provider_fly::FlyDeployConfig {
+            api_base_url: settings
+                .api_base_url
+                .clone()
+                .unwrap_or_else(|| graphrt_provider_fly::PUBLIC_API_BASE_URL.to_owned()),
+            token_origin: fly_token_origin(app, token)?,
+            client_policy: graphrt_provider_fly::ClientPolicy::default(),
+            env_lookup: Arc::new(|_: &str| None),
+        };
+        drivers.insert(app.clone(), graphrt_provider_fly::FlyDeployDriver::new(config));
+    }
+    Ok(Some(Arc::new(crate::retire::FlyRetirer(drivers))))
+}
+#[cfg(not(feature = "deploy-fly"))]
+fn fly_retirer(_settings: &FlyConfig) -> BuiltRetirer {
+    eprintln!("gateway: fly machines of retired versions stay (build with deploy-fly to destroy them)");
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

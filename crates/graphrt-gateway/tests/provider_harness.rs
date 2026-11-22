@@ -634,3 +634,60 @@ async fn azure_container_apps_behind_the_gateway() {
     // Standard ingress caps a request at 240 s, shortened to 2 s by Routed for C7.
     check("azure container apps (fake ARM)", world, provider, "shop", false).await;
 }
+
+#[cfg(feature = "deploy-cloud-run")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cloud_run_retirement_drops_the_old_tag() {
+    use graphrt_gateway::retire::{CloudRunRetirer, VersionRetirer};
+    use graphrt_gcp::cloud_run::CloudRunDeployDriver;
+    use graphrt_provider_api::DeployDriver as _;
+    let (_world, agent_url, _agent) = agent().await;
+    let google = gcp_support::FakeGoogle::start(&agent_url).await;
+    let driver = CloudRunDeployDriver::new(google.config(), &google.service_account_auth()).unwrap();
+    for version_id in ["v1", "v2"] {
+        let mut spec = gcp_support::spec(DEPLOYMENT, version_id);
+        spec.secrets.clear();
+        driver.apply(&spec).await.unwrap();
+    }
+    google.clear_requests();
+    let retirer = CloudRunRetirer(CloudRunDeployDriver::new(google.config(), &google.service_account_auth()).unwrap());
+    let target = gcp_support::service_resource(DEPLOYMENT);
+    let note = retirer.retire(&[DeploymentRef::new(DEPLOYMENT, "v1", &target)]).await.unwrap();
+    assert!(note.contains("traffic tags"), "{note}");
+    let patches = google.requests_to("PATCH", "");
+    assert!(patches.iter().any(|request| request.path.contains("updateMask=traffic")), "{patches:?}");
+    let service = google.service(&target).unwrap();
+    let tags: Vec<String> = service["traffic"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["tag"].as_str().map(str::to_owned))
+        .collect();
+    assert!(!tags.iter().any(|tag| tag.contains("v1")), "v1 tag dropped: {tags:?}");
+}
+
+#[cfg(feature = "deploy-fly")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fly_retirement_destroys_the_old_pool() {
+    use graphrt_gateway::retire::{FlyRetirer, VersionRetirer};
+    use graphrt_provider_fly::{ClientPolicy, FlyDeployConfig, FlyDeployDriver, FlyToken, TokenOrigin};
+    fly_support::install_crypto_provider();
+    let fake = fly_support::FakeFly::start().await;
+    for index in 0..3 {
+        fake.seed_machine(DEPLOYMENT, "v1", index, "stopped", 512);
+        fake.seed_machine(DEPLOYMENT, "v2", index, "stopped", 512);
+    }
+    let config = FlyDeployConfig {
+        api_base_url: fake.server.base_url(),
+        token_origin: TokenOrigin::Fixed(FlyToken::parse(fly_support::TOKEN).unwrap()),
+        client_policy: ClientPolicy::default(),
+        env_lookup: Arc::new(|_: &str| None),
+    };
+    let retirer =
+        FlyRetirer(std::collections::BTreeMap::from([(fly_support::APP.to_owned(), FlyDeployDriver::new(config))]));
+    let note = retirer.retire(&[DeploymentRef::new(DEPLOYMENT, "v1", fly_support::APP)]).await.unwrap();
+    assert_eq!(note, "destroyed 3 Machines");
+    assert!(fake.state().states_of("v1").is_empty(), "v1 pool destroyed");
+    assert_eq!(fake.state().states_of("v2").len(), 3, "v2 untouched");
+    assert!(retirer.retire(&[DeploymentRef::new(DEPLOYMENT, "v1", "unknown-app")]).await.is_err());
+}

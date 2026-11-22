@@ -14,6 +14,7 @@ pub mod limiter;
 pub mod pool;
 pub mod providers;
 pub mod quota;
+pub mod retire;
 pub mod signature;
 pub mod store;
 pub mod tz;
