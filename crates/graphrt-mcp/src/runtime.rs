@@ -77,18 +77,11 @@ impl McpToolRuntime {
     async fn connect_stdio(config: &McpServerConfig, stdio: &crate::config::StdioConfig) -> Result<Self, McpError> {
         use std::process::Stdio;
 
-        use crate::config::DEFAULT_PASS_ENV;
-
         let mut cmd = tokio::process::Command::new(&stdio.command);
         cmd.args(&stdio.args);
         if !stdio.inherit_env {
             cmd.env_clear();
-            let names = DEFAULT_PASS_ENV.iter().copied().chain(stdio.pass_env.iter().map(String::as_str));
-            for name in names {
-                if let Some(value) = std::env::var_os(name) {
-                    cmd.env(name, value);
-                }
-            }
+            cmd.envs(graphrt_core::child_env::minimal_env(stdio.pass_env.iter().map(String::as_str)));
         }
         cmd.envs(&stdio.env);
         if let Some(dir) = &stdio.cwd {

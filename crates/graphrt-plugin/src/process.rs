@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
+use graphrt_core::child_env::minimal_env;
 use graphrt_core::node::Clock;
 use tokio::io::AsyncReadExt;
 
@@ -16,11 +17,9 @@ use crate::error::CallError;
 use crate::manifest::{LoadedManifest, ProcessRuntime};
 use crate::transport::{INITIALIZE_TIMEOUT, Transport, check_initialize, initialize_params, with_timeout};
 
-/// Host variables always passed to plugin processes.
-/// The Windows names (`SYSTEMROOT`, `TEMP`, `PATHEXT`, ...) are needed by most
-/// Windows programs to start, find temp space and resolve `.cmd` launchers.
-pub const DEFAULT_PASS_ENV: &[&str] =
-    &["PATH", "HOME", "LANG", "TMPDIR", "SYSTEMROOT", "USERPROFILE", "APPDATA", "TEMP", "TMP", "PATHEXT"];
+/// Host variables always passed to plugin processes (shared with stdio MCP
+/// servers; see [`graphrt_core::child_env`]).
+pub use graphrt_core::child_env::DEFAULT_PASS_ENV;
 
 /// How much plugin stderr is kept for diagnostics.
 const STDERR_TAIL_BYTES: usize = 64 * 1024;
@@ -176,13 +175,7 @@ impl ProcessTransport {
         cmd.current_dir(&cwd);
         if !self.runtime.inherit_env {
             cmd.env_clear();
-            let names =
-                DEFAULT_PASS_ENV.iter().copied().chain(self.plugin.manifest.permissions.env.iter().map(String::as_str));
-            for var in names {
-                if let Some(value) = std::env::var_os(var) {
-                    cmd.env(var, value);
-                }
-            }
+            cmd.envs(minimal_env(self.plugin.manifest.permissions.env.iter().map(String::as_str)));
         }
         cmd.envs(&self.runtime.env);
         cmd.env("GRAPHRT_PLUGIN", name);
