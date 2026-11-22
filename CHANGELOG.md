@@ -316,6 +316,19 @@ releases may contain breaking changes; they are called out under **Changed**.
   the Windows `.exe` links the C runtime statically (no `VCRUNTIME140.dll`).
 
 ### Fixed
+- `graphrt gateway` no longer loses a run whose executor disappears without an
+  outcome. On a one-URL platform (Cloud Run, ACA, Lambda), where no orphan can
+  be pulled from an instance, or when no orphan comes within the reclaim grace
+  (the instance is gone), the run is re-dispatched at the next epoch from its
+  latest stored snapshot, else from its request with the same run id (nodes may
+  run again: at-least-once, keyed by `Idempotency-Key`). It ends
+  `failed{owner_lost}` only when that is impossible, and says why: the
+  request's credentials expired, the executor was lost 4 times in a row
+  (`SupervisorSettings::max_lost_executions`), or a gateway restart lost the
+  in-memory request of a run that had no checkpoint. A re-dispatch that reaches
+  the instance still holding the lost execution retries its `409
+  epoch_conflict` until that instance preempted it. New metric
+  `graphrt_gateway_lost_executions_total`.
 - `graphrt serve` drain: runs could be left `running` at the drain deadline (and
   marked failed by the next start) when the store was slow. The preemption
   reserve assumed 10 ms per active run, but a `--store` directory serialises

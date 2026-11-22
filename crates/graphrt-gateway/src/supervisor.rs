@@ -13,7 +13,11 @@
 //!   │                → re-dispatch at once with the snapshot and the in-memory inputs
 //!   └ stream broke   → Replica: reattach ≤ 3 s; else poll the agents' orphans
 //!                      (`GET /internal/v1/orphans`, backoff to 2 s) ≤ reclaim_grace
-//!                      → re-dispatch / finish; none → failed{owner_lost}
+//!                      → re-dispatch / finish
+//!                      Url (no instance to pull from), or no orphan: re-dispatch from the
+//!                      latest stored snapshot, else from the request with the same run id
+//!                      (nodes may run again: at-least-once, `Idempotency-Key`);
+//!                      failed{owner_lost} only when that is impossible, with the reason
 //! ```
 //!
 //! Request bodies (which carry secret inputs and `user_jwt`) live only in
@@ -54,6 +58,10 @@ pub struct SupervisorSettings {
     pub run_timeout: Duration,
     /// Frames kept in memory per run for `Last-Event-ID` replay.
     pub replay_ring: usize,
+    /// Executions in a row a run may lose (executor gone, no outcome) before it
+    /// fails with `owner_lost`: a run that kills its executor every time must
+    /// not be re-dispatched forever.
+    pub max_lost_executions: u32,
 }
 
 impl Default for SupervisorSettings {
@@ -66,6 +74,7 @@ impl Default for SupervisorSettings {
             max_dispatch_attempts: 3,
             run_timeout: Duration::from_secs(24 * 3600),
             replay_ring: 512,
+            max_lost_executions: 3,
         }
     }
 }
@@ -178,6 +187,11 @@ impl LiveRun {
         let (sender, receiver) = oneshot::channel();
         *self.orphan.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sender);
         receiver
+    }
+
+    /// Stops waiting for an orphan (it came, or the run continues without it).
+    fn stop_awaiting_orphan(&self) {
+        drop(self.orphan.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take());
     }
 
     /// Whether a supervisor waits for this run's orphan.
@@ -320,6 +334,11 @@ enum Outcome {
     Broken(String),
     /// The platform ended the request at its limit; no preemption or re-dispatch.
     PlatformTimeout(String),
+}
+
+/// The terminal event of a pulled orphan, if it has a valid one.
+fn orphan_terminal(orphan: Option<&Json>) -> Option<Event> {
+    serde_json::from_value(orphan?.get("terminal")?.clone()).ok()
 }
 
 /// Whether every pause reason is external (drain, preemption, lost gateway):
@@ -686,7 +705,14 @@ impl Gateway {
         let deployment = &run.deployment;
         let key = deployment.signing_key().ok_or(("dispatch_failed", "deployment has no signing key".to_owned()))?;
         let mut last_error = String::new();
-        for _ in 0..self.settings.max_dispatch_attempts {
+        // An instance may still hold the lost execution of the previous epoch
+        // until its reattach window passed and it preempted it (a platform that
+        // routes the re-dispatch to the same instance): it answers
+        // `409 epoch_conflict` meanwhile.
+        let conflict_deadline = Instant::now() + self.settings.reattach_window + Duration::from_secs(10);
+        let mut attempts = 0;
+        while attempts < self.settings.max_dispatch_attempts {
+            attempts += 1;
             let current = match lease.take() {
                 Some(current) => current,
                 None => version.pool.acquire().await.map_err(|error| ("dispatch_failed", error.to_string()))?,
@@ -710,6 +736,14 @@ impl Gateway {
                     current.release_broken();
                 }
                 Err(AgentError::Refused { status: 503, body }) => last_error = body,
+                Err(AgentError::Refused { status: 409, body })
+                    if body.contains("epoch_conflict") && Instant::now() < conflict_deadline =>
+                {
+                    attempts -= 1;
+                    last_error = body;
+                    *lease = Some(current);
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
                 Err(AgentError::PlatformTimeout(message)) => return Err(("platform_timeout", message)),
                 Err(error) => return Err(("dispatch_failed", error.to_string())),
             }
@@ -832,6 +866,7 @@ impl Gateway {
         mut resume: Option<Json>,
         mut claimed: bool,
     ) {
+        let mut lost = 0u32;
         loop {
             let owner = lease.as_ref().map(|lease| lease.endpoint.replica.id.clone());
             let claim = if std::mem::take(&mut claimed) {
@@ -880,6 +915,7 @@ impl Gateway {
             match outcome {
                 Outcome::Finished(event) => match self.finish(&run, record.clone(), &event).await {
                     Some(next) => {
+                        lost = 0;
                         bump(&self.metrics.redispatches);
                         record = self.store.get(&run.run_id).await.ok().flatten().unwrap_or(record);
                         resume = Some(next);
@@ -895,39 +931,104 @@ impl Gateway {
                         .await;
                 }
                 Outcome::Broken(reason) => {
-                    let receiver = run.expect_orphan();
-                    // Agents never call the gateway: pull the orphan from them.
-                    tokio::spawn(Arc::clone(&self).keep_polling_orphans(vec![run.run_id.clone()]));
                     if let Some(broken) = lease.take() {
                         self.agents.forget(&broken.endpoint.address);
                         broken.release_broken();
                     }
-                    let Some(orphan) = self.await_orphan(&run, receiver, record.epoch).await else {
-                        return self
-                            .fail(
-                                &run,
-                                record,
-                                "owner_lost",
-                                &format!("executor lost ({reason}) and no orphan within the reclaim grace"),
-                            )
-                            .await;
+                    let terminal = if capabilities.addressing == Addressing::Url {
+                        // No instance can be addressed to pull an orphan from.
+                        None
+                    } else {
+                        let receiver = run.expect_orphan();
+                        // Agents never call the gateway: pull the orphan from them.
+                        tokio::spawn(Arc::clone(&self).keep_polling_orphans(vec![run.run_id.clone()]));
+                        let orphan = self.await_orphan(&run, receiver, record.epoch).await;
+                        run.stop_awaiting_orphan();
+                        orphan_terminal(orphan.as_ref())
                     };
-                    let terminal: Option<Event> =
-                        orphan.get("terminal").and_then(|terminal| serde_json::from_value(terminal.clone()).ok());
-                    let Some(event) = terminal else {
-                        return self.fail(&run, record, "owner_lost", "orphan without a terminal event").await;
-                    };
-                    match self.finish(&run, record.clone(), &event).await {
-                        Some(next) => {
+                    let next = match terminal {
+                        Some(event) => {
+                            lost = 0;
+                            let Some(next) = self.finish(&run, record.clone(), &event).await else { return };
                             bump(&self.metrics.redispatches);
                             record = self.store.get(&run.run_id).await.ok().flatten().unwrap_or(record);
-                            resume = Some(next);
+                            Some(next)
                         }
-                        None => return,
-                    }
+                        None => {
+                            lost += 1;
+                            let Some((requeued, next)) = self.requeue(&run, record, &reason, lost).await else {
+                                return;
+                            };
+                            record = requeued;
+                            next
+                        }
+                    };
+                    resume = next;
                 }
             }
         }
+    }
+
+    /// Where a run whose executor was lost without an outcome continues: from
+    /// the latest stored snapshot, else from its request (same run id, next
+    /// epoch). `Err` says why it cannot: its credentials expired, or the request
+    /// inputs were only in the memory of a gateway that restarted (decision 7).
+    async fn checkpoint(&self, run: &LiveRun) -> Result<Option<Json>, String> {
+        let input = run.input();
+        if let Some(expires_at) = input.as_ref().and_then(|input| input.expires_at)
+            && expires_at <= now_ms() / 1000
+        {
+            return Err("the request's credentials expired; resume it with fresh ones".to_owned());
+        }
+        match self.store.load_snapshot(&run.run_id).await {
+            Ok(Some(snapshot)) => Ok(Some(serde_json::json!({ "snapshot": snapshot }))),
+            Ok(None) if input.is_some() => Ok(None),
+            Ok(None) => Err("it has no checkpoint and its request inputs were kept only in the memory of a \
+                              gateway that restarted"
+                .to_owned()),
+            Err(error) => Err(format!("its checkpoint cannot be read: {error}")),
+        }
+    }
+
+    /// Queues a run whose executor was lost (the `lost`-th time in a row) for
+    /// re-dispatch from [`Self::checkpoint`], and returns the queued record and
+    /// the resume body (`None`: start again from the request). Nodes that ran
+    /// may run again: at-least-once per node, keyed by `Idempotency-Key`. Fails
+    /// the run with `owner_lost` and the reason when it cannot continue.
+    async fn requeue(
+        self: &Arc<Self>,
+        run: &Arc<LiveRun>,
+        mut record: RunRecord,
+        reason: &str,
+        lost: u32,
+    ) -> Option<(RunRecord, Option<Json>)> {
+        if lost > self.settings.max_lost_executions {
+            let message = format!("executor lost {lost} times in a row (last: {reason})");
+            self.fail(run, record, "owner_lost", &message).await;
+            return None;
+        }
+        let resume = match self.checkpoint(run).await {
+            Ok(resume) => resume,
+            Err(why) => {
+                let message = format!("executor lost ({reason}) and the run cannot be re-dispatched: {why}");
+                self.fail(run, record, "owner_lost", &message).await;
+                return None;
+            }
+        };
+        let epoch = record.epoch;
+        record.status = RunStatus::Queued;
+        record.owner = None;
+        record.updated_ms = now_ms();
+        if let Err(error) = self.store.put_if(record.clone(), epoch).await {
+            // Another writer moved the run (a client abort): leave it to that.
+            eprintln!("gateway: run {}: re-queue refused: {error}", run.run_id);
+            let current = self.store.get(&run.run_id).await.ok().flatten().unwrap_or(record);
+            run.settled.send_replace(Settled::Done(Box::new(current)));
+            return None;
+        }
+        bump(&self.metrics.redispatches);
+        bump(&self.metrics.lost_executions);
+        Some((record, resume))
     }
 
     /// Reattaches a broken `Replica` stream within the reattach window.
@@ -1000,6 +1101,8 @@ impl Gateway {
             };
             let run =
                 LiveRun::new(&record.run_id, deployment.clone(), RunInput::default(), None, self.settings.replay_ring);
+            // The request inputs died with the previous gateway (decision 7).
+            run.set_input(None);
             let receiver = run.expect_orphan();
             self.register(&run);
             waiting.push(record.run_id.clone());
@@ -1033,27 +1136,31 @@ impl Gateway {
     }
 
     async fn reclaim(self: Arc<Self>, run: Arc<LiveRun>, record: RunRecord, receiver: oneshot::Receiver<Json>) {
-        let Some(orphan) = self.await_orphan(&run, receiver, record.epoch).await else {
-            return self
-                .fail(&run, record, "owner_lost", "gateway restarted and the executor did not report the run")
-                .await;
-        };
-        let Some(event) =
-            orphan.get("terminal").and_then(|terminal| serde_json::from_value::<Event>(terminal.clone()).ok())
-        else {
-            return self.fail(&run, record, "owner_lost", "orphan without a terminal event").await;
-        };
         let Ok(version) = run.deployment.version(record.deployment_version.as_deref().unwrap_or_default(), now_ms())
         else {
             return self.fail(&run, record, "version_retired", "deployment version retired").await;
         };
-        if let Some(next) = self.finish(&run, record.clone(), &event).await {
-            bump(&self.metrics.redispatches);
-            let current = self.store.get(&run.run_id).await.ok().flatten().unwrap_or(record);
-            // Without the in-memory inputs a run that needs secrets fails on the agent
-            // and stays resumable by the client with fresh credentials (decision 7).
-            self.supervise(run, version, current, None, Some(next)).await;
-        }
+        let terminal = if version.pool.capabilities().addressing == Addressing::Url {
+            // No instance can be addressed to pull an orphan from.
+            None
+        } else {
+            orphan_terminal(self.await_orphan(&run, receiver, record.epoch).await.as_ref())
+        };
+        run.stop_awaiting_orphan();
+        let (current, next) = match terminal {
+            Some(event) => {
+                let Some(next) = self.finish(&run, record.clone(), &event).await else { return };
+                bump(&self.metrics.redispatches);
+                (self.store.get(&run.run_id).await.ok().flatten().unwrap_or(record), Some(next))
+            }
+            None => {
+                let Some(requeued) = self.requeue(&run, record, "gateway restarted", 1).await else { return };
+                requeued
+            }
+        };
+        // Without the in-memory inputs a run that needs secrets fails on the agent
+        // and stays resumable by the client with fresh credentials (decision 7).
+        self.supervise(run, version, current, None, next).await;
     }
 
     /// Asks every listed replica of every deployment for orphans of `run_ids`.
