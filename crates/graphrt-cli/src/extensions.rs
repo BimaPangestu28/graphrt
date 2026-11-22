@@ -142,6 +142,18 @@ impl Extensions {
         Ok(ext)
     }
 
+    /// Starts every loaded process / HTTP plugin now instead of at its first
+    /// node (see [`graphrt_plugin::PluginHost::prewarm`]).
+    pub fn prewarm_plugins(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        #[cfg(any(feature = "plugins", feature = "wasm"))]
+        let starts: Vec<_> = self.hosts.iter().map(graphrt_plugin::PluginHost::prewarm).collect();
+        #[cfg(not(any(feature = "plugins", feature = "wasm")))]
+        let starts: Vec<std::future::Ready<()>> = Vec::new();
+        async move {
+            futures::future::join_all(starts).await;
+        }
+    }
+
     /// Successfully loaded plugins.
     pub fn loaded(&self) -> impl Iterator<Item = &PluginSummary> {
         self.plugins.iter().filter(|p| p.error.is_none())

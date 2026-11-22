@@ -10,6 +10,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from graphrt_plugin import Plugin, PluginError, pause  # noqa: E402
 
 plugin = Plugin("testkit")
+STARTED_NS = time.time_ns()
+
+
+@plugin.node("testkit.started")
+async def started(ctx, req):
+    return {"outputs": {"started_ns": STARTED_NS}}
 
 
 @plugin.node("testkit.echo")

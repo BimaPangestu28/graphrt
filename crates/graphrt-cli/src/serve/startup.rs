@@ -68,6 +68,13 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     #[cfg(not(feature = "jwt"))]
     let user_auth_line = None;
     let state = Arc::new(state);
+    // An agent behind a gateway is started because a run is on its way: its
+    // plugin processes (a Node.js host takes tens of ms) start alongside the
+    // bind and that run's dispatch instead of at its first plugin node.
+    #[cfg(feature = "trust-gateway")]
+    if state.gateway_agent().is_some() {
+        tokio::spawn(state.prewarm_plugins());
+    }
     recover_store(&state, args.store_ttl_days).await?;
     let app = router_with_uploads(Arc::clone(&state), args.max_body_bytes, args.max_upload_bytes);
     // Before listening: from here on SIGTERM / SIGINT start a drain (as PID 1 of a

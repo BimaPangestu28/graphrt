@@ -8,6 +8,7 @@
   "permissions": { "env": ["CARGO_PKG_NAME"] },
   "limits": { "timeout_ms": 5000, "max_concurrency": 4 },
   "nodes": [
+    { "kind": "testkit.started", "title": "Process start time", "outputs": [{ "name": "started_ns", "type": "integer" }] },
     { "kind": "testkit.echo", "title": "Echo", "outputs": [{ "name": "config", "type": "object" }] },
     { "kind": "testkit.sleep", "title": "Sleep" },
     { "kind": "testkit.crash_once", "title": "Crash once", "config_schema": { "required": ["marker"] } },
