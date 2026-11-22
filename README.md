@@ -468,6 +468,7 @@ graphrt-plugin  process / HTTP plugin host; graphrt-wasm: sandboxed WebAssembly 
 graphrt-bundle  portable .grt bundles; graphrt-otel: OpenTelemetry export
 graphrt-eval    eval harness: test suites, assertions, trajectories, retrieval metrics, CI gate
 graphrt-ffi     Kotlin / Swift bindings for Android and iOS
+graphrt-gcp     gateway on Google Cloud: GCP auth, Cloud Run provider + deploy driver
 graphrt-cli     `graphrt` binary: run, validate, inspect, serve, eval, kb, plugin, bundle
 ```
 
