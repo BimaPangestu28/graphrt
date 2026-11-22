@@ -33,6 +33,7 @@ done
 
 cd "$(dirname "$0")/.."
 
+# shellcheck disable=SC2016 # the single-quoted program is Python, not shell
 order=$(cargo metadata --format-version 1 --no-deps | python3 -c '
 import json, sys
 meta = json.load(sys.stdin)
