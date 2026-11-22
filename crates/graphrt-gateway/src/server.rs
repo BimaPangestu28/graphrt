@@ -471,8 +471,10 @@ fn client_stream(
                 return finish_stream(&gateway);
             }
         }
-        let mut heartbeat = tokio::time::interval(HEARTBEAT);
-        heartbeat.tick().await;
+        // First beat one period from now. `interval` + an initial `tick().await`
+        // went through the timer driver (1 ms resolution) and held back the
+        // first frame of every stream by up to a millisecond.
+        let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
         loop {
             if !matches!(*settled.borrow(), Settled::Running) {
                 while let Ok(frame) = frames.try_recv() {
