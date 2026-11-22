@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS snapshots (
     run_id TEXT PRIMARY KEY,
     snapshot TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS requests (
+    run_id TEXT PRIMARY KEY,
+    request TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS objects (
     key TEXT PRIMARY KEY,
     version INTEGER NOT NULL,
@@ -362,6 +366,48 @@ impl SqliteStore {
         .await
     }
 
+    /// Creates a run together with its request (secrets already stripped, see
+    /// [`crate::stored_request`]) in one transaction: no extra round trip on
+    /// the start path. `Conflict` when the run exists.
+    ///
+    /// # Errors
+    /// `Conflict`, an invalid run id, I/O.
+    pub async fn create_with_request(&self, record: RunRecord, request: Option<String>) -> StoreResult<()> {
+        validate_run_id(&record.run_id)?;
+        self.transaction(move |transaction| {
+            if load_record(transaction, &record.run_id)?.is_some() {
+                return Err(StoreError::Conflict(format!("run `{}` already exists", record.run_id)));
+            }
+            write_record(transaction, &record)?;
+            if let Some(request) = request {
+                transaction
+                    .execute(
+                        "INSERT OR REPLACE INTO requests (run_id, request) VALUES (?1, ?2)",
+                        params![record.run_id, request],
+                    )
+                    .map_err(io_error)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// The request stored with a run by [`Self::create_with_request`].
+    ///
+    /// # Errors
+    /// An invalid run id, I/O.
+    pub async fn load_request(&self, run_id: &str) -> StoreResult<Option<String>> {
+        validate_run_id(run_id)?;
+        let run_id = run_id.to_owned();
+        self.with_connection(move |connection| {
+            connection
+                .query_row("SELECT request FROM requests WHERE run_id = ?1", params![run_id], |row| row.get(0))
+                .optional()
+                .map_err(io_error)
+        })
+        .await
+    }
+
     /// Runs in `status` (all deployments), for reclaim after a restart.
     ///
     /// # Errors
@@ -462,16 +508,7 @@ fn put_record(transaction: &Connection, mut record: RunRecord, expected_epoch: O
 
 impl RunStore for SqliteStore {
     fn create(&self, record: RunRecord) -> BoxFuture<'_, StoreResult<()>> {
-        Box::pin(async move {
-            validate_run_id(&record.run_id)?;
-            self.transaction(move |transaction| {
-                if load_record(transaction, &record.run_id)?.is_some() {
-                    return Err(StoreError::Conflict(format!("run `{}` already exists", record.run_id)));
-                }
-                write_record(transaction, &record)
-            })
-            .await
-        })
+        Box::pin(self.create_with_request(record, None))
     }
 
     fn put(&self, record: RunRecord) -> BoxFuture<'_, StoreResult<()>> {
@@ -522,6 +559,7 @@ impl RunStore for SqliteStore {
                     transaction.execute("DELETE FROM runs WHERE run_id = ?1", params![run_id]).map_err(io_error)?;
                 transaction.execute("DELETE FROM events WHERE run_id = ?1", params![run_id]).map_err(io_error)?;
                 transaction.execute("DELETE FROM snapshots WHERE run_id = ?1", params![run_id]).map_err(io_error)?;
+                transaction.execute("DELETE FROM requests WHERE run_id = ?1", params![run_id]).map_err(io_error)?;
                 Ok(removed > 0)
             })
             .await
@@ -725,7 +763,7 @@ impl RunStore for SqliteStore {
                 .map_err(io_error)?;
             drop(statement);
             for id in &ids {
-                for table in ["runs", "events", "snapshots"] {
+                for table in ["runs", "events", "snapshots", "requests"] {
                     transaction
                         .execute(&format!("DELETE FROM {table} WHERE run_id = ?1"), params![id])
                         .map_err(io_error)?;
@@ -880,6 +918,24 @@ mod tests {
         assert_eq!(store.due_callbacks(100, 10).await.unwrap().len(), 1);
         store.complete_callback(due[0].id).await.unwrap();
         assert!(store.due_callbacks(1000, 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_request_is_written_with_the_run_and_removed_with_it() {
+        let store = SqliteStore::in_memory().unwrap();
+        let record = RunRecord::queued("r1", "wf", "fp", Some("shop".into()), 1);
+        store.create_with_request(record.clone(), Some(r#"{"body":{}}"#.into())).await.unwrap();
+        assert_eq!(store.load_request("r1").await.unwrap().as_deref(), Some(r#"{"body":{}}"#));
+        let duplicate = store.create_with_request(record, Some(r#"{"body":{"other":1}}"#.into())).await;
+        assert!(matches!(duplicate, Err(StoreError::Conflict(_))));
+        assert_eq!(store.load_request("r1").await.unwrap().as_deref(), Some(r#"{"body":{}}"#), "kept");
+        assert!(store.delete("r1").await.unwrap());
+        assert_eq!(store.load_request("r1").await.unwrap(), None);
+        let mut finished = RunRecord::queued("r2", "wf", "fp", Some("shop".into()), 1);
+        finished.status = RunStatus::Succeeded;
+        store.create_with_request(finished, Some("{}".into())).await.unwrap();
+        assert_eq!(store.purge_before(1_000).await.unwrap(), 1);
+        assert_eq!(store.load_request("r2").await.unwrap(), None, "purged with its run");
     }
 
     #[tokio::test]

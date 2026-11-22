@@ -268,6 +268,25 @@ fn agent_command(workflow: &std::path::Path, extra: &[String]) -> Result<Vec<Str
     Ok(command)
 }
 
+/// Start inputs `workflow` declares `type: secret`: the gateway strips them
+/// from the request it stores for a restart. `None` when the file cannot be
+/// read or parsed (the gateway then strips every input).
+fn declared_secret_inputs(workflow: &std::path::Path) -> Option<Vec<String>> {
+    let text = std::fs::read_to_string(workflow).ok()?;
+    let document = graphrt_core::Workflow::parse(&text).ok()?;
+    let start = document.graph.nodes.iter().find(|node| node.kind == "start" && node.parent.is_none());
+    let declared = start.and_then(|node| node.config.get("variables")).and_then(serde_json::Value::as_array);
+    Some(
+        declared
+            .into_iter()
+            .flatten()
+            .filter(|declaration| declaration.get("type").and_then(serde_json::Value::as_str) == Some("secret"))
+            .filter_map(|declaration| declaration.get("variable").and_then(serde_json::Value::as_str))
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
 fn workflow_name(workflow: &std::path::Path) -> String {
     workflow.file_stem().and_then(|stem| stem.to_str()).unwrap_or("workflow").to_owned()
 }
@@ -371,6 +390,7 @@ fn dev_config(workflow: &std::path::Path) -> Result<(GatewayConfig, Vec<(String,
         fingerprint: String::new(),
         target: "local".to_owned(),
         command: agent_command(workflow, &[])?,
+        secret_inputs: declared_secret_inputs(workflow),
         activated_ms: 0,
         superseded_ms: None,
     };
@@ -440,7 +460,8 @@ pub fn deploy(args: DeployArgs) -> Result<u8, CliError> {
         .clone()
         .or_else(|| std::env::var("GRAPHRT_GATEWAY_URL").ok())
         .unwrap_or_else(|| "http://127.0.0.1:8700".to_owned());
-    let registrar = graphrt_gateway::deploy::LocalDeployDriver::new(&gateway, &token);
+    let registrar = graphrt_gateway::deploy::LocalDeployDriver::new(&gateway, &token)
+        .with_secret_inputs(declared_secret_inputs(&args.workflow));
     let driver: Box<dyn DeployDriver> = if local {
         Box::new(registrar)
     } else {
@@ -457,4 +478,24 @@ pub fn deploy(args: DeployArgs) -> Result<u8, CliError> {
         deployed.target
     ))?;
     Ok(EXIT_OK)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn secret_inputs_come_from_the_start_node() {
+        let dir = std::env::temp_dir().join(format!("graphrt-secret-inputs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let workflow = dir.join("agent.yaml");
+        let example =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/supabase-chatbot/agent.yaml");
+        std::fs::copy(example, &workflow).unwrap();
+        assert_eq!(declared_secret_inputs(&workflow), Some(vec!["user_jwt".to_owned()]));
+        assert_eq!(declared_secret_inputs(&dir.join("missing.yaml")), None, "unknown: the gateway strips every input");
+        let _cleanup = std::fs::remove_dir_all(&dir);
+    }
 }

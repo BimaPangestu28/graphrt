@@ -1,7 +1,8 @@
 //! A run whose executor is lost without an outcome is not lost (plan §3.4, I1):
 //! the gateway re-dispatches it from the latest stored snapshot, else from its
 //! request with the same run id, also on platforms that expose only one URL
-//! (`Addressing::Url`: Cloud Run, ACA, Lambda), where no orphan can be pulled.
+//! (`Addressing::Url`: Cloud Run, ACA, Lambda), where no orphan can be pulled,
+//! and after a gateway restart (the request is stored without its secrets).
 //! `owner_lost` only when that is impossible, with the reason.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -134,24 +135,48 @@ async fn after_a_gateway_crash_a_url_run_resumes_from_its_stored_snapshot() {
     let _cleanup = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn after_a_gateway_crash_a_url_run_without_a_checkpoint_says_why_it_is_lost() {
-    let path = temp_store("no-checkpoint");
+/// Crashes a gateway while a Url-platform run without a checkpoint executes,
+/// recovers with a second gateway on the same store. Returns the settled
+/// record, the stored request and how many executions the run had.
+async fn restart_without_checkpoint(
+    tag: &str,
+    inputs: serde_json::Value,
+) -> (serde_json::Value, Option<String>, usize) {
+    let path = temp_store(tag);
     let world = Arc::new(AgentWorld::default());
-    let body = json!({ "async": true, "inputs": { "events": 40, "delay_ms": 20 } });
+    let body = json!({ "async": true, "inputs": inputs });
     let (run_id, at_crash) = crash_mid_stream(&path, &world, body, Duration::from_millis(300), true);
     assert_eq!(at_crash, RunStatus::Running, "crashed while it executed");
-    let second = start_gateway(Options {
-        store: SqliteStore::open(&path).unwrap(),
-        world: world.clone(),
-        url_provider: true,
-        ..Options::default()
-    })
-    .await;
-    second.gateway.recover().await.unwrap();
+    let store = SqliteStore::open(&path).unwrap();
+    assert!(store.load_snapshot(&run_id).await.unwrap().is_none(), "no checkpoint");
+    let request = store.load_request(&run_id).await.unwrap();
+    let second = start_gateway(Options { store, world: world.clone(), url_provider: true, ..Options::default() }).await;
+    assert_eq!(second.gateway.recover().await.unwrap(), (0, 1));
     let done = second.wait_settled(&run_id).await;
-    // The request inputs lived only in the dead gateway's memory (decision 7).
-    assert_eq!((done["status"].as_str(), done["error_type"].as_str()), (Some("failed"), Some("owner_lost")), "{done}");
-    assert!(done["error"].as_str().unwrap().contains("no checkpoint"), "{done}");
+    let executions = world.executions.lock().unwrap()[&run_id].len();
     let _cleanup = std::fs::remove_dir_all(path.parent().unwrap());
+    (done, request, executions)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_a_gateway_crash_a_url_run_without_a_checkpoint_restarts_from_its_stored_request() {
+    let (done, request, executions) =
+        restart_without_checkpoint("request", json!({ "events": 40, "delay_ms": 20, "text": "hi" })).await;
+    assert_eq!(done["status"], "succeeded", "{done}");
+    assert_eq!(done["outputs"]["echo"], "hi", "the restart got the stored inputs: {done}");
+    assert_eq!(executions, 2, "re-dispatched once with the same run id: {done}");
+    let request = request.expect("stored with the run");
+    assert!(request.contains("\"text\":\"hi\"") && !request.contains("needs_secrets"), "{request}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_a_gateway_crash_a_run_that_needs_a_secret_ends_credentials_required() {
+    let inputs = json!({ "events": 40, "delay_ms": 20, "api_token": "sk-never-stored" });
+    let (done, request, executions) = restart_without_checkpoint("secret", inputs).await;
+    assert_eq!((done["status"].as_str(), done["error_type"].as_str()), (Some("failed"), Some("owner_lost")), "{done}");
+    let error = done["error"].as_str().unwrap();
+    assert!(error.contains("credentials_required: it needs the secret inputs api_token"), "{error}");
+    assert_eq!(executions, 1, "not re-dispatched without its secret: {done}");
+    let request = request.expect("stored with the run");
+    assert!(!request.contains("sk-never-stored") && request.contains(r#""needs_secrets":["api_token"]"#), "{request}");
 }

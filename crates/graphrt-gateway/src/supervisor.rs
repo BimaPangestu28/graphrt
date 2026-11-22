@@ -20,8 +20,9 @@
 //!                      failed{owner_lost} only when that is impossible, with the reason
 //! ```
 //!
-//! Request bodies (which carry secret inputs and `user_jwt`) live only in
-//! [`LiveRun`] memory, never in the store or logs (decision 7, I6).
+//! Request bodies (which carry secret inputs and `user_jwt`) live in
+//! [`LiveRun`] memory; the store keeps a copy without them for a restart
+//! ([`StoredRequest`]), and no secret reaches the store or logs (decision 7, I6).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
@@ -40,6 +41,7 @@ use crate::metrics::{Metrics, bump};
 use crate::pool::{ActivateError, Lease};
 use crate::sse::Frame;
 use crate::store::SqliteStore;
+use crate::stored_request::{CREDENTIALS_REQUIRED, StoredRequest};
 
 /// Timing knobs of the supervisor.
 #[derive(Debug, Clone)]
@@ -80,7 +82,8 @@ impl Default for SupervisorSettings {
 }
 
 /// A run request as the client sent it (`inputs`, `sys`, `conversation`,
-/// `metadata`, `session_id`, `user_id`, `tags`). In memory only.
+/// `metadata`, `session_id`, `user_id`, `tags`). In memory; the store keeps
+/// only a copy without its secrets ([`StoredRequest`]).
 #[derive(Debug, Clone, Default)]
 pub struct RunInput {
     /// The JSON object.
@@ -460,7 +463,11 @@ impl Gateway {
         {
             record.user_id = Some(user.to_owned());
         }
-        match self.store.create(record.clone()).await {
+        // Written with the record (one transaction), without its secrets: a
+        // restart re-dispatches a run that has no checkpoint from it.
+        let header_inputs: Vec<&str> = deployment.input_headers.iter().map(|mapping| mapping.input.as_str()).collect();
+        let stored = StoredRequest::strip(&input, version.info.secret_inputs.as_deref(), &header_inputs);
+        match self.store.create_with_request(record.clone(), serde_json::to_string(&stored).ok()).await {
             Ok(()) => {}
             Err(StoreError::Conflict(_)) => {
                 let existing = self.store.get(&run_id).await?.ok_or(StartError::NotFound)?;
@@ -971,9 +978,12 @@ impl Gateway {
 
     /// Where a run whose executor was lost without an outcome continues: from
     /// the latest stored snapshot, else from its request (same run id, next
-    /// epoch). `Err` says why it cannot: its credentials expired, or the request
-    /// inputs were only in the memory of a gateway that restarted (decision 7).
+    /// epoch; after a restart the stored one). `Err` says why it cannot: its
+    /// credentials expired, or it needs secret inputs that are never stored.
     async fn checkpoint(&self, run: &LiveRun) -> Result<Option<Json>, String> {
+        if run.input().is_none() {
+            run.set_input(self.restored_input(&run.run_id).await?);
+        }
         let input = run.input();
         if let Some(expires_at) = input.as_ref().and_then(|input| input.expires_at)
             && expires_at <= now_ms() / 1000
@@ -983,11 +993,29 @@ impl Gateway {
         match self.store.load_snapshot(&run.run_id).await {
             Ok(Some(snapshot)) => Ok(Some(serde_json::json!({ "snapshot": snapshot }))),
             Ok(None) if input.is_some() => Ok(None),
-            Ok(None) => Err("it has no checkpoint and its request inputs were kept only in the memory of a \
-                              gateway that restarted"
-                .to_owned()),
+            Ok(None) => Err("it has no checkpoint and no stored request (accepted by an older gateway)".to_owned()),
             Err(error) => Err(format!("its checkpoint cannot be read: {error}")),
         }
+    }
+
+    /// The request stored with a run, for a gateway that restarted. `Ok(None)`:
+    /// none was stored (an older gateway accepted the run). `Err`
+    /// (`credentials_required`): it needs secret inputs, which are never stored.
+    async fn restored_input(&self, run_id: &str) -> Result<Option<RunInput>, String> {
+        let text = match self.store.load_request(run_id).await {
+            Ok(Some(text)) => text,
+            Ok(None) => return Ok(None),
+            Err(error) => return Err(format!("its stored request cannot be read: {error}")),
+        };
+        let stored: StoredRequest =
+            serde_json::from_str(&text).map_err(|error| format!("its stored request is corrupt: {error}"))?;
+        if !stored.needs_secrets.is_empty() {
+            return Err(format!(
+                "{CREDENTIALS_REQUIRED}: it needs the secret inputs {} and secrets are never stored; submit it again",
+                stored.needs_secrets.join(", ")
+            ));
+        }
+        Ok(Some(stored.into_input()))
     }
 
     /// Queues a run whose executor was lost (the `lost`-th time in a row) for
@@ -1086,6 +1114,15 @@ impl Gateway {
             let run =
                 LiveRun::new(&record.run_id, deployment.clone(), RunInput::default(), None, self.settings.replay_ring);
             self.register(&run);
+            // Its in-memory request died with the previous gateway (decision 7).
+            match self.restored_input(&record.run_id).await {
+                Ok(input) => run.set_input(input),
+                Err(why) => {
+                    let message = format!("the gateway restarted before the run was dispatched: {why}");
+                    self.fail(&run, record.clone(), "owner_lost", &message).await;
+                    continue;
+                }
+            }
             // A queued run with a snapshot was migrating when the gateway stopped.
             let resume = self
                 .store
@@ -1101,7 +1138,8 @@ impl Gateway {
             };
             let run =
                 LiveRun::new(&record.run_id, deployment.clone(), RunInput::default(), None, self.settings.replay_ring);
-            // The request inputs died with the previous gateway (decision 7).
+            // The request inputs died with the previous gateway (decision 7):
+            // a re-dispatch reads the stored request without its secrets.
             run.set_input(None);
             let receiver = run.expect_orphan();
             self.register(&run);
@@ -1158,8 +1196,6 @@ impl Gateway {
                 requeued
             }
         };
-        // Without the in-memory inputs a run that needs secrets fails on the agent
-        // and stays resumable by the client with fresh credentials (decision 7).
         self.supervise(run, version, current, None, next).await;
     }
 

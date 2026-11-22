@@ -426,6 +426,8 @@ pub fn version(version: &str) -> VersionInfo {
         fingerprint: String::new(),
         target: "fake".into(),
         command: Vec::new(),
+        // The fake agent's start node declares `api_token` as `type: secret`.
+        secret_inputs: Some(vec!["api_token".into()]),
         activated_ms: 0,
         superseded_ms: None,
     }

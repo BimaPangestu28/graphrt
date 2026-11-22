@@ -612,6 +612,8 @@ struct NewVersion {
     target: String,
     #[serde(default)]
     command: Vec<String>,
+    #[serde(default)]
+    secret_inputs: Option<Vec<String>>,
 }
 
 async fn add_version(
@@ -646,6 +648,7 @@ async fn add_version(
         fingerprint: request.fingerprint,
         target: request.target,
         command: request.command,
+        secret_inputs: request.secret_inputs,
         activated_ms: now_ms(),
         superseded_ms: None,
     };

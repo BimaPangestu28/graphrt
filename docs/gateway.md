@@ -92,7 +92,7 @@ executions); response text chunks are `id: N.k`. A reconnect with
 | Cold start | The request holds; one wake per pool (singleflight); waiters queue up to `max_queued` / `queue_timeout`, then `503 Retry-After` |
 | Agent drains (SIGTERM, scale-down) | The agent pauses or preempts the run; the gateway re-dispatches it at once to another replica with the snapshot and the request's inputs, which it keeps **in memory only** |
 | Stream breaks | Reattach within 3 s; otherwise the agent preempts the run and holds it as an orphan, the gateway polls the replicas' `GET /internal/v1/orphans` (backoff to 2 s) for up to 60 s and re-dispatches it. On a one-URL platform (Cloud Run, ACA, Lambda: no instance to pull from), or when no orphan comes (the instance is gone), the gateway re-dispatches at the next epoch from the latest stored snapshot, else from the request with the same run id: nodes may run again (at-least-once, keyed by `Idempotency-Key`). `failed{owner_lost}` only when that is impossible, with the reason: the request's credentials expired, or the executor was lost 4 times in a row |
-| Gateway restarts | Queued runs are re-dispatched, running ones are reclaimed from the orphans polled from the agents, else (one-URL platforms, no orphan) re-dispatched from their latest stored snapshot. Request inputs (secrets, `user_jwt`) are not persisted, so a run that needs them stays resumable by the client with fresh credentials; a run with neither an orphan nor a snapshot ends `failed{owner_lost}` saying it had no checkpoint |
+| Gateway restarts | Queued runs are re-dispatched, running ones are reclaimed from the orphans polled from the agents, else (one-URL platforms, no orphan) re-dispatched from their latest stored snapshot. The request is stored with the run (same transaction) without its secrets: start inputs the version declares `type: secret` and header-mapped inputs (`user_jwt`) are stripped and only their names kept, so a run with neither an orphan nor a snapshot is re-dispatched from the stored request with the same run id. A run that needs a stripped secret ends `failed{owner_lost}` with `credentials_required: it needs the secret inputs …`, and the client submits it again |
 | Platform without grace (Lambda) | No preemption; a run past the platform limit fails with `platform_timeout` |
 
 Nodes can therefore run more than once (at-least-once per node); `http-request`
@@ -193,6 +193,11 @@ graphrt deploy --target aca       --config gateway.yaml --deployment shop --vers
 
 `--set KEY=VALUE` passes provider settings (see each guide), `--env` plain
 environment, `--secret ENV=REFERENCE` secret-store references (never values).
+`graphrt deploy` also registers the start inputs `agent.yaml` declares
+`type: secret` with the version: the gateway strips them from the request it
+stores for a restart. A version registered without that list (an older
+`graphrt deploy`, or a workflow file it cannot read) has every input treated as
+secret.
 
 ## Store
 

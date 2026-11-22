@@ -196,7 +196,9 @@ restarts:
    agent's store is only a cache of its executions. Without an orphan (a
    one-URL platform, or an instance that is gone) the gateway re-dispatches the
    run at the next epoch from its latest stored snapshot, else from its
-   request, and ends it `failed{owner_lost}` only when that is impossible
+   request (after a gateway restart, the copy stored without its secrets), and
+   ends it `failed{owner_lost}` only when that is impossible, e.g.
+   `credentials_required` for a run that needs a secret input
    (see [gateway.md](gateway.md)).
 
 The orphan body is `{run_id, epoch, deployment, status, event_count, terminal,

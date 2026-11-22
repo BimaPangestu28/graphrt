@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{API_KEY, AgentWorld, DEPLOYMENT, Options, TestGateway, crash_mid_stream, start_gateway};
-use graphrt_core::store::{RunStatus, RunStore, StoredEvent};
+use graphrt_core::store::{RunStore, StoredEvent};
 use graphrt_gateway::cron::Schedule;
 use graphrt_gateway::pool::PoolConfig;
 use graphrt_gateway::quota::Quotas;
@@ -220,11 +220,17 @@ async fn invariants_hold_over_seeds() {
     let mut violations: Vec<String> =
         futures::future::join_all(tasks).await.into_iter().flat_map(Result::unwrap).collect();
 
-    // I6: no secret in records or metrics.
+    // I6: no secret in records, stored requests or metrics.
     let page = gateway.gateway.store.list(Default::default()).await.unwrap();
     let records = serde_json::to_string(&page.runs).unwrap();
     if records.contains(SECRET) {
         violations.push("I6: secret in a run record".into());
+    }
+    for run in &page.runs {
+        let request = gateway.gateway.store.load_request(&run.run_id).await.unwrap().unwrap_or_default();
+        if request.contains(SECRET) {
+            violations.push(format!("I6: secret in the stored request of {}", run.run_id));
+        }
     }
     let metrics = gateway
         .client()
@@ -308,39 +314,53 @@ async fn invariants_hold_on_a_url_platform() {
 async fn a_gateway_crash_on_a_url_platform_never_loses_a_run_silently() {
     let seeds = seed_count(8).max(1);
     let mut violations = Violations::default();
-    let (mut resumed, mut lost_without_checkpoint) = (0, 0);
+    let (mut from_checkpoint, mut from_request, mut credentials_required) = (0, 0, 0);
     for seed in 0..seeds {
         let rng = JitterRng::seeded(seed + 7_000);
         let mode = ["ok", "preempt_once"][(rng.next_u64() % 2) as usize];
+        // One run in three carries a secret input, which is never stored.
+        let needs_secret = rng.next_u64().is_multiple_of(3);
         let crash_ms = 100 + rng.next_u64() % 1_400;
         let dir = std::env::temp_dir().join(format!("graphrt-sim-crash-{seed}-{}", std::process::id()));
         let _cleanup = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("gateway.db");
         let world = Arc::new(AgentWorld::default());
-        let body = json!({ "async": true, "inputs": { "mode": mode, "events": 40, "delay_ms": 20 } });
+        let mut inputs = json!({ "mode": mode, "events": 40, "delay_ms": 20 });
+        if needs_secret {
+            inputs["api_token"] = json!(SECRET);
+        }
+        let body = json!({ "async": true, "inputs": inputs });
         let (run_id, at_crash) = crash_mid_stream(&path, &world, body, Duration::from_millis(crash_ms), true);
         let store = graphrt_gateway::store::SqliteStore::open(&path).unwrap();
         let checkpoint = store.load_snapshot(&run_id).await.unwrap().is_some();
+        // I6: the request is stored for the restart, its secret never.
+        let request = store.load_request(&run_id).await.unwrap().unwrap_or_default();
+        violations.check(request.contains("\"delay_ms\"") && !request.contains(SECRET), || {
+            format!("I6 seed {seed}: stored request `{request}`")
+        });
         let second = start_gateway(Options { store, world, url_provider: true, ..Options::default() }).await;
         second.gateway.recover().await.unwrap();
         let record = second.wait_settled(&run_id).await;
         let lost = record["error_type"] == "owner_lost";
+        let interrupted = !at_crash.is_terminal();
         if lost {
-            lost_without_checkpoint += 1;
-        } else if checkpoint && at_crash == RunStatus::Running {
-            resumed += 1;
+            credentials_required += 1;
+        } else if interrupted && checkpoint {
+            from_checkpoint += 1;
+        } else if interrupted {
+            from_request += 1;
         }
         violations.check(record["status"] == "succeeded" || lost, || {
             format!("I1 seed {seed} ({mode}, crash {crash_ms} ms, {at_crash:?}): {record}")
         });
-        violations.check(!lost || (!checkpoint && at_crash == RunStatus::Running), || {
-            format!("I1 seed {seed}: owner_lost although a checkpoint existed: {record}")
+        violations.check(lost == (needs_secret && interrupted), || {
+            format!("I1 seed {seed}: owner_lost only for an interrupted run that needs a secret: {record}")
         });
-        violations
-            .check(!lost || record["error"].as_str().is_some_and(|error| error.contains("no checkpoint")), || {
-                format!("I1 seed {seed}: owner_lost without its reason: {record}")
-            });
+        violations.check(
+            !lost || record["error"].as_str().is_some_and(|error| error.contains("credentials_required: ")),
+            || format!("I1 seed {seed}: owner_lost without its reason: {record}"),
+        );
         let stored = second.gateway.store.get(&run_id).await.unwrap().unwrap();
         let events = second.gateway.store.events(&run_id, 0).await.unwrap();
         check_events(&mut violations, &run_id, &events, stored.event_count);
@@ -348,7 +368,7 @@ async fn a_gateway_crash_on_a_url_platform_never_loses_a_run_silently() {
         let _cleanup = std::fs::remove_dir_all(&dir);
     }
     println!(
-        "crash simulation: {seeds} seeds ({resumed} resumed from a checkpoint, {lost_without_checkpoint} without one), {} violations",
+        "crash simulation: {seeds} seeds ({from_checkpoint} resumed from a checkpoint, {from_request} restarted from the stored request, {credentials_required} credentials_required), {} violations",
         violations.0.len()
     );
     assert!(violations.0.is_empty(), "{} invariant violations:\n{}", violations.0.len(), violations.0.join("\n"));
