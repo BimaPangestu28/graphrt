@@ -7,8 +7,8 @@
 //! ```
 //!
 //! It authenticates from the kubeconfig (kind uses a client certificate and an
-//! inline CA), deploys a tiny HTTP server (busybox `httpd` in `alpine:3.22`
-//! serving `/healthz`) with the deploy driver, then checks wake latency from
+//! inline CA), deploys a tiny HTTP server (a busybox `nc` loop in `alpine:3.22`
+//! answering `200 ok`) with the deploy driver, then checks wake latency from
 //! zero, scale-in victim selection with `pod-deletion-cost` and readiness
 //! tracking. Namespace: `GRAPHRT_K8S_E2E_NAMESPACE` (default `default`).
 
@@ -28,7 +28,7 @@ fn spec() -> DeploymentSpec {
         command: vec![
             "sh".into(),
             "-c".into(),
-            "mkdir -p /tmp/www && echo ok > /tmp/www/healthz && exec httpd -f -p 8080 -h /tmp/www".into(),
+            "trap 'exit 0' TERM; while true; do printf 'HTTP/1.0 200 OK\\r\\ncontent-length: 2\\r\\n\\r\\nok' | nc -l -p 8080 >/dev/null; done".into(),
         ],
         env: Default::default(),
         secrets: vec![],

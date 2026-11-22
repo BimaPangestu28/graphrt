@@ -22,6 +22,18 @@ releases may contain breaking changes; they are called out under **Changed**.
   shared provider HTTP layer (token bucket per provider API, jittered retry,
   token cache with one refresh on 401) and the C1–C13 provider conformance
   harness with a scripted fake HTTP server. No user-visible change yet.
+- `graphrt-provider-k8s` (internal crate): the Kubernetes provider of the
+  upcoming gateway, for self-hosted clusters, kind/k3s, GKE, EKS and AKS.
+  Scales a version's Deployment 0↔N through the `scale` subresource
+  (compare-and-swap, singleflight per version), picks the released replica
+  as the scale-in victim with `pod-deletion-cost`, tracks readiness from
+  EndpointSlice watches, and server-side applies Deployment + Service with
+  Secret references only. Cluster auth: in-cluster service account, kubeconfig
+  token / token file / client certificate / exec plugins, and a `TokenSource`
+  hook for EKS, GKE and AKS tokens. Minimal REST on the shared provider HTTP
+  layer, no `kube` / `k8s-openapi`. Passes the shared C1–C13 harness against an
+  emulated API server and an opt-in kind test. See
+  [docs/kubernetes-provider.md](docs/kubernetes-provider.md).
 - Live provider test matrix: `crates/graphrt-llm/tests/live_providers.rs` sends
   tiny streamed chat and tool-call round-trip requests to OpenAI, Anthropic,
   Gemini and Bedrock and a typed question to TypeSafe (opt-in with
