@@ -299,6 +299,18 @@ fn stored_event(data: &str) -> StoredEvent {
         .unwrap_or_else(|_| serde_json::value::RawValue::NULL.to_owned())
 }
 
+/// Milliseconds after which an execution must be preempted on a platform
+/// with a request cap and a grace period: `cap - min(60 s, cap / 4)`
+/// (3600 s → 3540 s, 240 s → 180 s). `None` without a cap, or when the
+/// platform gives no grace (Lambda: it fails with `platform_timeout` instead).
+pub fn planned_preemption_ms(capabilities: &graphrt_provider_api::Capabilities) -> Option<u64> {
+    let cap_ms = capabilities.max_request_secs?.saturating_mul(1000);
+    if !capabilities.can_preempt() || cap_ms == 0 {
+        return None;
+    }
+    Some(cap_ms - (cap_ms / 4).min(60_000))
+}
+
 /// What ended one execution.
 enum Outcome {
     /// A terminal or paused event (the full event, snapshot included).
@@ -542,6 +554,12 @@ impl Gateway {
             body.insert("fingerprint".into(), Json::from(version.info.fingerprint.clone()));
         }
         body.insert("deployment_version".into(), Json::from(version.info.version.clone()));
+        // Planned preemption before the platform's request cap (Cloud Run 60 min,
+        // ACA standard ingress 240 s): the agent pauses the run itself in time
+        // and the gateway re-dispatches it, instead of the platform killing it.
+        if let Some(after_ms) = planned_preemption_ms(version.pool.capabilities()) {
+            body.insert("preempt_after_ms".into(), Json::from(after_ms));
+        }
         body.insert("event_index".into(), Json::from(record.event_count));
         if let Some(resume) = resume {
             let mut resume = resume.clone();
@@ -1061,5 +1079,32 @@ impl Gateway {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod preemption_tests {
+    use graphrt_provider_api::{Addressing, Capabilities, Scaler};
+
+    fn caps(max_request_secs: Option<u64>, max_grace_secs: u64) -> Capabilities {
+        Capabilities {
+            addressing: Addressing::Url,
+            scaler: Scaler::Platform,
+            max_request_secs,
+            idle_timeout_secs: None,
+            max_grace_secs,
+            background_cpu: true,
+            supports_suspend: false,
+            wake_p95_target_ms: 1000,
+        }
+    }
+
+    #[test]
+    fn preempts_with_a_margin_before_the_cap() {
+        assert_eq!(super::planned_preemption_ms(&caps(Some(3600), 10)), Some(3_540_000));
+        assert_eq!(super::planned_preemption_ms(&caps(Some(240), 120)), Some(180_000));
+        assert_eq!(super::planned_preemption_ms(&caps(Some(2), 10)), Some(1_500));
+        assert_eq!(super::planned_preemption_ms(&caps(None, 30)), None);
+        assert_eq!(super::planned_preemption_ms(&caps(Some(840), 0)), None, "no grace: platform_timeout instead");
     }
 }

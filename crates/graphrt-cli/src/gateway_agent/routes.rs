@@ -136,6 +136,12 @@ pub struct InternalRunRequest {
     pub user_id: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Preempt the execution after this many milliseconds (the gateway sets it
+    /// shortly before the platform's request cap, e.g. Cloud Run's 60 minutes):
+    /// the run pauses with reason kind `external` / `request_cap` and the
+    /// gateway re-dispatches it, instead of the platform killing the request.
+    #[serde(default)]
+    pub preempt_after_ms: Option<u64>,
 }
 
 /// `resume` of [`InternalRunRequest`].
@@ -217,6 +223,7 @@ struct Prepared {
     input: RunInput,
     workflow: String,
     base_index: u64,
+    preempt_after_ms: Option<u64>,
 }
 
 fn prepare(state: &AppState, run_id: &str, epoch: u64, body: InternalRunRequest) -> Result<Prepared, Response> {
@@ -267,7 +274,13 @@ fn prepare(state: &AppState, run_id: &str, epoch: u64, body: InternalRunRequest)
         }
         input.resume = Some(from);
     }
-    Ok(Prepared { record, input, workflow: body.workflow, base_index: body.event_index })
+    Ok(Prepared {
+        record,
+        input,
+        workflow: body.workflow,
+        base_index: body.event_index,
+        preempt_after_ms: body.preempt_after_ms,
+    })
 }
 
 fn traceparent(headers: &axum::http::HeaderMap) -> Option<String> {
@@ -280,7 +293,7 @@ async fn launch_stream(
     prepared: Prepared,
     trace: Option<String>,
 ) -> Response {
-    let Prepared { record, input, workflow, base_index } = prepared;
+    let Prepared { record, input, workflow, base_index, preempt_after_ms } = prepared;
     let Some(served) = state.served_workflow(&workflow) else {
         return protocol_error(StatusCode::NOT_FOUND, "unknown_workflow", "unknown workflow");
     };
@@ -301,8 +314,28 @@ async fn launch_stream(
     };
     agent.begin(&run_id, epoch, base_index, seed, |id| state.active_run(id).is_some());
     let active = state.launch_run(&served.engine, record, input, trace.as_deref());
+    if let Some(after_ms) = preempt_after_ms {
+        arm_request_cap(Arc::clone(state), Arc::clone(agent), run_id.clone(), epoch, after_ms);
+    }
     // Attached once by `begin`; the stream below owns that attachment.
     stream_execution(state, agent, active, epoch, Cursor::ALL).unwrap_or_else(|refused| refused)
+}
+
+/// Reason data of a preemption before the platform's request cap.
+pub const REQUEST_CAP_REASON: &str = "request_cap";
+
+/// Preempts execution `epoch` of `run_id` after `after_ms` if it still runs
+/// here, so a capped platform request ends with a resumable snapshot.
+fn arm_request_cap(state: Arc<AppState>, agent: Arc<GatewayAgent>, run_id: String, epoch: u64, after_ms: u64) {
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(after_ms)).await;
+        let current = agent.execution(&run_id).map(|execution| execution.epoch);
+        if current == Some(epoch)
+            && let Some(run) = state.active_run(&run_id)
+        {
+            run.handle().preempt(REQUEST_CAP_REASON);
+        }
+    });
 }
 
 /// Attach one more stream to a running execution.

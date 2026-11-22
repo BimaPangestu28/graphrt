@@ -45,6 +45,8 @@ const DAY_MS: u64 = 24 * 3600 * 1000;
 struct Routed {
     inner: Arc<dyn Provider>,
     agent_url: String,
+    /// Shortens the platform's request cap (Cloud Run 3600 s, ACA 240 s) so C7 runs in seconds.
+    cap_secs: Option<u64>,
 }
 
 impl Routed {
@@ -60,7 +62,11 @@ impl Routed {
 
 impl Provider for Routed {
     fn capabilities(&self) -> Capabilities {
-        self.inner.capabilities()
+        let mut capabilities = self.inner.capabilities();
+        if let (Some(cap), Some(_)) = (self.cap_secs, capabilities.max_request_secs) {
+            capabilities.max_request_secs = Some(cap);
+        }
+        capabilities
     }
     fn wake<'a>(
         &'a self,
@@ -102,6 +108,7 @@ fn runs() -> String {
 
 /// The gateway-in-the-loop cases for one provider.
 struct Harness {
+    world: Arc<AgentWorld>,
     gateway: TestGateway,
     provider: Arc<dyn Provider>,
     reference: DeploymentRef,
@@ -173,7 +180,24 @@ impl Harness {
                 Err(format!("cap {cap} s without grace and no platform timeout seen"))
             }
             Some(cap) => {
-                Err(format!("planned preemption before the {cap} s request cap is not implemented in the gateway yet"))
+                // The run outlives the cap: preempted before it, then re-dispatched.
+                let inputs = json!({ "inputs": { "events": 12, "delay_ms": 250, "resume_events": 1 } });
+                let (_, record) = self.gateway.post(&runs(), inputs).await;
+                let dispatched: Vec<Option<u64>> = self.world.preempt_after.lock().unwrap().clone();
+                let expected = graphrt_gateway::supervisor::planned_preemption_ms(&capabilities);
+                if record["status"] != "succeeded" || record["outputs"]["executions"].as_u64() < Some(2) {
+                    return Err(format!("run past the {cap} s cap was not preempted and re-dispatched: {record}"));
+                }
+                if expected.is_none() || dispatched.last().copied().flatten() != expected {
+                    return Err(format!(
+                        "dispatch carried preempt_after_ms {:?}, expected {expected:?}",
+                        dispatched.last()
+                    ));
+                }
+                Ok(format!(
+                    "run past the {cap} s cap preempted at {} ms by the agent, re-dispatched, no platform kill",
+                    expected.unwrap_or(0)
+                ))
             }
         }
     }
@@ -274,7 +298,6 @@ async fn check(
     provider: Arc<dyn Provider>,
     target: &str,
     expects_platform_timeout: bool,
-    failing_by_design: &[CaseId],
 ) {
     let pool = graphrt_gateway::pool::PoolConfig {
         idle_timeout: Duration::from_millis(300),
@@ -283,15 +306,17 @@ async fn check(
     };
     let gateway = start_gateway(Options {
         pool,
-        world,
+        world: world.clone(),
         provider: Some(provider.clone()),
         target: target.to_owned(),
         ..Options::default()
     })
     .await;
     let reference = DeploymentRef::new(DEPLOYMENT, "v1", target);
-    let target =
-        Target { name: name.to_owned(), harness: Harness { gateway, provider, reference, expects_platform_timeout } };
+    let target = Target {
+        name: name.to_owned(),
+        harness: Harness { world, gateway, provider, reference, expects_platform_timeout },
+    };
     let config = ConformanceConfig {
         latency_samples: 5,
         poll_interval: Duration::from_millis(20),
@@ -301,16 +326,8 @@ async fn check(
         .await
         .unwrap_or_else(|_| panic!("{name}: conformance hung"));
     println!("{report}");
-    for result in &report.results {
-        let expected_failure = failing_by_design.contains(&result.id);
-        match (&result.outcome, expected_failure) {
-            (CaseOutcome::Failed(reason), false) => panic!("{name} {}: {reason}\n{report}", result.id),
-            (CaseOutcome::Failed(_), true) => {}
-            (_, true) => panic!("{name} {}: expected to fail (known gap), got {:?}", result.id, result.outcome),
-            _ => {}
-        }
-    }
-    for id in [CaseId::C3, CaseId::C6, CaseId::C11, CaseId::C12] {
+    report.assert_no_failures();
+    for id in [CaseId::C3, CaseId::C6, CaseId::C7, CaseId::C11, CaseId::C12] {
         assert!(matches!(report.outcome(id), Some(CaseOutcome::Passed(_))), "{name} {id}: {:?}", report.outcome(id));
     }
 }
@@ -344,8 +361,8 @@ async fn kubernetes_behind_the_gateway() {
     config.wake_timeout = Duration::from_secs(3);
     let client = KubeClient::new(&ClusterConfig::new(fake.url()), ClientOptions::default()).unwrap();
     let inner: Arc<dyn Provider> = Arc::new(K8sProvider::new(client, config));
-    let provider: Arc<dyn Provider> = Arc::new(Routed { inner, agent_url });
-    check("k8s (fake API server)", world, provider, "", false, &[]).await;
+    let provider: Arc<dyn Provider> = Arc::new(Routed { inner, agent_url, cap_secs: Some(2) });
+    check("k8s (fake API server)", world, provider, "", false).await;
     assert!(fake.scale_patches() > 0, "wakes went through the scale subresource");
 }
 
@@ -368,11 +385,11 @@ async fn cloud_run_behind_the_gateway() {
     let mut config = google.config();
     config.warm_window = Duration::ZERO;
     let inner = CloudRunProvider::new(config, google.metadata_auth()).unwrap();
-    let provider: Arc<dyn Provider> =
-        Arc::new(graphrt_gateway::cloud_run::CloudRunGatewayProvider::new(inner).unwrap());
+    let invoker: Arc<dyn Provider> = Arc::new(graphrt_gateway::cloud_run::CloudRunGatewayProvider::new(inner).unwrap());
+    // The service URL already is the agent; Routed only shortens the 3600 s cap to 2 s for C7.
+    let provider: Arc<dyn Provider> = Arc::new(Routed { inner: invoker, agent_url, cap_secs: Some(2) });
     let target = gcp_support::service_resource(DEPLOYMENT);
-    // C7 fails by design: planned preemption before Cloud Run's 3600 s cap is a known gap.
-    check("cloud run (fake Google APIs)", world.clone(), provider, &target, false, &[CaseId::C7]).await;
+    check("cloud run (fake Google APIs)", world.clone(), provider, &target, false).await;
     let invoked = world.bodies.lock().unwrap().len();
     assert!(invoked > 0, "runs reached the agent through the Cloud Run invoke path");
 }
@@ -408,8 +425,8 @@ async fn ecs_behind_the_gateway() {
         poll_interval: Duration::from_millis(10),
     };
     let inner: Arc<dyn Provider> = Arc::new(EcsProvider::new(fake.chain(), config).unwrap());
-    let provider: Arc<dyn Provider> = Arc::new(Routed { inner, agent_url });
-    check("ecs fargate (fake ECS API)", world, provider, "", false, &[]).await;
+    let provider: Arc<dyn Provider> = Arc::new(Routed { inner, agent_url, cap_secs: Some(2) });
+    check("ecs fargate (fake ECS API)", world, provider, "", false).await;
     assert!(fake.calls("RunTask") > 0);
 }
 
@@ -439,8 +456,8 @@ async fn fly_behind_the_gateway() {
     config.client_policy.requests_per_second = 10_000.0;
     config.client_policy.burst = 10_000;
     let inner: Arc<dyn Provider> = Arc::new(FlyProvider::new(config).unwrap());
-    let provider: Arc<dyn Provider> = Arc::new(Routed { inner, agent_url });
-    check("fly (fake Machines API)", world, provider, fly_support::APP, false, &[]).await;
+    let provider: Arc<dyn Provider> = Arc::new(Routed { inner, agent_url, cap_secs: Some(2) });
+    check("fly (fake Machines API)", world, provider, fly_support::APP, false).await;
 }
 
 /// A Lambda `InvokeWithResponseStream` endpoint that unwraps the Function URL
@@ -546,7 +563,7 @@ async fn lambda_behind_the_gateway() {
         buffering_threshold: Duration::from_secs(20),
     };
     let provider: Arc<dyn Provider> = Arc::new(LambdaProvider::new(credentials.chain(), config).unwrap());
-    check("lambda (fake InvokeWithResponseStream)", world.clone(), provider, "", true, &[]).await;
+    check("lambda (fake InvokeWithResponseStream)", world.clone(), provider, "", true).await;
     assert!(!world.bodies.lock().unwrap().is_empty(), "runs reached the agent through Provider::invoke");
 }
 
@@ -613,7 +630,7 @@ async fn azure_container_apps_behind_the_gateway() {
         .map(|label| (format!("shop---{label}.internal.fake-env.westeurope.azurecontainerapps.io"), address))
         .collect();
     let inner: Arc<dyn Provider> = Arc::new(AcaProvider::new(arm, config).unwrap());
-    let provider: Arc<dyn Provider> = Arc::new(Routed { inner, agent_url });
-    // C7 fails by design: standard ingress caps a request at 240 s and planned preemption is a known gap.
-    check("azure container apps (fake ARM)", world, provider, "shop", false, &[CaseId::C7]).await;
+    let provider: Arc<dyn Provider> = Arc::new(Routed { inner, agent_url, cap_secs: Some(2) });
+    // Standard ingress caps a request at 240 s, shortened to 2 s by Routed for C7.
+    check("azure container apps (fake ARM)", world, provider, "shop", false).await;
 }
