@@ -232,79 +232,105 @@ pub(crate) fn docx(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
     let xml =
         zip.read_text("word/document.xml")?.ok_or_else(|| DocError::malformed("docx", "missing word/document.xml"))?;
     let mut reader = Reader::from_str(&xml);
-    let mut out = String::new();
-    let mut paragraph = String::new();
-    let mut in_text = false;
-    // Table state: depth > 0 while inside a table; rows collect cells.
-    let mut table_depth = 0usize;
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    let mut row: Vec<String> = Vec::new();
-    let mut cell = String::new();
+    let mut body = DocxBody::default();
     loop {
         match reader.read_event().map_err(xml_error)? {
-            Event::Start(e) => match e.local_name().as_ref() {
-                "t" => in_text = true,
-                "tbl" => {
-                    table_depth += 1;
-                    if table_depth == 1 {
-                        flush_paragraph(&mut out, &mut paragraph);
-                        rows.clear();
-                    }
-                }
-                "tr" if table_depth == 1 => row.clear(),
-                "tc" if table_depth == 1 => cell.clear(),
-                _ => {}
-            },
-            Event::Empty(e) => {
-                let target = if table_depth > 0 { &mut cell } else { &mut paragraph };
-                match e.local_name().as_ref() {
-                    "tab" => target.push('\t'),
-                    "br" | "cr" => target.push('\n'),
-                    _ => {}
-                }
-            }
-            Event::Text(t) if in_text => {
-                let target = if table_depth > 0 { &mut cell } else { &mut paragraph };
-                target.push_str(&t.xml10_content());
-            }
-            Event::GeneralRef(r) if in_text => {
-                let target = if table_depth > 0 { &mut cell } else { &mut paragraph };
-                target.push_str(&entity_text(&r));
-            }
-            Event::End(e) => match e.local_name().as_ref() {
-                "t" => in_text = false,
-                "p" => {
-                    if table_depth > 0 {
-                        if !cell.is_empty() && !cell.ends_with('\n') {
-                            cell.push('\n');
-                        }
-                    } else {
-                        flush_paragraph(&mut out, &mut paragraph);
-                    }
-                }
-                "tc" if table_depth == 1 => row.push(cell.trim().to_owned()),
-                "tr" if table_depth == 1 => rows.push(std::mem::take(&mut row)),
-                "tbl" => {
-                    table_depth = table_depth.saturating_sub(1);
-                    if table_depth == 0 {
-                        let table = crate::text::render_table(&rows, opts)?;
-                        if !table.is_empty() {
-                            push_block(&mut out, &table);
-                        }
-                        rows.clear();
-                    }
-                }
-                _ => {}
-            },
+            Event::Start(e) => body.open(e.local_name().as_ref()),
+            Event::Empty(e) => body.empty(e.local_name().as_ref()),
+            Event::Text(t) if body.in_text => body.target().push_str(&t.xml10_content()),
+            Event::GeneralRef(r) if body.in_text => body.target().push_str(&entity_text(&r)),
+            Event::End(e) => body.close(e.local_name().as_ref(), opts)?,
             Event::Eof => break,
             _ => {}
         }
-        if out.len() > opts.max_output_chars.saturating_mul(4) {
+        // Stop parsing well past the output cap; the caller truncates.
+        if body.out.len() > opts.max_output_chars.saturating_mul(4) {
             break;
         }
     }
-    flush_paragraph(&mut out, &mut paragraph);
-    Ok(out)
+    flush_paragraph(&mut body.out, &mut body.paragraph);
+    Ok(body.out)
+}
+
+/// Text collected while walking `word/document.xml`. Outside tables text goes
+/// to the current paragraph; inside a table, to the current cell. Nested tables
+/// are flattened into the cell of the outermost one.
+#[derive(Default)]
+struct DocxBody {
+    out: String,
+    paragraph: String,
+    /// Inside a `<w:t>` text run.
+    in_text: bool,
+    /// Table nesting depth; 0 outside tables.
+    table_depth: usize,
+    rows: Vec<Vec<String>>,
+    row: Vec<String>,
+    cell: String,
+}
+
+impl DocxBody {
+    /// Where text, tabs and breaks go right now.
+    fn target(&mut self) -> &mut String {
+        if self.table_depth > 0 { &mut self.cell } else { &mut self.paragraph }
+    }
+
+    fn open(&mut self, name: &str) {
+        match name {
+            "t" => self.in_text = true,
+            "tbl" => {
+                self.table_depth += 1;
+                if self.table_depth == 1 {
+                    flush_paragraph(&mut self.out, &mut self.paragraph);
+                    self.rows.clear();
+                }
+            }
+            "tr" if self.table_depth == 1 => self.row.clear(),
+            "tc" if self.table_depth == 1 => self.cell.clear(),
+            _ => {}
+        }
+    }
+
+    fn empty(&mut self, name: &str) {
+        match name {
+            "tab" => self.target().push('\t'),
+            "br" | "cr" => self.target().push('\n'),
+            _ => {}
+        }
+    }
+
+    fn close(&mut self, name: &str, opts: &Options) -> Result<(), DocError> {
+        match name {
+            "t" => self.in_text = false,
+            "p" => self.end_paragraph(),
+            "tc" if self.table_depth == 1 => self.row.push(self.cell.trim().to_owned()),
+            "tr" if self.table_depth == 1 => self.rows.push(std::mem::take(&mut self.row)),
+            "tbl" => self.end_table(opts)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// A paragraph inside a cell is a line of that cell; outside, a block of the output.
+    fn end_paragraph(&mut self) {
+        if self.table_depth == 0 {
+            flush_paragraph(&mut self.out, &mut self.paragraph);
+        } else if !self.cell.is_empty() && !self.cell.ends_with('\n') {
+            self.cell.push('\n');
+        }
+    }
+
+    fn end_table(&mut self, opts: &Options) -> Result<(), DocError> {
+        self.table_depth = self.table_depth.saturating_sub(1);
+        if self.table_depth > 0 {
+            return Ok(());
+        }
+        let table = crate::text::render_table(&self.rows, opts)?;
+        if !table.is_empty() {
+            push_block(&mut self.out, &table);
+        }
+        self.rows.clear();
+        Ok(())
+    }
 }
 
 fn flush_paragraph(out: &mut String, paragraph: &mut String) {
