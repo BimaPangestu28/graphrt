@@ -310,7 +310,7 @@ pub struct Options {
     pub world: Arc<AgentWorld>,
     pub pool: PoolConfig,
     pub reclaim_grace: Duration,
-    pub configure_app: Option<Box<dyn FnOnce(&mut App)>>,
+    pub configure_app: Option<Box<dyn FnOnce(&mut App) + Send>>,
 }
 
 impl Default for Options {
