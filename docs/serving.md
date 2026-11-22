@@ -18,6 +18,8 @@ graphrt serve examples/ --store ./runs --store-ttl-days 30
 | `--store-inputs` | Keep each run's inputs (secrets masked) in its record; see [Run context and evaluation data](#run-context-and-evaluation-data). |
 | `--max-runs <n>` | In-memory store only: keep at most `n` runs (default 1000, `0` = unlimited). The oldest finished runs are dropped first; running and paused runs are always kept. |
 | `--max-active-runs <n>` | At most `n` runs execute at once (default 256, `0` = unlimited); further starts and resumes get `429 Too Many Requests`. Paused runs do not count. |
+| `--drain-timeout <d>` | On SIGTERM / SIGINT, pause or preempt active runs and exit within `d` (default `4s`; `500ms`, `30s`, `2m`). See [Shutdown and restarts](#shutdown-and-restarts). |
+| `--no-resume-drained` | Leave async and webhook runs drained by a previous shutdown paused instead of resuming them at startup. |
 
 ### Small devices
 
@@ -57,11 +59,73 @@ Nothing secret is written: event values are serialized with secrets masked, and
 snapshots never contain secret plaintext. Secrets other than `env.*` must be
 passed again on resume (`secrets` in the resume body).
 
-### Restarts
+### Shutdown and restarts
 
-On startup the server marks runs that were `running` as `failed` with the error
-`interrupted by restart` (a run's in-flight work cannot be recovered). Paused
-runs stay paused and can be resumed.
+On SIGTERM or SIGINT (Ctrl-C) the server **drains** before it exits, within
+`--drain-timeout` (default `4s`):
+
+1. New run starts, resumes and webhook deliveries get `503 Service Unavailable`
+   with `Retry-After: 5`. `GET /readyz` answers `503 draining` so a load
+   balancer stops routing here; `GET /healthz` stays `200`.
+2. Every active run (async, streaming and blocking) is paused: no further node
+   starts, nodes already running may finish.
+3. Shortly before the deadline (a reserve of a quarter of the timeout, 0.5–2 s,
+   plus 10 ms per active run), runs that are still busy are **preempted**:
+   their in-flight nodes are cancelled and saved as pending.
+4. Once every run stored its final state, open connections close and the
+   process exits `0`. A second signal preempts at once.
+
+Drained runs end `paused`, never `failed`, with a pause reason of kind
+`drained`:
+
+```json
+{ "kind": "drained", "node_id": null, "frame": "",
+  "data": { "cause": "SIGTERM", "resume": "auto" } }
+```
+
+- Streaming callers receive `run_paused` (with the snapshot) and blocking
+  callers `"status": "paused"`; `data.resume` is `client`: resume them with
+  `POST /v1/runs/{id}/resume` like any paused run, on this server after a
+  restart or on another replica sharing the store.
+- Async and webhook runs (`data.resume: "auto"`) are resumed by the next server
+  that starts on the same store, in the background after it listens. A run stays
+  paused for an API resume instead when its workflow changed (fingerprint), when
+  it needs secrets only its caller can supply (secret-typed start inputs,
+  `--input-header` values: the snapshot holds them redacted), or with
+  `--no-resume-drained`. Webhook completion callbacks of a drained run are not
+  sent again after the restart.
+
+**Preempted nodes run again (at-least-once).** A cancelled node is restored as
+pending with the same `exec_id` and attempt number, so on resume it executes a
+second time: an LLM call is repeated, an `http-request` is sent again. Nodes
+with side effects should be idempotent on `sys.run_id` plus the node's
+`exec_id` (the `node_started` event carries it). Nodes that finished before the
+preempt are not repeated, and container bodies (iteration, loop) resume at the
+item that was running. Pausing first and preempting only near the deadline keeps
+re-execution to the runs that could not finish in time; raise `--drain-timeout`
+(and the platform's grace period, see [deploy.md](deploy.md#graceful-shutdown))
+to avoid it for long nodes.
+
+Graphrt handles both signals itself, so a drain also works as PID 1 of a
+container without an init process (the kernel ignores SIGTERM for a PID 1
+without a handler).
+
+On startup the server marks runs that were still `running` as `failed` with the
+error `interrupted by restart`: after a SIGKILL, a crash, or a node that kept
+running past the drain deadline (blocking code cannot be cancelled). The server
+logs a summary of each drain (`drained 10 run(s) in 1.42 s: 7 paused, 3
+completed, 0 failed, 0 unfinished`) and warns about unfinished runs.
+
+### Event batches and store errors
+
+Events are written to the store in batches of 32, or 250 ms after the first
+event of a batch, whichever comes first, and at every terminal event: a replay
+(`/events`) or another replica reading the same store trails a live run by at
+most a quarter second. A store write that fails with an I/O error is retried
+five times with doubling delays (25 ms to 400 ms, about 0.8 s in total). When a
+paused run's snapshot still cannot be stored, its record keeps `status: paused`
+with `error_type: store_unavailable` (it cannot be resumed by id; a client that
+holds the snapshot from `run_paused` can still resume it).
 
 ### Keep-alive after early rejections
 
@@ -315,8 +379,11 @@ turn it on to build evaluation datasets from production runs.
 `key` is what to use in the resume `inputs`: the node id, or `<frame>/<node_id>`
 for a node paused inside an iteration or loop.
 
-A listener that falls behind the live tail receives a `lagged` event with the
-number of skipped events; the complete history stays available from the store.
+A listener that falls behind the live tail (a slow client of a fast run) is
+refilled from the run's in-memory feed, so it skips nothing. Only when it falls
+behind further than the feed keeps (the first 10,000 events of a run) does it
+receive a `lagged` event with the number of events it missed; those stay
+available from the store (`?from=N`). This applies to streaming run starts too.
 
 ## Scores and feedback
 

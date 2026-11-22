@@ -571,6 +571,17 @@ pub struct ServeArgs {
     /// requests get `429 Too Many Requests` (0 = unlimited). Paused runs do not count.
     #[arg(long, value_name = "N", default_value_t = crate::serve::DEFAULT_MAX_ACTIVE_RUNS)]
     pub max_active_runs: usize,
+    /// On SIGTERM / SIGINT, finish within this long: new runs get `503`, active runs
+    /// pause (in-flight nodes are cancelled once the deadline nears and run again on
+    /// resume), their state is stored, then the process exits. Set it a few seconds
+    /// below the platform's grace period (Kubernetes `terminationGracePeriodSeconds`,
+    /// Fly `kill_timeout`, ...). Accepts `500ms`, `4s`, `2m` or plain seconds.
+    #[arg(long, value_name = "DURATION", default_value = "4s", value_parser = crate::drain::parse_duration)]
+    pub drain_timeout: std::time::Duration,
+    /// Do not resume, at startup, the async and webhook runs a previous shutdown
+    /// drained (they stay paused until resumed over the API).
+    #[arg(long)]
+    pub no_resume_drained: bool,
     /// Map a request header to a start input as `INPUT=HEADER` (e.g.
     /// `user_jwt=X-User-Authorization`), for per-user credentials such as a JWT. Applies
     /// to workflows whose start node declares the input, which must be `type: secret`; a

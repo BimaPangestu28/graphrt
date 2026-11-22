@@ -109,6 +109,12 @@ Each run event is one SSE message; `response` events carry the ordered answer
 text token by token, from `llm` and `agent` nodes alike (see
 [docs/serving.md](docs/serving.md#streaming-sse)).
 
+On SIGTERM or SIGINT the server drains: new runs get `503`, active runs pause
+and are stored (nodes still running near `--drain-timeout` are cancelled and
+run again on resume), then it exits, also as PID 1 of a container. Async runs
+resume when the next server starts on the same store; see the grace periods
+per platform in [docs/deploy.md](docs/deploy.md#graceful-shutdown).
+
 Per-user credentials (a Supabase or OAuth JWT from a mobile app) can travel in
 their own header and reach the workflow as a masked secret input, while
 `Authorization` stays the server's API key:

@@ -46,6 +46,17 @@ releases may contain breaking changes; they are called out under **Changed**.
   with `user` in the body.
 
 ### Changed
+- `graphrt serve` writes a run's events to the store every 32 events **or**
+  250 ms after the first unwritten one (before: only every 32 events), so
+  replays trail live runs by at most a quarter second. Store writes failing
+  with an I/O error are retried five times with backoff (about 0.8 s); a
+  paused run whose snapshot cannot be stored gets `error_type:
+  store_unavailable` instead of only a log line.
+- A streaming caller or `/events` listener that falls behind a fast run is
+  refilled from the run's in-memory feed instead of silently skipping events
+  (streaming starts skipped them before); only events beyond the feed's first
+  10,000 are reported with a `lagged` event.
+- The example Fly config sets `kill_signal` and `kill_timeout`.
 - The `eval` and `online-eval` cargo features of `graphrt-cli` are no longer
   on by default (`online-eval` needs `eval`), so `cargo install graphrt-cli`
   and `docker build .` are smaller. Enable them with
@@ -88,6 +99,28 @@ releases may contain breaking changes; they are called out under **Changed**.
   layer, no `kube` / `k8s-openapi`. Passes the shared C1–C13 harness against an
   emulated API server and an opt-in kind test. See
   [docs/kubernetes-provider.md](docs/kubernetes-provider.md).
+- Graceful shutdown for `graphrt serve`: SIGTERM and SIGINT start a drain that
+  refuses new runs (`503` + `Retry-After`, `GET /readyz` turns `503
+  draining`), pauses every active run (async, streaming and blocking),
+  preempts the ones still busy shortly before `--drain-timeout` (default
+  `4s`), stores them and exits `0`. Drained runs end `paused` with reason kind
+  `drained`, never `failed`; async and webhook runs are resumed by the next
+  server on the same store (`--no-resume-drained` to opt out). Before, a
+  SIGTERM was ignored when graphrt ran as PID 1 of a container (the image has
+  no init) and every active run was lost to the SIGKILL. See
+  [docs/serving.md](docs/serving.md#shutdown-and-restarts) and the grace
+  periods per platform in [docs/deploy.md](docs/deploy.md#graceful-shutdown).
+- `RunHandle::preempt` / `preempt_with` and `RunHandle::pause_with` in
+  `graphrt-core`: a preempt cancels in-flight nodes and pauses at once; a
+  cancelled node is saved as pending with its `exec_id` and runs again on
+  resume (at-least-once per node), and container bodies resume at the item
+  that was running.
+- `GET /readyz` readiness endpoint.
+- CI gate `scripts/budget-gate.py` with budgets in `bench/budgets.toml`: binary
+  size and idle RSS of the `serve` and `serve,llm,plugins` builds,
+  exec→`/healthz` p95, and banned crates (cloud SDKs, Kubernetes clients, `h2`),
+  run as the `budgets` job for Linux musl x86_64 and aarch64. Baseline in
+  `bench/baseline/`.
 - Live provider test matrix: `crates/graphrt-llm/tests/live_providers.rs` sends
   tiny streamed chat and tool-call round-trip requests to OpenAI, Anthropic,
   Gemini and Bedrock and a typed question to TypeSafe (opt-in with
