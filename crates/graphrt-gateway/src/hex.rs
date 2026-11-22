@@ -25,6 +25,26 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     encode(&sha2::Sha256::digest(bytes))
 }
 
+/// HMAC-SHA256 (RFC 2104) of the concatenated `parts` under `key` of any length.
+pub fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    use sha2::Digest as _;
+    let mut block = [0u8; 64];
+    if key.len() > block.len() {
+        block.iter_mut().zip(sha2::Sha256::digest(key)).for_each(|(slot, byte)| *slot = byte);
+    } else {
+        block.iter_mut().zip(key).for_each(|(slot, byte)| *slot = *byte);
+    }
+    let mut inner = sha2::Sha256::new();
+    inner.update(block.map(|byte| byte ^ 0x36));
+    for part in parts {
+        inner.update(part);
+    }
+    let mut outer = sha2::Sha256::new();
+    outer.update(block.map(|byte| byte ^ 0x5c));
+    outer.update(inner.finalize());
+    outer.finalize().into()
+}
+
 /// Compares two byte strings in time independent of where they differ.
 pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     left.len() == right.len() && left.iter().zip(right).fold(0u8, |difference, (a, b)| difference | (a ^ b)) == 0
@@ -32,6 +52,12 @@ pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hmac_rfc4231_case_2() {
+        let mac = super::hmac_sha256(b"Jefe", &[b"what do ya want ", b"for nothing?"]);
+        assert_eq!(super::encode(&mac), "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+    }
+
     #[test]
     fn round_trips() {
         assert_eq!(super::encode(&[0, 171, 255]), "00abff");

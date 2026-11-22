@@ -23,3 +23,9 @@ pub mod agent_client;
 pub mod deployment;
 pub mod metrics;
 pub mod sse;
+pub mod supervisor;
+pub mod outbox;
+pub mod webhook;
+#[cfg(feature = "gw-local")]
+pub mod local;
+pub mod scheduler;
