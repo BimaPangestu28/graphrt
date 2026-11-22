@@ -10,8 +10,10 @@ EKS and AKS. Only cluster authentication differs between them.
 > `graphrt gateway` binary that loads it (cargo feature `provider-k8s`) lands
 > with the gateway MVP. Until then the crate is a library.
 
-It is hand-rolled REST over the reqwest + rustls stack graphrt already links:
-no `kube`, no `k8s-openapi`, no HTTP/2.
+It implements the `Provider` and `DeployDriver` traits of
+`graphrt-provider-api` and talks to the API server through the shared
+`ProviderHttp` layer: hand-rolled REST over the reqwest + rustls stack graphrt
+already links, no `kube`, no `k8s-openapi`, no HTTP/2.
 
 ## How it maps onto Kubernetes
 
@@ -24,7 +26,9 @@ no `kube`, no `k8s-openapi`, no HTTP/2.
 
 Every deployment version is its own Deployment and Service named
 `<deployment>-<version>` (sanitised to a DNS label, with a hash suffix when
-it had to change). Versions are immutable, so a paused run can still be
+it had to change). The deploy driver returns it as the version's `target`,
+`<namespace>/<name>`; the provider refuses targets outside its configured
+namespace before sending anything. Versions are immutable, so a paused run can still be
 resumed on the version it started on while that version is kept.
 
 Details that matter in production:
@@ -37,12 +41,14 @@ Details that matter in production:
 - **Victim order.** The ReplicaSet controller removes pods that are not ready
   before it looks at deletion cost. The gateway only routes to ready pods, so
   the pod removed instead has no runs on it.
-- **Errors are classified** for the gateway: an unschedulable pod at the wake
-  deadline is `Capacity` (fall back or stop), a bad image is `Fatal`, 429 is
-  `RateLimited` (with `Retry-After`), 401/403 is `Auth`, 404 `NotFound`, 409
-  and 5xx `Transient`.
+- **Errors are classified** for the gateway: at the wake deadline, an
+  unschedulable pod or a ResourceQuota rejection (the Deployment's
+  `ReplicaFailure` condition) is `Capacity` (fall back or stop), a bad image is
+  `Fatal`. 429 is `RateLimited` (with `Retry-After`), 401/403 is `Auth` (a 403
+  for an exceeded quota is `Capacity`), 404 `NotFound`, 5xx `Transient`. A
+  409 on the scale subresource re-reads and retries the compare-and-swap.
 - **Retries.** 429, 5xx and transport errors are retried up to four times with
-  full-jitter backoff (100 ms doubling, capped at 2 s; a `Retry-After` is
+  jittered backoff (100 ms doubling, capped at 2 s; a `Retry-After` is
   respected). A token bucket (20 requests/s, burst 40) protects the API
   server during wake storms.
 
@@ -51,18 +57,20 @@ Details that matter in production:
 `graphrt deploy` uses the deploy driver with deploy-time credentials. It
 server-side applies (field manager `graphrt-deploy`):
 
-- a **Deployment** with the agent container (`args`, port `http`), a 1 s
+- a **Deployment** with the agent container (`command`, port `http`,
+  8080 unless `provider_settings.port` says otherwise), a 1 s
   `/healthz` readiness probe (keeps a cold wake within about 3 s),
   `terminationGracePeriodSeconds` (default 120), no service account token
-  mounted (the agent never talks to the API server) and `replicas: 0` for a
-  new version. Re-applying a version keeps its current replica count, so a
+  mounted (the agent never talks to the API server), the workflow fingerprint
+  as an annotation, and `min_replicas` (normally 0) for a new version. Re-applying a version keeps its current replica count, so a
   deploy never fights the gateway's scaling.
 - a ClusterIP **Service** selecting the version's pods. Its EndpointSlices are
   what the gateway watches.
-- **Secret references only.** Secrets are referenced through `envFrom`
-  (`secretRef`) or `env[].valueFrom.secretKeyRef`. Their values are written to
-  a Kubernetes Secret at deploy time (`apply_secret`) and never pass through
-  the gateway.
+- **Secret references only.** Each `SecretRef` becomes an
+  `env[].valueFrom.secretKeyRef`; its `reference` is `<secret>/<key>`, or
+  `<secret>` when the key is named like the env var. Values are written to a
+  Kubernetes Secret at deploy time (`apply_secret`) and never pass through the
+  gateway.
 
 ## RBAC
 
@@ -74,6 +82,9 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata: { name: graphrt-gateway, namespace: agents }
 rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get"]          # status only, to diagnose a failed wake
   - apiGroups: ["apps"]
     resources: ["deployments/scale"]
     verbs: ["get", "patch"]
@@ -110,15 +121,17 @@ Resolved in the order client-go uses:
    `tls-server-name`, `proxy-url`, basic auth, and the removed `auth-provider`
    plugins (switch to their exec plugin).
 
-Tokens are cached until 5 minutes before they expire (covers ±5 minutes of
-clock skew) and refreshed once on a 401. They are never logged: credentials
+Tokens are cached by the shared `TokenCache` until 5 minutes before they
+expire (covers ±5 minutes of clock skew) and refreshed once on a 401. They are never logged: credentials
 are held in a type whose `Debug` output is redacted, and redirects are not
 followed.
 
 ### GKE, EKS and AKS from outside the cluster
 
 Exec plugins work today. Built-in cluster tokens without a plugin, using the
-gateway's own cloud identity, plug into the same `TokenSource` hook:
+gateway's own cloud identity, plug into the same hook: any
+`graphrt_provider_api::http::TokenSource`, set with
+`ClusterConfig::with_token_source` next to the cluster's endpoint and CA:
 
 | Cluster | Token | Built on |
 | --- | --- | --- |
@@ -155,27 +168,33 @@ built-in scaler is the supported path.
 
 ## Conformance
 
-`cargo test -p graphrt-provider-k8s` runs the provider conformance checks
-(plan §7) against an in-process fake API server. The fake models scale CAS,
-the ReplicaSet victim order, EndpointSlice watches with `410 Gone`, server-side
-apply, token checks, fault injection and capacity limits.
+`cargo test -p graphrt-provider-k8s` runs:
+
+- the shared suite of `graphrt-provider-api` (`run_conformance`, C1–C13)
+  against an emulated cluster behind the harness's scripted fake server, with
+  its fault injection (401, 429, 5xx, 400) and request scan;
+- deeper Kubernetes checks against a streaming fake API server that models
+  scale CAS, the ReplicaSet victim order, EndpointSlice watches with
+  `410 Gone`, server-side apply, token checks, capacity (unschedulable) and
+  ResourceQuota (`ReplicaFailure`).
 
 | Check | What is verified |
 | --- | --- |
 | C1 | 20 concurrent wakes from zero: one scale patch, exactly 1 replica |
 | C2 | 50 wakes from zero: the provider's own latency on top of pod readiness |
 | C4 | scale-in removes only the released replica; idempotent; 409 conflicts retried |
-| C5 | a pod killed outside the gateway is seen by the readiness watch (≈1 ms on the fake), also across a `410 Gone` relist |
-| C8 | a rejected token is refreshed exactly once; revoked credentials give `Auth`, no token in errors or `Debug` |
-| C9 | 503/429/500 retried with backoff; persistent errors classified; unschedulable is `Capacity` |
+| C5 | a pod killed outside the gateway is seen by the readiness watch, also across a `410 Gone` relist |
+| C8 | a rejected token is refreshed exactly once; revoked credentials give `Auth`; no token in errors, `Debug` or requests |
+| C9 | 503/429/500 retried with backoff, 400/403 not retried; unschedulable and exceeded quota are `Capacity` |
 | C10 | the applied Deployment carries Secret references only; re-deploy keeps replicas |
 | C12 | `list` reports every replica for reconciliation; releasing from the list reaches zero |
 
 C3, C6, C7 and C11 exercise the gateway's run supervisor (drain, long streams,
-request caps, the version pool) and run in the gateway's harness. C13 is the
-binary-size gate.
+request caps, the version pool) and are reported as skipped until the
+gateway's harness exists. C13 is the binary-size gate.
 
-Against a real cluster (opt-in):
+Against a real cluster (opt-in; kind uses a client certificate and an inline
+CA from the kubeconfig):
 
 ```sh
 kind create cluster --name graphrt-k8s

@@ -76,6 +76,18 @@ releases may contain breaking changes; they are called out under **Changed**.
   until retired) and Secret Manager references. Conformance C1–C12 against fake Google APIs; see
   [docs/gateway-cloud-run.md](docs/gateway-cloud-run.md) for IAM roles and what
   still needs a real project.
+- `graphrt-provider-k8s` (internal crate): the Kubernetes provider of the
+  upcoming gateway, for self-hosted clusters, kind/k3s, GKE, EKS and AKS.
+  Scales a version's Deployment 0↔N through the `scale` subresource
+  (compare-and-swap, singleflight per version), picks the released replica
+  as the scale-in victim with `pod-deletion-cost`, tracks readiness from
+  EndpointSlice watches, and server-side applies Deployment + Service with
+  Secret references only. Cluster auth: in-cluster service account, kubeconfig
+  token / token file / client certificate / exec plugins, and a `TokenSource`
+  hook for EKS, GKE and AKS tokens. Minimal REST on the shared provider HTTP
+  layer, no `kube` / `k8s-openapi`. Passes the shared C1–C13 harness against an
+  emulated API server and an opt-in kind test. See
+  [docs/kubernetes-provider.md](docs/kubernetes-provider.md).
 - Live provider test matrix: `crates/graphrt-llm/tests/live_providers.rs` sends
   tiny streamed chat and tool-call round-trip requests to OpenAI, Anthropic,
   Gemini and Bedrock and a typed question to TypeSafe (opt-in with
