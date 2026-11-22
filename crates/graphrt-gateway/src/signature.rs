@@ -4,8 +4,8 @@
 //! `graphrt-cli/src/gateway_agent/signature.rs`):
 //!
 //! ```text
-//! Graphrt-Sig: v1;kid=<kid>;ts=<unix seconds>;mac=<64 hex digits>
-//! mac = HMAC-SHA256(K[kid], "v1|<kid>|<deployment>|<METHOD>|<path?query>|<ts>|<run_id>|<epoch>|<hex sha256(body)>")
+//! Graphrt-Sig: v1;kid=<kid>;ts=<unix seconds>;n=<nonce>;mac=<64 hex digits>
+//! mac = HMAC-SHA256(K[kid], "v1|<kid>|<deployment>|<METHOD>|<path?query>|<ts>|<nonce>|<run_id>|<epoch>|<hex sha256(body)>")
 //! ```
 //!
 //! The gateway signs every `/internal/v1/*` request with the deployment's
@@ -135,16 +135,37 @@ pub struct Signed<'a> {
     pub body: &'a [u8],
 }
 
-fn canonical(kid: &str, timestamp: u64, signed: &Signed<'_>) -> Vec<u8> {
+fn canonical(kid: &str, timestamp: u64, nonce: &str, signed: &Signed<'_>) -> Vec<u8> {
     let body_hash = crate::hex::encode(&Sha256::digest(signed.body));
     let Signed { deployment, method, path, run_id, epoch, .. } = signed;
-    format!("{SCHEME}|{kid}|{deployment}|{method}|{path}|{timestamp}|{run_id}|{epoch}|{body_hash}").into_bytes()
+    format!("{SCHEME}|{kid}|{deployment}|{method}|{path}|{timestamp}|{nonce}|{run_id}|{epoch}|{body_hash}").into_bytes()
 }
 
-/// The `Graphrt-Sig` header value.
+fn nonce_ok(nonce: &str) -> bool {
+    (8..=64).contains(&nonce.len()) && nonce.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
+/// A nonce unique to this process and call (unique, not secret), so two
+/// identical requests in the same second still get different signatures.
+pub fn fresh_nonce() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_nanos());
+    let digest = Sha256::digest(format!("{}|{nanos}|{count}", std::process::id()));
+    crate::hex::encode(digest.get(..12).unwrap_or_default())
+}
+
+/// The `Graphrt-Sig` header value, with a fresh nonce.
 pub fn sign(key: &GatewayKey, timestamp: u64, signed: &Signed<'_>) -> String {
-    let mac = key.mac(&canonical(&key.kid, timestamp, signed));
-    format!("{SCHEME};kid={};ts={timestamp};mac={}", key.kid, crate::hex::encode(&mac))
+    sign_with_nonce(key, timestamp, &fresh_nonce(), signed)
+}
+
+/// [`sign`] with a given nonce (tests).
+pub fn sign_with_nonce(key: &GatewayKey, timestamp: u64, nonce: &str, signed: &Signed<'_>) -> String {
+    let mac = key.mac(&canonical(&key.kid, timestamp, nonce, signed));
+    format!("{SCHEME};kid={};ts={timestamp};n={nonce};mac={}", key.kid, crate::hex::encode(&mac))
 }
 
 /// Why a signature was refused (never names a secret).
@@ -176,6 +197,7 @@ pub enum SignatureError {
 struct ParsedSignature<'a> {
     kid: &'a str,
     timestamp: u64,
+    nonce: &'a str,
     mac: [u8; 32],
 }
 
@@ -184,16 +206,17 @@ fn parse_signature(header: &str) -> Option<ParsedSignature<'_>> {
     if parts.next()? != SCHEME {
         return None;
     }
-    let (mut kid, mut timestamp, mut mac) = (None, None, None);
+    let (mut kid, mut timestamp, mut nonce, mut mac) = (None, None, None, None);
     for part in parts {
         match part.split_once('=')? {
             ("kid", value) => kid = Some(value),
             ("ts", value) => timestamp = value.parse().ok(),
+            ("n", value) => nonce = Some(value).filter(|nonce| nonce_ok(nonce)),
             ("mac", value) => mac = crate::hex::decode(value).and_then(|bytes| <[u8; 32]>::try_from(bytes).ok()),
             _ => return None,
         }
     }
-    Some(ParsedSignature { kid: kid?, timestamp: timestamp?, mac: mac? })
+    Some(ParsedSignature { kid: kid?, timestamp: timestamp?, nonce: nonce?, mac: mac? })
 }
 
 #[derive(Debug, Default)]
@@ -230,7 +253,7 @@ impl Verifier {
         if parsed.timestamp.abs_diff(now) > MAX_SKEW_SECS {
             return Err(SignatureError::Expired);
         }
-        let expected = key.mac(&canonical(&key.kid, parsed.timestamp, signed));
+        let expected = key.mac(&canonical(&key.kid, parsed.timestamp, parsed.nonce, signed));
         if !crate::hex::constant_time_eq(&expected, &parsed.mac) {
             return Err(SignatureError::BadMac);
         }
@@ -287,6 +310,14 @@ mod tests {
         assert_eq!(verifier.verify(Some(&other), &signed(b"{\"x\":1}"), 1001), Err(SignatureError::BadMac));
         assert_eq!(verifier.verify(Some(&other), &signed(b"{}"), 1100), Err(SignatureError::Expired));
         assert_eq!(verifier.verify(None, &signed(b"{}"), 1001), Err(SignatureError::Missing));
+        let fixed = sign_with_nonce(&key(), 1000, "abcdefgh", &signed(b"{}"));
+        assert!(fixed.contains(";n=abcdefgh;"));
+        assert_ne!(sign(&key(), 1000, &signed(b"{}")), sign(&key(), 1000, &signed(b"{}")), "fresh nonce per call");
+        assert_eq!(
+            verifier.verify(Some("v1;kid=k1;ts=1000;mac=00"), &signed(b"{}"), 1000),
+            Err(SignatureError::Malformed),
+            "nonce required"
+        );
     }
 
     #[test]

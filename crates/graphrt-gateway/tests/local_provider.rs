@@ -117,7 +117,10 @@ async fn releasing_one_replica_keeps_the_other() {
     let _cleanup = std::fs::remove_dir_all(&dir);
     let provider = LocalProvider::new(&dir, Duration::from_secs(2)).unwrap();
     let deployment = DeploymentRef::new("shop", "v1", "local");
-    provider.register(&deployment, LocalVersion { command: vec![python, "-c".into(), AGENT.into()], keys: String::new(), env: Vec::new() });
+    provider.register(
+        &deployment,
+        LocalVersion { command: vec![python, "-c".into(), AGENT.into()], keys: String::new(), env: Vec::new() },
+    );
     for round in 0..5 {
         let endpoints = provider.wake(&deployment, 2).await.unwrap();
         assert_eq!(endpoints.len(), 2, "round {round}");
