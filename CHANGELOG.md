@@ -90,8 +90,10 @@ releases may contain breaking changes; they are called out under **Changed**.
   token cache with one refresh on 401) and the C1–C13 provider conformance
   harness with a scripted fake HTTP server; `Provider::invoke` lets a
   platform without an HTTP address (Lambda) carry the gateway's requests, and
-  `max_grace_secs = 0` marks a platform where no preemption is possible.
-  No user-visible change yet.
+  `max_grace_secs = 0` marks a platform where no preemption is possible;
+  `ProviderErrorKind` is `#[non_exhaustive]` and has a `PlatformTimeout` kind
+  for a run cut at such a platform's time cap (Lambda), recorded as
+  `failed{platform_timeout}` and never retried. No user-visible change yet.
 - `graphrt-gcp` crate (gateway plan F2, GCP family), each part behind its own
   cargo feature and without a Google SDK. `auth-gcp`: access and ID tokens from
   the metadata server or a service-account key (RS256 JWT signed with `ring`,

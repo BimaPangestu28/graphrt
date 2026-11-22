@@ -176,10 +176,9 @@ At run time:
   `lambda://<function>:<qualifier>`: the gateway sends its signed protocol
   requests through `Provider::invoke` (implemented by `LambdaProvider`), not
   plain HTTP. `Capabilities::can_preempt()` is false (`max_grace_secs = 0`). A
-  run cut by the time cap comes back as a `Fatal` `ProviderError` whose message
-  starts with `platform_timeout` (`lambda::PLATFORM_TIMEOUT_PREFIX`), to be
-  recorded as `failed{platform_timeout}` rather than re-dispatched; a truncated
-  stream is `Transient`.
+  run cut by the time cap comes back as a `ProviderError` of kind
+  `PlatformTimeout`, to be recorded as `failed{platform_timeout}` rather than
+  re-dispatched; a truncated stream is `Transient`.
 
 ### IAM policy for the gateway (Lambda)
 

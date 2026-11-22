@@ -580,21 +580,17 @@ fn agent_request(request: InvokeRequest) -> AgentRequest {
 impl InvokeError {
     /// The `ProviderError` the gateway sees through `Provider::invoke`.
     ///
-    /// A platform timeout is `Fatal` with a message starting with
-    /// [`PLATFORM_TIMEOUT_PREFIX`], so the gateway records
-    /// `failed{error_type: platform_timeout}` instead of re-dispatching.
+    /// A platform timeout is `ProviderErrorKind::PlatformTimeout`, so the gateway
+    /// records `failed{error_type: platform_timeout}` instead of re-dispatching.
     pub fn into_provider_error(self) -> ProviderError {
         match self {
             Self::Provider(error) => error,
-            Self::PlatformTimeout { .. } => ProviderError::fatal(format!("{PLATFORM_TIMEOUT_PREFIX}: {self}")),
+            Self::PlatformTimeout { .. } => ProviderError::platform_timeout(self.to_string()),
             Self::Function { .. } => ProviderError::fatal(format!("platform_error: {self}")),
             Self::Truncated | Self::Malformed(_) => ProviderError::transient(self.to_string()),
         }
     }
 }
-
-/// Message prefix of the `ProviderError` for a run cut by the Lambda / gateway time cap.
-pub const PLATFORM_TIMEOUT_PREFIX: &str = "platform_timeout";
 
 #[cfg(test)]
 mod tests {
