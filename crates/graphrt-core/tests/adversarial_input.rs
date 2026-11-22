@@ -36,9 +36,8 @@ fn deeply_nested_json_is_a_parse_error() {
     for open in ["[", "{\"a\":"] {
         let text = format!("{{\"graph\": {}", open.repeat(200_000));
         assert_fast("Workflow::parse", || assert!(Workflow::parse(&text).is_err()));
-        let validation = assert_fast("validate_text", || {
-            graphrt_core::validate::validate_text(&text, &Registry::with_builtins())
-        });
+        let validation =
+            assert_fast("validate_text", || graphrt_core::validate::validate_text(&text, &Registry::with_builtins()));
         assert!(validation.has_errors());
     }
 }
@@ -54,9 +53,8 @@ fn deeply_nested_yaml_is_a_parse_error() {
     }
     for text in [flow, block] {
         assert_fast("Workflow::parse", || assert!(Workflow::parse(&text).is_err()));
-        let validation = assert_fast("validate_text", || {
-            graphrt_core::validate::validate_text(&text, &Registry::with_builtins())
-        });
+        let validation =
+            assert_fast("validate_text", || graphrt_core::validate::validate_text(&text, &Registry::with_builtins()));
         assert!(validation.has_errors());
     }
 }
