@@ -78,10 +78,24 @@ fn build_deployment(
 /// # Errors
 /// Missing environment variables, bad keys, store failures.
 pub async fn build(config: &GatewayConfig) -> Result<Built, String> {
+    build_on(config, open_store(config)?).await
+}
+
+/// Opens the configured store (`:memory:` or a file).
+///
+/// # Errors
+/// When SQLite cannot open it.
+pub fn open_store(config: &GatewayConfig) -> Result<SqliteStore, String> {
+    if config.store == Path::new(":memory:") { SqliteStore::in_memory() } else { SqliteStore::open(&config.store) }
+        .map_err(|error| error.to_string())
+}
+
+/// [`build`] on an already opened (possibly fenced) store.
+///
+/// # Errors
+/// Missing environment variables, bad keys, store failures.
+pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Built, String> {
     crate::install_crypto_provider();
-    let store =
-        if config.store == Path::new(":memory:") { SqliteStore::in_memory() } else { SqliteStore::open(&config.store) }
-            .map_err(|error| error.to_string())?;
     let settings = SupervisorSettings {
         reclaim_grace: Duration::from_secs(config.reclaim_grace_secs),
         ..SupervisorSettings::default()
@@ -212,18 +226,12 @@ pub async fn serve(config: GatewayConfig) -> Result<(), String> {
 /// # Errors
 /// Bind failures and build errors.
 pub async fn serve_with(config: GatewayConfig, versions: Vec<(String, VersionInfo)>) -> Result<(), String> {
+    if config.ha.is_some() {
+        return crate::ha::run::serve_active_passive(config, versions).await;
+    }
     let started = tokio::time::Instant::now();
     let built = build(&config).await?;
-    for (name, info) in versions {
-        let Some(deployment) = built.app.gateway.deployment(&name) else { continue };
-        if deployment.versions().iter().any(|entry| entry.info.version == info.version) {
-            continue;
-        }
-        if let Some(hook) = &built.app.on_version {
-            hook(&deployment, &info);
-        }
-        deployment.add_version(info, now_ms());
-    }
+    register_versions(&built, versions);
     let (queued, running) = built.app.gateway.recover().await.map_err(|error| error.to_string())?;
     spawn_background(&built);
     let listener = tokio::net::TcpListener::bind(&config.listen)
@@ -239,7 +247,22 @@ pub async fn serve_with(config: GatewayConfig, versions: Vec<(String, VersionInf
     axum::serve(listener, service).with_graceful_shutdown(shutdown_signal()).await.map_err(|error| error.to_string())
 }
 
-async fn shutdown_signal() {
+/// Registers `versions` (deployment, version) that are new (`--dev`).
+pub fn register_versions(built: &Built, versions: Vec<(String, VersionInfo)>) {
+    for (name, info) in versions {
+        let Some(deployment) = built.app.gateway.deployment(&name) else { continue };
+        if deployment.versions().iter().any(|entry| entry.info.version == info.version) {
+            continue;
+        }
+        if let Some(hook) = &built.app.on_version {
+            hook(&deployment, &info);
+        }
+        deployment.add_version(info, now_ms());
+    }
+}
+
+/// Resolves on SIGTERM or SIGINT.
+pub async fn shutdown_signal() {
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}

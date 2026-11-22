@@ -34,6 +34,89 @@ pub async fn backup_once(store: &SqliteStore, policy: &BackupPolicy, now_ms: u64
     Ok(target)
 }
 
+/// The newest `gateway-*.db` backup in `dir`.
+pub fn newest_backup(dir: &Path) -> Option<PathBuf> {
+    let mut backups: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with("gateway-") && name.ends_with(".db")
+        })
+        .map(|entry| entry.path())
+        .collect();
+    backups.sort();
+    backups.pop()
+}
+
+/// What [`prepare_store`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Prepared {
+    /// The store passed `quick_check` (SQLite replayed its WAL on open).
+    Verified,
+    /// No store yet and no backup: a fresh one is created.
+    Fresh,
+    /// Restored from this backup (the failed store, if any, kept as `.corrupt-<ms>`).
+    Restored(PathBuf),
+    /// Verification disabled.
+    Unchecked,
+}
+
+fn quick_check(path: &Path) -> Result<(), String> {
+    let connection = rusqlite::Connection::open(path).map_err(|error| error.to_string())?;
+    connection.busy_timeout(Duration::from_secs(5)).map_err(|error| error.to_string())?;
+    let verdict: String =
+        connection.query_row("PRAGMA quick_check", [], |row| row.get(0)).map_err(|error| error.to_string())?;
+    if verdict == "ok" { Ok(()) } else { Err(verdict) }
+}
+
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Run by a gateway taking over (active/passive): opens the store once so
+/// SQLite replays its WAL, checks it with `PRAGMA quick_check`, and restores
+/// the newest backup of `backup_dir` when the check fails or the file is
+/// missing. RPO of a restore is the backup interval (plan §4).
+///
+/// # Errors
+/// When a failed store cannot be moved aside or the backup cannot be copied.
+pub fn prepare_store(store: &Path, backup_dir: Option<&Path>, verify: bool) -> Result<Prepared, String> {
+    if !verify {
+        return Ok(Prepared::Unchecked);
+    }
+    let exists = store.exists();
+    let failure = if exists { quick_check(store).err() } else { None };
+    if exists && failure.is_none() {
+        return Ok(Prepared::Verified);
+    }
+    let Some(backup) = backup_dir.and_then(newest_backup) else {
+        return match failure {
+            Some(failure) => {
+                Err(format!("store {} failed quick_check ({failure}) and no backup exists", store.display()))
+            }
+            None => Ok(Prepared::Fresh),
+        };
+    };
+    if let Some(failure) = failure {
+        let aside = sibling(store, &format!(".corrupt-{}", graphrt_core::store::now_ms()));
+        eprintln!("gateway: ha: store failed quick_check ({failure}); moving it to {}", aside.display());
+        std::fs::rename(store, &aside).map_err(|error| format!("moving the failed store aside: {error}"))?;
+        for suffix in ["-wal", "-shm"] {
+            let _moved = std::fs::rename(sibling(store, suffix), sibling(&aside, suffix));
+        }
+    }
+    if let Some(parent) = store.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let temporary = sibling(store, ".restoring");
+    std::fs::copy(&backup, &temporary).map_err(|error| format!("copying {}: {error}", backup.display()))?;
+    std::fs::rename(&temporary, store).map_err(|error| error.to_string())?;
+    Ok(Prepared::Restored(backup))
+}
+
 async fn prune(dir: &Path, keep: usize) -> std::io::Result<()> {
     let mut entries = tokio::fs::read_dir(dir).await?;
     let mut backups = Vec::new();
@@ -83,6 +166,33 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names, vec!["gateway-0000000000002.db", "gateway-0000000000003.db"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn takeover_restores_the_newest_backup_of_a_missing_or_corrupt_store() {
+        use graphrt_core::store::{RunRecord, RunStore};
+        let dir = std::env::temp_dir().join(format!("graphrt-gw-restore-{}", std::process::id()));
+        let _cleanup = std::fs::remove_dir_all(&dir);
+        let store_path = dir.join("gateway.db");
+        let backups = dir.join("backups");
+        assert_eq!(prepare_store(&store_path, Some(&backups), true).unwrap(), Prepared::Fresh);
+        {
+            let store = SqliteStore::open(&store_path).unwrap();
+            store.create(RunRecord::queued("r1", "wf", "fp", Some("shop".into()), 1)).await.unwrap();
+            let policy = BackupPolicy { dir: backups.clone(), interval: Duration::from_secs(300), keep: 2 };
+            backup_once(&store, &policy, 1).await.unwrap();
+        }
+        assert_eq!(prepare_store(&store_path, Some(&backups), true).unwrap(), Prepared::Verified);
+        std::fs::write(&store_path, b"definitely not sqlite, long enough to be read as a header ......").unwrap();
+        let _wal = std::fs::remove_file(sibling(&store_path, "-wal"));
+        let _shm = std::fs::remove_file(sibling(&store_path, "-shm"));
+        assert!(matches!(prepare_store(&store_path, Some(&backups), true).unwrap(), Prepared::Restored(_)));
+        let restored = SqliteStore::open(&store_path).unwrap();
+        assert!(restored.get("r1").await.unwrap().is_some());
+        std::fs::remove_file(&store_path).unwrap();
+        assert!(matches!(prepare_store(&store_path, Some(&backups), true).unwrap(), Prepared::Restored(_)));
+        assert!(prepare_store(&dir.join("other.db"), None, false).unwrap() == Prepared::Unchecked);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

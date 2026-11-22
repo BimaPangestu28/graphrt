@@ -22,6 +22,8 @@ use graphrt_core::store::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
+use crate::ha::fence::{Fence, FenceRefusal};
+
 /// Events kept per run; the count keeps growing past it (`events_truncated`).
 pub const DEFAULT_MAX_EVENTS: u64 = 10_000;
 /// Largest page of `list`.
@@ -66,7 +68,14 @@ CREATE TABLE IF NOT EXISTS outbox (
     created_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS outbox_due ON outbox(next_attempt_ms);
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+) WITHOUT ROWID;
 ";
+
+/// `meta` row holding the token of the active gateway (active/passive, I8).
+const FENCE_KEY: &str = "fence";
 
 /// A queued completion callback (webhook outbox, plan §4: written in the same
 /// transaction as the terminal record).
@@ -93,6 +102,7 @@ pub struct SqliteStore {
     writes: Arc<std::sync::atomic::AtomicU64>,
     path: Option<PathBuf>,
     max_events: u64,
+    fence: Option<Arc<Fence>>,
 }
 
 fn io_error(error: impl std::fmt::Display) -> StoreError {
@@ -138,6 +148,7 @@ impl SqliteStore {
             writes: Arc::default(),
             path,
             max_events: DEFAULT_MAX_EVENTS,
+            fence: None,
         })
     }
 
@@ -172,16 +183,81 @@ impl SqliteStore {
         self.writes.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Runs `operation` inside one immediate transaction.
+    /// Makes every write of this handle conditional on `fence` (active/passive):
+    /// see [`crate::ha::fence`]. Call [`SqliteStore::promote`] first.
+    pub fn with_fence(mut self, fence: Arc<Fence>) -> Self {
+        self.fence = Some(fence);
+        self
+    }
+
+    /// The fence of this handle, if any.
+    pub fn fence(&self) -> Option<&Arc<Fence>> {
+        self.fence.as_ref()
+    }
+
+    /// Installs `fence`'s token as the store owner: `meta.fence` must be lower
+    /// (compare-and-set), so of two promotions with the same token only one
+    /// wins and an older active can never write again. When the store is ahead
+    /// of the token (the lease file was reset), `raise` decides whether to retry
+    /// with `stored + 1`; it returns the token finally installed.
+    ///
+    /// # Errors
+    /// [`StoreError::Precondition`] when the store already belongs to an equal
+    /// or newer token and `raise` refused; I/O errors.
+    pub async fn promote<R>(&self, fence: Arc<Fence>, raise: R) -> StoreResult<u64>
+    where
+        R: FnOnce(u64) -> Option<u64> + Send + 'static,
+    {
+        self.writes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.with_connection(move |connection| {
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(io_error)?;
+            let stored = stored_fence(&transaction)?;
+            let mut token = fence.token();
+            if stored >= token {
+                token = raise(stored).filter(|raised| *raised > stored).ok_or_else(|| {
+                    StoreError::Precondition(format!("fenced: store owned by token {stored}, promotion with {token}"))
+                })?;
+                fence.set_token(token);
+            }
+            transaction
+                .execute(
+                    "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+                    params![FENCE_KEY, token as i64],
+                )
+                .map_err(io_error)?;
+            transaction.commit().map_err(io_error)?;
+            fence.confirm();
+            Ok(token)
+        })
+        .await
+    }
+
+    /// The token of the store owner (0 when never promoted).
+    ///
+    /// # Errors
+    /// On I/O errors.
+    pub async fn owner_token(&self) -> StoreResult<u64> {
+        self.with_connection(|connection| stored_fence(connection)).await
+    }
+
+    /// Runs `operation` inside one immediate transaction (after the fence check).
     async fn transaction<T, F>(&self, operation: F) -> StoreResult<T>
     where
         T: Send + 'static,
         F: FnOnce(&Transaction<'_>) -> StoreResult<T> + Send + 'static,
     {
         self.writes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let fence = self.fence.clone();
         self.with_connection(move |connection| {
+            if let Some(fence) = &fence {
+                fence.check_local().map_err(refusal_error)?;
+            }
             let transaction =
                 connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(io_error)?;
+            if let Some(fence) = &fence {
+                fence.check_stored(stored_fence(&transaction)?).map_err(refusal_error)?;
+            }
             let value = operation(&transaction)?;
             transaction.commit().map_err(io_error)?;
             Ok(value)
@@ -253,8 +329,8 @@ impl SqliteStore {
     /// # Errors
     /// On I/O errors.
     pub async fn complete_callback(&self, id: i64) -> StoreResult<()> {
-        self.with_connection(move |connection| {
-            connection.execute("DELETE FROM outbox WHERE id = ?1", params![id]).map(|_| ()).map_err(io_error)
+        self.transaction(move |transaction| {
+            transaction.execute("DELETE FROM outbox WHERE id = ?1", params![id]).map(|_| ()).map_err(io_error)
         })
         .await
     }
@@ -265,7 +341,7 @@ impl SqliteStore {
     /// # Errors
     /// On I/O errors.
     pub async fn retry_callback(&self, id: i64, next_attempt_ms: u64, max_attempts: u32) -> StoreResult<bool> {
-        self.with_connection(move |connection| {
+        self.transaction(move |connection| {
             let attempts: u32 = connection
                 .query_row("SELECT attempts FROM outbox WHERE id = ?1", params![id], |row| row.get(0))
                 .optional()
@@ -318,6 +394,23 @@ impl SqliteStore {
                 .collect()
         })
         .await
+    }
+}
+
+fn stored_fence(connection: &Connection) -> StoreResult<u64> {
+    let value: Option<i64> = connection
+        .query_row("SELECT value FROM meta WHERE key = ?1", params![FENCE_KEY], |row| row.get(0))
+        .optional()
+        .map_err(io_error)?;
+    Ok(value.unwrap_or(0) as u64)
+}
+
+/// A superseded gateway gets `Precondition` (never retried); an unconfirmed
+/// or released one gets `Io` (its writes may succeed again once confirmed).
+fn refusal_error(refusal: FenceRefusal) -> StoreError {
+    match refusal {
+        FenceRefusal::Superseded { .. } => StoreError::Precondition(refusal.to_string()),
+        FenceRefusal::Unconfirmed { .. } | FenceRefusal::Released => StoreError::Io(refusal.to_string()),
     }
 }
 
@@ -787,6 +880,43 @@ mod tests {
         assert_eq!(store.due_callbacks(100, 10).await.unwrap().len(), 1);
         store.complete_callback(due[0].id).await.unwrap();
         assert!(store.due_callbacks(1000, 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_superseded_gateway_can_never_write_again() {
+        let dir = std::env::temp_dir().join(format!("graphrt-gw-fence-{}", std::process::id()));
+        let _cleanup = std::fs::remove_dir_all(&dir);
+        let path = dir.join("gateway.db");
+        let clock: crate::ha::fence::Clock = Arc::new(|| 0);
+        let fence = |token| Arc::new(Fence::new(token, 60_000, clock.clone()));
+        let unfenced = SqliteStore::open(&path).unwrap();
+        assert_eq!(unfenced.owner_token().await.unwrap(), 0);
+
+        let fence_a = fence(1);
+        let a = SqliteStore::open(&path).unwrap().with_fence(fence_a.clone());
+        assert_eq!(a.promote(fence_a.clone(), |_| None).await.unwrap(), 1);
+        a.create(RunRecord::queued("r1", "wf", "fp", Some("shop".into()), 1)).await.unwrap();
+
+        let fence_b = fence(2);
+        let b = SqliteStore::open(&path).unwrap().with_fence(fence_b.clone());
+        b.promote(fence_b.clone(), |_| None).await.unwrap();
+        let stale = a.create(RunRecord::queued("r2", "wf", "fp", Some("shop".into()), 1)).await;
+        assert!(matches!(stale, Err(StoreError::Precondition(message)) if message.starts_with("fenced")));
+        assert!(fence_a.is_tripped(), "the old active learns it was superseded");
+        assert!(a.create_if_absent("d/shop/cron/x/last", b"1".to_vec()).await.is_err());
+        assert!(a.get("r1").await.unwrap().is_some(), "reads still work");
+        b.create(RunRecord::queued("r2", "wf", "fp", Some("shop".into()), 1)).await.unwrap();
+
+        let fence_c = fence(2);
+        let c = SqliteStore::open(&path).unwrap().with_fence(fence_c.clone());
+        assert!(matches!(c.promote(fence_c.clone(), |_| None).await, Err(StoreError::Precondition(_))));
+        assert_eq!(c.promote(fence_c.clone(), |stored| Some(stored + 1)).await.unwrap(), 3);
+        assert_eq!(fence_c.token(), 3);
+        assert!(b.put(RunRecord::queued("r2", "wf", "fp", Some("shop".into()), 1)).await.is_err());
+        fence_c.release();
+        assert!(matches!(c.delete("r1").await, Err(StoreError::Io(_))), "a released lease writes nothing");
+        assert_eq!(unfenced.owner_token().await.unwrap(), 3);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test]
