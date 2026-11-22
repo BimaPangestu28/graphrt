@@ -17,12 +17,15 @@ default = []
 # In-process fake Kubernetes API server (Deployments + scale, ReplicaSet-like pod
 # lifecycle, EndpointSlice watch, server-side apply, fault injection) for the
 # conformance suite. Test-only: never enable it in a shipped binary.
-fake-api-server = ["dep:axum", "dep:futures", "tokio/net"]
+fake-api-server = ["dep:axum", "dep:futures", "tokio/net", "graphrt-provider-api/conformance"]
 
 [dependencies]
+# Provider / DeployDriver traits, ProviderHttp (token bucket, jittered retry,
+# refresh-once-on-401), TokenSource and SecretString shared by every provider.
+graphrt-provider-api = { workspace = true, features = ["http"] }
 # The HTTP client, TLS and crypto every other graphrt crate already links:
-# reqwest + rustls with the ring provider. No `json`/`stream` reqwest features,
-# watch streams are read with `Response::chunk`.
+# reqwest + rustls with the ring provider (client CA / identity are set here).
+# No `json`/`stream` reqwest features: watch streams are read with `Response::chunk`.
 reqwest = { workspace = true, features = ["rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio = { workspace = true, features = ["rt", "time", "sync", "fs", "process", "io-util"] }
@@ -37,6 +40,7 @@ futures = { workspace = true, optional = true }
 
 [dev-dependencies]
 graphrt-provider-k8s = { path = ".", features = ["fake-api-server"] }
+graphrt-provider-api = { workspace = true, features = ["http", "conformance"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "sync"] }
 
 [lints]

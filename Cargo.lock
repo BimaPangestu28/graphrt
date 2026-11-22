@@ -1759,6 +1759,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "futures",
+ "graphrt-provider-api",
  "graphrt-provider-k8s",
  "reqwest",
  "rustls",
