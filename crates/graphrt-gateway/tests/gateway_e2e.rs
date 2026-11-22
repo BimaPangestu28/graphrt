@@ -227,3 +227,18 @@ async fn metrics_and_health() {
     let health: Json = gateway.client().get(format!("{}/healthz", gateway.url)).send().await.unwrap().json().await.unwrap();
     assert_eq!(health["status"], "ok");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn streamed_hitl_run_ends_its_stream_at_the_pause() {
+    let gateway = start_gateway(Options::default()).await;
+    let frames = tokio::time::timeout(Duration::from_secs(5), gateway.sse(&runs(), Some(json!({ "stream": true, "inputs": { "mode": "hitl", "events": 5 } })), None)).await.expect("stream ends");
+    assert_eq!(frames.last().unwrap().1, "run_paused");
+    let run_id = frames.iter().find(|(_, event, _)| event == "run_started").unwrap().2["run_id"].as_str().unwrap().to_owned();
+    let (status, _) = gateway.post(&format!("{}/{run_id}/resume", runs()), json!({ "inputs": { "ask": 1 } })).await;
+    assert_eq!(status, 202);
+    let done = gateway.wait_settled(&run_id).await;
+    assert_eq!(done["status"], "succeeded");
+    let replay = tokio::time::timeout(Duration::from_secs(5), gateway.sse(&format!("{}/{run_id}/events", runs()), None, Some("2"))).await.expect("replay ends");
+    let ids: Vec<String> = replay.iter().filter_map(|(id, _, _)| id.clone()).filter(|id| !id.contains('.')).collect();
+    assert_eq!(ids.first().map(String::as_str), Some("3"), "{ids:?}");
+}

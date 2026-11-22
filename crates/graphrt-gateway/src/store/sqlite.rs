@@ -90,6 +90,7 @@ pub struct OutboxEntry {
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
+    writes: Arc<std::sync::atomic::AtomicU64>,
     path: Option<PathBuf>,
     max_events: u64,
 }
@@ -132,7 +133,7 @@ impl SqliteStore {
             .execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = OFF; PRAGMA busy_timeout = 5000;")
             .map_err(io_error)?;
         connection.execute_batch(SCHEMA).map_err(io_error)?;
-        Ok(Self { connection: Arc::new(Mutex::new(connection)), path, max_events: DEFAULT_MAX_EVENTS })
+        Ok(Self { connection: Arc::new(Mutex::new(connection)), writes: Arc::default(), path, max_events: DEFAULT_MAX_EVENTS })
     }
 
     /// Caps the events kept per run.
@@ -161,12 +162,18 @@ impl SqliteStore {
         .map_err(io_error)?
     }
 
+    /// Write transactions so far (invariant I7: an idle deployment causes none).
+    pub fn write_count(&self) -> u64 {
+        self.writes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Runs `operation` inside one immediate transaction.
     async fn transaction<T, F>(&self, operation: F) -> StoreResult<T>
     where
         T: Send + 'static,
         F: FnOnce(&Transaction<'_>) -> StoreResult<T> + Send + 'static,
     {
+        self.writes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.with_connection(move |connection| {
             let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(io_error)?;
             let value = operation(&transaction)?;

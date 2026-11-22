@@ -353,7 +353,7 @@ impl Gateway {
         if !keep_input {
             run.set_input(None);
         }
-        let _ = run.settled.send(Settled::Done(Box::new(record)));
+        run.settled.send_replace(Settled::Done(Box::new(record)));
         let gateway = Arc::clone(self);
         let run = Arc::clone(run);
         tokio::spawn(async move {
@@ -693,7 +693,7 @@ impl Gateway {
                 Err(error) => {
                     eprintln!("gateway: run {}: dispatch claim refused: {error}", run.run_id);
                     let current = self.store.get(&run.run_id).await.ok().flatten();
-                    let _ = run.settled.send(Settled::Done(Box::new(current.unwrap_or(record))));
+                    run.settled.send_replace(Settled::Done(Box::new(current.unwrap_or(record))));
                     return;
                 }
             };

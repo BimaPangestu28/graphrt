@@ -345,8 +345,9 @@ fn client_stream(gateway: Arc<Gateway>, run_id: String, live: Option<Arc<LiveRun
             Some(Bytes::from(frame.encode()))
         };
         if needs_store && let Ok(events) = gateway.store.events(&run_id, cursor.0).await {
+            let base = cursor.0;
             for (offset, event) in events.iter().enumerate() {
-                let index = cursor.0 + offset as u64;
+                let index = base + offset as u64;
                 let frame = Frame { event: stored_event_type(event).unwrap_or("event").to_owned(), id: Some(index.to_string()), data: event.get().to_owned() };
                 if let Some(bytes) = send(&frame, &mut cursor.clone()) {
                     cursor = (index + 1, None);
