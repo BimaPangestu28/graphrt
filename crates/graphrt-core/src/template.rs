@@ -35,7 +35,7 @@ impl Template {
             let (before, after_open) = rest.split_at(start);
             text.push_str(before);
             let body_start = &after_open[3..];
-            match body_start.find("#}}") {
+            match find_placeholder_end(body_start) {
                 Some(end) => {
                     let body = &body_start[..end];
                     match parse_placeholder(body) {
@@ -53,8 +53,8 @@ impl Template {
                     }
                 }
                 None => {
-                    text.push_str(after_open);
-                    rest = "";
+                    text.push_str("{{#");
+                    rest = body_start;
                 }
             }
         }
@@ -122,8 +122,21 @@ impl Template {
     }
 }
 
+/// Longest placeholder body that can be a selector.
+const MAX_PLACEHOLDER_BYTES: usize = 512;
+
+/// Offset of the `#}}` closing a placeholder body, looked for only as far as
+/// the longest possible body. Searching the rest of the text made a source
+/// with many `{{#` and one late `#}}` quadratic to parse.
+fn find_placeholder_end(body_start: &str) -> Option<usize> {
+    let window = body_start.as_bytes();
+    let window = window.get(..window.len().min(MAX_PLACEHOLDER_BYTES + 3)).unwrap_or(window);
+    // `#}}` is ASCII, so its offset is a char boundary.
+    window.windows(3).position(|w| w == b"#}}")
+}
+
 fn parse_placeholder(body: &str) -> Option<Selector> {
-    if body.is_empty() || body.len() > 512 {
+    if body.is_empty() || body.len() > MAX_PLACEHOLDER_BYTES {
         return None;
     }
     let valid =
@@ -169,6 +182,21 @@ mod tests {
         p.insert("n", "obj", Value::from_json(serde_json::json!({"list": ["a", "b"]})));
         p.insert("n", "evil", Value::from("{{#sys.query#}}"));
         p
+    }
+
+    #[test]
+    fn unclosed_placeholders_parse_in_linear_time() {
+        // Each `{{#` used to scan to the one `#}}` at the very end: quadratic.
+        let source = format!("{}{{{{#sys.query#}}}}", "{{#".repeat(100_000));
+        let started = std::time::Instant::now();
+        let template = Template::parse(&source);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
+        assert_eq!(template.render(&pool()), format!("{}hi", "{{#".repeat(100_000)));
+        // A closing marker beyond the longest possible body stays literal text.
+        let far = format!("{{{{#{}#}}}}", "a".repeat(600));
+        assert!(Template::parse(&far).is_static());
+        let edge = format!("{{{{#sys.{}#}}}}", "q".repeat(MAX_PLACEHOLDER_BYTES - 4));
+        assert!(!Template::parse(&edge).is_static());
     }
 
     #[test]

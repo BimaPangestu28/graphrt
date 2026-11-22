@@ -71,6 +71,10 @@ releases may contain breaking changes; they are called out under **Changed**.
   were not measured at all. Streams are now decoded the way the parser
   decodes them, with every filter it supports, both before loading and on
   the parsed document before text is extracted.
+- `{{#…#}}` variable templates parsed in quadratic time: every `{{#` searched
+  the rest of the text for `#}}`, so a 900 KB string of `{{#` took minutes
+  (in a workflow document, or at run time in conditions and list filters).
+  The search now stops at the longest possible placeholder.
 
 ## [0.4.0] - 2026-11-20
 
