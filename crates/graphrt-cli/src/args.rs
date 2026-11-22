@@ -532,8 +532,9 @@ pub struct EvalArgs {
 pub struct ServeArgs {
     /// A workflow file, or a directory of workflow files (each served under its file stem).
     pub path: PathBuf,
-    /// Listen address.
-    #[arg(long, default_value = "127.0.0.1:8080")]
+    /// Listen address: `host:port`, or `unix:/path/to.sock` for a Unix socket
+    /// (created mode 0600, e.g. for a gateway on the same host).
+    #[arg(long, visible_alias = "listen", value_name = "ADDR", default_value = "127.0.0.1:8080")]
     pub addr: String,
     /// Name of the environment variable holding the API key. When set, requests must send
     /// `Authorization: Bearer <key>`.
@@ -571,6 +572,17 @@ pub struct ServeArgs {
     /// requests get `429 Too Many Requests` (0 = unlimited). Paused runs do not count.
     #[arg(long, value_name = "N", default_value_t = crate::serve::DEFAULT_MAX_ACTIVE_RUNS)]
     pub max_active_runs: usize,
+    /// On SIGTERM / SIGINT, finish within this long: new runs get `503`, active runs
+    /// pause (in-flight nodes are cancelled once the deadline nears and run again on
+    /// resume), their state is stored, then the process exits. Set it a few seconds
+    /// below the platform's grace period (Kubernetes `terminationGracePeriodSeconds`,
+    /// Fly `kill_timeout`, ...). Accepts `500ms`, `4s`, `2m` or plain seconds.
+    #[arg(long, value_name = "DURATION", default_value = "4s", value_parser = crate::drain::parse_duration)]
+    pub drain_timeout: std::time::Duration,
+    /// Do not resume, at startup, the async and webhook runs a previous shutdown
+    /// drained (they stay paused until resumed over the API).
+    #[arg(long)]
+    pub no_resume_drained: bool,
     /// Map a request header to a start input as `INPUT=HEADER` (e.g.
     /// `user_jwt=X-User-Authorization`), for per-user credentials such as a JWT. Applies
     /// to workflows whose start node declares the input, which must be `type: secret`; a
@@ -595,8 +607,40 @@ pub struct ServeArgs {
     #[cfg(feature = "jwt")]
     #[command(flatten)]
     pub user_auth: UserAuthArgs,
+    #[cfg(feature = "trust-gateway")]
+    #[command(flatten)]
+    pub gateway: GatewayTrustArgs,
     #[command(flatten)]
     pub services: ServiceArgs,
+}
+
+/// Running behind a graphrt gateway (`graphrt serve --trust-gateway`, see
+/// docs/gateway-protocol.md).
+#[cfg(feature = "trust-gateway")]
+#[derive(Debug, Default, Args)]
+pub struct GatewayTrustArgs {
+    /// Serve the gateway protocol under `/internal/v1`: requests signed with HMAC-SHA256
+    /// by a key of `$GRAPHRT_GATEWAY_KEYS` (`kid:hexsecret[,kid:hexsecret]`, 32+ bytes
+    /// each) for `--deployment`. Gateway-started runs survive a lost gateway connection
+    /// for the reclaim grace instead of being aborted.
+    #[arg(long)]
+    pub trust_gateway: bool,
+    /// Deployment this agent serves; signed requests for another deployment are refused
+    /// [default: $GRAPHRT_DEPLOYMENT].
+    #[arg(long, value_name = "NAME", requires = "trust_gateway")]
+    pub deployment: Option<String>,
+    /// Name of the environment variable holding the gateway keys.
+    #[arg(long, value_name = "VAR", default_value = crate::gateway_agent::KEYS_ENV)]
+    pub gateway_keys_env: String,
+    /// Where to report runs whose gateway stream broke: `http://host:port` (private
+    /// network) or `unix:/path/to.sock` [default: $GRAPHRT_GATEWAY_URL; none: the gateway
+    /// lists them with `GET /internal/v1/orphans`].
+    #[arg(long, value_name = "URL", requires = "trust_gateway")]
+    pub gateway_url: Option<String>,
+    /// How long the outcome of a run whose gateway stream broke is kept for the gateway
+    /// to reclaim before the run is marked failed (`owner_lost`).
+    #[arg(long, value_name = "SECS", default_value_t = crate::gateway_agent::DEFAULT_RECLAIM_GRACE_SECS)]
+    pub reclaim_grace_secs: u64,
 }
 
 /// End-user JWT verification for `graphrt serve` (see docs/serving.md).

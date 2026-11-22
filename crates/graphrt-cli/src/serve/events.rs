@@ -1,6 +1,8 @@
 //! `GET /v1/runs/{run_id}/events`: stored events, then the live tail of a run
-//! that still executes.
+//! that still executes. A reconnecting SSE client resumes after its
+//! `Last-Event-ID`.
 
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Json;
@@ -12,9 +14,9 @@ use graphrt_core::store::{StoredEvent, event_to_stored};
 use serde::Deserialize;
 
 use super::errors::store_error;
-use super::sse::{live_events, sse_event, stored_sse};
+use super::sse::{Numbered, lagged_sse, numbered, sse_event, stored_sse};
 use super::state::AppState;
-use crate::store::live;
+use crate::store::live::{self, ActiveRun};
 
 /// Query of `GET /v1/runs/{id}/events`.
 #[derive(Debug, Default, Deserialize)]
@@ -30,40 +32,67 @@ pub(super) async fn run_events(
     State(state): State<Arc<AppState>>,
     UrlPath(run_id): UrlPath<String>,
     Query(query): Query<EventsQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
+    // A reconnecting SSE client names the last event it saw.
+    let from = query.from.max(crate::sse_ids::resume_index_of(&headers).unwrap_or(0));
+    events_response(&state, &run_id, from, 0, query.stream == Some(false)).await
+}
+
+/// The live part of a run that still executes: its listener's subscription,
+/// and the index of the subscription's first event in the run's log.
+struct LiveTail {
+    run: Arc<ActiveRun>,
+    first_index: u64,
+    subscription: live::Subscription,
+}
+
+/// Stored events of `run_id` from index `from`, followed by the live tail while
+/// the run executes, each with `id_base` + its index as SSE `id:` (or a JSON
+/// array when `json`). Shared by `/v1/runs/{id}/events` and the gateway's reattach.
+pub(crate) async fn events_response(state: &AppState, run_id: &str, from: u64, id_base: u64, json: bool) -> Response {
     // Take the live subscription first: events the driver stores after this point
     // reach us through it, and the stored part is cut at `stored_before`.
-    let subscription = state.active(&run_id).map(|run| (run.stored_before, run.subscribe()));
-    let stored_until = subscription.as_ref().map(|(before, _)| *before);
-    let mut stored = match state.store.events(&run_id, query.from).await {
+    let tail =
+        state.active(run_id).map(|run| LiveTail { first_index: run.stored_before, subscription: run.subscribe(), run });
+    let mut stored = match state.store.events(run_id, from).await {
         Ok(events) => events,
         Err(e) => return store_error(&e),
     };
-    if let Some(limit) = stored_until {
-        let keep = usize::try_from(limit.saturating_sub(query.from)).unwrap_or(usize::MAX);
+    if let Some(tail) = &tail {
+        let keep = usize::try_from(tail.first_index.saturating_sub(from)).unwrap_or(usize::MAX);
         stored.truncate(keep);
     }
-    let subscription = subscription.map(|(_, sub)| sub);
-    if query.stream == Some(false) {
-        return events_json(stored, subscription);
+    if json {
+        return events_json(stored, tail, from);
     }
-    events_sse(stored, subscription)
+    events_sse(stored, tail, from, id_base)
 }
 
-/// The stored events, then the backlog of a run that still executes, as one JSON array.
-fn events_json(mut stored: Vec<StoredEvent>, subscription: Option<live::Subscription>) -> Response {
-    if let Some(sub) = subscription {
-        stored.extend(sub.backlog.iter().map(|event| event_to_stored(event)));
+/// The stored events, then the backlog of a run that still executes (from
+/// index `from` on), as one JSON array.
+fn events_json(mut stored: Vec<StoredEvent>, tail: Option<LiveTail>, from: u64) -> Response {
+    if let Some(tail) = tail {
+        let skip = usize::try_from(from.saturating_sub(tail.first_index)).unwrap_or(usize::MAX);
+        stored.extend(tail.subscription.backlog.iter().skip(skip).map(|event| event_to_stored(event)));
     }
     Json(stored).into_response()
 }
 
-/// The stored events as SSE, then (for a run that still executes) its backlog
-/// and live events until the terminal one.
-fn events_sse(stored: Vec<StoredEvent>, subscription: Option<live::Subscription>) -> Response {
-    let replay = futures::stream::iter(stored.into_iter().map(|json| Ok(stored_sse(&json))));
-    let Some(sub) = subscription else { return Sse::new(replay.boxed()).into_response() };
-    let backlog = futures::stream::iter(sub.backlog.into_iter().map(|e| Ok(sse_event(&e))));
-    let live = if sub.done { futures::stream::empty().boxed() } else { live_events(sub.live).boxed() };
-    Sse::new(replay.chain(backlog).chain(live)).keep_alive(KeepAlive::default()).into_response()
+/// The stored events (the first at index `from`) as SSE, then, for a run that
+/// still executes, its events from `from` on until the terminal one.
+fn events_sse(stored: Vec<StoredEvent>, tail: Option<LiveTail>, from: u64, id_base: u64) -> Response {
+    let replay = stored
+        .into_iter()
+        .zip(from..)
+        .map(move |(json, index)| Ok::<_, Infallible>(stored_sse(&json, id_base + index)));
+    let replay = futures::stream::iter(replay);
+    let Some(tail) = tail else { return Sse::new(replay.boxed()).into_response() };
+    let live = numbered(live::follow(tail.run, tail.subscription), tail.first_index).filter_map(move |item| {
+        futures::future::ready(match item {
+            Numbered::Event(event, index) => (index >= from).then(|| Ok(sse_event(&event, id_base + index))),
+            Numbered::Lagged(skipped) => Some(Ok(lagged_sse(skipped))),
+        })
+    });
+    Sse::new(replay.chain(live)).keep_alive(KeepAlive::default()).into_response()
 }

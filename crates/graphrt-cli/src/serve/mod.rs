@@ -3,6 +3,7 @@
 //! | Method | Path | Body | Response |
 //! | --- | --- | --- | --- |
 //! | GET | `/healthz` | – | `ok` (never requires auth) |
+//! | GET | `/readyz` | – | `ready`, or `503 draining` during a shutdown drain (never requires auth) |
 //! | GET | `/v1/workflows` | – | workflow names, inputs and env requirements |
 //! | POST | `/v1/workflows/{name}/runs` | `{inputs, sys, conversation, stream, async}` | SSE stream, JSON result, or `202` + run id when `async` |
 //! | GET | `/v1/runs` | query `workflow`, `status`, `limit`, `cursor` | stored runs, newest first |
@@ -20,7 +21,9 @@
 //!
 //! SSE events use the engine event `type` as the event name and its JSON as
 //! data, plus `response` events carrying the ordered answer text
-//! (`{node_id, text, is_final}`).
+//! (`{node_id, text, is_final}`). Each carries its index in the run's event
+//! log as `id:` ([`crate::sse_ids`]), so `/events` resumes after a client's
+//! `Last-Event-ID`.
 //!
 //! Runs are recorded in a run store (`--store <dir>` for a durable directory,
 //! in-memory otherwise), so a paused run can be resumed by id. See `docs/serving.md`.
@@ -35,7 +38,7 @@
 //! - [`router`]: routes and layers; [`auth`] and [`local_host`]: the request checks.
 //! - [`start`], [`resume`], [`runs`], [`events`], [`workflows`]: the handlers.
 //! - [`execute`]: launching runs; [`delivery`] and [`sse`]: answering their callers.
-//! - [`startup`]: the `graphrt serve` command.
+//! - [`startup`]: the `graphrt serve` command, its shutdown drain included.
 
 mod auth;
 mod build;
@@ -58,14 +61,20 @@ pub use auth::AuthenticatedUser;
 pub(crate) use auth::Caller;
 pub(crate) use auth::constant_time_eq;
 pub use build::{build_state, discover};
+#[cfg(feature = "trust-gateway")]
+pub(crate) use delivery::{EventScope, StreamGuard};
 pub(crate) use errors::error_response;
-#[cfg(feature = "scores")]
+#[cfg(any(feature = "scores", feature = "trust-gateway"))]
 pub(crate) use errors::store_error;
 pub use events::EventsQuery;
+#[cfg(feature = "trust-gateway")]
+pub(crate) use events::events_response;
 pub(crate) use execute::{Launch, launch_detached, traceparent};
-pub use resume::ResumeRequest;
+pub use resume::{ResumeRequest, resume_drained_runs};
 pub use router::{DEFAULT_MAX_UPLOAD_BYTES, router, router_with_uploads};
 pub use runs::ListQuery;
+#[cfg(feature = "trust-gateway")]
+pub(crate) use sse::sse_stream;
 pub use start::RunRequest;
 pub use startup::serve;
 pub use state::{AppState, DEFAULT_MAX_ACTIVE_RUNS, ServedWorkflow};

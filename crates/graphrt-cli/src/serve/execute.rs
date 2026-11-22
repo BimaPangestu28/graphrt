@@ -13,10 +13,11 @@ use graphrt_core::store::{RunRecord, StoreError, now_ms};
 use graphrt_core::{Engine, Graph, Selector, Value};
 use indexmap::IndexMap;
 
-use super::delivery::{AbortOnDrop, Delivery, Reply, result_json};
+use super::delivery::{AbortOnDrop, Delivery, EventScope, Reply, result_json};
 use super::errors::{error_response, store_error};
 use super::sse::sse_stream;
 use super::state::AppState;
+use crate::sse_ids::Cursor;
 use crate::store::live::{self, ActiveRun};
 
 /// Caller context stored on a run record, for its spans.
@@ -54,13 +55,12 @@ pub(super) async fn execute(
     let run_id = record.run_id.clone();
     let active = launch(state, engine, record, input, traceparent.as_deref());
     match reply.delivery {
-        Delivery::Detached => accepted_response(&run_id),
-        Delivery::Stream => {
-            // The subscription's backlog covers events emitted before subscribing.
-            let subscription = active.subscribe();
-            let events = sse_stream(subscription, stream_assembler, AbortOnDrop(active), reply.scope);
-            Sse::new(events).keep_alive(KeepAlive::default()).into_response()
+        Delivery::Detached => {
+            // No caller waits: a shutdown drain leaves it for the next server to resume.
+            active.set_detached();
+            accepted_response(&run_id)
         }
+        Delivery::Stream => stream_response(active, stream_assembler, reply.scope),
         Delivery::Blocking => {
             let guard = AbortOnDrop(Arc::clone(&active));
             let outcome = active.wait().await;
@@ -68,6 +68,17 @@ pub(super) async fn execute(
             result_json(&run_id, outcome, reply.scope)
         }
     }
+}
+
+/// The SSE response of a streaming caller, numbered from the run's first event
+/// of this execution; the caller disconnecting aborts the run.
+fn stream_response(active: Arc<ActiveRun>, assembler: ResponseAssembler, scope: EventScope) -> Response {
+    // The subscription's backlog covers events emitted before subscribing.
+    let events = live::follow(Arc::clone(&active), active.subscribe());
+    let first_index = active.stored_before;
+    let guard = Box::new(AbortOnDrop(active));
+    let events = sse_stream(events, assembler, first_index, Cursor::ALL, guard, scope);
+    Sse::new(events).keep_alive(KeepAlive::default()).into_response()
 }
 
 /// `202` for a detached run, with where to follow it.
@@ -81,7 +92,9 @@ fn accepted_response(run_id: &str) -> Response {
     (StatusCode::ACCEPTED, Json(body)).into_response()
 }
 
-fn new_assembler(engine: &Engine, input: &RunInput) -> ResponseAssembler {
+/// The answer assembler of a run, seeded with what a resumed run already said
+/// and with the caller's `sys` values.
+pub(super) fn new_assembler(engine: &Engine, input: &RunInput) -> ResponseAssembler {
     let mut assembler = ResponseAssembler::new(engine.graph());
     if let Some(resume) = &input.resume {
         // Nodes that finished before the pause will not re-run; seed their values.
@@ -94,7 +107,7 @@ fn new_assembler(engine: &Engine, input: &RunInput) -> ResponseAssembler {
 }
 
 /// Start driving a run in the background and track it as active.
-fn launch(
+pub(super) fn launch(
     state: &Arc<AppState>,
     engine: &Engine,
     record: RunRecord,
@@ -124,6 +137,21 @@ fn launch(
     #[cfg(feature = "telemetry")]
     crate::telemetry::count_run();
     active
+}
+
+#[cfg(feature = "trust-gateway")]
+impl AppState {
+    /// Start driving a run in the background and track it as active (for the
+    /// gateway protocol). `record` must already exist in the store.
+    pub(crate) fn launch_run(
+        self: &Arc<Self>,
+        engine: &Engine,
+        record: RunRecord,
+        input: RunInput,
+        traceparent: Option<&str>,
+    ) -> Arc<ActiveRun> {
+        launch(self, engine, record, input, traceparent)
+    }
 }
 
 /// Id of the root graph's start node, whose outputs are the run's validated inputs.
@@ -177,5 +205,8 @@ pub(crate) async fn launch_detached(
     input.run_id = Some(run_id);
     input.inputs = inputs;
     input.env = workflow.env.clone();
-    Ok(Launch::Started(launch(state, &workflow.engine, record, input, traceparent.as_deref())))
+    let active = launch(state, &workflow.engine, record, input, traceparent.as_deref());
+    // Webhook runs have no waiting caller: after a drain the next server resumes them.
+    active.set_detached();
+    Ok(Launch::Started(active))
 }

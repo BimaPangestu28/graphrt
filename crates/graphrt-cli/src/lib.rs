@@ -7,6 +7,8 @@ pub mod body_drain;
 pub mod bundle_cmd;
 pub mod catalog;
 pub mod diagnostics;
+#[cfg(feature = "serve")]
+pub mod drain;
 pub mod error;
 #[cfg(feature = "eval")]
 pub mod eval;
@@ -14,6 +16,8 @@ pub mod eval;
 pub mod eval_trace;
 pub mod extensions;
 pub mod files;
+#[cfg(feature = "trust-gateway")]
+pub mod gateway_agent;
 #[cfg(feature = "serve")]
 pub mod header_inputs;
 #[cfg(any(feature = "serve", feature = "telemetry"))]
@@ -25,6 +29,8 @@ pub mod kb;
 pub mod knowledge_api;
 #[cfg(feature = "langfuse")]
 pub mod langfuse;
+#[cfg(feature = "serve")]
+pub mod listen;
 #[cfg(feature = "online-eval")]
 pub mod online_eval;
 pub mod otel;
@@ -38,6 +44,8 @@ pub mod scores;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod setup;
+#[cfg(feature = "serve")]
+pub mod sse_ids;
 #[cfg(feature = "serve")]
 pub mod store;
 #[cfg(feature = "telemetry")]
@@ -94,6 +102,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "serve") {
         features.push("serve");
     }
+    if cfg!(feature = "trust-gateway") {
+        features.push("trust-gateway");
+    }
     if cfg!(feature = "scores") {
         features.push("scores");
     }
@@ -137,7 +148,10 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         #[cfg(feature = "serve")]
         Command::Serve(args) => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(runtime_error)?;
-            runtime.block_on(serve::serve(*args))
+            let result = runtime.block_on(serve::serve(*args));
+            // A node stuck in blocking code must not hold the exit past the drain deadline.
+            runtime.shutdown_timeout(std::time::Duration::from_millis(500));
+            result
         }
     }
 }

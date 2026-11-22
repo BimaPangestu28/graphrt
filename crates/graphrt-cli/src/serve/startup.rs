@@ -1,23 +1,28 @@
 //! `graphrt serve` itself: build the state from the flags, bind, print what is
-//! served and run until Ctrl-C.
+//! served, run until SIGTERM / SIGINT and then drain (see [`crate::drain`]).
 //!
 //! The steps run in a fixed order so that, of several misconfigurations, the
 //! same one is always reported first: workflows, API key and user tokens,
-//! telemetry, stores, webhooks, the compiled state, then the listener.
+//! telemetry, stores, webhooks, the trusted gateway, the compiled state, then
+//! the signal handlers and the listener.
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::Router;
+use futures::future::Either;
 use graphrt_core::store::{RunStore, now_ms};
-use tokio::net::TcpListener;
 
 use super::build::{build_state, discover};
 use super::local_host::require_local_host;
+use super::resume::resume_drained_runs;
 use super::router::router_with_uploads;
 use super::state::AppState;
 use crate::args::ServeArgs;
+use crate::drain::ShutdownSignals;
 use crate::error::{CliError, EXIT_OK};
+use crate::listen::Listener;
 use crate::otel::Telemetry;
 use crate::run::service_options;
 use crate::setup::{self, ServiceOptions};
@@ -31,6 +36,14 @@ struct StartupReport<'a> {
     user_auth: Option<String>,
 }
 
+/// How the HTTP server stopped.
+enum Stopped {
+    /// A signal started a drain, which finished.
+    Drained,
+    /// The server task ended on its own, before any signal.
+    ServerEnded,
+}
+
 /// Execute `graphrt serve`.
 pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let mut options = service_options(&args.services)?;
@@ -38,9 +51,15 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let api_key = lookup_env(&options, &args.api_key_env).filter(|key| !key.is_empty());
     #[cfg(feature = "jwt")]
     let user_auth = user_auth_from_args(&args, &options, api_key.is_some()).await?;
+    #[cfg(feature = "jwt")]
+    let verifies_user_tokens = user_auth.is_some();
+    #[cfg(not(feature = "jwt"))]
+    let verifies_user_tokens = false;
     let telemetry = Telemetry::from_args(&args.services, &options.all_vars())?;
     options.capture_content = crate::otel::captures_content(telemetry.as_ref());
-    let state = configured_state(&args, &options, &files, api_key.clone(), telemetry.clone()).await?;
+    let configured =
+        configured_state(&args, &options, &files, api_key.clone(), telemetry.clone(), verifies_user_tokens);
+    let state = configured.await?;
     #[cfg(feature = "jwt")]
     let (state, user_auth_line) = {
         let line = user_auth.as_ref().map(crate::user_auth::UserAuth::describe);
@@ -51,12 +70,17 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let state = Arc::new(state);
     recover_store(&state, args.store_ttl_days).await?;
     let app = router_with_uploads(Arc::clone(&state), args.max_body_bytes, args.max_upload_bytes);
-    let listener = bind(&args.addr).await?;
-    let loopback = listener.local_addr().map(|a| a.ip().is_loopback()).unwrap_or(false);
-    let app = guard_keyless_loopback(app, api_key.is_none() && loopback);
+    // Before listening: from here on SIGTERM / SIGINT start a drain (as PID 1 of a
+    // container, an unhandled SIGTERM would be ignored until the SIGKILL).
+    let signals = ShutdownSignals::install()?;
+    let listener = Listener::bind(&args.addr).await?;
+    let loopback = listener.is_local();
+    let app = guard_keyless_loopback(app, api_key.is_none() && loopback && listener.is_browser_reachable());
     let report = StartupReport { args: &args, has_api_key: api_key.is_some(), loopback, user_auth: user_auth_line };
     print_startup(&state, &report);
-    serve_until_ctrl_c(listener, app).await?;
+    if let Stopped::ServerEnded = serve_until_drained(listener, app, &state, &args, signals).await? {
+        return Ok(EXIT_OK);
+    }
     if let Some(telemetry) = &telemetry {
         telemetry.shutdown().await;
     }
@@ -82,17 +106,39 @@ async fn user_auth_from_args(
     crate::user_auth::UserAuth::from_args(&args.user_auth, &args.input_header, lookup).await
 }
 
-/// Compile the workflows and attach everything the flags configure, except
-/// user-token verification (see [`serve`]).
+/// The trusted gateway (`--trust-gateway`), which excludes `--verify-jwt`:
+/// behind a gateway, the gateway verifies end-user tokens.
 ///
-/// @throws CliError - On an unusable store, webhooks file, workflow, header
-///   mapping, Langfuse setup or evaluators config.
+/// @throws CliError (usage) - On invalid gateway flags, or with `--verify-jwt`.
+#[cfg(feature = "trust-gateway")]
+fn gateway_agent_from_args(
+    args: &ServeArgs,
+    options: &ServiceOptions,
+    verifies_user_tokens: bool,
+) -> Result<Option<Arc<crate::gateway_agent::GatewayAgent>>, CliError> {
+    let lookup = |name: &str| lookup_env(options, name);
+    let config = crate::gateway_agent::GatewayAgentConfig::from_args(&args.gateway, lookup, args.max_body_bytes)?;
+    if config.is_some() && verifies_user_tokens {
+        return Err(CliError::usage(
+            "--trust-gateway and --verify-jwt are exclusive: behind a gateway, the gateway verifies end-user tokens",
+        ));
+    }
+    Ok(config.map(|config| Arc::new(crate::gateway_agent::GatewayAgent::new(config))))
+}
+
+/// Compile the workflows and attach everything the flags configure, except
+/// user-token verification (see [`serve`]). `verifies_user_tokens` tells
+/// whether `--verify-jwt` is on, which a trusted gateway excludes.
+///
+/// @throws CliError - On an unusable store, webhooks file, gateway setup,
+///   workflow, header mapping, Langfuse setup or evaluators config.
 async fn configured_state(
     args: &ServeArgs,
     options: &ServiceOptions,
     files: &[(String, PathBuf)],
     api_key: Option<String>,
     telemetry: Option<Arc<Telemetry>>,
+    verifies_user_tokens: bool,
 ) -> Result<AppState, CliError> {
     let limits = setup::limits(args.services.timeout_ms, args.services.max_steps);
     let stores = crate::store::open_stores(args.store.as_ref(), args.max_runs)?;
@@ -102,6 +148,10 @@ async fn configured_state(
     };
     #[cfg(feature = "online-eval")]
     let judge_limits = limits.clone();
+    #[cfg(feature = "trust-gateway")]
+    let gateway = gateway_agent_from_args(args, options, verifies_user_tokens)?;
+    #[cfg(not(feature = "trust-gateway"))]
+    let _ = verifies_user_tokens;
     let has_telemetry = telemetry.is_some();
     let state = build_state(files, options, limits, api_key)
         .await?
@@ -111,6 +161,8 @@ async fn configured_state(
         .with_max_active_runs(args.max_active_runs)
         .with_webhooks(webhooks)?
         .with_header_inputs(&args.input_header)?;
+    #[cfg(feature = "trust-gateway")]
+    let state = state.with_gateway_agent(gateway);
     #[cfg(feature = "langfuse")]
     let state = with_langfuse_scores(state, args, options, has_telemetry)?;
     #[cfg(not(feature = "langfuse"))]
@@ -163,15 +215,11 @@ async fn recover_store(state: &AppState, ttl_days: Option<u64>) -> Result<(), Cl
     Ok(())
 }
 
-/// @throws CliError (usage) - When the address cannot be bound.
-async fn bind(addr: &str) -> Result<TcpListener, CliError> {
-    TcpListener::bind(addr).await.map_err(|e| CliError::usage(format!("cannot listen on {addr}: {e}")))
-}
-
 /// Without an API key, a loopback server is reachable from any web page through
 /// DNS rebinding (the page's own host name resolving to 127.0.0.1). Such
 /// requests carry that foreign host name, so only local `Host` values are
-/// accepted when `keyless_loopback`.
+/// accepted when `keyless_loopback` (a Unix socket is out of a browser's reach
+/// and needs no such check).
 fn guard_keyless_loopback(app: Router, keyless_loopback: bool) -> Router {
     if keyless_loopback { app.layer(axum::middleware::from_fn(require_local_host)) } else { app }
 }
@@ -179,7 +227,13 @@ fn guard_keyless_loopback(app: Router, keyless_loopback: bool) -> Router {
 /// The startup banner on stderr: address, routes, and warnings about
 /// unauthenticated access.
 fn print_startup(state: &AppState, report: &StartupReport<'_>) {
-    eprintln!("graphrt serving {} workflow(s) on http://{}", state.workflows.len(), report.args.addr);
+    let addr = &report.args.addr;
+    let shown_addr = if crate::listen::unix_path(addr).is_some() { addr.clone() } else { format!("http://{addr}") };
+    eprintln!("graphrt serving {} workflow(s) on {shown_addr}", state.workflows.len());
+    #[cfg(feature = "trust-gateway")]
+    if let Some(agent) = state.gateway_agent() {
+        eprintln!("  trusting the gateway of deployment `{}` (signed /internal/v1)", agent.deployment());
+    }
     if let Some(line) = &report.user_auth {
         eprintln!("  {line}");
     }
@@ -213,24 +267,85 @@ fn print_keyless_warnings(report: &StartupReport<'_>) {
     }
 }
 
-/// Serve `app` until Ctrl-C, then finish the requests in flight.
+/// Serve `app` until SIGTERM / SIGINT, drain the active runs within
+/// `--drain-timeout`, then close the connections still open. Drained runs of
+/// the previous process are resumed in the background (unless
+/// `--no-resume-drained`).
 ///
 /// @throws CliError - On a server error.
-async fn serve_until_ctrl_c(listener: TcpListener, app: Router) -> Result<(), CliError> {
-    // Without TCP_NODELAY, the second and later small writes of a streamed (SSE)
-    // response wait for the client's delayed ACK: about 40 ms per run on Linux.
-    let listener = axum::serve::ListenerExt::tap_io(listener, |tcp: &mut tokio::net::TcpStream| {
-        if let Err(e) = tcp.set_nodelay(true) {
-            eprintln!("warning: cannot set TCP_NODELAY: {e}");
+async fn serve_until_drained(
+    listener: Listener,
+    app: Router,
+    state: &Arc<AppState>,
+    args: &ServeArgs,
+    mut signals: ShutdownSignals,
+) -> Result<Stopped, CliError> {
+    let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut server = tokio::spawn(listener.serve(app, async {
+        let _closed = close_rx.await;
+    }));
+    if !args.no_resume_drained {
+        // After listening, so a store scan never delays the first health check.
+        tokio::spawn(resume_drained_runs(Arc::clone(state)));
+    }
+    let cause = match futures::future::select(&mut server, std::pin::pin!(signals.recv())).await {
+        Either::Left((ended, _)) => {
+            server_ended(ended)?;
+            return Ok(Stopped::ServerEnded);
         }
-    });
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-            eprintln!("shutting down");
-        })
-        .await
-        .map_err(|e| CliError::failed(format!("server error: {e}")))
+        Either::Right((cause, _)) => cause,
+    };
+    let deadline = Instant::now() + args.drain_timeout;
+    drain_runs(state, args.drain_timeout, cause, &mut signals).await;
+    // Connections still open (idle keep-alives, finished streams) get the rest of
+    // the deadline, at least a moment, to close.
+    let _closing = close_tx.send(());
+    close_connections(server, deadline).await?;
+    Ok(Stopped::Drained)
+}
+
+/// Pause (and near the deadline preempt) every active run, and report how
+/// they ended on stderr.
+async fn drain_runs(state: &AppState, timeout: Duration, cause: &str, signals: &mut ShutdownSignals) {
+    eprintln!("received {cause}: draining (no new runs; active runs pause, deadline {:.1} s)", timeout.as_secs_f64());
+    let report = crate::drain::drain(state, timeout, cause, Some(signals)).await;
+    eprintln!("{report}");
+    if report.unfinished > 0 {
+        eprintln!(
+            "warning: {} run(s) did not stop in time; the next start marks them failed (raise --drain-timeout)",
+            report.unfinished
+        );
+    }
+}
+
+/// Wait for the HTTP server to close its connections until `deadline` (at
+/// least a moment), then abort the ones left.
+///
+/// @throws CliError - On a server error.
+async fn close_connections(
+    mut server: tokio::task::JoinHandle<std::io::Result<()>>,
+    deadline: Instant,
+) -> Result<(), CliError> {
+    let rest = deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(100));
+    match tokio::time::timeout(rest, &mut server).await {
+        Ok(ended) => server_ended(ended),
+        Err(_) => {
+            server.abort();
+            eprintln!("warning: closing the remaining connections at the drain deadline");
+            Ok(())
+        }
+    }
+}
+
+/// The result of the HTTP server task.
+///
+/// @throws CliError - When the server failed or its task panicked.
+fn server_ended(ended: Result<std::io::Result<()>, tokio::task::JoinError>) -> Result<(), CliError> {
+    match ended {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(CliError::failed(format!("server error: {e}"))),
+        Err(e) => Err(CliError::failed(format!("server task failed: {e}"))),
+    }
 }
 
 /// Delete runs older than `days` (any status except running), hourly.

@@ -6,6 +6,21 @@
 //!
 //! Nothing secret is persisted: event values serialize with secrets masked, and
 //! snapshots never contain secret plaintext (see [`crate::snapshot`]).
+//!
+//! # Writes that can be retried
+//!
+//! A host that writes through a network (a gateway in front of agents, an
+//! object store) must be able to retry any write without corrupting the run:
+//!
+//! - [`RunStore::append_events`] takes the index of the first event of the
+//!   batch. A batch that is already stored (a retry after a lost reply) is
+//!   accepted without storing it twice; a batch that would leave a gap, or that
+//!   differs from the events already stored at those indices, is refused.
+//! - [`RunStore::put_if`] replaces a record only while its [`RunRecord::epoch`]
+//!   is still the expected one, so a stale writer (a zombie replica, an
+//!   execution that was taken over) cannot overwrite a newer one.
+//! - Every claim ([`RunStore::claim_resume`], [`RunStore::claim_dispatch`])
+//!   increments the epoch.
 
 use std::fmt;
 
@@ -22,6 +37,8 @@ use crate::value::Value;
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum RunStatus {
+    /// Accepted but not dispatched to an executor yet (a gateway's queue).
+    Queued,
     Running,
     Paused,
     Succeeded,
@@ -38,6 +55,7 @@ impl RunStatus {
     /// Parse the wire name (`running`, `paused`, ...).
     pub fn parse(text: &str) -> Option<Self> {
         match text {
+            "queued" => Some(RunStatus::Queued),
             "running" => Some(RunStatus::Running),
             "paused" => Some(RunStatus::Paused),
             "succeeded" => Some(RunStatus::Succeeded),
@@ -49,7 +67,11 @@ impl RunStatus {
 }
 
 /// Persisted summary of one run.
+///
+/// The struct is `#[non_exhaustive]`: build one with [`RunRecord::running`] or
+/// [`RunRecord::queued`] and set fields afterwards.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RunRecord {
     pub run_id: String,
     /// Name the workflow is served under.
@@ -73,7 +95,9 @@ pub struct RunRecord {
     pub error_type: Option<String>,
     #[serde(default)]
     pub usage: Usage,
-    /// Events stored so far (may stop growing at the store's cap).
+    /// Index of the run's next event: how many events were appended so far. Stores
+    /// keep at most their per-run cap of them (see `events_truncated`); the count
+    /// keeps growing past it so event indices (and SSE `id:`s) stay stable.
     #[serde(default)]
     pub event_count: u64,
     /// Whether events were dropped because the store's per-run cap was reached.
@@ -107,6 +131,22 @@ pub struct RunRecord {
     /// Caller-supplied tags.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Deployment the run belongs to (the namespace of a gateway's store); `None`
+    /// on a standalone server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<String>,
+    /// Immutable version of that deployment the run executes (resume needs the
+    /// same workflow graph).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_version: Option<String>,
+    /// Execution epoch: 0 when created, incremented by every claim (dispatch,
+    /// resume). Conditional writes ([`RunStore::put_if`]) compare it, and an
+    /// executor refuses work for an epoch other than the one it was given.
+    #[serde(default)]
+    pub epoch: u64,
+    /// Who executes the current epoch (a replica id), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 impl RunRecord {
@@ -140,7 +180,26 @@ impl RunRecord {
             user_id: None,
             user_verified: false,
             tags: Vec::new(),
+            deployment: None,
+            deployment_version: None,
+            epoch: 0,
+            owner: None,
         }
+    }
+
+    /// A new `queued` record (epoch 0) of `deployment`, waiting to be dispatched
+    /// with [`RunStore::claim_dispatch`].
+    pub fn queued(
+        run_id: impl Into<String>,
+        workflow: impl Into<String>,
+        fingerprint: impl Into<String>,
+        deployment: Option<String>,
+        now_ms: u64,
+    ) -> Self {
+        let mut record = Self::running(run_id, workflow, fingerprint, now_ms);
+        record.status = RunStatus::Queued;
+        record.deployment = deployment;
+        record
     }
 
     /// Apply a terminal event (`RunSucceeded`, `RunFailed`, `RunAborted`, `RunPaused`).
@@ -210,6 +269,10 @@ pub enum StoreError {
     Conflict(String),
     #[error("invalid run id `{0}`")]
     InvalidId(String),
+    /// A conditional write found another epoch than the expected one (another
+    /// writer got there first).
+    #[error("{0}")]
+    Precondition(String),
     #[error("run store I/O error: {0}")]
     Io(String),
     #[error("corrupt run store entry: {0}")]
@@ -221,34 +284,127 @@ pub type StoreResult<T> = Result<T, StoreError>;
 
 /// Durable storage of run records, events and snapshots.
 ///
-/// Implementations must make [`RunStore::claim_resume`] atomic: of two concurrent
-/// claims on the same paused run, exactly one succeeds.
+/// Implementations must make [`RunStore::claim_resume`] and [`RunStore::put_if`]
+/// atomic: of two concurrent claims (or conditional writes) on the same run,
+/// exactly one succeeds. [`RunStore::append_events`] must be idempotent per
+/// index range (see the module docs). The `store-conformance` feature of this
+/// crate ships an abstract test suite every implementation should pass.
 pub trait RunStore: Send + Sync + fmt::Debug {
     /// Insert a new record. Fails with [`StoreError::Conflict`] if the id exists.
     fn create(&self, record: RunRecord) -> BoxFuture<'_, StoreResult<()>>;
-    /// Insert or replace a record.
+    /// Insert or replace a record, unconditionally. Hosts with more than one
+    /// writer use [`RunStore::put_if`] instead.
     fn put(&self, record: RunRecord) -> BoxFuture<'_, StoreResult<()>>;
+    /// Replace the record of an existing run only while its stored `epoch` is
+    /// `expected_epoch`. Fails with [`StoreError::Precondition`] otherwise, and
+    /// with [`StoreError::NotFound`] when the run does not exist. The store keeps
+    /// its own event counters, as with `put`.
+    fn put_if(&self, record: RunRecord, expected_epoch: u64) -> BoxFuture<'_, StoreResult<()>>;
     fn get<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, StoreResult<Option<RunRecord>>>;
     fn list(&self, filter: RunFilter) -> BoxFuture<'_, StoreResult<RunPage>>;
     /// Remove a run and everything stored for it. Returns whether it existed.
     fn delete<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, StoreResult<bool>>;
-    /// Append events (already serialized by [`event_to_stored`], secrets masked).
-    /// Stores may cap the number of events kept per run; they then set
-    /// `events_truncated`.
-    fn append_events<'a>(&'a self, run_id: &'a str, events: Vec<StoredEvent>) -> BoxFuture<'a, StoreResult<()>>;
+    /// Append events (already serialized by [`event_to_stored`], secrets masked)
+    /// whose first one has index `first_index`, and return the run's new
+    /// [`RunRecord::event_count`].
+    ///
+    /// Idempotent: events at indices already stored must equal the stored ones
+    /// and are skipped (a retried batch is not stored twice). Fails with
+    /// [`StoreError::Conflict`] when `first_index` is past the run's event count
+    /// (a gap) or an overlapping event differs. Stores may cap the number of
+    /// events kept per run; they then set `events_truncated` and keep counting.
+    fn append_events<'a>(
+        &'a self,
+        run_id: &'a str,
+        first_index: u64,
+        events: &'a [StoredEvent],
+    ) -> BoxFuture<'a, StoreResult<u64>>;
     /// Stored events, starting at index `from`.
     fn events<'a>(&'a self, run_id: &'a str, from: u64) -> BoxFuture<'a, StoreResult<Vec<StoredEvent>>>;
     fn save_snapshot<'a>(&'a self, run_id: &'a str, snapshot: &'a Snapshot) -> BoxFuture<'a, StoreResult<()>>;
     fn load_snapshot<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, StoreResult<Option<Snapshot>>>;
-    /// Atomically move a `paused` run to `running` and return the updated record.
-    /// Fails with [`StoreError::Conflict`] when the run is not paused (including when
-    /// another request claimed it first).
+    /// Atomically move a `paused` run to `running`, increment its epoch and
+    /// return the updated record. Fails with [`StoreError::Conflict`] when the
+    /// run is not paused (including when another request claimed it first).
     fn claim_resume<'a>(&'a self, run_id: &'a str, now_ms: u64) -> BoxFuture<'a, StoreResult<RunRecord>>;
+    /// Compare-and-set a `queued` or `paused` run at `expected_epoch` to
+    /// `running` at `expected_epoch + 1`, executed by `owner`, before the run is
+    /// handed to that executor. Fails with [`StoreError::Precondition`] when the
+    /// epoch moved, [`StoreError::Conflict`] when the run is in another status.
+    ///
+    /// The default implementation is `get` + [`RunStore::put_if`], which is
+    /// atomic as long as `put_if` is.
+    fn claim_dispatch<'a>(
+        &'a self,
+        run_id: &'a str,
+        expected_epoch: u64,
+        owner: Option<String>,
+        now_ms: u64,
+    ) -> BoxFuture<'a, StoreResult<RunRecord>> {
+        Box::pin(async move {
+            let mut record = self.get(run_id).await?.ok_or_else(|| StoreError::NotFound(run_id.to_owned()))?;
+            if !matches!(record.status, RunStatus::Queued | RunStatus::Paused) {
+                return Err(StoreError::Conflict(format!("run `{run_id}` is not queued or paused")));
+            }
+            check_epoch(&record, expected_epoch)?;
+            record.status = RunStatus::Running;
+            record.epoch = expected_epoch.saturating_add(1);
+            record.owner = owner;
+            record.updated_ms = now_ms;
+            self.put_if(record.clone(), expected_epoch).await?;
+            Ok(record)
+        })
+    }
     /// After a host restart: mark every `running` run as `failed` ("interrupted by
-    /// restart"). Paused runs stay resumable. Returns how many runs were marked.
+    /// restart"). Paused and queued runs are kept. Returns how many runs were marked.
     fn recover_interrupted(&self, now_ms: u64) -> BoxFuture<'_, StoreResult<usize>>;
-    /// Delete runs (any status except `running`) last updated before `cutoff_ms`.
+    /// Delete runs (any status except `running` and `queued`) last updated before
+    /// `cutoff_ms`.
     fn purge_before(&self, cutoff_ms: u64) -> BoxFuture<'_, StoreResult<usize>>;
+}
+
+/// [`StoreError::Precondition`] unless `record` is at `expected_epoch`.
+pub fn check_epoch(record: &RunRecord, expected_epoch: u64) -> StoreResult<()> {
+    if record.epoch == expected_epoch {
+        Ok(())
+    } else {
+        Err(StoreError::Precondition(format!(
+            "run `{}` is at epoch {}, expected {expected_epoch}",
+            record.run_id, record.epoch
+        )))
+    }
+}
+
+/// How a batch passed to [`RunStore::append_events`] lines up with the events a
+/// store already holds (shared by implementations).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppendPlan {
+    /// Leading events of the batch that are already stored (a retry); they must
+    /// equal the stored ones at `first_index..first_index + overlap`.
+    pub overlap: usize,
+    /// The run's event count after the append.
+    pub new_count: u64,
+}
+
+/// Plan an append of `batch_len` events at `first_index` to a run holding
+/// `event_count` events. Fails with [`StoreError::Conflict`] on a gap.
+pub fn plan_append(run_id: &str, event_count: u64, first_index: u64, batch_len: usize) -> StoreResult<AppendPlan> {
+    if first_index > event_count {
+        return Err(StoreError::Conflict(format!(
+            "run `{run_id}`: events must be appended at index {event_count}, not {first_index}"
+        )));
+    }
+    let batch = u64::try_from(batch_len).unwrap_or(u64::MAX);
+    let overlap = (event_count - first_index).min(batch);
+    Ok(AppendPlan {
+        overlap: usize::try_from(overlap).unwrap_or(usize::MAX),
+        new_count: event_count.max(first_index.saturating_add(batch)),
+    })
+}
+
+/// [`StoreError::Conflict`] for a retried event that differs from the stored one.
+pub fn append_mismatch(run_id: &str, index: u64) -> StoreError {
+    StoreError::Conflict(format!("run `{run_id}`: event {index} differs from the one already stored"))
 }
 
 /// Error message stored on runs interrupted by a host restart.

@@ -1225,3 +1225,204 @@ async fn a_chain_reads_the_clock_about_once_per_node() {
     // few per run; two per node would be over 100.
     assert!(reads <= len + 10, "{reads} clock reads for {len} nodes");
 }
+
+// ---------------------------------------------------------------------------
+// Preempt (host shutdown that cannot wait for in-flight nodes)
+// ---------------------------------------------------------------------------
+
+/// `exec_id` of every `NodeStarted` of `node` in the root frame.
+fn exec_ids_of(events: &[Event], node: &str) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::NodeStarted { node_id, exec_id, .. } if node_id.as_ref() == node => Some(exec_id.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(feature = "tokio")] // needs a timer-capable clock
+#[tokio::test]
+async fn preempt_cancels_in_flight_nodes_and_resume_reruns_them_with_the_same_exec_id() {
+    let g = build(
+        vec![
+            node("start", "src", json!({})),
+            node("fast", "echo", json!({"template": "F"})),
+            node("slow", "echo", json!({"template": "S{{#fast.out#}}", "delay_ms": 60_000})),
+            node("end", "end", json!({"name": "r", "value": "{{#slow.out#}}"})),
+        ],
+        vec![edge("start", "fast"), edge("fast", "slow"), edge("slow", "end")],
+    );
+    let engine = Engine::new(g);
+    let mut stream = engine.run(RunInput::new());
+    let handle = stream.handle();
+    let began = std::time::Instant::now();
+    let mut events = Vec::new();
+    while let Some(e) = stream.next().await {
+        if matches!(&e, Event::NodeStarted { node_id, .. } if node_id.as_ref() == "slow") {
+            handle.preempt("shutdown");
+        }
+        events.push(e);
+    }
+    // The 60 s node was cancelled, not awaited.
+    assert!(began.elapsed() < Duration::from_secs(5), "preempt waited for the node");
+    match terminal(&events) {
+        Event::RunPaused { reasons, .. } => {
+            assert_eq!(reasons.len(), 1);
+            assert_eq!(reasons[0].kind, "external");
+            assert_eq!(reasons[0].data, Value::from("shutdown"));
+        }
+        other => panic!("expected pause, got {other:?}"),
+    }
+    assert!(!events.iter().any(|e| matches!(e, Event::NodeSucceeded { node_id, .. } if node_id.as_ref() == "slow")));
+    let first_exec = exec_ids_of(&events, "slow");
+    assert_eq!(first_exec.len(), 1);
+
+    // Resume: `fast` is kept, `slow` runs again under the same exec id (a stable
+    // idempotency key for side effects).
+    let snapshot = through_json(&paused_snapshot(&events));
+    // Only check what re-runs, then preempt again instead of waiting a minute.
+    let mut resumed = engine.run(RunInput::new().resume(snapshot, IndexMap::new()));
+    let resumed_handle = resumed.handle();
+    let mut events = Vec::new();
+    while let Some(e) = resumed.next().await {
+        if matches!(&e, Event::NodeStarted { node_id, .. } if node_id.as_ref() == "slow") {
+            resumed_handle.preempt("again");
+        }
+        events.push(e);
+    }
+    assert_eq!(started(&events), ["slow"]);
+    assert_eq!(exec_ids_of(&events, "slow"), first_exec);
+    assert!(matches!(terminal(&events), Event::RunPaused { .. }));
+}
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn preempted_run_resumes_to_completion() {
+    let g = build(
+        vec![
+            node("start", "src", json!({})),
+            node("a", "echo", json!({"template": "A", "delay_ms": 30})),
+            node("b", "echo", json!({"template": "B", "delay_ms": 30})),
+            node("end", "end", json!({"name": "r", "value": "{{#a.out#}}{{#b.out#}}"})),
+        ],
+        vec![edge("start", "a"), edge("start", "b"), edge("a", "end"), edge("b", "end")],
+    );
+    let engine = Engine::new(g);
+    let mut stream = engine.run(RunInput::new());
+    let handle = stream.handle();
+    let mut events = Vec::new();
+    while let Some(e) = stream.next().await {
+        if matches!(&e, Event::NodeStarted { node_id, .. } if node_id.as_ref() == "b") {
+            handle.preempt("drain");
+        }
+        events.push(e);
+    }
+    assert!(matches!(terminal(&events), Event::RunPaused { .. }));
+    let snapshot = through_json(&paused_snapshot(&events));
+    let events = collect(&engine, RunInput::new().resume(snapshot, IndexMap::new())).await;
+    let mut again = started(&events);
+    again.sort();
+    assert_eq!(again, ["a", "b", "end"]);
+    assert_eq!(outputs(&events).get("r"), Some(&Value::from("AB")));
+}
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn preempt_escalates_a_pause_that_waits_on_a_slow_node() {
+    let g = build(
+        vec![
+            node("start", "src", json!({})),
+            node("slow", "echo", json!({"template": "S", "delay_ms": 60_000})),
+            node("end", "end", json!({"name": "r", "value": "{{#slow.out#}}"})),
+        ],
+        vec![edge("start", "slow"), edge("slow", "end")],
+    );
+    let engine = Engine::new(g);
+    let mut stream = engine.run(RunInput::new());
+    let handle = stream.handle();
+    let began = std::time::Instant::now();
+    let mut events = Vec::new();
+    while let Some(e) = stream.next().await {
+        if matches!(&e, Event::NodeStarted { node_id, .. } if node_id.as_ref() == "slow") {
+            handle.pause_with(graphrt_core::event::PauseReason {
+                frame: Arc::from(""),
+                node_id: None,
+                kind: "drained".into(),
+                data: Value::Null,
+            });
+            let escalate = handle.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                escalate.preempt_with(None);
+            });
+        }
+        events.push(e);
+    }
+    assert!(began.elapsed() < Duration::from_secs(5));
+    match terminal(&events) {
+        // Only the pause's reason: the escalation reported none.
+        Event::RunPaused { reasons, .. } => {
+            assert_eq!(reasons.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), ["drained"]);
+        }
+        other => panic!("expected pause, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn preempt_inside_a_container_resumes_the_body_where_it_stopped() {
+    let g = container_graph(
+        vec![
+            node("bs", "scope-start", json!({})),
+            node("work", "echo", json!({"template": "#{{#box.index#}}", "delay_ms": 40})),
+        ],
+        vec![edge("bs", "work")],
+        3,
+        "work.out",
+    );
+    let engine = Engine::new(g);
+    let mut stream = engine.run(RunInput::new());
+    let handle = stream.handle();
+    let mut events = Vec::new();
+    while let Some(e) = stream.next().await {
+        // Preempt while the second body item is running.
+        if matches!(&e, Event::NodeStarted { node_id, frame, .. } if node_id.as_ref() == "work" && frame.as_ref() == "box[1]")
+        {
+            handle.preempt("drain");
+        }
+        events.push(e);
+    }
+    assert!(matches!(terminal(&events), Event::RunPaused { .. }));
+    // The container paused itself (with its body snapshot) instead of being cancelled.
+    assert!(events.iter().any(|e| matches!(e, Event::NodePaused { node_id, .. } if node_id.as_ref() == "box")));
+    let snapshot = through_json(&paused_snapshot(&events));
+    let events = collect(&engine, RunInput::new().resume(snapshot, IndexMap::new())).await;
+    let frames: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::NodeStarted { node_id, frame, .. } if node_id.as_ref() == "work" => Some(frame.to_string()),
+            _ => None,
+        })
+        .collect();
+    // Item 0 is not repeated; item 1 runs again (it was cancelled), then item 2.
+    assert_eq!(frames, ["box[1]", "box[2]"]);
+    assert_eq!(
+        outputs(&events).get("items"),
+        Some(&Value::array([Value::from("#0"), Value::from("#1"), Value::from("#2")]))
+    );
+}
+
+#[tokio::test]
+async fn preempt_of_a_finished_run_changes_nothing() {
+    let g = build(
+        vec![node("start", "src", json!({})), node("end", "end", json!({"name": "r", "value": "x"}))],
+        vec![edge("start", "end")],
+    );
+    let engine = Engine::new(g);
+    let stream = engine.run(RunInput::new());
+    let handle = stream.handle();
+    let events: Vec<Event> = stream.collect().await;
+    handle.preempt("late");
+    assert_eq!(outputs(&events).get("r"), Some(&Value::from("x")));
+}

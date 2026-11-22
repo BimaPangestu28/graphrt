@@ -408,6 +408,9 @@ impl Frame {
             if control.is_stopped() {
                 return FrameOutcome::Stopped;
             }
+            if control.preempt_requested() {
+                return self.preempt(solo.as_mut(), &mut running);
+            }
             let seen = control.version();
             if self.is_root {
                 self.apply_external_updates();
@@ -482,6 +485,45 @@ impl Frame {
             }
             self.run.emit(Event::VariableUpdated { frame: self.id.clone(), node_id: Arc::from(""), selector, value });
         }
+    }
+
+    /// Preempt the frame: apply what already finished, then cancel the rest.
+    ///
+    /// Every task gets one last poll first (with a no-op waker, the tasks are
+    /// dropped right after): nodes that are done get committed, and container
+    /// nodes see the preempt in their own body frames and pause with a snapshot,
+    /// so they resume where they stopped instead of starting over. Nodes still
+    /// running after that are cancelled and saved as pending (keeping their
+    /// `exec_id` and attempt), so they run again on resume.
+    fn preempt<F: Future<Output = TaskDone>>(
+        mut self,
+        mut solo: std::pin::Pin<&mut Option<F>>,
+        running: &mut FuturesUnordered<F>,
+    ) -> FrameOutcome {
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        if let Some(task) = solo.as_mut().as_pin_mut()
+            && let std::task::Poll::Ready(done) = task.poll(&mut cx)
+        {
+            solo.set(None);
+            if let Some(outcome) = self.on_done(done) {
+                return outcome;
+            }
+        }
+        if let Some(outcome) = self.commit_finished(running) {
+            return outcome;
+        }
+        let mut cancelled: Vec<NodeIx> =
+            self.nodes.iter().filter(|(_, rt)| rt.state == State::Running).map(|(ix, _)| *ix).collect();
+        cancelled.sort_unstable();
+        for ix in cancelled {
+            if let Some(rt) = self.nodes.get_mut(&ix) {
+                // A resumed node already handed its saved state to the cancelled
+                // attempt, so it starts over (at-least-once).
+                rt.state = State::Ready;
+            }
+            self.ready.push_back(ix);
+        }
+        self.finish()
     }
 
     /// Nothing is running: decide between completed and paused.

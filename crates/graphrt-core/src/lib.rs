@@ -16,6 +16,7 @@
 pub mod catalog;
 pub mod child_env;
 pub mod condition;
+pub mod coordination;
 pub mod doc_schema;
 pub mod dsl;
 pub mod engine;
@@ -31,6 +32,8 @@ pub mod response;
 pub mod snapshot;
 pub mod source_map;
 pub mod store;
+#[cfg(feature = "store-conformance")]
+pub mod store_conformance;
 pub mod template;
 pub mod tool;
 pub mod tool_node;

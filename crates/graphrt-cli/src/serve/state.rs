@@ -7,10 +7,10 @@ use std::collections::HashMap;
 use std::path::Path;
 #[cfg(feature = "rag")]
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 #[cfg(feature = "online-eval")]
 use graphrt_core::engine::Limits;
@@ -31,6 +31,10 @@ use crate::store::live::ActiveRun;
 /// Default cap on runs executing at once (`--max-active-runs`).
 pub const DEFAULT_MAX_ACTIVE_RUNS: usize = 256;
 
+/// `Retry-After` (seconds) of runs refused while draining: long enough for a
+/// load balancer to route the retry to another replica, or for a restart.
+const DRAIN_RETRY_AFTER: &str = "5";
+
 /// One served workflow.
 #[derive(Debug)]
 pub struct ServedWorkflow {
@@ -46,6 +50,8 @@ pub struct AppState {
     pub(super) runs: Mutex<HashMap<String, Arc<ActiveRun>>>,
     /// Cap on `runs` (executing runs); `0` = unlimited.
     pub(super) max_active_runs: usize,
+    /// Set by a shutdown drain: new and resumed runs are refused with `503`.
+    pub(super) draining: AtomicBool,
     pub(super) store: Arc<dyn RunStore>,
     /// Evaluation scores, kept by the same backend as `store`.
     #[cfg(feature = "scores")]
@@ -77,6 +83,9 @@ pub struct AppState {
     /// Score uploads to Langfuse (`--langfuse-scores`).
     #[cfg(feature = "langfuse")]
     pub(super) langfuse: Option<Arc<crate::langfuse::LangfuseUploader>>,
+    /// The gateway this agent trusts (`--trust-gateway`): `/internal/v1`.
+    #[cfg(feature = "trust-gateway")]
+    pub(super) gateway_agent: Option<Arc<crate::gateway_agent::GatewayAgent>>,
 }
 
 impl AppState {
@@ -87,6 +96,7 @@ impl AppState {
             workflows,
             runs: Mutex::new(HashMap::new()),
             max_active_runs: 0,
+            draining: AtomicBool::new(false),
             store: memory.clone(),
             #[cfg(feature = "scores")]
             scores: memory,
@@ -107,6 +117,8 @@ impl AppState {
             online: None,
             #[cfg(feature = "langfuse")]
             langfuse: None,
+            #[cfg(feature = "trust-gateway")]
+            gateway_agent: None,
         }
     }
 
@@ -278,7 +290,13 @@ impl AppState {
     /// `429` when the server already executes `max_active_runs` runs. Checked before a
     /// run is created, so a refused request leaves no record behind. The check and the
     /// later insert are not atomic: concurrent requests can overshoot by a few runs.
+    ///
+    /// While the server drains for shutdown, every new or resumed run gets `503`
+    /// with `Retry-After` instead (see [`crate::drain`]).
     pub(super) fn refuse_if_busy(&self) -> Option<Response> {
+        if self.is_draining() {
+            return Some(draining_response());
+        }
         if self.max_active_runs == 0 {
             return None;
         }
@@ -374,5 +392,78 @@ impl AppState {
     /// Number of runs currently executing.
     pub fn active_runs(&self) -> usize {
         self.runs.lock().map(|r| r.len()).unwrap_or(0)
+    }
+
+    /// The runs currently executing.
+    pub fn active_list(&self) -> Vec<Arc<ActiveRun>> {
+        self.runs.lock().map(|runs| runs.values().cloned().collect()).unwrap_or_default()
+    }
+
+    /// Stop accepting runs (`503` + `Retry-After`) and report not ready on `/readyz`.
+    pub fn begin_drain(&self) {
+        self.draining.store(true, Ordering::Release);
+    }
+
+    /// Whether [`AppState::begin_drain`] was called.
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::Acquire)
+    }
+}
+
+/// The `503` of a run refused during a shutdown drain; `Retry-After` lets the
+/// client (or a load balancer) retry on another replica or after the restart.
+fn draining_response() -> Response {
+    let mut refused = error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "the server is shutting down and accepts no new runs; retry shortly",
+    );
+    refused.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static(DRAIN_RETRY_AFTER));
+    refused
+}
+
+/// What the gateway protocol (`--trust-gateway`, [`crate::gateway_agent`])
+/// reads of the server state, outside the `serve` module.
+#[cfg(feature = "trust-gateway")]
+impl AppState {
+    /// Trust a gateway (`--trust-gateway`): serve the signed `/internal/v1` API.
+    pub fn with_gateway_agent(mut self, agent: Option<Arc<crate::gateway_agent::GatewayAgent>>) -> Self {
+        self.gateway_agent = agent;
+        self
+    }
+
+    /// The gateway agent state, with `--trust-gateway`.
+    pub(crate) fn gateway_agent(&self) -> Option<&Arc<crate::gateway_agent::GatewayAgent>> {
+        self.gateway_agent.as_ref()
+    }
+
+    /// Served workflows by name.
+    pub(crate) fn served_workflows(&self) -> impl Iterator<Item = (&String, &ServedWorkflow)> {
+        self.workflows.iter()
+    }
+
+    /// The workflow served as `name`.
+    pub(crate) fn served_workflow(&self, name: &str) -> Option<&ServedWorkflow> {
+        self.workflows.get(name)
+    }
+
+    /// `--max-active-runs` (0 = unlimited).
+    pub(crate) fn max_active_runs(&self) -> usize {
+        self.max_active_runs
+    }
+
+    /// Plugins loaded at startup (their hosts stay up for the server's lifetime).
+    pub(crate) fn warm_plugins(&self) -> Vec<String> {
+        self.extensions.loaded().map(|plugin| plugin.name.clone()).collect()
+    }
+
+    /// The `429` to answer when `--max-active-runs` runs are executing (or the
+    /// `503` while draining).
+    pub(crate) fn busy_response(&self) -> Option<Response> {
+        self.refuse_if_busy()
+    }
+
+    /// The executing run `run_id`, if any.
+    pub(crate) fn active_run(&self, run_id: &str) -> Option<Arc<ActiveRun>> {
+        self.active(run_id)
     }
 }

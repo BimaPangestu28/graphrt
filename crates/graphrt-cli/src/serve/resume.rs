@@ -1,4 +1,5 @@
-//! `POST /v1/runs/{run_id}/resume`: continue a paused run.
+//! `POST /v1/runs/{run_id}/resume`: continue a paused run; and at startup,
+//! the runs a previous shutdown drained ([`resume_drained_runs`]).
 
 use std::sync::Arc;
 
@@ -8,13 +9,13 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use graphrt_core::Snapshot;
 use graphrt_core::engine::{ResumeFrom, RunInput};
-use graphrt_core::store::{RunRecord, RunStatus, StoreError, now_ms};
+use graphrt_core::store::{RunFilter, RunRecord, RunStatus, StoreError, now_ms};
 use indexmap::IndexMap;
 use serde::Deserialize;
 
 use super::delivery::{Delivery, EventScope, Reply};
 use super::errors::{error_response, store_error};
-use super::execute::{execute, to_values, traceparent};
+use super::execute::{execute, launch, to_values, traceparent};
 use super::state::{AppState, ServedWorkflow};
 
 /// Body of `POST /v1/runs/{run_id}/resume`.
@@ -163,11 +164,95 @@ async fn load_stored_snapshot(state: &AppState, run_id: &str) -> Result<Snapshot
     }
 }
 
-/// Undo a resume claim so a refused resume leaves the run visible as paused.
+/// Undo a resume claim so a refused resume leaves the run visible as paused. The
+/// write is fenced by the claim's epoch, so it never undoes a later claim.
 async fn release_claim(state: &AppState, mut record: RunRecord) {
     record.status = RunStatus::Paused;
     let run_id = record.run_id.clone();
-    if let Err(e) = state.store.put(record).await {
+    let epoch = record.epoch;
+    if let Err(e) = state.store.put_if(record, epoch).await {
         eprintln!("warning: run {run_id}: cannot restore paused status: {e}");
     }
+}
+
+/// At startup: resume the async and webhook runs a previous shutdown drained
+/// ([`crate::drain::is_auto_resumable`]) in the background. Runs whose workflow
+/// changed, or that need secrets only their caller has, stay paused for a
+/// resume over the API. Returns how many were resumed.
+pub async fn resume_drained_runs(state: Arc<AppState>) -> usize {
+    let mut resumed = 0;
+    let mut cursor = None;
+    loop {
+        let filter = RunFilter { status: Some(RunStatus::Paused), limit: 100, cursor, ..RunFilter::default() };
+        let page = match state.store.list(filter).await {
+            Ok(page) => page,
+            Err(e) => {
+                eprintln!("warning: cannot list drained runs to resume: {e}");
+                return resumed;
+            }
+        };
+        for record in page.runs.iter().filter(|r| crate::drain::is_auto_resumable(r)) {
+            if state.refuse_if_busy().is_some() {
+                eprintln!("warning: not resuming further drained runs: the server is busy or draining");
+                return resumed;
+            }
+            match resume_drained(&state, &record.run_id).await {
+                Ok(()) => resumed += 1,
+                Err(why) => eprintln!("run {}: drained run left paused: {why}", record.run_id),
+            }
+        }
+        cursor = match page.next_cursor {
+            Some(next) => Some(next),
+            None => break,
+        };
+    }
+    if resumed > 0 {
+        eprintln!("resumed {resumed} run(s) drained by the previous shutdown");
+    }
+    resumed
+}
+
+/// Claim and resume one drained run as a detached run. Like an API resume,
+/// every refusal after the claim passes through one [`release_claim`].
+///
+/// @throws String - Why the run stays paused.
+async fn resume_drained(state: &Arc<AppState>, run_id: &str) -> Result<(), String> {
+    let record = state.store.claim_resume(run_id, now_ms()).await.map_err(|e| e.to_string())?;
+    let (workflow, input) = match prepare_drained_resume(state, &record).await {
+        Ok(prepared) => prepared,
+        Err(why) => {
+            release_claim(state, record).await;
+            return Err(why);
+        }
+    };
+    let active = launch(state, &workflow.engine, record, input, None);
+    active.set_detached();
+    Ok(())
+}
+
+/// The workflow and input of a claimed drained run: its stored snapshot, on
+/// the unchanged served workflow, without caller-supplied secrets.
+///
+/// @throws String - Why the run cannot resume by itself. The caller releases the claim.
+async fn prepare_drained_resume<'a>(
+    state: &'a AppState,
+    record: &RunRecord,
+) -> Result<(&'a ServedWorkflow, RunInput), String> {
+    let snapshot = match state.store.load_snapshot(&record.run_id).await {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) | Err(_) => return Err("no stored snapshot".to_owned()),
+    };
+    let workflow =
+        state.workflows.get(&record.workflow).filter(|w| w.engine.graph().fingerprint() == snapshot.graph_fingerprint);
+    let Some(workflow) = workflow else {
+        return Err("its workflow is not served or changed since".to_owned());
+    };
+    if crate::drain::needs_caller_secrets(&snapshot) {
+        return Err("it needs secrets only its caller can supply; resume it over the API".to_owned());
+    }
+    let mut input = RunInput::new();
+    input.run_id = Some(record.run_id.clone());
+    input.env = workflow.env.clone();
+    input.resume = Some(ResumeFrom::new(snapshot, IndexMap::new()));
+    Ok((workflow, input))
 }

@@ -13,7 +13,7 @@ pub(crate) fn error_response(status: StatusCode, message: &str) -> Response {
 pub(crate) fn store_error(e: &StoreError) -> Response {
     let status = match e {
         StoreError::NotFound(_) => StatusCode::NOT_FOUND,
-        StoreError::Conflict(_) => StatusCode::CONFLICT,
+        StoreError::Conflict(_) | StoreError::Precondition(_) => StatusCode::CONFLICT,
         StoreError::InvalidId(_) => StatusCode::BAD_REQUEST,
         _ => {
             // I/O and corruption errors name server paths: log them, answer generically.

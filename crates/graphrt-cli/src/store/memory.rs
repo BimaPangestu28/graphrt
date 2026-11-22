@@ -1,13 +1,14 @@
 //! In-process [`RunStore`]. Contents are lost when the process exits.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use futures::future::{BoxFuture, ready};
 use graphrt_core::Snapshot;
+use graphrt_core::coordination::{CoordinationStore, Versioned, validate_key, validate_value};
 use graphrt_core::store::{
     INTERRUPTED_BY_RESTART, RunFilter, RunPage, RunRecord, RunStatus, RunStore, StoreError, StoreResult, StoredEvent,
-    page_of, sort_newest_first, validate_run_id,
+    append_mismatch, check_epoch, page_of, plan_append, sort_newest_first, validate_run_id,
 };
 
 /// Default per-run event cap.
@@ -33,6 +34,8 @@ struct Entry {
 #[derive(Debug)]
 pub struct MemoryStore {
     runs: Mutex<HashMap<String, Entry>>,
+    /// [`CoordinationStore`] objects.
+    objects: Mutex<BTreeMap<String, Versioned>>,
     max_events: usize,
     /// 0 = unlimited.
     max_runs: usize,
@@ -46,7 +49,12 @@ impl Default for MemoryStore {
 
 impl MemoryStore {
     pub fn new() -> Self {
-        Self { runs: Mutex::new(HashMap::new()), max_events: DEFAULT_MAX_EVENTS, max_runs: DEFAULT_MAX_RUNS }
+        Self {
+            runs: Mutex::new(HashMap::new()),
+            objects: Mutex::new(BTreeMap::new()),
+            max_events: DEFAULT_MAX_EVENTS,
+            max_runs: DEFAULT_MAX_RUNS,
+        }
     }
 
     /// Keep at most `max` runs (0 = unlimited). When a new run would exceed it,
@@ -110,12 +118,20 @@ impl RunStore for MemoryStore {
         let result = validate_run_id(&record.run_id).map(|()| {
             let mut runs = self.lock();
             let entry = runs.entry(record.run_id.clone()).or_default();
-            // Keep the event counters the store maintains.
-            let (count, truncated) = entry.record.as_ref().map_or((0, false), |r| (r.event_count, r.events_truncated));
-            let mut record = record;
-            record.event_count = record.event_count.max(count);
-            record.events_truncated |= truncated;
-            entry.record = Some(record);
+            replace_record(entry, record);
+        });
+        Box::pin(ready(result))
+    }
+
+    fn put_if(&self, record: RunRecord, expected_epoch: u64) -> BoxFuture<'_, StoreResult<()>> {
+        let result = validate_run_id(&record.run_id).and_then(|()| {
+            let mut runs = self.lock();
+            let entry = existing(&mut runs, &record.run_id)?;
+            if let Some(stored) = &entry.record {
+                check_epoch(stored, expected_epoch)?;
+            }
+            replace_record(entry, record);
+            Ok(())
         });
         Box::pin(ready(result))
     }
@@ -136,20 +152,34 @@ impl RunStore for MemoryStore {
         Box::pin(ready(result))
     }
 
-    fn append_events<'a>(&'a self, run_id: &'a str, events: Vec<StoredEvent>) -> BoxFuture<'a, StoreResult<()>> {
+    fn append_events<'a>(
+        &'a self,
+        run_id: &'a str,
+        first_index: u64,
+        events: &'a [StoredEvent],
+    ) -> BoxFuture<'a, StoreResult<u64>> {
         let max = self.max_events;
         let result = validate_run_id(run_id).and_then(|()| {
             let mut runs = self.lock();
             let entry = existing(&mut runs, run_id)?;
-            let room = max.saturating_sub(entry.events.len());
-            let dropped = events.len() > room;
-            entry.events.extend(events.into_iter().take(room));
-            let count = u64::try_from(entry.events.len()).unwrap_or(u64::MAX);
-            if let Some(record) = entry.record.as_mut() {
-                record.event_count = count;
-                record.events_truncated |= dropped;
+            let count = entry.record.as_ref().map_or(0, |r| r.event_count);
+            let plan = plan_append(run_id, count, first_index, events.len())?;
+            let (retried, new) = events.split_at(plan.overlap);
+            for (offset, event) in retried.iter().enumerate() {
+                let index = first_index + offset as u64;
+                let stored = usize::try_from(index).ok().and_then(|i| entry.events.get(i));
+                // Events past the cap were never kept and cannot be compared.
+                if stored.is_some_and(|stored| stored.get() != event.get()) {
+                    return Err(append_mismatch(run_id, index));
+                }
             }
-            Ok(())
+            let room = max.saturating_sub(entry.events.len());
+            entry.events.extend(new.iter().take(room).cloned());
+            if let Some(record) = entry.record.as_mut() {
+                record.event_count = plan.new_count;
+                record.events_truncated |= new.len() > room;
+            }
+            Ok(plan.new_count)
         });
         Box::pin(ready(result))
     }
@@ -227,7 +257,15 @@ impl crate::scores::ScoreStore for MemoryStore {
     }
 }
 
-/// Paused -> running, or a conflict.
+/// Replace an entry's record, keeping the event counters the store maintains.
+fn replace_record(entry: &mut Entry, mut record: RunRecord) {
+    let (count, truncated) = entry.record.as_ref().map_or((0, false), |r| (r.event_count, r.events_truncated));
+    record.event_count = record.event_count.max(count);
+    record.events_truncated |= truncated;
+    entry.record = Some(record);
+}
+
+/// Paused -> running at the next epoch, or a conflict.
 pub(super) fn claim(record: &mut RunRecord, now_ms: u64) -> StoreResult<RunRecord> {
     if record.status != RunStatus::Paused {
         return Err(StoreError::Conflict(format!(
@@ -237,6 +275,7 @@ pub(super) fn claim(record: &mut RunRecord, now_ms: u64) -> StoreResult<RunRecor
         )));
     }
     record.status = RunStatus::Running;
+    record.epoch = record.epoch.saturating_add(1);
     record.updated_ms = now_ms;
     Ok(record.clone())
 }
@@ -258,9 +297,81 @@ pub(super) fn mark_interrupted(record: &mut RunRecord, now_ms: u64) -> bool {
     true
 }
 
-/// Whether TTL cleanup may delete this record (never a running one).
+/// Whether TTL cleanup may delete this record (never a running or queued one).
 pub(super) fn purgeable(record: &RunRecord, cutoff_ms: u64) -> bool {
-    record.status != RunStatus::Running && record.updated_ms < cutoff_ms
+    !matches!(record.status, RunStatus::Running | RunStatus::Queued) && record.updated_ms < cutoff_ms
+}
+
+impl MemoryStore {
+    fn objects(&self) -> MutexGuard<'_, BTreeMap<String, Versioned>> {
+        // Values are replaced whole, so a poisoned lock holds consistent data.
+        self.objects.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl CoordinationStore for MemoryStore {
+    fn create_if_absent<'a>(&'a self, key: &'a str, value: Vec<u8>) -> BoxFuture<'a, StoreResult<u64>> {
+        let result = validate_key(key).and_then(|()| validate_value(&value)).and_then(|()| {
+            let mut objects = self.objects();
+            if objects.contains_key(key) {
+                return Err(StoreError::Conflict(format!("key `{key}` already exists")));
+            }
+            objects.insert(key.to_owned(), Versioned { value, version: 1 });
+            Ok(1)
+        });
+        Box::pin(ready(result))
+    }
+
+    fn compare_and_swap<'a>(
+        &'a self,
+        key: &'a str,
+        expected_version: u64,
+        value: Vec<u8>,
+    ) -> BoxFuture<'a, StoreResult<u64>> {
+        let result = validate_key(key).and_then(|()| validate_value(&value)).and_then(|()| {
+            let mut objects = self.objects();
+            let object = objects.get_mut(key).ok_or_else(|| StoreError::NotFound(key.to_owned()))?;
+            check_version(key, object.version, expected_version)?;
+            *object = Versioned { value, version: expected_version + 1 };
+            Ok(object.version)
+        });
+        Box::pin(ready(result))
+    }
+
+    fn get_object<'a>(&'a self, key: &'a str) -> BoxFuture<'a, StoreResult<Option<Versioned>>> {
+        let result = validate_key(key).map(|()| self.objects().get(key).cloned());
+        Box::pin(ready(result))
+    }
+
+    fn list_objects<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, StoreResult<Vec<(String, Versioned)>>> {
+        let objects = self.objects();
+        let listed = objects
+            .range(prefix.to_owned()..)
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .map(|(key, object)| (key.clone(), object.clone()))
+            .collect();
+        Box::pin(ready(Ok(listed)))
+    }
+
+    fn delete_object<'a>(&'a self, key: &'a str, expected_version: u64) -> BoxFuture<'a, StoreResult<bool>> {
+        let result = validate_key(key).and_then(|()| {
+            let mut objects = self.objects();
+            let Some(object) = objects.get(key) else { return Ok(false) };
+            check_version(key, object.version, expected_version)?;
+            objects.remove(key);
+            Ok(true)
+        });
+        Box::pin(ready(result))
+    }
+}
+
+/// [`StoreError::Precondition`] unless a coordination object is at `expected`.
+pub(super) fn check_version(key: &str, actual: u64, expected: u64) -> StoreResult<()> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(StoreError::Precondition(format!("key `{key}` is at version {actual}, expected {expected}")))
+    }
 }
 
 #[cfg(test)]
@@ -314,10 +425,12 @@ mod tests {
         assert_eq!(block_on(store.claim_resume("r1", 2)).unwrap().status, RunStatus::Running);
         assert!(matches!(block_on(store.claim_resume("r1", 3)), Err(StoreError::Conflict(_))));
 
-        block_on(store.append_events("r1", crate::store::raw(&["1", "2"]))).unwrap();
-        block_on(store.append_events("r1", crate::store::raw(&["3", "4"]))).unwrap();
+        block_on(store.append_events("r1", 0, &crate::store::raw(&["1", "2"]))).unwrap();
+        block_on(store.append_events("r1", 2, &crate::store::raw(&["3", "4"]))).unwrap();
+        // A retry past the cap is accepted by index; the count keeps growing.
+        assert_eq!(block_on(store.append_events("r1", 3, &crate::store::raw(&["4", "5"]))).unwrap(), 5);
         let rec = block_on(store.get("r1")).unwrap().unwrap();
-        assert_eq!(rec.event_count, 3);
+        assert_eq!(rec.event_count, 5);
         assert!(rec.events_truncated);
         assert_eq!(crate::store::texts(&block_on(store.events("r1", 1)).unwrap()), ["2", "3"]);
 
@@ -325,6 +438,14 @@ mod tests {
         assert_eq!(block_on(store.get("r1")).unwrap().unwrap().status, RunStatus::Failed);
         assert_eq!(block_on(store.purge_before(100)).unwrap(), 1);
         assert!(block_on(store.get("r1")).unwrap().is_none());
+    }
+
+    #[test]
+    fn passes_the_store_conformance_suite() {
+        let store = MemoryStore::new();
+        block_on(graphrt_core::store_conformance::run_store_suite(&store));
+        block_on(graphrt_core::store_conformance::append_retry_property(&store, 500));
+        block_on(graphrt_core::store_conformance::coordination_suite(&store));
     }
 
     #[cfg(feature = "scores")]

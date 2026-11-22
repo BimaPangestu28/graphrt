@@ -1,0 +1,45 @@
+# Size, memory and start-up budgets of graphrt builds, enforced in CI by
+# scripts/budget-gate.py (job `budgets` in .github/workflows/ci.yml).
+#
+# Budgets are upper bounds for Linux musl binaries built with `--profile min-size`
+# on x86_64 and aarch64. A change that exceeds one fails CI; raising a budget is an
+# explicit decision, made in the same pull request with the reason in its
+# description. The measured baseline lives in bench/baseline/.
+#
+# Units: binary size in MiB (1 MiB = 1 048 576 bytes), RSS in MiB, times in ms.
+
+# Builds of the graphrt CLI to measure. `features` are the cargo features of
+# graphrt-cli, built with --no-default-features. A budget is a number, or a table
+# keyed by `<arch>-<os>` of the binary (`x86_64-linux`, `aarch64-linux`) with a
+# `default` for anything else (macOS builds during development).
+#
+# The binary budgets of the plan (3.4 / 5.6 MiB) were derived from macOS arm64
+# builds (3.20 / 5.42 MiB). Static musl binaries are larger: the first Linux
+# baseline (bench/baseline/linux-musl.md, 2026-11-22) measured 4.38 / 7.40 MiB
+# on x86_64 and 3.72 / 6.16 MiB on aarch64; main was within 43 KiB of that.
+# The Linux budgets below are that baseline plus about 3 % (pending a decision
+# on the final figures); the macOS figures stay as `default`.
+[[build]]
+name = "agent-minimal"
+features = "serve"
+binary_mib = { x86_64-linux = 4.5, aarch64-linux = 3.85, default = 3.4 }
+idle_rss_mib = 5.0
+
+[[build]]
+name = "agent-slim"
+features = "serve,llm,plugins"
+binary_mib = { x86_64-linux = 7.6, aarch64-linux = 6.35, default = 5.6 }
+idle_rss_mib = 6.0
+
+# Time from exec of `graphrt serve` to its first `200` on GET /healthz, p95 over
+# `samples` starts (measured on the agent-slim build).
+[startup]
+build = "agent-slim"
+samples = 30
+healthz_p95_ms = 10.0
+
+# Crates that must never enter the dependency tree (cloud SDKs, Kubernetes
+# clients, HTTP/2): graphrt talks to cloud APIs over its own small REST layer.
+[dependencies]
+banned = ["h2", "kube", "kube-client", "k8s-openapi", "aws-config"]
+banned_prefixes = ["aws-sdk-", "google-cloud-", "azure_"]

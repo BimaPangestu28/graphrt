@@ -1,0 +1,78 @@
+[package]
+name = "graphrt-gcp"
+description = "Google Cloud for the graphrt gateway: hand-rolled GCP auth (metadata server, service-account JWT) and the Cloud Run provider and deploy driver."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-gcp"
+homepage = "https://github.com/BimaPangestu28/graphrt"
+keywords = ["gcp", "cloud-run", "gateway", "deploy", "graphrt"]
+categories = ["api-bindings", "asynchronous"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Google credentials without an SDK: metadata server (access + ID tokens) and
+# service-account keys signed as RS256 JWTs with `ring` (already linked for TLS),
+# exchanged at the OAuth 2.0 token endpoint. Tokens are cached until `exp - 5 min`.
+auth-gcp = ["dep:graphrt-provider-api", "graphrt-provider-api/http", "dep:reqwest", "dep:rustls", "dep:ring", "dep:base64", "dep:tokio"]
+# The run-time Cloud Run provider of the gateway (`Addressing::Url`,
+# platform-scaled, min instances 0): wake, list, invoker ID tokens.
+provider-cloud-run = ["auth-gcp"]
+# Deploy time (`graphrt deploy --target cloud-run`): the Cloud Run deploy driver
+# (Admin API v2 services.patch + operations) and Secret Manager writes. Kept out
+# of the gateway build, which only needs `provider-cloud-run`.
+deploy-cloud-run = ["provider-cloud-run"]
+
+[dependencies]
+graphrt-provider-api = { workspace = true, optional = true }
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "stream"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+ring = { version = "0.17", optional = true, default-features = false, features = ["alloc"] }
+base64 = { version = "0.22", optional = true }
+tokio = { workspace = true, optional = true, features = ["time", "sync", "rt"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "sync"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+reqwest = { workspace = true, features = ["rustls-no-provider"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+futures = { workspace = true }
+graphrt-provider-api = { workspace = true, features = ["http", "conformance"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "auth_conformance"
+required-features = ["auth-gcp"]
+
+[[test]]
+name = "cloud_run_conformance"
+required-features = ["deploy-cloud-run"]
+
+[[test]]
+name = "cloud_run_harness"
+required-features = ["deploy-cloud-run"]
+
+[[example]]
+name = "size_baseline"
+required-features = ["auth-gcp"]
+
+[[example]]
+name = "size_auth_gcp"
+required-features = ["auth-gcp"]
+
+[[example]]
+name = "size_cloud_run"
+required-features = ["deploy-cloud-run"]
+
+[[example]]
+name = "size_cloud_run_provider"
+required-features = ["provider-cloud-run"]

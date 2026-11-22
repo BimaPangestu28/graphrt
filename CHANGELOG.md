@@ -46,6 +46,35 @@ releases may contain breaking changes; they are called out under **Changed**.
   with `user` in the body.
 
 ### Changed
+- **Breaking (`graphrt-core` store API, 0.5.0).** `RunRecord` is
+  `#[non_exhaustive]` (build it with `RunRecord::running` or the new
+  `RunRecord::queued`) and gains `deployment`, `deployment_version`, `epoch`
+  and `owner`; `RunStatus` gains `Queued`. `RunStore::append_events` takes the
+  index of the batch's first event (`append_events(run_id, first_index,
+  &events) -> event_count`) and is idempotent per index range: a retried batch
+  is stored once, a gap or an altered retry is a `Conflict`. New
+  `RunStore::put_if` (a write fenced by the record's epoch, `StoreError::
+  Precondition` otherwise) and `RunStore::claim_dispatch` (queued/paused →
+  running at `epoch + 1`); `claim_resume` increments the epoch too.
+  `event_count` is now the index of the next event and keeps counting past
+  the store's per-run cap. `graphrt serve` writes final states with `put_if`,
+  and an event batch whose write failed goes out again at the same index with
+  the next one instead of being lost. See
+  [docs/gateway-protocol.md](docs/gateway-protocol.md#run-store-contract).
+- Every SSE event of `graphrt serve` has an `id:`: the event's index in the
+  run's log (continuing across resumes), `<index>.<k>` for `response` text;
+  `lagged` events have none.
+- `graphrt serve` writes a run's events to the store every 32 events **or**
+  250 ms after the first unwritten one (before: only every 32 events), so
+  replays trail live runs by at most a quarter second. Store writes failing
+  with an I/O error are retried five times with backoff (about 0.8 s); a
+  paused run whose snapshot cannot be stored gets `error_type:
+  store_unavailable` instead of only a log line.
+- A streaming caller or `/events` listener that falls behind a fast run is
+  refilled from the run's in-memory feed instead of silently skipping events
+  (streaming starts skipped them before); only events beyond the feed's first
+  10,000 are reported with a `lagged` event.
+- The example Fly config sets `kill_signal` and `kill_timeout`.
 - The `eval` and `online-eval` cargo features of `graphrt-cli` are no longer
   on by default (`online-eval` needs `eval`), so `cargo install graphrt-cli`
   and `docker build .` are smaller. Enable them with
@@ -55,6 +84,84 @@ releases may contain breaking changes; they are called out under **Changed**.
   `langfuse` stay on by default.
 
 ### Added
+- `graphrt-provider-api` (internal crate): the `Provider` / `DeployDriver`
+  traits, capabilities and error kinds of the upcoming `graphrt gateway`, the
+  shared provider HTTP layer (token bucket per provider API, jittered retry,
+  token cache with one refresh on 401) and the C1–C13 provider conformance
+  harness with a scripted fake HTTP server; `Provider::invoke` lets a
+  platform without an HTTP address (Lambda) carry the gateway's requests, and
+  `max_grace_secs = 0` marks a platform where no preemption is possible.
+  No user-visible change yet.
+- `graphrt-gcp` crate (gateway plan F2, GCP family), each part behind its own
+  cargo feature and without a Google SDK. `auth-gcp`: access and ID tokens from
+  the metadata server or a service-account key (RS256 JWT signed with `ring`,
+  exchanged at the OAuth 2.0 token endpoint), cached until `exp - 5 min`, one
+  shared fetch per token, one refresh after a 401, ±5 min clock skew corrected
+  from the token endpoint's `Date`, never logged. `provider-cloud-run`: the
+  Cloud Run provider (`Addressing::Url`, platform-scaled, min instances 0,
+  startup CPU boost, request-based billing, 10 s grace → preempt, 60-min cap →
+  planned preempt); `deploy-cloud-run`: its deploy driver over the Cloud Run
+  Admin API v2 (one traffic tag per version so old versions stay wakeable
+  until retired) and Secret Manager references. Conformance C1–C12 against fake Google APIs; see
+  [docs/gateway-cloud-run.md](docs/gateway-cloud-run.md) for IAM roles and what
+  still needs a real project.
+- `graphrt-provider-k8s` (internal crate): the Kubernetes provider of the
+  upcoming gateway, for self-hosted clusters, kind/k3s, GKE, EKS and AKS.
+  Scales a version's Deployment 0↔N through the `scale` subresource
+  (compare-and-swap, singleflight per version), picks the released replica
+  as the scale-in victim with `pod-deletion-cost`, tracks readiness from
+  EndpointSlice watches, and server-side applies Deployment + Service with
+  Secret references only. Cluster auth: in-cluster service account, kubeconfig
+  token / token file / client certificate / exec plugins, and a `TokenSource`
+  hook for EKS, GKE and AKS tokens. Minimal REST on the shared provider HTTP
+  layer, no `kube` / `k8s-openapi`. Passes the shared C1–C13 harness against an
+  emulated API server and an opt-in kind test. See
+  [docs/kubernetes-provider.md](docs/kubernetes-provider.md).
+- `GET /v1/runs/{id}/events` honours `Last-Event-ID` (`N` resumes after event
+  `N`, `N.k` at event `N`), so reconnecting clients get the rest of the run
+  without gaps or duplicates.
+- `graphrt serve --trust-gateway --deployment NAME`: the agent side of the
+  gateway protocol (`Graphrt-Protocol: 1`). Signed (`Graphrt-Sig`,
+  HMAC-SHA256 over method, path, deployment, run id, epoch, a per-request
+  nonce and the body hash,
+  key ids from `$GRAPHRT_GATEWAY_KEYS` for rotation, ±30 s window, replays
+  refused) `/internal/v1` routes: `hello`, `runs` (start, or resume with the
+  snapshot in the body; same epoch attaches or replays, never re-executes),
+  `runs/{id}/stream` (reattach from any `Last-Event-ID`, response text
+  included), `runs/{id}/abort`, `drain`, and `orphans`. A gateway-started run
+  whose stream breaks is preempted after 3 s without a reattach and held for
+  `--reclaim-grace-secs` (60) as an orphan, reported to `--gateway-url` (HTTP
+  or Unix socket) and listed for reclaim, instead of being aborted. Cargo
+  feature `trust-gateway` (default; no new dependency). See [docs/gateway-protocol.md](docs/gateway-protocol.md).
+- `graphrt serve --listen unix:/path` (alias of `--addr`): listen on a Unix
+  socket created mode `0600`.
+- `CoordinationStore` in `graphrt-core` (versioned objects written with
+  `create_if_absent` / `compare_and_swap`), implemented by the memory and
+  directory stores, and the abstract store conformance suite
+  `graphrt_core::store_conformance` (feature `store-conformance`), including
+  a property test of retried, overlapping and lost-reply appends.
+- Graceful shutdown for `graphrt serve`: SIGTERM and SIGINT start a drain that
+  refuses new runs (`503` + `Retry-After`, `GET /readyz` turns `503
+  draining`), pauses every active run (async, streaming and blocking),
+  preempts the ones still busy shortly before `--drain-timeout` (default
+  `4s`), stores them and exits `0`. Drained runs end `paused` with reason kind
+  `drained`, never `failed`; async and webhook runs are resumed by the next
+  server on the same store (`--no-resume-drained` to opt out). Before, a
+  SIGTERM was ignored when graphrt ran as PID 1 of a container (the image has
+  no init) and every active run was lost to the SIGKILL. See
+  [docs/serving.md](docs/serving.md#shutdown-and-restarts) and the grace
+  periods per platform in [docs/deploy.md](docs/deploy.md#graceful-shutdown).
+- `RunHandle::preempt` / `preempt_with` and `RunHandle::pause_with` in
+  `graphrt-core`: a preempt cancels in-flight nodes and pauses at once; a
+  cancelled node is saved as pending with its `exec_id` and runs again on
+  resume (at-least-once per node), and container bodies resume at the item
+  that was running.
+- `GET /readyz` readiness endpoint.
+- CI gate `scripts/budget-gate.py` with budgets in `bench/budgets.toml`: binary
+  size and idle RSS of the `serve` and `serve,llm,plugins` builds,
+  exec→`/healthz` p95, and banned crates (cloud SDKs, Kubernetes clients, `h2`),
+  run as the `budgets` job for Linux musl x86_64 and aarch64. Baseline in
+  `bench/baseline/`.
 - Live provider test matrix: `crates/graphrt-llm/tests/live_providers.rs` sends
   tiny streamed chat and tool-call round-trip requests to OpenAI, Anthropic,
   Gemini and Bedrock and a typed question to TypeSafe (opt-in with

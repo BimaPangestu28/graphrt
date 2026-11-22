@@ -36,7 +36,7 @@ impl Delivery {
 
 /// How much of a run the caller receives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum EventScope {
+pub(crate) enum EventScope {
     /// Every engine event and the full result (API-key callers, `--user-events all`).
     Full,
     /// The answer stream, the final result and pause prompts (end users by default).
@@ -54,6 +54,16 @@ pub(super) struct Reply {
 /// Aborts the run when a synchronous caller (blocking or streaming) goes away before
 /// the run finished. Detached runs never get one.
 pub(super) struct AbortOnDrop(pub(super) Arc<ActiveRun>);
+
+/// Kept alive by a run's SSE response for as long as the client is connected.
+/// What happens when it is dropped is the guard's business: [`AbortOnDrop`]
+/// aborts the run, the gateway's reclaim guard holds it as an orphan.
+pub(crate) trait StreamGuard: Send + 'static {
+    /// The run's terminal event was handed to the response.
+    fn terminal_sent(&self) {}
+}
+
+impl StreamGuard for AbortOnDrop {}
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {

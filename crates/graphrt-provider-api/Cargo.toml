@@ -1,0 +1,43 @@
+[package]
+name = "graphrt-provider-api"
+description = "Provider abstraction of the graphrt gateway: the Provider / DeployDriver traits, shared provider HTTP layer and the C1-C13 conformance harness."
+readme = "README.md"
+keywords = ["workflow", "agent", "gateway", "scale-to-zero", "deploy"]
+categories = ["development-tools"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Internal contract between the gateway and its provider crates; not on crates.io
+# until it has settled through F2.
+publish = false
+
+[features]
+default = []
+# `ProviderHttp`: reqwest client with the per-API token bucket, jittered retry and
+# refresh-once-on-401 (rustls with ring, crypto provider installed by the binary).
+http = ["dep:reqwest"]
+# C1-C13 conformance harness, the scripted fake HTTP server and an in-memory
+# reference provider. For tests and dev-dependencies only, never in a binary.
+conformance = ["tokio/net", "tokio/io-util", "tokio/rt", "tokio/macros"]
+
+[dependencies]
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time", "sync"] }
+reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "test-util", "net", "io-util"] }
+reqwest = { workspace = true, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "conformance"
+required-features = ["http", "conformance"]

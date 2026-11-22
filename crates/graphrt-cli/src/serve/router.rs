@@ -3,8 +3,10 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::DefaultBodyLimit;
+use axum::extract::{DefaultBodyLimit, State};
+use axum::http::StatusCode;
 use axum::middleware;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 
 use super::auth::{authorize_start, require_auth};
@@ -31,8 +33,12 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     // Opt-in usage telemetry counts API requests (in memory); health checks are not counted.
     #[cfg(feature = "telemetry")]
     let counted = counted.layer(middleware::from_fn(crate::telemetry::count_requests));
+    // Gateway-signed routes authenticate themselves (HMAC, `--trust-gateway`).
+    #[cfg(feature = "trust-gateway")]
+    let counted = if state.gateway_agent.is_some() { counted.merge(crate::gateway_agent::router()) } else { counted };
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/readyz", get(readiness))
         .merge(counted)
         .layer(DefaultBodyLimit::max(max_body_bytes))
         // Outermost: early rejections leave the body unread; drain it so keep-alive clients can reuse the connection.
@@ -41,6 +47,16 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
             crate::body_drain::drain_unread_body,
         ))
         .with_state(state)
+}
+
+/// `GET /readyz`: `200 ready`, or `503 draining` once a shutdown drain began, so
+/// a load balancer stops routing new runs here. `/healthz` stays `200` (liveness).
+async fn readiness(State(state): State<Arc<AppState>>) -> Response {
+    if state.is_draining() {
+        (StatusCode::SERVICE_UNAVAILABLE, "draining").into_response()
+    } else {
+        "ready".into_response()
+    }
 }
 
 /// Routes that take the API key only; the caller adds the `require_auth` layer.

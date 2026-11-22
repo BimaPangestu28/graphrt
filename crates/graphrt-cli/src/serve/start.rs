@@ -58,7 +58,7 @@ impl RunRequest {
     /// Validate and copy the caller context onto `record`.
     ///
     /// @throws String - A message for a `400` response when a field is too large.
-    fn apply_context(&self, record: &mut RunRecord) -> Result<(), String> {
+    pub(crate) fn apply_context(&self, record: &mut RunRecord) -> Result<(), String> {
         if self.metadata.len() > MAX_METADATA_ENTRIES {
             return Err(format!("`metadata` has more than {MAX_METADATA_ENTRIES} entries"));
         }

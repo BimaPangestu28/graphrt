@@ -208,6 +208,18 @@ They honour standard proxy environment variables, except the OTel exporter and
 - **Identifiers.** Run ids and dataset ids are validated (`[A-Za-z0-9._-]`, no
   leading dot) before any path is built. Workflow names and document ids are
   only lookup keys.
+- **Behind a gateway (`--trust-gateway`).** The `/internal/v1` routes accept
+  only requests signed with HMAC-SHA256 by a key of `$GRAPHRT_GATEWAY_KEYS`
+  (32+ bytes, key ids for rotation) over the method, path and query,
+  deployment, run id, epoch and body hash, within ±30 s; each signature is
+  accepted once (replays are refused even within the window) and requests for
+  another `--deployment` get `403`. The private network between gateway and
+  agents is not assumed to be a trust boundary (Fly's private network spans an
+  organization, pod networks are flat): add NetworkPolicy or an internal
+  ingress on top. Agent reports to the gateway are signed the same way and only
+  go to the operator-configured `--gateway-url`. `--trust-gateway` and
+  `--verify-jwt` are exclusive. See [gateway-protocol.md](gateway-protocol.md#signatures).
+- **Unix sockets.** `--listen unix:/path` creates the socket mode `0600`.
 - **Resume with a client snapshot.** `POST /v1/runs/{id}/resume` accepts a
   client-supplied snapshot. Snapshots are not signed, so a caller holding the
   API key can forge node state, for example to skip a human-approval step. Every
