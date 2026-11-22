@@ -116,7 +116,9 @@ pub struct DeployArgs {
 fn random_hex(bytes: usize) -> Result<String, CliError> {
     use ring::rand::SecureRandom as _;
     let mut buffer = vec![0u8; bytes];
-    ring::rand::SystemRandom::new().fill(&mut buffer).map_err(|_| CliError::failed("system random number generator unavailable"))?;
+    ring::rand::SystemRandom::new()
+        .fill(&mut buffer)
+        .map_err(|_| CliError::failed("system random number generator unavailable"))?;
     Ok(graphrt_gateway::hex::encode(&buffer))
 }
 
@@ -126,13 +128,18 @@ fn print(text: &str) -> Result<(), CliError> {
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, CliError> {
-    tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|error| CliError::failed(format!("cannot start runtime: {error}")))
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| CliError::failed(format!("cannot start runtime: {error}")))
 }
 
 fn agent_command(workflow: &std::path::Path, extra: &[String]) -> Result<Vec<String>, CliError> {
     let exe = std::env::current_exe().map_err(|error| CliError::failed(format!("cannot find this binary: {error}")))?;
-    let workflow = std::fs::canonicalize(workflow).map_err(|error| CliError::invalid(format!("{}: {error}", workflow.display())))?;
-    let mut command = vec![exe.to_string_lossy().into_owned(), "serve".to_owned(), workflow.to_string_lossy().into_owned()];
+    let workflow = std::fs::canonicalize(workflow)
+        .map_err(|error| CliError::invalid(format!("{}: {error}", workflow.display())))?;
+    let mut command =
+        vec![exe.to_string_lossy().into_owned(), "serve".to_owned(), workflow.to_string_lossy().into_owned()];
     command.extend(extra.iter().cloned());
     Ok(command)
 }
@@ -157,7 +164,8 @@ pub fn gateway(args: GatewayArgs) -> Result<u8, CliError> {
             return Ok(EXIT_OK);
         }
         Some(GatewayCommand::Check { config }) => {
-            let text = std::fs::read_to_string(&config).map_err(|error| CliError::invalid(format!("{}: {error}", config.display())))?;
+            let text = std::fs::read_to_string(&config)
+                .map_err(|error| CliError::invalid(format!("{}: {error}", config.display())))?;
             let parsed = GatewayConfig::from_yaml(&text).map_err(CliError::invalid)?;
             print(&format!("ok: {} deployments, store {}", parsed.deployments.len(), parsed.store.display()))?;
             return Ok(EXIT_OK);
@@ -165,10 +173,14 @@ pub fn gateway(args: GatewayArgs) -> Result<u8, CliError> {
         Some(GatewayCommand::Import { from, store, deployment }) => return import(&from, &store, &deployment),
         None => {}
     }
-    let config_path = args.config.clone().or_else(|| std::env::var_os("GRAPHRT_GATEWAY_CONFIG").filter(|value| !value.is_empty()).map(PathBuf::from));
+    let config_path = args
+        .config
+        .clone()
+        .or_else(|| std::env::var_os("GRAPHRT_GATEWAY_CONFIG").filter(|value| !value.is_empty()).map(PathBuf::from));
     let (mut config, versions) = match (&config_path, &args.dev) {
         (Some(path), None) => {
-            let text = std::fs::read_to_string(path).map_err(|error| CliError::invalid(format!("{}: {error}", path.display())))?;
+            let text = std::fs::read_to_string(path)
+                .map_err(|error| CliError::invalid(format!("{}: {error}", path.display())))?;
             (GatewayConfig::from_yaml(&text).map_err(CliError::invalid)?, Vec::new())
         }
         (None, Some(workflow)) => dev_config(workflow)?,
@@ -184,8 +196,13 @@ pub fn gateway(args: GatewayArgs) -> Result<u8, CliError> {
 fn dev_config(workflow: &std::path::Path) -> Result<(GatewayConfig, Vec<(String, VersionInfo)>), CliError> {
     let mut config = GatewayConfig::from_yaml("store: .graphrt/gateway-dev.db").map_err(CliError::invalid)?;
     config.inline_admin_token = Some(random_hex(16)?);
-    let deployment: DeploymentConfig = serde_saphyr::from_str("name: dev\nkeys_env: unused\nopen: true\n").map_err(|error| CliError::failed(error.to_string()))?;
-    let deployment = DeploymentConfig { inline_keys: Some(format!("dev:{}", random_hex(32)?)), pool: PoolFileConfig { idle_timeout_secs: 120, ..PoolFileConfig::default() }, ..deployment };
+    let deployment: DeploymentConfig = serde_saphyr::from_str("name: dev\nkeys_env: unused\nopen: true\n")
+        .map_err(|error| CliError::failed(error.to_string()))?;
+    let deployment = DeploymentConfig {
+        inline_keys: Some(format!("dev:{}", random_hex(32)?)),
+        pool: PoolFileConfig { idle_timeout_secs: 120, ..PoolFileConfig::default() },
+        ..deployment
+    };
     config.deployments.push(deployment);
     let version = VersionInfo {
         version: format!("dev-{}", graphrt_core::store::now_ms()),
@@ -202,9 +219,15 @@ fn dev_config(workflow: &std::path::Path) -> Result<(GatewayConfig, Vec<(String,
 
 fn import(from: &std::path::Path, store: &std::path::Path, deployment: &str) -> Result<u8, CliError> {
     let source = crate::store::FileStore::open(from)?;
-    let target = graphrt_gateway::store::SqliteStore::open(store).map_err(|error| CliError::failed(error.to_string()))?;
-    let summary = runtime()?.block_on(graphrt_gateway::store::import::import_runs(&source, &target, deployment)).map_err(|error| CliError::failed(error.to_string()))?;
-    print(&format!("imported {} runs ({} events), skipped {} already present", summary.imported, summary.events, summary.skipped))?;
+    let target =
+        graphrt_gateway::store::SqliteStore::open(store).map_err(|error| CliError::failed(error.to_string()))?;
+    let summary = runtime()?
+        .block_on(graphrt_gateway::store::import::import_runs(&source, &target, deployment))
+        .map_err(|error| CliError::failed(error.to_string()))?;
+    print(&format!(
+        "imported {} runs ({} events), skipped {} already present",
+        summary.imported, summary.events, summary.skipped
+    ))?;
     Ok(EXIT_OK)
 }
 
@@ -214,7 +237,8 @@ fn import(from: &std::path::Path, store: &std::path::Path, deployment: &str) -> 
 /// Missing token, unreachable gateway, refused spec.
 pub fn deploy(args: DeployArgs) -> Result<u8, CliError> {
     let DeployTarget::Local = args.target;
-    let token = std::env::var(&args.token_env).map_err(|_| CliError::usage(format!("set {} to the gateway's admin token", args.token_env)))?;
+    let token = std::env::var(&args.token_env)
+        .map_err(|_| CliError::usage(format!("set {} to the gateway's admin token", args.token_env)))?;
     let version = args.version.clone().unwrap_or_else(|| format!("v{}", graphrt_core::store::now_ms() / 1000));
     let mut provider_settings = BTreeMap::new();
     provider_settings.insert("workflow".to_owned(), serde_json::Value::from(workflow_name(&args.workflow)));
@@ -234,7 +258,11 @@ pub fn deploy(args: DeployArgs) -> Result<u8, CliError> {
         provider_settings,
     };
     graphrt_gateway::install_crypto_provider();
-    let gateway = args.gateway.clone().or_else(|| std::env::var("GRAPHRT_GATEWAY_URL").ok()).unwrap_or_else(|| "http://127.0.0.1:8700".to_owned());
+    let gateway = args
+        .gateway
+        .clone()
+        .or_else(|| std::env::var("GRAPHRT_GATEWAY_URL").ok())
+        .unwrap_or_else(|| "http://127.0.0.1:8700".to_owned());
     let driver = graphrt_gateway::deploy::LocalDeployDriver::new(&gateway, &token);
     let deployed = runtime()?.block_on(driver.apply(&spec)).map_err(|error| CliError::failed(error.to_string()))?;
     print(&format!("deployed {}@{} (target local)", deployed.name, deployed.version))?;

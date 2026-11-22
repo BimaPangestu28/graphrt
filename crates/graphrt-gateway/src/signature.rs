@@ -58,7 +58,9 @@ impl GatewayKey {
     /// # Errors
     /// Invalid id (1-64 of `[A-Za-z0-9_.-]`) or a secret under [`MIN_KEY_BYTES`].
     pub fn new(kid: &str, secret: &[u8]) -> Result<Self, String> {
-        let kid_ok = !kid.is_empty() && kid.len() <= 64 && kid.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        let kid_ok = !kid.is_empty()
+            && kid.len() <= 64
+            && kid.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
         if !kid_ok {
             return Err(format!("invalid gateway key id `{kid}`"));
         }
@@ -102,7 +104,8 @@ impl GatewayKey {
 pub fn parse_keys(text: &str) -> Result<Vec<GatewayKey>, String> {
     let mut keys: Vec<GatewayKey> = Vec::new();
     for entry in text.split(',').map(str::trim).filter(|entry| !entry.is_empty()) {
-        let (kid, hex) = entry.split_once(':').ok_or_else(|| "gateway keys are `kid:hexsecret`, comma-separated".to_owned())?;
+        let (kid, hex) =
+            entry.split_once(':').ok_or_else(|| "gateway keys are `kid:hexsecret`, comma-separated".to_owned())?;
         let secret = crate::hex::decode(hex.trim()).ok_or_else(|| format!("gateway key `{kid}` is not hex"))?;
         if keys.iter().any(|key| key.kid == kid) {
             return Err(format!("gateway key id `{kid}` appears twice"));

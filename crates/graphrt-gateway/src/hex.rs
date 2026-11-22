@@ -12,7 +12,7 @@ pub fn encode(bytes: &[u8]) -> String {
 
 /// Bytes of an even-length hex string.
 pub fn decode(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return None;
     }
     let digit = |c: u8| (c as char).to_digit(16).and_then(|value| u8::try_from(value).ok());

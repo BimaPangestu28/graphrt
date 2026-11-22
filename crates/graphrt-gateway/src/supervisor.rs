@@ -112,7 +112,13 @@ impl std::fmt::Debug for LiveRun {
 }
 
 impl LiveRun {
-    fn new(run_id: &str, deployment: Arc<Deployment>, input: RunInput, callback: Option<String>, ring_capacity: usize) -> Arc<Self> {
+    fn new(
+        run_id: &str,
+        deployment: Arc<Deployment>,
+        input: RunInput,
+        callback: Option<String>,
+        ring_capacity: usize,
+    ) -> Arc<Self> {
         let (frames, _) = broadcast::channel(1024);
         let (settled, _) = watch::channel(Settled::Running);
         Arc::new(Self {
@@ -284,7 +290,8 @@ fn stored_event(data: &str) -> StoredEvent {
     {
         object.remove("snapshot");
     }
-    serde_json::value::RawValue::from_string(value.to_string()).unwrap_or_else(|_| serde_json::value::RawValue::NULL.to_owned())
+    serde_json::value::RawValue::from_string(value.to_string())
+        .unwrap_or_else(|_| serde_json::value::RawValue::NULL.to_owned())
 }
 
 /// What ended one execution.
@@ -299,7 +306,10 @@ enum Outcome {
 /// such a run is re-dispatched at once instead of waiting for a human.
 fn is_external_pause(event: &Event) -> bool {
     match event {
-        Event::RunPaused { reasons, .. } => !reasons.is_empty() && reasons.iter().all(|reason| reason.kind == "external" || reason.kind == "gateway_disconnected"),
+        Event::RunPaused { reasons, .. } => {
+            !reasons.is_empty()
+                && reasons.iter().all(|reason| reason.kind == "external" || reason.kind == "gateway_disconnected")
+        }
         _ => false,
     }
 }
@@ -319,7 +329,10 @@ impl Gateway {
 
     /// Registers a deployment.
     pub fn add_deployment(&self, deployment: Arc<Deployment>) {
-        self.deployments.write().unwrap_or_else(std::sync::PoisonError::into_inner).insert(deployment.name.clone(), deployment);
+        self.deployments
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(deployment.name.clone(), deployment);
     }
 
     /// A deployment by name.
@@ -367,7 +380,9 @@ impl Gateway {
                 tokio::time::sleep(Duration::from_secs(30)).await;
             }
             let mut live = gateway.live.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if live.get(&run.run_id).is_some_and(|current| Arc::ptr_eq(current, &run)) && !matches!(*run.settled.borrow(), Settled::Running) {
+            if live.get(&run.run_id).is_some_and(|current| Arc::ptr_eq(current, &run))
+                && !matches!(*run.settled.borrow(), Settled::Running)
+            {
                 live.remove(&run.run_id);
             }
         });
@@ -377,7 +392,12 @@ impl Gateway {
     ///
     /// # Errors
     /// See [`StartError`].
-    pub async fn start_run(self: &Arc<Self>, deployment: &Arc<Deployment>, input: RunInput, options: StartOptions) -> Result<Started, StartError> {
+    pub async fn start_run(
+        self: &Arc<Self>,
+        deployment: &Arc<Deployment>,
+        input: RunInput,
+        options: StartOptions,
+    ) -> Result<Started, StartError> {
         let version = deployment.current()?;
         let run_id = options.run_id.clone().unwrap_or_else(new_run_id);
         graphrt_core::store::validate_run_id(&run_id).map_err(|error| StartError::Conflict(error.to_string()))?;
@@ -385,7 +405,13 @@ impl Gateway {
             return Ok(Started::Duplicate(Box::new(existing)));
         }
         let lease = if options.interactive { Some(version.pool.acquire().await?) } else { None };
-        let mut record = RunRecord::queued(&run_id, &version.info.workflow, &version.info.fingerprint, Some(deployment.name.clone()), now_ms());
+        let mut record = RunRecord::queued(
+            &run_id,
+            &version.info.workflow,
+            &version.info.fingerprint,
+            Some(deployment.name.clone()),
+            now_ms(),
+        );
         record.deployment_version = Some(version.info.version.clone());
         for (key, value) in options.metadata {
             record.metadata.insert(key, value);
@@ -420,7 +446,14 @@ impl Gateway {
     ///
     /// # Errors
     /// `NotFound`, `Conflict` (not paused / already claimed), `Version(Retired)`.
-    pub async fn resume_run(self: &Arc<Self>, deployment: &Arc<Deployment>, run_id: &str, inputs: Json, secrets: serde_json::Map<String, Json>, input: Option<RunInput>) -> Result<Arc<LiveRun>, StartError> {
+    pub async fn resume_run(
+        self: &Arc<Self>,
+        deployment: &Arc<Deployment>,
+        run_id: &str,
+        inputs: Json,
+        secrets: serde_json::Map<String, Json>,
+        input: Option<RunInput>,
+    ) -> Result<Arc<LiveRun>, StartError> {
         let record = self.store.get(run_id).await?.ok_or(StartError::NotFound)?;
         if record.deployment.as_deref() != Some(deployment.name.as_str()) {
             return Err(StartError::NotFound);
@@ -430,11 +463,16 @@ impl Gateway {
         }
         let version_name = record.deployment_version.clone().unwrap_or_default();
         let version = deployment.version(&version_name, now_ms())?;
-        let snapshot = self.store.load_snapshot(run_id).await?.ok_or_else(|| StartError::Conflict("paused run has no snapshot".to_owned()))?;
+        let snapshot = self
+            .store
+            .load_snapshot(run_id)
+            .await?
+            .ok_or_else(|| StartError::Conflict("paused run has no snapshot".to_owned()))?;
         let lease = version.pool.acquire().await?;
         // Claim before answering, so a second resume of the same pause is refused
         // and no reader sees the run still paused after a 202.
-        let record = self.store.claim_dispatch(run_id, record.epoch, Some(lease.endpoint.replica.id.clone()), now_ms()).await?;
+        let record =
+            self.store.claim_dispatch(run_id, record.epoch, Some(lease.endpoint.replica.id.clone()), now_ms()).await?;
         let previous = self.live_run(run_id).and_then(|run| run.input());
         let run_input = input.or(previous).unwrap_or_default();
         let run = LiveRun::new(run_id, deployment.clone(), run_input, None, self.settings.replay_ring);
@@ -442,7 +480,9 @@ impl Gateway {
         let resume = serde_json::json!({ "snapshot": snapshot, "inputs": inputs, "secrets": secrets });
         let gateway = Arc::clone(self);
         let supervised = run.clone();
-        tokio::spawn(async move { gateway.supervise_claimed(supervised, version, record, Some(lease), Some(resume)).await });
+        tokio::spawn(
+            async move { gateway.supervise_claimed(supervised, version, record, Some(lease), Some(resume)).await },
+        );
         Ok(run)
     }
 
@@ -459,12 +499,17 @@ impl Gateway {
         if record.status.is_terminal() {
             return Err(StartError::Conflict("run already finished".to_owned()));
         }
-        let current = self.live_run(run_id).and_then(|run| run.current.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+        let current = self
+            .live_run(run_id)
+            .and_then(|run| run.current.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
         if record.status == RunStatus::Running
             && let Some((address, epoch)) = current
             && let Some(key) = deployment.signing_key()
         {
-            self.agents.abort(&address, key, &deployment.name, RunScope { run_id, epoch: Some(epoch) }).await.map_err(|error| StartError::Conflict(error.to_string()))?;
+            self.agents
+                .abort(&address, key, &deployment.name, RunScope { run_id, epoch: Some(epoch) })
+                .await
+                .map_err(|error| StartError::Conflict(error.to_string()))?;
             return Ok(record);
         }
         let epoch = record.epoch;
@@ -475,7 +520,13 @@ impl Gateway {
         Ok(record)
     }
 
-    fn dispatch_body(&self, version: &VersionEntry, record: &RunRecord, input: Option<&RunInput>, resume: Option<&Json>) -> Json {
+    fn dispatch_body(
+        &self,
+        version: &VersionEntry,
+        record: &RunRecord,
+        input: Option<&RunInput>,
+        resume: Option<&Json>,
+    ) -> Json {
         let mut body = input.map(|input| input.body.clone()).unwrap_or_default();
         body.remove("stream");
         body.remove("async");
@@ -488,7 +539,9 @@ impl Gateway {
         if let Some(resume) = resume {
             let mut resume = resume.clone();
             // Inputs of the original request re-supply secret inputs after a migration.
-            if let (Some(object), Some(inputs)) = (resume.as_object_mut(), input.and_then(|input| input.body.get("inputs")).and_then(Json::as_object)) {
+            if let (Some(object), Some(inputs)) =
+                (resume.as_object_mut(), input.and_then(|input| input.body.get("inputs")).and_then(Json::as_object))
+            {
                 let secrets = object.entry("secrets").or_insert_with(|| Json::Object(Default::default()));
                 if let Some(secrets) = secrets.as_object_mut() {
                     for (name, value) in inputs {
@@ -506,7 +559,7 @@ impl Gateway {
     /// Writes buffered events, retrying transient failures (never dropping
     /// them silently: a final failure is counted and logged).
     async fn flush(&self, run_id: &str, buffer: &mut Vec<(u64, StoredEvent)>) -> Option<u64> {
-        let Some(first) = buffer.first().map(|(index, _)| *index) else { return None };
+        let first = buffer.first().map(|(index, _)| *index)?;
         let events: Vec<StoredEvent> = buffer.drain(..).map(|(_, event)| event).collect();
         for attempt in 0..3u32 {
             match self.store.append_events(run_id, first, &events).await {
@@ -564,7 +617,11 @@ impl Gateway {
             let kind = event_type(&frame.data).unwrap_or_default();
             let terminal = is_terminal_type(&kind).then(|| serde_json::from_str::<Event>(&frame.data).ok()).flatten();
             buffer.push((index, stored_event(&frame.data)));
-            let public = if kind == "run_paused" { Frame { data: stored_event(&frame.data).get().to_owned(), ..frame } } else { frame };
+            let public = if kind == "run_paused" {
+                Frame { data: stored_event(&frame.data).get().to_owned(), ..frame }
+            } else {
+                frame
+            };
             run.publish(public);
             if let Some(event) = terminal {
                 if let Some(count) = self.flush(&run.run_id, &mut buffer).await {
@@ -589,7 +646,14 @@ impl Gateway {
 
     /// Opens the stream of `record` at its current epoch on `lease`'s replica,
     /// moving to another replica when one is unreachable or draining.
-    async fn open_stream(&self, run: &LiveRun, version: &VersionEntry, record: &RunRecord, lease: &mut Option<Lease>, resume: Option<&Json>) -> Result<AgentStream, String> {
+    async fn open_stream(
+        &self,
+        run: &LiveRun,
+        version: &VersionEntry,
+        record: &RunRecord,
+        lease: &mut Option<Lease>,
+        resume: Option<&Json>,
+    ) -> Result<AgentStream, String> {
         let deployment = &run.deployment;
         let key = deployment.signing_key().ok_or("deployment has no signing key")?;
         let mut last_error = String::new();
@@ -600,9 +664,14 @@ impl Gateway {
             };
             let body = self.dispatch_body(version, record, run.input().as_ref(), resume);
             let scope = RunScope { run_id: &run.run_id, epoch: Some(record.epoch) };
-            match self.agents.start_run_on(deployment.provider.as_ref(), &current.endpoint, key, &deployment.name, scope, &body).await {
+            match self
+                .agents
+                .start_run_on(deployment.provider.as_ref(), &current.endpoint, key, &deployment.name, scope, &body)
+                .await
+            {
                 Ok(stream) => {
-                    *run.current.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((current.endpoint.address.clone(), record.epoch));
+                    *run.current.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some((current.endpoint.address.clone(), record.epoch));
                     *lease = Some(current);
                     return Ok(stream);
                 }
@@ -677,18 +746,45 @@ impl Gateway {
     }
 
     /// Drives `record` through executions until it settles.
-    async fn supervise(self: Arc<Self>, run: Arc<LiveRun>, version: VersionEntry, record: RunRecord, lease: Option<Lease>, resume: Option<Json>) {
+    async fn supervise(
+        self: Arc<Self>,
+        run: Arc<LiveRun>,
+        version: VersionEntry,
+        record: RunRecord,
+        lease: Option<Lease>,
+        resume: Option<Json>,
+    ) {
         self.supervise_inner(run, version, record, lease, resume, false).await;
     }
 
     /// [`Self::supervise`] for a record already claimed at its current epoch.
-    async fn supervise_claimed(self: Arc<Self>, run: Arc<LiveRun>, version: VersionEntry, record: RunRecord, lease: Option<Lease>, resume: Option<Json>) {
+    async fn supervise_claimed(
+        self: Arc<Self>,
+        run: Arc<LiveRun>,
+        version: VersionEntry,
+        record: RunRecord,
+        lease: Option<Lease>,
+        resume: Option<Json>,
+    ) {
         self.supervise_inner(run, version, record, lease, resume, true).await;
     }
 
-    async fn supervise_inner(self: Arc<Self>, run: Arc<LiveRun>, version: VersionEntry, record: RunRecord, lease: Option<Lease>, resume: Option<Json>, claimed: bool) {
+    async fn supervise_inner(
+        self: Arc<Self>,
+        run: Arc<LiveRun>,
+        version: VersionEntry,
+        record: RunRecord,
+        lease: Option<Lease>,
+        resume: Option<Json>,
+        claimed: bool,
+    ) {
         let deadline = Instant::now() + self.settings.run_timeout;
-        match tokio::time::timeout_at(deadline, self.clone().executions(run.clone(), version, record.clone(), lease, resume, claimed)).await {
+        match tokio::time::timeout_at(
+            deadline,
+            self.clone().executions(run.clone(), version, record.clone(), lease, resume, claimed),
+        )
+        .await
+        {
             Ok(()) => {}
             Err(_) => {
                 let current = self.store.get(&run.run_id).await.ok().flatten().unwrap_or(record);
@@ -697,10 +793,22 @@ impl Gateway {
         }
     }
 
-    async fn executions(self: Arc<Self>, run: Arc<LiveRun>, version: VersionEntry, mut record: RunRecord, mut lease: Option<Lease>, mut resume: Option<Json>, mut claimed: bool) {
+    async fn executions(
+        self: Arc<Self>,
+        run: Arc<LiveRun>,
+        version: VersionEntry,
+        mut record: RunRecord,
+        mut lease: Option<Lease>,
+        mut resume: Option<Json>,
+        mut claimed: bool,
+    ) {
         loop {
             let owner = lease.as_ref().map(|lease| lease.endpoint.replica.id.clone());
-            let claim = if std::mem::take(&mut claimed) { Ok(record.clone()) } else { self.store.claim_dispatch(&run.run_id, record.epoch, owner, now_ms()).await };
+            let claim = if std::mem::take(&mut claimed) {
+                Ok(record.clone())
+            } else {
+                self.store.claim_dispatch(&run.run_id, record.epoch, owner, now_ms()).await
+            };
             record = match claim {
                 Ok(claimed) => claimed,
                 Err(error) => {
@@ -715,13 +823,18 @@ impl Gateway {
                 Err(message) => return self.fail(&run, record, "dispatch_failed", &message).await,
             };
             let capabilities = version.pool.capabilities().clone();
-            let request_cap = capabilities.max_request_secs.filter(|_| !capabilities.can_preempt()).map(Duration::from_secs);
+            let request_cap =
+                capabilities.max_request_secs.filter(|_| !capabilities.can_preempt()).map(Duration::from_secs);
             let outcome = loop {
                 let pumped = match request_cap {
                     // No grace, no preemption (Lambda): the platform kills the run at its cap.
                     Some(cap) => match tokio::time::timeout(cap, self.pump(&run, &mut stream, &mut record)).await {
                         Ok(outcome) => outcome,
-                        Err(_) => return self.fail(&run, record, "platform_timeout", "run exceeded the platform's request limit").await,
+                        Err(_) => {
+                            return self
+                                .fail(&run, record, "platform_timeout", "run exceeded the platform's request limit")
+                                .await;
+                        }
                     },
                     None => self.pump(&run, &mut stream, &mut record).await,
                 };
@@ -750,9 +863,17 @@ impl Gateway {
                         broken.release_broken();
                     }
                     let Some(orphan) = self.await_orphan(&run, receiver, record.epoch).await else {
-                        return self.fail(&run, record, "owner_lost", &format!("executor lost ({reason}) and no orphan report within the reclaim grace")).await;
+                        return self
+                            .fail(
+                                &run,
+                                record,
+                                "owner_lost",
+                                &format!("executor lost ({reason}) and no orphan report within the reclaim grace"),
+                            )
+                            .await;
                     };
-                    let terminal: Option<Event> = orphan.get("terminal").and_then(|terminal| serde_json::from_value(terminal.clone()).ok());
+                    let terminal: Option<Event> =
+                        orphan.get("terminal").and_then(|terminal| serde_json::from_value(terminal.clone()).ok());
                     let Some(event) = terminal else {
                         return self.fail(&run, record, "owner_lost", "orphan report without a terminal event").await;
                     };
@@ -770,7 +891,13 @@ impl Gateway {
     }
 
     /// Reattaches a broken `Replica` stream within the reattach window.
-    async fn reattach(&self, run: &LiveRun, version: &VersionEntry, record: &RunRecord, lease: Option<&Lease>) -> Option<AgentStream> {
+    async fn reattach(
+        &self,
+        run: &LiveRun,
+        version: &VersionEntry,
+        record: &RunRecord,
+        lease: Option<&Lease>,
+    ) -> Option<AgentStream> {
         if version.pool.capabilities().addressing != Addressing::Replica {
             return None;
         }
@@ -779,7 +906,11 @@ impl Gateway {
         let deadline = Instant::now() + self.settings.reattach_window;
         while Instant::now() < deadline {
             let scope = RunScope { run_id: &run.run_id, epoch: Some(record.epoch) };
-            match self.agents.reattach(&lease.endpoint.address, key, &run.deployment.name, scope, record.event_count).await {
+            match self
+                .agents
+                .reattach(&lease.endpoint.address, key, &run.deployment.name, scope, record.event_count)
+                .await
+            {
                 Ok(stream) => return Some(stream),
                 Err(AgentError::Refused { .. }) => return None,
                 Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
@@ -804,18 +935,31 @@ impl Gateway {
         let queued = self.store.runs_with_status(RunStatus::Queued).await?;
         let running = self.store.runs_with_status(RunStatus::Running).await?;
         for record in &queued {
-            let Some(deployment) = record.deployment.as_deref().and_then(|name| self.deployment(name)) else { continue };
-            let Ok(version) = deployment.version(record.deployment_version.as_deref().unwrap_or_default(), now_ms()) else { continue };
-            let run = LiveRun::new(&record.run_id, deployment.clone(), RunInput::default(), None, self.settings.replay_ring);
+            let Some(deployment) = record.deployment.as_deref().and_then(|name| self.deployment(name)) else {
+                continue;
+            };
+            let Ok(version) = deployment.version(record.deployment_version.as_deref().unwrap_or_default(), now_ms())
+            else {
+                continue;
+            };
+            let run =
+                LiveRun::new(&record.run_id, deployment.clone(), RunInput::default(), None, self.settings.replay_ring);
             self.register(&run);
             // A queued run with a snapshot was migrating when the gateway stopped.
-            let resume = self.store.load_snapshot(&record.run_id).await?.map(|snapshot| serde_json::json!({ "snapshot": snapshot }));
+            let resume = self
+                .store
+                .load_snapshot(&record.run_id)
+                .await?
+                .map(|snapshot| serde_json::json!({ "snapshot": snapshot }));
             tokio::spawn(Arc::clone(self).supervise(run, version, record.clone(), None, resume));
         }
         let mut waiting = Vec::new();
         for record in &running {
-            let Some(deployment) = record.deployment.as_deref().and_then(|name| self.deployment(name)) else { continue };
-            let run = LiveRun::new(&record.run_id, deployment.clone(), RunInput::default(), None, self.settings.replay_ring);
+            let Some(deployment) = record.deployment.as_deref().and_then(|name| self.deployment(name)) else {
+                continue;
+            };
+            let run =
+                LiveRun::new(&record.run_id, deployment.clone(), RunInput::default(), None, self.settings.replay_ring);
             let receiver = run.expect_orphan();
             self.register(&run);
             waiting.push(record.run_id.clone());
@@ -829,12 +973,17 @@ impl Gateway {
 
     async fn reclaim(self: Arc<Self>, run: Arc<LiveRun>, record: RunRecord, receiver: oneshot::Receiver<Json>) {
         let Some(orphan) = self.await_orphan(&run, receiver, record.epoch).await else {
-            return self.fail(&run, record, "owner_lost", "gateway restarted and the executor did not report the run").await;
+            return self
+                .fail(&run, record, "owner_lost", "gateway restarted and the executor did not report the run")
+                .await;
         };
-        let Some(event) = orphan.get("terminal").and_then(|terminal| serde_json::from_value::<Event>(terminal.clone()).ok()) else {
+        let Some(event) =
+            orphan.get("terminal").and_then(|terminal| serde_json::from_value::<Event>(terminal.clone()).ok())
+        else {
             return self.fail(&run, record, "owner_lost", "orphan report without a terminal event").await;
         };
-        let Ok(version) = run.deployment.version(record.deployment_version.as_deref().unwrap_or_default(), now_ms()) else {
+        let Ok(version) = run.deployment.version(record.deployment_version.as_deref().unwrap_or_default(), now_ms())
+        else {
             return self.fail(&run, record, "version_retired", "deployment version retired").await;
         };
         if let Some(next) = self.finish(&run, record.clone(), &event).await {
@@ -854,14 +1003,21 @@ impl Gateway {
         for deployment in self.deployments() {
             let Some(key) = deployment.signing_key() else { continue };
             for version in deployment.versions() {
-                let Ok(replicas) = deployment.provider.list(&version.info.reference(&deployment.name)).await else { continue };
+                let Ok(replicas) = deployment.provider.list(&version.info.reference(&deployment.name)).await else {
+                    continue;
+                };
                 for replica in replicas.into_iter().filter_map(|state| state.address) {
                     let Ok(orphans) = self.agents.orphans(&replica, key, &deployment.name).await else { continue };
                     for orphan in orphans {
-                        let Some(run_id) = orphan.get("run_id").and_then(Json::as_str).map(str::to_owned) else { continue };
+                        let Some(run_id) = orphan.get("run_id").and_then(Json::as_str).map(str::to_owned) else {
+                            continue;
+                        };
                         if run_ids.contains(&run_id) && self.accept_orphan(&run_id, orphan.clone()) {
                             let epoch = orphan.get("epoch").and_then(Json::as_u64);
-                            let _ = self.agents.release_orphan(&replica, key, &deployment.name, RunScope { run_id: &run_id, epoch }).await;
+                            let _ = self
+                                .agents
+                                .release_orphan(&replica, key, &deployment.name, RunScope { run_id: &run_id, epoch })
+                                .await;
                         }
                     }
                 }

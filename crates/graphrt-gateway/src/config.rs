@@ -281,13 +281,17 @@ impl GatewayConfig {
                 }
             }
             if !deployment.open && deployment.api_keys.is_empty() && deployment.jwt.is_none() {
-                return Err(format!("{}: configure api_keys or jwt (open deployments are only for --dev)", deployment.name));
+                return Err(format!(
+                    "{}: configure api_keys or jwt (open deployments are only for --dev)",
+                    deployment.name
+                ));
             }
             if deployment.api_keys.iter().any(|hash| hash.len() != 64 || crate::hex::decode(hash).is_none()) {
                 return Err(format!("{}: api_keys are SHA-256 hex digests (graphrt gateway key new)", deployment.name));
             }
             for cron in &deployment.crons {
-                crate::cron::Schedule::new(&cron.id, &cron.schedule, &cron.timezone).map_err(|error| format!("{}: cron {}: {error}", deployment.name, cron.id))?;
+                crate::cron::Schedule::new(&cron.id, &cron.schedule, &cron.timezone)
+                    .map_err(|error| format!("{}: cron {}: {error}", deployment.name, cron.id))?;
             }
         }
         Ok(())

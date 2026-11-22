@@ -142,7 +142,9 @@ impl JwksCache {
     /// # Errors
     /// When the URL is not `https://` (or local `http://`).
     pub fn new(url: &str, client: reqwest::Client) -> Result<Self, String> {
-        let local = url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost") || url.starts_with("http://[::1]");
+        let local = url.starts_with("http://127.0.0.1")
+            || url.starts_with("http://localhost")
+            || url.starts_with("http://[::1]");
         if !url.starts_with("https://") && !local {
             return Err(format!("JWKS URL must be https: {url}"));
         }
@@ -152,7 +154,8 @@ impl JwksCache {
     async fn key(&self, kid: Option<&str>) -> Result<Jwk, AuthError> {
         let mut state = self.state.lock().await;
         let stale = state.fetched_at.is_none_or(|at| at.elapsed() >= JWKS_TTL);
-        let find = |keys: &[Jwk]| keys.iter().find(|key| kid.is_none_or(|kid| key.kid.as_deref() == Some(kid))).cloned();
+        let find =
+            |keys: &[Jwk]| keys.iter().find(|key| kid.is_none_or(|kid| key.kid.as_deref() == Some(kid))).cloned();
         if !stale && let Some(key) = find(&state.keys) {
             return Ok(key);
         }
@@ -171,7 +174,13 @@ impl JwksCache {
     }
 
     async fn fetch(&self) -> Result<Vec<Jwk>, AuthError> {
-        let response = self.client.get(&self.url).timeout(Duration::from_secs(5)).send().await.map_err(|_| AuthError::KeysUnavailable)?;
+        let response = self
+            .client
+            .get(&self.url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|_| AuthError::KeysUnavailable)?;
         if !response.status().is_success() {
             return Err(AuthError::KeysUnavailable);
         }
@@ -184,8 +193,11 @@ impl JwksCache {
 #[derive(Debug, Default)]
 pub struct DeploymentAuth {
     api_key_hashes: Vec<String>,
-    jwt: Option<(JwtConfig, Option<Vec<u8>>, Option<Arc<JwksCache>>)>,
+    jwt: Option<JwtVerifier>,
 }
+
+/// Settings, HS256 secret and JWKS cache of one deployment's JWTs.
+type JwtVerifier = (JwtConfig, Option<Vec<u8>>, Option<Arc<JwksCache>>);
 
 impl DeploymentAuth {
     /// From configured API key digests and optional JWT settings.
@@ -197,10 +209,16 @@ impl DeploymentAuth {
             None => None,
             Some(config) => {
                 let secret = match &config.hs256_secret_env {
-                    Some(name) => Some(std::env::var(name).map_err(|_| format!("JWT secret variable {name} is not set"))?.into_bytes()),
+                    Some(name) => Some(
+                        std::env::var(name).map_err(|_| format!("JWT secret variable {name} is not set"))?.into_bytes(),
+                    ),
                     None => None,
                 };
-                let jwks = config.jwks_url.as_deref().map(|url| JwksCache::new(url, client.clone()).map(Arc::new)).transpose()?;
+                let jwks = config
+                    .jwks_url
+                    .as_deref()
+                    .map(|url| JwksCache::new(url, client.clone()).map(Arc::new))
+                    .transpose()?;
                 if secret.is_none() && jwks.is_none() {
                     return Err("jwt needs jwks_url or hs256_secret_env".to_owned());
                 }
@@ -221,7 +239,12 @@ impl DeploymentAuth {
     ///
     /// # Errors
     /// See [`AuthError`].
-    pub async fn authenticate(&self, bearer: Option<&str>, api_key: Option<&str>, now_secs: u64) -> Result<Principal, AuthError> {
+    pub async fn authenticate(
+        &self,
+        bearer: Option<&str>,
+        api_key: Option<&str>,
+        now_secs: u64,
+    ) -> Result<Principal, AuthError> {
         let presented = api_key.or(bearer).ok_or(AuthError::Missing)?;
         let digest = crate::hex::sha256_hex(presented.as_bytes());
         if self.api_key_hashes.iter().any(|hash| crate::hex::constant_time_eq(hash.as_bytes(), digest.as_bytes())) {
@@ -240,22 +263,33 @@ fn decode_part(part: &str) -> Result<Vec<u8>, AuthError> {
     URL_SAFE_NO_PAD.decode(part).map_err(|_| AuthError::BadToken("bad base64"))
 }
 
-async fn verify_jwt(token: &str, config: &JwtConfig, secret: Option<&[u8]>, jwks: Option<&JwksCache>, now_secs: u64) -> Result<Principal, AuthError> {
+async fn verify_jwt(
+    token: &str,
+    config: &JwtConfig,
+    secret: Option<&[u8]>,
+    jwks: Option<&JwksCache>,
+    now_secs: u64,
+) -> Result<Principal, AuthError> {
     if token.len() > MAX_TOKEN_BYTES {
         return Err(AuthError::BadToken("too long"));
     }
     let mut parts = token.split('.');
-    let (Some(header_part), Some(claims_part), Some(signature_part), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+    let (Some(header_part), Some(claims_part), Some(signature_part), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
         return Err(AuthError::BadToken("not a JWS"));
     };
-    let header: Header = serde_json::from_slice(&decode_part(header_part)?).map_err(|_| AuthError::BadToken("bad header"))?;
+    let header: Header =
+        serde_json::from_slice(&decode_part(header_part)?).map_err(|_| AuthError::BadToken("bad header"))?;
     let signature = decode_part(signature_part)?;
-    let signing_input = token.get(..header_part.len() + 1 + claims_part.len()).ok_or(AuthError::BadToken("not a JWS"))?;
+    let signing_input =
+        token.get(..header_part.len() + 1 + claims_part.len()).ok_or(AuthError::BadToken("not a JWS"))?;
     match header.alg.as_str() {
         "HS256" => {
             let secret = secret.ok_or(AuthError::BadToken("HS256 not configured"))?;
             let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret);
-            ring::hmac::verify(&key, signing_input.as_bytes(), &signature).map_err(|_| AuthError::BadToken("bad signature"))?;
+            ring::hmac::verify(&key, signing_input.as_bytes(), &signature)
+                .map_err(|_| AuthError::BadToken("bad signature"))?;
         }
         "RS256" | "ES256" => {
             let jwks = jwks.ok_or(AuthError::BadToken("JWKS not configured"))?;
@@ -264,18 +298,23 @@ async fn verify_jwt(token: &str, config: &JwtConfig, secret: Option<&[u8]>, jwks
         }
         _ => return Err(AuthError::BadToken("unsupported alg")),
     }
-    let claims: Claims = serde_json::from_slice(&decode_part(claims_part)?).map_err(|_| AuthError::BadToken("bad claims"))?;
+    let claims: Claims =
+        serde_json::from_slice(&decode_part(claims_part)?).map_err(|_| AuthError::BadToken("bad claims"))?;
     check_claims(&claims, config, now_secs)
 }
 
 fn verify_asymmetric(alg: &str, jwk: &Jwk, message: &[u8], signature: &[u8]) -> Result<(), AuthError> {
-    use ring::signature::{ECDSA_P256_SHA256_FIXED, RSA_PKCS1_2048_8192_SHA256, RsaPublicKeyComponents, UnparsedPublicKey};
+    use ring::signature::{
+        ECDSA_P256_SHA256_FIXED, RSA_PKCS1_2048_8192_SHA256, RsaPublicKeyComponents, UnparsedPublicKey,
+    };
     let bad = || AuthError::BadToken("bad signature");
     match (alg, jwk.kty.as_str()) {
         ("RS256", "RSA") => {
             let modulus = decode_part(jwk.n.as_deref().ok_or_else(bad)?)?;
             let exponent = decode_part(jwk.e.as_deref().ok_or_else(bad)?)?;
-            RsaPublicKeyComponents { n: modulus, e: exponent }.verify(&RSA_PKCS1_2048_8192_SHA256, message, signature).map_err(|_| bad())
+            RsaPublicKeyComponents { n: modulus, e: exponent }
+                .verify(&RSA_PKCS1_2048_8192_SHA256, message, signature)
+                .map_err(|_| bad())
         }
         ("ES256", "EC") if jwk.crv.as_deref() == Some("P-256") => {
             let mut point = vec![0x04];
@@ -300,13 +339,14 @@ fn check_claims(claims: &Claims, config: &JwtConfig, now_secs: u64) -> Result<Pr
     }
     let audience_ok = match &claims.aud {
         Some(Audience::One(audience)) => *audience == config.audience,
-        Some(Audience::Many(audiences)) => audiences.iter().any(|audience| *audience == config.audience),
+        Some(Audience::Many(audiences)) => audiences.contains(&config.audience),
         None => false,
     };
     if !audience_ok {
         return Err(AuthError::BadToken("wrong audience"));
     }
-    let subject = claims.sub.clone().filter(|subject| !subject.is_empty()).ok_or(AuthError::BadToken("sub required"))?;
+    let subject =
+        claims.sub.clone().filter(|subject| !subject.is_empty()).ok_or(AuthError::BadToken("sub required"))?;
     Ok(Principal::User { subject, expires_at })
 }
 
@@ -327,11 +367,19 @@ mod tests {
     }
 
     fn config() -> JwtConfig {
-        JwtConfig { issuer: "https://auth.example".into(), audience: "shop".into(), jwks_url: None, hs256_secret_env: None }
+        JwtConfig {
+            issuer: "https://auth.example".into(),
+            audience: "shop".into(),
+            jwks_url: None,
+            hs256_secret_env: None,
+        }
     }
 
     fn auth_with_secret(secret: &[u8]) -> DeploymentAuth {
-        DeploymentAuth { api_key_hashes: vec![crate::hex::sha256_hex(b"grk_live_1")], jwt: Some((config(), Some(secret.to_vec()), None)) }
+        DeploymentAuth {
+            api_key_hashes: vec![crate::hex::sha256_hex(b"grk_live_1")],
+            jwt: Some((config(), Some(secret.to_vec()), None)),
+        }
     }
 
     #[tokio::test]
@@ -352,11 +400,17 @@ mod tests {
         let cases = [
             (serde_json::json!({"iss": "https://auth.example", "aud": "shop", "sub": "u1", "exp": 100}), "expired"),
             (serde_json::json!({"iss": "https://evil", "aud": "shop", "sub": "u1", "exp": 2000}), "wrong issuer"),
-            (serde_json::json!({"iss": "https://auth.example", "aud": "other", "sub": "u1", "exp": 2000}), "wrong audience"),
+            (
+                serde_json::json!({"iss": "https://auth.example", "aud": "other", "sub": "u1", "exp": 2000}),
+                "wrong audience",
+            ),
             (serde_json::json!({"iss": "https://auth.example", "aud": "shop", "sub": "u1"}), "exp required"),
         ];
         for (claims, reason) in cases {
-            assert_eq!(auth.authenticate(Some(&hs256_token(b"secret", &claims)), None, 1000).await, Err(AuthError::BadToken(reason)));
+            assert_eq!(
+                auth.authenticate(Some(&hs256_token(b"secret", &claims)), None, 1000).await,
+                Err(AuthError::BadToken(reason))
+            );
         }
         let forged = hs256_token(b"wrong", &good);
         assert_eq!(auth.authenticate(Some(&forged), None, 1000).await, Err(AuthError::BadToken("bad signature")));

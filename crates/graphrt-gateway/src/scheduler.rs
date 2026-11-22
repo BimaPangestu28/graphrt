@@ -70,7 +70,9 @@ pub async fn fire(gateway: &Arc<Gateway>, deployment: &Arc<Deployment>, job: &Cr
 
 fn log_skip(gateway: &Gateway, deployment: &str, schedule: &str, at: i64, reason: &str) {
     bump(&gateway.metrics.cron_skipped);
-    eprintln!("{{\"audit\":\"cron_skipped\",\"deployment\":\"{deployment}\",\"schedule\":\"{schedule}\",\"fire_time\":{at},\"reason\":\"{reason}\"}}");
+    eprintln!(
+        "{{\"audit\":\"cron_skipped\",\"deployment\":\"{deployment}\",\"schedule\":\"{schedule}\",\"fire_time\":{at},\"reason\":\"{reason}\"}}"
+    );
 }
 
 /// Runs one job forever.

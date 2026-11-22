@@ -21,7 +21,12 @@ while True:
 "#;
 
 fn python() -> Option<String> {
-    std::process::Command::new("python3").arg("--version").output().ok().filter(|output| output.status.success()).map(|_| "python3".to_owned())
+    std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|_| "python3".to_owned())
 }
 
 struct LocalTarget {
@@ -41,7 +46,12 @@ impl ConformanceTarget for LocalTarget {
     }
     fn kill_externally<'a>(&'a self, replica: &'a ReplicaRef) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            let status = tokio::process::Command::new("kill").arg("-KILL").arg(&replica.id).status().await.map_err(|error| error.to_string())?;
+            let status = tokio::process::Command::new("kill")
+                .arg("-KILL")
+                .arg(&replica.id)
+                .status()
+                .await
+                .map_err(|error| error.to_string())?;
             if status.success() { Ok(()) } else { Err("kill failed".into()) }
         })
     }
@@ -60,11 +70,23 @@ async fn local_process_provider_conformance() {
     let _cleanup = std::fs::remove_dir_all(&dir);
     let provider = Arc::new(LocalProvider::new(&dir, Duration::from_secs(2)).unwrap());
     let deployment = DeploymentRef::new("shop", "v1", "local");
-    provider.register(&deployment, LocalVersion { command: vec![python, "-c".into(), AGENT.into()], keys: format!("k1:{}", "ab".repeat(32)), env: Vec::new() });
+    provider.register(
+        &deployment,
+        LocalVersion {
+            command: vec![python, "-c".into(), AGENT.into()],
+            keys: format!("k1:{}", "ab".repeat(32)),
+            env: Vec::new(),
+        },
+    );
     let target = LocalTarget { provider: provider.clone(), deployment: deployment.clone() };
     // Python starts in tens of milliseconds, slower than the 15 ms target of a
     // real agent; C2 is measured against 500 ms here and reported.
-    let config = ConformanceConfig { latency_samples: 10, wake_p95_target_ms: Some(500), poll_interval: Duration::from_millis(20), ..ConformanceConfig::default() };
+    let config = ConformanceConfig {
+        latency_samples: 10,
+        wake_p95_target_ms: Some(500),
+        poll_interval: Duration::from_millis(20),
+        ..ConformanceConfig::default()
+    };
     let report = run_conformance(&target, &config).await;
     println!("{report}");
     report.assert_no_failures();

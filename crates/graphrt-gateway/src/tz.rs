@@ -80,7 +80,8 @@ impl PosixRule {
         let (year, _, _) = civil_from_days(utc.div_euclid(86_400));
         let start_utc = start.local_secs(year) - i64::from(self.std_offset);
         let end_utc = end.local_secs(year) - i64::from(dst_offset);
-        let in_dst = if start_utc < end_utc { utc >= start_utc && utc < end_utc } else { utc >= start_utc || utc < end_utc };
+        let in_dst =
+            if start_utc < end_utc { utc >= start_utc && utc < end_utc } else { utc >= start_utc || utc < end_utc };
         if in_dst { dst_offset } else { self.std_offset }
     }
 }
@@ -121,11 +122,15 @@ impl Zone {
         if let Some(offset) = parse_fixed_offset(name) {
             return Ok(Self::fixed(name, offset));
         }
-        if name.contains("..") || name.starts_with('/') || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '+')) {
+        if name.contains("..")
+            || name.starts_with('/')
+            || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '+'))
+        {
             return Err(format!("invalid time zone name `{name}`"));
         }
         let dir = std::env::var_os("TZDIR").map_or_else(|| PathBuf::from("/usr/share/zoneinfo"), PathBuf::from);
-        let bytes = std::fs::read(dir.join(name)).map_err(|error| format!("time zone `{name}`: {error} (install tzdata or set TZDIR)"))?;
+        let bytes = std::fs::read(dir.join(name))
+            .map_err(|error| format!("time zone `{name}`: {error} (install tzdata or set TZDIR)"))?;
         let mut zone = parse_tzif(&bytes).ok_or_else(|| format!("time zone `{name}`: not a valid TZif file"))?;
         zone.name = name.to_owned();
         Ok(zone)
@@ -152,7 +157,11 @@ impl Zone {
         let mut offsets = vec![self.offset_at(local - 86_400), self.offset_at(local), self.offset_at(local + 86_400)];
         offsets.sort_unstable();
         offsets.dedup();
-        let mut instants: Vec<i64> = offsets.into_iter().map(|offset| local - i64::from(offset)).filter(|utc| i64::from(self.offset_at(*utc)) == local - utc).collect();
+        let mut instants: Vec<i64> = offsets
+            .into_iter()
+            .map(|offset| local - i64::from(offset))
+            .filter(|utc| i64::from(self.offset_at(*utc)) == local - utc)
+            .collect();
         instants.sort_unstable();
         instants.dedup();
         instants
@@ -212,7 +221,10 @@ fn read_header(cursor: &mut Cursor<'_>) -> Option<(u8, Counts)> {
     let version = cursor.u8()?;
     cursor.take(15)?;
     let mut next = || cursor.u32().map(|value| value as usize);
-    Some((version, Counts { isut: next()?, isstd: next()?, leap: next()?, time: next()?, types: next()?, chars: next()? }))
+    Some((
+        version,
+        Counts { isut: next()?, isstd: next()?, leap: next()?, time: next()?, types: next()?, chars: next()? },
+    ))
 }
 
 /// Parses a TZif v2+ file (64-bit section and footer rule).
@@ -233,9 +245,14 @@ fn parse_tzif(bytes: &[u8]) -> Option<Zone> {
         types.push(offset);
     }
     cursor.take(counts.chars + counts.leap * 12 + counts.isstd + counts.isut)?;
-    let footer = cursor.bytes.get(cursor.position..).and_then(|rest| std::str::from_utf8(rest).ok()).unwrap_or_default();
+    let footer =
+        cursor.bytes.get(cursor.position..).and_then(|rest| std::str::from_utf8(rest).ok()).unwrap_or_default();
     let rule = footer.trim_matches('\n').lines().next().and_then(parse_posix_rule);
-    let transitions = times.into_iter().zip(indices).map(|(at, index)| Some((at, *types.get(usize::from(index))?))).collect::<Option<Vec<_>>>()?;
+    let transitions = times
+        .into_iter()
+        .zip(indices)
+        .map(|(at, index)| Some((at, *types.get(usize::from(index))?)))
+        .collect::<Option<Vec<_>>>()?;
     Some(Zone { name: String::new(), transitions, initial_offset: types.first().copied().unwrap_or(0), rule })
 }
 
@@ -306,7 +323,12 @@ mod tests {
     use super::*;
 
     fn berlin_rule() -> Zone {
-        Zone { name: "rule".into(), transitions: Vec::new(), initial_offset: 3600, rule: parse_posix_rule("CET-1CEST,M3.5.0,M10.5.0/3") }
+        Zone {
+            name: "rule".into(),
+            transitions: Vec::new(),
+            initial_offset: 3600,
+            rule: parse_posix_rule("CET-1CEST,M3.5.0,M10.5.0/3"),
+        }
     }
 
     #[test]

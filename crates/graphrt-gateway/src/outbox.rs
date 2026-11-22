@@ -49,7 +49,8 @@ pub async fn run_outbox(gateway: Arc<Gateway>, client: reqwest::Client, secrets:
         for entry in due {
             if deliver(&client, &entry, secrets.get(&entry.deployment).map(Vec::as_slice)).await {
                 bump(&metrics.callbacks_delivered);
-                let _logged = store.complete_callback(entry.id).await.map_err(|error| eprintln!("gateway: outbox: {error}"));
+                let _logged =
+                    store.complete_callback(entry.id).await.map_err(|error| eprintln!("gateway: outbox: {error}"));
             } else {
                 bump(&metrics.callbacks_failed);
                 let next = now_ms() + backoff(entry.attempts).as_millis() as u64;

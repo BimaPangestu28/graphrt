@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use common::{DEPLOYMENT, Options, TestGateway, start_gateway, version};
 use graphrt_core::store::now_ms;
-use graphrt_provider_api::conformance::{CaseId, CaseOutcome, ConformanceConfig, ConformanceTarget, GatewayHarness, HookResult, run_conformance};
+use graphrt_provider_api::conformance::{
+    CaseId, CaseOutcome, ConformanceConfig, ConformanceTarget, GatewayHarness, HookResult, run_conformance,
+};
 use graphrt_provider_api::{BoxFuture, DeploymentRef, Provider, ReplicaRef};
 use serde_json::json;
 
@@ -28,7 +30,8 @@ struct Harness {
 
 impl Harness {
     async fn grace(&self) -> HookResult {
-        let (_, record) = self.gateway.post(&runs(DEPLOYMENT), json!({ "inputs": { "mode": "preempt_once", "events": 3 } })).await;
+        let (_, record) =
+            self.gateway.post(&runs(DEPLOYMENT), json!({ "inputs": { "mode": "preempt_once", "events": 3 } })).await;
         if record["status"] != "succeeded" || record["outputs"]["executions"] != 2 {
             return Err(format!("drained run not continued elsewhere: {record}"));
         }
@@ -37,7 +40,15 @@ impl Harness {
 
     async fn long_stream(&self) -> HookResult {
         let started = tokio::time::Instant::now();
-        let response = self.gateway.client().post(format!("{}{}", self.gateway.url, runs(DEPLOYMENT))).header("x-api-key", common::API_KEY).json(&json!({ "stream": true, "inputs": { "events": 40, "delay_ms": 25 } })).send().await.map_err(|error| error.to_string())?;
+        let response = self
+            .gateway
+            .client()
+            .post(format!("{}{}", self.gateway.url, runs(DEPLOYMENT)))
+            .header("x-api-key", common::API_KEY)
+            .json(&json!({ "stream": true, "inputs": { "events": 40, "delay_ms": 25 } }))
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
         let mut response = response;
         let mut arrivals = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
@@ -56,7 +67,12 @@ impl Harness {
         if overhead > Duration::from_millis(50) {
             return Err(format!("inter-event p95 {p95:?} (overhead {overhead:?} > 50 ms)"));
         }
-        Ok(format!("{} chunks, inter-event p95 {:.1} ms vs 25 ms emitted, first after {:.1} ms", arrivals.len(), p95.as_secs_f64() * 1000.0, first.as_secs_f64() * 1000.0))
+        Ok(format!(
+            "{} chunks, inter-event p95 {:.1} ms vs 25 ms emitted, first after {:.1} ms",
+            arrivals.len(),
+            p95.as_secs_f64() * 1000.0,
+            first.as_secs_f64() * 1000.0
+        ))
     }
 
     async fn request_cap(&self) -> HookResult {
@@ -71,7 +87,8 @@ impl Harness {
         let run_id = paused["run_id"].as_str().ok_or("no run id")?.to_owned();
         // v2 became current 6 days ago: v1's pool still resumes.
         deployment.add_version(version("v2"), now_ms() - 6 * DAY_MS);
-        let (status, _) = self.gateway.post(&format!("{}/{run_id}/resume", runs(DEPLOYMENT)), json!({ "inputs": {} })).await;
+        let (status, _) =
+            self.gateway.post(&format!("{}/{run_id}/resume", runs(DEPLOYMENT)), json!({ "inputs": {} })).await;
         let done = self.gateway.wait_settled(&run_id).await;
         if status != 202 || done["status"] != "succeeded" || done["version"] != "v1" {
             return Err(format!("day-6 resume of v1: {status} {done}"));
@@ -101,7 +118,10 @@ impl Harness {
         self.gateway.provider.wake(&current.info.reference(DEPLOYMENT), 2).await.map_err(|error| error.to_string())?;
         let (_, released) = current.pool.reconcile().await.map_err(|error| error.to_string())?;
         if live != 0 || self.gateway.provider.live() != 0 {
-            return Err(format!("{live} replicas after idle timeout, {} after reconcile", self.gateway.provider.live()));
+            return Err(format!(
+                "{live} replicas after idle timeout, {} after reconcile",
+                self.gateway.provider.live()
+            ));
         }
         Ok(format!("idle → 0 replicas after the idle timeout; reconcile released {released} orphans"))
     }
@@ -153,7 +173,15 @@ async fn gateway_cases_pass() {
     let pool = graphrt_gateway::pool::PoolConfig { idle_timeout: Duration::from_millis(300), ..Default::default() };
     let gateway = start_gateway(Options { pool, ..Options::default() }).await;
     let target = Target { harness: Harness { gateway } };
-    let report = run_conformance(&target, &ConformanceConfig { latency_samples: 10, poll_interval: Duration::from_millis(10), ..ConformanceConfig::default() }).await;
+    let report = run_conformance(
+        &target,
+        &ConformanceConfig {
+            latency_samples: 10,
+            poll_interval: Duration::from_millis(10),
+            ..ConformanceConfig::default()
+        },
+    )
+    .await;
     println!("{report}");
     report.assert_no_failures();
     for id in [CaseId::C3, CaseId::C6, CaseId::C7, CaseId::C11, CaseId::C12] {

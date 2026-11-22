@@ -75,7 +75,13 @@ fn header<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str>
 ///
 /// # Errors
 /// See [`HookError`].
-pub fn verify(hook: &HookConfig, secret: Option<&[u8]>, headers: &axum::http::HeaderMap, body: &[u8], now_secs: u64) -> Result<(), HookError> {
+pub fn verify(
+    hook: &HookConfig,
+    secret: Option<&[u8]>,
+    headers: &axum::http::HeaderMap,
+    body: &[u8],
+    now_secs: u64,
+) -> Result<(), HookError> {
     if hook.scheme == Scheme::None {
         return Ok(());
     }
@@ -119,7 +125,12 @@ pub fn sign_callback(secret: &[u8], timestamp: u64, body: &[u8]) -> String {
 
 /// The idempotency key of a delivery: the configured header, else the body hash.
 pub fn delivery_key(hook: &HookConfig, headers: &axum::http::HeaderMap, body: &[u8]) -> String {
-    hook.idempotency_header.as_deref().and_then(|name| header(headers, name)).map(str::to_owned).filter(|key| !key.is_empty()).unwrap_or_else(|| sha256_hex(body))
+    hook.idempotency_header
+        .as_deref()
+        .and_then(|name| header(headers, name))
+        .map(str::to_owned)
+        .filter(|key| !key.is_empty())
+        .unwrap_or_else(|| sha256_hex(body))
 }
 
 /// Run id of a delivery: `hook-<hex(H(deployment, hook, key))[..32]>`.
@@ -135,7 +146,14 @@ mod tests {
     use super::*;
 
     fn hook(scheme: Scheme) -> HookConfig {
-        HookConfig { id: "gh".into(), scheme, secret_env: None, idempotency_header: Some("x-github-delivery".into()), input: None, callback_url: None }
+        HookConfig {
+            id: "gh".into(),
+            scheme,
+            secret_env: None,
+            idempotency_header: Some("x-github-delivery".into()),
+            input: None,
+            callback_url: None,
+        }
     }
 
     #[test]

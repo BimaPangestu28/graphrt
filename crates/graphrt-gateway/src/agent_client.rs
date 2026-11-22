@@ -9,7 +9,10 @@ use std::time::Duration;
 
 use graphrt_provider_api::{Endpoint, EndpointAddress, InvokeRequest, Provider};
 
-use crate::signature::{DEPLOYMENT_HEADER, EPOCH_HEADER, GatewayKey, PROTOCOL_HEADER, PROTOCOL_VERSION, RUN_ID_HEADER, SIGNATURE_HEADER, Signed, sign, unix_now};
+use crate::signature::{
+    DEPLOYMENT_HEADER, EPOCH_HEADER, GatewayKey, PROTOCOL_HEADER, PROTOCOL_VERSION, RUN_ID_HEADER, SIGNATURE_HEADER,
+    Signed, sign, unix_now,
+};
 use crate::sse::{Frame, Parser, SseError};
 
 /// Failure talking to an agent.
@@ -86,7 +89,11 @@ impl AgentStream {
                 return Ok(Some(frame));
             }
             let chunk = match &mut self.source {
-                StreamSource::Http(response) => response.chunk().await.map(|chunk| chunk.map(|bytes| bytes.to_vec())).map_err(|error| error.to_string()),
+                StreamSource::Http(response) => response
+                    .chunk()
+                    .await
+                    .map(|chunk| chunk.map(|bytes| bytes.to_vec()))
+                    .map_err(|error| error.to_string()),
                 StreamSource::Invoke(stream) => stream.next().await.transpose().map_err(|error| error.to_string()),
             };
             match chunk {
@@ -112,7 +119,10 @@ impl AgentClient {
         if let Some(client) = clients.get(address) {
             return Ok(client.clone());
         }
-        let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(5)).pool_idle_timeout(Duration::from_secs(90)).http1_only();
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .http1_only();
         if let EndpointAddress::Unix(path) = address {
             builder = builder.unix_socket(path.as_path());
         }
@@ -129,10 +139,22 @@ impl AgentClient {
         self.clients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(address);
     }
 
-    async fn send(&self, address: &EndpointAddress, key: &GatewayKey, deployment: &str, method: reqwest::Method, path: &str, scope: RunScope<'_>, body: Vec<u8>) -> Result<reqwest::Response, AgentError> {
+    // One private call site per protocol operation; a parameter struct would only rename them.
+    #[allow(clippy::too_many_arguments)]
+    async fn send(
+        &self,
+        address: &EndpointAddress,
+        key: &GatewayKey,
+        deployment: &str,
+        method: reqwest::Method,
+        path: &str,
+        scope: RunScope<'_>,
+        body: Vec<u8>,
+    ) -> Result<reqwest::Response, AgentError> {
         let client = self.client(address)?;
         let epoch = scope.epoch.map(|epoch| epoch.to_string()).unwrap_or_default();
-        let signed = Signed { deployment, method: method.as_str(), path, run_id: scope.run_id, epoch: &epoch, body: &body };
+        let signed =
+            Signed { deployment, method: method.as_str(), path, run_id: scope.run_id, epoch: &epoch, body: &body };
         let mut request = client
             .request(method.clone(), format!("{}{path}", base_url(address)))
             .header(PROTOCOL_HEADER, PROTOCOL_VERSION.to_string())
@@ -160,9 +182,17 @@ impl AgentClient {
     ///
     /// # Errors
     /// See [`AgentError`].
-    pub async fn start_run(&self, address: &EndpointAddress, key: &GatewayKey, deployment: &str, scope: RunScope<'_>, body: &serde_json::Value) -> Result<AgentStream, AgentError> {
+    pub async fn start_run(
+        &self,
+        address: &EndpointAddress,
+        key: &GatewayKey,
+        deployment: &str,
+        scope: RunScope<'_>,
+        body: &serde_json::Value,
+    ) -> Result<AgentStream, AgentError> {
         let bytes = serde_json::to_vec(body).map_err(|error| AgentError::Stream(error.to_string()))?;
-        let response = self.send(address, key, deployment, reqwest::Method::POST, "/internal/v1/runs", scope, bytes).await?;
+        let response =
+            self.send(address, key, deployment, reqwest::Method::POST, "/internal/v1/runs", scope, bytes).await?;
         Ok(AgentStream::http(response))
     }
 
@@ -171,7 +201,15 @@ impl AgentClient {
     ///
     /// # Errors
     /// See [`AgentError`].
-    pub async fn start_run_on(&self, provider: &dyn Provider, endpoint: &Endpoint, key: &GatewayKey, deployment: &str, scope: RunScope<'_>, body: &serde_json::Value) -> Result<AgentStream, AgentError> {
+    pub async fn start_run_on(
+        &self,
+        provider: &dyn Provider,
+        endpoint: &Endpoint,
+        key: &GatewayKey,
+        deployment: &str,
+        scope: RunScope<'_>,
+        body: &serde_json::Value,
+    ) -> Result<AgentStream, AgentError> {
         let bytes = serde_json::to_vec(body).map_err(|error| AgentError::Stream(error.to_string()))?;
         let path = "/internal/v1/runs";
         let epoch = scope.epoch.map(|epoch| epoch.to_string()).unwrap_or_default();
@@ -192,14 +230,25 @@ impl AgentClient {
         if !(200..300).contains(&response.status) {
             return Err(AgentError::Refused { status: response.status, body: String::new() });
         }
-        Ok(AgentStream { source: StreamSource::Invoke(response.body), parser: Parser::default(), pending: Default::default() })
+        Ok(AgentStream {
+            source: StreamSource::Invoke(response.body),
+            parser: Parser::default(),
+            pending: Default::default(),
+        })
     }
 
     /// `GET /internal/v1/runs/{id}/stream?from=N`: reattach after a lost connection.
     ///
     /// # Errors
     /// See [`AgentError`].
-    pub async fn reattach(&self, address: &EndpointAddress, key: &GatewayKey, deployment: &str, scope: RunScope<'_>, from: u64) -> Result<AgentStream, AgentError> {
+    pub async fn reattach(
+        &self,
+        address: &EndpointAddress,
+        key: &GatewayKey,
+        deployment: &str,
+        scope: RunScope<'_>,
+        from: u64,
+    ) -> Result<AgentStream, AgentError> {
         let path = format!("/internal/v1/runs/{}/stream?from={from}", scope.run_id);
         let response = self.send(address, key, deployment, reqwest::Method::GET, &path, scope, Vec::new()).await?;
         Ok(AgentStream::http(response))
@@ -209,7 +258,13 @@ impl AgentClient {
     ///
     /// # Errors
     /// See [`AgentError`].
-    pub async fn abort(&self, address: &EndpointAddress, key: &GatewayKey, deployment: &str, scope: RunScope<'_>) -> Result<(), AgentError> {
+    pub async fn abort(
+        &self,
+        address: &EndpointAddress,
+        key: &GatewayKey,
+        deployment: &str,
+        scope: RunScope<'_>,
+    ) -> Result<(), AgentError> {
         let path = format!("/internal/v1/runs/{}/abort", scope.run_id);
         self.send(address, key, deployment, reqwest::Method::POST, &path, scope, Vec::new()).await.map(|_| ())
     }
@@ -218,8 +273,15 @@ impl AgentClient {
     ///
     /// # Errors
     /// See [`AgentError`].
-    pub async fn hello(&self, address: &EndpointAddress, key: &GatewayKey, deployment: &str) -> Result<serde_json::Value, AgentError> {
-        let response = self.send(address, key, deployment, reqwest::Method::GET, "/internal/v1/hello", RunScope::default(), Vec::new()).await?;
+    pub async fn hello(
+        &self,
+        address: &EndpointAddress,
+        key: &GatewayKey,
+        deployment: &str,
+    ) -> Result<serde_json::Value, AgentError> {
+        let response = self
+            .send(address, key, deployment, reqwest::Method::GET, "/internal/v1/hello", RunScope::default(), Vec::new())
+            .await?;
         let bytes = response.bytes().await.map_err(|error| AgentError::Stream(error.to_string()))?;
         serde_json::from_slice(&bytes).map_err(|error| AgentError::Stream(error.to_string()))
     }
@@ -228,19 +290,43 @@ impl AgentClient {
     ///
     /// # Errors
     /// See [`AgentError`].
-    pub async fn drain(&self, address: &EndpointAddress, key: &GatewayKey, deployment: &str, deadline_ms: u64) -> Result<(), AgentError> {
+    pub async fn drain(
+        &self,
+        address: &EndpointAddress,
+        key: &GatewayKey,
+        deployment: &str,
+        deadline_ms: u64,
+    ) -> Result<(), AgentError> {
         let body = serde_json::to_vec(&serde_json::json!({ "deadline_ms": deadline_ms })).unwrap_or_default();
-        self.send(address, key, deployment, reqwest::Method::POST, "/internal/v1/drain", RunScope::default(), body).await.map(|_| ())
+        self.send(address, key, deployment, reqwest::Method::POST, "/internal/v1/drain", RunScope::default(), body)
+            .await
+            .map(|_| ())
     }
 
     /// `GET /internal/v1/orphans`: executions whose gateway stream was lost.
     ///
     /// # Errors
     /// See [`AgentError`].
-    pub async fn orphans(&self, address: &EndpointAddress, key: &GatewayKey, deployment: &str) -> Result<Vec<serde_json::Value>, AgentError> {
-        let response = self.send(address, key, deployment, reqwest::Method::GET, "/internal/v1/orphans", RunScope::default(), Vec::new()).await?;
+    pub async fn orphans(
+        &self,
+        address: &EndpointAddress,
+        key: &GatewayKey,
+        deployment: &str,
+    ) -> Result<Vec<serde_json::Value>, AgentError> {
+        let response = self
+            .send(
+                address,
+                key,
+                deployment,
+                reqwest::Method::GET,
+                "/internal/v1/orphans",
+                RunScope::default(),
+                Vec::new(),
+            )
+            .await?;
         let bytes = response.bytes().await.map_err(|error| AgentError::Stream(error.to_string()))?;
-        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| AgentError::Stream(error.to_string()))?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|error| AgentError::Stream(error.to_string()))?;
         Ok(value.get("orphans").and_then(serde_json::Value::as_array).cloned().unwrap_or_default())
     }
 
@@ -248,7 +334,13 @@ impl AgentClient {
     ///
     /// # Errors
     /// See [`AgentError`].
-    pub async fn release_orphan(&self, address: &EndpointAddress, key: &GatewayKey, deployment: &str, scope: RunScope<'_>) -> Result<(), AgentError> {
+    pub async fn release_orphan(
+        &self,
+        address: &EndpointAddress,
+        key: &GatewayKey,
+        deployment: &str,
+        scope: RunScope<'_>,
+    ) -> Result<(), AgentError> {
         let path = format!("/internal/v1/orphans/{}", scope.run_id);
         self.send(address, key, deployment, reqwest::Method::DELETE, &path, scope, Vec::new()).await.map(|_| ())
     }

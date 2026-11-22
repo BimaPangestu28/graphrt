@@ -50,7 +50,10 @@ fn parse_field(field: &str, min: u32, max: u32, names: &[&str], base: u32) -> Re
     let mut values = BTreeSet::new();
     for part in field.split(',') {
         let (range, step) = match part.split_once('/') {
-            Some((range, step)) => (range, step.parse::<u32>().ok().filter(|step| *step > 0).ok_or_else(|| format!("bad step in `{part}`"))?),
+            Some((range, step)) => (
+                range,
+                step.parse::<u32>().ok().filter(|step| *step > 0).ok_or_else(|| format!("bad step in `{part}`"))?,
+            ),
             None => (part, 1),
         };
         let (low, high) = if range == "*" {

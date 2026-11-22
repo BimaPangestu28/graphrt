@@ -113,7 +113,13 @@ impl Deployment {
     ///
     /// # Panics
     /// Never: `keys` is checked non-empty by the caller (config validation).
-    pub fn new(name: &str, auth: DeploymentAuth, keys: Vec<GatewayKey>, provider: Arc<dyn Provider>, pool_config: PoolConfig) -> Self {
+    pub fn new(
+        name: &str,
+        auth: DeploymentAuth,
+        keys: Vec<GatewayKey>,
+        provider: Arc<dyn Provider>,
+        pool_config: PoolConfig,
+    ) -> Self {
         Self {
             name: name.to_owned(),
             auth,
@@ -172,7 +178,12 @@ impl Deployment {
     /// # Errors
     /// [`VersionError::NothingDeployed`].
     pub fn current(&self) -> Result<VersionEntry, VersionError> {
-        self.read().iter().rev().find(|entry| entry.info.superseded_ms.is_none()).cloned().ok_or(VersionError::NothingDeployed)
+        self.read()
+            .iter()
+            .rev()
+            .find(|entry| entry.info.superseded_ms.is_none())
+            .cloned()
+            .ok_or(VersionError::NothingDeployed)
     }
 
     /// `version` if it may still run at `now_ms` (7-day pool of old versions).
@@ -181,8 +192,15 @@ impl Deployment {
     /// [`VersionError::Unknown`] or [`VersionError::Retired`].
     pub fn version(&self, version: &str, now_ms: u64) -> Result<VersionEntry, VersionError> {
         let versions = self.read();
-        let entry = versions.iter().find(|entry| entry.info.version == version).ok_or_else(|| VersionError::Unknown(version.to_owned()))?;
-        if entry.info.superseded_ms.is_some_and(|superseded| now_ms.saturating_sub(superseded) > VERSION_RETENTION.as_millis() as u64) {
+        let entry = versions
+            .iter()
+            .find(|entry| entry.info.version == version)
+            .ok_or_else(|| VersionError::Unknown(version.to_owned()))?;
+        if entry
+            .info
+            .superseded_ms
+            .is_some_and(|superseded| now_ms.saturating_sub(superseded) > VERSION_RETENTION.as_millis() as u64)
+        {
             return Err(VersionError::Retired(version.to_owned()));
         }
         Ok(entry.clone())
@@ -197,8 +215,9 @@ impl Deployment {
     pub fn take_retired(&self, now_ms: u64) -> Vec<VersionEntry> {
         let mut versions = self.versions.write().unwrap_or_else(std::sync::PoisonError::into_inner);
         let retention = VERSION_RETENTION.as_millis() as u64;
-        let (retired, kept): (Vec<_>, Vec<_>) =
-            versions.drain(..).partition(|entry| entry.info.superseded_ms.is_some_and(|superseded| now_ms.saturating_sub(superseded) > retention));
+        let (retired, kept): (Vec<_>, Vec<_>) = versions.drain(..).partition(|entry| {
+            entry.info.superseded_ms.is_some_and(|superseded| now_ms.saturating_sub(superseded) > retention)
+        });
         *versions = kept;
         retired
     }
@@ -211,13 +230,27 @@ mod tests {
     use super::*;
 
     fn info(version: &str) -> VersionInfo {
-        VersionInfo { version: version.into(), workflow: "wf".into(), fingerprint: format!("fp-{version}"), target: "mem".into(), command: Vec::new(), activated_ms: 0, superseded_ms: None }
+        VersionInfo {
+            version: version.into(),
+            workflow: "wf".into(),
+            fingerprint: format!("fp-{version}"),
+            target: "mem".into(),
+            command: Vec::new(),
+            activated_ms: 0,
+            superseded_ms: None,
+        }
     }
 
     #[test]
     fn old_versions_resume_for_seven_days() {
         let key = GatewayKey::new("k", &[1; 32]).unwrap();
-        let deployment = Deployment::new("shop", DeploymentAuth::default(), vec![key], Arc::new(MemoryProvider::new(Duration::ZERO)), PoolConfig::default());
+        let deployment = Deployment::new(
+            "shop",
+            DeploymentAuth::default(),
+            vec![key],
+            Arc::new(MemoryProvider::new(Duration::ZERO)),
+            PoolConfig::default(),
+        );
         assert_eq!(deployment.current().unwrap_err(), VersionError::NothingDeployed);
         let day = 24 * 3600 * 1000;
         deployment.add_version(info("v1"), 0);

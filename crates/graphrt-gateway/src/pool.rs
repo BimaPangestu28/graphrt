@@ -20,7 +20,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use graphrt_provider_api::{Addressing, Capabilities, DeploymentRef, Endpoint, Provider, ProviderError, ReleaseMode, ReplicaPhase, ReplicaRef};
+use graphrt_provider_api::{
+    Addressing, Capabilities, DeploymentRef, Endpoint, Provider, ProviderError, ReleaseMode, ReplicaPhase, ReplicaRef,
+};
 use tokio::sync::Notify;
 use tokio::time::Instant;
 
@@ -162,7 +164,14 @@ impl Pool {
     /// A pool for `deployment` on `provider`.
     pub fn new(deployment: DeploymentRef, provider: Arc<dyn Provider>, config: PoolConfig) -> Arc<Self> {
         let capabilities = provider.capabilities();
-        Arc::new(Self { deployment, provider, capabilities, config, state: Mutex::new(PoolState::default()), changed: Notify::new() })
+        Arc::new(Self {
+            deployment,
+            provider,
+            capabilities,
+            config,
+            state: Mutex::new(PoolState::default()),
+            changed: Notify::new(),
+        })
     }
 
     /// The deployment version.
@@ -197,7 +206,8 @@ impl Pool {
     /// Takes the least-loaded free slot, if any.
     fn try_take(&self, state: &mut PoolState) -> Option<Endpoint> {
         let capacity = self.slot_capacity();
-        let slot = state.slots.iter_mut().filter(|slot| slot.active_runs < capacity).min_by_key(|slot| slot.active_runs)?;
+        let slot =
+            state.slots.iter_mut().filter(|slot| slot.active_runs < capacity).min_by_key(|slot| slot.active_runs)?;
         slot.active_runs += 1;
         Some(slot.endpoint.clone())
     }
@@ -258,7 +268,8 @@ impl Pool {
 
     /// The single in-flight wake of this pool.
     async fn wake(self: Arc<Self>, target: u32) {
-        let outcome = tokio::time::timeout(self.config.wake_timeout, self.provider.wake(&self.deployment, target)).await;
+        let outcome =
+            tokio::time::timeout(self.config.wake_timeout, self.provider.wake(&self.deployment, target)).await;
         let mut state = self.lock();
         state.waking = false;
         match outcome {
@@ -276,7 +287,10 @@ impl Pool {
                 state.last_wake_error = None;
             }
             Ok(Err(error)) => state.last_wake_error = Some((Instant::now(), error.to_string())),
-            Err(_) => state.last_wake_error = Some((Instant::now(), format!("wake timed out after {:?}", self.config.wake_timeout))),
+            Err(_) => {
+                state.last_wake_error =
+                    Some((Instant::now(), format!("wake timed out after {:?}", self.config.wake_timeout)))
+            }
         }
         drop(state);
         self.changed.notify_waiters();
@@ -362,7 +376,9 @@ impl Pool {
         let (dropped, orphans) = {
             let mut state = self.lock();
             let before = state.slots.len();
-            state.slots.retain(|slot| listed.iter().any(|row| row.replica == slot.endpoint.replica && row.phase == ReplicaPhase::Ready));
+            state.slots.retain(|slot| {
+                listed.iter().any(|row| row.replica == slot.endpoint.replica && row.phase == ReplicaPhase::Ready)
+            });
             let dropped = before - state.slots.len();
             let orphans: Vec<ReplicaRef> = listed
                 .iter()
@@ -437,7 +453,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn scales_out_least_loaded_up_to_max() {
         let provider = Arc::new(MemoryProvider::new(Duration::from_millis(10)));
-        let config = PoolConfig { max_active_runs: 2, quotas: Quotas { max_replicas: 2, ..Quotas::default() }, queue_timeout: Duration::from_millis(200), ..PoolConfig::default() };
+        let config = PoolConfig {
+            max_active_runs: 2,
+            quotas: Quotas { max_replicas: 2, ..Quotas::default() },
+            queue_timeout: Duration::from_millis(200),
+            ..PoolConfig::default()
+        };
         let pool = pool(provider.clone(), config);
         let mut leases = Vec::new();
         for _ in 0..4 {
@@ -496,7 +517,11 @@ mod tests {
         let pool = pool(provider, PoolConfig { queue_timeout: Duration::from_millis(100), ..PoolConfig::default() });
         assert!(matches!(pool.acquire().await, Err(ActivateError::Wake(_))));
         let quota = Quotas { max_wakes_per_hour: 0, ..Quotas::default() };
-        let blocked = Pool::new(deployment(), Arc::new(MemoryProvider::new(Duration::ZERO)), PoolConfig { quotas: quota, ..PoolConfig::default() });
+        let blocked = Pool::new(
+            deployment(),
+            Arc::new(MemoryProvider::new(Duration::ZERO)),
+            PoolConfig { quotas: quota, ..PoolConfig::default() },
+        );
         assert_eq!(blocked.acquire().await.unwrap_err(), ActivateError::WakeQuota);
     }
 }

@@ -44,20 +44,29 @@ fn runs() -> String {
 }
 
 fn engine_ids(frames: &[(Option<String>, String, Json)]) -> Vec<u64> {
-    frames.iter().filter_map(|(id, _, _)| id.as_deref()).filter(|id| !id.contains('.')).map(|id| id.parse().unwrap()).collect()
+    frames
+        .iter()
+        .filter_map(|(id, _, _)| id.as_deref())
+        .filter(|id| !id.contains('.'))
+        .map(|id| id.parse().unwrap())
+        .collect()
 }
 
 /// I2: stored indices 0..event_count, no duplicates (append idempotency), one
 /// `run_started` per execution segment.
 fn check_events(violations: &mut Violations, run_id: &str, events: &[StoredEvent], event_count: u64) {
-    violations.check(events.len() as u64 == event_count, || format!("I2 {run_id}: {} stored events, event_count {event_count}", events.len()));
-    violations.check(events.iter().all(|event| !event.get().contains(SECRET)), || format!("I6 {run_id}: secret in stored events"));
+    violations.check(events.len() as u64 == event_count, || {
+        format!("I2 {run_id}: {} stored events, event_count {event_count}", events.len())
+    });
+    violations.check(events.iter().all(|event| !event.get().contains(SECRET)), || {
+        format!("I6 {run_id}: secret in stored events")
+    });
 }
 
 async fn simulate_seed(gateway: &TestGateway, seed: u64, violations: &mut Violations) {
     let rng = JitterRng::seeded(seed);
     let mode = MODES[(rng.next_u64() % MODES.len() as u64) as usize];
-    let stream = rng.next_u64() % 2 == 0;
+    let stream = rng.next_u64().is_multiple_of(2);
     let events = rng.next_u64() % 6;
     if std::env::var_os("GRAPHRT_SIM_TRACE").is_some() {
         println!("  mode {mode} stream {stream} events {events}");
@@ -67,9 +76,12 @@ async fn simulate_seed(gateway: &TestGateway, seed: u64, violations: &mut Violat
     let run_id = if stream {
         let frames = gateway.sse(&runs(), Some(body), None).await;
         let ids = engine_ids(&frames);
-        let contiguous = ids.windows(2).all(|pair| pair[1] == pair[0] + 1) && ids.first().is_none_or(|first| *first == 0);
+        let contiguous =
+            ids.windows(2).all(|pair| pair[1] == pair[0] + 1) && ids.first().is_none_or(|first| *first == 0);
         violations.check(contiguous, || format!("I5 seed {seed}: live ids {ids:?}"));
-        frames.iter().find_map(|(_, event, data)| (event == "run_started").then(|| data["run_id"].as_str().map(str::to_owned)).flatten())
+        frames.iter().find_map(|(_, event, data)| {
+            (event == "run_started").then(|| data["run_id"].as_str().map(str::to_owned)).flatten()
+        })
     } else {
         let (status, record) = gateway.post(&runs(), body).await;
         violations.check(status == 200, || format!("I1 seed {seed}: status {status} {record}"));
@@ -88,7 +100,8 @@ async fn simulate_seed(gateway: &TestGateway, seed: u64, violations: &mut Violat
         println!("  settled {}", record["status"]);
     }
     if record["status"] == "paused" {
-        let (status, _) = gateway.post(&format!("{}/{run_id}/resume", runs()), json!({ "inputs": { "ask": seed } })).await;
+        let (status, _) =
+            gateway.post(&format!("{}/{run_id}/resume", runs()), json!({ "inputs": { "ask": seed } })).await;
         violations.check(status == 202, || format!("seed {seed}: resume {status}"));
         record = gateway.wait_settled(&run_id).await;
     }
@@ -105,7 +118,9 @@ async fn simulate_seed(gateway: &TestGateway, seed: u64, violations: &mut Violat
     let cut = rng.next_u64() % stored.event_count.max(1);
     let replay = gateway.sse(&format!("{}/{run_id}/events", runs()), None, Some(&cut.to_string())).await;
     let replayed = engine_ids(&replay);
-    violations.check(replayed == ((cut + 1)..stored.event_count).collect::<Vec<_>>(), || format!("I5 seed {seed}: after {cut} got {replayed:?} of {}", stored.event_count));
+    violations.check(replayed == ((cut + 1)..stored.event_count).collect::<Vec<_>>(), || {
+        format!("I5 seed {seed}: after {cut} got {replayed:?} of {}", stored.event_count)
+    });
 }
 
 async fn simulate_duplicates(gateway: &Arc<TestGateway>, seed: u64, violations: &mut Violations) {
@@ -137,8 +152,13 @@ async fn simulate_duplicates(gateway: &Arc<TestGateway>, seed: u64, violations: 
     // I3: the same fire twice → one run.
     let job = CronJob { schedule: Schedule::new("sim", "* * * * *", "UTC").unwrap(), body: serde_json::Map::new() };
     let at = 1_800_000_000 + (seed as i64) * 60;
-    let (first, second) = tokio::join!(fire(&gateway.gateway, &gateway.deployment, &job, at), fire(&gateway.gateway, &gateway.deployment, &job, at));
-    violations.check(u8::from(first) + u8::from(second) == 1, || format!("I3 seed {seed}: {} runs for one fire", u8::from(first) + u8::from(second)));
+    let (first, second) = tokio::join!(
+        fire(&gateway.gateway, &gateway.deployment, &job, at),
+        fire(&gateway.gateway, &gateway.deployment, &job, at)
+    );
+    violations.check(u8::from(first) + u8::from(second) == 1, || {
+        format!("I3 seed {seed}: {} runs for one fire", u8::from(first) + u8::from(second))
+    });
     for run_id in ids.iter().cloned().chain([graphrt_gateway::cron::fire_run_id(DEPLOYMENT, "sim", at)]) {
         let record = gateway.wait_settled(&run_id).await;
         violations.check(record["status"] == "succeeded", || format!("I1 seed {seed}: {run_id} {record}"));
@@ -149,10 +169,22 @@ async fn simulate_duplicates(gateway: &Arc<TestGateway>, seed: u64, violations: 
 async fn invariants_hold_over_seeds() {
     let seeds: u64 = std::env::var("GRAPHRT_SIM_SEEDS").ok().and_then(|value| value.parse().ok()).unwrap_or(1000);
     let start: u64 = std::env::var("GRAPHRT_SIM_SEED_START").ok().and_then(|value| value.parse().ok()).unwrap_or(0);
-    let hook = HookConfig { id: "sim".into(), scheme: Scheme::Github, secret_env: None, idempotency_header: Some("x-delivery".into()), input: None, callback_url: None };
+    let hook = HookConfig {
+        id: "sim".into(),
+        scheme: Scheme::Github,
+        secret_env: None,
+        idempotency_header: Some("x-delivery".into()),
+        input: None,
+        callback_url: None,
+    };
     let options = Options {
         // The wake quota is unit-tested; thousands of seeds in seconds would exhaust it.
-        pool: PoolConfig { max_active_runs: 16, idle_timeout: Duration::from_millis(300), quotas: Quotas { max_wakes_per_hour: u32::MAX, ..Quotas::default() }, ..PoolConfig::default() },
+        pool: PoolConfig {
+            max_active_runs: 16,
+            idle_timeout: Duration::from_millis(300),
+            quotas: Quotas { max_wakes_per_hour: u32::MAX, ..Quotas::default() },
+            ..PoolConfig::default()
+        },
         configure_app: Some(Box::new(move |app| {
             app.hooks.insert((DEPLOYMENT.into(), "sim".into()), (hook, Some(b"sim-hook".to_vec())));
         })),
@@ -170,7 +202,7 @@ async fn invariants_hold_over_seeds() {
                     println!("seed {seed}");
                 }
                 simulate_seed(&gateway, seed, &mut violations).await;
-                if seed % 5 == 0 {
+                if seed.is_multiple_of(5) {
                     simulate_duplicates(&gateway, seed, &mut violations).await;
                 }
                 seed += lanes;
@@ -178,7 +210,8 @@ async fn invariants_hold_over_seeds() {
             violations.0
         })
     });
-    let mut violations: Vec<String> = futures::future::join_all(tasks).await.into_iter().flat_map(Result::unwrap).collect();
+    let mut violations: Vec<String> =
+        futures::future::join_all(tasks).await.into_iter().flat_map(Result::unwrap).collect();
 
     // I6: no secret in records or metrics.
     let page = gateway.gateway.store.list(Default::default()).await.unwrap();
@@ -186,7 +219,16 @@ async fn invariants_hold_over_seeds() {
     if records.contains(SECRET) {
         violations.push("I6: secret in a run record".into());
     }
-    let metrics = gateway.client().get(format!("{}/metrics", gateway.url)).header("x-api-key", API_KEY).send().await.unwrap().text().await.unwrap();
+    let metrics = gateway
+        .client()
+        .get(format!("{}/metrics", gateway.url))
+        .header("x-api-key", API_KEY)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
     if metrics.contains(SECRET) {
         violations.push("I6: secret in metrics".into());
     }
@@ -204,5 +246,10 @@ async fn invariants_hold_over_seeds() {
         violations.push(format!("I7: {} replicas after idle timeout", gateway.provider.live()));
     }
     println!("simulation: {seeds} seeds from {start}, {} violations", violations.len());
-    assert!(violations.is_empty(), "{} invariant violations:\n{}", violations.len(), violations.iter().take(30).cloned().collect::<Vec<_>>().join("\n"));
+    assert!(
+        violations.is_empty(),
+        "{} invariant violations:\n{}",
+        violations.len(),
+        violations.iter().take(30).cloned().collect::<Vec<_>>().join("\n")
+    );
 }

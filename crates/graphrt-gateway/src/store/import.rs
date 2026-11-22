@@ -25,7 +25,11 @@ pub struct ImportSummary {
 ///
 /// # Errors
 /// The first store error other than an existing run.
-pub async fn import_runs(source: &dyn RunStore, target: &dyn RunStore, deployment: &str) -> Result<ImportSummary, StoreError> {
+pub async fn import_runs(
+    source: &dyn RunStore,
+    target: &dyn RunStore,
+    deployment: &str,
+) -> Result<ImportSummary, StoreError> {
     let mut summary = ImportSummary::default();
     let mut cursor = None;
     loop {

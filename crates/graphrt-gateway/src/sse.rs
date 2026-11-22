@@ -97,7 +97,11 @@ impl Parser {
                 self.id = None;
                 return Ok(None);
             }
-            let frame = Frame { event: self.event.take().unwrap_or_else(|| "message".to_owned()), id: self.id.take(), data: self.data.join("\n") };
+            let frame = Frame {
+                event: self.event.take().unwrap_or_else(|| "message".to_owned()),
+                id: self.id.take(),
+                data: self.data.join("\n"),
+            };
             self.data.clear();
             self.data_bytes = 0;
             return Ok(Some(frame));
@@ -105,7 +109,8 @@ impl Parser {
         if line.starts_with(':') {
             return Ok(None);
         }
-        let (field, value) = line.split_once(':').map_or((line, ""), |(field, value)| (field, value.strip_prefix(' ').unwrap_or(value)));
+        let (field, value) =
+            line.split_once(':').map_or((line, ""), |(field, value)| (field, value.strip_prefix(' ').unwrap_or(value)));
         match field {
             "event" => self.event = Some(value.to_owned()),
             "id" => self.id = Some(value.to_owned()),
@@ -152,7 +157,8 @@ mod tests {
     fn parses_across_chunk_boundaries() {
         let mut parser = Parser::default();
         assert!(parser.feed(b"event: hello\ndata: {\"run_id\"").unwrap().is_empty());
-        let frames = parser.feed(b":\"r\"}\n\n: heartbeat\n\nid: 3\nevent: node_started\r\ndata: a\ndata: b\n\n").unwrap();
+        let frames =
+            parser.feed(b":\"r\"}\n\n: heartbeat\n\nid: 3\nevent: node_started\r\ndata: a\ndata: b\n\n").unwrap();
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0], Frame { event: "hello".into(), id: None, data: "{\"run_id\":\"r\"}".into() });
         assert_eq!(frames[1].event_index(), Some(3));

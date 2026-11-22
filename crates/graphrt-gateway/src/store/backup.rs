@@ -77,7 +77,10 @@ mod tests {
         for now in [1, 2, 3] {
             backup_once(&store, &policy, now).await.unwrap();
         }
-        let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
         names.sort();
         assert_eq!(names, vec!["gateway-0000000000002.db", "gateway-0000000000003.db"]);
         std::fs::remove_dir_all(&dir).unwrap();

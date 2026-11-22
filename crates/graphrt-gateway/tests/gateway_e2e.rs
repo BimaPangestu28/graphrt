@@ -23,7 +23,8 @@ fn runs() -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sync_run_needs_a_key_and_returns_outputs() {
     let gateway = start_gateway(Options::default()).await;
-    let unauthorized = gateway.client().post(format!("{}{}", gateway.url, runs())).json(&json!({})).send().await.unwrap();
+    let unauthorized =
+        gateway.client().post(format!("{}{}", gateway.url, runs())).json(&json!({})).send().await.unwrap();
     assert_eq!(unauthorized.status().as_u16(), 401);
     let (status, record) = gateway.post(&runs(), json!({ "inputs": { "text": "hi", "api_token": "s3cr3t" } })).await;
     assert_eq!(status, 200, "{record}");
@@ -47,10 +48,12 @@ async fn streams_have_gapless_ids_across_reconnects() {
     let engine: Vec<u64> = ids.iter().filter(|id| !id.contains('.')).map(|id| id.parse().unwrap()).collect();
     assert_eq!(engine, (0..7).collect::<Vec<_>>(), "{ids:?}");
     assert!(ids.contains(&"1.0".to_owned()), "response chunks keep N.k ids");
-    let run_id = frames.iter().find(|(_, event, _)| event == "run_started").unwrap().2["run_id"].as_str().unwrap().to_owned();
+    let run_id =
+        frames.iter().find(|(_, event, _)| event == "run_started").unwrap().2["run_id"].as_str().unwrap().to_owned();
     // Reconnect after event 3: events 4.. only, from the ring or the store (I5).
     let replay = gateway.sse(&format!("{}/{run_id}/events", runs()), None, Some("3")).await;
-    let replay_ids: Vec<String> = replay.iter().filter_map(|(id, _, _)| id.clone()).filter(|id| !id.contains('.')).collect();
+    let replay_ids: Vec<String> =
+        replay.iter().filter_map(|(id, _, _)| id.clone()).filter(|id| !id.contains('.')).collect();
     assert_eq!(replay_ids, vec!["4", "5", "6"]);
     // Mid-chunk resume: `4.0` seen, event 4 not yet.
     let replay = gateway.sse(&format!("{}/{run_id}/events", runs()), None, Some("4.0")).await;
@@ -79,7 +82,8 @@ async fn hitl_pause_then_resume() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn drained_runs_are_redispatched_with_their_inputs() {
     let gateway = start_gateway(Options::default()).await;
-    let (_, record) = gateway.post(&runs(), json!({ "inputs": { "mode": "preempt_once", "user_jwt": "eyJ.secret.jwt" } })).await;
+    let (_, record) =
+        gateway.post(&runs(), json!({ "inputs": { "mode": "preempt_once", "user_jwt": "eyJ.secret.jwt" } })).await;
     assert_eq!(record["status"], "succeeded", "{record}");
     assert_eq!(record["outputs"]["executions"], 2);
     assert_eq!(record["epoch"], 2);
@@ -122,14 +126,26 @@ async fn concurrent_cold_requests_wake_one_replica() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn full_queue_answers_503_with_retry_after() {
-    let pool = PoolConfig { max_active_runs: 1, queue_timeout: Duration::from_millis(100), quotas: Quotas { max_replicas: 1, max_queued: 8, ..Quotas::default() }, ..PoolConfig::default() };
+    let pool = PoolConfig {
+        max_active_runs: 1,
+        queue_timeout: Duration::from_millis(100),
+        quotas: Quotas { max_replicas: 1, max_queued: 8, ..Quotas::default() },
+        ..PoolConfig::default()
+    };
     let gateway = Arc::new(start_gateway(Options { pool, ..Options::default() }).await);
     let slow = {
         let gateway = gateway.clone();
         tokio::spawn(async move { gateway.post(&runs(), json!({ "inputs": { "delay_ms": 300 } })).await })
     };
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let response = gateway.client().post(format!("{}{}", gateway.url, runs())).header("x-api-key", API_KEY).json(&json!({})).send().await.unwrap();
+    let response = gateway
+        .client()
+        .post(format!("{}{}", gateway.url, runs()))
+        .header("x-api-key", API_KEY)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(response.status().as_u16(), 503);
     assert!(response.headers().get("retry-after").is_some());
     assert_eq!(slow.await.unwrap().1["status"], "succeeded");
@@ -137,7 +153,14 @@ async fn full_queue_answers_503_with_retry_after() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn idempotency_keys_and_webhooks_dedupe() {
-    let hook = HookConfig { id: "orders".into(), scheme: Scheme::Github, secret_env: None, idempotency_header: Some("x-delivery".into()), input: None, callback_url: None };
+    let hook = HookConfig {
+        id: "orders".into(),
+        scheme: Scheme::Github,
+        secret_env: None,
+        idempotency_header: Some("x-delivery".into()),
+        input: None,
+        callback_url: None,
+    };
     let options = Options {
         configure_app: Some(Box::new(move |app| {
             app.hooks.insert((DEPLOYMENT.into(), "orders".into()), (hook, Some(b"hook-secret".to_vec())));
@@ -145,9 +168,28 @@ async fn idempotency_keys_and_webhooks_dedupe() {
         ..Options::default()
     };
     let gateway = start_gateway(options).await;
-    let first = gateway.client().post(format!("{}{}", gateway.url, runs())).header("x-api-key", API_KEY).header("idempotency-key", "k-1").json(&json!({})).send().await.unwrap();
+    let first = gateway
+        .client()
+        .post(format!("{}{}", gateway.url, runs()))
+        .header("x-api-key", API_KEY)
+        .header("idempotency-key", "k-1")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
     let first: Json = first.json().await.unwrap();
-    let second: Json = gateway.client().post(format!("{}{}", gateway.url, runs())).header("x-api-key", API_KEY).header("idempotency-key", "k-1").json(&json!({})).send().await.unwrap().json().await.unwrap();
+    let second: Json = gateway
+        .client()
+        .post(format!("{}{}", gateway.url, runs()))
+        .header("x-api-key", API_KEY)
+        .header("idempotency-key", "k-1")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(first["run_id"], second["run_id"]);
     assert_eq!(second["duplicate"], true);
 
@@ -170,7 +212,14 @@ async fn idempotency_keys_and_webhooks_dedupe() {
     assert_eq!(again["run_id"], accepted["run_id"]);
     let done = gateway.wait_settled(accepted["run_id"].as_str().unwrap()).await;
     assert_eq!(done["status"], "succeeded");
-    let forged = gateway.client().post(format!("{}/v1/deployments/{DEPLOYMENT}/hooks/orders", gateway.url)).header("x-hub-signature-256", "sha256=00").body(body.to_vec()).send().await.unwrap();
+    let forged = gateway
+        .client()
+        .post(format!("{}/v1/deployments/{DEPLOYMENT}/hooks/orders", gateway.url))
+        .header("x-hub-signature-256", "sha256=00")
+        .body(body.to_vec())
+        .send()
+        .await
+        .unwrap();
     assert_eq!(forged.status().as_u16(), 401);
 }
 
@@ -188,8 +237,11 @@ async fn gateway_restart_reclaims_running_runs() {
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
             let result = runtime.block_on(async move {
-                let first = start_gateway(Options { store: SqliteStore::open(&path).unwrap(), world, ..Options::default() }).await;
-                let (_, accepted) = first.post(&runs(), json!({ "async": true, "inputs": { "events": 40, "delay_ms": 20 } })).await;
+                let first =
+                    start_gateway(Options { store: SqliteStore::open(&path).unwrap(), world, ..Options::default() })
+                        .await;
+                let (_, accepted) =
+                    first.post(&runs(), json!({ "async": true, "inputs": { "events": 40, "delay_ms": 20 } })).await;
                 let run_id = accepted["run_id"].as_str().unwrap().to_owned();
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 let before = first.gateway.store.get(&run_id).await.unwrap().unwrap();
@@ -204,7 +256,9 @@ async fn gateway_restart_reclaims_running_runs() {
         .unwrap()
     };
     let restarted = tokio::time::Instant::now();
-    let second = start_gateway(Options { store: SqliteStore::open(&path).unwrap(), world: world.clone(), ..Options::default() }).await;
+    let second =
+        start_gateway(Options { store: SqliteStore::open(&path).unwrap(), world: world.clone(), ..Options::default() })
+            .await;
     let (queued, running) = second.gateway.recover().await.unwrap();
     assert_eq!((queued, running), (0, 1));
     assert!(restarted.elapsed() < Duration::from_secs(2), "restart to serving < 2 s");
@@ -224,21 +278,33 @@ async fn metrics_and_health() {
     let text = gateway.client().get(format!("{}/metrics", gateway.url)).send().await.unwrap().text().await.unwrap();
     assert!(text.contains("graphrt_gateway_runs_started_total 1"), "{text}");
     assert!(text.contains("graphrt_gateway_replicas{deployment=\"shop\",version=\"v1\"} 1"));
-    let health: Json = gateway.client().get(format!("{}/healthz", gateway.url)).send().await.unwrap().json().await.unwrap();
+    let health: Json =
+        gateway.client().get(format!("{}/healthz", gateway.url)).send().await.unwrap().json().await.unwrap();
     assert_eq!(health["status"], "ok");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn streamed_hitl_run_ends_its_stream_at_the_pause() {
     let gateway = start_gateway(Options::default()).await;
-    let frames = tokio::time::timeout(Duration::from_secs(5), gateway.sse(&runs(), Some(json!({ "stream": true, "inputs": { "mode": "hitl", "events": 5 } })), None)).await.expect("stream ends");
+    let frames = tokio::time::timeout(
+        Duration::from_secs(5),
+        gateway.sse(&runs(), Some(json!({ "stream": true, "inputs": { "mode": "hitl", "events": 5 } })), None),
+    )
+    .await
+    .expect("stream ends");
     assert_eq!(frames.last().unwrap().1, "run_paused");
-    let run_id = frames.iter().find(|(_, event, _)| event == "run_started").unwrap().2["run_id"].as_str().unwrap().to_owned();
+    let run_id =
+        frames.iter().find(|(_, event, _)| event == "run_started").unwrap().2["run_id"].as_str().unwrap().to_owned();
     let (status, _) = gateway.post(&format!("{}/{run_id}/resume", runs()), json!({ "inputs": { "ask": 1 } })).await;
     assert_eq!(status, 202);
     let done = gateway.wait_settled(&run_id).await;
     assert_eq!(done["status"], "succeeded");
-    let replay = tokio::time::timeout(Duration::from_secs(5), gateway.sse(&format!("{}/{run_id}/events", runs()), None, Some("2"))).await.expect("replay ends");
+    let replay = tokio::time::timeout(
+        Duration::from_secs(5),
+        gateway.sse(&format!("{}/{run_id}/events", runs()), None, Some("2")),
+    )
+    .await
+    .expect("replay ends");
     let ids: Vec<String> = replay.iter().filter_map(|(id, _, _)| id.clone()).filter(|id| !id.contains('.')).collect();
     assert_eq!(ids.first().map(String::as_str), Some("3"), "{ids:?}");
 }
@@ -251,16 +317,42 @@ impl graphrt_provider_api::Provider for InvokeOnly {
     fn capabilities(&self) -> graphrt_provider_api::Capabilities {
         graphrt_provider_api::Capabilities { max_grace_secs: 0, max_request_secs: Some(1), ..self.0.capabilities() }
     }
-    fn wake<'a>(&'a self, deployment: &'a graphrt_provider_api::DeploymentRef, replicas: u32) -> graphrt_provider_api::BoxFuture<'a, Result<Vec<graphrt_provider_api::Endpoint>, graphrt_provider_api::ProviderError>> {
+    fn wake<'a>(
+        &'a self,
+        deployment: &'a graphrt_provider_api::DeploymentRef,
+        replicas: u32,
+    ) -> graphrt_provider_api::BoxFuture<
+        'a,
+        Result<Vec<graphrt_provider_api::Endpoint>, graphrt_provider_api::ProviderError>,
+    > {
         self.0.wake(deployment, replicas)
     }
-    fn release<'a>(&'a self, replica: &'a graphrt_provider_api::ReplicaRef, mode: graphrt_provider_api::ReleaseMode) -> graphrt_provider_api::BoxFuture<'a, Result<(), graphrt_provider_api::ProviderError>> {
+    fn release<'a>(
+        &'a self,
+        replica: &'a graphrt_provider_api::ReplicaRef,
+        mode: graphrt_provider_api::ReleaseMode,
+    ) -> graphrt_provider_api::BoxFuture<'a, Result<(), graphrt_provider_api::ProviderError>> {
         self.0.release(replica, mode)
     }
-    fn list<'a>(&'a self, deployment: &'a graphrt_provider_api::DeploymentRef) -> graphrt_provider_api::BoxFuture<'a, Result<Vec<graphrt_provider_api::ReplicaState>, graphrt_provider_api::ProviderError>> {
+    fn list<'a>(
+        &'a self,
+        deployment: &'a graphrt_provider_api::DeploymentRef,
+    ) -> graphrt_provider_api::BoxFuture<
+        'a,
+        Result<Vec<graphrt_provider_api::ReplicaState>, graphrt_provider_api::ProviderError>,
+    > {
         self.0.list(deployment)
     }
-    fn invoke<'a>(&'a self, endpoint: &'a graphrt_provider_api::Endpoint, request: graphrt_provider_api::InvokeRequest) -> Option<graphrt_provider_api::BoxFuture<'a, Result<graphrt_provider_api::InvokeResponse, graphrt_provider_api::ProviderError>>> {
+    fn invoke<'a>(
+        &'a self,
+        endpoint: &'a graphrt_provider_api::Endpoint,
+        request: graphrt_provider_api::InvokeRequest,
+    ) -> Option<
+        graphrt_provider_api::BoxFuture<
+            'a,
+            Result<graphrt_provider_api::InvokeResponse, graphrt_provider_api::ProviderError>,
+        >,
+    > {
         self.1.fetch_add(1, Ordering::SeqCst);
         let graphrt_provider_api::EndpointAddress::Http(base) = &endpoint.address else { return None };
         let url = format!("{base}{}", request.path);
@@ -269,13 +361,18 @@ impl graphrt_provider_api::Provider for InvokeOnly {
             for (name, value) in request.headers {
                 builder = builder.header(name, value);
             }
-            let response = builder.send().await.map_err(|error| graphrt_provider_api::ProviderError::transient(error.to_string()))?;
+            let response = builder
+                .send()
+                .await
+                .map_err(|error| graphrt_provider_api::ProviderError::transient(error.to_string()))?;
             let status = response.status().as_u16();
             let body = futures::stream::unfold(response, |mut response| async move {
                 match response.chunk().await {
                     Ok(Some(chunk)) => Some((Ok(chunk.to_vec()), response)),
                     Ok(None) => None,
-                    Err(error) => Some((Err(graphrt_provider_api::ProviderError::transient(error.to_string())), response)),
+                    Err(error) => {
+                        Some((Err(graphrt_provider_api::ProviderError::transient(error.to_string())), response))
+                    }
                 }
             });
             Ok(graphrt_provider_api::InvokeResponse { status, body: Box::pin(body) })
@@ -287,14 +384,26 @@ impl graphrt_provider_api::Provider for InvokeOnly {
 async fn invoke_transport_and_platform_timeout() {
     let base = start_gateway(Options::default()).await;
     let provider = Arc::new(InvokeOnly(base.provider.clone(), std::sync::atomic::AtomicU32::new(0)));
-    let auth = graphrt_gateway::auth::DeploymentAuth::new(vec![graphrt_gateway::hex::sha256_hex(API_KEY.as_bytes())], None, &reqwest::Client::new()).unwrap();
-    let lambda = Arc::new(graphrt_gateway::deployment::Deployment::new("lambda", auth, vec![common::key()], provider.clone(), PoolConfig::default()));
+    let auth = graphrt_gateway::auth::DeploymentAuth::new(
+        vec![graphrt_gateway::hex::sha256_hex(API_KEY.as_bytes())],
+        None,
+        &reqwest::Client::new(),
+    )
+    .unwrap();
+    let lambda = Arc::new(graphrt_gateway::deployment::Deployment::new(
+        "lambda",
+        auth,
+        vec![common::key()],
+        provider.clone(),
+        PoolConfig::default(),
+    ));
     lambda.add_version(common::version("v1"), graphrt_core::store::now_ms());
     base.gateway.add_deployment(lambda);
     let (_, record) = base.post("/v1/deployments/lambda/runs", json!({ "inputs": { "text": "via invoke" } })).await;
     assert_eq!(record["outputs"]["echo"], "via invoke", "{record}");
     assert_eq!(provider.1.load(Ordering::SeqCst), 1, "the request went through Provider::invoke");
-    let (_, record) = base.post("/v1/deployments/lambda/runs", json!({ "inputs": { "events": 5, "delay_ms": 400 } })).await;
+    let (_, record) =
+        base.post("/v1/deployments/lambda/runs", json!({ "inputs": { "events": 5, "delay_ms": 400 } })).await;
     assert_eq!(record["status"], "failed");
     assert_eq!(record["error_type"], "platform_timeout");
 }

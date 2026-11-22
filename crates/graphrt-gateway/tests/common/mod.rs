@@ -2,7 +2,15 @@
 //! SSE with `id:`s, orphan reports) and a provider whose replicas are fake
 //! agents on loopback ports, plus a helper that runs a gateway in-process.
 
-#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+#![allow(
+    dead_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::result_large_err,
+    clippy::type_complexity
+)]
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -24,11 +32,14 @@ use graphrt_gateway::auth::DeploymentAuth;
 use graphrt_gateway::deployment::{Deployment, VersionInfo};
 use graphrt_gateway::pool::PoolConfig;
 use graphrt_gateway::server::{App, router};
-use graphrt_gateway::signature::{DEPLOYMENT_HEADER, EPOCH_HEADER, GatewayKey, RUN_ID_HEADER, SIGNATURE_HEADER, Signed, Verifier, sign, unix_now};
+use graphrt_gateway::signature::{
+    DEPLOYMENT_HEADER, EPOCH_HEADER, GatewayKey, RUN_ID_HEADER, SIGNATURE_HEADER, Signed, Verifier, sign, unix_now,
+};
 use graphrt_gateway::store::SqliteStore;
 use graphrt_gateway::supervisor::{Gateway, SupervisorSettings};
 use graphrt_provider_api::{
-    Addressing, BoxFuture, Capabilities, DeploymentRef, Endpoint, EndpointAddress, Provider, ProviderError, ReleaseMode, ReplicaPhase, ReplicaRef, ReplicaState, Scaler,
+    Addressing, BoxFuture, Capabilities, DeploymentRef, Endpoint, EndpointAddress, Provider, ProviderError,
+    ReleaseMode, ReplicaPhase, ReplicaRef, ReplicaState, Scaler,
 };
 use serde_json::{Value as Json, json};
 
@@ -40,7 +51,16 @@ pub fn key() -> GatewayKey {
 }
 
 fn snapshot(run_id: &str) -> Snapshot {
-    Snapshot { format: 1, run_id: run_id.into(), graph_fingerprint: String::new(), elapsed_ms: 0, steps: 1, usage: Default::default(), handled_errors: 0, root: FrameSnapshot::default() }
+    Snapshot {
+        format: 1,
+        run_id: run_id.into(),
+        graph_fingerprint: String::new(),
+        elapsed_ms: 0,
+        steps: 1,
+        usage: Default::default(),
+        handled_errors: 0,
+        root: FrameSnapshot::default(),
+    }
 }
 
 /// Shared knobs of all fake agents.
@@ -75,7 +95,10 @@ fn verify(state: &AgentState, method: &str, path: &str, headers: &HeaderMap, bod
     let (deployment, run_id, epoch) = (header(DEPLOYMENT_HEADER), header(RUN_ID_HEADER), header(EPOCH_HEADER));
     let signed = Signed { deployment: &deployment, method, path, run_id: &run_id, epoch: &epoch, body };
     let signature = header(SIGNATURE_HEADER);
-    state.verifier.verify(Some(&signature), &signed, unix_now()).map_err(|error| (StatusCode::UNAUTHORIZED, error.to_string()).into_response())
+    state
+        .verifier
+        .verify(Some(&signature), &signed, unix_now())
+        .map_err(|error| (StatusCode::UNAUTHORIZED, error.to_string()).into_response())
 }
 
 fn orphan_client() -> &'static reqwest::Client {
@@ -88,7 +111,8 @@ async fn post_orphan(world: &AgentWorld, run_id: &str, epoch: u64, terminal: Jso
     let body = serde_json::to_vec(&json!({ "run_id": run_id, "epoch": epoch, "deployment": DEPLOYMENT, "status": "paused", "event_count": event_count, "terminal": terminal, "answer": "", "orphaned_ms": 0 })).unwrap();
     let path = format!("/internal/v1/orphans/{run_id}");
     let epoch_text = epoch.to_string();
-    let signed = Signed { deployment: DEPLOYMENT, method: "POST", path: &path, run_id, epoch: &epoch_text, body: &body };
+    let signed =
+        Signed { deployment: DEPLOYMENT, method: "POST", path: &path, run_id, epoch: &epoch_text, body: &body };
     for _ in 0..50 {
         let response = orphan_client()
             .post(format!("{url}{path}"))
@@ -143,15 +167,21 @@ async fn start_run(State(state): State<Arc<AgentState>>, headers: HeaderMap, bod
         for step in 0..count {
             tokio::time::sleep(delay).await;
             let (kind, id, data) = emit(json!({ "type": "node_succeeded", "step": step, "execution": previous }));
-            let _ = sender.send(frame("response", Some(format!("{id}.0")), &json!({ "text": format!("chunk{step}") }))).await;
+            let _ = sender
+                .send(frame("response", Some(format!("{id}.0")), &json!({ "text": format!("chunk{step}") })))
+                .await;
             if sender.send(frame(&kind, Some(id.to_string()), &data)).await.is_err() {
                 return;
             }
         }
         let first_execution = previous == 0 && !resumed;
         let terminal = match mode.as_str() {
-            "hitl" if !resumed => json!({ "type": "run_paused", "reasons": [{ "frame": "", "node_id": "ask", "kind": "human_input", "data": null }], "snapshot": snapshot(&run_id) }),
-            "preempt_once" if first_execution => json!({ "type": "run_paused", "reasons": [{ "frame": "", "node_id": null, "kind": "external", "data": "drained" }], "snapshot": snapshot(&run_id) }),
+            "hitl" if !resumed => {
+                json!({ "type": "run_paused", "reasons": [{ "frame": "", "node_id": "ask", "kind": "human_input", "data": null }], "snapshot": snapshot(&run_id) })
+            }
+            "preempt_once" if first_execution => {
+                json!({ "type": "run_paused", "reasons": [{ "frame": "", "node_id": null, "kind": "external", "data": "drained" }], "snapshot": snapshot(&run_id) })
+            }
             "break_once" if first_execution => {
                 // The stream breaks; the agent preempts and reports the orphan.
                 drop(sender);
@@ -164,9 +194,15 @@ async fn start_run(State(state): State<Arc<AgentState>>, headers: HeaderMap, bod
                 drop(sender);
                 return;
             }
-            "fail" => json!({ "type": "run_failed", "error": "boom", "error_type": "node", "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }, "elapsed_ms": 1 }),
+            "fail" => {
+                json!({ "type": "run_failed", "error": "boom", "error_type": "node", "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }, "elapsed_ms": 1 })
+            }
             _ => {
-                let echo = if resumed { request["resume"]["inputs"].clone() } else { inputs.get("text").cloned().unwrap_or(Json::Null) };
+                let echo = if resumed {
+                    request["resume"]["inputs"].clone()
+                } else {
+                    inputs.get("text").cloned().unwrap_or(Json::Null)
+                };
                 json!({ "type": "run_succeeded", "outputs": { "echo": echo, "user": request["user_id"], "executions": previous + 1 }, "usage": { "prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3 }, "handled_errors": 0, "elapsed_ms": 1 })
             }
         };
@@ -182,7 +218,8 @@ async fn hello(State(state): State<Arc<AgentState>>, headers: HeaderMap) -> Resp
     if let Err(refused) = verify(&state, "GET", "/internal/v1/hello", &headers, b"") {
         return refused;
     }
-    axum::Json(json!({ "protocol": 1, "deployment": DEPLOYMENT, "replica": state.replica, "draining": false })).into_response()
+    axum::Json(json!({ "protocol": 1, "deployment": DEPLOYMENT, "replica": state.replica, "draining": false }))
+        .into_response()
 }
 
 async fn orphans(State(state): State<Arc<AgentState>>, headers: HeaderMap) -> Response {
@@ -209,7 +246,11 @@ impl FakeAgentProvider {
 
     async fn spawn_agent(&self, deployment: &DeploymentRef) -> (ReplicaRef, SocketAddr) {
         let id = format!("agent-{}", self.next.fetch_add(1, Ordering::SeqCst) + 1);
-        let state = Arc::new(AgentState { world: self.world.clone(), verifier: Verifier::new(vec![key()]), replica: id.clone() });
+        let state = Arc::new(AgentState {
+            world: self.world.clone(),
+            verifier: Verifier::new(vec![key()]),
+            replica: id.clone(),
+        });
         let app = Router::new()
             .route("/internal/v1/runs", post(start_run))
             .route("/internal/v1/hello", get(hello))
@@ -243,14 +284,30 @@ impl FakeAgentProvider {
 
 impl Provider for FakeAgentProvider {
     fn capabilities(&self) -> Capabilities {
-        Capabilities { addressing: Addressing::Replica, scaler: Scaler::Gateway, max_request_secs: None, idle_timeout_secs: None, max_grace_secs: 30, background_cpu: true, supports_suspend: false, wake_p95_target_ms: 50 }
+        Capabilities {
+            addressing: Addressing::Replica,
+            scaler: Scaler::Gateway,
+            max_request_secs: None,
+            idle_timeout_secs: None,
+            max_grace_secs: 30,
+            background_cpu: true,
+            supports_suspend: false,
+            wake_p95_target_ms: 50,
+        }
     }
 
-    fn wake<'a>(&'a self, deployment: &'a DeploymentRef, replicas: u32) -> BoxFuture<'a, Result<Vec<Endpoint>, ProviderError>> {
+    fn wake<'a>(
+        &'a self,
+        deployment: &'a DeploymentRef,
+        replicas: u32,
+    ) -> BoxFuture<'a, Result<Vec<Endpoint>, ProviderError>> {
         Box::pin(async move {
             let _serialised = self.wake_lock.lock().await;
             self.wakes.fetch_add(1, Ordering::SeqCst);
-            while (self.replicas.lock().unwrap().keys().filter(|replica| replica.deployment == *deployment).count() as u32) < replicas {
+            while (self.replicas.lock().unwrap().keys().filter(|replica| replica.deployment == *deployment).count()
+                as u32)
+                < replicas
+            {
                 self.spawn_agent(deployment).await;
             }
             Ok(self
@@ -259,7 +316,10 @@ impl Provider for FakeAgentProvider {
                 .unwrap()
                 .iter()
                 .filter(|(replica, _)| replica.deployment == *deployment)
-                .map(|(replica, (address, _))| Endpoint { replica: replica.clone(), address: EndpointAddress::Http(format!("http://{address}")) })
+                .map(|(replica, (address, _))| Endpoint {
+                    replica: replica.clone(),
+                    address: EndpointAddress::Http(format!("http://{address}")),
+                })
                 .collect())
         })
     }
@@ -278,7 +338,12 @@ impl Provider for FakeAgentProvider {
             .unwrap()
             .iter()
             .filter(|(replica, _)| replica.deployment == *deployment)
-            .map(|(replica, (address, _))| ReplicaState { replica: replica.clone(), phase: ReplicaPhase::Ready, address: Some(EndpointAddress::Http(format!("http://{address}"))), started_at_ms: None })
+            .map(|(replica, (address, _))| ReplicaState {
+                replica: replica.clone(),
+                phase: ReplicaPhase::Ready,
+                address: Some(EndpointAddress::Http(format!("http://{address}"))),
+                started_at_ms: None,
+            })
             .collect();
         Box::pin(async move { Ok(rows) })
     }
@@ -302,7 +367,15 @@ impl Drop for TestGateway {
 }
 
 pub fn version(version: &str) -> VersionInfo {
-    VersionInfo { version: version.into(), workflow: "agent".into(), fingerprint: String::new(), target: "fake".into(), command: Vec::new(), activated_ms: 0, superseded_ms: None }
+    VersionInfo {
+        version: version.into(),
+        workflow: "agent".into(),
+        fingerprint: String::new(),
+        target: "fake".into(),
+        command: Vec::new(),
+        activated_ms: 0,
+        superseded_ms: None,
+    }
 }
 
 pub struct Options {
@@ -315,16 +388,28 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { store: SqliteStore::in_memory().unwrap(), world: Arc::default(), pool: PoolConfig::default(), reclaim_grace: Duration::from_secs(5), configure_app: None }
+        Self {
+            store: SqliteStore::in_memory().unwrap(),
+            world: Arc::default(),
+            pool: PoolConfig::default(),
+            reclaim_grace: Duration::from_secs(5),
+            configure_app: None,
+        }
     }
 }
 
 pub async fn start_gateway(options: Options) -> TestGateway {
     graphrt_gateway::install_crypto_provider();
-    let settings = SupervisorSettings { reclaim_grace: options.reclaim_grace, reattach_window: Duration::from_millis(200), ..SupervisorSettings::default() };
+    let settings = SupervisorSettings {
+        reclaim_grace: options.reclaim_grace,
+        reattach_window: Duration::from_millis(200),
+        ..SupervisorSettings::default()
+    };
     let gateway = Gateway::new(options.store, settings);
     let provider = Arc::new(FakeAgentProvider::new(options.world.clone()));
-    let auth = DeploymentAuth::new(vec![graphrt_gateway::hex::sha256_hex(API_KEY.as_bytes())], None, &reqwest::Client::new()).unwrap();
+    let auth =
+        DeploymentAuth::new(vec![graphrt_gateway::hex::sha256_hex(API_KEY.as_bytes())], None, &reqwest::Client::new())
+            .unwrap();
     let deployment = Arc::new(Deployment::new(DEPLOYMENT, auth, vec![key()], provider.clone(), options.pool));
     deployment.add_version(version("v1"), graphrt_core::store::now_ms());
     gateway.add_deployment(deployment.clone());
@@ -349,20 +434,33 @@ impl TestGateway {
     }
 
     pub async fn post(&self, path: &str, body: Json) -> (u16, Json) {
-        let response = self.client().post(format!("{}{path}", self.url)).header("x-api-key", API_KEY).json(&body).send().await.unwrap();
+        let response = self
+            .client()
+            .post(format!("{}{path}", self.url))
+            .header("x-api-key", API_KEY)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
         let status = response.status().as_u16();
         let text = response.text().await.unwrap();
         (status, serde_json::from_str(&text).unwrap_or(Json::String(text)))
     }
 
     pub async fn get(&self, path: &str) -> (u16, Json) {
-        let response = self.client().get(format!("{}{path}", self.url)).header("x-api-key", API_KEY).send().await.unwrap();
+        let response =
+            self.client().get(format!("{}{path}", self.url)).header("x-api-key", API_KEY).send().await.unwrap();
         let status = response.status().as_u16();
         (status, response.json().await.unwrap_or(Json::Null))
     }
 
     /// Reads an SSE response fully: (id, event, data) triples.
-    pub async fn sse(&self, path: &str, body: Option<Json>, last_event_id: Option<&str>) -> Vec<(Option<String>, String, Json)> {
+    pub async fn sse(
+        &self,
+        path: &str,
+        body: Option<Json>,
+        last_event_id: Option<&str>,
+    ) -> Vec<(Option<String>, String, Json)> {
         let mut request = match &body {
             Some(body) => self.client().post(format!("{}{path}", self.url)).json(body),
             None => self.client().get(format!("{}{path}", self.url)),
@@ -373,7 +471,12 @@ impl TestGateway {
         }
         let text = request.send().await.unwrap().text().await.unwrap();
         let mut parser = graphrt_gateway::sse::Parser::default();
-        parser.feed(text.as_bytes()).unwrap().into_iter().map(|frame| (frame.id, frame.event, serde_json::from_str(&frame.data).unwrap_or(Json::Null))).collect()
+        parser
+            .feed(text.as_bytes())
+            .unwrap()
+            .into_iter()
+            .map(|frame| (frame.id, frame.event, serde_json::from_str(&frame.data).unwrap_or(Json::Null)))
+            .collect()
     }
 
     /// Polls a run until it leaves `running` / `queued`.

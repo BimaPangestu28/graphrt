@@ -18,7 +18,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use graphrt_provider_api::{
-    Addressing, BoxFuture, Capabilities, DeploymentRef, Endpoint, EndpointAddress, Provider, ProviderError, ReleaseMode, ReplicaPhase, ReplicaRef, ReplicaState, Scaler,
+    Addressing, BoxFuture, Capabilities, DeploymentRef, Endpoint, EndpointAddress, Provider, ProviderError,
+    ReleaseMode, ReplicaPhase, ReplicaRef, ReplicaState, Scaler,
 };
 use tokio::process::{Child, Command};
 
@@ -84,17 +85,27 @@ impl LocalProvider {
 
     /// Registers how to start `deployment`'s agents.
     pub fn register(&self, deployment: &DeploymentRef, version: LocalVersion) {
-        self.versions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((deployment.name.clone(), deployment.version.clone()), version);
+        self.versions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((deployment.name.clone(), deployment.version.clone()), version);
     }
 
     fn ready_count(&self, deployment: &DeploymentRef) -> usize {
-        self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|(replica, state)| replica.deployment == *deployment && state.phase == ReplicaPhase::Ready).count()
+        self.replicas
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(replica, state)| replica.deployment == *deployment && state.phase == ReplicaPhase::Ready)
+            .count()
     }
 
     async fn spawn_one(&self, deployment: &DeploymentRef, version: &LocalVersion) -> Result<(), ProviderError> {
-        let (program, arguments) = version.command.split_first().ok_or_else(|| ProviderError::fatal("empty agent command"))?;
+        let (program, arguments) =
+            version.command.split_first().ok_or_else(|| ProviderError::fatal("empty agent command"))?;
         let prefix = version_prefix(deployment);
-        let number = (0..u32::MAX).find(|number| !self.socket_dir.join(format!("{prefix}-{number}.sock")).exists()).unwrap_or(0);
+        let number =
+            (0..u32::MAX).find(|number| !self.socket_dir.join(format!("{prefix}-{number}.sock")).exists()).unwrap_or(0);
         let socket = self.socket_dir.join(format!("{prefix}-{number}.sock"));
         let mut command = Command::new(program);
         command
@@ -112,18 +123,30 @@ impl LocalProvider {
         let child = command.spawn().map_err(|error| ProviderError::fatal(format!("spawning the agent: {error}")))?;
         let pid = child.id().ok_or_else(|| ProviderError::transient("agent exited at once"))?;
         let pid_file = socket.with_extension("pid");
-        std::fs::write(&pid_file, format!("{pid}\n{}\n{}\n", deployment.name, deployment.version)).map_err(|error| ProviderError::transient(error.to_string()))?;
+        std::fs::write(&pid_file, format!("{pid}\n{}\n{}\n", deployment.name, deployment.version))
+            .map_err(|error| ProviderError::transient(error.to_string()))?;
         let replica = ReplicaRef { deployment: deployment.clone(), id: pid.to_string() };
-        self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(replica.clone(), LocalReplica { child: Some(child), pid, socket: socket.clone(), phase: ReplicaPhase::Starting });
+        self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
+            replica.clone(),
+            LocalReplica { child: Some(child), pid, socket: socket.clone(), phase: ReplicaPhase::Starting },
+        );
         let deadline = tokio::time::Instant::now() + self.ready_timeout;
         loop {
             if tokio::net::UnixStream::connect(&socket).await.is_ok() {
-                if let Some(state) = self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(&replica) {
+                if let Some(state) =
+                    self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(&replica)
+                {
                     state.phase = ReplicaPhase::Ready;
                 }
                 return Ok(());
             }
-            let exited = self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(&replica).and_then(|state| state.child.as_mut()).and_then(|child| child.try_wait().ok().flatten());
+            let exited = self
+                .replicas
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_mut(&replica)
+                .and_then(|state| state.child.as_mut())
+                .and_then(|child| child.try_wait().ok().flatten());
             if exited.is_some() || tokio::time::Instant::now() >= deadline {
                 self.forget(&replica);
                 let _cleanup = std::fs::remove_file(&pid_file);
@@ -156,7 +179,12 @@ impl LocalProvider {
             let replica = ReplicaRef { deployment: deployment.clone(), id: pid.to_string() };
             let socket = path.with_extension("sock");
             let mut replicas = self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            replicas.entry(replica).or_insert_with(|| LocalReplica { child: None, pid, socket, phase: ReplicaPhase::Ready });
+            replicas.entry(replica).or_insert_with(|| LocalReplica {
+                child: None,
+                pid,
+                socket,
+                phase: ReplicaPhase::Ready,
+            });
         }
     }
 
@@ -194,11 +222,22 @@ impl Provider for LocalProvider {
         }
     }
 
-    fn wake<'a>(&'a self, deployment: &'a DeploymentRef, replicas: u32) -> BoxFuture<'a, Result<Vec<Endpoint>, ProviderError>> {
+    fn wake<'a>(
+        &'a self,
+        deployment: &'a DeploymentRef,
+        replicas: u32,
+    ) -> BoxFuture<'a, Result<Vec<Endpoint>, ProviderError>> {
         Box::pin(async move {
             let _serialised = self.wake_lock.lock().await;
-            let version = self.versions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&(deployment.name.clone(), deployment.version.clone())).cloned();
-            let version = version.ok_or_else(|| ProviderError::not_found(format!("{}@{} is not registered", deployment.name, deployment.version)))?;
+            let version = self
+                .versions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&(deployment.name.clone(), deployment.version.clone()))
+                .cloned();
+            let version = version.ok_or_else(|| {
+                ProviderError::not_found(format!("{}@{} is not registered", deployment.name, deployment.version))
+            })?;
             self.refresh(deployment);
             let missing = (replicas as usize).saturating_sub(self.ready_count(deployment));
             let started = futures::future::join_all((0..missing).map(|_| self.spawn_one(deployment, &version))).await;
@@ -211,7 +250,10 @@ impl Provider for LocalProvider {
             Ok(replicas
                 .iter()
                 .filter(|(replica, state)| replica.deployment == *deployment && state.phase == ReplicaPhase::Ready)
-                .map(|(replica, state)| Endpoint { replica: replica.clone(), address: EndpointAddress::Unix(state.socket.clone()) })
+                .map(|(replica, state)| Endpoint {
+                    replica: replica.clone(),
+                    address: EndpointAddress::Unix(state.socket.clone()),
+                })
                 .collect())
         })
     }
@@ -250,7 +292,12 @@ impl Provider for LocalProvider {
             Ok(replicas
                 .iter()
                 .filter(|(replica, _)| replica.deployment == *deployment)
-                .map(|(replica, state)| ReplicaState { replica: replica.clone(), phase: state.phase, address: Some(EndpointAddress::Unix(state.socket.clone())), started_at_ms: None })
+                .map(|(replica, state)| ReplicaState {
+                    replica: replica.clone(),
+                    phase: state.phase,
+                    address: Some(EndpointAddress::Unix(state.socket.clone())),
+                    started_at_ms: None,
+                })
                 .collect())
         })
     }

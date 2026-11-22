@@ -8,7 +8,9 @@
 
 use std::time::Duration;
 
-use graphrt_provider_api::{BoxFuture, DeployDriver, DeployError, DeployErrorKind, DeploymentRef, DeploymentSpec, ProviderErrorKind};
+use graphrt_provider_api::{
+    BoxFuture, DeployDriver, DeployError, DeployErrorKind, DeploymentRef, DeploymentSpec, ProviderErrorKind,
+};
 
 /// Driver for the local-process target.
 #[derive(Debug, Clone)]
@@ -38,10 +40,15 @@ pub fn validate_local_spec(spec: &DeploymentSpec) -> Result<String, DeployError>
         return Err(DeployError::unsupported("the local target runs a command, not an image"));
     }
     if !spec.secrets.iter().all(|secret| secret.reference.starts_with("env:")) {
-        return Err(DeployError::unsupported("local secrets are references `env:NAME` to the gateway host environment"));
+        return Err(DeployError::unsupported(
+            "local secrets are references `env:NAME` to the gateway host environment",
+        ));
     }
-    let workflow = spec.provider_settings.get("workflow").and_then(serde_json::Value::as_str).filter(|name| !name.is_empty());
-    workflow.map(str::to_owned).ok_or_else(|| DeployError::invalid("provider_settings.workflow (the served workflow name) is required"))
+    let workflow =
+        spec.provider_settings.get("workflow").and_then(serde_json::Value::as_str).filter(|name| !name.is_empty());
+    workflow
+        .map(str::to_owned)
+        .ok_or_else(|| DeployError::invalid("provider_settings.workflow (the served workflow name) is required"))
 }
 
 impl DeployDriver for LocalDeployDriver {
@@ -53,14 +60,19 @@ impl DeployDriver for LocalDeployDriver {
                 "target": "local", "command": spec.command,
             });
             let url = format!("{}/admin/v1/deployments/{}/versions", self.gateway_url, spec.name);
-            let response = self.client.post(url).bearer_auth(&self.admin_token).json_body(&body).send().await.map_err(|error| DeployError {
-                kind: DeployErrorKind::Provider(ProviderErrorKind::Transient),
-                message: format!("gateway unreachable: {error}"),
-            })?;
+            let response = self.client.post(url).bearer_auth(&self.admin_token).json_body(&body).send().await.map_err(
+                |error| DeployError {
+                    kind: DeployErrorKind::Provider(ProviderErrorKind::Transient),
+                    message: format!("gateway unreachable: {error}"),
+                },
+            )?;
             let status = response.status().as_u16();
             if !(200..300).contains(&status) {
                 let text = response.text().await.unwrap_or_default();
-                return Err(DeployError { kind: DeployErrorKind::Provider(graphrt_provider_api::ProviderError::kind_for_status(status)), message: format!("gateway refused ({status}): {}", text.chars().take(300).collect::<String>()) });
+                return Err(DeployError {
+                    kind: DeployErrorKind::Provider(graphrt_provider_api::ProviderError::kind_for_status(status)),
+                    message: format!("gateway refused ({status}): {}", text.chars().take(300).collect::<String>()),
+                });
             }
             Ok(DeploymentRef::new(&spec.name, &spec.version, "local"))
         })

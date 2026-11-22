@@ -49,13 +49,25 @@ fn keys_of(config: &DeploymentConfig) -> Result<String, String> {
     }
 }
 
-fn build_deployment(config: &DeploymentConfig, provider: Arc<LocalProvider>, client: &reqwest::Client) -> Result<Deployment, String> {
+fn build_deployment(
+    config: &DeploymentConfig,
+    provider: Arc<LocalProvider>,
+    client: &reqwest::Client,
+) -> Result<Deployment, String> {
     let keys_text = keys_of(config)?;
     let keys = parse_keys(&keys_text).map_err(|error| format!("{}: {error}", config.name))?;
-    let auth = DeploymentAuth::new(config.api_keys.clone(), config.jwt.clone(), client).map_err(|error| format!("{}: {error}", config.name))?;
+    let auth = DeploymentAuth::new(config.api_keys.clone(), config.jwt.clone(), client)
+        .map_err(|error| format!("{}: {error}", config.name))?;
     let mut deployment = Deployment::new(&config.name, auth, keys, provider, config.pool_config());
     deployment.principal_limiter = config.rate_limit.map(|limit| Gcra::new(limit.into(), 100_000));
-    deployment.input_headers = config.input_headers.iter().map(|mapping| crate::deployment::InputHeader { header: mapping.header.to_ascii_lowercase(), ..mapping.clone() }).collect();
+    deployment.input_headers = config
+        .input_headers
+        .iter()
+        .map(|mapping| crate::deployment::InputHeader {
+            header: mapping.header.to_ascii_lowercase(),
+            ..mapping.clone()
+        })
+        .collect();
     deployment.open = config.open;
     Ok(deployment)
 }
@@ -67,11 +79,20 @@ fn build_deployment(config: &DeploymentConfig, provider: Arc<LocalProvider>, cli
 /// Missing environment variables, bad keys, store failures.
 pub async fn build(config: &GatewayConfig) -> Result<Built, String> {
     crate::install_crypto_provider();
-    let store = if config.store == Path::new(":memory:") { SqliteStore::in_memory() } else { SqliteStore::open(&config.store) }.map_err(|error| error.to_string())?;
-    let settings = SupervisorSettings { reclaim_grace: Duration::from_secs(config.reclaim_grace_secs), ..SupervisorSettings::default() };
+    let store =
+        if config.store == Path::new(":memory:") { SqliteStore::in_memory() } else { SqliteStore::open(&config.store) }
+            .map_err(|error| error.to_string())?;
+    let settings = SupervisorSettings {
+        reclaim_grace: Duration::from_secs(config.reclaim_grace_secs),
+        ..SupervisorSettings::default()
+    };
     let gateway = Gateway::new(store, settings);
-    let provider = Arc::new(LocalProvider::new(&config.socket_dir, Duration::from_secs(config.local_grace_secs)).map_err(|error| format!("socket dir: {error}"))?);
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|error| error.to_string())?;
+    let provider = Arc::new(
+        LocalProvider::new(&config.socket_dir, Duration::from_secs(config.local_grace_secs))
+            .map_err(|error| format!("socket dir: {error}"))?,
+    );
+    let client =
+        reqwest::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|error| error.to_string())?;
     let mut app = App::new(gateway.clone());
     let mut crons = Vec::new();
     let mut callback_secrets = HashMap::new();
@@ -107,12 +128,25 @@ pub async fn build(config: &GatewayConfig) -> Result<Built, String> {
     let local = provider.clone();
     let hook: VersionHook = Arc::new(move |deployment: &Deployment, info: &VersionInfo| {
         let keys = keys_by_deployment.get(&deployment.name).cloned().unwrap_or_default();
-        local.register(&info.reference(&deployment.name), LocalVersion { command: info.command.clone(), keys, env: Vec::new() });
+        local.register(
+            &info.reference(&deployment.name),
+            LocalVersion { command: info.command.clone(), keys, env: Vec::new() },
+        );
     });
     load_versions(&gateway, Some(&hook)).await.map_err(|error| error.to_string())?;
     app.on_version = Some(hook);
-    let backup = config.backup.as_ref().map(|backup| crate::store::backup::BackupPolicy { dir: backup.dir.clone(), interval: Duration::from_secs(backup.interval_secs.max(10)), keep: backup.keep });
-    Ok(Built { app: Arc::new(app), crons, callback_secrets, backup, ttl: Duration::from_secs(config.store_ttl_days * 86_400) })
+    let backup = config.backup.as_ref().map(|backup| crate::store::backup::BackupPolicy {
+        dir: backup.dir.clone(),
+        interval: Duration::from_secs(backup.interval_secs.max(10)),
+        keep: backup.keep,
+    });
+    Ok(Built {
+        app: Arc::new(app),
+        crons,
+        callback_secrets,
+        backup,
+        ttl: Duration::from_secs(config.store_ttl_days * 86_400),
+    })
 }
 
 /// Idle release every 5 s, reconciliation every minute (I7: at most one
@@ -125,15 +159,18 @@ pub async fn maintenance(gateway: Arc<Gateway>, ttl: Duration) {
         for deployment in gateway.deployments() {
             for version in deployment.versions() {
                 version.pool.release_idle().await;
-                if tick % 12 == 0
+                if tick.is_multiple_of(12)
                     && let Err(error) = version.pool.reconcile().await
                 {
                     eprintln!("gateway: reconcile {}@{}: {error}", deployment.name, version.info.version);
                 }
             }
-            if tick % 720 == 0 {
+            if tick.is_multiple_of(720) {
                 for retired in deployment.take_retired(now_ms()) {
-                    eprintln!("{{\"audit\":\"version_retired\",\"deployment\":\"{}\",\"version\":\"{}\"}}", deployment.name, retired.info.version);
+                    eprintln!(
+                        "{{\"audit\":\"version_retired\",\"deployment\":\"{}\",\"version\":\"{}\"}}",
+                        deployment.name, retired.info.version
+                    );
                     retired.pool.close().await;
                 }
             }
@@ -189,7 +226,9 @@ pub async fn serve_with(config: GatewayConfig, versions: Vec<(String, VersionInf
     }
     let (queued, running) = built.app.gateway.recover().await.map_err(|error| error.to_string())?;
     spawn_background(&built);
-    let listener = tokio::net::TcpListener::bind(&config.listen).await.map_err(|error| format!("binding {}: {error}", config.listen))?;
+    let listener = tokio::net::TcpListener::bind(&config.listen)
+        .await
+        .map_err(|error| format!("binding {}: {error}", config.listen))?;
     let address = listener.local_addr().map_err(|error| error.to_string())?;
     eprintln!(
         "graphrt gateway listening on http://{address} ({} deployments, reclaiming {running} running and {queued} queued runs, ready in {} ms)",
