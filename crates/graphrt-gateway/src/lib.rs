@@ -10,6 +10,7 @@ pub mod ha;
 pub mod hex;
 pub mod limiter;
 pub mod pool;
+pub mod providers;
 pub mod quota;
 pub mod signature;
 pub mod store;

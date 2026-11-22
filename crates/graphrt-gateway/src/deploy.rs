@@ -51,30 +51,106 @@ pub fn validate_local_spec(spec: &DeploymentSpec) -> Result<String, DeployError>
         .ok_or_else(|| DeployError::invalid("provider_settings.workflow (the served workflow name) is required"))
 }
 
+/// What the gateway records about a new version.
+#[derive(Debug, Clone, Copy)]
+pub struct VersionRegistration<'a> {
+    /// Deployment name.
+    pub deployment: &'a str,
+    /// New version.
+    pub version: &'a str,
+    /// Served workflow name.
+    pub workflow: &'a str,
+    /// Workflow fingerprint (may be empty).
+    pub fingerprint: &'a str,
+    /// Provider target the platform driver returned (`DeploymentRef::target`).
+    pub target: &'a str,
+    /// Agent command (local-process only).
+    pub command: &'a [String],
+}
+
+impl LocalDeployDriver {
+    /// Registers a version with the gateway (`POST /admin/v1/deployments/{d}/versions`).
+    ///
+    /// # Errors
+    /// The gateway is unreachable or refuses.
+    pub async fn register(&self, registration: VersionRegistration<'_>) -> Result<(), DeployError> {
+        let body = serde_json::json!({
+            "version": registration.version, "workflow": registration.workflow, "fingerprint": registration.fingerprint,
+            "target": registration.target, "command": registration.command,
+        });
+        let url = format!("{}/admin/v1/deployments/{}/versions", self.gateway_url, registration.deployment);
+        let response = self.client.post(url).bearer_auth(&self.admin_token).json_body(&body).send().await.map_err(|error| DeployError {
+            kind: DeployErrorKind::Provider(ProviderErrorKind::Transient),
+            message: format!("gateway unreachable: {error}"),
+        })?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let text = response.text().await.unwrap_or_default();
+            return Err(DeployError {
+                kind: DeployErrorKind::Provider(graphrt_provider_api::ProviderError::kind_for_status(status)),
+                message: format!("gateway refused ({status}): {}", text.chars().take(300).collect::<String>()),
+            });
+        }
+        Ok(())
+    }
+}
+
 impl DeployDriver for LocalDeployDriver {
     fn apply<'a>(&'a self, spec: &'a DeploymentSpec) -> BoxFuture<'a, Result<DeploymentRef, DeployError>> {
         Box::pin(async move {
             let workflow = validate_local_spec(spec)?;
-            let body = serde_json::json!({
-                "version": spec.version, "workflow": workflow, "fingerprint": spec.workflow_fingerprint,
-                "target": "local", "command": spec.command,
-            });
-            let url = format!("{}/admin/v1/deployments/{}/versions", self.gateway_url, spec.name);
-            let response = self.client.post(url).bearer_auth(&self.admin_token).json_body(&body).send().await.map_err(
-                |error| DeployError {
-                    kind: DeployErrorKind::Provider(ProviderErrorKind::Transient),
-                    message: format!("gateway unreachable: {error}"),
-                },
-            )?;
-            let status = response.status().as_u16();
-            if !(200..300).contains(&status) {
-                let text = response.text().await.unwrap_or_default();
-                return Err(DeployError {
-                    kind: DeployErrorKind::Provider(graphrt_provider_api::ProviderError::kind_for_status(status)),
-                    message: format!("gateway refused ({status}): {}", text.chars().take(300).collect::<String>()),
-                });
-            }
+            self.register(VersionRegistration {
+                deployment: &spec.name,
+                version: &spec.version,
+                workflow: &workflow,
+                fingerprint: &spec.workflow_fingerprint,
+                target: "local",
+                command: &spec.command,
+            })
+            .await?;
             Ok(DeploymentRef::new(&spec.name, &spec.version, "local"))
+        })
+    }
+}
+
+/// A platform driver (K8s, Cloud Run, ECS, Lambda, Fly) followed by the
+/// registration of the new version with the gateway, so the gateway only
+/// ever learns the target name the platform returned.
+pub struct RegisteringDriver {
+    platform: Box<dyn DeployDriver>,
+    gateway: LocalDeployDriver,
+}
+
+impl std::fmt::Debug for RegisteringDriver {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("RegisteringDriver").finish_non_exhaustive()
+    }
+}
+
+impl RegisteringDriver {
+    /// Wraps `platform`; versions are registered at `gateway`.
+    pub fn new(platform: Box<dyn DeployDriver>, gateway: LocalDeployDriver) -> Self {
+        Self { platform, gateway }
+    }
+}
+
+impl DeployDriver for RegisteringDriver {
+    fn apply<'a>(&'a self, spec: &'a DeploymentSpec) -> BoxFuture<'a, Result<DeploymentRef, DeployError>> {
+        Box::pin(async move {
+            let workflow = spec.provider_settings.get("workflow").and_then(serde_json::Value::as_str).filter(|name| !name.is_empty());
+            let workflow = workflow.ok_or_else(|| DeployError::invalid("provider_settings.workflow (the served workflow name) is required"))?.to_owned();
+            let deployed = self.platform.apply(spec).await?;
+            self.gateway
+                .register(VersionRegistration {
+                    deployment: &spec.name,
+                    version: &deployed.version,
+                    workflow: &workflow,
+                    fingerprint: &spec.workflow_fingerprint,
+                    target: &deployed.target,
+                    command: &[],
+                })
+                .await?;
+            Ok(deployed)
         })
     }
 }

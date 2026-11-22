@@ -172,6 +172,9 @@ pub struct DeploymentConfig {
     /// Accept requests without credentials (only `--dev`).
     #[serde(default)]
     pub open: bool,
+    /// Name of the entry under `providers:` (default `local`).
+    #[serde(default)]
+    pub provider: Option<String>,
     /// Agent keys given programmatically (`--dev`) instead of `keys_env`.
     #[serde(skip)]
     pub inline_keys: Option<String>,
@@ -224,6 +227,9 @@ pub struct GatewayConfig {
     /// Active/passive on a shared volume (F3); absent: a single gateway.
     #[serde(default)]
     pub ha: Option<crate::ha::HaConfig>,
+    /// Named providers (operator configuration; see [`crate::providers`]).
+    #[serde(default)]
+    pub providers: std::collections::BTreeMap<String, crate::providers::ProviderConfig>,
     /// Deployments.
     #[serde(default)]
     pub deployments: Vec<DeploymentConfig>,
@@ -277,6 +283,12 @@ impl GatewayConfig {
         for deployment in &self.deployments {
             if graphrt_core::coordination::validate_key(&deployment.name).is_err() || deployment.name.contains('/') {
                 return Err(format!("invalid deployment name `{}`", deployment.name));
+            }
+            if let Some(provider) = &deployment.provider
+                && provider != "local"
+                && !self.providers.contains_key(provider)
+            {
+                return Err(format!("{}: provider `{provider}` is not defined under providers:", deployment.name));
             }
             if !names.insert(deployment.name.as_str()) {
                 return Err(format!("deployment `{}` appears twice", deployment.name));

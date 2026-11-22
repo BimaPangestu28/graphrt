@@ -51,6 +51,9 @@ graphrt-eval = { path = "crates/graphrt-eval", version = "0.4.0", default-featur
 graphrt-gateway = { path = "crates/graphrt-gateway", version = "0.4.0", default-features = false }
 graphrt-provider-api = { path = "crates/graphrt-provider-api", version = "0.4.0", default-features = false }
 graphrt-provider-fly = { path = "crates/graphrt-provider-fly", version = "0.4.0", default-features = false }
+graphrt-provider-k8s = { path = "crates/graphrt-provider-k8s", version = "0.4.0", default-features = false }
+graphrt-provider-aws = { path = "crates/graphrt-provider-aws", version = "0.4.0", default-features = false }
+graphrt-gcp = { path = "crates/graphrt-gcp", version = "0.4.0", default-features = false }
 
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 thiserror = "2"
