@@ -48,6 +48,13 @@ releases may contain breaking changes; they are called out under **Changed**.
 - Windows: the Python code node keeps the host `PATH` and `SYSTEMROOT`, without
   which CPython cannot start (the Unix default `PATH` does not exist there).
 
+### Security
+- `graphrt serve`: human feedback could fill a run's 256-score cap and make
+  every later online-evaluator score of that run fail to store, so an end user
+  (`--verify-jwt`) could keep a safety judge from ever scoring their own runs.
+  The cap now counts each source (`human`, `online`) separately. (Low; 0.4.0
+  is affected.)
+
 ## [0.4.0] - 2026-11-20
 
 Evaluation. `graphrt eval` runs datasets against a workflow with deterministic,

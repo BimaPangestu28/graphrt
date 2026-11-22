@@ -33,7 +33,9 @@ use sha2::{Digest, Sha256};
 
 use crate::serve::{AppState, error_response};
 
-/// Scores kept per run; a new score beyond this is refused (`409`).
+/// Scores kept per run and per [`ScoreSource`]; a new score beyond this is
+/// refused (`409`). Counted per source so feedback, which end users can send
+/// on their own runs, never takes the room online evaluators need.
 pub const MAX_SCORES_PER_RUN: usize = 256;
 const MAX_NAME_BYTES: usize = 200;
 /// Langfuse's limit for text scores.
@@ -211,7 +213,7 @@ pub trait ScoreStore: Send + Sync + std::fmt::Debug {
     /// Add scores to an existing run, replacing stored ones with the same id.
     ///
     /// @throws StoreError::NotFound - The run does not exist.
-    /// @throws StoreError::Conflict - The run already has [`MAX_SCORES_PER_RUN`] scores.
+    /// @throws StoreError::Conflict - The run already has [`MAX_SCORES_PER_RUN`] scores of that source.
     fn put_scores<'a>(&'a self, run_id: &'a str, scores: Vec<Score>) -> BoxFuture<'a, StoreResult<()>>;
 
     /// The scores of a run, oldest first.
@@ -222,7 +224,8 @@ pub trait ScoreStore: Send + Sync + std::fmt::Debug {
 
 /// Upsert `new` into `stored` by id.
 ///
-/// @throws StoreError::Conflict - When that would exceed [`MAX_SCORES_PER_RUN`].
+/// @throws StoreError::Conflict - When that would give a run more than
+///   [`MAX_SCORES_PER_RUN`] scores of one source.
 pub(crate) fn merge_scores(stored: &mut Vec<Score>, new: Vec<Score>, run_id: &str) -> StoreResult<()> {
     for score in new {
         match stored.iter().position(|s| s.id == score.id) {
@@ -231,9 +234,10 @@ pub(crate) fn merge_scores(stored: &mut Vec<Score>, new: Vec<Score>, run_id: &st
                     *slot = score;
                 }
             }
-            None if stored.len() >= MAX_SCORES_PER_RUN => {
+            None if stored.iter().filter(|s| s.source == score.source).count() >= MAX_SCORES_PER_RUN => {
                 return Err(graphrt_core::store::StoreError::Conflict(format!(
-                    "run `{run_id}` already has {MAX_SCORES_PER_RUN} scores"
+                    "run `{run_id}` already has {MAX_SCORES_PER_RUN} {} scores",
+                    score.source.as_str()
                 )));
             }
             None => stored.push(score),
@@ -476,5 +480,15 @@ mod tests {
         let mut full: Vec<Score> = (0..MAX_SCORES_PER_RUN).map(|i| score(&i.to_string())).collect();
         assert!(merge_scores(&mut full, vec![score("one more")], "r").is_err());
         assert!(merge_scores(&mut full, vec![score("0")], "r").is_ok(), "replacing still works");
+    }
+
+    #[test]
+    fn human_feedback_cannot_crowd_out_online_scores() {
+        let human = |name: &str| Score::new("r", name, ScoreValue::Bool(true), ScoreSource::Human, Some("u".into()));
+        let mut stored: Vec<Score> = (0..MAX_SCORES_PER_RUN).map(|i| human(&i.to_string())).collect();
+        assert!(merge_scores(&mut stored, vec![human("one more")], "r").is_err(), "human scores are capped");
+        let online = Score::new("r", "safety", ScoreValue::Number(0.0), ScoreSource::Online, None);
+        merge_scores(&mut stored, vec![online], "r").expect("an evaluator still has room");
+        assert_eq!(stored.iter().filter(|s| s.source == ScoreSource::Online).count(), 1);
     }
 }

@@ -315,7 +315,7 @@ build.)
 | Request | Response |
 | --- | --- |
 | `GET /v1/runs/{id}/scores` | `{run_id, scores}`, oldest first; `404` for an unknown run |
-| `POST /v1/runs/{id}/feedback` | `201` and the stored score; `400` for an invalid body, `404` for an unknown run, `409` once a run has 256 scores |
+| `POST /v1/runs/{id}/feedback` | `201` and the stored score; `400` for an invalid body, `404` for an unknown run, `409` once a run has 256 human scores (online scores have their own 256) |
 
 ```sh
 curl -s localhost:8080/v1/runs/$RUN/feedback -H "authorization: Bearer $GRAPHRT_API_KEY" \
