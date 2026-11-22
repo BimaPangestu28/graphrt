@@ -68,8 +68,16 @@ impl RunStore for FlakyStore {
     fn delete<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, StoreResult<bool>> {
         self.inner.delete(run_id)
     }
-    fn append_events<'a>(&'a self, run_id: &'a str, events: Vec<StoredEvent>) -> BoxFuture<'a, StoreResult<()>> {
-        if self.fails(&self.appends) { unavailable() } else { self.inner.append_events(run_id, events) }
+    fn put_if(&self, record: RunRecord, expected_epoch: u64) -> BoxFuture<'_, StoreResult<()>> {
+        if self.fails(&self.puts) { unavailable() } else { self.inner.put_if(record, expected_epoch) }
+    }
+    fn append_events<'a>(
+        &'a self,
+        run_id: &'a str,
+        first_index: u64,
+        events: &'a [StoredEvent],
+    ) -> BoxFuture<'a, StoreResult<u64>> {
+        if self.fails(&self.appends) { unavailable() } else { self.inner.append_events(run_id, first_index, events) }
     }
     fn events<'a>(&'a self, run_id: &'a str, from: u64) -> BoxFuture<'a, StoreResult<Vec<StoredEvent>>> {
         self.inner.events(run_id, from)
@@ -185,8 +193,16 @@ async fn the_snapshot_error_is_recorded_when_only_the_snapshot_fails() {
         fn delete<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, StoreResult<bool>> {
             self.0.delete(run_id)
         }
-        fn append_events<'a>(&'a self, run_id: &'a str, events: Vec<StoredEvent>) -> BoxFuture<'a, StoreResult<()>> {
-            self.0.append_events(run_id, events)
+        fn put_if(&self, record: RunRecord, expected_epoch: u64) -> BoxFuture<'_, StoreResult<()>> {
+            self.0.put_if(record, expected_epoch)
+        }
+        fn append_events<'a>(
+            &'a self,
+            run_id: &'a str,
+            first_index: u64,
+            events: &'a [StoredEvent],
+        ) -> BoxFuture<'a, StoreResult<u64>> {
+            self.0.append_events(run_id, first_index, events)
         }
         fn events<'a>(&'a self, run_id: &'a str, from: u64) -> BoxFuture<'a, StoreResult<Vec<StoredEvent>>> {
             self.0.events(run_id, from)

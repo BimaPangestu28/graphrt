@@ -124,6 +124,8 @@ axum ={ version = "0.8", optional = true, default-features = false, features = [
 http-body = { version = "1", optional = true }
 
 [dev-dependencies]
+# The abstract store conformance suite runs against the memory and directory stores.
+graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio", "store-conformance"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 http-body-util = "0.1"
 jsonschema = { version = "0.61", default-features = false }

@@ -285,7 +285,8 @@ async fn drive(
     mut recorder: Recorder,
 ) {
     let run_id = record.run_id.clone();
-    let mut writer = EventWriter { store: Arc::clone(&store), active: Arc::clone(&active), written: 0, lost: 0 };
+    let mut writer =
+        EventWriter { store: Arc::clone(&store), first_index: record.event_count, written: 0, behind: Vec::new() };
     let mut pending: Vec<StoredEvent> = Vec::new();
     // Only the assembled text is kept (`text_so_far`); the chunks themselves are dropped.
     let mut chunks = Vec::new();
@@ -330,8 +331,10 @@ async fn drive(
                 }
             }
             record.answer = assembler.text_so_far().to_owned();
-            // `put` keeps the store's own event counters.
-            if let Err(e) = with_retries(|| store.put(record.clone())).await {
+            // Fenced by the epoch this execution was claimed at; the store keeps its
+            // own event counters.
+            let epoch = record.epoch;
+            if let Err(e) = with_retries(|| store.put_if(record.clone(), epoch)).await {
                 eprintln!("warning: run {run_id}: cannot store final status: {e}");
             }
         }
@@ -346,53 +349,61 @@ async fn drive(
     }
 }
 
-/// Writes a run's event batches to the store, retrying I/O errors.
+/// Writes a run's event batches to the store at their indices, retrying I/O errors.
 #[derive(Debug)]
 struct EventWriter {
     store: Arc<dyn RunStore>,
-    active: Arc<ActiveRun>,
+    /// Index of this execution's first event in the run's log.
+    first_index: u64,
     /// Events of this execution written so far.
     written: u64,
-    /// Events of this execution given up on.
-    lost: u64,
+    /// Events after `written` whose write failed: they go out again, at the same
+    /// index, in front of the next batch (appends are idempotent per index, so a
+    /// write that failed after reaching the store is not stored twice).
+    behind: Vec<StoredEvent>,
 }
 
+/// Events kept for a later retry after failed writes; beyond it the oldest are
+/// given up on (and every later append of the run is refused as a gap).
+const MAX_BEHIND: usize = 4 * FEED_CAP;
+
 impl EventWriter {
-    /// Append `batch`, the events right after the ones already handled. A retry
-    /// re-serializes the batch from the feed (the first attempt consumed it), so
-    /// the common path copies nothing; a batch past the feed's cap is not retried.
+    /// Append `batch`, the events right after the ones already handed over.
     async fn write(&mut self, run_id: &str, batch: Vec<StoredEvent>) {
-        if batch.is_empty() {
+        if batch.is_empty() && self.behind.is_empty() {
             return;
         }
-        let count = u64::try_from(batch.len()).unwrap_or(u64::MAX);
-        let first = self.written + self.lost;
-        let mut result = self.store.append_events(run_id, batch).await;
+        let events = if self.behind.is_empty() {
+            batch
+        } else {
+            let mut events = std::mem::take(&mut self.behind);
+            events.extend(batch);
+            events
+        };
+        let first = self.first_index + self.written;
+        let mut result = self.store.append_events(run_id, first, &events).await;
         let mut delay = RETRY_FIRST_DELAY;
         for _ in 0..STORE_RETRIES {
             if !matches!(result, Err(StoreError::Io(_))) {
                 break;
             }
-            let Some(again) = self.stored_range(first, count) else { break };
             tokio::time::sleep(delay).await;
             delay = delay.saturating_mul(2);
-            result = self.store.append_events(run_id, again).await;
+            result = self.store.append_events(run_id, first, &events).await;
         }
+        let count = events.len();
         match result {
-            Ok(()) => self.written += count,
+            Ok(_) => self.written += u64::try_from(count).unwrap_or(u64::MAX),
+            Err(StoreError::Io(e)) if count <= MAX_BEHIND => {
+                eprintln!(
+                    "warning: run {run_id}: cannot store {count} event(s) yet, retrying with the next write: {e}"
+                );
+                self.behind = events;
+            }
             Err(e) => {
-                self.lost += count;
                 eprintln!("warning: run {run_id}: cannot store {count} event(s), they are missing from replays: {e}");
             }
         }
-    }
-
-    /// Events `first..first + count` of this execution, serialized again.
-    fn stored_range(&self, first: u64, count: u64) -> Option<Vec<StoredEvent>> {
-        let feed = self.active.feed();
-        let start = usize::try_from(first).ok()?;
-        let end = usize::try_from(first.checked_add(count)?).ok()?;
-        feed.events.get(start..end).map(|events| events.iter().map(|event| event_to_stored(event)).collect())
     }
 }
 

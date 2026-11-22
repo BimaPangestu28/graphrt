@@ -8,7 +8,12 @@
 //! <dir>/runs/<run_id>/events.jsonl one stored event per line (append)
 //! <dir>/runs/<run_id>/snapshot.json snapshot of a paused run (atomic replace)
 //! <dir>/runs/<run_id>/scores.json evaluation scores (atomic replace; feature `scores`)
+//! <dir>/coord/<key>~              coordination object: version line, then the value (atomic replace)
 //! ```
+//!
+//! A run's event count lives in its record; `events.jsonl` may briefly hold more
+//! lines than it after a crash between the append and the record update, and
+//! the next append (a retry of the same batch) reconciles the two.
 //!
 //! Records and snapshots are written to a unique temporary file, fsynced, renamed
 //! over the target and the directory fsynced, so a crash leaves either the old or
@@ -25,18 +30,24 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures::future::BoxFuture;
+use graphrt_core::coordination::{CoordinationStore, Versioned, validate_key, validate_value};
 use graphrt_core::store::{
-    RunFilter, RunPage, RunRecord, RunStore, StoreError, StoreResult, StoredEvent, page_of, sort_newest_first,
-    validate_run_id,
+    RunFilter, RunPage, RunRecord, RunStore, StoreError, StoreResult, StoredEvent, append_mismatch, check_epoch,
+    page_of, plan_append, sort_newest_first, validate_run_id,
 };
 use graphrt_core::{Snapshot, private_fs};
 
-use super::memory::{DEFAULT_MAX_EVENTS, MAX_PAGE, claim, mark_interrupted, purgeable};
+use super::memory::{DEFAULT_MAX_EVENTS, MAX_PAGE, check_version, claim, mark_interrupted, purgeable};
 use crate::error::CliError;
 
 const RECORD: &str = "record.json";
 const EVENTS: &str = "events.jsonl";
 const SNAPSHOT: &str = "snapshot.json";
+/// Directory of coordination objects.
+const COORD: &str = "coord";
+/// Suffix of coordination object files; `~` is not allowed in keys, so an
+/// object file never collides with the directory of a longer key.
+const OBJECT_SUFFIX: char = '~';
 #[cfg(feature = "scores")]
 const SCORES: &str = "scores.json";
 
@@ -186,6 +197,189 @@ impl Inner {
             Err(e) => Err(io("cannot read events", &e)),
         }
     }
+
+    /// Lines `from..from + count` of an events file (fewer when it is shorter).
+    fn read_lines(path: &Path, from: u64, count: usize) -> StoreResult<Vec<String>> {
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(io("cannot read events", &e)),
+        };
+        let skip = usize::try_from(from).unwrap_or(usize::MAX);
+        BufReader::new(file)
+            .lines()
+            .skip(skip)
+            .take(count)
+            .map(|line| line.map_err(|e| io("cannot read events", &e)))
+            .collect()
+    }
+
+    /// Append `events` at `first_index` (see [`RunStore::append_events`]).
+    fn append(&self, run_id: &str, first_index: u64, events: &[StoredEvent]) -> StoreResult<u64> {
+        let (dir, mut record) = self.require_record(run_id)?;
+        let path = dir.join(EVENTS);
+        let stored = Self::count_lines(&path)?;
+        // Lines written before a crash that kept the record from being updated count too.
+        let count = record.event_count.max(u64::try_from(stored).unwrap_or(u64::MAX));
+        let plan = plan_append(run_id, count, first_index, events.len())?;
+        let (retried, new) = events.split_at(plan.overlap);
+        if !retried.is_empty() {
+            let lines = Self::read_lines(&path, first_index, retried.len())?;
+            if let Some(offset) = lines.iter().zip(retried).position(|(line, event)| line != event.get()) {
+                return Err(append_mismatch(run_id, first_index + offset as u64));
+            }
+        }
+        let room = self.max_events.saturating_sub(stored);
+        let mut buf = Vec::new();
+        for event in new.iter().take(room) {
+            buf.extend_from_slice(event.get().as_bytes());
+            buf.push(b'\n');
+        }
+        if !buf.is_empty() {
+            let mut file = private_fs::append_file(&path).map_err(|e| io("cannot open events", &e))?;
+            file.write_all(&buf).map_err(|e| io("cannot append events", &e))?;
+            file.sync_data().map_err(|e| io("cannot sync events", &e))?;
+        }
+        if plan.new_count != record.event_count || new.len() > room {
+            record.event_count = plan.new_count;
+            record.events_truncated |= new.len() > room;
+            self.write_record(&dir, &record)?;
+        }
+        Ok(plan.new_count)
+    }
+
+    /// Path of coordination object `key` (already validated).
+    fn object_path(&self, key: &str) -> PathBuf {
+        let mut path = self.root.join(COORD);
+        path.extend(key.split('/'));
+        let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+        name.push(OBJECT_SUFFIX.to_string());
+        path.set_file_name(name);
+        path
+    }
+
+    fn read_object(path: &Path) -> StoreResult<Option<Versioned>> {
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io("cannot read coordination object", &e)),
+        };
+        let corrupt = || StoreError::Corrupt(format!("coordination object `{}`", path.display()));
+        let newline = bytes.iter().position(|b| *b == b'\n').ok_or_else(corrupt)?;
+        let (head, rest) = bytes.split_at(newline);
+        let version = std::str::from_utf8(head).ok().and_then(|v| v.parse().ok()).ok_or_else(corrupt)?;
+        let value = rest.get(1..).unwrap_or_default().to_vec();
+        Ok(Some(Versioned { value, version }))
+    }
+
+    fn write_object(&self, path: &Path, version: u64, value: &[u8]) -> StoreResult<()> {
+        let mut bytes = format!("{version}\n").into_bytes();
+        bytes.extend_from_slice(value);
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+            return Err(StoreError::Io(format!("bad coordination path `{}`", path.display())));
+        };
+        self.atomic_write(dir, name, &bytes)
+    }
+
+    /// Every object under `dir`, with keys built from `prefix` + relative path.
+    fn walk_objects(dir: &Path, key_prefix: &str, out: &mut Vec<(String, Versioned)>) -> StoreResult<()> {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(io("cannot list coordination objects", &e)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|e| io("cannot list coordination objects", &e))?;
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
+            let path = entry.path();
+            if path.is_dir() {
+                Self::walk_objects(&path, &format!("{key_prefix}{name}/"), out)?;
+            } else if let Some(segment) = name.strip_suffix(OBJECT_SUFFIX)
+                && let Some(object) = Self::read_object(&path)?
+            {
+                out.push((format!("{key_prefix}{segment}"), object));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl CoordinationStore for FileStore {
+    fn create_if_absent<'a>(&'a self, key: &'a str, value: Vec<u8>) -> BoxFuture<'a, StoreResult<u64>> {
+        let key = key.to_owned();
+        self.blocking(move |inner| {
+            validate_key(&key)?;
+            validate_value(&value)?;
+            let path = inner.object_path(&key);
+            if Inner::read_object(&path)?.is_some() {
+                return Err(StoreError::Conflict(format!("key `{key}` already exists")));
+            }
+            inner.write_object(&path, 1, &value)?;
+            Ok(1)
+        })
+    }
+
+    fn compare_and_swap<'a>(
+        &'a self,
+        key: &'a str,
+        expected_version: u64,
+        value: Vec<u8>,
+    ) -> BoxFuture<'a, StoreResult<u64>> {
+        let key = key.to_owned();
+        self.blocking(move |inner| {
+            validate_key(&key)?;
+            validate_value(&value)?;
+            let path = inner.object_path(&key);
+            let object = Inner::read_object(&path)?.ok_or_else(|| StoreError::NotFound(key.clone()))?;
+            check_version(&key, object.version, expected_version)?;
+            inner.write_object(&path, expected_version + 1, &value)?;
+            Ok(expected_version + 1)
+        })
+    }
+
+    fn get_object<'a>(&'a self, key: &'a str) -> BoxFuture<'a, StoreResult<Option<Versioned>>> {
+        let key = key.to_owned();
+        self.blocking(move |inner| {
+            validate_key(&key)?;
+            Inner::read_object(&inner.object_path(&key))
+        })
+    }
+
+    fn list_objects<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, StoreResult<Vec<(String, Versioned)>>> {
+        let prefix = prefix.to_owned();
+        self.blocking(move |inner| {
+            // Walk only the deepest directory the prefix names completely.
+            let base = prefix.rfind('/').map_or("", |slash| &prefix[..=slash]);
+            if !base.is_empty() && validate_key(base.trim_end_matches('/')).is_err() {
+                return Ok(Vec::new());
+            }
+            let mut dir = inner.root.join(COORD);
+            dir.extend(base.split('/').filter(|s| !s.is_empty()));
+            let mut out = Vec::new();
+            Inner::walk_objects(&dir, base, &mut out)?;
+            out.retain(|(key, _)| key.starts_with(&prefix));
+            out.sort_by(|a, b| a.0.cmp(&b.0));
+            Ok(out)
+        })
+    }
+
+    fn delete_object<'a>(&'a self, key: &'a str, expected_version: u64) -> BoxFuture<'a, StoreResult<bool>> {
+        let key = key.to_owned();
+        self.blocking(move |inner| {
+            validate_key(&key)?;
+            let path = inner.object_path(&key);
+            let Some(object) = Inner::read_object(&path)? else { return Ok(false) };
+            check_version(&key, object.version, expected_version)?;
+            fs::remove_file(&path).map_err(|e| io("cannot delete coordination object", &e))?;
+            Ok(true)
+        })
+    }
+}
+
+/// Event counters are maintained by the store: keep the stored ones.
+fn keep_counters(record: &mut RunRecord, old: &RunRecord) {
+    record.event_count = record.event_count.max(old.event_count);
+    record.events_truncated |= old.events_truncated;
 }
 
 #[cfg(unix)]
@@ -254,10 +448,18 @@ impl RunStore for FileStore {
             let dir = inner.run_dir(&record.run_id)?;
             let mut record = record;
             if let Some(old) = inner.read_record(&dir)? {
-                // Event counters are maintained by the store.
-                record.event_count = record.event_count.max(old.event_count);
-                record.events_truncated |= old.events_truncated;
+                keep_counters(&mut record, &old);
             }
+            inner.write_record(&dir, &record)
+        })
+    }
+
+    fn put_if(&self, record: RunRecord, expected_epoch: u64) -> BoxFuture<'_, StoreResult<()>> {
+        self.blocking(move |inner| {
+            let (dir, old) = inner.require_record(&record.run_id)?;
+            check_epoch(&old, expected_epoch)?;
+            let mut record = record;
+            keep_counters(&mut record, &old);
             inner.write_record(&dir, &record)
         })
     }
@@ -290,29 +492,15 @@ impl RunStore for FileStore {
         })
     }
 
-    fn append_events<'a>(&'a self, run_id: &'a str, events: Vec<StoredEvent>) -> BoxFuture<'a, StoreResult<()>> {
+    fn append_events<'a>(
+        &'a self,
+        run_id: &'a str,
+        first_index: u64,
+        events: &'a [StoredEvent],
+    ) -> BoxFuture<'a, StoreResult<u64>> {
         let run_id = run_id.to_owned();
-        self.blocking(move |inner| {
-            let (dir, mut record) = inner.require_record(&run_id)?;
-            let path = dir.join(EVENTS);
-            let stored = Inner::count_lines(&path)?;
-            let room = inner.max_events.saturating_sub(stored);
-            let dropped = events.len() > room;
-            let mut buf = Vec::new();
-            for event in events.iter().take(room) {
-                buf.extend_from_slice(event.get().as_bytes());
-                buf.push(b'\n');
-            }
-            if !buf.is_empty() {
-                let mut file = private_fs::append_file(&path).map_err(|e| io("cannot open events", &e))?;
-                file.write_all(&buf).map_err(|e| io("cannot append events", &e))?;
-                file.sync_data().map_err(|e| io("cannot sync events", &e))?;
-            }
-            let total = stored.saturating_add(events.len().min(room));
-            record.event_count = u64::try_from(total).unwrap_or(u64::MAX);
-            record.events_truncated |= dropped;
-            inner.write_record(&dir, &record)
-        })
+        let events = events.to_vec();
+        self.blocking(move |inner| inner.append(&run_id, first_index, &events))
     }
 
     fn events<'a>(&'a self, run_id: &'a str, from: u64) -> BoxFuture<'a, StoreResult<Vec<StoredEvent>>> {
@@ -418,8 +606,8 @@ mod tests {
         store.create(paused).await.unwrap();
         store.create(RunRecord::running("r1", "wf", "fp", 2)).await.unwrap();
         assert!(matches!(store.create(RunRecord::running("r1", "wf", "fp", 2)).await, Err(StoreError::Conflict(_))));
-        store.append_events("p1", crate::store::raw(&[r#"{"a":1}"#, r#"{"b":2}"#])).await.unwrap();
-        store.append_events("p1", crate::store::raw(&[r#"{"c":3}"#])).await.unwrap();
+        store.append_events("p1", 0, &crate::store::raw(&[r#"{"a":1}"#, r#"{"b":2}"#])).await.unwrap();
+        store.append_events("p1", 2, &crate::store::raw(&[r#"{"c":3}"#])).await.unwrap();
         drop(store);
 
         let store = FileStore::open(&dir).unwrap();
@@ -427,7 +615,8 @@ mod tests {
         assert_eq!(store.get("r1").await.unwrap().unwrap().status, RunStatus::Failed);
         let p1 = store.get("p1").await.unwrap().unwrap();
         assert_eq!(p1.status, RunStatus::Paused);
-        assert_eq!(p1.event_count, 2);
+        // The count goes on past the cap, so event indices stay stable.
+        assert_eq!(p1.event_count, 3);
         assert!(p1.events_truncated);
         assert_eq!(crate::store::texts(&store.events("p1", 1).await.unwrap()), [r#"{"b":2}"#]);
 
@@ -436,6 +625,38 @@ mod tests {
         assert!(store.delete("p1").await.unwrap());
         assert!(!store.delete("p1").await.unwrap());
         assert!(matches!(store.get("../etc").await, Err(StoreError::InvalidId(_))));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn passes_the_store_conformance_suite() {
+        let dir = temp_dir("conformance");
+        let store = FileStore::open(&dir).unwrap();
+        graphrt_core::store_conformance::run_store_suite(&store).await;
+        graphrt_core::store_conformance::append_retry_property(&store, 60).await;
+        graphrt_core::store_conformance::coordination_suite(&store).await;
+        drop(store);
+        // Coordination objects survive a reopen.
+        let store = FileStore::open(&dir).unwrap();
+        let object = store.get_object("conformance/d/shop/cron/b").await.unwrap().unwrap();
+        assert_eq!(object.version, 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_retry_after_a_crash_between_append_and_record_update_is_not_stored_twice() {
+        let dir = temp_dir("crash-append");
+        let store = FileStore::open(&dir).unwrap();
+        store.create(RunRecord::running("c1", "wf", "fp", 1)).await.unwrap();
+        let events = crate::store::raw(&[r#"{"a":1}"#, r#"{"b":2}"#, r#"{"c":3}"#]);
+        store.append_events("c1", 0, &events[..1]).await.unwrap();
+        // Simulate the crash: the lines reached the file, the record still says 1.
+        let mut file = std::fs::OpenOptions::new().append(true).open(dir.join("runs/c1/events.jsonl")).unwrap();
+        file.write_all(b"{\"b\":2}\n").unwrap();
+        drop(file);
+        assert_eq!(store.append_events("c1", 1, &events[1..]).await.unwrap(), 3);
+        assert_eq!(crate::store::texts(&store.events("c1", 0).await.unwrap()), crate::store::texts(&events));
+        assert_eq!(store.get("c1").await.unwrap().unwrap().event_count, 3);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -526,7 +747,7 @@ mod tests {
         let mut record = RunRecord::running("m1", "wf", "fp", 1);
         record.status = RunStatus::Paused;
         store.create(record).await.unwrap();
-        store.append_events("m1", crate::store::raw(&[r#"{"a":1}"#])).await.unwrap();
+        store.append_events("m1", 0, &crate::store::raw(&[r#"{"a":1}"#])).await.unwrap();
         let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir.join("runs")), 0o700);
         assert_eq!(mode(&dir.join("runs/m1")), 0o700);

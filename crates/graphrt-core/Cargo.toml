@@ -20,6 +20,9 @@ yaml = ["dep:serde-saphyr"]
 jinja = ["dep:minijinja"]
 # Tokio-backed clock (timers for retries and timeouts). The engine itself never requires tokio.
 tokio = ["dep:tokio", "tokio/time", "tokio/rt"]
+# Abstract conformance suite for `RunStore` / `CoordinationStore` implementations
+# (`graphrt_core::store_conformance`), for the tests of store backends.
+store-conformance = []
 
 [dependencies]
 futures.workspace = true
