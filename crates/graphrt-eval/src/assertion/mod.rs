@@ -27,7 +27,7 @@ use serde_json::Value as Json;
 use crate::capture::RunCapture;
 use crate::config::{AssertionSpec, TestCase};
 use crate::error::EvalError;
-use crate::judge::JudgeRecord;
+use crate::judge::{JudgeRecord, Verdict};
 use crate::path::JsonPath;
 
 /// What an assertion sees: the test case and the run it produced.
@@ -149,6 +149,19 @@ impl AssertionResult {
     /// The name the summary aggregates this result under: `metric`, else the type.
     pub fn metric_name(&self) -> &str {
         self.metric.as_deref().unwrap_or(&self.kind)
+    }
+
+    /// The result as a score label: `unknown` when excluded (it decided
+    /// nothing), else `pass` or `fail`. Offline trace evaluations and online
+    /// scores label results the same way through this.
+    pub fn verdict(&self) -> Verdict {
+        if self.excluded {
+            Verdict::Unknown
+        } else if self.pass {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        }
     }
 }
 
@@ -364,6 +377,18 @@ mod tests {
         let result = eval(json!({"type": "not-contains", "value": "hello"}), &capture);
         assert!(!result.pass && result.score == 0.0);
         assert_eq!(result.metric_name(), "not-contains");
+    }
+
+    #[test]
+    fn verdict_labels_excluded_results_unknown() {
+        let mut result = AssertionResult::new("contains", true, 1.0, 1.0, "");
+        assert_eq!(result.verdict(), Verdict::Pass);
+        result.pass = false;
+        assert_eq!(result.verdict(), Verdict::Fail);
+        result.excluded = true;
+        assert_eq!(result.verdict(), Verdict::Unknown);
+        result.pass = true;
+        assert_eq!(result.verdict().as_str(), "unknown", "excluded wins over pass");
     }
 
     #[test]
