@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use crate::auth::SecretString;
 use crate::client::{KubeClient, RequestBody, http_status};
 use crate::names::{is_label_value, object_name};
-use crate::resources::{DEPLOYMENT_LABEL, MANAGED_BY_LABEL, Scale, VERSION_LABEL};
+use crate::resources::{DEPLOYMENT_LABEL, MANAGED_BY_LABEL, VERSION_LABEL, spec_replicas};
 
 /// Field manager of deploy-time applies.
 pub const DEPLOY_FIELD_MANAGER: &str = "graphrt-deploy";
@@ -49,8 +49,8 @@ impl K8sDeployDriver {
     /// Current replicas of an existing Deployment, `None` when it does not exist yet.
     async fn current_replicas(&self, name: &str) -> Result<Option<u32>, ProviderError> {
         let path = format!("/apis/apps/v1/namespaces/{}/deployments/{name}/scale", self.namespace);
-        match self.client.get::<Scale>(&path).await {
-            Ok(scale) => Ok(Some(scale.spec.replicas)),
+        match self.client.get(&path).await {
+            Ok(scale) => Ok(Some(spec_replicas(&scale))),
             Err(error) if http_status(&error) == Some(404) => Ok(None),
             Err(error) => Err(error),
         }
@@ -126,7 +126,10 @@ pub fn validate(spec: &DeploymentSpec) -> Result<u16, DeployError> {
         }
         let (name, key) = secret_key_ref(&secret.reference, &secret.env);
         if !is_dns_subdomain(name) || key.is_empty() {
-            return Err(DeployError::invalid(format!("secret reference {:?} is not <secret>[/<key>]", secret.reference)));
+            return Err(DeployError::invalid(format!(
+                "secret reference {:?} is not <secret>[/<key>]",
+                secret.reference
+            )));
         }
     }
     Ok(port)

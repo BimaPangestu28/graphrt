@@ -14,8 +14,7 @@ use std::time::Duration;
 
 use graphrt_provider_api::{
     Addressing, BoxFuture, Capabilities, DeploymentRef, Endpoint, EndpointAddress, Provider, ProviderError,
-    ProviderErrorKind,
-    ReleaseMode, ReplicaPhase, ReplicaRef, ReplicaState, Scaler,
+    ProviderErrorKind, ReleaseMode, ReplicaPhase, ReplicaRef, ReplicaState, Scaler,
 };
 use reqwest::Method;
 use tokio::sync::Mutex;
@@ -24,7 +23,7 @@ use tokio::time::Instant;
 use crate::client::{KubeClient, RequestBody, http_status};
 use crate::names::{object_name, pod_selector};
 use crate::readiness::ReadinessTracker;
-use crate::resources::{DeploymentStatusOnly, ObjectList, POD_DELETION_COST, Pod, ReadyAddress, Scale};
+use crate::resources::{POD_DELETION_COST, Pod, ReadyAddress, items, replica_failure, resource_version, spec_replicas};
 
 /// Field manager of the gateway's scale patches (deploy uses `graphrt-deploy`).
 pub const GATEWAY_FIELD_MANAGER: &str = "graphrt-gateway";
@@ -110,7 +109,7 @@ impl K8sProvider {
         Ok(ReadinessTracker::new(self.client.clone(), &self.config.namespace, &self.resolve(deployment)?))
     }
 
-    async fn get_scale(&self, name: &str) -> Result<Scale, ProviderError> {
+    async fn get_scale(&self, name: &str) -> Result<serde_json::Value, ProviderError> {
         self.client.get(&format!("{}/scale", self.deployment_path(name))).await
     }
 
@@ -122,10 +121,11 @@ impl K8sProvider {
         let path = format!("{}/scale?fieldManager={GATEWAY_FIELD_MANAGER}", self.deployment_path(name));
         for _ in 0..SCALE_CAS_ATTEMPTS {
             let scale = self.get_scale(name).await?;
-            let Some(replicas) = next(scale.spec.replicas) else { return Ok(scale.spec.replicas) };
+            let current = spec_replicas(&scale);
+            let Some(replicas) = next(current) else { return Ok(current) };
             // resourceVersion makes the patch a compare-and-swap: a concurrent writer gets 409.
             let patch = serde_json::json!({
-                "metadata": { "resourceVersion": scale.metadata.resource_version },
+                "metadata": { "resourceVersion": resource_version(&scale) },
                 "spec": { "replicas": replicas },
             });
             match self.client.send(Method::PATCH, &path, Some(RequestBody::merge_patch(&patch))).await {
@@ -139,21 +139,27 @@ impl K8sProvider {
 
     async fn list_pods(&self, deployment: &DeploymentRef) -> Result<Vec<Pod>, ProviderError> {
         let path = format!("{}?labelSelector={}", self.pods_path(), pod_selector(deployment));
-        let list: ObjectList<Pod> = self.client.get(&path).await?;
-        Ok(list.items)
+        let list = self.client.get(&path).await?;
+        Ok(items(&list).iter().cloned().map(Pod).collect())
     }
 
     /// Why a wake timed out: unschedulable pods are `Capacity`, bad images `Fatal`.
-    async fn diagnose_wake_timeout(&self, deployment: &DeploymentRef, name: &str, wanted: u32, ready: usize) -> ProviderError {
+    async fn diagnose_wake_timeout(
+        &self,
+        deployment: &DeploymentRef,
+        name: &str,
+        wanted: u32,
+        ready: usize,
+    ) -> ProviderError {
         let pods = self.list_pods(deployment).await.unwrap_or_default();
         let active = pods.iter().filter(|pod| !pod.is_terminating());
         let mut diagnosis = None;
         for pod in active {
             if let Some(message) = pod.unschedulable_message() {
-                return ProviderError::capacity(format!("{}: {message}", pod.metadata.name));
+                return ProviderError::capacity(format!("{}: {message}", pod.name()));
             }
             if diagnosis.is_none() {
-                diagnosis = pod.fatal_waiting_reason().map(|reason| format!("{}: {reason}", pod.metadata.name));
+                diagnosis = pod.fatal_waiting_reason().map(|reason| format!("{}: {reason}", pod.name()));
             }
         }
         if let Some(message) = self.replica_failure(name).await {
@@ -177,13 +183,7 @@ impl K8sProvider {
     /// Message of the Deployment's `ReplicaFailure=True` condition (pods the
     /// ReplicaSet could not create), if any.
     async fn replica_failure(&self, name: &str) -> Option<String> {
-        let deployment: DeploymentStatusOnly = self.client.get(&self.deployment_path(name)).await.ok()?;
-        deployment
-            .status
-            .conditions
-            .into_iter()
-            .find(|condition| condition.kind == "ReplicaFailure" && condition.status == "True")
-            .map(|condition| condition.message.unwrap_or_else(|| "replica creation failed".into()))
+        replica_failure(&self.client.get(&self.deployment_path(name)).await.ok()?)
     }
 
     fn endpoints(deployment: &DeploymentRef, ready: &[ReadyAddress]) -> Vec<Endpoint> {
@@ -219,15 +219,15 @@ impl K8sProvider {
 
     async fn release_locked(&self, replica: &ReplicaRef, name: &str) -> Result<(), ProviderError> {
         let pod_path = format!("{}/{}", self.pods_path(), replica.id);
-        let pod: Pod = match self.client.get(&pod_path).await {
-            Ok(pod) => pod,
+        let pod = match self.client.get(&pod_path).await {
+            Ok(pod) => Pod(pod),
             Err(error) if http_status(&error) == Some(404) => return Ok(()),
             Err(error) => return Err(error),
         };
         if pod.is_terminating() {
             return Ok(());
         }
-        let already_marked = pod.metadata.annotations.get(POD_DELETION_COST).map(String::as_str) == Some(VICTIM_COST);
+        let already_marked = pod.annotation(POD_DELETION_COST) == Some(VICTIM_COST);
         if !already_marked {
             self.set_deletion_cost(&pod_path, Some(VICTIM_COST)).await?;
         }
@@ -266,7 +266,11 @@ impl K8sProvider {
 impl K8sProvider {
     /// Scale to at least `replicas` and wait until that many are ready.
     /// `replicas == 0` only reports the ready endpoints.
-    pub async fn wake_replicas(&self, deployment: &DeploymentRef, replicas: u32) -> Result<Vec<Endpoint>, ProviderError> {
+    pub async fn wake_replicas(
+        &self,
+        deployment: &DeploymentRef,
+        replicas: u32,
+    ) -> Result<Vec<Endpoint>, ProviderError> {
         if replicas > self.config.max_replicas {
             return Err(ProviderError::capacity(format!(
                 "{replicas} replicas requested, provider limit is {}",
@@ -298,9 +302,9 @@ impl K8sProvider {
             .map(|pod| {
                 let phase = if pod.is_terminating() {
                     ReplicaPhase::Stopping
-                } else if pod.status.phase.as_deref() == Some("Failed") {
+                } else if pod.phase() == Some("Failed") {
                     ReplicaPhase::Failed
-                } else if pod.status.phase.as_deref() == Some("Succeeded") {
+                } else if pod.phase() == Some("Succeeded") {
                     ReplicaPhase::Stopped
                 } else if pod.is_ready() {
                     ReplicaPhase::Ready
@@ -309,7 +313,7 @@ impl K8sProvider {
                 };
                 ReplicaState {
                     address: pod.address().map(|address| EndpointAddress::Http(format!("http://{address}"))),
-                    replica: ReplicaRef { deployment: deployment.clone(), id: pod.metadata.name },
+                    replica: ReplicaRef { deployment: deployment.clone(), id: pod.name().to_owned() },
                     phase,
                     started_at_ms: None,
                 }

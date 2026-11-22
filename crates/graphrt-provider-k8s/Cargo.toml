@@ -13,11 +13,18 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+default = ["kubeconfig", "deploy"]
+# Out-of-cluster credentials: kubeconfig files (token, token file, client
+# certificate, exec plugins such as `aws eks get-token`). A gateway running in
+# the cluster only needs the service account and can leave this off (~65 KiB).
+kubeconfig = ["dep:serde-saphyr", "dep:base64", "tokio/process"]
+# Deploy-time driver (`graphrt deploy`): server-side apply of Deployment,
+# Service and Secret (~49 KiB). The gateway's run-time provider does not need it.
+deploy = ["dep:base64"]
 # In-process fake Kubernetes API server (Deployments + scale, ReplicaSet-like pod
 # lifecycle, EndpointSlice watch, server-side apply, fault injection) for the
 # conformance suite. Test-only: never enable it in a shipped binary.
-fake-api-server = ["dep:axum", "dep:futures", "tokio/net", "graphrt-provider-api/conformance"]
+fake-api-server = ["deploy", "dep:axum", "dep:futures", "tokio/net", "graphrt-provider-api/conformance"]
 
 [dependencies]
 # Provider / DeployDriver traits, ProviderHttp (token bucket, jittered retry,
@@ -28,20 +35,28 @@ graphrt-provider-api = { workspace = true, features = ["http"] }
 # No `json`/`stream` reqwest features: watch streams are read with `Response::chunk`.
 reqwest = { workspace = true, features = ["rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-tokio = { workspace = true, features = ["rt", "time", "sync", "fs", "process", "io-util"] }
+tokio = { workspace = true, features = ["rt", "time", "sync", "fs"] }
 serde.workspace = true
 serde_json.workspace = true
-serde-saphyr.workspace = true
+serde-saphyr = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing.workspace = true
-base64 = "0.22"
+base64 = { version = "0.22", optional = true }
 axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio"] }
 futures = { workspace = true, optional = true }
 
 [dev-dependencies]
-graphrt-provider-k8s = { path = ".", features = ["fake-api-server"] }
+graphrt-provider-k8s = { path = ".", default-features = false, features = ["fake-api-server"] }
 graphrt-provider-api = { workspace = true, features = ["http", "conformance"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "sync"] }
+
+[[test]]
+name = "real_cluster"
+required-features = ["kubeconfig", "deploy"]
+
+[[test]]
+name = "conformance"
+required-features = ["fake-api-server"]
 
 [lints]
 workspace = true

@@ -40,7 +40,11 @@ fn bot() -> DeploymentRef {
 
 fn fast_retries() -> ClientOptions {
     ClientOptions {
-        retry: RetryPolicy { max_attempts: 4, base_delay: Duration::from_millis(5), max_delay: Duration::from_millis(50) },
+        retry: RetryPolicy {
+            max_attempts: 4,
+            base_delay: Duration::from_millis(5),
+            max_delay: Duration::from_millis(50),
+        },
         qps: 1_000.0,
         burst: 1_000,
         ..ClientOptions::default()

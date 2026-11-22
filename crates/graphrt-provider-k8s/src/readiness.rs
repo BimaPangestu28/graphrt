@@ -10,7 +10,7 @@ use tokio::time::Instant;
 
 use crate::client::{KubeClient, WatchEvent, http_status};
 use crate::names::encode_query;
-use crate::resources::{EndpointSlice, ObjectList, ReadyAddress, SERVICE_NAME_LABEL};
+use crate::resources::{ReadyAddress, SERVICE_NAME_LABEL, items, name, ready_addresses, resource_version};
 
 /// Longest single watch request; the server closes it and we resume.
 const WATCH_CHUNK: Duration = Duration::from_secs(60);
@@ -52,10 +52,9 @@ impl ReadinessTracker {
     /// Replace the state with a fresh LIST.
     pub async fn relist(&mut self) -> Result<(), ProviderError> {
         let path = format!("{}?labelSelector={}", self.collection_path, self.selector);
-        let list: ObjectList<EndpointSlice> = self.client.get(&path).await?;
-        self.slices =
-            list.items.iter().map(|slice| (slice.metadata.name.clone(), slice.ready_addresses())).collect();
-        self.resource_version = Some(list.metadata.resource_version);
+        let list = self.client.get(&path).await?;
+        self.slices = items(&list).iter().map(|slice| (name(slice).to_owned(), ready_addresses(slice))).collect();
+        self.resource_version = Some(resource_version(&list).to_owned());
         Ok(())
     }
 
@@ -140,7 +139,7 @@ impl ReadinessTracker {
             timeout.as_secs().max(1)
         );
         let mut stream = self.client.watch(&path, timeout).await?;
-        while let Some(event) = stream.next::<serde_json::Value>().await? {
+        while let Some(event) = stream.next().await? {
             self.apply(event, &path)?;
             if done(&self.ready()) {
                 return Ok(true);
@@ -149,7 +148,7 @@ impl ReadinessTracker {
         Ok(false)
     }
 
-    fn apply(&mut self, event: WatchEvent<serde_json::Value>, path: &str) -> Result<(), ProviderError> {
+    fn apply(&mut self, event: WatchEvent, path: &str) -> Result<(), ProviderError> {
         if event.kind == "ERROR" {
             // A Status object; keep the `HTTP <code>:` convention so `http_status` reads it.
             let code = event.object.get("code").and_then(serde_json::Value::as_u64).unwrap_or(500);
@@ -158,17 +157,16 @@ impl ReadinessTracker {
             let kind = ProviderError::kind_for_status(code);
             return Err(ProviderError::new(kind, format!("HTTP {code}: {message} (WATCH {path})")));
         }
-        let slice: EndpointSlice = serde_json::from_value(event.object)
-            .map_err(|error| ProviderError::fatal(format!("decode watch event of {path}: {error}")))?;
-        if !slice.metadata.resource_version.is_empty() {
-            self.resource_version = Some(slice.metadata.resource_version.clone());
+        let slice = event.object;
+        if !resource_version(&slice).is_empty() {
+            self.resource_version = Some(resource_version(&slice).to_owned());
         }
         match event.kind.as_str() {
             "ADDED" | "MODIFIED" => {
-                self.slices.insert(slice.metadata.name.clone(), slice.ready_addresses());
+                self.slices.insert(name(&slice).to_owned(), ready_addresses(&slice));
             }
             "DELETED" => {
-                self.slices.remove(&slice.metadata.name);
+                self.slices.remove(name(&slice));
             }
             _ => {} // BOOKMARK: only the resourceVersion moves.
         }

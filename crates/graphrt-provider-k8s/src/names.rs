@@ -5,18 +5,16 @@
 //! stay wakeable for 7 days), cut to a DNS-1123 label of at most 63 bytes with a
 //! stable hash suffix when it is too long.
 
-use graphrt_provider_api::DeploymentRef;
 use crate::resources::{DEPLOYMENT_LABEL, VERSION_LABEL};
+use graphrt_provider_api::DeploymentRef;
 
 const MAX_NAME: usize = 63;
 
 /// Name of the Deployment and Service of one deployment version.
 pub fn object_name(deployment: &DeploymentRef) -> String {
     let raw = format!("{}-{}", deployment.name, deployment.version);
-    let mut name: String = raw
-        .chars()
-        .map(|char| if char.is_ascii_alphanumeric() { char.to_ascii_lowercase() } else { '-' })
-        .collect();
+    let mut name: String =
+        raw.chars().map(|char| if char.is_ascii_alphanumeric() { char.to_ascii_lowercase() } else { '-' }).collect();
     let changed = name != raw || name.len() > MAX_NAME;
     if changed {
         // Sanitising can map different inputs to one name: a hash of the raw input keeps them apart.
@@ -41,10 +39,7 @@ pub fn is_label_value(value: &str) -> bool {
 
 /// `labelSelector` query value matching the pods of one version (URL-encoded).
 pub fn pod_selector(deployment: &DeploymentRef) -> String {
-    encode_query(&format!(
-        "{DEPLOYMENT_LABEL}={},{VERSION_LABEL}={}",
-        deployment.name, deployment.version
-    ))
+    encode_query(&format!("{DEPLOYMENT_LABEL}={},{VERSION_LABEL}={}", deployment.name, deployment.version))
 }
 
 /// Percent-encode a query value (label selectors contain `/`, `=` and `,`).
@@ -89,7 +84,9 @@ mod tests {
     #[test]
     fn label_values_and_selectors() {
         assert!(is_label_value("support-bot") && is_label_value("v1.2_3"));
-        assert!(!is_label_value("") && !is_label_value("-x") && !is_label_value("a/b") && !is_label_value(&"a".repeat(64)));
+        assert!(
+            !is_label_value("") && !is_label_value("-x") && !is_label_value("a/b") && !is_label_value(&"a".repeat(64))
+        );
         assert_eq!(
             pod_selector(&DeploymentRef::new("bot", "v1", "")),
             "graphrt.dev%2Fdeployment%3Dbot%2Cgraphrt.dev%2Fversion%3Dv1"

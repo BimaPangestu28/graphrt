@@ -1,8 +1,8 @@
 //! In-cluster config: the pod's service account token and CA, the API server
 //! from `KUBERNETES_SERVICE_HOST` / `KUBERNETES_SERVICE_PORT`.
 
-use std::path::Path;
 use super::{AuthError, ClusterConfig, TokenFile, cached};
+use std::path::Path;
 
 /// Where Kubernetes mounts the service account of a pod.
 pub const IN_CLUSTER_DIR: &str = "/var/run/secrets/kubernetes.io/serviceaccount";
@@ -80,6 +80,9 @@ mod tests {
     fn outside_a_pod_is_not_in_cluster() {
         let missing = Path::new("/nonexistent/graphrt-sa");
         assert!(matches!(in_cluster_config_from(None, None, missing), Err(AuthError::NotInCluster(_))));
-        assert!(matches!(in_cluster_config_from(Some("10.0.0.1"), Some("443"), missing), Err(AuthError::NotInCluster(_))));
+        assert!(matches!(
+            in_cluster_config_from(Some("10.0.0.1"), Some("443"), missing),
+            Err(AuthError::NotInCluster(_))
+        ));
     }
 }
