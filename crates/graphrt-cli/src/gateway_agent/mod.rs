@@ -139,6 +139,7 @@ impl GatewayAgentConfig {
     /// @throws CliError - Usage error when the deployment or keys are missing or invalid.
     pub fn from_args(
         args: &crate::args::GatewayTrustArgs,
+        deployment: Option<String>,
         lookup_env: impl Fn(&str) -> Option<String>,
         max_body_bytes: usize,
     ) -> Result<Option<Self>, crate::error::CliError> {
@@ -146,16 +147,8 @@ impl GatewayAgentConfig {
         if !args.trust_gateway {
             return Ok(None);
         }
-        let deployment = args
-            .deployment
-            .clone()
-            .or_else(|| lookup_env("GRAPHRT_DEPLOYMENT"))
-            .filter(|d| !d.is_empty())
+        let deployment = deployment
             .ok_or_else(|| CliError::usage("--trust-gateway needs --deployment NAME (or $GRAPHRT_DEPLOYMENT)"))?;
-        graphrt_core::coordination::validate_key(&deployment)
-            .ok()
-            .filter(|()| !deployment.contains('/'))
-            .ok_or_else(|| CliError::usage(format!("invalid deployment name `{deployment}`")))?;
         let keys_text = lookup_env(&args.gateway_keys_env).filter(|k| !k.is_empty()).ok_or_else(|| {
             CliError::usage(format!("--trust-gateway needs the gateway keys in ${}", args.gateway_keys_env))
         })?;

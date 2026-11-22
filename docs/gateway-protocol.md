@@ -73,7 +73,7 @@ about 110 KiB more than without the feature.
 | Flag | Effect |
 | --- | --- |
 | `--trust-gateway` | Serve the signed `/internal/v1` API |
-| `--deployment NAME` (or `$GRAPHRT_DEPLOYMENT`) | The only deployment this agent accepts requests for |
+| `--deployment NAME` (or `$GRAPHRT_DEPLOYMENT`) | The only deployment this agent accepts requests for; also namespaces webhook run ids (see [serving.md](serving.md#idempotency)). A `serve` flag of its own, usable without `--trust-gateway` |
 | `--gateway-keys-env VAR` | Variable holding the keys (default `GRAPHRT_GATEWAY_KEYS`): `kid:hexsecret`, comma-separated, 32 bytes or more each. The first signs, all verify, so two can be active during a rotation |
 | `--gateway-url URL` (or `$GRAPHRT_GATEWAY_URL`) | Where lost runs are reported: `http://host:port` (private network) or `unix:/path` |
 | `--reclaim-grace-secs N` | How long a lost run's outcome waits to be reclaimed (default 60) |

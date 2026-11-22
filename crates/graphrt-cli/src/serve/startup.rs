@@ -106,6 +106,23 @@ async fn user_auth_from_args(
     crate::user_auth::UserAuth::from_args(&args.user_auth, &args.input_header, lookup).await
 }
 
+/// `--deployment` (or `$GRAPHRT_DEPLOYMENT`), validated: one key segment of a
+/// gateway store (`[A-Za-z0-9_.:=-]`, no `/`).
+///
+/// @throws CliError (usage) - On an invalid name.
+pub(crate) fn deployment(args: &ServeArgs, options: &ServiceOptions) -> Result<Option<String>, CliError> {
+    let Some(name) = args.deployment.clone().or_else(|| lookup_env(options, "GRAPHRT_DEPLOYMENT")) else {
+        return Ok(None);
+    };
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if name.contains('/') || graphrt_core::coordination::validate_key(&name).is_err() {
+        return Err(CliError::usage(format!("invalid deployment name `{name}` (letters, digits and _ . : = -)")));
+    }
+    Ok(Some(name))
+}
+
 /// The trusted gateway (`--trust-gateway`), which excludes `--verify-jwt`:
 /// behind a gateway, the gateway verifies end-user tokens.
 ///
@@ -117,7 +134,9 @@ fn gateway_agent_from_args(
     verifies_user_tokens: bool,
 ) -> Result<Option<Arc<crate::gateway_agent::GatewayAgent>>, CliError> {
     let lookup = |name: &str| lookup_env(options, name);
-    let config = crate::gateway_agent::GatewayAgentConfig::from_args(&args.gateway, lookup, args.max_body_bytes)?;
+    let deployment = deployment(args, options)?;
+    let config =
+        crate::gateway_agent::GatewayAgentConfig::from_args(&args.gateway, deployment, lookup, args.max_body_bytes)?;
     if config.is_some() && verifies_user_tokens {
         return Err(CliError::usage(
             "--trust-gateway and --verify-jwt are exclusive: behind a gateway, the gateway verifies end-user tokens",
@@ -145,7 +164,8 @@ async fn configured_state(
     let webhooks = match &args.webhooks {
         Some(path) => crate::webhooks::Webhooks::load(path, &options.all_vars(), options.allow_private_network)?,
         None => crate::webhooks::Webhooks::default(),
-    };
+    }
+    .with_deployment(deployment(args, options)?);
     #[cfg(feature = "online-eval")]
     let judge_limits = limits.clone();
     #[cfg(feature = "trust-gateway")]

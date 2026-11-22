@@ -140,6 +140,8 @@ graphrt serve <workflow-file|directory> [--addr 127.0.0.1:8080] [--api-key-env G
                [--jwt-issuer ISS] [--jwt-audience AUD] [--user-rate-limit N]
                [--user-events answer|all]]
               [--evaluators FILE] [--otel | --otel-preset NAME]
+              [--webhooks FILE] [--deployment NAME]
+              [--trust-gateway [--reclaim-grace-secs N]]
 ```
 
 Each workflow file is served under its file stem and compiled once at startup.
@@ -161,6 +163,11 @@ one). `--user-rate-limit N` caps runs per minute per token
 answer, the final result and pause prompts; `--user-events all` streams every
 event. See
 [serving.md](serving.md#verifying-end-user-jwts).
+
+`--deployment NAME` (or `$GRAPHRT_DEPLOYMENT`) names the deployment the server
+belongs to: webhook idempotency run ids include it, as a graphrt gateway derives
+them (see [serving.md](serving.md#idempotency)), and `--trust-gateway` requires
+it (see [gateway-protocol.md](gateway-protocol.md)).
 
 `--evaluators evaluators.yaml` scores a deterministic sample of finished runs
 in a bounded background pool (judge workflows, regexes, schemas, budgets,

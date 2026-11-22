@@ -505,3 +505,33 @@ mod callbacks {
         assert!(Webhooks::from_value(unsigned, &vars(), false).unwrap_err().contains("secret"));
     }
 }
+
+/// With `--deployment`, idempotent run ids are the gateway's, namespaced by the
+/// deployment (`hook-<sha256("hook|<deployment>|<hook>|<key>")[..32]>`).
+#[tokio::test]
+async fn a_deployment_namespaces_idempotent_run_ids_like_the_gateway() {
+    let dir = TempDir::new("deployment-ids");
+    let flows = workflows(&dir);
+    let files = discover(&flows).unwrap();
+    let options = ServiceOptions {
+        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        ..ServiceOptions::default()
+    };
+    let webhooks = Webhooks::from_value(hooks_config(), &vars(), false).unwrap().with_deployment(Some("shop".into()));
+    let state = build_state(&files, &options, Limits::default(), None)
+        .await
+        .unwrap()
+        .with_store(Arc::new(MemoryStore::new()))
+        .with_webhooks(webhooks)
+        .unwrap();
+    let namespaced = router(Arc::new(state), 1 << 20);
+    let (status, json) =
+        send(&namespaced, delivery("/v1/hooks/echo", "{}", &[("idempotency-key", "delivery-1")])).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+    // `hook_run_id("shop", "echo", "delivery-1")` of graphrt-gateway.
+    assert_eq!(json["run_id"], "hook-7a36d11a40ec7b3fb755e7c606ace5dc");
+    // Without a deployment the id differs (and keeps the earlier formula).
+    let (_, plain) =
+        send(&app(&dir).await, delivery("/v1/hooks/echo", "{}", &[("idempotency-key", "delivery-1")])).await;
+    assert_ne!(plain["run_id"], json["run_id"]);
+}
