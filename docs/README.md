@@ -21,6 +21,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 - [Gateway on Cloud Run](gateway-cloud-run.md): GCP auth, the Cloud Run provider and deploy driver, IAM roles, billing caveats
 - [Kubernetes provider (gateway)](kubernetes-provider.md): scale-to-zero of agent Deployments, RBAC, cluster auth (in-cluster, kubeconfig, exec plugins), optional KEDA
 - [Gateway protocol](gateway-protocol.md): `serve --trust-gateway`, signed `/internal/v1` API, run store contract (epochs, idempotent appends, coordination store), SSE ids and `Last-Event-ID`
+- [Gateway on AWS](gateway-aws.md): ECS Fargate and Lambda targets of the upcoming gateway, credentials, IAM policies, limits
 - [Bundles (`.grt`)](bundles.md)
 - [Observability](observability.md): OpenTelemetry traces and metrics, GenAI semantic conventions, presets for Langfuse, LangSmith, Braintrust, Opik, Phoenix and MLflow
 - [Usage telemetry](telemetry.md)
