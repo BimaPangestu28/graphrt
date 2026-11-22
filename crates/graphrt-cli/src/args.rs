@@ -532,8 +532,9 @@ pub struct EvalArgs {
 pub struct ServeArgs {
     /// A workflow file, or a directory of workflow files (each served under its file stem).
     pub path: PathBuf,
-    /// Listen address.
-    #[arg(long, default_value = "127.0.0.1:8080")]
+    /// Listen address: `host:port`, or `unix:/path/to.sock` for a Unix socket
+    /// (created mode 0600, e.g. for a gateway on the same host).
+    #[arg(long, visible_alias = "listen", value_name = "ADDR", default_value = "127.0.0.1:8080")]
     pub addr: String,
     /// Name of the environment variable holding the API key. When set, requests must send
     /// `Authorization: Bearer <key>`.
@@ -607,7 +608,37 @@ pub struct ServeArgs {
     #[command(flatten)]
     pub user_auth: UserAuthArgs,
     #[command(flatten)]
+    pub gateway: GatewayTrustArgs,
+    #[command(flatten)]
     pub services: ServiceArgs,
+}
+
+/// Running behind a graphrt gateway (`graphrt serve --trust-gateway`, see
+/// docs/gateway-protocol.md).
+#[derive(Debug, Default, Args)]
+pub struct GatewayTrustArgs {
+    /// Serve the gateway protocol under `/internal/v1`: requests signed with HMAC-SHA256
+    /// by a key of `$GRAPHRT_GATEWAY_KEYS` (`kid:hexsecret[,kid:hexsecret]`, 32+ bytes
+    /// each) for `--deployment`. Gateway-started runs survive a lost gateway connection
+    /// for the reclaim grace instead of being aborted.
+    #[arg(long)]
+    pub trust_gateway: bool,
+    /// Deployment this agent serves; signed requests for another deployment are refused
+    /// [default: $GRAPHRT_DEPLOYMENT].
+    #[arg(long, value_name = "NAME", requires = "trust_gateway")]
+    pub deployment: Option<String>,
+    /// Name of the environment variable holding the gateway keys.
+    #[arg(long, value_name = "VAR", default_value = crate::gateway_agent::KEYS_ENV)]
+    pub gateway_keys_env: String,
+    /// Where to report runs whose gateway stream broke: `http://host:port` (private
+    /// network) or `unix:/path/to.sock` [default: $GRAPHRT_GATEWAY_URL; none: the gateway
+    /// lists them with `GET /internal/v1/orphans`].
+    #[arg(long, value_name = "URL", requires = "trust_gateway")]
+    pub gateway_url: Option<String>,
+    /// How long the outcome of a run whose gateway stream broke is kept for the gateway
+    /// to reclaim before the run is marked failed (`owner_lost`).
+    #[arg(long, value_name = "SECS", default_value_t = crate::gateway_agent::DEFAULT_RECLAIM_GRACE_SECS)]
+    pub reclaim_grace_secs: u64,
 }
 
 /// End-user JWT verification for `graphrt serve` (see docs/serving.md).

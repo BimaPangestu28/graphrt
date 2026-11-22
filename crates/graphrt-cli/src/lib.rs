@@ -17,6 +17,8 @@ pub mod eval_trace;
 pub mod extensions;
 pub mod files;
 #[cfg(feature = "serve")]
+pub mod gateway_agent;
+#[cfg(feature = "serve")]
 pub mod header_inputs;
 #[cfg(any(feature = "serve", feature = "telemetry"))]
 pub mod hex;
@@ -27,6 +29,8 @@ pub mod kb;
 pub mod knowledge_api;
 #[cfg(feature = "langfuse")]
 pub mod langfuse;
+#[cfg(feature = "serve")]
+pub mod listen;
 #[cfg(feature = "online-eval")]
 pub mod online_eval;
 pub mod otel;
@@ -40,6 +44,8 @@ pub mod scores;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod setup;
+#[cfg(feature = "serve")]
+pub mod sse_ids;
 #[cfg(feature = "serve")]
 pub mod store;
 #[cfg(feature = "telemetry")]

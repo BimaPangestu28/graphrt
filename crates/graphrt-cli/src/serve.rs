@@ -111,6 +111,8 @@ pub struct AppState {
     /// Score uploads to Langfuse (`--langfuse-scores`).
     #[cfg(feature = "langfuse")]
     langfuse: Option<Arc<crate::langfuse::LangfuseUploader>>,
+    /// The gateway this agent trusts (`--trust-gateway`): `/internal/v1`.
+    gateway_agent: Option<Arc<crate::gateway_agent::GatewayAgent>>,
 }
 
 /// The verified end user of a request (`sub` of its JWT), set by `--verify-jwt`.
@@ -146,7 +148,49 @@ impl AppState {
             online: None,
             #[cfg(feature = "langfuse")]
             langfuse: None,
+            gateway_agent: None,
         }
+    }
+
+    /// Trust a gateway (`--trust-gateway`): serve the signed `/internal/v1` API.
+    pub fn with_gateway_agent(mut self, agent: Option<Arc<crate::gateway_agent::GatewayAgent>>) -> Self {
+        self.gateway_agent = agent;
+        self
+    }
+
+    /// The gateway agent state, with `--trust-gateway`.
+    pub(crate) fn gateway_agent(&self) -> Option<&Arc<crate::gateway_agent::GatewayAgent>> {
+        self.gateway_agent.as_ref()
+    }
+
+    /// Served workflows by name.
+    pub(crate) fn served_workflows(&self) -> impl Iterator<Item = (&String, &ServedWorkflow)> {
+        self.workflows.iter()
+    }
+
+    /// The workflow served as `name`.
+    pub(crate) fn served_workflow(&self, name: &str) -> Option<&ServedWorkflow> {
+        self.workflows.get(name)
+    }
+
+    /// `--max-active-runs` (0 = unlimited).
+    pub(crate) fn max_active_runs(&self) -> usize {
+        self.max_active_runs
+    }
+
+    /// Plugins loaded at startup (their hosts stay up for the server's lifetime).
+    pub(crate) fn warm_plugins(&self) -> Vec<String> {
+        self.extensions.loaded().map(|plugin| plugin.name.clone()).collect()
+    }
+
+    /// The `429` to answer when `--max-active-runs` runs are executing.
+    pub(crate) fn busy_response(&self) -> Option<Response> {
+        self.refuse_if_busy()
+    }
+
+    /// The executing run `run_id`, if any.
+    pub(crate) fn active_run(&self, run_id: &str) -> Option<Arc<ActiveRun>> {
+        self.active(run_id)
     }
 
     /// Upload every stored score to Langfuse (`--langfuse-scores`). Call before
@@ -591,6 +635,12 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     // Opt-in usage telemetry counts API requests (in memory); health checks are not counted.
     #[cfg(feature = "telemetry")]
     let counted = counted.layer(middleware::from_fn(crate::telemetry::count_requests));
+    // Gateway-signed routes authenticate themselves (HMAC, `--trust-gateway`).
+    let counted = if state.gateway_agent.is_some() {
+        counted.merge(crate::gateway_agent::router(state.clone()))
+    } else {
+        counted
+    };
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readiness))
@@ -638,6 +688,13 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let user_auth_line = user_auth.as_ref().map(crate::user_auth::UserAuth::describe);
     #[cfg(feature = "online-eval")]
     let judge_limits = limits.clone();
+    let gateway = crate::gateway_agent::GatewayAgentConfig::from_args(&args.gateway, lookup_env, args.max_body_bytes)?;
+    #[cfg(feature = "jwt")]
+    if gateway.is_some() && user_auth_line.is_some() {
+        return Err(CliError::usage(
+            "--trust-gateway and --verify-jwt are exclusive: behind a gateway, the gateway verifies end-user tokens",
+        ));
+    }
     let state = build_state(&files, &options, limits, api_key.clone())
         .await?
         .with_stores(stores)
@@ -645,7 +702,8 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         .with_store_inputs(args.store_inputs)
         .with_max_active_runs(args.max_active_runs)
         .with_webhooks(webhooks)?
-        .with_header_inputs(&args.input_header)?;
+        .with_header_inputs(&args.input_header)?
+        .with_gateway_agent(gateway.map(|config| Arc::new(crate::gateway_agent::GatewayAgent::new(config))));
     #[cfg(feature = "jwt")]
     let state = state.with_user_auth(user_auth);
     #[cfg(feature = "langfuse")]
@@ -680,16 +738,25 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     // Before listening: from here on SIGTERM / SIGINT start a drain (as PID 1 of a
     // container, an unhandled SIGTERM would be ignored until the SIGKILL).
     let mut signals = crate::drain::ShutdownSignals::install()?;
-    let listener = tokio::net::TcpListener::bind(&args.addr)
-        .await
-        .map_err(|e| CliError::usage(format!("cannot listen on {}: {e}", args.addr)))?;
-    let loopback = listener.local_addr().map(|a| a.ip().is_loopback()).unwrap_or(false);
+    let listener = crate::listen::Listener::bind(&args.addr).await?;
+    let loopback = listener.is_local();
     // Without an API key, a loopback server is reachable from any web page through DNS
     // rebinding (the page's own host name resolving to 127.0.0.1). Such requests carry
     // that foreign host name, so only local `Host` values are accepted.
-    let app =
-        if api_key.is_none() && loopback { app.layer(axum::middleware::from_fn(require_local_host)) } else { app };
-    eprintln!("graphrt serving {} workflow(s) on http://{}", state.workflows.len(), args.addr);
+    let app = if api_key.is_none() && loopback && listener.is_browser_reachable() {
+        app.layer(axum::middleware::from_fn(require_local_host))
+    } else {
+        app
+    };
+    let shown_addr = if crate::listen::unix_path(&args.addr).is_some() {
+        args.addr.clone()
+    } else {
+        format!("http://{}", args.addr)
+    };
+    eprintln!("graphrt serving {} workflow(s) on {shown_addr}", state.workflows.len());
+    if let Some(agent) = state.gateway_agent() {
+        eprintln!("  trusting the gateway of deployment `{}` (signed /internal/v1)", agent.deployment());
+    }
     #[cfg(feature = "jwt")]
     if let Some(line) = &user_auth_line {
         eprintln!("  {line}");
@@ -717,18 +784,10 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             );
         }
     }
-    // Without TCP_NODELAY, the second and later small writes of a streamed (SSE)
-    // response wait for the client's delayed ACK: about 40 ms per run on Linux.
-    let listener = axum::serve::ListenerExt::tap_io(listener, |tcp: &mut tokio::net::TcpStream| {
-        if let Err(e) = tcp.set_nodelay(true) {
-            eprintln!("warning: cannot set TCP_NODELAY: {e}");
-        }
-    });
     let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
-    let server = axum::serve(listener, app).with_graceful_shutdown(async {
+    let mut server = tokio::spawn(listener.serve(app, async {
         let _closed = close_rx.await;
-    });
-    let mut server = tokio::spawn(server.into_future());
+    }));
     if !args.no_resume_drained {
         // After listening, so a store scan never delays the first health check.
         tokio::spawn(resume_drained_runs(Arc::clone(&state)));
@@ -1038,7 +1097,7 @@ impl RunRequest {
     /// Validate and copy the caller context onto `record`.
     ///
     /// @throws String - A message for a `400` response when a field is too large.
-    fn apply_context(&self, record: &mut RunRecord) -> Result<(), String> {
+    pub(crate) fn apply_context(&self, record: &mut RunRecord) -> Result<(), String> {
         if self.metadata.len() > MAX_METADATA_ENTRIES {
             return Err(format!("`metadata` has more than {MAX_METADATA_ENTRIES} entries"));
         }
@@ -1122,7 +1181,7 @@ impl Delivery {
 
 /// How much of a run the caller receives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EventScope {
+pub(crate) enum EventScope {
     /// Every engine event and the full result (API-key callers, `--user-events all`).
     Full,
     /// The answer stream, the final result and pause prompts (end users by default).
@@ -1144,7 +1203,7 @@ fn to_values(map: serde_json::Map<String, serde_json::Value>) -> IndexMap<String
 pub(crate) fn store_error(e: &StoreError) -> Response {
     let status = match e {
         StoreError::NotFound(_) => StatusCode::NOT_FOUND,
-        StoreError::Conflict(_) => StatusCode::CONFLICT,
+        StoreError::Conflict(_) | StoreError::Precondition(_) => StatusCode::CONFLICT,
         StoreError::InvalidId(_) => StatusCode::BAD_REQUEST,
         _ => {
             // I/O and corruption errors name server paths: log them, answer generically.
@@ -1294,11 +1353,13 @@ async fn resume_run(
     execute(&state, &workflow.engine, record, input, reply, traceparent(&headers)).await
 }
 
-/// Undo a resume claim so a refused resume leaves the run visible as paused.
+/// Undo a resume claim so a refused resume leaves the run visible as paused. The
+/// write is fenced by the claim's epoch, so it never undoes a later claim.
 async fn release_claim(state: &AppState, mut record: RunRecord) {
     record.status = RunStatus::Paused;
     let run_id = record.run_id.clone();
-    if let Err(e) = state.store.put(record).await {
+    let epoch = record.epoch;
+    if let Err(e) = state.store.put_if(record, epoch).await {
         eprintln!("warning: run {run_id}: cannot restore paused status: {e}");
     }
 }
@@ -1394,34 +1455,49 @@ async fn run_events(
     State(state): State<Arc<AppState>>,
     UrlPath(run_id): UrlPath<String>,
     Query(query): Query<EventsQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
-    let active = state.active(&run_id);
+    // A reconnecting SSE client names the last event it saw.
+    let from = query.from.max(crate::sse_ids::resume_index_of(&headers).unwrap_or(0));
+    events_response(&state, &run_id, from, 0, query.stream == Some(false)).await
+}
+
+/// Stored events of `run_id` from index `from`, followed by the live tail while
+/// the run executes, each with `id_base` + its index as SSE `id:` (or a JSON
+/// array when `json`). Shared by `/v1/runs/{id}/events` and the gateway's reattach.
+pub(crate) async fn events_response(state: &AppState, run_id: &str, from: u64, id_base: u64, json: bool) -> Response {
+    let active = state.active(run_id);
     // Take the live subscription first: events the driver stores after this point
     // reach us through it, and the stored part is cut at `stored_before`.
     let subscription = active.as_ref().map(|run| (run.stored_before, run.subscribe()));
     let stored_until = subscription.as_ref().map(|(before, _)| *before);
-    let mut stored = match state.store.events(&run_id, query.from).await {
+    let mut stored = match state.store.events(run_id, from).await {
         Ok(events) => events,
         Err(e) => return store_error(&e),
     };
     if let Some(limit) = stored_until {
-        let keep = usize::try_from(limit.saturating_sub(query.from)).unwrap_or(usize::MAX);
+        let keep = usize::try_from(limit.saturating_sub(from)).unwrap_or(usize::MAX);
         stored.truncate(keep);
     }
-    if query.stream == Some(false) {
+    if json {
         let mut all = stored;
-        if let Some((_, sub)) = subscription {
-            all.extend(sub.backlog.iter().map(|event| event_to_stored(event)));
+        if let Some((before, sub)) = subscription {
+            let skip = usize::try_from(from.saturating_sub(before)).unwrap_or(usize::MAX);
+            all.extend(sub.backlog.iter().skip(skip).map(|event| event_to_stored(event)));
         }
         return Json(all).into_response();
     }
-    let replay = futures::stream::iter(stored.into_iter().map(|json| Ok::<_, Infallible>(stored_sse(&json))));
+    let replay = stored
+        .into_iter()
+        .zip(from..)
+        .map(move |(json, index)| Ok::<_, Infallible>(stored_sse(&json, id_base + index)));
+    let replay = futures::stream::iter(replay);
     match (subscription, active) {
-        (Some((_, sub)), Some(run)) => {
-            let live = live::follow(run, sub).map(|followed| {
-                Ok(match followed {
-                    live::Followed::Event(event) => sse_event(&event),
-                    live::Followed::Lagged(skipped) => lagged_sse(skipped),
+        (Some((before, sub)), Some(run)) => {
+            let live = numbered(live::follow(run, sub), before).filter_map(move |item| {
+                futures::future::ready(match item {
+                    Numbered::Event(event, index) => (index >= from).then(|| Ok(sse_event(&event, id_base + index))),
+                    Numbered::Lagged(skipped) => Some(Ok(lagged_sse(skipped))),
                 })
             });
             Sse::new(replay.chain(live)).keep_alive(KeepAlive::default()).into_response()
@@ -1432,14 +1508,50 @@ async fn run_events(
 
 /// The `lagged` SSE event: `skipped` events are gone for this listener (it fell
 /// further behind than the in-memory feed keeps). Fetch them with `?from=` later.
+/// It carries no `id:`, so `Last-Event-ID` keeps naming the last real event.
 fn lagged_sse(skipped: u64) -> SseEvent {
     let data = serde_json::json!({ "type": "lagged", "skipped": skipped });
     SseEvent::default().event("lagged").data(data.to_string())
 }
 
+/// A [`live::Followed`] item with the event's index in the run's log.
+pub(crate) enum Numbered {
+    Event(live::SharedEvent, u64),
+    Lagged(u64),
+}
+
+/// Number the events of [`live::follow`], whose first event has index
+/// `first_index`; events reported lagged keep their indices (a gap in the ids).
+pub(crate) fn numbered(
+    events: impl Stream<Item = live::Followed> + Send + 'static,
+    first_index: u64,
+) -> impl Stream<Item = Numbered> + Send + 'static {
+    events.scan(first_index, |next, followed| {
+        let item = match followed {
+            live::Followed::Event(event) => {
+                *next += 1;
+                Numbered::Event(event, *next - 1)
+            }
+            live::Followed::Lagged(skipped) => {
+                *next += skipped;
+                Numbered::Lagged(skipped)
+            }
+        };
+        futures::future::ready(Some(item))
+    })
+}
+
 /// Aborts the run when a synchronous caller (blocking or streaming) goes away before
 /// the run finished. Detached runs never get one.
 struct AbortOnDrop(Arc<ActiveRun>);
+
+impl StreamGuard for AbortOnDrop {}
+
+/// Kept alive by a run's SSE response for as long as the client is connected.
+pub(crate) trait StreamGuard: Send + 'static {
+    /// The run's terminal event was handed to the response.
+    fn terminal_sent(&self) {}
+}
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
@@ -1471,8 +1583,10 @@ async fn execute(
             // The subscription's backlog covers events emitted before subscribing.
             let subscription = active.subscribe();
             let events = live::follow(Arc::clone(&active), subscription);
+            let first_index = active.stored_before;
             let guard = AbortOnDrop(active);
-            let events = sse_stream(events, stream_assembler, guard, reply.scope);
+            let cursor = crate::sse_ids::Cursor::ALL;
+            let events = sse_stream(events, stream_assembler, first_index, cursor, guard, reply.scope);
             Sse::new(events).keep_alive(KeepAlive::default()).into_response()
         }
         Delivery::Blocking => {
@@ -1543,6 +1657,20 @@ fn launch(
     active
 }
 
+impl AppState {
+    /// Start driving a run in the background and track it as active (for the
+    /// gateway protocol). `record` must already exist in the store.
+    pub(crate) fn launch_run(
+        self: &Arc<Self>,
+        engine: &Engine,
+        record: RunRecord,
+        input: RunInput,
+        traceparent: Option<&str>,
+    ) -> Arc<ActiveRun> {
+        launch(self, engine, record, input, traceparent)
+    }
+}
+
 /// Id of the root graph's start node, whose outputs are the run's validated inputs.
 fn root_start_node(graph: &Graph) -> Option<Arc<str>> {
     graph.nodes().iter().find(|n| n.parent.is_none() && n.kind.as_ref() == "start").map(|n| Arc::clone(&n.id))
@@ -1599,56 +1727,74 @@ pub(crate) async fn launch_detached(
     Ok(Launch::Started(active))
 }
 
-fn sse_stream(
+/// The SSE response of a streaming run start or resume: response text and
+/// engine events (from [`live::follow`], whose first event has index
+/// `first_index`) with their `id:`s until the terminal one, skipping what
+/// `cursor` excludes. The assembler sees every event, so the text after a
+/// cursor is exactly what an uninterrupted stream would have sent. `guard`
+/// lives as long as the stream.
+pub(crate) fn sse_stream<G: StreamGuard>(
     events: impl Stream<Item = live::Followed> + Send + 'static,
     mut assembler: ResponseAssembler,
-    guard: AbortOnDrop,
+    first_index: u64,
+    cursor: crate::sse_ids::Cursor,
+    guard: G,
     scope: EventScope,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + 'static {
     // `follow` ends right after the terminal event and refills a lagging caller
     // from the run's feed, so the answer text stays complete.
     let mut chunks = Vec::new();
-    events.flat_map(move |followed| {
-        let _keep_alive = &guard;
-        let event = match followed {
-            live::Followed::Event(event) => event,
-            live::Followed::Lagged(skipped) => return futures::stream::iter(vec![Ok(lagged_sse(skipped))]),
+    numbered(events, first_index).flat_map(move |item| {
+        let (event, index) = match item {
+            Numbered::Event(event, index) => (event, index),
+            Numbered::Lagged(skipped) => return futures::stream::iter(vec![Ok(lagged_sse(skipped))]),
         };
         let mut out = Vec::new();
         assembler.push_into(&event, &mut chunks);
-        for chunk in chunks.drain(..) {
+        for (k, chunk) in chunks.drain(..).enumerate() {
+            if !cursor.admits(index, Some(k)) {
+                continue;
+            }
             let data = serde_json::json!({ "node_id": chunk.node_id, "text": chunk.text, "is_final": chunk.is_final });
-            out.push(Ok(SseEvent::default().event("response").data(data.to_string())));
+            let response = SseEvent::default().event("response").id(crate::sse_ids::chunk_id(index, k));
+            out.push(Ok(response.data(data.to_string())));
         }
-        if let Some(message) = scoped_sse_event(&event, scope) {
-            out.push(Ok(message));
+        if cursor.admits(index, None) {
+            if let Some(message) = scoped_sse_event(&event, index, scope) {
+                out.push(Ok(message));
+            }
+            if event.is_terminal() {
+                guard.terminal_sent();
+            }
         }
         futures::stream::iter(out)
     })
 }
 
-/// The SSE message for `event` within `scope`; `None` when the caller does not see it.
-fn scoped_sse_event(event: &Event, scope: EventScope) -> Option<SseEvent> {
+/// The SSE message for `event` (at `index`) within `scope`; `None` when the
+/// caller does not see it.
+fn scoped_sse_event(event: &Event, index: u64, scope: EventScope) -> Option<SseEvent> {
     match scope {
-        EventScope::Full => Some(sse_event(event)),
+        EventScope::Full => Some(sse_event(event, index)),
         #[cfg(feature = "jwt")]
-        EventScope::Answer => crate::user_auth::events::sse_event(event),
+        EventScope::Answer => crate::user_auth::events::sse_event(event).map(|m| m.id(crate::sse_ids::event_id(index))),
     }
 }
 
-/// A live event; unlike stored ones, `run_paused` keeps its snapshot here.
-fn sse_event(event: &Event) -> SseEvent {
+/// A live event with its index as `id:`; unlike stored ones, `run_paused` keeps
+/// its snapshot here.
+pub(crate) fn sse_event(event: &Event, index: u64) -> SseEvent {
     let text = serde_json::to_string(event).unwrap_or_else(|_| "null".to_owned());
     match serde_json::value::RawValue::from_string(text) {
-        Ok(json) => stored_sse(&json),
-        Err(_) => SseEvent::default().event("event").data("null"),
+        Ok(json) => stored_sse(&json, index),
+        Err(_) => SseEvent::default().event("event").id(crate::sse_ids::event_id(index)).data("null"),
     }
 }
 
-/// One SSE message per event, named after the event's `type`.
-fn stored_sse(event: &StoredEvent) -> SseEvent {
+/// One SSE message per event, named after the event's `type`, with its index as `id:`.
+fn stored_sse(event: &StoredEvent, index: u64) -> SseEvent {
     let name = stored_event_type(event).unwrap_or("event");
-    SseEvent::default().event(name).data(event.get())
+    SseEvent::default().event(name).id(crate::sse_ids::event_id(index)).data(event.get())
 }
 
 /// The JSON body returned to blocking callers.
@@ -1695,8 +1841,17 @@ fn spawn_retention(store: Arc<dyn RunStore>, days: u64) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    use std::sync::Arc;
+
+    use axum::response::IntoResponse;
+    use axum::response::sse::Sse;
+    use graphrt_core::engine::{Limits, RunInput};
+    use graphrt_core::store::RunRecord;
+
     use super::{constant_time_eq, is_local_host};
+    use crate::store::live;
 
     #[test]
     fn local_host_names() {
@@ -1725,5 +1880,74 @@ mod tests {
         assert!(!constant_time_eq(b"secret", b"secreT"));
         assert!(!constant_time_eq(b"secret", b"secret2"));
         assert!(!constant_time_eq(b"", b"x"));
+    }
+
+    /// Property: a stream started at any cursor (after any engine event, or in the
+    /// middle of an event's response text) sends exactly the rest of what an
+    /// uninterrupted stream sends: same ids, same names, same response text.
+    #[tokio::test]
+    async fn a_stream_from_any_cursor_is_the_exact_rest_of_the_full_stream() {
+        use http_body_util::BodyExt;
+        let dir = std::env::temp_dir().join(format!("graphrt-cursor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("chat.yaml"),
+            "version: \"1\"\nname: chat\ngraph:\n  nodes:\n    - { id: start, type: start, variables: [] }\n\
+             \x20   - { id: a, type: answer, answer: \"one \" }\n    - { id: b, type: answer, answer: \"two\" }\n\
+             \x20 edges:\n    - { source: start, target: a }\n    - { source: a, target: b }\n",
+        )
+        .unwrap();
+        let files = super::discover(&dir).unwrap();
+        let options = crate::setup::ServiceOptions {
+            plugins: crate::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+            ..crate::setup::ServiceOptions::default()
+        };
+        let state = std::sync::Arc::new(super::build_state(&files, &options, Limits::default(), None).await.unwrap());
+        // (id, event name, data unless it holds timings).
+        let stream = |cursor: crate::sse_ids::Cursor| {
+            let state = std::sync::Arc::clone(&state);
+            async move {
+                let workflow = state.served_workflow("chat").unwrap();
+                let record = RunRecord::running(state.new_run_id(), "chat", workflow.engine.graph().fingerprint(), 1);
+                state.store.create(record.clone()).await.unwrap();
+                let input = RunInput::new();
+                let assembler = super::new_assembler(&workflow.engine, &input);
+                let active = super::launch(&state, &workflow.engine, record, input, None);
+                let events = live::follow(Arc::clone(&active), active.subscribe());
+                let sse = Sse::new(super::sse_stream(
+                    events,
+                    assembler,
+                    7,
+                    cursor,
+                    super::AbortOnDrop(active),
+                    super::EventScope::Full,
+                ));
+                let body = sse.into_response().into_body().collect().await.unwrap().to_bytes();
+                let text = String::from_utf8(body.to_vec()).unwrap();
+                text.split("\n\n")
+                    .filter(|block| block.contains("event:"))
+                    .map(|block| {
+                        let field = |name: &str| {
+                            block
+                                .lines()
+                                .find_map(|l| l.strip_prefix(name))
+                                .map(|v| v.trim().to_owned())
+                                .unwrap_or_default()
+                        };
+                        let data = if field("event:") == "response" { field("data:") } else { String::new() };
+                        (field("id:"), field("event:"), data)
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+        let full = stream(crate::sse_ids::Cursor::ALL).await;
+        assert!(full.iter().any(|(id, ..)| id.contains('.')), "the stream has response text: {full:?}");
+        assert_eq!(full.first().map(|(id, ..)| id.as_str()), Some("7"), "ids start at the first index");
+        for (at, (last, ..)) in full.iter().enumerate() {
+            let rest = stream(crate::sse_ids::Cursor::after(last).unwrap()).await;
+            assert_eq!(rest, full[at + 1..], "after {last}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

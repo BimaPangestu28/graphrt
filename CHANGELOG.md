@@ -46,6 +46,24 @@ releases may contain breaking changes; they are called out under **Changed**.
   with `user` in the body.
 
 ### Changed
+- **Breaking (`graphrt-core` store API, 0.5.0).** `RunRecord` is
+  `#[non_exhaustive]` (build it with `RunRecord::running` or the new
+  `RunRecord::queued`) and gains `deployment`, `deployment_version`, `epoch`
+  and `owner`; `RunStatus` gains `Queued`. `RunStore::append_events` takes the
+  index of the batch's first event (`append_events(run_id, first_index,
+  &events) -> event_count`) and is idempotent per index range: a retried batch
+  is stored once, a gap or an altered retry is a `Conflict`. New
+  `RunStore::put_if` (a write fenced by the record's epoch, `StoreError::
+  Precondition` otherwise) and `RunStore::claim_dispatch` (queued/paused →
+  running at `epoch + 1`); `claim_resume` increments the epoch too.
+  `event_count` is now the index of the next event and keeps counting past
+  the store's per-run cap. `graphrt serve` writes final states with `put_if`,
+  and an event batch whose write failed goes out again at the same index with
+  the next one instead of being lost. See
+  [docs/gateway-protocol.md](docs/gateway-protocol.md#run-store-contract).
+- Every SSE event of `graphrt serve` has an `id:`: the event's index in the
+  run's log (continuing across resumes), `<index>.<k>` for `response` text;
+  `lagged` events have none.
 - `graphrt serve` writes a run's events to the store every 32 events **or**
   250 ms after the first unwritten one (before: only every 32 events), so
   replays trail live runs by at most a quarter second. Store writes failing
@@ -99,6 +117,29 @@ releases may contain breaking changes; they are called out under **Changed**.
   layer, no `kube` / `k8s-openapi`. Passes the shared C1–C13 harness against an
   emulated API server and an opt-in kind test. See
   [docs/kubernetes-provider.md](docs/kubernetes-provider.md).
+- `GET /v1/runs/{id}/events` honours `Last-Event-ID` (`N` resumes after event
+  `N`, `N.k` at event `N`), so reconnecting clients get the rest of the run
+  without gaps or duplicates.
+- `graphrt serve --trust-gateway --deployment NAME`: the agent side of the
+  gateway protocol (`Graphrt-Protocol: 1`). Signed (`Graphrt-Sig`,
+  HMAC-SHA256 over method, path, deployment, run id, epoch, a per-request
+  nonce and the body hash,
+  key ids from `$GRAPHRT_GATEWAY_KEYS` for rotation, ±30 s window, replays
+  refused) `/internal/v1` routes: `hello`, `runs` (start, or resume with the
+  snapshot in the body; same epoch attaches or replays, never re-executes),
+  `runs/{id}/stream` (reattach from any `Last-Event-ID`, response text
+  included), `runs/{id}/abort`, `drain`, and `orphans`. A gateway-started run
+  whose stream breaks is preempted after 3 s without a reattach and held for
+  `--reclaim-grace-secs` (60) as an orphan, reported to `--gateway-url` (HTTP
+  or Unix socket) and listed for reclaim, instead of being aborted. No new
+  dependency. See [docs/gateway-protocol.md](docs/gateway-protocol.md).
+- `graphrt serve --listen unix:/path` (alias of `--addr`): listen on a Unix
+  socket created mode `0600`.
+- `CoordinationStore` in `graphrt-core` (versioned objects written with
+  `create_if_absent` / `compare_and_swap`), implemented by the memory and
+  directory stores, and the abstract store conformance suite
+  `graphrt_core::store_conformance` (feature `store-conformance`), including
+  a property test of retried, overlapping and lost-reply appends.
 - Graceful shutdown for `graphrt serve`: SIGTERM and SIGINT start a drain that
   refuses new runs (`503` + `Retry-After`, `GET /readyz` turns `503
   draining`), pauses every active run (async, streaming and blocking),
