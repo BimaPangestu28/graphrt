@@ -327,6 +327,23 @@ releases may contain breaking changes; they are called out under **Changed**.
   `graphrt deploy --target`, and the docs index groups the gateway guides.
 
 ### Fixed
+- Gateway HA: a passive now takes over from an active frozen (`SIGSTOP`, VM
+  pause, CPU starvation) *inside* a heartbeat. The heartbeat holds
+  `graphrt-gateway.lease.lock` for its write + fsync + rename (4 ms p50, 8 ms
+  max on macOS APFS, about 2 % of a 200 ms beat, longer under load), and a
+  process frozen there kept the lock, so every passive poll found it busy and
+  waited until the process resumed: no steal, no kill (the cause of a
+  `gateway_failover` "no steal" failure under CPU load). A lock still busy
+  after `stale_after_ms` now means its holder is frozen, and the passive
+  applies the usual rules without it (the lease file is replaced atomically;
+  the store fence still orders the tokens): it kills the frozen holder on
+  the same host and takes over after `stale_after_ms` (1.56–1.89 s with
+  1500 ms, real processes, 13 runs at load average 59–126). `ha promote` goes through such a lock as
+  well. The failover simulation now freezes processes inside the lock (with
+  the heartbeat's write landing late on resume) and checks that a frozen
+  active on one host loses the lease before it resumes: 147 violations in
+  1,000 seeds without the fix, 0 in 10,000 with it. `gateway_failover`
+  freezes its active with the lease lock held, so the case runs every time.
 - The `gateway` feature includes `trust-gateway`. A
   `--no-default-features --features gateway` build answered every run of
   `graphrt gateway --dev` (and of `kind: local` deployments) with

@@ -9,8 +9,9 @@
 //! 3. `kill -9 gw-a` while a run waits on its upstream call: `gw-b` takes over
 //!    (measured), adopts the agents, reclaims and finishes that run, serves
 //!    the stored runs, dedupes the webhook redelivery and runs new requests.
-//! 4. `gw-a` restarts as a passive. `SIGSTOP gw-b`: `gw-a` steals the lease
-//!    after `stale_after`, kills the frozen holder and serves (measured).
+//! 4. `gw-a` restarts as a passive. `SIGSTOP gw-b` with the lease lock taken
+//!    (a freeze inside a heartbeat): `gw-a` steals the lease after
+//!    `stale_after`, kills the frozen holder and serves (measured).
 //! 5. A new passive `gw-c` and `SIGTERM gw-a`: graceful handover (measured).
 //!
 //! Timings print with `--nocapture`.
@@ -259,6 +260,15 @@ fn wait_for(limit: Duration, mut condition: impl FnMut() -> bool) -> bool {
     false
 }
 
+/// Takes the lease read-modify-write lock (`flock`), as a gateway frozen
+/// between its heartbeat's lock and unlock would keep it.
+fn hold_lease_lock(world: &World) -> std::fs::File {
+    let path = world.dir.join("data/graphrt-gateway.lease.lock");
+    let file = std::fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+    assert!(wait_for(Duration::from_secs(5), || file.try_lock().is_ok()), "lease lock never free");
+    file
+}
+
 fn deploy(world: &World, workflow: &Path) {
     let output = Command::new(BIN)
         .args(["deploy", "--target", "local", "--deployment", "shop", "--version", "v1"])
@@ -326,9 +336,13 @@ fn passive_takes_over_after_kill_freeze_and_handover() {
     let third = world.gateway("gw-a");
     assert!(wait_for(Duration::from_secs(30), || world.log("gw-a").contains("passive")));
     assert!(alive(third));
+    // Worst case, made deterministic: the freeze lands inside a heartbeat, so
+    // the lease lock stays taken for the whole freeze (the test holds it).
+    let lease_lock = hold_lease_lock(&world);
     signal(second, "STOP");
     let frozen_at = Instant::now();
     assert!(wait_for(Duration::from_secs(30), || world.lease()["lease"]["node"] == "gw-a"), "no steal");
+    drop(lease_lock);
     world.wait_healthy(Duration::from_secs(30));
     let freeze_takeover = frozen_at.elapsed().as_millis();
     assert!(
