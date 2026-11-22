@@ -68,11 +68,11 @@ first use and restarted after crashes.
 
 | Field | Type | Default | Constraints |
 | --- | --- | --- | --- |
-| `command` | string | required | Not blank. A relative path with a separator (`./bin/plugin`, `bin/plugin`) is resolved against the plugin directory and must not be a symlink; a bare name (`python3`, `node`) is looked up in `PATH`. |
+| `command` | string | required | Not blank. A relative path with a separator (`./bin/plugin`, `bin/plugin`) is resolved against the plugin directory and must not be a symlink; a bare name (`python3`, `node`) is looked up in `PATH`; an absolute path (`/usr/bin/node`) is used as is. A relative path must not contain a `..` segment. |
 | `args` | array of strings | `[]` | |
 | `env` | object of strings | `{}` | Fixed environment variables. |
 | `inherit_env` | boolean | `false` | `true` passes the whole host environment. Otherwise the process gets `PATH`, `HOME`, `LANG`, `TMPDIR` (and `SYSTEMROOT`, `USERPROFILE`, `APPDATA`, `TEMP`, `TMP`, `PATHEXT` on Windows) plus `permissions.env`. |
-| `cwd` | string \| null | `null` | Working directory relative to the plugin directory; default the plugin directory. The parser does not check it for `..`. |
+| `cwd` | string \| null | `null` | Working directory, a [relative path](#relative-paths) inside the plugin directory; default the plugin directory. |
 
 ### `runtime: http`
 
@@ -188,7 +188,7 @@ Each `tools[]` entry is offered to `tool` and `agent` nodes under provider
 
 ## Relative paths
 
-`module`, `checksums` keys (and, by convention, `cwd`) are paths inside the
+`module`, `checksums` keys and `cwd` are paths inside the
 plugin directory: not blank, not absolute, and without a `..` segment (`/` and
 `\` both separate segments).
 
@@ -203,7 +203,8 @@ After parsing, a manifest is rejected when:
 4. a node `kind` is empty or contains whitespace or control characters, breaks the
    [prefix rule](#node-kinds), is a `container`, or is a duplicate;
 5. a tool `name` is blank, contains control characters or is a duplicate;
-6. a process `command` is blank; an http `url` is not `http(s)://`, or breaks
+6. a process `command` is blank or a relative path with a `..` segment, or
+   its `cwd` is not a [relative path](#relative-paths); an http `url` is not `http(s)://`, or breaks
    the https / `permissions.env` rules for credentials; a wasm `module` is
    blank or not a [relative path](#relative-paths);
 7. a `checksums` key is not a relative path, or a non-empty `checksums` does

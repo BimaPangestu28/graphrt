@@ -397,6 +397,7 @@ impl PluginManifest {
         }
         match &self.runtime {
             Runtime::Process(p) if p.command.trim().is_empty() => bad("`command` must not be empty".into()),
+            Runtime::Process(p) => validate_process_paths(p).or_else(bad),
             Runtime::Http(h) if !(h.url.starts_with("http://") || h.url.starts_with("https://")) => {
                 bad(format!("`url` must be an http(s) URL, got `{}`", h.url))
             }
@@ -450,6 +451,28 @@ impl PluginManifest {
         }
         Ok(())
     }
+}
+
+/// A process plugin's `cwd` stays inside the plugin directory, and a relative
+/// `command` cannot climb out of it with `..`. Bare names (`python3`, looked
+/// up in `PATH`) and absolute system paths (`/usr/bin/node`) stay allowed: the
+/// operator chose to install a plugin that runs them.
+///
+/// @throws String - The reason, for the manifest error.
+fn validate_process_paths(process: &ProcessRuntime) -> Result<(), String> {
+    if let Some(cwd) = &process.cwd
+        && !is_inside(cwd)
+    {
+        return Err(format!("`cwd` `{cwd}` must be relative and inside the plugin directory"));
+    }
+    let command = Path::new(&process.command);
+    let is_rooted = process.command.starts_with(['/', '\\'])
+        || command.has_root()
+        || command.components().any(|part| matches!(part, std::path::Component::Prefix(_)));
+    if !is_rooted && process.command.split(['/', '\\']).any(|segment| segment == "..") {
+        return Err(format!("`command` `{}` must not leave the plugin directory with `..`", process.command));
+    }
+    Ok(())
 }
 
 /// Relative path without `..` segments. A leading `/` or `\` and a drive prefix
@@ -654,6 +677,30 @@ mod tests {
         let mut v = base();
         v["protocol_version"] = 99.into();
         assert!(PluginManifest::from_json(&v.to_string()).is_err());
+    }
+
+    #[test]
+    fn process_cwd_and_command_stay_inside_the_plugin_directory() {
+        let with = |field: &str, value: &str| {
+            let mut v = base();
+            v[field] = value.into();
+            PluginManifest::from_json(&v.to_string())
+        };
+        for cwd in [".", "scripts", "./lib/run"] {
+            assert!(with("cwd", cwd).is_ok(), "{cwd}");
+        }
+        for cwd in ["..", "../other", "/tmp", "a/../../b", "\\windows"] {
+            let err = with("cwd", cwd).unwrap_err().to_string();
+            assert!(err.contains("`cwd`"), "{cwd}: {err}");
+        }
+        // Documented forms: a bare name on PATH, a path inside the plugin, an absolute system path.
+        for command in ["python3", "node", "./bin/plugin", "bin/plugin", "/usr/bin/python3"] {
+            assert!(with("command", command).is_ok(), "{command}");
+        }
+        for command in ["../bin/evil", "./../x", "bin/../../x", "..\\x.exe"] {
+            let err = with("command", command).unwrap_err().to_string();
+            assert!(err.contains("must not leave the plugin directory"), "{command}: {err}");
+        }
     }
 
     #[test]
