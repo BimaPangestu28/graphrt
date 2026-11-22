@@ -25,49 +25,9 @@ pub fn router(state: Arc<AppState>, max_body_bytes: usize) -> Router {
 
 /// The HTTP router, with a separate body limit for knowledge base file uploads.
 pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_upload_bytes: usize) -> Router {
-    let api = Router::new()
-        .route("/v1/workflows", get(list_workflows))
-        .route("/v1/runs", get(list_runs))
-        .route("/v1/runs/{run_id}", get(get_run).merge(delete(delete_run)))
-        .route("/v1/runs/{run_id}/events", get(run_events))
-        .route("/v1/runs/{run_id}/abort", post(abort_run))
-        .route("/v1/runs/{run_id}/resume", post(resume_run))
-        .route("/v1/nodes", get(list_nodes))
-        .route("/v1/validate", post(validate_workflow));
-    #[cfg(feature = "rag")]
-    let api = {
-        use crate::knowledge_api as k;
-        api.route("/v1/knowledge/datasets", get(k::list_datasets).post(k::create_dataset))
-            .route("/v1/knowledge/datasets/{dataset}", delete(k::delete_dataset))
-            .route("/v1/knowledge/resources", get(k::list_resources))
-            .route("/v1/knowledge/datasets/{dataset}/documents", get(k::list_documents).post(k::put_text_document))
-            .route(
-                "/v1/knowledge/datasets/{dataset}/documents/{document}",
-                get(k::get_document).merge(delete(k::delete_document)).merge(axum::routing::patch(k::patch_document)),
-            )
-            .route(
-                "/v1/knowledge/datasets/{dataset}/documents/{document}/file",
-                axum::routing::put(k::put_file_document).layer(DefaultBodyLimit::max(max_upload_bytes)),
-            )
-            .route("/v1/knowledge/retrieve", post(k::retrieve))
-    };
-    #[cfg(not(feature = "rag"))]
-    let _ = max_upload_bytes;
-    #[cfg(feature = "scores")]
-    let api = api.route("/v1/runs/{run_id}/scores", get(crate::scores::get_scores));
-    let api = api
-        .route("/v1/hooks", get(crate::webhooks::list_hooks))
-        .layer(middleware::from_fn_with_state(state.clone(), require_auth));
-    // Run starts accept a verified end-user JWT instead of the key (`--verify-jwt`).
-    let start = Router::new()
-        .route("/v1/workflows/{name}/runs", post(start_run))
-        .layer(middleware::from_fn_with_state(state.clone(), authorize_start));
-    // Webhook deliveries authenticate themselves (signature, else the bearer key).
-    let hooks = Router::new().route("/v1/hooks/{hook}", post(crate::webhooks::receive));
-    let counted = api.merge(start).merge(hooks);
-    // Feedback authorizes itself: a verified end-user JWT for the user's own runs, else the key.
-    #[cfg(feature = "scores")]
-    let counted = counted.route("/v1/runs/{run_id}/feedback", post(crate::scores::post_feedback));
+    let key_only =
+        key_only_routes(max_upload_bytes).layer(middleware::from_fn_with_state(Arc::clone(&state), require_auth));
+    let counted = key_only.merge(self_authenticating_routes(&state));
     // Opt-in usage telemetry counts API requests (in memory); health checks are not counted.
     #[cfg(feature = "telemetry")]
     let counted = counted.layer(middleware::from_fn(crate::telemetry::count_requests));
@@ -81,4 +41,59 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
             crate::body_drain::drain_unread_body,
         ))
         .with_state(state)
+}
+
+/// Routes that take the API key only; the caller adds the `require_auth` layer.
+fn key_only_routes(max_upload_bytes: usize) -> Router<Arc<AppState>> {
+    let api = Router::new()
+        .route("/v1/workflows", get(list_workflows))
+        .route("/v1/runs", get(list_runs))
+        .route("/v1/runs/{run_id}", get(get_run).merge(delete(delete_run)))
+        .route("/v1/runs/{run_id}/events", get(run_events))
+        .route("/v1/runs/{run_id}/abort", post(abort_run))
+        .route("/v1/runs/{run_id}/resume", post(resume_run))
+        .route("/v1/nodes", get(list_nodes))
+        .route("/v1/validate", post(validate_workflow));
+    #[cfg(feature = "rag")]
+    let api = with_knowledge_routes(api, max_upload_bytes);
+    #[cfg(not(feature = "rag"))]
+    let _ = max_upload_bytes;
+    #[cfg(feature = "scores")]
+    let api = api.route("/v1/runs/{run_id}/scores", get(crate::scores::get_scores));
+    api.route("/v1/hooks", get(crate::webhooks::list_hooks))
+}
+
+/// The knowledge base API under `/v1/knowledge`; file uploads get their own
+/// body limit (`--max-upload-bytes`).
+#[cfg(feature = "rag")]
+fn with_knowledge_routes(api: Router<Arc<AppState>>, max_upload_bytes: usize) -> Router<Arc<AppState>> {
+    use crate::knowledge_api as k;
+    api.route("/v1/knowledge/datasets", get(k::list_datasets).post(k::create_dataset))
+        .route("/v1/knowledge/datasets/{dataset}", delete(k::delete_dataset))
+        .route("/v1/knowledge/resources", get(k::list_resources))
+        .route("/v1/knowledge/datasets/{dataset}/documents", get(k::list_documents).post(k::put_text_document))
+        .route(
+            "/v1/knowledge/datasets/{dataset}/documents/{document}",
+            get(k::get_document).merge(delete(k::delete_document)).merge(axum::routing::patch(k::patch_document)),
+        )
+        .route(
+            "/v1/knowledge/datasets/{dataset}/documents/{document}/file",
+            axum::routing::put(k::put_file_document).layer(DefaultBodyLimit::max(max_upload_bytes)),
+        )
+        .route("/v1/knowledge/retrieve", post(k::retrieve))
+}
+
+/// Routes that authenticate on their own rather than by the API key alone.
+fn self_authenticating_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    // Run starts accept a verified end-user JWT instead of the key (`--verify-jwt`).
+    let start = Router::new()
+        .route("/v1/workflows/{name}/runs", post(start_run))
+        .layer(middleware::from_fn_with_state(Arc::clone(state), authorize_start));
+    // Webhook deliveries authenticate themselves (signature, else the bearer key).
+    let hooks = Router::new().route("/v1/hooks/{hook}", post(crate::webhooks::receive));
+    let routes = start.merge(hooks);
+    // Feedback authorizes itself: a verified end-user JWT for the user's own runs, else the key.
+    #[cfg(feature = "scores")]
+    let routes = routes.route("/v1/runs/{run_id}/feedback", post(crate::scores::post_feedback));
+    routes
 }

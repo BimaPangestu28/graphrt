@@ -87,6 +87,7 @@ impl RunRequest {
     }
 }
 
+/// `POST /v1/workflows/{name}/runs`.
 pub(super) async fn start_run(
     State(state): State<Arc<AppState>>,
     UrlPath(name): UrlPath<String>,
@@ -112,8 +113,8 @@ pub(super) async fn start_run(
     {
         return refused.into_response();
     }
-    let user_token = user.is_some();
-    if let Some(axum::Extension(AuthenticatedUser(subject))) = &user {
+    let verified_user = user.map(|axum::Extension(AuthenticatedUser(subject))| subject);
+    if let Some(subject) = &verified_user {
         // A verified end user (`--verify-jwt`) is the run's user, whatever the body said.
         record.user_id = Some(subject.clone());
         record.user_verified = true;
@@ -121,16 +122,25 @@ pub(super) async fn start_run(
     if let Err(e) = state.store.create(record.clone()).await {
         return store_error(&e);
     }
+    let reply = Reply {
+        delivery: Delivery::of(body.stream, body.run_async),
+        scope: state.event_scope(verified_user.is_some()),
+    };
     let mut input = RunInput::new();
     input.run_id = Some(run_id);
     input.inputs = inputs;
-    input.sys = to_values(body.sys);
-    if let Some(axum::Extension(AuthenticatedUser(subject))) = user {
-        // The verified identity wins over anything the client put in `sys`.
-        input.sys.insert("user_id".to_owned(), Value::String(subject.into()));
-    }
+    input.sys = run_sys(body.sys, verified_user);
     input.conversation = to_values(body.conversation);
     input.env = workflow.env.clone();
-    let reply = Reply { delivery: Delivery::of(body.stream, body.run_async), scope: state.event_scope(user_token) };
     execute(&state, &workflow.engine, record, input, reply, traceparent(&headers)).await
+}
+
+/// The run's `sys` values: the caller's, with a verified end user's `sub` as
+/// `user_id`, which wins over anything the client put there.
+fn run_sys(sys: serde_json::Map<String, serde_json::Value>, verified_user: Option<String>) -> IndexMap<String, Value> {
+    let mut values = to_values(sys);
+    if let Some(subject) = verified_user {
+        values.insert("user_id".to_owned(), Value::String(subject.into()));
+    }
+    values
 }

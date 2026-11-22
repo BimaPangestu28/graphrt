@@ -29,6 +29,7 @@ fn record_context(record: &RunRecord) -> crate::otel::RunContext {
     }
 }
 
+/// Request JSON values as engine values.
 pub(super) fn to_values(map: serde_json::Map<String, serde_json::Value>) -> IndexMap<String, Value> {
     map.into_iter().map(|(k, v)| (k, Value::from_json(v))).collect()
 }
@@ -38,6 +39,7 @@ pub(super) fn traceparent(headers: &axum::http::HeaderMap) -> Option<String> {
     headers.get("traceparent").and_then(|v| v.to_str().ok()).map(str::to_owned)
 }
 
+/// Launch a run and answer its caller in `reply`'s delivery mode.
 pub(super) async fn execute(
     state: &Arc<AppState>,
     engine: &Engine,
@@ -52,21 +54,11 @@ pub(super) async fn execute(
     let run_id = record.run_id.clone();
     let active = launch(state, engine, record, input, traceparent.as_deref());
     match reply.delivery {
-        Delivery::Detached => (
-            StatusCode::ACCEPTED,
-            Json(serde_json::json!({
-                "run_id": run_id,
-                "status": "running",
-                "run": format!("/v1/runs/{run_id}"),
-                "events": format!("/v1/runs/{run_id}/events"),
-            })),
-        )
-            .into_response(),
+        Delivery::Detached => accepted_response(&run_id),
         Delivery::Stream => {
             // The subscription's backlog covers events emitted before subscribing.
             let subscription = active.subscribe();
-            let guard = AbortOnDrop(active);
-            let events = sse_stream(subscription, stream_assembler, guard, reply.scope);
+            let events = sse_stream(subscription, stream_assembler, AbortOnDrop(active), reply.scope);
             Sse::new(events).keep_alive(KeepAlive::default()).into_response()
         }
         Delivery::Blocking => {
@@ -76,6 +68,17 @@ pub(super) async fn execute(
             result_json(&run_id, outcome, reply.scope)
         }
     }
+}
+
+/// `202` for a detached run, with where to follow it.
+fn accepted_response(run_id: &str) -> Response {
+    let body = serde_json::json!({
+        "run_id": run_id,
+        "status": "running",
+        "run": format!("/v1/runs/{run_id}"),
+        "events": format!("/v1/runs/{run_id}/events"),
+    });
+    (StatusCode::ACCEPTED, Json(body)).into_response()
 }
 
 fn new_assembler(engine: &Engine, input: &RunInput) -> ResponseAssembler {

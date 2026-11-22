@@ -7,36 +7,46 @@ use axum::Json;
 use axum::extract::State;
 use graphrt_core::Graph;
 
-use super::state::AppState;
+use super::state::{AppState, ServedWorkflow};
 
+/// `GET /v1/workflows`.
 pub(super) async fn list_workflows(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let items: Vec<serde_json::Value> = state
-        .workflows
-        .iter()
-        .map(|(name, wf)| {
-            let doc = wf.engine.graph().workflow();
-            let inputs: Vec<serde_json::Value> = doc
-                .graph
-                .nodes
-                .iter()
-                .filter(|n| n.kind == "start")
-                .filter_map(|n| n.config.get("variables").cloned())
-                .collect();
-            serde_json::json!({
-                "name": name,
-                "title": doc.name,
-                "description": doc.description,
-                "inputs": inputs.into_iter().next().unwrap_or(serde_json::Value::Array(Vec::new())),
-                "env": doc.env.iter().map(|e| serde_json::json!({
-                    "name": e.name,
-                    "configured": wf.env.contains_key(&e.name) || e.value.is_some(),
-                })).collect::<Vec<_>>(),
-            })
-        })
-        .collect();
+    let items: Vec<serde_json::Value> =
+        state.workflows.iter().map(|(name, workflow)| workflow_json(name, workflow)).collect();
     Json(serde_json::json!({ "workflows": items }))
 }
 
+/// A served workflow as listed: its start inputs, and which declared env
+/// variables have a value (never the value itself).
+fn workflow_json(name: &str, workflow: &ServedWorkflow) -> serde_json::Value {
+    let doc = workflow.engine.graph().workflow();
+    let inputs = doc
+        .graph
+        .nodes
+        .iter()
+        .filter(|n| n.kind == "start")
+        .find_map(|n| n.config.get("variables").cloned())
+        .unwrap_or(serde_json::Value::Array(Vec::new()));
+    let env: Vec<serde_json::Value> = doc
+        .env
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "name": e.name,
+                "configured": workflow.env.contains_key(&e.name) || e.value.is_some(),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "name": name,
+        "title": doc.name,
+        "description": doc.description,
+        "inputs": inputs,
+        "env": env,
+    })
+}
+
+/// `GET /v1/nodes`.
 pub(super) async fn list_nodes(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "nodes": state.extensions.registry.descriptors() }))
 }

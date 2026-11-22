@@ -34,6 +34,9 @@ pub(super) fn live_events(
     })
 }
 
+/// The SSE stream of a streaming caller: the run's events within `scope`,
+/// each preceded by the `response` events of the answer text it completes.
+/// Holding `guard` aborts the run when the caller disconnects early.
 pub(super) fn sse_stream(
     subscription: live::Subscription,
     mut assembler: ResponseAssembler,
@@ -41,41 +44,57 @@ pub(super) fn sse_stream(
     scope: EventScope,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + 'static {
     let backlog = futures::stream::iter(subscription.backlog);
-    let live = futures::stream::unfold(subscription.live, |mut rx| async move {
+    let events =
+        if subscription.done { backlog.boxed() } else { backlog.chain(skipping_lags(subscription.live)).boxed() };
+    let mut chunks = Vec::new();
+    until_terminal(events).flat_map(move |event| {
+        let _keep_alive = &guard;
+        let mut out = Vec::new();
+        assembler.push_into(&event, &mut chunks);
+        out.extend(chunks.drain(..).map(|chunk| Ok(response_sse(&chunk))));
+        if let Some(message) = scoped_sse_event(&event, scope) {
+            out.push(Ok(message));
+        }
+        futures::stream::iter(out)
+    })
+}
+
+/// Live events of a run. A streaming caller that cannot keep up skips events,
+/// like any lagging listener.
+fn skipping_lags(
+    rx: tokio::sync::broadcast::Receiver<live::SharedEvent>,
+) -> impl Stream<Item = live::SharedEvent> + Send + 'static {
+    futures::stream::unfold(rx, |mut rx| async move {
         loop {
             match rx.recv().await {
                 Ok(event) => return Some((event, rx)),
-                // A streaming caller that cannot keep up skips events, like any lagging listener.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
             }
         }
-    });
-    let events = if subscription.done { backlog.boxed() } else { backlog.chain(live).boxed() };
-    // End right after the terminal event: the broadcast channel itself stays open
-    // while the run is tracked, so waiting for it to close would hang.
-    let events = futures::stream::unfold((events, false), |(mut events, finished)| async move {
+    })
+}
+
+/// `events` up to and including the terminal event. The broadcast channel
+/// itself stays open while the run is tracked, so waiting for it to close
+/// would hang.
+fn until_terminal(
+    events: impl Stream<Item = live::SharedEvent> + Send + Unpin + 'static,
+) -> impl Stream<Item = live::SharedEvent> + Send + 'static {
+    futures::stream::unfold((events, false), |(mut events, finished)| async move {
         if finished {
             return None;
         }
         let event = events.next().await?;
         let terminal = event.is_terminal();
         Some((event, (events, terminal)))
-    });
-    let mut chunks = Vec::new();
-    events.flat_map(move |event| {
-        let _keep_alive = &guard;
-        let mut out = Vec::new();
-        assembler.push_into(&event, &mut chunks);
-        for chunk in chunks.drain(..) {
-            let data = serde_json::json!({ "node_id": chunk.node_id, "text": chunk.text, "is_final": chunk.is_final });
-            out.push(Ok(SseEvent::default().event("response").data(data.to_string())));
-        }
-        if let Some(message) = scoped_sse_event(&event, scope) {
-            out.push(Ok(message));
-        }
-        futures::stream::iter(out)
     })
+}
+
+/// A `response` SSE message: a piece of the ordered answer text.
+fn response_sse(chunk: &graphrt_core::response::ResponseChunk) -> SseEvent {
+    let data = serde_json::json!({ "node_id": chunk.node_id, "text": chunk.text, "is_final": chunk.is_final });
+    SseEvent::default().event("response").data(data.to_string())
 }
 
 /// The SSE message for `event` within `scope`; `None` when the caller does not see it.
