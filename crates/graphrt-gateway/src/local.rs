@@ -11,6 +11,11 @@
 //!   by a previous gateway process: each replica leaves a `.pid` file next to
 //!   its socket, so after a `kill -9` of the gateway the new one can adopt
 //!   their orphans or release them (C12).
+//! - **socket paths** must fit in `sun_path` (108 bytes on Linux, 104 on macOS
+//!   and the BSDs, NUL included), or the agent cannot bind and exits. When
+//!   `socket_dir` is too long, sockets and pid files go to a short directory
+//!   instead, `/tmp/graphrt-gw-<hash of socket_dir>` (mode 0700, owned by the
+//!   gateway's user), the same one after every restart so orphans are adopted.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -62,6 +67,53 @@ fn short_hash(text: &str) -> String {
     crate::hex::sha256_hex(text.as_bytes()).chars().take(10).collect()
 }
 
+/// Longest Unix socket path `bind` accepts (`sun_path` minus the NUL).
+const MAX_SOCKET_PATH: usize = if cfg!(target_os = "linux") { 107 } else { 103 };
+
+/// Longest file name `spawn_one` creates: `g<10 hex>-<u64::MAX>.sock`.
+const MAX_SOCKET_NAME: usize = "g0123456789-18446744073709551615.sock".len();
+
+/// Base of the short directory used when `socket_dir` is too long.
+const SHORT_SOCKET_BASE: &str = "/tmp";
+
+fn fits_sun_path(directory: &Path) -> bool {
+    directory.as_os_str().len() + 1 + MAX_SOCKET_NAME <= MAX_SOCKET_PATH
+}
+
+/// The directory sockets and pid files actually go to: `configured` when every
+/// socket path in it fits `sun_path`, else a short private directory derived
+/// from it (stable across restarts, so orphans are still adopted).
+///
+/// # Errors
+/// When a directory cannot be created, or the short one exists but is not a
+/// private directory of this user (another user could otherwise intercept
+/// the agents' sockets).
+fn effective_socket_dir(configured: &Path) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+    std::fs::create_dir_all(configured)?;
+    if fits_sun_path(configured) {
+        return Ok(configured.to_path_buf());
+    }
+    let canonical = std::fs::canonicalize(configured)?;
+    let short = Path::new(SHORT_SOCKET_BASE).join(format!("graphrt-gw-{}", short_hash(&canonical.to_string_lossy())));
+    match std::fs::DirBuilder::new().mode(0o700).create(&short) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let owner = std::fs::metadata(configured)?.uid();
+    let metadata = std::fs::symlink_metadata(&short)?;
+    if !metadata.is_dir() || metadata.uid() != owner || metadata.mode() & 0o077 != 0 {
+        return Err(std::io::Error::other(format!(
+            "socket_dir {} is too long for Unix socket paths ({MAX_SOCKET_PATH} bytes), and its short replacement {} \
+             is not a private directory of this user; remove it or set a shorter socket_dir",
+            configured.display(),
+            short.display()
+        )));
+    }
+    Ok(short)
+}
+
 fn version_prefix(deployment: &DeploymentRef) -> String {
     format!("g{}", short_hash(&format!("{}/{}", deployment.name, deployment.version)))
 }
@@ -71,14 +123,15 @@ async fn signal_group(pid: u32, signal: &str) {
 }
 
 impl LocalProvider {
-    /// A provider placing sockets in `socket_dir` (created if missing).
+    /// A provider placing sockets in `socket_dir` (created if missing), or in
+    /// a short private directory when paths in `socket_dir` would not fit
+    /// `sun_path` (see [`Self::socket_dir`]).
     ///
     /// # Errors
-    /// When the directory cannot be created.
+    /// When a directory cannot be created or the short one is not private.
     pub fn new(socket_dir: &Path, grace: Duration) -> std::io::Result<Self> {
-        std::fs::create_dir_all(socket_dir)?;
         Ok(Self {
-            socket_dir: socket_dir.to_path_buf(),
+            socket_dir: effective_socket_dir(socket_dir)?,
             grace,
             ready_timeout: Duration::from_secs(30),
             versions: Mutex::new(HashMap::new()),
@@ -87,6 +140,12 @@ impl LocalProvider {
             next_socket: std::sync::atomic::AtomicU64::new(0),
             released: Mutex::new(std::collections::HashSet::new()),
         })
+    }
+
+    /// The directory the agents' sockets and pid files are in.
+    #[must_use]
+    pub fn socket_dir(&self) -> &Path {
+        &self.socket_dir
     }
 
     /// Registers how to start `deployment`'s agents.

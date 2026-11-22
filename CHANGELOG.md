@@ -362,6 +362,14 @@ releases may contain breaking changes; they are called out under **Changed**.
   active on one host loses the lease before it resumes: 147 violations in
   1,000 seeds without the fix, 0 in 10,000 with it. `gateway_failover`
   freezes its active with the lease lock held, so the case runs every time.
+- `graphrt gateway`: a `socket_dir` too long for Unix socket paths (104 bytes
+  on macOS, 108 on Linux, e.g. a deep `$TMPDIR`) made every local agent exit
+  with status 2 (`agent exited during start-up`). The gateway now puts the
+  agents' sockets and pid files in a short private directory,
+  `/tmp/graphrt-gw-<hash of socket_dir>` (0700, owner checked, the same after
+  a restart so orphans are adopted), and logs it. Tests with a long base
+  directory in `graphrt-gateway/tests/local_provider.rs` and
+  `graphrt-cli/tests/gateway_dev.rs`.
 - The `gateway` feature includes `trust-gateway`. A
   `--no-default-features --features gateway` build answered every run of
   `graphrt gateway --dev` (and of `kind: local` deployments) with

@@ -46,7 +46,7 @@ store: /var/lib/graphrt/gateway.db      # SQLite, WAL; put it on a persistent vo
 backup: { dir: /backup/graphrt, interval_secs: 300, keep: 12 }
 admin_token_env: GRAPHRT_GATEWAY_ADMIN_TOKEN   # for graphrt deploy
 per_ip: { per_second: 20, burst: 40 }
-socket_dir: /run/graphrt                 # Unix sockets of local agents
+socket_dir: /run/graphrt                 # Unix sockets of local agents (see below when it is long)
 store_ttl_days: 7                        # ≥ 3: webhook senders retry for days
 wake_storm: { max_parallel_wakes: 16, prewarm_jitter_ms: 1000 }   # see Warm-up and cost guards
 deployments:
@@ -65,6 +65,13 @@ deployments:
       - { id: nightly, schedule: "0 3 * * *", timezone: Europe/Berlin, catchup: latest, jitter_secs: 120, prewarm_secs: 30, inputs: { report: daily } }
     warm: { predictive: true, lead_secs: 60, max_warm_replica_secs_per_day: 7200 }   # off / unlimited by default
 ```
+
+Unix socket paths must fit in 104 bytes on macOS (108 on Linux). When a
+socket in `socket_dir` would not, the gateway puts its local agents' sockets
+and pid files in `/tmp/graphrt-gw-<hash of socket_dir>` instead (mode 0700,
+checked to belong to the gateway's user; the same directory after a restart,
+so agents are still adopted) and logs it at start-up. Set a short
+`socket_dir` to keep them where you chose.
 
 Keys: `graphrt gateway key new` prints a client API key and its digest;
 `graphrt gateway key hmac` prints an agent key (`k1:<64 hex>`). Two agent keys

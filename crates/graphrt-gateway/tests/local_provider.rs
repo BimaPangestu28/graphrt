@@ -134,3 +134,62 @@ async fn releasing_one_replica_keeps_the_other() {
     }
     let _cleanup = std::fs::remove_dir_all(&dir);
 }
+
+/// Longest Unix socket path `bind` accepts: `sun_path` is 108 bytes on Linux,
+/// 104 on macOS and the BSDs, including the terminating NUL.
+const MAX_SOCKET_PATH: usize = if cfg!(target_os = "linux") { 107 } else { 103 };
+
+fn socket_of(endpoint: &graphrt_provider_api::Endpoint) -> std::path::PathBuf {
+    match &endpoint.address {
+        graphrt_provider_api::EndpointAddress::Unix(path) => path.clone(),
+        other => panic!("expected a Unix socket, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_socket_dir_too_long_for_sun_path_still_starts_agents() {
+    let Some(python) = python() else { return };
+    let base = std::env::temp_dir().join(format!("gwll-{}", std::process::id()));
+    let _cleanup = std::fs::remove_dir_all(&base);
+    // Longer than sun_path on every platform: a socket inside it could never be bound.
+    let dir = base.join("a".repeat(60)).join("b".repeat(60));
+    assert!(dir.as_os_str().len() > MAX_SOCKET_PATH);
+    let provider = LocalProvider::new(&dir, Duration::from_secs(2)).unwrap();
+    let deployment = DeploymentRef::new("shop", "v1", "local");
+    provider.register(
+        &deployment,
+        LocalVersion { command: vec![python, "-c".into(), AGENT.into()], keys: String::new(), env: Vec::new() },
+    );
+
+    let endpoints = provider.wake(&deployment, 1).await.expect("the agent starts despite the long socket_dir");
+
+    let socket = socket_of(&endpoints[0]);
+    assert!(socket.as_os_str().len() <= MAX_SOCKET_PATH, "{} is too long", socket.display());
+    // A gateway restarted with the same socket_dir finds the same short directory and adopts the agent.
+    let restarted = LocalProvider::new(&dir, Duration::from_secs(2)).unwrap();
+    let orphans = restarted.list(&deployment).await.unwrap();
+    assert_eq!(orphans.len(), 1, "orphan adopted from the short directory");
+    restarted.release(&orphans[0].replica, graphrt_provider_api::ReleaseMode::Stop).await.unwrap();
+    let _cleanup = std::fs::remove_dir_all(&base);
+    let _cleanup = socket.parent().map(std::fs::remove_dir_all);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_short_socket_dir_is_used_as_configured() {
+    let Some(python) = python() else { return };
+    let dir = std::env::temp_dir().join(format!("gwls-{}", std::process::id()));
+    let _cleanup = std::fs::remove_dir_all(&dir);
+    if dir.as_os_str().len() + 40 > MAX_SOCKET_PATH {
+        return; // this machine's temp dir is itself too long to tell the two cases apart
+    }
+    let provider = LocalProvider::new(&dir, Duration::from_secs(2)).unwrap();
+    let deployment = DeploymentRef::new("shop", "v1", "local");
+    provider.register(
+        &deployment,
+        LocalVersion { command: vec![python, "-c".into(), AGENT.into()], keys: String::new(), env: Vec::new() },
+    );
+    let endpoints = provider.wake(&deployment, 1).await.unwrap();
+    assert_eq!(socket_of(&endpoints[0]).parent(), Some(dir.as_path()));
+    provider.release(&endpoints[0].replica, graphrt_provider_api::ReleaseMode::Stop).await.unwrap();
+    let _cleanup = std::fs::remove_dir_all(&dir);
+}

@@ -114,6 +114,13 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
         LocalProvider::new(&config.socket_dir, Duration::from_secs(config.local_grace_secs))
             .map_err(|error| format!("socket dir: {error}"))?,
     );
+    if provider.socket_dir() != config.socket_dir.as_path() {
+        eprintln!(
+            "graphrt gateway: socket_dir {} is too long for Unix sockets; agents listen in {}",
+            config.socket_dir.display(),
+            provider.socket_dir().display()
+        );
+    }
     let client =
         reqwest::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|error| error.to_string())?;
     let mut app = App::new(gateway.clone());

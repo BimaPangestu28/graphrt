@@ -78,7 +78,7 @@ Files in `ha.lease_dir` (default: the store's directory):
 ```yaml
 listen: 127.0.0.1:8700
 store: /srv/graphrt/gateway.db          # on the shared volume
-socket_dir: /srv/graphrt/sockets        # shared too, so the new active adopts the agents
+socket_dir: /srv/graphrt/sockets        # shared too, so the new active adopts the agents (keep it short: see gateway.md)
 backup: { dir: /backup/graphrt, interval_secs: 300, keep: 12 }
 ha:
   node_id: gw-a          # default <host>-<pid>; usually set per process with --ha-node
