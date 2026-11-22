@@ -71,6 +71,12 @@ releases may contain breaking changes; they are called out under **Changed**.
   the live provider API keys), `ci.yml` runs with a read-only token and
   without persisted checkout credentials, and the PostgREST binary the
   chatbot e2e job installs as root is checked against its sha256.
+- Release workflow: a manual run's `tag` input must name an existing `v*`
+  tag, and every job checks out `refs/tags/<tag>`, so a branch with the same
+  name can no longer be built and published as that release (the input was
+  used unchecked as the ref and the release tag). `cargo-zigbuild`, which runs
+  in the jobs that produce the release binaries, is pinned to 0.24.1, and no
+  release job keeps checkout credentials.
 
 ## [0.4.0] - 2026-11-20
 
