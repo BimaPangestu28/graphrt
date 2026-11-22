@@ -32,7 +32,12 @@ releases may contain breaking changes; they are called out under **Changed**.
   runs). `provider-lambda` runs short synchronous runs (≤ 14 min) through
   `InvokeWithResponseStream` and Lambda Web Adapter, detects buffered replies
   and ends over-long runs with an explicit `platform_timeout`. App Runner is
-  not supported (closed to new customers). See
+  not supported (closed to new customers). The `deploy-ecs` / `deploy-lambda`
+  features add the `DeployDriver`s of `graphrt deploy`: an ECS task definition
+  revision per version (secrets as Secrets Manager / SSM `valueFrom`
+  references, `stopTimeout` ≤ 120 s), and a Lambda container-image function
+  created or updated, published, aliased by version, with Lambda Web Adapter
+  streaming settings and an IAM Function URL in `RESPONSE_STREAM` mode. See
   [docs/gateway-aws.md](docs/gateway-aws.md). No user-visible change yet.
 - Live provider test matrix: `crates/graphrt-llm/tests/live_providers.rs` sends
   tiny streamed chat and tool-call round-trip requests to OpenAI, Anthropic,

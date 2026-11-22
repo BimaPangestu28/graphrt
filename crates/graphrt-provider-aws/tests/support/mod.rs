@@ -86,6 +86,29 @@ pub struct FakeState {
     pub imds_token_seen: bool,
     pub sts_forms: Vec<String>,
     pub container_auth_seen: Vec<String>,
+    /// RegisterTaskDefinition requests, in order.
+    pub task_definitions: Vec<Value>,
+    pub functions: HashMap<String, FakeFunction>,
+    /// Polls a create / update stays `InProgress`.
+    pub update_polls: u32,
+    /// The next CreateFunction answers 409 (created concurrently by someone else).
+    pub create_conflict_next: bool,
+    /// Lambda control-plane calls (`METHOD path`), in order.
+    pub lambda_calls: Vec<String>,
+    /// SecretString / parameter values by ARN.
+    pub secret_values: HashMap<String, String>,
+}
+
+/// A Lambda function in the fake control plane.
+#[derive(Clone, Debug, Default)]
+pub struct FakeFunction {
+    pub configuration: Value,
+    pub image: String,
+    /// (version, image, configuration) of each published version.
+    pub versions: Vec<(String, String, Value)>,
+    pub aliases: HashMap<String, String>,
+    pub url: Option<Value>,
+    pub polls_left: u32,
 }
 
 pub type Shared = Arc<Mutex<FakeState>>;
@@ -276,19 +299,36 @@ async fn ecs_or_sts(
     if content_type.starts_with("application/x-www-form-urlencoded") {
         return sts(&state, &body);
     }
-    if let Err(response) = verify(&state, &method, &uri, &headers, &body, "ecs") {
+    let target = headers.get("x-amz-target").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+    let service = if target.starts_with("secretsmanager.") {
+        "secretsmanager"
+    } else if target.starts_with("AmazonSSM.") {
+        "ssm"
+    } else {
+        "ecs"
+    };
+    if let Err(response) = verify(&state, &method, &uri, &headers, &body, service) {
         return response;
     }
     if let Some(response) = injected_failure(&state) {
         return response;
     }
-    let target = headers.get("x-amz-target").and_then(|v| v.to_str().ok()).unwrap_or_default();
+    if service != "ecs" {
+        return secret_value(&state, &target, &body);
+    }
     let operation = target.rsplit('.').next().unwrap_or_default().to_owned();
     let request: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let mut s = state.lock().unwrap();
     *s.calls.entry(operation.clone()).or_default() += 1;
     let provisioning = s.provisioning;
     match operation.as_str() {
+        "RegisterTaskDefinition" => {
+            let family = request["family"].as_str().unwrap_or_default().to_owned();
+            s.task_definitions.push(request.clone());
+            let revision = s.task_definitions.iter().filter(|t| t["family"] == family.as_str()).count();
+            let arn = format!("arn:aws:ecs:eu-west-1:123456789012:task-definition/{family}:{revision}");
+            json_response(StatusCode::OK, json!({"taskDefinition": {"taskDefinitionArn": arn, "revision": revision}}))
+        }
         "RunTask" => {
             if s.capacity_failure {
                 return json_response(
@@ -366,6 +406,176 @@ async fn ecs_or_sts(
             }
         }
         other => aws_error(StatusCode::BAD_REQUEST, "UnknownOperationException", other, now_unix()),
+    }
+}
+
+fn secret_value(state: &Shared, target: &str, body: &[u8]) -> Response {
+    let request: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let s = state.lock().unwrap();
+    if target == "AmazonSSM.GetParameter" {
+        assert_eq!(request["WithDecryption"], true);
+        let name = request["Name"].as_str().unwrap_or_default();
+        return match s.secret_values.get(name) {
+            Some(value) => json_response(StatusCode::OK, json!({"Parameter": {"Name": name, "Value": value}})),
+            None => aws_error(StatusCode::BAD_REQUEST, "ParameterNotFound", "no such parameter", now_unix()),
+        };
+    }
+    let id = request["SecretId"].as_str().unwrap_or_default();
+    match s.secret_values.get(id) {
+        Some(value) => json_response(StatusCode::OK, json!({"ARN": id, "SecretString": value})),
+        None => aws_error(StatusCode::BAD_REQUEST, "ResourceNotFoundException", "no such secret", now_unix()),
+    }
+}
+
+fn lambda_error(status: StatusCode, code: &str, message: &str) -> Response {
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .header("x-amzn-errortype", code)
+        .body(Body::from(json!({"Type": "User", "Message": message}).to_string()))
+        .unwrap()
+}
+
+fn function_arn(name: &str) -> String {
+    if name.starts_with("arn:") {
+        name.to_owned()
+    } else {
+        format!("arn:aws:lambda:eu-west-1:123456789012:function:{name}")
+    }
+}
+
+fn function_configuration(name: &str, function: &FakeFunction) -> Value {
+    let mut configuration = function.configuration.clone();
+    let in_progress = function.polls_left > 0;
+    configuration["FunctionName"] = json!(name);
+    configuration["FunctionArn"] = json!(function_arn(name));
+    configuration["State"] = json!("Active");
+    configuration["LastUpdateStatus"] = json!(if in_progress { "InProgress" } else { "Successful" });
+    configuration
+}
+
+/// The Lambda control plane (`/2015-03-31/functions…`, `/2021-10-31/functions/{f}/url`).
+async fn lambda_control(
+    State(state): State<Shared>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = verify(&state, &method, &uri, &headers, &body, "lambda") {
+        return response;
+    }
+    if let Some(response) = injected_failure(&state) {
+        return response;
+    }
+    let path = percent_decode(uri.path());
+    let request: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    let mut s = state.lock().unwrap();
+    s.lambda_calls.push(format!("{method} {path}"));
+    let polls = s.update_polls;
+    if let Some(name) = path.strip_prefix("/2021-10-31/functions/").and_then(|p| p.strip_suffix("/url")) {
+        let qualifier = uri.query().unwrap_or_default().strip_prefix("Qualifier=").unwrap_or_default().to_owned();
+        let Some(function) = s.functions.get_mut(name) else {
+            return lambda_error(StatusCode::NOT_FOUND, "ResourceNotFoundException", "no function");
+        };
+        if !function.aliases.contains_key(&qualifier) {
+            return lambda_error(StatusCode::NOT_FOUND, "ResourceNotFoundException", "no alias");
+        }
+        if method == Method::POST && function.url.is_some() {
+            return lambda_error(StatusCode::CONFLICT, "ResourceConflictException", "url exists");
+        }
+        let url = json!({"FunctionUrl": "https://abc.lambda-url.eu-west-1.on.aws/", "AuthType": request["AuthType"],
+                         "InvokeMode": request["InvokeMode"], "Qualifier": qualifier});
+        function.url = Some(url.clone());
+        return json_response(StatusCode::OK, url);
+    }
+    let rest = path.strip_prefix("/2015-03-31/functions").unwrap_or_default().to_owned();
+    if rest.is_empty() && method == Method::POST {
+        let name = request["FunctionName"].as_str().unwrap_or_default().to_owned();
+        if s.create_conflict_next {
+            s.create_conflict_next = false;
+            s.functions.insert(name.clone(), FakeFunction { configuration: json!({}), ..Default::default() });
+            return lambda_error(StatusCode::CONFLICT, "ResourceConflictException", "Function already exist");
+        }
+        if s.functions.contains_key(&name) {
+            return lambda_error(StatusCode::CONFLICT, "ResourceConflictException", "Function already exist");
+        }
+        assert_eq!(request["PackageType"], "Image");
+        let image = request["Code"]["ImageUri"].as_str().unwrap_or_default().to_owned();
+        let function = FakeFunction { configuration: request.clone(), image, polls_left: polls, ..Default::default() };
+        let configuration = function_configuration(&name, &function);
+        s.functions.insert(name, function);
+        return json_response(StatusCode::CREATED, configuration);
+    }
+    let rest = rest.trim_start_matches('/');
+    let (name, suffix) = match rest.find("/") {
+        Some(at) => (rest[..at].to_owned(), rest[at..].to_owned()),
+        None => (rest.to_owned(), String::new()),
+    };
+    let Some(function) = s.functions.get_mut(&name) else {
+        return lambda_error(StatusCode::NOT_FOUND, "ResourceNotFoundException", "Function not found");
+    };
+    match (method.as_str(), suffix.as_str()) {
+        ("GET", "") => json_response(StatusCode::OK, json!({"Configuration": function_configuration(&name, function)})),
+        ("GET", "/configuration") => {
+            function.polls_left = function.polls_left.saturating_sub(1);
+            let configuration = function_configuration(&name, function);
+            json_response(StatusCode::OK, configuration)
+        }
+        ("PUT", "/configuration") | ("PUT", "/code") if function.polls_left > 0 => lambda_error(
+            StatusCode::CONFLICT,
+            "ResourceConflictException",
+            "The operation cannot be performed at this time. An update is in progress",
+        ),
+        ("PUT", "/configuration") => {
+            if let (Some(target), Some(update)) = (function.configuration.as_object_mut(), request.as_object()) {
+                for (k, v) in update {
+                    target.insert(k.clone(), v.clone());
+                }
+            }
+            function.polls_left = polls;
+            json_response(StatusCode::OK, function_configuration(&name, function))
+        }
+        ("PUT", "/code") => {
+            function.image = request["ImageUri"].as_str().unwrap_or_default().to_owned();
+            function.polls_left = polls;
+            json_response(StatusCode::OK, function_configuration(&name, function))
+        }
+        ("POST", "/versions") => {
+            if function.polls_left > 0 {
+                return lambda_error(StatusCode::CONFLICT, "ResourceConflictException", "update in progress");
+            }
+            let mut configuration = function.configuration.clone();
+            configuration.as_object_mut().map(|c| c.remove("Description"));
+            let version = match function.versions.last() {
+                Some((v, image, c)) if *image == function.image && *c == configuration => v.clone(),
+                _ => {
+                    let v = (function.versions.len() + 1).to_string();
+                    function.versions.push((v.clone(), function.image.clone(), configuration));
+                    v
+                }
+            };
+            json_response(
+                StatusCode::CREATED,
+                json!({"Version": version, "FunctionArn": format!("{}:{version}", function_arn(&name))}),
+            )
+        }
+        ("POST", "/aliases") => {
+            let alias = request["Name"].as_str().unwrap_or_default().to_owned();
+            if function.aliases.contains_key(&alias) {
+                return lambda_error(StatusCode::CONFLICT, "ResourceConflictException", "alias exists");
+            }
+            function.aliases.insert(alias.clone(), request["FunctionVersion"].as_str().unwrap_or_default().to_owned());
+            json_response(StatusCode::CREATED, json!({"Name": alias}))
+        }
+        ("GET", alias_path) if alias_path.starts_with("/aliases/") => {
+            let alias = &alias_path["/aliases/".len()..];
+            match function.aliases.get(alias) {
+                Some(version) => json_response(StatusCode::OK, json!({"Name": alias, "FunctionVersion": version})),
+                None => lambda_error(StatusCode::NOT_FOUND, "ResourceNotFoundException", "alias not found"),
+            }
+        }
+        other => lambda_error(StatusCode::BAD_REQUEST, "InvalidRequest", &format!("unexpected {other:?}")),
     }
 }
 
@@ -551,6 +761,9 @@ pub async fn start() -> FakeAws {
     let app = Router::new()
         .route("/", post(ecs_or_sts))
         .route("/2021-11-15/functions/{function}/response-streaming-invocations", post(lambda_invoke))
+        .route("/2015-03-31/functions", post(lambda_control))
+        .route("/2015-03-31/functions/{*rest}", any(lambda_control))
+        .route("/2021-10-31/functions/{*rest}", any(lambda_control))
         .route("/creds", get(container_credentials))
         .route("/latest/api/token", put(imds_token))
         .route("/latest/meta-data/iam/security-credentials/", get(imds_roles))
