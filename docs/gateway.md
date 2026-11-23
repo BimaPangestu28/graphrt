@@ -359,3 +359,13 @@ Warm-up: per deployment version and `source`,
 `graphrt_gateway_warm_budget_replica_seconds`; gateway-wide
 `graphrt_gateway_wakes_in_flight` and `graphrt_gateway_wakes_gated_total`
 (wakes that waited for `max_parallel_wakes`).
+
+## Performance
+
+Measured on Linux aarch64 with `bench/targets.sh`
+([details](benchmarks.md#gateway-targets-on-linux)): the gateway adds about
+0.25 ms to the first byte of a warm run (Unix socket or loopback TCP), wakes a
+local agent in ~7 ms (p95), acks a webhook in 0.5 ms, idles at 7 MiB and holds
+1,000 concurrent streams in ~75 MiB (about 68 KiB per stream, half of it two
+HTTP/1.1 connections). An agent started by the gateway starts its process
+plugins at once, alongside the dispatch of the run that woke it.

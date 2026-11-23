@@ -189,6 +189,17 @@ breaking changes (see **Changed (Breaking)**).
   `--features gateway`): +60.8 KiB x86_64 musl (9,441,208 → 9,503,416 B),
   +48.2 KiB aarch64 musl (8,074,536 → 8,123,944 B), +48.6 KiB macOS arm64
   (7,011,360 → 7,061,136 B).
+- `bench/targets.sh` checks every measurable target of the gateway plan on
+  Linux against `bench/budgets.toml` and exits 1 on a miss: sizes and idle RSS
+  of the agent and gateway builds (`budget-gate.py` now runs `graphrt gateway`
+  too), gateway TTFB overhead over a Unix socket and loopback TCP, 1,000
+  concurrent SSE streams, cold wake with and without a Node.js plugin, webhook
+  ack, cron lag (`bench/gateway/gwbench.py`), an RS256 JWT microbench and the
+  SIGTERM drain of graphrt as PID 1 of a real container
+  (`scripts/test-pid1-container.sh`). Manual CI workflow **Bench targets**.
+- `graphrt serve --trust-gateway` starts process and HTTP plugins with the
+  agent instead of at their first node (`PluginHost::prewarm`): a cold wake
+  with a Node.js plugin no longer waits for the host after the dispatch.
 - `graphrt gateway` preempts runs shortly before a platform's request cap
   (Cloud Run 60 min, Container Apps standard ingress 240 s) and re-dispatches
   them, so long runs continue across the cap: the gateway sends
@@ -455,6 +466,18 @@ breaking changes (see **Changed (Breaking)**).
   and a cold request at the same moment could start two replicas, and prewarms
   did not count against `max_wakes_per_hour`. Prewarms now join the in-flight
   wake and are counted.
+- `graphrt gateway`: warm first-byte overhead down from ~1.5 ms to ~0.25 ms
+  (p50, Linux aarch64). Each client stream's first frame waited up to 1 ms
+  for the heartbeat timer; a fresh run's stream read the store before its
+  first frame; `start_run` made two store round trips it does not need
+  (a duplicate read for a random id, a separate dispatch claim for an
+  interactive run); SQLite statements were parsed again on every call.
+- `graphrt gateway` started one blocking thread per store operation waiting
+  for the SQLite connection (176 threads, 180 MiB RSS with 200 streams);
+  operations now queue for it. With mimalloc built without transparent huge
+  pages, a 32-frame broadcast per live run (a lagging stream catches up from
+  the ring) and a smaller supervisor future, the gateway idles at 7 MiB
+  instead of 20 MiB and holds 1,000 streams in ~75 MiB.
 - `graphrt gateway` no longer loses a run without a checkpoint when the gateway
   restarts. Each accepted run request is written to the store in the
   transaction that creates the run (no extra write), without the start inputs

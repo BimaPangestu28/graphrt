@@ -150,6 +150,52 @@ stripped, unwinding kept):
 | default (LLM, HTTP, JS code, Python runner, MCP, documents, RAG, plugins, WASM, server) | 12.51 MiB |
 | container image (`Dockerfile`, distroless static, default features) | 24.36 MiB |
 
+## Gateway targets on Linux
+
+`bench/targets.sh` measures every target of the gateway plan on Linux against
+`bench/budgets.toml` (`[[build]]` sizes and idle RSS, `[gateway_targets]`
+run-time targets) and exits 1 on a miss; the manual workflow **Bench
+targets** runs it on x86_64 and arm64 runners. It drives real
+`graphrt gateway` and `graphrt serve --trust-gateway` processes over plain
+sockets (`bench/gateway/gwbench.py`, Python standard library only):
+
+```sh
+bench/targets.sh                                     # build with cargo, then measure (Linux)
+bench/targets.sh --build-only --target aarch64-unknown-linux-musl \
+  --build-cmd "cargo zigbuild" --bin-dir bins        # on a Mac, for a Linux VM
+sudo bench/targets.sh --bin-dir bins                 # root only for the container drain test
+```
+
+| Target | How it is measured | aarch64 (2026-11-23) | Target |
+| --- | --- | ---: | ---: |
+| TTFB overhead, gateway → agent on a Unix socket | first `run_started` byte through the gateway minus signed straight to the same agent, interleaved, n = 1,000 | p50 0.25 ms, p95 0.24 ms | ≤ 0.3 / ≤ 1 ms |
+| TTFB overhead, agent on loopback TCP | the same behind the k8s provider (fake Kubernetes API) | p95 0.24 ms | ≤ 1 ms + 1 RTT |
+| 1,000 concurrent SSE streams | 20 chunks 500 ms apart each (fake OpenAI); gateway peak RSS, stalls | 75.5 MiB, 0 failed, 0 stalled, max gap 534 ms | ≤ 80 MiB (plan); audit: 64 |
+| Cold wake, local provider | request → new agent process → first SSE event, 100 fresh deployments | p95 7.1 ms | ≤ 15 ms |
+| Cold wake + Node.js plugin | request → the plugin node's result | p95 66.8 ms (the plugin alone: 58.9 ms) | ≤ 60 ms |
+| Webhook ack | HMAC-signed POST → 202, n = 1,000 | p95 0.52 ms | ≤ 10 ms |
+| Cron lag | 1,000 schedules firing in the same minute → run finished | p95 418 ms | ≤ 1 s |
+| RS256 JWT verification | cached JWKS key, 5,000 verifications | mean 17.3 µs | ≤ 50 µs |
+| PID 1 drain in a container | `docker stop` of the release image's base with a run in flight | exit 0 in 1.55 s, run paused (drained) | ≤ drain timeout |
+| Gateway binary / idle RSS | `--features gateway`, min-size | 7.66 MiB / 7.0 MiB | ≤ 8 / ≤ 20 MiB |
+
+Machine: Lima VM (vz, 4 vCPU, 4 GiB, Ubuntu 26.04) on an Apple M3 Pro, static
+musl binaries; raw data in
+[bench/results/targets-2026-11-23-lima-gbench-aarch64.md](../bench/results/targets-2026-11-23-lima-gbench-aarch64.md).
+Latency targets run three rounds and gate the median one: in a VM on a busy
+laptop single rounds swing by 2x.
+
+- **Two targets are not met on this machine.** With a Node.js plugin the
+  plugin's own start (spawn → `initialize`, no graphrt) already takes
+  57–59 ms here (`node -e 0` alone ~45 ms); graphrt adds 5–8 ms on top.
+  1,000 streams peak at 75 MiB against the audit's 64 MiB: each stream holds
+  two HTTP/1.1 connections (client and agent side) with about 32 KiB of hyper
+  buffers between them; the plan's CI budget (80 MiB) is what the gate checks.
+- **x86_64** sizes are measured (`scripts/budget-gate.py --target
+  x86_64-unknown-linux-musl`: gateway 8.95 MiB, all providers 9.94 MiB, within
+  their x86_64 budgets); x86_64 run-time numbers need a native runner (under
+  Rosetta a cold wake takes ~150 ms of translation).
+
 ## Caveats
 
 - **Mock models.** Model calls return immediately (or after a fixed sleep) from

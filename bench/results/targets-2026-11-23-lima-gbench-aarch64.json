@@ -1,0 +1,347 @@
+{
+  "budgets": {
+    "target": "aarch64-linux (host)",
+    "platform": "aarch64-linux",
+    "profile": "min-size",
+    "builds": {
+      "agent-minimal": {
+        "features": "serve",
+        "binary_bytes": 3946152,
+        "binary_mib": 3.763,
+        "idle_rss_mib": 3.1
+      },
+      "agent-slim": {
+        "features": "serve,llm,plugins",
+        "binary_bytes": 6513584,
+        "binary_mib": 6.212,
+        "idle_rss_mib": 4.82,
+        "healthz_p50_ms": 1.26,
+        "healthz_p95_ms": 1.71,
+        "healthz_samples": 30
+      },
+      "agent-slim-gateway": {
+        "features": "serve,llm,plugins,trust-gateway",
+        "binary_bytes": 6588656,
+        "binary_mib": 6.283,
+        "delta_kib": 73.3,
+        "delta_of": "agent-slim",
+        "idle_rss_mib": 4.86
+      },
+      "gateway": {
+        "features": "gateway",
+        "binary_bytes": 8031144,
+        "binary_mib": 7.659,
+        "idle_rss_mib": 7.01
+      },
+      "gateway-all": {
+        "features": "gateway-all",
+        "binary_bytes": 8859432,
+        "binary_mib": 8.449
+      }
+    },
+    "violations": []
+  },
+  "gateway": {
+    "machine": "aarch64, 4 CPUs, Linux 7.0.0-15-generic",
+    "quick": false,
+    "results": {
+      "ttfb-uds": {
+        "gateway_ms": {
+          "n": 1000,
+          "p50": 0.4752,
+          "p95": 0.5258,
+          "p99": 0.7353,
+          "max": 0.8596,
+          "mean": 0.4822
+        },
+        "direct_ms": {
+          "n": 1000,
+          "p50": 0.2236,
+          "p95": 0.281,
+          "p99": 0.3465,
+          "max": 1.3405,
+          "mean": 0.2328
+        },
+        "overhead_p50_ms": 0.2516,
+        "overhead_p95_ms": 0.2448,
+        "rounds": [
+          [
+            0.2514,
+            0.2673
+          ],
+          [
+            0.2516,
+            0.2448
+          ],
+          [
+            0.2518,
+            0.2511
+          ]
+        ]
+      },
+      "ttfb-tcp": {
+        "gateway_ms": {
+          "n": 1000,
+          "p50": 0.4692,
+          "p95": 0.5088,
+          "p99": 0.7248,
+          "max": 0.8866,
+          "mean": 0.4729
+        },
+        "direct_ms": {
+          "n": 1000,
+          "p50": 0.2268,
+          "p95": 0.2695,
+          "p99": 0.349,
+          "max": 0.8558,
+          "mean": 0.2342
+        },
+        "overhead_p50_ms": 0.2424,
+        "overhead_p95_ms": 0.2393,
+        "loopback_rtt_ms": 0.0153,
+        "rounds": [
+          [
+            0.236
+          ],
+          [
+            0.2393
+          ],
+          [
+            0.2446
+          ]
+        ]
+      },
+      "sse": {
+        "streams": 1000,
+        "chunks_per_stream": 20,
+        "chunk_interval_ms": 500,
+        "gateway_rss_before_mib": 8.16,
+        "gateway_rss_max_sampled_mib": 75.94,
+        "gateway_peak_rss_mib": 75.45,
+        "failed_streams": 0,
+        "failure_examples": [],
+        "stalled_streams": 0,
+        "max_chunk_gap_ms": 533.9,
+        "first_chunk_ms": {
+          "n": 1000,
+          "p50": 131.6669,
+          "p95": 1143.1249,
+          "p99": 1151.9046,
+          "max": 1153.4979,
+          "mean": 589.7569
+        }
+      },
+      "wake": {
+        "first_event_ms": {
+          "n": 100,
+          "p50": 6.366,
+          "p95": 7.126,
+          "p99": 7.7086,
+          "max": 9.5141,
+          "mean": 6.4421
+        },
+        "run_finished_ms": {
+          "n": 100,
+          "p50": 6.4954,
+          "p95": 7.2829,
+          "p99": 7.8595,
+          "max": 9.6906,
+          "mean": 6.5833
+        },
+        "rounds": [
+          [
+            7.0725
+          ],
+          [
+            7.126
+          ],
+          [
+            7.2973
+          ]
+        ]
+      },
+      "wake-node": {
+        "first_event_ms": {
+          "n": 100,
+          "p50": 6.5348,
+          "p95": 10.06,
+          "p99": 10.2097,
+          "max": 10.6147,
+          "mean": 7.1968
+        },
+        "run_finished_ms": {
+          "n": 100,
+          "p50": 61.207,
+          "p95": 66.8418,
+          "p99": 69.8678,
+          "max": 70.5561,
+          "mean": 61.7857
+        },
+        "plugin_handshake_ms": {
+          "n": 30,
+          "p50": 57.1834,
+          "p95": 58.8669,
+          "p99": 59.8819,
+          "max": 59.8819,
+          "mean": 56.9876
+        },
+        "rounds": [
+          [
+            62.6791
+          ],
+          [
+            66.8418
+          ],
+          [
+            71.1216
+          ]
+        ]
+      },
+      "webhook": {
+        "ack_ms": {
+          "n": 1000,
+          "p50": 0.306,
+          "p95": 0.5168,
+          "p99": 0.7421,
+          "max": 1.0378,
+          "mean": 0.3226
+        },
+        "statuses": {
+          "202": 1020
+        },
+        "rounds": [
+          [
+            0.5113
+          ],
+          [
+            0.5168
+          ],
+          [
+            0.5428
+          ]
+        ]
+      },
+      "cron": {
+        "fires": 1000,
+        "fire_time": 1795401000,
+        "created_lag_ms": {
+          "n": 1000,
+          "p50": 27,
+          "p95": 48,
+          "p99": 49,
+          "max": 50,
+          "mean": 27.166
+        },
+        "finished_lag_ms": {
+          "n": 1000,
+          "p50": 374,
+          "p95": 418,
+          "p99": 422,
+          "max": 423,
+          "mean": 374.201
+        }
+      }
+    },
+    "checks": [
+      {
+        "scenario": "ttfb-uds",
+        "metric": "overhead p50",
+        "value": 0.2516,
+        "budget": 0.3,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "ttfb-uds",
+        "metric": "overhead p95",
+        "value": 0.2448,
+        "budget": 1.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "ttfb-tcp",
+        "metric": "overhead p95 (budget + 1 RTT)",
+        "value": 0.2393,
+        "budget": 1.0153,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "sse",
+        "metric": "gateway peak RSS",
+        "value": 75.45,
+        "budget": 80.0,
+        "unit": "MiB",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "sse",
+        "metric": "gateway peak RSS (audit target, not gated)",
+        "value": 75.45,
+        "budget": 64.0,
+        "unit": "MiB",
+        "gated": false,
+        "ok": false
+      },
+      {
+        "scenario": "sse",
+        "metric": "failed streams",
+        "value": 0,
+        "budget": 0,
+        "unit": "",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "sse",
+        "metric": "stalled streams",
+        "value": 0,
+        "budget": 0,
+        "unit": "",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "wake",
+        "metric": "p95 to first event",
+        "value": 7.126,
+        "budget": 15.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "wake-node",
+        "metric": "p95 to plugin result",
+        "value": 66.8418,
+        "budget": 60.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": false
+      },
+      {
+        "scenario": "webhook",
+        "metric": "ack p95",
+        "value": 0.5168,
+        "budget": 10.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "cron",
+        "metric": "lag p95 (fire -> run finished)",
+        "value": 418,
+        "budget": 1000.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      }
+    ]
+  }
+}
