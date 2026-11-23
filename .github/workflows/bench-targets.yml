@@ -1,0 +1,63 @@
+# Measurable targets of the gateway plan on native Linux runners (bench/targets.sh):
+# sizes and idle RSS of the agent and gateway builds, gateway TTFB overhead (Unix
+# socket and loopback TCP), 1,000 concurrent SSE streams, cold wake (with and
+# without a Node.js plugin), webhook ack, cron lag, RS256 JWT verification and
+# the SIGTERM drain of graphrt as PID 1 of a Docker container.
+#
+# Manual only: it takes about 10 minutes per architecture and its timings need a
+# quiet machine, so it is not a pull-request gate (the `budgets` job of ci.yml
+# gates sizes and RSS on every pull request).
+name: Bench targets
+
+on:
+  workflow_dispatch:
+    inputs:
+      quick:
+        description: "Fewer samples, never fails (smoke run)"
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  targets:
+    name: targets (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: bench-targets-${{ matrix.target }}
+      - name: Install zig + cargo-zigbuild
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - run: cargo install cargo-zigbuild --locked
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Build
+        run: bench/targets.sh --build-only --target ${{ matrix.target }} --build-cmd "cargo zigbuild" --bin-dir bench-bins
+      - name: Measure
+        # Root for the container drain test; the runner's docker is rootful.
+        run: sudo -E env "PATH=$PATH" bench/targets.sh --bin-dir bench-bins ${{ inputs.quick && '--quick' || '' }} | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-targets-${{ matrix.target }}
+          path: bench/results/targets-*
