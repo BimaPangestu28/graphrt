@@ -583,3 +583,20 @@ async fn secrets_permission_must_be_granted_by_the_host() {
         assert_eq!(outputs(&events)["c"]["key"], expected, "trusted={trusted}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prewarm_starts_the_plugin_before_its_first_node() {
+    let mut host = PluginHost::new();
+    host.load_dir(&fixture("testkit")).unwrap();
+    let mut registry = Registry::with_builtins();
+    let mut tools = ToolRegistry::new();
+    host.register(&mut registry, &mut tools).unwrap();
+    let setup = Setup { registry, tools };
+    tokio::time::timeout(Duration::from_secs(30), host.prewarm()).await.unwrap();
+    let before_run = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let mut doc = single_node("testkit.started", json!({}));
+    doc["graph"]["nodes"][2]["outputs"] = json!([{"variable": "started_ns", "value_selector": ["p", "started_ns"]}]);
+    let out = outputs(&collect(&engine(&setup, doc), RunInput::new()).await);
+    let started = u128::from(out["started_ns"].as_u64().expect("started_ns"));
+    assert!(started < before_run, "the plugin process started with the run, not at prewarm");
+}

@@ -24,3 +24,17 @@ so the drain adds 43 KiB and 38 KiB (33 KiB on macOS arm64: 3,352,128 →
 - The plan's binary budgets (3.4 / 5.6 MiB) came from macOS builds; musl
   binaries are 0.5–2 MiB larger. `bench/budgets.toml` sets the Linux budgets to
   this baseline plus about 3 % pending a decision on the final figures.
+
+## Gateway (2026-11-23)
+
+`--features gateway` (SQLite, mimalloc without transparent huge pages,
+local provider, `trust-gateway` for its local agents; after the size passes of #45 and #46) and `gateway-all` (every provider), min-size, `cargo zigbuild`:
+
+| Build | x86_64 binary | aarch64 binary | aarch64 idle RSS |
+| --- | ---: | ---: | ---: |
+| gateway-core | 7.93 MiB (8,311,624 B) | 6.80 MiB (7,128,896 B) | 6.6 MiB |
+| gateway-all | 8.91 MiB (9,342,408 B) | 7.58 MiB (7,952,064 B) | – |
+| agent-slim-gateway | +84.2 KiB over agent-slim | +73.6 KiB over agent-slim | 4.71 MiB |
+
+Run-time targets of the gateway: [docs/benchmarks.md](../../docs/benchmarks.md#gateway-targets-on-linux)
+and `bench/results/targets-2026-11-23-lima-gbench-aarch64.md`.

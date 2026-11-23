@@ -7,7 +7,9 @@ prebuilt binary from --bin-dir), then measures:
 
 - binary size, and for a build with `delta_of`, its size minus that earlier
   build's (`delta_kib`: what a feature costs, independent of the base growing);
-- idle RSS of `graphrt serve` one second after it became healthy;
+- idle RSS of `graphrt serve` (or, for a build with `run = "gateway"`, of
+  `graphrt gateway` with one deployment and no agent) one second after it
+  became healthy (`run = "none"`: size only);
 - exec -> first 200 on GET /healthz, p95 over [startup].samples starts;
 - that SIGTERM makes the server exit 0 (the drain path; a PID-1 run is covered
   by scripts/test-pid1.sh).
@@ -124,21 +126,36 @@ def rss_mib(pid: int) -> float:
     return int(out.strip()) / 1024
 
 
-def serve_once(binary: Path, workflows: Path, measure_rss: bool) -> tuple[float, float | None]:
-    """Start `graphrt serve`, time exec -> healthy, optionally read idle RSS, then SIGTERM it."""
+def gateway_config(work: Path, port: int) -> Path:
+    """A gateway with one deployment (no agent running): JSON, which is YAML."""
+    config = {
+        "listen": f"127.0.0.1:{port}",
+        "store": str(work / "gateway.db"),
+        "socket_dir": str(work / "sockets"),
+        "deployments": [{"name": "shop", "keys_env": "BUDGET_GATE_KEYS", "api_keys": ["0" * 64]}],
+    }
+    path = work / f"gateway-{port}.yaml"
+    path.write_text(json.dumps(config))
+    return path
+
+
+def serve_once(binary: Path, workflows: Path, measure_rss: bool, mode: str = "serve") -> tuple[float, float | None]:
+    """Start `graphrt serve` (or `graphrt gateway`), time exec -> healthy, optionally read idle RSS, then SIGTERM it."""
     port = free_port()
     env = {k: v for k, v in os.environ.items() if not k.startswith("GRAPHRT_")}
+    if mode == "gateway":
+        command = [binary, "gateway", "--config", gateway_config(workflows.parent, port)]
+        env["BUDGET_GATE_KEYS"] = "k1:" + "ab" * 32
+    else:
+        command = [binary, "serve", workflows, "--addr", f"127.0.0.1:{port}"]
     began = time.perf_counter()
-    process = subprocess.Popen(
-        [binary, "serve", workflows, "--addr", f"127.0.0.1:{port}"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env,
-    )
+    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
     try:
         while not healthz_ok(port):
             if process.poll() is not None:
-                sys.exit(f"budget-gate: {binary.name} serve exited: {process.stderr.read().decode()}")
+                sys.exit(f"budget-gate: {binary.name} {mode} exited: {process.stderr.read().decode()}")
             if time.perf_counter() - began > 10:
-                sys.exit(f"budget-gate: {binary.name} serve did not become healthy in 10 s")
+                sys.exit(f"budget-gate: {binary.name} {mode} did not become healthy in 10 s")
             time.sleep(0.0002)
         startup_ms = (time.perf_counter() - began) * 1000
         rss = None
@@ -201,12 +218,13 @@ def main() -> int:
                 entry["delta_kib"] = round(delta, 1)
                 entry["delta_of"] = spec["delta_of"]
                 check(results, spec["name"], f"size over {spec['delta_of']}", delta, budget_for(spec.get("delta_kib"), key), "KiB")
-            if not args.skip_run and runs_here(binary):
+            mode = spec.get("run", "serve")
+            if not args.skip_run and mode != "none" and runs_here(binary):
                 timed = spec["name"] == startup.get("build")
                 samples = int(startup.get("samples", 30)) if timed else 1
                 times, rss = [], None
                 for i in range(samples):
-                    ms, measured = serve_once(binary, work / "workflows", measure_rss=(i == 0))
+                    ms, measured = serve_once(binary, work / "workflows", measure_rss=(i == 0), mode=mode)
                     times.append(ms)
                     rss = measured if measured is not None else rss
                 entry["idle_rss_mib"] = round(rss, 2)

@@ -142,6 +142,16 @@ impl Extensions {
         Ok(ext)
     }
 
+    /// Starts every loaded process / HTTP plugin now, each on its own task,
+    /// instead of at its first node (see [`graphrt_plugin::PluginHost::prewarm`]).
+    /// Needs a Tokio runtime.
+    pub fn prewarm_plugins(&self) {
+        #[cfg(any(feature = "plugins", feature = "wasm"))]
+        for host in &self.hosts {
+            graphrt_core::task::spawn(host.prewarm());
+        }
+    }
+
     /// Successfully loaded plugins.
     pub fn loaded(&self) -> impl Iterator<Item = &PluginSummary> {
         self.plugins.iter().filter(|p| p.error.is_none())

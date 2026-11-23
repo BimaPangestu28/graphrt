@@ -234,6 +234,27 @@ impl PluginHost {
         Ok(())
     }
 
+    /// Start every process / HTTP plugin now (its `initialize` handshake)
+    /// instead of at its first node. For a process started because work is on
+    /// its way (an agent woken by a gateway request), the plugins start while
+    /// that request is routed instead of after it. A failure is left to the
+    /// first call, which starts the plugin again (after its usual backoff).
+    pub fn prewarm(&self) -> futures::future::BoxFuture<'static, ()> {
+        let transports: Vec<Arc<dyn Transport>> = self
+            .entries
+            .iter()
+            .filter_map(|entry| entry.shared.as_ref().map(|shared| shared.transport.clone()))
+            .collect();
+        Box::pin(async move {
+            let clock = graphrt_core::node::default_clock();
+            // One after another: a host holds one plugin in practice, and a
+            // join over them costs more binary than it saves time.
+            for transport in transports {
+                let _outcome_left_to_first_call = transport.initialize(&clock).await;
+            }
+        })
+    }
+
     /// Register every plugin's nodes into `registry` and tools into `tools`.
     /// Fails on node kinds that are already registered (plugins never replace
     /// built-in or other plugins' nodes).

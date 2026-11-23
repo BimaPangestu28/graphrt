@@ -43,6 +43,15 @@ use crate::sse::Frame;
 use crate::store::SqliteStore;
 use crate::stored_request::{CREDENTIALS_REQUIRED, StoredRequest};
 
+/// Frames a live run queues per subscriber before the subscriber lags. Small,
+/// because every slot of every live run is memory (1,024 slots were ~36 KiB per
+/// run: 36 MiB with 1,000 streams), and a lagging client stream catches up
+/// from the ring instead ([`LiveRun::catch_up`]).
+pub const LIVE_FRAMES: usize = 32;
+
+/// Buffered frames (oldest first) and the receiver of the next ones.
+pub type Subscription = (Vec<Arc<Frame>>, broadcast::Receiver<Arc<Frame>>);
+
 /// Timing knobs of the supervisor.
 #[derive(Debug, Clone)]
 pub struct SupervisorSettings {
@@ -116,6 +125,9 @@ pub struct LiveRun {
     orphan: Mutex<Option<oneshot::Sender<Json>>>,
     current: Mutex<Option<(graphrt_provider_api::EndpointAddress, u64)>>,
     callback: Option<String>,
+    /// Created by this request with no event anywhere yet: until the ring has
+    /// frames, nothing is in the store either.
+    new_run: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for LiveRun {
@@ -132,7 +144,7 @@ impl LiveRun {
         callback: Option<String>,
         ring_capacity: usize,
     ) -> Arc<Self> {
-        let (frames, _) = broadcast::channel(1024);
+        let (frames, _) = broadcast::channel(LIVE_FRAMES);
         let (settled, _) = watch::channel(Settled::Running);
         Arc::new(Self {
             run_id: run_id.to_owned(),
@@ -145,6 +157,7 @@ impl LiveRun {
             orphan: Mutex::new(None),
             current: Mutex::new(None),
             callback,
+            new_run: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -162,15 +175,38 @@ impl LiveRun {
 
     /// Subscribes to new frames and returns the buffered ones (oldest first).
     /// Subscribe before reading the ring, so nothing falls between them.
-    pub fn subscribe(&self) -> (Vec<Arc<Frame>>, broadcast::Receiver<Arc<Frame>>) {
+    pub fn subscribe(&self) -> Subscription {
         let receiver = self.frames.subscribe();
         let buffered = self.ring.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().cloned().collect();
         (buffered, receiver)
     }
 
+    /// A fresh subscription for a subscriber that lagged at `cursor` (as in
+    /// [`crate::sse::is_after`]), with the ring's frames to send first. `None`
+    /// when frames after the cursor may be gone: the ring dropped frames and
+    /// its oldest one was not sent yet.
+    pub fn catch_up(&self, cursor: (u64, Option<u64>)) -> Option<Subscription> {
+        let (buffered, receiver) = self.subscribe();
+        let whole_history = buffered.len() < self.ring_capacity;
+        let oldest_sent = buffered
+            .first()
+            .and_then(|frame| frame.id.as_deref())
+            .is_some_and(|id| !crate::sse::is_after(id, cursor.0, cursor.1));
+        (whole_history || oldest_sent).then_some((buffered, receiver))
+    }
+
     /// Lowest engine event index still in the ring.
     pub fn ring_start(&self) -> Option<u64> {
         self.ring.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find_map(|frame| frame.event_index())
+    }
+
+    /// Whether events from `index` on may be in the store only (evicted from
+    /// the ring, or written by an earlier execution or gateway process).
+    pub fn needs_store_from(&self, index: u64) -> bool {
+        match self.ring_start() {
+            Some(first) => first > index,
+            None => !self.new_run.load(std::sync::atomic::Ordering::Relaxed),
+        }
     }
 
     /// Watches the settled state.
@@ -443,7 +479,12 @@ impl Gateway {
         let version = deployment.current()?;
         let run_id = options.run_id.clone().unwrap_or_else(new_run_id);
         graphrt_core::store::validate_run_id(&run_id).map_err(|error| StartError::Conflict(error.to_string()))?;
-        if let Some(existing) = self.store.get(&run_id).await? {
+        // Only a caller-chosen id (webhook, cron, Idempotency-Key) can already
+        // exist; a fresh random one skips the read (one store round trip less
+        // before the first byte). `create` still refuses a duplicate.
+        if options.run_id.is_some()
+            && let Some(existing) = self.store.get(&run_id).await?
+        {
             return Ok(Started::Duplicate(Box::new(existing)));
         }
         let lease = if options.interactive { Some(version.pool.acquire().await?) } else { None };
@@ -467,6 +508,15 @@ impl Gateway {
         // restart re-dispatches a run that has no checkpoint from it.
         let header_inputs: Vec<&str> = deployment.input_headers.iter().map(|mapping| mapping.input.as_str()).collect();
         let stored = StoredRequest::strip(&input, version.info.secret_inputs.as_deref(), &header_inputs);
+        // With a replica already leased (interactive runs), the record is created
+        // claimed for it: the same state `claim_dispatch` would write next, in the
+        // create transaction instead of a second one before the first byte.
+        let claimed = lease.is_some();
+        if let Some(lease) = &lease {
+            record.status = RunStatus::Running;
+            record.epoch = record.epoch.saturating_add(1);
+            record.owner = Some(lease.endpoint.replica.id.clone());
+        }
         match self.store.create_with_request(record.clone(), serde_json::to_string(&stored).ok()).await {
             Ok(()) => {}
             Err(StoreError::Conflict(_)) => {
@@ -480,10 +530,17 @@ impl Gateway {
         }
         bump(&self.metrics.runs_started);
         let run = LiveRun::new(&run_id, deployment.clone(), input, options.callback, self.settings.replay_ring);
+        run.new_run.store(true, std::sync::atomic::Ordering::Relaxed);
         self.register(&run);
         let gateway = Arc::clone(self);
         let supervised = run.clone();
-        graphrt_core::task::spawn(async move { gateway.supervise(supervised, version, record, lease, None).await });
+        if claimed {
+            graphrt_core::task::spawn(async move {
+                gateway.supervise_claimed(supervised, version, record, lease, None).await;
+            });
+        } else {
+            graphrt_core::task::spawn(async move { gateway.supervise(supervised, version, record, lease, None).await });
+        }
         Ok(Started::New(run))
     }
 
@@ -864,6 +921,9 @@ impl Gateway {
         }
     }
 
+    // Every await but the pump is boxed: an async fn is as large as its largest
+    // awaited future, and this one lives for the whole run (13.6 KiB per run
+    // before, mostly for `finish`, `fail` and the orphan path).
     async fn executions(
         self: Arc<Self>,
         run: Arc<LiveRun>,
@@ -890,10 +950,11 @@ impl Gateway {
                     return;
                 }
             };
-            let mut stream = match self.open_stream(&run, &version, &record, &mut lease, resume.as_ref()).await {
-                Ok(stream) => stream,
-                Err((error_type, message)) => return self.fail(&run, record, error_type, &message).await,
-            };
+            let mut stream =
+                match Box::pin(self.open_stream(&run, &version, &record, &mut lease, resume.as_ref())).await {
+                    Ok(stream) => stream,
+                    Err((error_type, message)) => return Box::pin(self.fail(&run, record, error_type, &message)).await,
+                };
             let capabilities = version.pool.capabilities().clone();
             let request_cap =
                 capabilities.max_request_secs.filter(|_| !capabilities.can_preempt()).map(Duration::from_secs);
@@ -903,9 +964,13 @@ impl Gateway {
                     Some(cap) => match tokio::time::timeout(cap, self.pump(&run, &mut stream, &mut record)).await {
                         Ok(outcome) => outcome,
                         Err(_) => {
-                            return self
-                                .fail(&run, record, "platform_timeout", "run exceeded the platform's request limit")
-                                .await;
+                            return Box::pin(self.fail(
+                                &run,
+                                record,
+                                "platform_timeout",
+                                "run exceeded the platform's request limit",
+                            ))
+                            .await;
                         }
                     },
                     None => self.pump(&run, &mut stream, &mut record).await,
@@ -913,14 +978,16 @@ impl Gateway {
                 match pumped {
                     Outcome::Finished(event) => break Outcome::Finished(event),
                     Outcome::PlatformTimeout(message) => break Outcome::PlatformTimeout(message),
-                    Outcome::Broken(reason) => match self.reattach(&run, &version, &record, lease.as_ref()).await {
-                        Some(reattached) => stream = reattached,
-                        None => break Outcome::Broken(reason),
-                    },
+                    Outcome::Broken(reason) => {
+                        match Box::pin(self.reattach(&run, &version, &record, lease.as_ref())).await {
+                            Some(reattached) => stream = reattached,
+                            None => break Outcome::Broken(reason),
+                        }
+                    }
                 }
             };
             match outcome {
-                Outcome::Finished(event) => match self.finish(&run, record.clone(), &event).await {
+                Outcome::Finished(event) => match Box::pin(self.finish(&run, record.clone(), &event)).await {
                     Some(next) => {
                         lost = 0;
                         bump(&self.metrics.redispatches);
@@ -933,9 +1000,8 @@ impl Gateway {
                 // Lambda-like platforms end the request themselves: no preemption
                 // happened, so there is nothing to re-dispatch from.
                 Outcome::PlatformTimeout(message) => {
-                    return self
-                        .fail(&run, record, "platform_timeout", &format!("platform ended the run: {message}"))
-                        .await;
+                    let message = format!("platform ended the run: {message}");
+                    return Box::pin(self.fail(&run, record, "platform_timeout", &message)).await;
                 }
                 Outcome::Broken(reason) => {
                     if let Some(broken) = lease.take() {
@@ -949,21 +1015,22 @@ impl Gateway {
                         let receiver = run.expect_orphan();
                         // Agents never call the gateway: pull the orphan from them.
                         graphrt_core::task::spawn(Arc::clone(&self).keep_polling_orphans(vec![run.run_id.clone()]));
-                        let orphan = self.await_orphan(&run, receiver, record.epoch).await;
+                        let orphan = Box::pin(self.await_orphan(&run, receiver, record.epoch)).await;
                         run.stop_awaiting_orphan();
                         orphan_terminal(orphan.as_ref())
                     };
                     let next = match terminal {
                         Some(event) => {
                             lost = 0;
-                            let Some(next) = self.finish(&run, record.clone(), &event).await else { return };
+                            let Some(next) = Box::pin(self.finish(&run, record.clone(), &event)).await else { return };
                             bump(&self.metrics.redispatches);
                             record = self.store.get(&run.run_id).await.ok().flatten().unwrap_or(record);
                             Some(next)
                         }
                         None => {
                             lost += 1;
-                            let Some((requeued, next)) = self.requeue(&run, record, &reason, lost).await else {
+                            let Some((requeued, next)) = Box::pin(self.requeue(&run, record, &reason, lost)).await
+                            else {
                                 return;
                             };
                             record = requeued;
@@ -1254,5 +1321,53 @@ mod preemption_tests {
         assert_eq!(super::planned_preemption_ms(&caps(Some(2), 10)), Some(1_500));
         assert_eq!(super::planned_preemption_ms(&caps(None, 30)), None);
         assert_eq!(super::planned_preemption_ms(&caps(Some(840), 0)), None, "no grace: platform_timeout instead");
+    }
+}
+
+#[cfg(test)]
+mod live_run_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use graphrt_provider_api::conformance::MemoryProvider;
+    use tokio::sync::broadcast::error::RecvError;
+
+    use super::{LIVE_FRAMES, LiveRun, RunInput};
+    use crate::auth::DeploymentAuth;
+    use crate::deployment::Deployment;
+    use crate::pool::PoolConfig;
+    use crate::signature::GatewayKey;
+    use crate::sse::Frame;
+
+    fn run(ring: usize) -> Arc<LiveRun> {
+        let key = GatewayKey::new("k", &[1; 32]).unwrap();
+        let provider = Arc::new(MemoryProvider::new(Duration::ZERO));
+        let deployment = Deployment::new("shop", DeploymentAuth::default(), vec![key], provider, PoolConfig::default());
+        LiveRun::new("run-1", Arc::new(deployment), RunInput::default(), None, ring)
+    }
+
+    fn publish(run: &LiveRun, events: std::ops::Range<u64>) {
+        for index in events {
+            run.publish(Frame { event: "node_succeeded".into(), id: Some(index.to_string()), data: "{}".into() });
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lagging_subscriber_catches_up_from_the_ring() {
+        let run = run(512);
+        let (_, mut receiver) = run.subscribe();
+        publish(&run, 0..(LIVE_FRAMES as u64 * 3));
+        assert!(matches!(receiver.recv().await, Err(RecvError::Lagged(_))));
+        let (buffered, _) = run.catch_up((0, None)).expect("the ring holds every frame");
+        assert_eq!(buffered.len(), LIVE_FRAMES * 3);
+    }
+
+    #[tokio::test]
+    async fn catching_up_needs_the_frames_after_the_cursor() {
+        let run = run(8);
+        publish(&run, 0..20);
+        // The ring holds 12..19: a subscriber that sent up to 13 continues, one at 5 cannot.
+        assert!(run.catch_up((14, None)).is_some());
+        assert!(run.catch_up((5, None)).is_none());
     }
 }

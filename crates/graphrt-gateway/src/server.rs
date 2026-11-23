@@ -37,6 +37,7 @@ use graphrt_core::coordination::{CoordinationStore, deployment_key};
 use graphrt_core::store::{RunRecord, RunStatus, RunStore, now_ms, stored_event_type};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
+use tokio::sync::broadcast;
 
 use crate::auth::{AuthError, Principal};
 use crate::deployment::{Deployment, VersionError, VersionInfo};
@@ -433,8 +434,9 @@ fn client_stream(
         bump(&gateway.metrics.client_streams);
         let mut cursor = (start, chunks);
         let subscription = live.as_ref().map(|run| (run.subscribe(), run.settled()));
-        let ring_start = live.as_ref().and_then(|run| run.ring_start());
-        let needs_store = ring_start.is_none_or(|first| first > cursor.0);
+        // A run this request just created streams from its ring alone: one
+        // store read (and its wait for the connection) fewer before the first byte.
+        let needs_store = live.as_ref().is_none_or(|run| run.needs_store_from(cursor.0));
         let send = |frame: &Frame, cursor: &mut (u64, Option<u64>)| -> Option<Bytes> {
             let id = frame.id.as_deref()?;
             if !is_after(id, cursor.0, cursor.1) {
@@ -471,8 +473,10 @@ fn client_stream(
                 return finish_stream(&gateway);
             }
         }
-        let mut heartbeat = tokio::time::interval(HEARTBEAT);
-        heartbeat.tick().await;
+        // First beat one period from now. `interval` + an initial `tick().await`
+        // went through the timer driver (1 ms resolution) and held back the
+        // first frame of every stream by up to a millisecond.
+        let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
         loop {
             if !matches!(*settled.borrow(), Settled::Running) {
                 while let Ok(frame) = frames.try_recv() {
@@ -485,8 +489,20 @@ fn client_stream(
             tokio::select! {
                 frame = frames.recv() => match frame {
                     Ok(frame) => if let Some(bytes) = send(&frame, &mut cursor) && sender.send(bytes).await.is_err() { return finish_stream(&gateway) },
-                    // Lagged or closed: end the stream; the client resumes with Last-Event-ID.
-                    Err(_) => return finish_stream(&gateway),
+                    // Lagged: continue from the ring when it still holds the frames after the cursor.
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        let Some((buffered, receiver)) = live.as_ref().and_then(|run| run.catch_up(cursor)) else {
+                            // The client resumes with Last-Event-ID (from the store).
+                            return finish_stream(&gateway);
+                        };
+                        frames = receiver;
+                        for frame in &buffered {
+                            if let Some(bytes) = send(frame, &mut cursor) && sender.send(bytes).await.is_err() {
+                                return finish_stream(&gateway);
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return finish_stream(&gateway),
                 },
                 changed = settled.changed() => if changed.is_err() { return finish_stream(&gateway) },
                 _ = heartbeat.tick() => if sender.send(Bytes::from_static(b": heartbeat\n\n")).await.is_err() { return finish_stream(&gateway) },

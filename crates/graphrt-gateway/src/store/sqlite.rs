@@ -26,6 +26,8 @@ use crate::ha::fence::{Fence, FenceRefusal};
 
 /// Events kept per run; the count keeps growing past it (`events_truncated`).
 pub const DEFAULT_MAX_EVENTS: u64 = 10_000;
+/// Prepared statements kept per connection (this module has about 35).
+const STATEMENT_CACHE: usize = 64;
 /// Largest page of `list`.
 pub const MAX_PAGE: usize = 1_000;
 
@@ -103,6 +105,12 @@ pub struct OutboxEntry {
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,
+    /// Callers waiting for the connection queue here (FIFO), not on the
+    /// blocking pool: each operation waiting on the `Mutex` inside
+    /// `spawn_blocking` held a pool thread, so under load tokio started one
+    /// thread per waiting write (176 for 200 streams, each with its own
+    /// allocator heap: ~150 MiB of RSS).
+    turn: Arc<tokio::sync::Mutex<()>>,
     writes: Arc<std::sync::atomic::AtomicU64>,
     path: Option<PathBuf>,
     max_events: u64,
@@ -147,8 +155,11 @@ impl SqliteStore {
             .execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = OFF; PRAGMA busy_timeout = 5000;")
             .map_err(io_error)?;
         connection.execute_batch(SCHEMA).map_err(io_error)?;
+        // Every statement of this module fits, so none is parsed twice.
+        connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            turn: Arc::default(),
             writes: Arc::default(),
             path,
             max_events: DEFAULT_MAX_EVENTS,
@@ -173,6 +184,7 @@ impl SqliteStore {
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> StoreResult<T> + Send + 'static,
     {
+        let _turn = self.turn.lock().await;
         let connection = self.connection.clone();
         graphrt_core::task::spawn_blocking(move || {
             let mut guard = connection.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -224,12 +236,12 @@ impl SqliteStore {
                 })?;
                 fence.set_token(token);
             }
-            transaction
-                .execute(
-                    "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
-                    params![FENCE_KEY, token as i64],
-                )
-                .map_err(io_error)?;
+            execute(
+                &transaction,
+                "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+                params![FENCE_KEY, token as i64],
+            )
+            .map_err(io_error)?;
             transaction.commit().map_err(io_error)?;
             fence.confirm();
             Ok(token)
@@ -297,8 +309,7 @@ impl SqliteStore {
         self.transaction(move |transaction| {
             put_record(transaction, record.clone(), Some(expected_epoch))?;
             if let Some((url, body)) = callback {
-                transaction
-                    .execute(
+                execute(transaction,
                         "INSERT INTO outbox (run_id, deployment, url, body, next_attempt_ms, created_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
                         params![record.run_id, record.deployment.clone().unwrap_or_default(), url, body, now_ms as i64],
                     )
@@ -316,7 +327,7 @@ impl SqliteStore {
     pub async fn due_callbacks(&self, now_ms: u64, limit: usize) -> StoreResult<Vec<OutboxEntry>> {
         self.with_connection(move |connection| {
             let mut statement = connection
-                .prepare("SELECT id, run_id, deployment, url, body, attempts FROM outbox WHERE next_attempt_ms <= ?1 ORDER BY next_attempt_ms LIMIT ?2")
+                .prepare_cached("SELECT id, run_id, deployment, url, body, attempts FROM outbox WHERE next_attempt_ms <= ?1 ORDER BY next_attempt_ms LIMIT ?2")
                 .map_err(io_error)?;
             let rows = statement
                 .query_map(params![now_ms as i64, limit as i64], |row| {
@@ -334,7 +345,7 @@ impl SqliteStore {
     /// On I/O errors.
     pub async fn complete_callback(&self, id: i64) -> StoreResult<()> {
         self.transaction(move |transaction| {
-            transaction.execute("DELETE FROM outbox WHERE id = ?1", params![id]).map(|_| ()).map_err(io_error)
+            execute(transaction, "DELETE FROM outbox WHERE id = ?1", params![id]).map(|_| ()).map_err(io_error)
         })
         .await
     }
@@ -346,21 +357,21 @@ impl SqliteStore {
     /// On I/O errors.
     pub async fn retry_callback(&self, id: i64, next_attempt_ms: u64, max_attempts: u32) -> StoreResult<bool> {
         self.transaction(move |connection| {
-            let attempts: u32 = connection
-                .query_row("SELECT attempts FROM outbox WHERE id = ?1", params![id], |row| row.get(0))
-                .optional()
-                .map_err(io_error)?
-                .unwrap_or(0);
+            let attempts: u32 =
+                query_row(connection, "SELECT attempts FROM outbox WHERE id = ?1", params![id], |row| row.get(0))
+                    .optional()
+                    .map_err(io_error)?
+                    .unwrap_or(0);
             if attempts + 1 >= max_attempts {
-                connection.execute("DELETE FROM outbox WHERE id = ?1", params![id]).map_err(io_error)?;
+                execute(connection, "DELETE FROM outbox WHERE id = ?1", params![id]).map_err(io_error)?;
                 return Ok(true);
             }
-            connection
-                .execute(
-                    "UPDATE outbox SET attempts = attempts + 1, next_attempt_ms = ?2 WHERE id = ?1",
-                    params![id, next_attempt_ms as i64],
-                )
-                .map_err(io_error)?;
+            execute(
+                connection,
+                "UPDATE outbox SET attempts = attempts + 1, next_attempt_ms = ?2 WHERE id = ?1",
+                params![id, next_attempt_ms as i64],
+            )
+            .map_err(io_error)?;
             Ok(false)
         })
         .await
@@ -380,12 +391,12 @@ impl SqliteStore {
             }
             write_record(transaction, &record)?;
             if let Some(request) = request {
-                transaction
-                    .execute(
-                        "INSERT OR REPLACE INTO requests (run_id, request) VALUES (?1, ?2)",
-                        params![record.run_id, request],
-                    )
-                    .map_err(io_error)?;
+                execute(
+                    transaction,
+                    "INSERT OR REPLACE INTO requests (run_id, request) VALUES (?1, ?2)",
+                    params![record.run_id, request],
+                )
+                .map_err(io_error)?;
             }
             Ok(())
         })
@@ -400,8 +411,7 @@ impl SqliteStore {
         validate_run_id(run_id)?;
         let run_id = run_id.to_owned();
         self.with_connection(move |connection| {
-            connection
-                .query_row("SELECT request FROM requests WHERE run_id = ?1", params![run_id], |row| row.get(0))
+            query_row(connection, "SELECT request FROM requests WHERE run_id = ?1", params![run_id], |row| row.get(0))
                 .optional()
                 .map_err(io_error)
         })
@@ -415,7 +425,8 @@ impl SqliteStore {
     pub async fn runs_with_status(&self, status: RunStatus) -> StoreResult<Vec<RunRecord>> {
         let status = status_text(status);
         self.with_connection(move |connection| {
-            let mut statement = connection.prepare("SELECT record FROM runs WHERE status = ?1").map_err(io_error)?;
+            let mut statement =
+                connection.prepare_cached("SELECT record FROM runs WHERE status = ?1").map_err(io_error)?;
             let rows = statement.query_map(params![status], |row| row.get::<_, String>(0)).map_err(io_error)?;
             rows.map(|row| row.map_err(io_error).and_then(|text| serde_json::from_str(&text).map_err(corrupt)))
                 .collect()
@@ -432,9 +443,9 @@ impl SqliteStore {
             ["runs", "events", "snapshots", "objects", "outbox"]
                 .into_iter()
                 .map(|table| {
-                    let count: i64 = connection
-                        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
-                        .map_err(io_error)?;
+                    let count: i64 =
+                        query_row(connection, &format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                            .map_err(io_error)?;
                     Ok((table, count as u64))
                 })
                 .collect()
@@ -443,11 +454,26 @@ impl SqliteStore {
     }
 }
 
+/// `execute` through the connection's statement cache. The gateway runs the
+/// same few statements for every run; parsing them again each time was about
+/// a tenth of its CPU per run.
+fn execute(connection: &Connection, sql: &str, params: impl rusqlite::Params) -> rusqlite::Result<usize> {
+    connection.prepare_cached(sql)?.execute(params)
+}
+
+/// `query_row` through the statement cache (see [`execute`]).
+fn query_row<T, F>(connection: &Connection, sql: &str, params: impl rusqlite::Params, map: F) -> rusqlite::Result<T>
+where
+    F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+{
+    connection.prepare_cached(sql)?.query_row(params, map)
+}
+
 fn stored_fence(connection: &Connection) -> StoreResult<u64> {
-    let value: Option<i64> = connection
-        .query_row("SELECT value FROM meta WHERE key = ?1", params![FENCE_KEY], |row| row.get(0))
-        .optional()
-        .map_err(io_error)?;
+    let value: Option<i64> =
+        query_row(connection, "SELECT value FROM meta WHERE key = ?1", params![FENCE_KEY], |row| row.get(0))
+            .optional()
+            .map_err(io_error)?;
     Ok(value.unwrap_or(0) as u64)
 }
 
@@ -461,17 +487,16 @@ fn refusal_error(refusal: FenceRefusal) -> StoreError {
 }
 
 fn load_record(transaction: &Connection, run_id: &str) -> StoreResult<Option<RunRecord>> {
-    let text: Option<String> = transaction
-        .query_row("SELECT record FROM runs WHERE run_id = ?1", params![run_id], |row| row.get(0))
-        .optional()
-        .map_err(io_error)?;
+    let text: Option<String> =
+        query_row(transaction, "SELECT record FROM runs WHERE run_id = ?1", params![run_id], |row| row.get(0))
+            .optional()
+            .map_err(io_error)?;
     text.map(|text| serde_json::from_str(&text).map_err(corrupt)).transpose()
 }
 
 fn write_record(transaction: &Connection, record: &RunRecord) -> StoreResult<()> {
     let text = serde_json::to_string(record).map_err(corrupt)?;
-    transaction
-        .execute(
+    execute(transaction,
             "INSERT INTO runs (run_id, deployment, workflow, status, epoch, created_ms, updated_ms, record) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(run_id) DO UPDATE SET deployment = ?2, workflow = ?3, status = ?4, epoch = ?5, created_ms = ?6, updated_ms = ?7, record = ?8",
             params![
@@ -534,7 +559,7 @@ impl RunStore for SqliteStore {
             let records: Vec<RunRecord> = self
                 .with_connection(move |connection| {
                     let mut statement = connection
-                        .prepare(
+                        .prepare_cached(
                             "SELECT record FROM runs WHERE (?1 IS NULL OR status = ?1) AND (?2 IS NULL OR workflow = ?2)
                              ORDER BY created_ms DESC, run_id DESC",
                         )
@@ -556,10 +581,10 @@ impl RunStore for SqliteStore {
             validate_run_id(&run_id)?;
             self.transaction(move |transaction| {
                 let removed =
-                    transaction.execute("DELETE FROM runs WHERE run_id = ?1", params![run_id]).map_err(io_error)?;
-                transaction.execute("DELETE FROM events WHERE run_id = ?1", params![run_id]).map_err(io_error)?;
-                transaction.execute("DELETE FROM snapshots WHERE run_id = ?1", params![run_id]).map_err(io_error)?;
-                transaction.execute("DELETE FROM requests WHERE run_id = ?1", params![run_id]).map_err(io_error)?;
+                    execute(transaction, "DELETE FROM runs WHERE run_id = ?1", params![run_id]).map_err(io_error)?;
+                execute(transaction, "DELETE FROM events WHERE run_id = ?1", params![run_id]).map_err(io_error)?;
+                execute(transaction, "DELETE FROM snapshots WHERE run_id = ?1", params![run_id]).map_err(io_error)?;
+                execute(transaction, "DELETE FROM requests WHERE run_id = ?1", params![run_id]).map_err(io_error)?;
                 Ok(removed > 0)
             })
             .await
@@ -584,14 +609,14 @@ impl RunStore for SqliteStore {
                 let (retried, fresh) = texts.split_at(plan.overlap.min(texts.len()));
                 for (offset, text) in retried.iter().enumerate() {
                     let index = first_index + offset as u64;
-                    let stored: Option<String> = transaction
-                        .query_row(
-                            "SELECT event FROM events WHERE run_id = ?1 AND idx = ?2",
-                            params![run_id, index as i64],
-                            |row| row.get(0),
-                        )
-                        .optional()
-                        .map_err(io_error)?;
+                    let stored: Option<String> = query_row(
+                        transaction,
+                        "SELECT event FROM events WHERE run_id = ?1 AND idx = ?2",
+                        params![run_id, index as i64],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(io_error)?;
                     if stored.is_some_and(|stored| stored != *text) {
                         return Err(append_mismatch(&run_id, index));
                     }
@@ -600,12 +625,12 @@ impl RunStore for SqliteStore {
                 let mut dropped = false;
                 for (index, text) in (start..).zip(fresh) {
                     if index < max_events {
-                        transaction
-                            .execute(
-                                "INSERT INTO events (run_id, idx, event) VALUES (?1, ?2, ?3)",
-                                params![run_id, index as i64, text],
-                            )
-                            .map_err(io_error)?;
+                        execute(
+                            transaction,
+                            "INSERT INTO events (run_id, idx, event) VALUES (?1, ?2, ?3)",
+                            params![run_id, index as i64, text],
+                        )
+                        .map_err(io_error)?;
                     } else {
                         dropped = true;
                     }
@@ -628,7 +653,7 @@ impl RunStore for SqliteStore {
                     return Err(StoreError::NotFound(run_id));
                 }
                 let mut statement = connection
-                    .prepare("SELECT event FROM events WHERE run_id = ?1 AND idx >= ?2 ORDER BY idx")
+                    .prepare_cached("SELECT event FROM events WHERE run_id = ?1 AND idx >= ?2 ORDER BY idx")
                     .map_err(io_error)?;
                 let rows = statement
                     .query_map(params![run_id, from.min(i64::MAX as u64) as i64], |row| row.get::<_, String>(0))
@@ -653,8 +678,7 @@ impl RunStore for SqliteStore {
                 if load_record(transaction, &run_id)?.is_none() {
                     return Err(StoreError::NotFound(run_id));
                 }
-                transaction
-                    .execute("INSERT INTO snapshots (run_id, snapshot) VALUES (?1, ?2) ON CONFLICT(run_id) DO UPDATE SET snapshot = ?2", params![run_id, text])
+                execute(transaction, "INSERT INTO snapshots (run_id, snapshot) VALUES (?1, ?2) ON CONFLICT(run_id) DO UPDATE SET snapshot = ?2", params![run_id, text])
                     .map_err(io_error)?;
                 Ok(())
             })
@@ -667,8 +691,10 @@ impl RunStore for SqliteStore {
         Box::pin(async move {
             validate_run_id(&run_id)?;
             self.with_connection(move |connection| {
-                let text: Option<String> = connection
-                    .query_row("SELECT snapshot FROM snapshots WHERE run_id = ?1", params![run_id], |row| row.get(0))
+                let text: Option<String> =
+                    query_row(connection, "SELECT snapshot FROM snapshots WHERE run_id = ?1", params![run_id], |row| {
+                        row.get(0)
+                    })
                     .optional()
                     .map_err(io_error)?;
                 text.map(|text| serde_json::from_str(&text).map_err(corrupt)).transpose()
@@ -731,7 +757,8 @@ impl RunStore for SqliteStore {
     fn recover_interrupted(&self, now_ms: u64) -> BoxFuture<'_, StoreResult<usize>> {
         Box::pin(self.transaction(move |transaction| {
             let running = status_text(RunStatus::Running);
-            let mut statement = transaction.prepare("SELECT record FROM runs WHERE status = ?1").map_err(io_error)?;
+            let mut statement =
+                transaction.prepare_cached("SELECT record FROM runs WHERE status = ?1").map_err(io_error)?;
             let texts: Vec<String> = statement
                 .query_map(params![running], |row| row.get(0))
                 .map_err(io_error)?
@@ -754,7 +781,7 @@ impl RunStore for SqliteStore {
         Box::pin(self.transaction(move |transaction| {
             let keep = [status_text(RunStatus::Running), status_text(RunStatus::Queued)];
             let mut statement = transaction
-                .prepare("SELECT run_id FROM runs WHERE updated_ms < ?1 AND status NOT IN (?2, ?3)")
+                .prepare_cached("SELECT run_id FROM runs WHERE updated_ms < ?1 AND status NOT IN (?2, ?3)")
                 .map_err(io_error)?;
             let ids: Vec<String> = statement
                 .query_map(params![cutoff_ms as i64, keep[0], keep[1]], |row| row.get(0))
@@ -764,8 +791,7 @@ impl RunStore for SqliteStore {
             drop(statement);
             for id in &ids {
                 for table in ["runs", "events", "snapshots", "requests"] {
-                    transaction
-                        .execute(&format!("DELETE FROM {table} WHERE run_id = ?1"), params![id])
+                    execute(transaction, &format!("DELETE FROM {table} WHERE run_id = ?1"), params![id])
                         .map_err(io_error)?;
                 }
             }
@@ -775,12 +801,11 @@ impl RunStore for SqliteStore {
 }
 
 fn load_object(connection: &Connection, key: &str) -> StoreResult<Option<Versioned>> {
-    connection
-        .query_row("SELECT value, version FROM objects WHERE key = ?1", params![key], |row| {
-            Ok(Versioned { value: row.get(0)?, version: row.get::<_, i64>(1)? as u64 })
-        })
-        .optional()
-        .map_err(io_error)
+    query_row(connection, "SELECT value, version FROM objects WHERE key = ?1", params![key], |row| {
+        Ok(Versioned { value: row.get(0)?, version: row.get::<_, i64>(1)? as u64 })
+    })
+    .optional()
+    .map_err(io_error)
 }
 
 impl CoordinationStore for SqliteStore {
@@ -793,9 +818,12 @@ impl CoordinationStore for SqliteStore {
                 if load_object(transaction, &key)?.is_some() {
                     return Err(StoreError::Conflict(format!("key `{key}` already exists")));
                 }
-                transaction
-                    .execute("INSERT INTO objects (key, version, value) VALUES (?1, 1, ?2)", params![key, value])
-                    .map_err(io_error)?;
+                execute(
+                    transaction,
+                    "INSERT INTO objects (key, version, value) VALUES (?1, 1, ?2)",
+                    params![key, value],
+                )
+                .map_err(io_error)?;
                 Ok(1)
             })
             .await
@@ -821,12 +849,12 @@ impl CoordinationStore for SqliteStore {
                     )));
                 }
                 let next = expected_version + 1;
-                transaction
-                    .execute(
-                        "UPDATE objects SET version = ?2, value = ?3 WHERE key = ?1",
-                        params![key, next as i64, value],
-                    )
-                    .map_err(io_error)?;
+                execute(
+                    transaction,
+                    "UPDATE objects SET version = ?2, value = ?3 WHERE key = ?1",
+                    params![key, next as i64, value],
+                )
+                .map_err(io_error)?;
                 Ok(next)
             })
             .await
@@ -845,7 +873,7 @@ impl CoordinationStore for SqliteStore {
         let prefix = prefix.to_owned();
         Box::pin(self.with_connection(move |connection| {
             let mut statement = connection
-                .prepare("SELECT key, value, version FROM objects WHERE substr(key, 1, ?2) = ?1 ORDER BY key")
+                .prepare_cached("SELECT key, value, version FROM objects WHERE substr(key, 1, ?2) = ?1 ORDER BY key")
                 .map_err(io_error)?;
             let rows = statement
                 .query_map(params![prefix, prefix.len() as i64], |row| {
@@ -871,7 +899,7 @@ impl CoordinationStore for SqliteStore {
                         stored.version
                     )));
                 }
-                transaction.execute("DELETE FROM objects WHERE key = ?1", params![key]).map_err(io_error)?;
+                execute(transaction, "DELETE FROM objects WHERE key = ?1", params![key]).map_err(io_error)?;
                 Ok(true)
             })
             .await

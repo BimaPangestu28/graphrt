@@ -482,7 +482,7 @@ impl Pool {
             tokio::time::sleep(delay).await;
             let name = &pool.deployment.name;
             let source = request.source.label();
-            match pool.prewarm_holding(request.replicas, request.source, request.hold).await {
+            match pool.prewarm_after_in_flight(&request).await {
                 Ok(PrewarmOutcome::BudgetExhausted) => {
                     eprintln!("gateway: {source} prewarm of {name} skipped: keep-warm budget spent")
                 }
@@ -493,6 +493,22 @@ impl Pool {
                 Err(error) => eprintln!("gateway: {source} prewarm of {name}: {error}"),
             }
         });
+    }
+
+    /// [`Pool::prewarm_holding`] that waits out a wake already in flight and
+    /// checks again: that wake brings one replica (`slots + 1`), so a prewarm
+    /// of `min_replicas` arriving with a cold request was otherwise lost and
+    /// the pool stayed at one replica.
+    async fn prewarm_after_in_flight(self: &Arc<Self>, request: &PrewarmRequest) -> Result<PrewarmOutcome, String> {
+        let deadline = Instant::now() + self.config.wake_timeout;
+        loop {
+            let woken = self.changed.notified();
+            let outcome = self.prewarm_holding(request.replicas, request.source, request.hold).await;
+            if !matches!(outcome, Ok(PrewarmOutcome::InFlight)) || Instant::now() >= deadline {
+                return outcome;
+            }
+            let _deadline_passed = tokio::time::timeout_at(deadline, woken).await;
+        }
     }
 
     /// What a prewarm of `replicas` would do now, without doing it
@@ -795,6 +811,37 @@ mod tests {
             PoolConfig { quotas: Quotas { max_wakes_per_hour: 0, ..Quotas::default() }, ..PoolConfig::default() },
         );
         assert_eq!(other.prewarm(1, PrewarmSource::Api).await.unwrap(), PrewarmOutcome::QuotaExhausted);
+    }
+
+    #[tokio::test]
+    async fn a_background_prewarm_tops_up_after_an_in_flight_wake() {
+        // A cold request wakes one replica; the version's `min_replicas` prewarm
+        // arriving meanwhile must not be lost to that wake (it used to end as
+        // `InFlight`, leaving the pool at one replica for good).
+        let provider = Arc::new(MemoryProvider::new(Duration::from_millis(50)));
+        let pool = pool(provider.clone(), PoolConfig::default());
+        let request = tokio::spawn({
+            let pool = pool.clone();
+            async move { pool.acquire().await }
+        });
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_eq!(pool.prewarm_check(3), PrewarmOutcome::InFlight);
+        pool.spawn_prewarm(PrewarmRequest {
+            replicas: 3,
+            source: PrewarmSource::Api,
+            hold: Duration::ZERO,
+            max_delay: Duration::ZERO,
+        });
+        let lease = request.await.unwrap().unwrap();
+        for _ in 0..100 {
+            if pool.stats().replicas == 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(pool.stats().replicas, 3);
+        drop(lease);
+        pool.close().await;
     }
 
     #[tokio::test(start_paused = true)]
