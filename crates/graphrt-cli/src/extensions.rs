@@ -148,7 +148,7 @@ impl Extensions {
     pub fn prewarm_plugins(&self) {
         #[cfg(any(feature = "plugins", feature = "wasm"))]
         for host in &self.hosts {
-            tokio::spawn(host.prewarm());
+            graphrt_core::task::spawn(host.prewarm());
         }
     }
 
