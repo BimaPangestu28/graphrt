@@ -63,11 +63,16 @@ delta_kib = { x86_64-linux = 94, aarch64-linux = 77, default = 65 }
 [[build]]
 name = "gateway-core"
 features = "gateway"
+# Idle RSS: `graphrt gateway` with one deployment and no agent (mimalloc built
+# without transparent huge pages).
+run = "gateway"
+idle_rss_mib = 20.0
 binary_mib = { x86_64-linux = 8.0, aarch64-linux = 6.95, default = 8.0 }
 
 [[build]]
 name = "gateway-all"
 features = "gateway-all"
+run = "none"
 binary_mib = { x86_64-linux = 9.0, aarch64-linux = 7.75, default = 9.0 }
 
 # Time from exec of `graphrt serve` to its first `200` on GET /healthz, p95 over
@@ -76,6 +81,46 @@ binary_mib = { x86_64-linux = 9.0, aarch64-linux = 7.75, default = 9.0 }
 build = "agent-slim"
 samples = 30
 healthz_p95_ms = 10.0
+
+# Run-time targets of `graphrt gateway` on Linux (audit of the deploy/gateway plan,
+# §4.1-4.2), measured on the real binaries by bench/gateway/gwbench.py
+# (bench/targets.sh runs it with the budget gate). Times in ms, RSS in MiB.
+[gateway_targets]
+# Warm TTFB overhead: first `run_started` byte through the gateway minus straight
+# to the same agent, interleaved. TCP: agent on loopback behind the k8s provider;
+# its budget is this plus one measured loopback round trip.
+ttfb_samples = 1000
+ttfb_overhead_uds_p50_ms = 0.3
+ttfb_overhead_uds_p95_ms = 1.0
+ttfb_overhead_tcp_p95_ms = 1.0
+# Concurrent streaming runs through one gateway (fake OpenAI upstream streaming
+# `sse_chunks` deltas `sse_chunk_interval_ms` apart). A stall is a gap between
+# two chunks of a stream above `sse_max_gap_ms`.
+sse_streams = 1000
+sse_chunks = 20
+sse_chunk_interval_ms = 500
+sse_max_gap_ms = 2500
+# Gate: the CI budget of the plan (§9, 80 MiB). The audit's target (§4.2,
+# 64 MiB) is reported next to it and not met yet: two HTTP/1.1 connections per
+# stream (client and agent side) keep ~32 KiB of hyper buffers each stream.
+sse_rss_mib = 80.0
+sse_rss_target_mib = 64.0
+# Cold wake of the local provider: request -> new agent process -> first SSE
+# event, one fresh deployment per sample. With a Node.js process plugin the
+# clock stops at the plugin node's result (its host must be up).
+wake_samples = 100
+wake_p95_ms = 15.0
+wake_node_p95_ms = 60.0
+# Webhook ack (HMAC-signed POST -> 202), sequential.
+webhook_samples = 1000
+webhook_ack_p95_ms = 10.0
+# Cron: `cron_fires` schedules firing in the same minute (with prewarm); lag is
+# fire time -> run record finished (an upper bound of fire -> run_started).
+cron_fires = 1000
+cron_lag_p95_ms = 1000.0
+# RS256 JWT verification (cached JWKS key), mean per verification:
+# crates/graphrt-gateway/tests/jwt_verify_bench.rs.
+jwt_verify_rs256_us = 50.0
 
 # Crates that must never enter the dependency tree (cloud SDKs, Kubernetes
 # clients, HTTP/2): graphrt talks to cloud APIs over its own small REST layer.
