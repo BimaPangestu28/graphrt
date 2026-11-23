@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use axum::Json;
+use crate::http_input::JsonBody;
 use axum::extract::{Path as UrlPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -93,7 +93,7 @@ pub(super) async fn start_run(
     UrlPath(name): UrlPath<String>,
     user: Option<axum::Extension<AuthenticatedUser>>,
     headers: axum::http::HeaderMap,
-    Json(body): Json<RunRequest>,
+    JsonBody(body): JsonBody<RunRequest>,
 ) -> Response {
     let Some(workflow) = state.workflows.get(&name) else {
         return error_response(StatusCode::NOT_FOUND, &format!("unknown workflow `{name}`"));

@@ -36,7 +36,7 @@ pub fn redact_secrets<'a, S: AsRef<str>>(text: &'a str, secrets: &[S]) -> Cow<'a
     if candidates.is_empty() {
         return Cow::Borrowed(text);
     }
-    candidates.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    candidates.sort_unstable_by_key(|s| std::cmp::Reverse(s.len()));
     let mut scrubbed = text.to_owned();
     for secret in candidates {
         if scrubbed.contains(secret) {

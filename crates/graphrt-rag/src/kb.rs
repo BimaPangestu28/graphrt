@@ -601,9 +601,7 @@ impl KnowledgeConfig {
 
     #[cfg(feature = "yaml")]
     pub fn from_yaml(text: &str) -> Result<Self, RagError> {
-        let options = serde_saphyr::options! { strict_booleans: true };
-        serde_saphyr::from_str_with_options(text, options)
-            .map_err(|e| RagError::Config(format!("invalid knowledge config: {e}")))
+        graphrt_core::yaml::from_str(text, true).map_err(|e| RagError::Config(format!("invalid knowledge config: {e}")))
     }
 
     /// Build the knowledge base, resolving secrets with `std::env::var`.

@@ -224,7 +224,7 @@ impl fmt::Debug for HostCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let sources = self.sources.read().unwrap_or_else(PoisonError::into_inner);
         let mut names: Vec<&String> = sources.keys().collect();
-        names.sort();
+        names.sort_unstable();
         f.debug_struct("HostCredentials").field("providers", &names).finish()
     }
 }

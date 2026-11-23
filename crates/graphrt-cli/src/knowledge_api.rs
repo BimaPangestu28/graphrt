@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path as UrlPath, Query, State};
+use axum::extract::{Path as UrlPath, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use std::path::PathBuf;
@@ -22,6 +22,7 @@ use graphrt_rag::{
 use serde::Deserialize;
 use tokio::sync::{Mutex, Semaphore};
 
+use crate::http_input::{JsonBody, QueryParams};
 use crate::serve::{AppState, error_response};
 
 /// The knowledge base exposed over HTTP, with its ingestion queue.
@@ -87,7 +88,7 @@ pub async fn list_resources(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// `POST /v1/knowledge/datasets`: create a dataset from the config's named resources.
-pub async fn create_dataset(State(state): State<Arc<AppState>>, Json(spec): Json<DatasetSpec>) -> Response {
+pub async fn create_dataset(State(state): State<Arc<AppState>>, JsonBody(spec): JsonBody<DatasetSpec>) -> Response {
     let Some(knowledge) = state.knowledge() else { return not_served() };
     let _admin = knowledge.admin.lock().await;
     let id = spec.id.clone();
@@ -132,8 +133,16 @@ pub struct PageQuery {
 pub async fn list_documents(
     State(state): State<Arc<AppState>>,
     UrlPath(dataset): UrlPath<String>,
-    Query(page): Query<PageQuery>,
+    RawQuery(raw): RawQuery,
 ) -> Response {
+    let params = QueryParams::parse(raw.as_deref());
+    let page = match params.number("limit") {
+        Ok(limit) => PageQuery {
+            limit: limit.map(|limit| usize::try_from(limit).unwrap_or(usize::MAX)),
+            after: params.string("after"),
+        },
+        Err(refused) => return refused,
+    };
     let Some(knowledge) = state.knowledge() else { return not_served() };
     let limit = page.limit.unwrap_or(DEFAULT_DOCUMENT_PAGE);
     match knowledge.kb.list_documents(&dataset, limit, page.after.as_deref()).await {
@@ -164,7 +173,7 @@ pub struct TextDocument {
 pub async fn put_text_document(
     State(state): State<Arc<AppState>>,
     UrlPath(dataset): UrlPath<String>,
-    Json(body): Json<TextDocument>,
+    JsonBody(body): JsonBody<TextDocument>,
 ) -> Response {
     let Some(knowledge) = state.knowledge() else { return not_served() };
     if body.document_id.trim().is_empty() {
@@ -187,10 +196,12 @@ pub struct FileQuery {
 pub async fn put_file_document(
     State(state): State<Arc<AppState>>,
     UrlPath((dataset, document_id)): UrlPath<(String, String)>,
-    Query(query): Query<FileQuery>,
+    RawQuery(raw): RawQuery,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    let params = QueryParams::parse(raw.as_deref());
+    let query = FileQuery { name: params.string("name"), title: params.string("title") };
     let Some(knowledge) = state.knowledge() else { return not_served() };
     if body.is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "the request body (the file) is empty");
@@ -283,7 +294,7 @@ pub struct DocumentPatch {
 pub async fn patch_document(
     State(state): State<Arc<AppState>>,
     UrlPath((dataset, document_id)): UrlPath<(String, String)>,
-    Json(patch): Json<DocumentPatch>,
+    JsonBody(patch): JsonBody<DocumentPatch>,
 ) -> Response {
     let Some(knowledge) = state.knowledge() else { return not_served() };
     match knowledge.kb.set_document_enabled(&dataset, &document_id, patch.enabled).await {
@@ -330,7 +341,7 @@ pub struct RetrieveBody {
 pub const MAX_RETRIEVE_TOP_K: usize = 100;
 
 /// `POST /v1/knowledge/retrieve`: run a query exactly as the `knowledge-retrieval` node would.
-pub async fn retrieve(State(state): State<Arc<AppState>>, Json(body): Json<RetrieveBody>) -> Response {
+pub async fn retrieve(State(state): State<Arc<AppState>>, JsonBody(body): JsonBody<RetrieveBody>) -> Response {
     let Some(knowledge) = state.knowledge() else { return not_served() };
     let mut request = RetrievalRequest::new(body.query, body.datasets)
         .threshold(body.score_threshold)

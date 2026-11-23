@@ -287,13 +287,17 @@ pub async fn maintenance(gateway: Arc<Gateway>, ttl: Duration) {
 pub fn spawn_background(built: &Built) {
     let gateway = built.app.gateway.clone();
     let callback_client = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().unwrap_or_default();
-    tokio::spawn(crate::outbox::run_outbox(gateway.clone(), callback_client, built.callback_secrets.clone()));
+    graphrt_core::task::spawn(crate::outbox::run_outbox(
+        gateway.clone(),
+        callback_client,
+        built.callback_secrets.clone(),
+    ));
     if let Some(policy) = built.backup.clone() {
-        tokio::spawn(crate::store::backup::run_backups(gateway.store.clone(), policy));
+        graphrt_core::task::spawn(crate::store::backup::run_backups(gateway.store.clone(), policy));
     }
-    tokio::spawn(maintenance(gateway.clone(), built.ttl));
+    graphrt_core::task::spawn(maintenance(gateway.clone(), built.ttl));
     for (deployment, job) in &built.crons {
-        tokio::spawn(crate::scheduler::run_job(gateway.clone(), deployment.clone(), job.clone()));
+        graphrt_core::task::spawn(crate::scheduler::run_job(gateway.clone(), deployment.clone(), job.clone()));
     }
 }
 

@@ -499,7 +499,7 @@ pub fn page_of(mut sorted: Vec<RunRecord>, filter: &RunFilter, max_limit: usize)
 
 /// Sort records newest first (ties broken by id, descending) for [`page_of`].
 pub fn sort_newest_first(records: &mut [RunRecord]) {
-    records.sort_by(|a, b| b.created_ms.cmp(&a.created_ms).then_with(|| b.run_id.cmp(&a.run_id)));
+    records.sort_unstable_by(|a, b| b.created_ms.cmp(&a.created_ms).then_with(|| b.run_id.cmp(&a.run_id)));
 }
 
 #[cfg(test)]

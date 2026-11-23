@@ -45,7 +45,7 @@ pub fn newest_backup(dir: &Path) -> Option<PathBuf> {
         })
         .map(|entry| entry.path())
         .collect();
-    backups.sort();
+    backups.sort_unstable();
     backups.pop()
 }
 
@@ -126,7 +126,7 @@ async fn prune(dir: &Path, keep: usize) -> std::io::Result<()> {
             backups.push(entry.path());
         }
     }
-    backups.sort();
+    backups.sort_unstable();
     let excess = backups.len().saturating_sub(keep.max(1));
     for path in backups.into_iter().take(excess) {
         tokio::fs::remove_file(path).await?;
@@ -164,7 +164,7 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        names.sort();
+        names.sort_unstable();
         assert_eq!(names, vec!["gateway-0000000000002.db", "gateway-0000000000003.db"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }

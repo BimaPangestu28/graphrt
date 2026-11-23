@@ -363,7 +363,11 @@ impl Pool {
                     } else {
                         state.waking = true;
                         let target = state.slots.len() as u32 + 1;
-                        tokio::spawn(Arc::clone(self).wake(target, None, Duration::ZERO));
+                        let pool = Arc::clone(self);
+                        // The outcome is recorded in the pool state for the waiters.
+                        graphrt_core::task::spawn(async move {
+                            let _recorded = pool.wake(target, None, Duration::ZERO).await;
+                        });
                     }
                 }
             }
@@ -474,7 +478,7 @@ impl Pool {
     pub fn spawn_prewarm(self: &Arc<Self>, request: PrewarmRequest) {
         let delay = self.config.wake_gate.as_ref().map_or(Duration::ZERO, |gate| gate.jitter(request.max_delay));
         let pool = Arc::clone(self);
-        tokio::spawn(async move {
+        graphrt_core::task::spawn(async move {
             tokio::time::sleep(delay).await;
             let name = &pool.deployment.name;
             let source = request.source.label();
@@ -542,7 +546,7 @@ impl Pool {
             let spent = self.budget_exhausted();
             let (mut keep, idle_timeout) =
                 if spent { (0, Duration::ZERO) } else { (self.config.min_replicas as usize, self.config.idle_timeout) };
-            state.slots.sort_by_key(|slot| std::cmp::Reverse(slot.idle_since));
+            state.slots.sort_unstable_by_key(|slot| std::cmp::Reverse(slot.idle_since));
             let now = Instant::now();
             let mut victims = Vec::new();
             for slot in std::mem::take(&mut state.slots) {

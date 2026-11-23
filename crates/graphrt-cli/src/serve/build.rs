@@ -33,7 +33,7 @@ pub fn discover(path: &Path) -> Result<Vec<(String, PathBuf)>, CliError> {
             found.push((name_of(&p), p));
         }
     }
-    found.sort();
+    found.sort_unstable();
     if found.is_empty() {
         return Err(CliError::usage(format!("no workflow files in `{}`", path.display())));
     }

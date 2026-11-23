@@ -102,7 +102,7 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
     #[cfg(feature = "telemetry")]
     crate::telemetry::count_run();
     let handle = stream.handle();
-    let interrupt = tokio::spawn(async move {
+    let interrupt = graphrt_core::task::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             eprintln!("\ninterrupted, aborting run...");
             handle.abort("interrupted by user");

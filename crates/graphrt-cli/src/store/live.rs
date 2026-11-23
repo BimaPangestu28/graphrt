@@ -240,7 +240,7 @@ pub fn spawn(
         detached: AtomicBool::new(false),
     });
     let recorder = Recorder { tracer, capture, ids_pending: true };
-    tokio::spawn(drive(run, assembler, record, store, Arc::clone(&active), on_finish, recorder));
+    graphrt_core::task::spawn(drive(run, assembler, record, store, Arc::clone(&active), on_finish, recorder));
     active
 }
 

@@ -305,9 +305,7 @@ impl PluginManifest {
     /// Parse a manifest from YAML text.
     #[cfg(feature = "yaml")]
     pub fn from_yaml(text: &str) -> Result<Self, PluginError> {
-        let options = serde_saphyr::options! { strict_booleans: true };
-        let raw: serde_json::Value =
-            serde_saphyr::from_str_with_options(text, options).map_err(|e| PluginError::Manifest(e.to_string()))?;
+        let raw = graphrt_core::yaml::to_value(text, true).map_err(|e| PluginError::Manifest(e.to_string()))?;
         let manifest: Self = serde_json::from_value(raw).map_err(|e| PluginError::Manifest(e.to_string()))?;
         manifest.validate()?;
         Ok(manifest)

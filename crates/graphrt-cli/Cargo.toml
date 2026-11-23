@@ -131,7 +131,6 @@ futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 indexmap.workspace = true
-serde-saphyr.workspace = true
 # Plugin catalog downloads (`plugins`): the same HTTP client, TLS, gzip and sha256
 # crates the workspace already uses.
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }

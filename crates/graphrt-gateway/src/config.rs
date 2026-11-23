@@ -277,7 +277,8 @@ impl GatewayConfig {
     /// # Errors
     /// A message naming the problem.
     pub fn from_yaml(text: &str) -> Result<Self, String> {
-        let config: Self = serde_saphyr::from_str(text).map_err(|error| format!("gateway config: {error}"))?;
+        let config: Self =
+            graphrt_core::yaml::from_str(text, false).map_err(|error| format!("gateway config: {error}"))?;
         config.validate()?;
         Ok(config)
     }
@@ -366,6 +367,11 @@ deployments:
         let reserved = "deployments: [{ name: shop, keys_env: K, open: true, input_headers: [{ header: Graphrt-Epoch, input: x }] }]";
         assert!(GatewayConfig::from_yaml(reserved).unwrap_err().contains("reserved"));
         assert!(GatewayConfig::from_yaml("store_ttl_days: 1").is_err());
+        let typed =
+            "deployments:\n  - name: shop\n    keys_env: K\n    open: true\n    pool: { max_active_runs: many }\n";
+        let error = GatewayConfig::from_yaml(typed).unwrap_err();
+        assert!(error.starts_with("gateway config: deployments[0].pool.max_active_runs (line 5, column "), "{error}");
+        assert!(error.contains("invalid type: string \"many\""), "{error}");
         let threshold = "deployments: [{ name: shop, keys_env: K, open: true, warm: { threshold: 2 } }]";
         assert!(GatewayConfig::from_yaml(threshold).unwrap_err().contains("warm.threshold"));
     }

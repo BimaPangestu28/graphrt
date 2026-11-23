@@ -164,12 +164,14 @@ impl NodeDoc {
 }
 
 /// Deserialize a config map, reporting the path of the offending field
-/// (`variables[0].value_selector`, or `.` for the config itself).
+/// (`variables[0].value_selector`, or `.` for the config itself). The path is
+/// recovered from the error only when there is one ([`crate::value_path`]),
+/// so each config type is compiled against one plain deserializer.
 pub(crate) fn parse_config_at<T: serde::de::DeserializeOwned>(
     config: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<T, (String, serde_json::Error)> {
     let value = serde_json::Value::Object(config.clone());
-    serde_path_to_error::deserialize(value).map_err(|e| (e.path().to_string(), e.into_inner()))
+    T::deserialize(&value).map_err(|e| (crate::value_path::error_path_text(&value, &e), e))
 }
 
 fn with_field(path: &str, error: &serde_json::Error) -> String {
@@ -272,9 +274,7 @@ impl Workflow {
     #[cfg(feature = "yaml")]
     pub fn from_yaml(text: &str) -> Result<Self, DocumentError> {
         // YAML 1.2 booleans only: `yes`, `no`, `y`, `n`, `on`, `off` stay strings.
-        let options = serde_saphyr::options! { strict_booleans: true };
-        let raw: serde_json::Value =
-            serde_saphyr::from_str_with_options(text, options).map_err(|e| DocumentError::Yaml(e.to_string()))?;
+        let raw = crate::yaml::to_value(text, true).map_err(|e| DocumentError::Yaml(e.to_string()))?;
         Self::from_value(raw)
     }
 
@@ -1038,7 +1038,7 @@ fn canonicalize(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
             let mut entries: Vec<(String, serde_json::Value)> = map.into_iter().collect();
-            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
             serde_json::Value::Object(entries.into_iter().map(|(k, v)| (k, canonicalize(v))).collect())
         }
         serde_json::Value::Array(items) => serde_json::Value::Array(items.into_iter().map(canonicalize).collect()),

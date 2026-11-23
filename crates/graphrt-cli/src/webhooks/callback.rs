@@ -92,7 +92,7 @@ impl CallbackTarget {
 pub fn spawn_delivery(target: Arc<CallbackTarget>, hook: &str, workflow: &str, run: Arc<ActiveRun>) {
     let hook = hook.to_owned();
     let workflow = workflow.to_owned();
-    tokio::spawn(async move {
+    graphrt_core::task::spawn(async move {
         let outcome = run.wait().await;
         let Some(payload) = payload(&hook, &workflow, &run.run_id, &outcome) else { return };
         let status = payload.get("status").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();

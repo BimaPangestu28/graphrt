@@ -291,8 +291,7 @@ fn parse_raw(text: &str) -> Result<serde_json::Value, Box<Diagnostic>> {
     }
     #[cfg(feature = "yaml")]
     {
-        let options = serde_saphyr::options! { strict_booleans: true };
-        serde_saphyr::from_str_with_options(text, options).map_err(|e| {
+        crate::yaml::to_value(text, true).map_err(|e| {
             let (line, column) = e
                 .location()
                 .map(|l| (usize::try_from(l.line()).unwrap_or(0), usize::try_from(l.column()).unwrap_or(0)))

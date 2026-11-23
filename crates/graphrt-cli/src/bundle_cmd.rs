@@ -232,7 +232,7 @@ fn build_cmd(args: crate::args::BundleBuildArgs) -> Result<u8, CliError> {
             None => missing.push(node.kind.clone()),
         }
     }
-    missing.sort();
+    missing.sort_unstable();
     missing.dedup();
     if !missing.is_empty() {
         eprintln!("warning: no plugin found for node kinds: {} (hosts must provide them)", missing.join(", "));

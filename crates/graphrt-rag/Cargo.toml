@@ -28,7 +28,7 @@ sqlite = ["dep:rusqlite"]
 # a local model directory works without it.
 local-embed = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
 # Load `KnowledgeConfig` from YAML.
-yaml = ["dep:serde-saphyr"]
+yaml = ["graphrt-core/yaml"]
 # Ingest PDF / Office / spreadsheet / HTML / EPUB / email files via graphrt-doc.
 doc = ["dep:graphrt-doc"]
 
@@ -40,7 +40,6 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 indexmap.workspace = true
-serde-saphyr = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "json"] }
 sha2 = { version = "0.11", optional = true, default-features = false }
 candle-core = { version = "0.11", optional = true, default-features = false }

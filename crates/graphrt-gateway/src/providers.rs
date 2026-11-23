@@ -768,7 +768,7 @@ machines: { kind: fly, apps: { graphrt-chat: { token_env: FLY_API_TOKEN } } }
 apps: { kind: aca, subscription_id: sub, resource_group: rg }
 dev: { kind: local }
 "#;
-        let providers: BTreeMap<String, ProviderConfig> = serde_saphyr::from_str(yaml).unwrap();
+        let providers: BTreeMap<String, ProviderConfig> = graphrt_core::yaml::from_str(yaml, false).unwrap();
         assert_eq!(providers.len(), 7);
         assert_eq!(
             providers["tasks"],
@@ -797,7 +797,7 @@ dev: { kind: local }
                 assert!(error.contains(config.feature()), "{error}");
             }
         }
-        let unknown = serde_saphyr::from_str::<ProviderConfig>("{ kind: app_runner }");
+        let unknown = graphrt_core::yaml::from_str::<ProviderConfig>("{ kind: app_runner }", false);
         assert!(unknown.is_err(), "App Runner is not supported");
     }
 }

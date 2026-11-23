@@ -370,7 +370,7 @@ fn server_ended(ended: Result<std::io::Result<()>, tokio::task::JoinError>) -> R
 
 /// Delete runs older than `days` (any status except running), hourly.
 fn spawn_retention(store: Arc<dyn RunStore>, days: u64) {
-    tokio::spawn(async move {
+    graphrt_core::task::spawn(async move {
         let ttl_ms = days.saturating_mul(24 * 60 * 60 * 1000);
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
         loop {

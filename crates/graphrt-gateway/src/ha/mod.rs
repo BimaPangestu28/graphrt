@@ -193,7 +193,7 @@ mod tests {
     use super::*;
 
     fn parse(yaml: &str) -> HaConfig {
-        serde_saphyr::from_str(yaml).unwrap()
+        graphrt_core::yaml::from_str(yaml, false).unwrap()
     }
 
     #[test]
@@ -206,6 +206,6 @@ mod tests {
         assert!(config.validate(Path::new(":memory:")).is_err());
         assert!(parse("heartbeat_ms: 1000\nstale_after_ms: 2000\n").validate(Path::new("g.db")).is_err());
         assert!(parse("poll_ms: 1\n").validate(Path::new("g.db")).is_err());
-        assert!(serde_saphyr::from_str::<HaConfig>("unknown: 1\n").is_err());
+        assert!(graphrt_core::yaml::from_str::<HaConfig>("unknown: 1\n", false).is_err());
     }
 }

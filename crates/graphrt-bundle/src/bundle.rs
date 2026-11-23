@@ -312,9 +312,7 @@ impl Bundle {
         let parsed: Result<serde_json::Value, BundleError> = if path.ends_with(".json") {
             serde_json::from_str(text).map_err(|e| BundleError::Manifest(format!("{path}: {e}")))
         } else {
-            let options = serde_saphyr::options! { strict_booleans: true };
-            serde_saphyr::from_str_with_options(text, options)
-                .map_err(|e| BundleError::Manifest(format!("{path}: {e}")))
+            graphrt_core::yaml::to_value(text, true).map_err(|e| BundleError::Manifest(format!("{path}: {e}")))
         };
         Some(parsed.map(|mut value| {
             if let Some(stores) = value.get_mut("stores").and_then(|s| s.as_object_mut()) {

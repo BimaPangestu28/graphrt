@@ -82,7 +82,7 @@ impl OnlineEval {
             sinks: sinks.clone(),
             counters: Arc::clone(&counters),
         });
-        tokio::spawn(dispatch(rx, worker, config.concurrency.max(1)));
+        graphrt_core::task::spawn(dispatch(rx, worker, config.concurrency.max(1)));
         Arc::new(Self { evaluators, tx, counters, sinks })
     }
 

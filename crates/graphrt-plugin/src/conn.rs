@@ -207,8 +207,8 @@ impl Connection {
     {
         let shared = Arc::new(Shared::new());
         let (tx, rx) = mpsc::unbounded_channel::<String>();
-        let writer_task = tokio::spawn(write_loop(writer, rx, shared.clone()));
-        let reader_task = tokio::spawn(read_loop(
+        let writer_task = graphrt_core::task::spawn(write_loop(writer, rx, shared.clone()));
+        let reader_task = graphrt_core::task::spawn(read_loop(
             BufReader::new(reader),
             shared.clone(),
             tx.clone(),

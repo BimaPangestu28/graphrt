@@ -40,13 +40,12 @@ deploy-fly = ["gw-fly", "graphrt-provider-fly/deploy"]
 deploy-aca = ["gw-aca", "graphrt-provider-azure/deploy-aca"]
 
 [dependencies]
-graphrt-core = { workspace = true, features = ["tokio"] }
+graphrt-core = { workspace = true, features = ["tokio", "yaml"] }
 graphrt-provider-api = { workspace = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde-saphyr.workspace = true
 indexmap.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros", "process", "io-util", "fs", "signal"] }

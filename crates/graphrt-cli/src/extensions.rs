@@ -232,7 +232,7 @@ fn bare_wasm_modules(paths: &[PathBuf]) -> Vec<PathBuf> {
         let Ok(entries) = std::fs::read_dir(path) else { continue };
         let mut modules: Vec<PathBuf> =
             entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| is_wasm(p)).collect();
-        modules.sort();
+        modules.sort_unstable();
         found.extend(modules);
     }
     found

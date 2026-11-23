@@ -19,12 +19,12 @@ process = ["tokio/process"]
 # Plugins served over HTTP.
 http = ["dep:reqwest", "dep:rustls"]
 # YAML manifests (`graphrt-plugin.yaml`).
-yaml = ["dep:serde-saphyr"]
+yaml = ["graphrt-core/yaml"]
 # `install_from_git` (runs the `git` executable; no extra dependencies).
 git = []
 
 [dependencies]
-graphrt-core.workspace = true
+graphrt-core = { workspace = true, features = ["tokio"] }
 futures.workspace = true
 thiserror.workspace = true
 serde.workspace = true
@@ -32,7 +32,6 @@ serde_json.workspace = true
 indexmap.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "io-util", "macros"] }
 sha2 = { version = "0.11", default-features = false }
-serde-saphyr = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "json", "stream"] }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 

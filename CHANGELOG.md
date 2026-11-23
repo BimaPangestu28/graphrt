@@ -46,6 +46,27 @@ releases may contain breaking changes; they are called out under **Changed**.
   with `user` in the body.
 
 ### Changed
+- Smaller binaries from less generic code, no feature removed. YAML is parsed
+  by one function (`graphrt_core::yaml::to_value`) and every document then
+  deserialized from a `serde_json::Value`; node configs and HTTP request bodies
+  no longer go through `serde_path_to_error` (the offending path is recovered
+  from the error, only when there is one: `graphrt_core::value_path`); the
+  stores' blocking jobs and the background tasks share one tokio task type
+  (`graphrt_core::task`); sorts with unique keys are unstable sorts. Gateway
+  core (`min-size`): x86_64 musl 9,042,760 → 8,291,784 B (8.62 → 7.91 MiB,
+  −733 KiB, now within the plan's 8 MiB), aarch64 musl 7,668,672 →
+  7,112,896 B (−543 KiB), macOS arm64 6,758,768 → 6,259,824 B (−487 KiB);
+  `gateway-all` x86_64 10,077,000 → 9,324,616 B (8.89 MiB, within 9 MiB),
+  aarch64 −545 KiB, macOS −471 KiB. `bench/budgets.toml` holds x86_64 to
+  8 / 9 MiB.
+- `gateway.yaml` values are typed as YAML resolves them: a string setting given
+  an unquoted number (`name: 2024`) is refused with its path and line
+  (`deployments[0].name (line 3, column 11): invalid type: integer `2024`,
+  expected a string`); quote it. Errors in the file now name the setting's path
+  and line.
+- `graphrt serve`: a bad query parameter is answered
+  `400 Failed to deserialize query string: <field>: <reason>`; request bodies
+  keep axum's statuses and texts (415, 400, 422 with the field path).
 - Smaller binaries wherever SQLite or C code is linked: builds from this
   repository (CI, release binaries, the container image) compile the bundled
   SQLite without full-text search, R*Tree, STAT4, dbstat, soundex, column
