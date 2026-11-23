@@ -142,15 +142,13 @@ impl Extensions {
         Ok(ext)
     }
 
-    /// Starts every loaded process / HTTP plugin now instead of at its first
-    /// node (see [`graphrt_plugin::PluginHost::prewarm`]).
-    pub fn prewarm_plugins(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+    /// Starts every loaded process / HTTP plugin now, each on its own task,
+    /// instead of at its first node (see [`graphrt_plugin::PluginHost::prewarm`]).
+    /// Needs a Tokio runtime.
+    pub fn prewarm_plugins(&self) {
         #[cfg(any(feature = "plugins", feature = "wasm"))]
-        let starts: Vec<_> = self.hosts.iter().map(graphrt_plugin::PluginHost::prewarm).collect();
-        #[cfg(not(any(feature = "plugins", feature = "wasm")))]
-        let starts: Vec<std::future::Ready<()>> = Vec::new();
-        async move {
-            futures::future::join_all(starts).await;
+        for host in &self.hosts {
+            tokio::spawn(host.prewarm());
         }
     }
 

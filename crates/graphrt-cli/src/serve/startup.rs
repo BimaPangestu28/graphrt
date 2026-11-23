@@ -73,7 +73,7 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     // bind and that run's dispatch instead of at its first plugin node.
     #[cfg(feature = "trust-gateway")]
     if state.gateway_agent().is_some() {
-        tokio::spawn(state.prewarm_plugins());
+        state.prewarm_plugins();
     }
     recover_store(&state, args.store_ttl_days).await?;
     let app = router_with_uploads(Arc::clone(&state), args.max_body_bytes, args.max_upload_bytes);

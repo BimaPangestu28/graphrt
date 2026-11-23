@@ -464,8 +464,8 @@ impl AppState {
     }
 
     /// Starts the loaded plugins' processes now (see [`Extensions::prewarm_plugins`]).
-    pub(crate) fn prewarm_plugins(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
-        self.extensions.prewarm_plugins()
+    pub(crate) fn prewarm_plugins(&self) {
+        self.extensions.prewarm_plugins();
     }
 
     /// Plugins loaded at startup (their hosts stay up for the server's lifetime).
