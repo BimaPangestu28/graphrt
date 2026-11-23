@@ -222,7 +222,8 @@ pub struct GatewayConfig {
     /// Per-IP limit.
     #[serde(default)]
     pub per_ip: Option<RateLimitConfig>,
-    /// Directory of local-process sockets.
+    /// Directory of local-process sockets; replaced by a short private one
+    /// under `/tmp` when socket paths in it would not fit `sun_path`.
     #[serde(default = "default_socket_dir")]
     pub socket_dir: PathBuf,
     /// Grace of local replicas (SIGTERM → SIGKILL).
