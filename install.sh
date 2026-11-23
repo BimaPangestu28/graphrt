@@ -8,6 +8,7 @@
 # Options:
 #   --version TAG   release tag to install (default: latest)
 #   --dir DIR       install directory (default: ~/.local/bin, or /usr/local/bin when root)
+#   --gateway       install the gateway build (`graphrt gateway`, `graphrt deploy`; 0.5.0+)
 #   --uninstall     remove an installed graphrt binary from --dir
 #   -h, --help      show this help
 #
@@ -22,6 +23,7 @@ BIN="graphrt"
 version="${GRAPHRT_VERSION:-latest}"
 dir="${GRAPHRT_INSTALL_DIR:-}"
 uninstall=0
+flavor=""
 
 say() { printf '%s\n' "graphrt-install: $*" >&2; }
 die() { say "error: $*"; exit 1; }
@@ -31,7 +33,8 @@ while [ $# -gt 0 ]; do
         --version) [ $# -ge 2 ] || die "--version needs a value"; version="$2"; shift ;;
         --dir) [ $# -ge 2 ] || die "--dir needs a value"; dir="$2"; shift ;;
         --uninstall) uninstall=1 ;;
-        -h | --help) sed -n '2,17p' "$0" 2>/dev/null || true; exit 0 ;;
+        --gateway) flavor="-gateway" ;;
+        -h | --help) sed -n '2,18p' "$0" 2>/dev/null || true; exit 0 ;;
         *) die "unknown option: $1 (see --help)" ;;
     esac
     shift
@@ -108,7 +111,7 @@ else
     case "$version" in v*) ;; *) version="v${version}" ;; esac
     base="https://github.com/${REPO}/releases/download/${version}"
 fi
-archive="${BIN}-${target}.tar.gz"
+archive="${BIN}${flavor}-${target}.tar.gz"
 
 tmp=$(mktemp -d 2>/dev/null || mktemp -d -t graphrt)
 trap 'rm -rf "$tmp"' EXIT INT TERM

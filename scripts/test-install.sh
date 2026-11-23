@@ -29,6 +29,20 @@ fi
 GRAPHRT_DOWNLOAD_BASE="file://$work/release" sh "$root/install.sh" --dir "$work/bin"
 "$work/bin/graphrt" | grep -q "graphrt fake" || { echo "installed binary does not run" >&2; exit 1; }
 
+# --gateway installs the gateway archive of the same release.
+gateway_archive="graphrt-gateway-${target}.tar.gz"
+mkdir -p "$work/release/graphrt-gateway-${target}"
+printf '#!/bin/sh\necho "graphrt fake gateway 0.0.0"\n' > "$work/release/graphrt-gateway-${target}/graphrt"
+chmod 755 "$work/release/graphrt-gateway-${target}/graphrt"
+(cd "$work/release" && tar -czf "$gateway_archive" "graphrt-gateway-${target}")
+if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$work/release" && sha256sum "$archive" "$gateway_archive" > SHA256SUMS)
+else
+    (cd "$work/release" && shasum -a 256 "$archive" "$gateway_archive" > SHA256SUMS)
+fi
+GRAPHRT_DOWNLOAD_BASE="file://$work/release" sh "$root/install.sh" --gateway --dir "$work/bin-gateway"
+"$work/bin-gateway/graphrt" | grep -q "graphrt fake gateway" || { echo "--gateway did not install the gateway build" >&2; exit 1; }
+
 # A tampered archive must be rejected.
 echo "tampered" >> "$work/release/$archive"
 if GRAPHRT_DOWNLOAD_BASE="file://$work/release" sh "$root/install.sh" --dir "$work/bin2" 2>/dev/null; then

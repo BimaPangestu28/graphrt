@@ -1,7 +1,7 @@
 # graphrt-provider-api
 
 The contract between the graphrt gateway and the platforms it wakes agents on.
-Internal crate (`publish = false`) until the provider wave (F2) has settled.
+Its API is still young and may change between minor releases.
 
 ## What is in it
 

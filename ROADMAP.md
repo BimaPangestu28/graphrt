@@ -52,7 +52,22 @@ Models come from API providers; the runtime itself needs no server.
   LangSmith, Braintrust, Opik, Phoenix and MLflow.
 - End-user JWT verification and per-user rate limits for `graphrt serve`.
 
+## Done in 0.5
+
+- `graphrt gateway` (preview): always-on front of scale-to-zero agents, sole
+  writer of the run store, re-dispatch after drains, lost replicas and gateway
+  restarts, on-prem active/passive HA, warm-up and cost guards
+  ([docs/gateway.md](docs/gateway.md)).
+- Providers and `graphrt deploy` for local processes, Kubernetes, Cloud Run,
+  ECS Fargate, Lambda, Fly and Azure Container Apps (cloud targets tested
+  against API fakes; real-cloud verification pending).
+- Gateway release build (`graphrt-gateway-<target>`, `:gateway` image) next to
+  the slim agent build.
+
 ## Next
+
+- Real-cloud verification of the Cloud Run, ECS, Lambda, Fly and Azure
+  Container Apps providers.
 
 - Windows binaries tested on Windows, and release automation per tag (CI).
   The workflows are in place (tests on Linux, macOS and Windows gate every tag;

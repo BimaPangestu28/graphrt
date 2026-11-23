@@ -1,7 +1,7 @@
 # graphrt-provider-aws
 
-AWS targets of the graphrt gateway, without the AWS SDK. Internal crate
-(`publish = false`) until the gateway's provider wave (F2) has settled.
+AWS targets of the graphrt gateway, without the AWS SDK. Its API follows
+`graphrt-provider-api` and may change between minor releases.
 
 | Feature | Adds |
 | --- | --- |
@@ -12,7 +12,7 @@ AWS targets of the graphrt gateway, without the AWS SDK. Internal crate
 
 Both providers implement `graphrt_provider_api::Provider`. Setup, IAM
 policies, limits and the conformance status are in
-[docs/gateway-aws.md](../../docs/gateway-aws.md).
+[docs/gateway-aws.md](https://github.com/BimaPangestu28/graphrt/blob/main/docs/gateway-aws.md).
 
 ```sh
 cargo test -p graphrt-provider-aws --features deploy
