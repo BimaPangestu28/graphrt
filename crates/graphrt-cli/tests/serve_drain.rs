@@ -89,7 +89,12 @@ async fn state_with(workflows: &Path, store: Arc<dyn RunStore>) -> Arc<AppState>
     let files = discover(workflows).expect("discover");
     let options = ServiceOptions {
         allow_private_network: true,
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     };
     Arc::new(build_state(&files, &options, Limits::default(), None).await.expect("state").with_store(store))

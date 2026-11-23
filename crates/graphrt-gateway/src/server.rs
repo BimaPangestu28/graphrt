@@ -683,6 +683,7 @@ async fn warm(
     let pool = current.pool;
     match pool.prewarm_check(replicas) {
         PrewarmOutcome::AlreadyWarm => {
+            pool.hint_warm();
             (StatusCode::OK, axum::Json(json!({ "status": "warm", "replicas": pool.stats().replicas }))).into_response()
         }
         PrewarmOutcome::BudgetExhausted => retry_after(

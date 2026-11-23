@@ -19,6 +19,9 @@ compares the result with the `[gateway_targets]` table of bench/budgets.toml
   wake-node   the same with a Node.js process plugin: request -> the plugin node's result
               (the agent starts the plugin host at start-up; the plugin's own spawn -> initialize
               time without graphrt is reported as the floor)
+  plugin-pool a kept-warm agent with the Node.js plugin and `--plugin-pool`: RSS of the agent
+              and its plugin processes for pool sizes 0/1/2, a run on the warm pool, and after the
+              idle stop (`--plugin-idle`) a run cold vs. after a gateway warm hint (POST .../warm)
   webhook     webhook ack (HMAC-signed POST -> 202), sequential, n = webhook_samples
   cron        lag of cron_fires fires (`* * * * *` schedules with prewarm): fire time
               -> run record created, and -> run finished (gated: an upper bound)
@@ -57,7 +60,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SCENARIOS = ["ttfb-uds", "ttfb-tcp", "sse", "wake", "wake-node", "webhook", "cron"]
+SCENARIOS = ["ttfb-uds", "ttfb-tcp", "sse", "wake", "wake-node", "plugin-pool", "webhook", "cron"]
 ADMIN_TOKEN = secrets.token_hex(16)
 API_KEY = "bench-" + secrets.token_hex(16)
 AGENT_KEY_HEX = secrets.token_hex(32)
@@ -686,20 +689,7 @@ def measure_wakes(ctx: Context, name: str, workflow_text: str, workflow_name: st
         first_event, finished = [], []
         for index, deployment in enumerate(names):
             before = agent_pids(gateway.socket_dir)
-            request = client_run_request(deployment, {"stream": True, "inputs": {}})
-            began = time.perf_counter_ns()
-            with gateway.address.connect() as sock:
-                sock.sendall(request)
-                received, started_ms = b"", None
-                while chunk := sock.recv(65536):
-                    received += chunk
-                    if started_ms is None and b"run_started" in received:
-                        started_ms = (time.perf_counter_ns() - began) / 1e6
-                    if b"run_succeeded" in received:
-                        break
-                done_ms = (time.perf_counter_ns() - began) / 1e6
-            if started_ms is None or b"run_succeeded" not in received:
-                raise RuntimeError(f"{deployment}: {received[-400:]!r}\n{gateway.log_tail()}")
+            started_ms, done_ms = timed_run(gateway, deployment)
             if index >= warmup:
                 first_event.append(started_ms)
                 finished.append(done_ms)
@@ -709,6 +699,25 @@ def measure_wakes(ctx: Context, name: str, workflow_text: str, workflow_name: st
         return {"first_event_ms": summarize(first_event), "run_finished_ms": summarize(finished)}
     finally:
         gateway.stop()
+
+
+def timed_run(gateway: Gateway, deployment: str) -> tuple[float, float]:
+    """A streaming run through the gateway: ms to `run_started` and to `run_succeeded`."""
+    request = client_run_request(deployment, {"stream": True, "inputs": {}})
+    began = time.perf_counter_ns()
+    with gateway.address.connect() as sock:
+        sock.sendall(request)
+        received, started_ms = b"", None
+        while chunk := sock.recv(65536):
+            received += chunk
+            if started_ms is None and b"run_started" in received:
+                started_ms = (time.perf_counter_ns() - began) / 1e6
+            if b"run_succeeded" in received:
+                break
+        done_ms = (time.perf_counter_ns() - began) / 1e6
+    if started_ms is None or b"run_succeeded" not in received:
+        raise RuntimeError(f"{deployment}: {received[-400:]!r}\n{gateway.log_tail()}")
+    return started_ms, done_ms
 
 
 def scenario_wake(ctx: Context) -> dict:
@@ -727,6 +736,110 @@ def scenario_wake_node(ctx: Context) -> dict:
                            ctx.samples("wake_samples", 20))
     result["plugin_handshake_ms"] = summarize(plugin_handshakes(link, 30))
     return result
+
+
+def node_plugins_dir(ctx: Context, name: str) -> Path:
+    plugins = ctx.workspace(name).root / "plugins"
+    plugins.mkdir(exist_ok=True)
+    (plugins / "upper").symlink_to(ROOT / "plugins" / "examples" / "node-uppercase")
+    return plugins
+
+
+def process_tree(pid: int) -> list[int]:
+    """`pid` and its descendants (from /proc/*/task/*/children)."""
+    tree, pending = [], [pid]
+    while pending:
+        current = pending.pop()
+        tree.append(current)
+        for children in Path(f"/proc/{current}/task").glob("*/children"):
+            try:
+                pending += [int(child) for child in children.read_text().split()]
+            except OSError:
+                continue
+    return tree
+
+
+def tree_rss_kib(pid: int) -> int:
+    total = 0
+    for member in process_tree(pid):
+        try:
+            total += proc_status_kib(member, "VmRSS")
+        except (OSError, KeyError):
+            continue
+    return total
+
+
+def plugin_processes(agent: int) -> int:
+    return len(process_tree(agent)) - 1
+
+
+def warm_request(deployment: str) -> bytes:
+    headers = {"Content-Type": "application/json", "X-Api-Key": API_KEY}
+    return http_request("POST", f"/v1/deployments/{deployment}/warm", headers, b"{}")
+
+
+def kept_warm_agent(ctx: Context, name: str, agent_args: list[str]) -> tuple[Gateway, int]:
+    """A gateway with one deployment kept warm (`min_replicas: 1`) running the Node.js
+    plugin workflow with `agent_args`, and its agent's pid."""
+    work = ctx.workspace(name)
+    workflow = work.write("shout.yaml", PLUGIN_WORKFLOW)
+    plugins = node_plugins_dir(ctx, name)
+    pool = {"max_active_runs": 8, "min_replicas": 1, "idle_timeout_secs": 3600}
+    gateway = Gateway(ctx.args.gateway, work, [deployment_entry(name, pool=pool)]).start()
+    gateway.register(name, "shout", [str(ctx.args.agent), "serve", str(workflow), "--plugins", str(plugins), *agent_args])
+    timed_run(gateway, name)
+    pids = agent_pids(gateway.socket_dir)
+    if len(pids) != 1:
+        raise RuntimeError(f"{name}: expected one agent, found {sorted(pids)}\n{gateway.log_tail()}")
+    return gateway, pids.pop()
+
+
+def settled_rss_mib(agent: int, plugins: int) -> float:
+    wait_until(lambda: plugin_processes(agent) >= plugins, 15, f"{plugins} plugin processes")
+    time.sleep(1.0)
+    return round(tree_rss_kib(agent) / 1024, 2)
+
+
+def scenario_plugin_pool(ctx: Context) -> dict:
+    if not shutil.which("node"):
+        raise SkipScenario("node is not installed")
+    samples = ctx.samples("plugin_pool_samples", 5)
+    rss = {}
+    for size in (0, 1, 2):
+        gateway, agent = kept_warm_agent(ctx, f"pool-{size}", ["--plugin-pool", str(size)] if size else [])
+        try:
+            rss[str(size)] = settled_rss_mib(agent, max(size, 1))
+            if size == 1:
+                warm = [timed_run(gateway, f"pool-{size}")[1] for _ in range(samples)]
+        finally:
+            gateway.stop()
+    # Idle stop: the pool empties after 1 s without a run; then a run either starts the
+    # plugin itself (cold) or finds it started by a warm hint sent `lead` before.
+    lead = 0.3
+    gateway, agent = kept_warm_agent(ctx, "pool-idle", ["--plugin-pool", "1", "--plugin-idle", "1s"])
+    try:
+        cold, hinted, agent_only = [], [], 0.0
+        for index in range(2 * samples):
+            wait_until(lambda: plugin_processes(agent) == 0, 15, "the idle stop of the plugin pool", 0.02)
+            agent_only = round(tree_rss_kib(agent) / 1024, 2)
+            if index % 2:
+                status, body = exchange(gateway.address, warm_request("pool-idle"))
+                if status != 200:
+                    raise RuntimeError(f"warm: {status} {body[-300:]!r}")
+                time.sleep(lead)
+                hinted.append(timed_run(gateway, "pool-idle")[1])
+            else:
+                cold.append(timed_run(gateway, "pool-idle")[1])
+    finally:
+        gateway.stop()
+    return {
+        "rss_mib_by_pool_size": rss,
+        "agent_only_rss_mib": agent_only,
+        "warm_run_ms": summarize(warm),
+        "cold_pool_run_ms": summarize(cold),
+        "hinted_run_ms": summarize(hinted),
+        "hint_lead_ms": lead * 1000,
+    }
 
 
 def plugin_handshakes(plugin_dir: Path, samples: int) -> list[float]:
@@ -861,6 +974,9 @@ def checks_for(name: str, result: dict, targets: dict) -> list[Check]:
     if name == "wake-node":
         # The plugin node's result, not the first event: the Node.js host must be up.
         return [Check(name, "p95 to plugin result", result["run_finished_ms"]["p95"], t["wake_node_p95_ms"], "ms")]
+    if name == "plugin-pool":
+        return [Check(name, "p95 run after a warm hint", result["hinted_run_ms"]["p95"], t["plugin_pool_hinted_p95_ms"], "ms"),
+                Check(name, "p95 run on a warm pool", result["warm_run_ms"]["p95"], t["plugin_pool_hinted_p95_ms"], "ms")]
     if name == "webhook":
         return [Check(name, "ack p95", result["ack_ms"]["p95"], t["webhook_ack_p95_ms"], "ms")]
     if name == "cron":
@@ -907,6 +1023,13 @@ def describe(name: str, result: dict) -> str:
             h = result["plugin_handshake_ms"]
             text += f"; the plugin alone (spawn -> initialize, no graphrt) p50/p95 {h['p50']:.1f}/{h['p95']:.1f} ms"
         return text + rounds_note(result)
+    if name == "plugin-pool":
+        r = result["rss_mib_by_pool_size"]
+        w, c, h = result["warm_run_ms"], result["cold_pool_run_ms"], result["hinted_run_ms"]
+        return (f"RSS agent + plugins, pool 0/1/2: {r['0']}/{r['1']}/{r['2']} MiB, agent alone after the idle stop "
+                f"{result['agent_only_rss_mib']} MiB; run p50/p95 warm {w['p50']:.2f}/{w['p95']:.2f} ms, after the idle "
+                f"stop cold {c['p50']:.2f}/{c['p95']:.2f} ms vs. {result['hint_lead_ms']:g} ms after a warm hint "
+                f"{h['p50']:.2f}/{h['p95']:.2f} ms, n={h['n']}")
     if name == "webhook":
         a = result["ack_ms"]
         text = f"ack p50 {a['p50']:.3f} ms, p99 {a['p99']:.3f} ms, n={a['n']}"
@@ -1013,6 +1136,7 @@ SCENARIO_FUNCTIONS = {
     "sse": scenario_sse,
     "wake": scenario_wake,
     "wake-node": scenario_wake_node,
+    "plugin-pool": scenario_plugin_pool,
     "webhook": scenario_webhook,
     "cron": scenario_cron,
 }

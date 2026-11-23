@@ -38,6 +38,8 @@ struct Shared {
     logs: Mutex<LogBuffer>,
     /// Plugin name used in forwarded log events.
     label: Mutex<String>,
+    /// Woken when the connection closes (see [`Connection::closed`]).
+    closed_signal: tokio::sync::Notify,
 }
 
 /// Most recent `log` notifications, bounded by line count and total bytes.
@@ -95,6 +97,7 @@ impl Shared {
                 Vec::new()
             }
         };
+        self.closed_signal.notify_waiters();
         let reason = self.reason();
         for pending in drained {
             let _receiver_gone = pending.reply.send(Err(CallError::Crashed(reason.clone())));
@@ -228,6 +231,17 @@ impl Connection {
     /// Whether the connection is closed (the plugin exited or broke the protocol).
     pub fn is_closed(&self) -> bool {
         self.shared.closed.load(Ordering::SeqCst)
+    }
+
+    /// Resolves once the connection is closed (at once when it already is).
+    pub async fn closed(&self) {
+        let notified = self.shared.closed_signal.notified();
+        futures::pin_mut!(notified);
+        // Registered before the check, so a close in between still wakes us.
+        notified.as_mut().enable();
+        if !self.is_closed() {
+            notified.await;
+        }
     }
 
     /// A fresh request id, unique within this connection.

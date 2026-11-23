@@ -64,11 +64,17 @@ fn config(grace: Duration) -> GatewayAgentConfig {
 }
 
 async fn state(tag: &str, agent: Option<GatewayAgentConfig>) -> Arc<AppState> {
+    let plugins = graphrt_cli::extensions::PluginOptions { no_default: true, ..Default::default() };
+    state_with_plugins(tag, agent, plugins).await
+}
+
+async fn state_with_plugins(
+    tag: &str,
+    agent: Option<GatewayAgentConfig>,
+    plugins: graphrt_cli::extensions::PluginOptions,
+) -> Arc<AppState> {
     let files = discover(&workflows_dir(tag)).expect("discover");
-    let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
-        ..ServiceOptions::default()
-    };
+    let options = ServiceOptions { plugins, ..ServiceOptions::default() };
     let state = build_state(&files, &options, Limits::default(), None).await.expect("state");
     Arc::new(state.with_gateway_agent(agent.map(|config| Arc::new(GatewayAgent::new(config)))))
 }
@@ -353,6 +359,33 @@ async fn a_gateway_drain_refuses_new_runs() {
     let (status, _, body) = send(&app, signed("POST", "/internal/v1/runs", Some(("late", 1)), &run)).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert!(body.contains("draining"), "{body}");
+}
+
+/// `warm_plugins` of `GET /internal/v1/hello`.
+async fn warm_plugins(app: &axum::Router) -> Json {
+    let (status, _, hello) = send(app, signed("GET", "/internal/v1/hello", None, &Json::Null)).await;
+    assert_eq!(status, StatusCode::OK, "{hello}");
+    serde_json::from_str::<Json>(&hello).unwrap()["warm_plugins"].clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_warm_hint_starts_the_plugin_pool_and_hello_reports_it_warm() {
+    let plugins = graphrt_cli::extensions::PluginOptions {
+        dirs: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/examples/python-sentiment")],
+        no_default: true,
+        pool: graphrt_cli::extensions::PluginPool { size: 1, idle_timeout: None },
+        ..Default::default()
+    };
+    let state = state_with_plugins("warm", Some(config(Duration::from_secs(60))), plugins).await;
+    let app = router(state, 1 << 20);
+    assert_eq!(warm_plugins(&app).await, json!([]), "a loaded plugin is not warm before it starts");
+    let (status, _, body) = send(&app, signed("POST", "/internal/v1/warm", None, &Json::Null)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while warm_plugins(&app).await != json!(["sentiment"]) {
+        assert!(std::time::Instant::now() < deadline, "the hint never warmed the plugin");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// A lost gateway stream becomes an orphan the gateway pulls: the agent never

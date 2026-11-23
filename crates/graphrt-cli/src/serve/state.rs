@@ -435,6 +435,13 @@ fn draining_response() -> Response {
 
 /// What the gateway protocol (`--trust-gateway`, [`crate::gateway_agent`])
 /// reads of the server state, outside the `serve` module.
+impl AppState {
+    /// Starts the loaded plugins' processes now (see [`Extensions::prewarm_plugins`]).
+    pub(crate) fn prewarm_plugins(&self) {
+        self.extensions.prewarm_plugins();
+    }
+}
+
 #[cfg(feature = "trust-gateway")]
 impl AppState {
     /// Trust a gateway (`--trust-gateway`): serve the signed `/internal/v1` API.
@@ -463,14 +470,9 @@ impl AppState {
         self.max_active_runs
     }
 
-    /// Starts the loaded plugins' processes now (see [`Extensions::prewarm_plugins`]).
-    pub(crate) fn prewarm_plugins(&self) {
-        self.extensions.prewarm_plugins();
-    }
-
-    /// Plugins loaded at startup (their hosts stay up for the server's lifetime).
+    /// Loaded plugins that would serve a node without starting a process first.
     pub(crate) fn warm_plugins(&self) -> Vec<String> {
-        self.extensions.loaded().map(|plugin| plugin.name.clone()).collect()
+        self.extensions.warm_plugins()
     }
 
     /// The `429` to answer when `--max-active-runs` runs are executing (or the

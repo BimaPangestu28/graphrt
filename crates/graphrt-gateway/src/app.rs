@@ -81,6 +81,30 @@ fn build_deployment(
     Ok(deployment)
 }
 
+/// The warm hint of `deployment`'s pools: `POST /internal/v1/warm` to each
+/// replica, in the background. Best effort: a replica that is gone, or an
+/// agent older than the hint (`404`), only misses the head start.
+pub fn warm_hint(
+    gateway: &Arc<Gateway>,
+    deployment: &str,
+    key: Option<&crate::signature::GatewayKey>,
+) -> Option<crate::pool::WarmHint> {
+    let key = key?.clone();
+    let name = deployment.to_owned();
+    let gateway = Arc::downgrade(gateway);
+    Some(crate::pool::WarmHint(Arc::new(move |addresses| {
+        let (gateway, key, name) = (gateway.clone(), key.clone(), name.clone());
+        graphrt_core::task::spawn(async move {
+            let Some(gateway) = gateway.upgrade() else { return };
+            for address in addresses {
+                if let Err(error) = gateway.agents.warm(&address, &key, &name).await {
+                    eprintln!("gateway: warm hint to {name}: {error}");
+                }
+            }
+        });
+    })))
+}
+
 /// Assembles the gateway. `keys_by_deployment` receives each deployment's
 /// raw key list so the local provider can hand it to its agents.
 ///
@@ -155,6 +179,7 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
             }
         };
         let mut deployment = build_deployment(deployment_config, chosen, &client, &wake_gate)?;
+        deployment.pool_config.warm_hint = warm_hint(&gateway, &deployment.name, deployment.signing_key());
         deployment.retirer = retirers.get(provider_name).cloned();
         let deployment = Arc::new(deployment);
         if let Some(name) = &deployment_config.callback_secret_env {

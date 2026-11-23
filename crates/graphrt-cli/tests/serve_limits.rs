@@ -42,7 +42,12 @@ async fn runs_beyond_the_active_limit_are_refused() {
     let dir = workflows_dir();
     let files = discover(&dir).expect("discover");
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     };
     let state = build_state(&files, &options, Limits::default(), None).await.expect("state").with_max_active_runs(1);

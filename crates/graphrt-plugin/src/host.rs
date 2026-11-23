@@ -78,6 +78,8 @@ pub struct PluginHost {
     entries: Vec<Entry>,
     loaders: HashMap<String, Arc<dyn PluginLoader>>,
     trusted: std::collections::HashSet<String>,
+    #[cfg(feature = "process")]
+    pool: crate::pool::PoolConfig,
 }
 
 impl fmt::Debug for PluginHost {
@@ -96,6 +98,16 @@ impl PluginHost {
     /// Add a loader for a custom runtime (e.g. `wasm`).
     pub fn with_loader(mut self, loader: Arc<dyn PluginLoader>) -> Self {
         self.loaders.insert(loader.runtime().to_owned(), loader);
+        self
+    }
+
+    /// Keep process plugins loaded after this call warm in a
+    /// [`crate::ProcessPool`] of `config.size` processes each (`size: 0`, the
+    /// default, keeps one process started at the first request). Each pooled
+    /// process costs the plugin's resident memory (a Node.js host ~40 MiB).
+    #[cfg(feature = "process")]
+    pub fn with_pool(mut self, config: crate::pool::PoolConfig) -> Self {
+        self.pool = config;
         self
     }
 
@@ -166,7 +178,7 @@ impl PluginHost {
             return Err(PluginError::DuplicatePlugin(name));
         }
         let (trusted, warnings) = self.apply_policy(&mut plugin)?;
-        let transport = make_transport(&plugin)?;
+        let transport = self.make_transport(&plugin)?;
         let shared = transport.map(|t| Arc::new(PluginShared::new(&plugin.manifest, t)));
         let entry = Entry { plugin, shared, trusted, warnings };
         let summary = info(&entry);
@@ -253,6 +265,24 @@ impl PluginHost {
                 let _outcome_left_to_first_call = transport.initialize(&clock).await;
             }
         })
+    }
+
+    /// Names of the plugins that would serve a request without starting a
+    /// process now (in-process and HTTP plugins always do).
+    pub fn warm_plugins(&self) -> Vec<String> {
+        let warm = |entry: &&Entry| entry.shared.as_ref().is_none_or(|shared| shared.transport.is_warm());
+        self.entries.iter().filter(warm).map(|entry| entry.plugin.manifest.name.clone()).collect()
+    }
+
+    /// Transport for built-in runtimes; `None` for runtimes handled by a loader.
+    fn make_transport(&self, plugin: &LoadedManifest) -> Result<Option<Arc<dyn Transport>>, PluginError> {
+        #[cfg(feature = "process")]
+        if let Runtime::Process(p) = &plugin.manifest.runtime
+            && self.pool.enabled()
+        {
+            return Ok(Some(Arc::new(crate::pool::ProcessPool::new(plugin, p, self.pool))));
+        }
+        make_transport(plugin)
     }
 
     /// Register every plugin's nodes into `registry` and tools into `tools`.

@@ -200,6 +200,7 @@ impl DeploymentConfig {
                 .max_warm_replica_secs_per_day
                 .map(|secs| std::sync::Arc::new(crate::warm::WarmBudget::new(secs))),
             wake_gate: None,
+            warm_hint: None,
         }
     }
 }

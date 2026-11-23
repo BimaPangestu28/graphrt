@@ -23,7 +23,12 @@ fn repo_root() -> PathBuf {
 
 fn options() -> ServiceOptions {
     ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     }
 }

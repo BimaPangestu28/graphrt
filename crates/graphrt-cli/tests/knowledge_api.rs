@@ -50,7 +50,12 @@ impl Drop for Fixture {
 async fn state(fixture: &Fixture, with_knowledge: bool) -> Arc<AppState> {
     let files = vec![("hello".to_owned(), fixture.path().join("flows/hello.yaml"))];
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         knowledge: with_knowledge.then(|| fixture.path().join("knowledge.json")),
         ..ServiceOptions::default()
     };

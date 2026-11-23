@@ -106,7 +106,12 @@ async fn app_with_events(dir: &TempDir, per_minute: u32, events: UserEvents) -> 
     let flows = write_workflow(dir);
     let files = discover(&flows).expect("discover");
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     };
     let specs: Vec<HeaderInputSpec> = vec![format!("user_jwt={HEADER}").parse().unwrap()];

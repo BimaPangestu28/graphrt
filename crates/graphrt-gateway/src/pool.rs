@@ -56,6 +56,20 @@ pub struct PoolConfig {
     pub warm_budget: Option<Arc<WarmBudget>>,
     /// Gateway-wide wake limit; `None`: unlimited.
     pub wake_gate: Option<Arc<WakeGate>>,
+    /// Sends a warm hint (`POST /internal/v1/warm`) to replicas a prewarm
+    /// found already up, so their agents start plugin processes an idle plugin
+    /// pool stopped; `None`: no hints.
+    pub warm_hint: Option<WarmHint>,
+}
+
+/// Sends a warm hint to the given replicas (in the background).
+#[derive(Clone)]
+pub struct WarmHint(pub Arc<dyn Fn(Vec<graphrt_provider_api::EndpointAddress>) + Send + Sync>);
+
+impl std::fmt::Debug for WarmHint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("WarmHint")
+    }
 }
 
 impl Default for PoolConfig {
@@ -69,6 +83,7 @@ impl Default for PoolConfig {
             quotas: Quotas::default(),
             warm_budget: None,
             wake_gate: None,
+            warm_hint: None,
         }
     }
 }
@@ -483,6 +498,7 @@ impl Pool {
             let name = &pool.deployment.name;
             let source = request.source.label();
             match pool.prewarm_after_in_flight(&request).await {
+                Ok(PrewarmOutcome::AlreadyWarm) => pool.hint_warm(),
                 Ok(PrewarmOutcome::BudgetExhausted) => {
                     eprintln!("gateway: {source} prewarm of {name} skipped: keep-warm budget spent")
                 }
@@ -508,6 +524,16 @@ impl Pool {
                 return outcome;
             }
             let _deadline_passed = tokio::time::timeout_at(deadline, woken).await;
+        }
+    }
+
+    /// Sends the warm hint (if configured) to every replica of the pool: a
+    /// prewarm found them up, and their agents may have stopped idle plugins.
+    pub fn hint_warm(&self) {
+        let Some(hint) = &self.config.warm_hint else { return };
+        let addresses: Vec<_> = self.lock().slots.iter().map(|slot| slot.endpoint.address.clone()).collect();
+        if !addresses.is_empty() {
+            (hint.0)(addresses);
         }
     }
 
@@ -764,6 +790,22 @@ mod tests {
             PoolConfig { quotas: quota, ..PoolConfig::default() },
         );
         assert_eq!(blocked.acquire().await.unwrap_err(), ActivateError::WakeQuota);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_background_prewarm_of_a_warm_pool_hints_its_replicas() {
+        let provider = Arc::new(MemoryProvider::new(Duration::from_millis(10)));
+        let hinted = Arc::new(Mutex::new(Vec::new()));
+        let seen = hinted.clone();
+        let hint = WarmHint(Arc::new(move |addresses| seen.lock().unwrap().push(addresses.len())));
+        let pool = pool(provider, PoolConfig { warm_hint: Some(hint), ..PoolConfig::default() });
+        let cron = || PrewarmRequest::one(PrewarmSource::Cron, Duration::ZERO);
+        pool.spawn_prewarm(cron());
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(hinted.lock().unwrap().is_empty(), "a replica the prewarm starts needs no hint");
+        pool.spawn_prewarm(cron());
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(*hinted.lock().unwrap(), vec![1], "the warm replica got one hint");
     }
 
     #[tokio::test(start_paused = true)]

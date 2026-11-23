@@ -111,7 +111,12 @@ fn workflows_dir(tag: &str) -> PathBuf {
 async fn app_with(store: Arc<dyn RunStore>, tag: &str) -> (axum::Router, PathBuf) {
     let dir = workflows_dir(tag);
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     };
     let state =
@@ -259,7 +264,12 @@ graph:
     .unwrap();
     let store = Arc::new(MemoryStore::new());
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     };
     let state = build_state(&discover(&dir).unwrap(), &options, Limits::default(), None)

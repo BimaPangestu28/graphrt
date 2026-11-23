@@ -78,6 +78,8 @@ pub struct AgentWorld {
     /// Starts to refuse with `409 epoch_conflict`, like an agent that still holds
     /// the lost execution of the previous epoch until it preempted it.
     pub epoch_conflicts: AtomicU32,
+    /// Warm hints (`POST /internal/v1/warm`) received.
+    pub warm_hints: AtomicU32,
 }
 
 struct AgentState {
@@ -240,6 +242,14 @@ async fn hello(State(state): State<Arc<AgentState>>, headers: HeaderMap) -> Resp
         .into_response()
 }
 
+async fn warm(State(state): State<Arc<AgentState>>, headers: HeaderMap) -> Response {
+    if let Err(refused) = verify(&state, "POST", "/internal/v1/warm", &headers, b"") {
+        return refused;
+    }
+    state.world.warm_hints.fetch_add(1, Ordering::SeqCst);
+    (StatusCode::ACCEPTED, axum::Json(json!({ "warm_plugins": [] }))).into_response()
+}
+
 async fn orphans(State(state): State<Arc<AgentState>>, headers: HeaderMap) -> Response {
     if let Err(refused) = verify(&state, "GET", "/internal/v1/orphans", &headers, b"") {
         return refused;
@@ -276,6 +286,7 @@ pub async fn serve_agent(world: Arc<AgentWorld>, id: &str) -> (SocketAddr, tokio
     let app = Router::new()
         .route("/internal/v1/runs", post(start_run))
         .route("/internal/v1/hello", get(hello))
+        .route("/internal/v1/warm", post(warm))
         .route("/internal/v1/orphans", get(orphans))
         .route("/internal/v1/orphans/{run_id}", axum::routing::delete(release_orphan))
         // Platform readiness probes (Cloud Run wake) hit the agent's /healthz.
@@ -476,7 +487,9 @@ pub async fn start_gateway(options: Options) -> TestGateway {
     let auth =
         DeploymentAuth::new(vec![graphrt_gateway::hex::sha256_hex(API_KEY.as_bytes())], None, &reqwest::Client::new())
             .unwrap();
-    let deployment = Arc::new(Deployment::new(DEPLOYMENT, auth, vec![key()], chosen, options.pool));
+    let mut pool = options.pool;
+    pool.warm_hint = graphrt_gateway::app::warm_hint(&gateway, DEPLOYMENT, Some(&key()));
+    let deployment = Arc::new(Deployment::new(DEPLOYMENT, auth, vec![key()], chosen, pool));
     let mut first = version("v1");
     first.target = options.target.clone();
     deployment.add_version(first, graphrt_core::store::now_ms());

@@ -47,6 +47,7 @@ enum Stopped {
 /// Execute `graphrt serve`.
 pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let mut options = service_options(&args.services)?;
+    options.plugins.pool = plugin_pool(&args)?;
     let files = discover(&args.path)?;
     let api_key = lookup_env(&options, &args.api_key_env).filter(|key| !key.is_empty());
     #[cfg(feature = "jwt")]
@@ -70,9 +71,13 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let state = Arc::new(state);
     // An agent behind a gateway is started because a run is on its way: its
     // plugin processes (a Node.js host takes tens of ms) start alongside the
-    // bind and that run's dispatch instead of at its first plugin node.
+    // bind and that run's dispatch instead of at its first plugin node. A
+    // plugin pool fills at startup in any mode.
     #[cfg(feature = "trust-gateway")]
-    if state.gateway_agent().is_some() {
+    let behind_gateway = state.gateway_agent().is_some();
+    #[cfg(not(feature = "trust-gateway"))]
+    let behind_gateway = false;
+    if behind_gateway || options.plugins.pool.size > 0 {
         state.prewarm_plugins();
     }
     recover_store(&state, args.store_ttl_days).await?;
@@ -92,6 +97,17 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         telemetry.shutdown().await;
     }
     Ok(EXIT_OK)
+}
+
+/// `--plugin-pool` and `--plugin-idle`.
+///
+/// @throws CliError (usage) - `--plugin-idle` without a pool.
+fn plugin_pool(args: &ServeArgs) -> Result<crate::extensions::PluginPool, CliError> {
+    let idle_timeout = args.plugin_idle.filter(|idle| !idle.is_zero());
+    if idle_timeout.is_some() && args.plugin_pool == 0 {
+        return Err(CliError::usage("`--plugin-idle` needs `--plugin-pool 1` or more"));
+    }
+    Ok(crate::extensions::PluginPool { size: usize::from(args.plugin_pool), idle_timeout })
 }
 
 /// A variable of the process environment, else of `--env-file`.

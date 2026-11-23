@@ -21,7 +21,12 @@ async fn state(api_key: Option<&str>) -> Arc<AppState> {
     let files = discover(&examples()).expect("discover");
     // Ignore the developer's own installed plugins.
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     };
     let state = build_state(&files, &options, Limits::default(), api_key.map(str::to_owned)).await.expect("state");
@@ -204,7 +209,7 @@ async fn plugin_kinds_are_served_and_validated() {
         plugins: graphrt_cli::extensions::PluginOptions {
             dirs: vec![plugins.clone()],
             no_default: true,
-            trusted: Vec::new(),
+            ..Default::default()
         },
         ..ServiceOptions::default()
     };

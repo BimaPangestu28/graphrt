@@ -301,6 +301,16 @@ impl AgentClient {
         serde_json::from_slice(&bytes).map_err(|error| AgentError::Stream(error.to_string()))
     }
 
+    /// `POST /internal/v1/warm`: a warm hint (runs are expected soon).
+    ///
+    /// # Errors
+    /// See [`AgentError`] (an agent older than the hint answers `404`).
+    pub async fn warm(&self, address: &EndpointAddress, key: &GatewayKey, deployment: &str) -> Result<(), AgentError> {
+        self.send(address, key, deployment, reqwest::Method::POST, "/internal/v1/warm", RunScope::default(), Vec::new())
+            .await
+            .map(|_| ())
+    }
+
     /// `POST /internal/v1/drain` with a deadline.
     ///
     /// # Errors

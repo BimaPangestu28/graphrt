@@ -117,7 +117,12 @@ async fn state_with(
 ) -> Arc<AppState> {
     let files = discover(flows).unwrap();
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         allow_private_network: allow_private,
         ..ServiceOptions::default()
     };
@@ -352,7 +357,12 @@ async fn hooks_must_name_served_workflows() {
     let flows = workflows(&dir);
     let files = discover(&flows).unwrap();
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     };
     let webhooks = Webhooks::from_value(json!({ "hooks": { "h": { "workflow": "missing" } } }), &[], false).unwrap();
@@ -514,7 +524,12 @@ async fn a_deployment_namespaces_idempotent_run_ids_like_the_gateway() {
     let flows = workflows(&dir);
     let files = discover(&flows).unwrap();
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     };
     let webhooks = Webhooks::from_value(hooks_config(), &vars(), false).unwrap().with_deployment(Some("shop".into()));

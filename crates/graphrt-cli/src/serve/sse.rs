@@ -164,7 +164,7 @@ mod tests {
         .unwrap();
         let files = discover(&dir).unwrap();
         let options = crate::setup::ServiceOptions {
-            plugins: crate::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+            plugins: crate::extensions::PluginOptions { no_default: true, ..Default::default() },
             ..crate::setup::ServiceOptions::default()
         };
         let state = std::sync::Arc::new(build_state(&files, &options, Limits::default(), None).await.unwrap());
