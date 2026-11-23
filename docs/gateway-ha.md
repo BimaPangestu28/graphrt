@@ -16,7 +16,7 @@ over; the old active can never write again.
 | --- | --- | --- |
 | `kill -9` / crash of the active | the kernel drops its `active.lock`; the passive sees it at its next poll and takes over | 73 ms to the first `200 /healthz` with the default `poll_ms: 200`; 41–53 ms with `poll_ms: 50` |
 | A run executing at that moment | its agent notices the lost stream, waits its reattach window, preempts and holds the orphan; the new active polls it, re-dispatches, the run finishes | finished 3.1 s after the kill (an 800 ms tool call, re-executed once) |
-| Active frozen (`SIGSTOP`, VM pause, I/O stall) | after `stale_after_ms` without a heartbeat the passive steals the lease, `SIGKILL`s the frozen holder when it runs on the same host | `stale_after_ms` + 25–50 ms (1.53 s with 1500 ms) |
+| Active frozen (`SIGSTOP`, VM pause, I/O stall) | after `stale_after_ms` without a heartbeat the passive steals the lease, `SIGKILL`s the frozen holder when it runs on the same host. Also when it froze *inside* a heartbeat, with `lease.lock` taken: after `stale_after_ms` of a busy lock the passive decides without it | `stale_after_ms` + 25–50 ms (1.53 s with 1500 ms); frozen inside the lock 1.56–1.89 s (13 runs at load average 59–126) |
 | Planned restart / upgrade (`SIGTERM`) | the active stops listening, releases the lease; the passive takes over at its next poll | 26–78 ms |
 | Active loses the volume | it cannot confirm its heartbeat, stops writing after `stale_after_ms − heartbeat_ms`, exits after `stale_after_ms`; the passive steals | ≈ `stale_after_ms` |
 | Old active comes back | its first write or heartbeat sees a newer token, it exits; the supervisor restarts it as a passive | – |
@@ -37,7 +37,7 @@ Files in `ha.lease_dir` (default: the store's directory):
 | File | Role |
 | --- | --- |
 | `graphrt-gateway.lease` | JSON: token, holder (node, host, pid), heartbeat counter, `released`. Replaced atomically |
-| `graphrt-gateway.lease.lock` | `flock` around each read-modify-write of the lease (microseconds) |
+| `graphrt-gateway.lease.lock` | `flock` around each read-modify-write of the lease (write + fsync + rename: 4 ms p50, 8 ms max on macOS APFS, where fsync is `F_FULLFSYNC`) |
 | `graphrt-gateway.active.lock` | `flock` held by the active for its whole tenure |
 | `graphrt-gateway.promote` | a manual promotion request |
 
@@ -45,7 +45,14 @@ Files in `ha.lease_dir` (default: the store's directory):
   was released, when the holder's `active.lock` is free (the holder process is
   gone), on `graphrt gateway ha promote`, or with `takeover: auto` when the
   heartbeat counter did not move for `stale_after_ms` *measured on the
-  passive's own monotonic clock* (wall clocks are never compared).
+  passive's own monotonic clock* (wall clocks are never compared). A
+  `lease.lock` still taken after `stale_after_ms` means its holder froze
+  inside a read-modify-write and keeps the lock until it dies: the passive
+  then applies the same rules without the lock (the lease file is replaced
+  atomically, so the read is whole), which is what lets it `SIGKILL` that
+  holder. Up to 0.4.0 such a freeze — about 2 % of the time with a 200 ms
+  heartbeat, more under CPU load — blocked every takeover until the process
+  resumed.
 - **Safety** is the store. Every take increments the token; the new active
   raises `meta.fence` in SQLite to its token (compare-and-set: only a higher
   token wins), and every write transaction of the gateway first checks that
@@ -197,22 +204,31 @@ reclaimed runs), `ha_killed_stale_holder`, `ha_superseded`, `ha_released`.
 - `crates/graphrt-gateway/tests/failover_simulation.rs`: deterministic chaos
   on a simulated clock with the real lease state machine, store fence, SQLite
   file and cron/webhook run ids; `kill -9` (also between taking the lease and
-  fencing the store), freezes with a pending write, volume partitions,
-  handovers, promotion requests, clock skew and jumps, seeds without the
-  self-fence. 10,000 seeds (`GRAPHRT_SIM_SEEDS=10000`, 237 s): 125,921
-  promotions, 455,296 committed writes, 9,990 writes of superseded actives
-  refused, 0 violations of I8 (token order of committed writes), I3 (one run
-  per fire, no missed fire) and I4 (one run per webhook key, every delivery
-  acknowledged and stored); 83,523 single-fault takeovers in `auto`: p50
-  100 ms, p99 5.0 s, max 14.9 s (simulated time, bound 30 s). With the store
-  fence disabled the checker reports I8 violations. Pull requests run 1,000
-  seeds.
+  fencing the store), freezes with a pending write, freezes inside the lease
+  lock (a heartbeat's write landing late on resume, a passive's poll),
+  volume partitions, handovers, promotion requests, clock skew and jumps,
+  seeds without the self-fence. 10,000 seeds (`GRAPHRT_SIM_SEEDS=10000`,
+  83 s): 131,720 promotions, 455,113 committed writes, 15,780 writes of
+  superseded actives refused, 0 violations of I8 (token order of committed
+  writes), I3 (one run per fire, no missed fire), I4 (one run per webhook
+  key, every delivery acknowledged and stored) and of the freeze bound (on
+  one host in `auto`, the lease of an active frozen longer than
+  2 × `stale_after_ms` has moved before it resumes); 82,903 single-fault
+  takeovers in `auto`: p50 100 ms, p99 5.1 s, max 19.8 s (simulated time,
+  bound 30 s). With the store fence disabled the checker reports I8
+  violations; with the busy-lock rule removed, 147 freeze-bound violations
+  in 1,000 seeds. Pull requests run 1,000 seeds.
 - `crates/graphrt-cli/tests/gateway_failover.rs`: two real processes with
   real agents — `kill -9` while a run executes (reclaimed and finished),
-  `SIGSTOP` and `SIGTERM` of the active, webhook dedupe across failovers,
-  passive RSS.
+  `SIGSTOP` of the active with the lease lock taken (a freeze inside a
+  heartbeat, made deterministic) and `SIGTERM`, webhook dedupe across
+  failovers, passive RSS.
 
-Limits: a process frozen *inside* the microsecond lease critical section
-blocks takeovers until it resumes or is killed; external side effects of a
+Limits: a holder frozen inside the lease lock on *another* host (no kill
+possible) may finish its heartbeat write when it resumes and overwrite the
+new lease; the new active then sees a foreign token and restarts, the old
+one is refused by the store fence at its first write and exits, and a
+passive takes the lease again — one extra failover, never two actives
+committing. External side effects of a
 node (LLM calls, `http-request`) stay at-least-once across a failover, as
 across any re-dispatch.

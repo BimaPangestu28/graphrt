@@ -12,7 +12,9 @@
 //!
 //! Chaos: `kill -9` of the active (also between taking the lease and fencing
 //! the store), freezes (SIGSTOP) of any process with a pending write on
-//! resume, partitions from the volume, graceful handovers, manual promotion
+//! resume, freezes *inside* the lease lock (mid heartbeat: the lock stays
+//! taken and the beat's write lands late on resume; mid poll of a passive),
+//! partitions from the volume, graceful handovers, manual promotion
 //! requests, wall-clock skew between nodes, and seeds with the self-fence
 //! disabled so only the store fence stands between a resumed active and the
 //! store.
@@ -24,7 +26,9 @@
 //! - **I4**: at most one new run per webhook key; every delivery acknowledged
 //!   and its run stored.
 //! - Takeover: a fault of the active with a healthy passive is followed by a
-//!   new active within 30 s.
+//!   new active within 30 s; on one host (`auto`), the lease of an active
+//!   frozen for more than twice `stale_after` (inside the lease lock or not)
+//!   has moved to a passive before it resumes.
 //!
 //! `GRAPHRT_SIM_SEEDS` (default 1000; nightly 10000), `GRAPHRT_SIM_SEED_START`,
 //! `GRAPHRT_SIM_LANES` (threads, default 8).
@@ -188,6 +192,12 @@ struct Node {
     frozen_until: Option<u64>,
     pending_write: bool,
     partitioned_until: Option<u64>,
+    /// Frozen while holding the lease lock.
+    frozen_in_lock: bool,
+    /// The lease the frozen heartbeat writes when the process resumes.
+    late_lease: Option<LeaseRecord>,
+    /// A single-fault freeze of the active that a passive must end: (start, faults, token).
+    displace_by_resume: Option<(u64, u64, u64)>,
 }
 
 impl Node {
@@ -273,6 +283,9 @@ impl World {
                 frozen_until: None,
                 pending_write: false,
                 partitioned_until: None,
+                frozen_in_lock: false,
+                late_lease: None,
+                displace_by_resume: None,
             });
         }
         let takeover = if rng.chance(800) { Takeover::Auto } else { Takeover::Manual };
@@ -365,6 +378,69 @@ impl World {
         target.state = State::Down { restart_at: now + restart_in };
         target.frozen_until = None;
         target.pending_write = false;
+        target.frozen_in_lock = false;
+        target.late_lease = None;
+        target.displace_by_resume = None;
+    }
+
+    fn same_host(&self) -> bool {
+        self.nodes.iter().all(|node| node.host == self.nodes[0].host)
+    }
+
+    /// Freezes `target` until `until`; sometimes inside the lease lock.
+    fn freeze(&mut self, target: usize, until: u64) {
+        let now = self.time();
+        let node = &self.nodes[target];
+        if matches!(node.state, State::Down { .. }) || node.frozen(now) {
+            return;
+        }
+        let in_lock = self.disk.mutex.is_none() && !node.partitioned(now) && self.rng.chance(500);
+        if in_lock {
+            let before = self.disk.lease.clone();
+            let unix_ms = (self.base_unix as u64) * 1000 + now;
+            let World { disk, nodes, .. } = self;
+            if let State::Active(active) = &mut nodes[target].state {
+                // The beat read the lease and wrote its temporary file; the rename lands on resume.
+                let mut medium = SimMedium { disk, node: target, partitioned: false, unix_ms };
+                if active.holder.beat(&mut medium) == Beat::Confirmed {
+                    nodes[target].late_lease = disk.lease.clone();
+                }
+                disk.lease = before;
+            }
+            disk.mutex = Some(target);
+        }
+        let token = self.token_of(target);
+        let healthy = self.nodes.iter().any(|node| node.healthy_passive(now));
+        let bounded = self.settings.takeover == Takeover::Auto && self.same_host();
+        let node = &mut self.nodes[target];
+        node.frozen_until = Some(until);
+        node.pending_write = true;
+        node.frozen_in_lock = in_lock;
+        node.displace_by_resume = token
+            .filter(|_| bounded && healthy && until - now > 2 * STALE_AFTER_MS + 2 * POLL_MS)
+            .map(|token| (now, self.faults, token));
+    }
+
+    /// The process continues after a freeze: a heartbeat stopped inside the
+    /// lease lock completes its write and releases the lock.
+    fn resume(&mut self, node: usize) {
+        self.nodes[node].frozen_until = None;
+        if let Some((started, faults, token)) = self.nodes[node].displace_by_resume.take()
+            && faults == self.faults
+            && self.disk.lease.as_ref().is_some_and(|lease| lease.token == token)
+        {
+            self.violation(format!(
+                "active gw-{node} (token {token}) frozen at {started} ms resumed still holding the lease"
+            ));
+        }
+        if std::mem::take(&mut self.nodes[node].frozen_in_lock) {
+            if let Some(late) = self.nodes[node].late_lease.take() {
+                self.disk.lease = Some(late);
+            }
+            if self.disk.mutex == Some(node) {
+                self.disk.mutex = None;
+            }
+        }
     }
 
     fn start_outage(&mut self) {
@@ -397,11 +473,7 @@ impl World {
                     self.start_outage();
                 }
                 let until = now + self.rng.range(1_000, 25_000);
-                let node = &mut self.nodes[target];
-                if !matches!(node.state, State::Down { .. }) && !node.frozen(now) {
-                    node.frozen_until = Some(until);
-                    node.pending_write = true;
-                }
+                self.freeze(target, until);
             }
             3 => {
                 let target = if self.rng.chance(600) { active.unwrap_or(target) } else { target };
@@ -704,6 +776,9 @@ impl World {
         for node in 0..self.nodes.len() {
             if self.nodes[node].frozen(now) {
                 continue;
+            }
+            if self.nodes[node].frozen_until.is_some() {
+                self.resume(node);
             }
             match &self.nodes[node].state {
                 State::Down { restart_at } if *restart_at <= now => {

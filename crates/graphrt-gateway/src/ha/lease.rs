@@ -7,7 +7,7 @@
 //! | File | Role |
 //! | --- | --- |
 //! | `graphrt-gateway.lease` | JSON [`LeaseRecord`]: token, holder, heartbeat counter. Replaced atomically (write + rename) |
-//! | `graphrt-gateway.lease.lock` | `flock` serialising read-modify-write of the lease (held for microseconds) |
+//! | `graphrt-gateway.lease.lock` | `flock` serialising read-modify-write of the lease (held for one write + fsync + rename: milliseconds) |
 //! | `graphrt-gateway.active.lock` | `flock` held by the active for its whole tenure: the kernel drops it when the process dies |
 //! | `graphrt-gateway.promote` | manual promotion request (`graphrt gateway ha promote`) |
 //!
@@ -20,7 +20,9 @@
 //!    when it provably still runs on this host);
 //! 4. `takeover: auto` and the holder's heartbeat counter did not move for
 //!    `stale_after` on the *passive's* monotonic clock (frozen or partitioned
-//!    holder; audit D1): same as 3.
+//!    holder; audit D1): same as 3. This also holds when the lease lock
+//!    stays taken for `stale_after` (the holder froze inside a heartbeat):
+//!    the passive then decides without the lock.
 //!
 //! Every take bumps the token. The active ([`Holder`]) increments the
 //! heartbeat counter every beat and steps down as soon as the lease names
@@ -192,12 +194,14 @@ pub struct Candidate {
     identity: Identity,
     settings: LeaseSettings,
     observed: Option<Observation>,
+    /// Start of the current run of polls that found the lease lock taken.
+    lock_busy_since: Option<u64>,
 }
 
 impl Candidate {
     /// A candidate.
     pub fn new(identity: Identity, settings: LeaseSettings) -> Self {
-        Self { identity, settings, observed: None }
+        Self { identity, settings, observed: None, lock_busy_since: None }
     }
 
     /// Who this is.
@@ -209,21 +213,42 @@ impl Candidate {
     ///
     /// # Errors
     /// I/O errors of the volume (the caller logs and polls again).
+    ///
+    /// The lease lock is held for one read-modify-write (a few ms: write +
+    /// fsync + rename). When it stays taken for `stale_after`, its holder was
+    /// frozen (`SIGSTOP`, VM pause) inside that window and keeps the lock
+    /// until it dies; waiting for the lock would then never displace it. The
+    /// candidate decides without the lock instead (the lease file is replaced
+    /// atomically, so the read is whole): the rules are the same, and the
+    /// store fence still orders the tokens if the frozen process ever
+    /// completes its write.
     pub fn step(&mut self, medium: &mut dyn LeaseMedium, now_ms: u64) -> io::Result<Option<Promotion>> {
-        if !medium.try_lock_mutex()? {
+        if medium.try_lock_mutex()? {
+            self.lock_busy_since = None;
+            let result = self.take_if_due(medium, now_ms, None);
+            medium.unlock_mutex();
+            return result;
+        }
+        let busy_since = *self.lock_busy_since.get_or_insert(now_ms);
+        if now_ms.saturating_sub(busy_since) < self.settings.stale_after_ms {
             return Ok(None);
         }
-        let result = self.step_locked(medium, now_ms);
-        medium.unlock_mutex();
-        result
+        let promotion = self.take_if_due(medium, now_ms, Some(busy_since))?;
+        if promotion.is_some() {
+            self.lock_busy_since = None;
+        }
+        Ok(promotion)
     }
 
-    fn stale_for(&mut self, record: &LeaseRecord, now_ms: u64) -> u64 {
+    /// How long the holder's heartbeat has not moved. `quiet_since` is when
+    /// the lease lock became busy: no heartbeat can be written without it.
+    fn stale_for(&mut self, record: &LeaseRecord, now_ms: u64, quiet_since: Option<u64>) -> u64 {
         match self.observed {
             Some(seen) if seen.token == record.token && seen.seq == record.seq => now_ms.saturating_sub(seen.since_ms),
             _ => {
-                self.observed = Some(Observation { token: record.token, seq: record.seq, since_ms: now_ms });
-                0
+                let since_ms = quiet_since.unwrap_or(now_ms);
+                self.observed = Some(Observation { token: record.token, seq: record.seq, since_ms });
+                now_ms.saturating_sub(since_ms)
             }
         }
     }
@@ -233,6 +258,7 @@ impl Candidate {
         medium: &mut dyn LeaseMedium,
         current: Option<&LeaseRecord>,
         now_ms: u64,
+        quiet_since: Option<u64>,
     ) -> io::Result<Option<(TakeReason, bool)>> {
         let Some(record) = current else { return Ok(Some((TakeReason::Vacant, false))) };
         if record.released {
@@ -241,7 +267,7 @@ impl Candidate {
         if record.tenure && medium.try_tenure()? {
             return Ok(Some((TakeReason::HolderExited, true)));
         }
-        let stale_for = self.stale_for(record, now_ms);
+        let stale_for = self.stale_for(record, now_ms, quiet_since);
         if medium.take_promote_request(&self.identity.node)? {
             return Ok(Some((TakeReason::Requested, false)));
         }
@@ -251,14 +277,21 @@ impl Candidate {
         Ok(None)
     }
 
-    fn step_locked(&mut self, medium: &mut dyn LeaseMedium, now_ms: u64) -> io::Result<Option<Promotion>> {
+    fn take_if_due(
+        &mut self,
+        medium: &mut dyn LeaseMedium,
+        now_ms: u64,
+        quiet_since: Option<u64>,
+    ) -> io::Result<Option<Promotion>> {
         let current = match medium.read() {
             Ok(current) => current,
             // An unreadable lease is vacant: the store fence still orders the tokens.
             Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
             Err(error) => return Err(error),
         };
-        let Some((reason, mut tenure)) = self.decide(medium, current.as_ref(), now_ms)? else { return Ok(None) };
+        let Some((reason, mut tenure)) = self.decide(medium, current.as_ref(), now_ms, quiet_since)? else {
+            return Ok(None);
+        };
         if !tenure {
             tenure = medium.try_tenure()?;
         }
@@ -640,6 +673,53 @@ mod tests {
         let requested = manual.step(&mut medium, 60_001).unwrap().unwrap();
         assert_eq!((requested.token, requested.reason), (3, TakeReason::Requested));
         assert!(!dir.join(PROMOTE_FILE).exists(), "the request is consumed");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn holder_frozen_inside_the_lease_lock_is_still_displaced() {
+        // SIGSTOP between `flock(lease.lock)` and its release (the beat's
+        // write + fsync): the lock stays taken until the holder dies.
+        let dir = temp_dir("frozen-lock");
+        let mut holder_medium = FileLease::open(&dir, "a").unwrap();
+        let promotion =
+            Candidate::new(identity("a", 1), settings(Takeover::Auto)).step(&mut holder_medium, 0).unwrap().unwrap();
+        let mut holder = Holder::new(identity("a", 1), &promotion);
+        assert_eq!(holder.beat(&mut holder_medium), Beat::Confirmed);
+        assert!(holder_medium.try_lock_mutex().unwrap(), "frozen mid-beat");
+
+        let mut medium = FileLease::open(&dir, "b").unwrap();
+        let mut auto = Candidate::new(identity("b", 2), settings(Takeover::Auto));
+        assert_eq!(auto.step(&mut medium, 1_000).unwrap(), None, "a busy lock is normal for one beat");
+        assert_eq!(auto.step(&mut medium, 5_999).unwrap(), None);
+        let stolen = auto.step(&mut medium, 6_000).unwrap().unwrap();
+        assert_eq!((stolen.token, stolen.reason, stolen.kill), (2, TakeReason::Stale, Some(1)));
+        assert_eq!(FileLease::peek(&dir).unwrap().unwrap().node, "b");
+
+        // Manual mode: `ha promote` still goes through the frozen lock.
+        let mut manual = Candidate::new(identity("c", 3), settings(Takeover::Manual));
+        assert_eq!(manual.step(&mut medium, 10_000).unwrap(), None);
+        assert_eq!(manual.step(&mut medium, 60_000).unwrap(), None, "manual never steals on staleness");
+        FileLease::request_promotion(&dir, Some("c")).unwrap();
+        let requested = manual.step(&mut medium, 60_001).unwrap().unwrap();
+        assert_eq!((requested.token, requested.reason), (3, TakeReason::Requested));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn frozen_lock_holder_that_left_frees_the_tenure_and_the_lease() {
+        // A frozen passive holds the lease lock; the active stepped down and exited.
+        let dir = temp_dir("frozen-passive");
+        let mut active_medium = FileLease::open(&dir, "a").unwrap();
+        Candidate::new(identity("a", 1), settings(Takeover::Manual)).step(&mut active_medium, 0).unwrap().unwrap();
+        let mut frozen = FileLease::open(&dir, "f").unwrap();
+        assert!(frozen.try_lock_mutex().unwrap());
+        drop(active_medium);
+        let mut medium = FileLease::open(&dir, "b").unwrap();
+        let mut manual = Candidate::new(identity("b", 2), settings(Takeover::Manual));
+        assert_eq!(manual.step(&mut medium, 0).unwrap(), None);
+        let taken = manual.step(&mut medium, 5_000).unwrap().unwrap();
+        assert_eq!((taken.token, taken.reason, taken.tenure, taken.kill), (2, TakeReason::HolderExited, true, None));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
