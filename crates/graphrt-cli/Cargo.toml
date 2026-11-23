@@ -141,7 +141,7 @@ sha2 = { version = "0.11", optional = true, default-features = false }
 getrandom = { version = "0.3", optional = true }
 # `jwt`: signature checks (the same `ring` rustls uses) and base64url.
 ring = { version = "0.17", optional = true, default-features = false, features = ["alloc"] }
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23", optional = true }
 thiserror = { workspace = true, optional = true }
 axum ={ version = "0.8", optional = true, default-features = false, features = ["http1", "json", "query", "tokio"] }
 # Already linked through axum/hyper; named for `Frame` in the body drain of `serve`.

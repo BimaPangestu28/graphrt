@@ -1,0 +1,22 @@
+# Build settings shared by every build from this repository (CI, release
+# binaries, the container image, local development).
+
+[env]
+# The bundled SQLite (rusqlite `bundled`: the gateway store, graphrt-rag's
+# `sqlite` store) is compiled by libsqlite3-sys with full-text search, R*Tree,
+# STAT4, dbstat, soundex, column metadata and extension loading. graphrt uses
+# none of them: plain tables, WAL and `VACUUM INTO` only. Turning them off,
+# plus SQLite's recommended `OMIT_DEPRECATED` / `OMIT_SHARED_CACHE`, saves
+# about 360 KiB of every binary that links SQLite (gateway core x86_64 musl
+# 9,503,416 → 9,134,408 B). Not applied to `cargo install graphrt-cli` from
+# crates.io, which builds SQLite with libsqlite3-sys's defaults.
+# A variable already set in the environment wins over this one.
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_FTS3 -USQLITE_ENABLE_FTS3_PARENTHESIS -USQLITE_ENABLE_FTS5 -USQLITE_ENABLE_RTREE -USQLITE_ENABLE_STAT4 -USQLITE_ENABLE_DBSTAT_VTAB -USQLITE_SOUNDEX -USQLITE_ENABLE_COLUMN_METADATA -USQLITE_ENABLE_LOAD_EXTENSION -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_SHARED_CACHE"
+
+# C dependencies (SQLite, mimalloc, QuickJS, ring's C parts) of the static musl
+# builds without unwind tables. No Rust panic unwinds through a C frame: a panic
+# leaving an `extern "C"` callback aborts (Rust ≥ 1.81) and rusqlite catches
+# panics in its callbacks, so the tables only cost size (about 93 KiB on the
+# gateway core, x86_64). Ring's assembly keeps its explicit CFI.
+CFLAGS_x86_64_unknown_linux_musl = "-fno-asynchronous-unwind-tables -fno-unwind-tables"
+CFLAGS_aarch64_unknown_linux_musl = "-fno-asynchronous-unwind-tables -fno-unwind-tables"

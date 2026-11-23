@@ -41,7 +41,7 @@ serde_json.workspace = true
 serde-saphyr = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing.workspace = true
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23", optional = true }
 axum = { version = "0.8", optional = true, default-features = false, features = ["http1", "tokio"] }
 futures = { workspace = true, optional = true }
 

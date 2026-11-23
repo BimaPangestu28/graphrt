@@ -317,9 +317,8 @@ crate's conformance tests), and real-cloud verification is pending.
 | First blocking run through `--dev` that wakes a local agent from zero (`examples/hello.yaml`, `curl` included, ~6.8 ms of it is `curl` starting) | p50 17.4 / p95 18.4 ms; warm p50 8.7 ms, n = 20 | macOS arm64, `--no-default-features --features gateway` |
 | HA takeover after `kill -9` of the active, to first `200 /healthz` | 73 ms (`poll_ms: 200`); 41–53 ms (`poll_ms: 50`) | macOS arm64, [gateway-ha.md](gateway-ha.md) |
 | Kubernetes wake 0 → 1 pod, n = 50 | p50 340 ms, p95 812 ms, max 1.17 s (target ≤ 3 s) | local kind v1.36.1 cluster, [kubernetes-provider.md](kubernetes-provider.md#conformance) |
-| Binary: gateway core (`--no-default-features --features gateway`, local agents included) | 6.73 MiB (7,061,136 B; `trust-gateway` adds 48.8 KiB, warm-up and cost guards 48.6 KiB) | macOS arm64, 2026-11-22 |
-| Binary: gateway core, static musl | x86_64 9.06 MiB (9,503,416 B), aarch64 7.75 MiB (8,123,944 B); warm-up and cost guards add 60.8 / 48.2 KiB | `cargo zigbuild`, 2026-11-22 |
-| Binary: every provider and deploy driver (`--no-default-features --features gateway-all`) | 7.40 MiB (7,759,968 B; `trust-gateway` adds 81.1 KiB) | macOS arm64, 2026-11-22 |
+| Binary: gateway core (`--no-default-features --features gateway`, local agents included) | macOS arm64 6.45 MiB (6,758,752 B), static musl x86_64 8.62 MiB (9,040,840 B), aarch64 7.31 MiB (7,667,392 B) | 2026-11-23, budgets in [bench/budgets.toml](../bench/budgets.toml) (`gateway-core`) |
+| Binary: every provider and deploy driver (`--no-default-features --features gateway-all`) | macOS arm64 7.14 MiB (7,490,736 B), static musl x86_64 9.61 MiB (10,075,080 B), aarch64 8.10 MiB (8,494,912 B) | 2026-11-23, `gateway-all` in [bench/budgets.toml](../bench/budgets.toml) |
 | Binary: agent behind a gateway (`serve,llm,plugins,trust-gateway`) | ≈ 6.2 MiB (agent-slim 6.16 MiB + 73.3 KiB) | static musl, Linux arm64 ([bench/budgets.toml](../bench/budgets.toml)) |
 
 Not measured yet: Linux gateway RSS, cold starts on any real

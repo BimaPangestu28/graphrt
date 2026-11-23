@@ -46,6 +46,19 @@ releases may contain breaking changes; they are called out under **Changed**.
   with `user` in the body.
 
 ### Changed
+- Smaller binaries wherever SQLite or C code is linked: builds from this
+  repository (CI, release binaries, the container image) compile the bundled
+  SQLite without full-text search, R*Tree, STAT4, dbstat, soundex, column
+  metadata and extension loading, which graphrt never used, plus SQLite's
+  recommended `OMIT_DEPRECATED` / `OMIT_SHARED_CACHE`, and the C dependencies
+  of the static musl builds without unwind tables (`.cargo/config.toml`).
+  `base64` and `sha2` are no longer linked in two versions. Gateway core
+  (`min-size`): x86_64 musl 9,503,416 → 9,040,840 B (−451.7 KiB), aarch64
+  musl 8,124,200 → 7,667,392 B (−446.1 KiB), macOS arm64 7,061,136 →
+  6,758,752 B (−295.3 KiB); `gateway-all` −461.1 / −449.2 / −311.5 KiB.
+  `bench/budgets.toml` now gates `gateway-core` and `gateway-all` per
+  architecture. `cargo install graphrt-cli` from crates.io still builds SQLite
+  with libsqlite3-sys's defaults.
 - The `trust-gateway` feature is about 40 % smaller (slim agent, `min-size`:
   +73 KiB instead of +126 KiB on Linux musl aarch64, +89 instead of +150 KiB
   on x86_64), with a budget in the CI gate (`agent-slim-gateway`, measured +
