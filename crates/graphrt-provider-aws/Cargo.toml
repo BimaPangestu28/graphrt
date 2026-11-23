@@ -2,6 +2,8 @@
 name = "graphrt-provider-aws"
 description = "AWS providers for the graphrt gateway: ECS Fargate (gateway-scheduled tasks) and Lambda (short synchronous runs), with a hand-rolled SigV4 + credential chain (no AWS SDK)."
 readme = "README.md"
+homepage = "https://github.com/BimaPangestu28/graphrt"
+documentation = "https://docs.rs/graphrt-provider-aws"
 keywords = ["aws", "ecs", "lambda", "sigv4", "gateway"]
 categories = ["api-bindings", "asynchronous"]
 version.workspace = true
@@ -9,8 +11,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-# Internal to the gateway until the provider wave (F2) has settled, like graphrt-provider-api.
-publish = false
 
 [features]
 default = []

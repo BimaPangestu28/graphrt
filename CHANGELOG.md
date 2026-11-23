@@ -7,7 +7,33 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-23
+
+Scale to zero, everywhere. `graphrt gateway` (preview) is an always-on front of
+scale-to-zero agents and the only writer of the run store: it holds every run's
+stream, wakes agents on demand and re-dispatches runs after drains, lost
+replicas and its own restarts, with on-prem active/passive HA, warm-up
+(`POST /v1/deployments/{d}/warm`, predictive prewarm) and cost guards.
+Providers for local processes, Kubernetes, Cloud Run, ECS Fargate, Lambda, Fly
+and Azure Container Apps, and `graphrt deploy --target
+local|k8s|cloud-run|ecs|lambda|fly|aca` ships immutable versions. The cloud
+providers are tested against API fakes (conformance suite); real-cloud
+verification is pending. Releases now ship a second build per platform,
+`graphrt-gateway-<target>`, and a `:gateway` image; the agent build stays as
+slim as before. The gateway core is 7.91 MiB (x86_64 musl, `min-size`), with
+every provider 8.89 MiB. `graphrt serve --trust-gateway` is the agent side of the
+gateway protocol, plus graceful drain, `/readyz` and Unix sockets. Contains
+breaking changes (see **Changed (Breaking)**).
+
 ### Changed (Breaking)
+- `gateway.yaml` values are typed as YAML resolves them: a string setting given
+  an unquoted number (`name: 2024`) is refused with its path and line
+  (`deployments[0].name (line 3, column 11): invalid type: integer `2024`,
+  expected a string`); quote it. Errors in the file now name the setting's path
+  and line.
+- `graphrt serve`: a bad query parameter is answered
+  `400 Failed to deserialize query string: <field>: <reason>`; request bodies
+  keep axum's statuses and texts (415, 400, 422 with the field path).
 - `graphrt serve --verify-jwt` refuses to start without an API key on every
   address, loopback included. A reverse proxy on the same host forwards the
   internet to a loopback port (and one that rewrites `Host` also passes the
@@ -46,6 +72,11 @@ releases may contain breaking changes; they are called out under **Changed**.
   with `user` in the body.
 
 ### Changed
+- `graphrt-gateway`, `graphrt-provider-api`, `graphrt-provider-k8s`,
+  `graphrt-provider-aws`, `graphrt-provider-azure`, `graphrt-provider-fly` and
+  `graphrt-gcp` are published on crates.io (they were internal), so
+  `cargo install graphrt-cli --features gateway-all` works from crates.io.
+  Their Rust APIs are young and may change between minor releases.
 - Smaller binaries from less generic code, no feature removed. YAML is parsed
   by one function (`graphrt_core::yaml::to_value`) and every document then
   deserialized from a `serde_json::Value`; node configs and HTTP request bodies
@@ -59,14 +90,6 @@ releases may contain breaking changes; they are called out under **Changed**.
   `gateway-all` x86_64 10,077,000 → 9,324,616 B (8.89 MiB, within 9 MiB),
   aarch64 −545 KiB, macOS −471 KiB. `bench/budgets.toml` holds x86_64 to
   8 / 9 MiB.
-- `gateway.yaml` values are typed as YAML resolves them: a string setting given
-  an unquoted number (`name: 2024`) is refused with its path and line
-  (`deployments[0].name (line 3, column 11): invalid type: integer `2024`,
-  expected a string`); quote it. Errors in the file now name the setting's path
-  and line.
-- `graphrt serve`: a bad query parameter is answered
-  `400 Failed to deserialize query string: <field>: <reason>`; request bodies
-  keep axum's statuses and texts (415, 400, 422 with the field path).
 - Smaller binaries wherever SQLite or C code is linked: builds from this
   repository (CI, release binaries, the container image) compile the bundled
   SQLite without full-text search, R*Tree, STAT4, dbstat, soundex, column
@@ -135,6 +158,14 @@ releases may contain breaking changes; they are called out under **Changed**.
   `langfuse` stay on by default.
 
 ### Added
+- Release assets: every platform gets a second archive,
+  `graphrt-gateway-<target>` (features `gateway-all,eval,online-eval`: the same
+  CLI plus `graphrt gateway` and `graphrt deploy` with every provider; it links
+  mimalloc, the agent archive `graphrt-<target>` does not), with its checksum in
+  `SHA256SUMS` and the same smoke test plus `gateway --help` / `deploy --help`.
+  The container image gains `ghcr.io/bimapangestu28/graphrt:<version>-gateway`
+  (also `<major.minor>-gateway` and `gateway`). `install.sh --gateway`
+  installs the gateway build. `release.yml` builds both.
 - `graphrt gateway` warm-up and cost guards (plan F4), all off or bounded by
   default ([docs](docs/gateway.md#warm-up-and-cost-guards)):
   `POST /v1/deployments/{d}/warm` prewarms the current version ahead of
@@ -192,7 +223,7 @@ releases may contain breaking changes; they are called out under **Changed**.
   so servers of different deployments can share a store and a delivery maps to
   one run whichever of the two receives it. Without it, ids are derived as
   before. See [docs/serving.md](docs/serving.md#idempotency).
-- `graphrt-provider-fly` (internal crate, feature `provider-fly`): the Fly
+- `graphrt-provider-fly` (feature `provider-fly`): the Fly
   Machines provider of the upcoming `graphrt gateway`. A deployment version is
   a pool of pre-created Machines, woken with `start` (suspended snapshots
   first), released with `suspend` falling back to `stop`, addressed over 6PN.
@@ -202,7 +233,7 @@ releases may contain breaking changes; they are called out under **Changed**.
   client, no Fly SDK; passes the provider conformance suite against a fake
   Machines API. Not wired into a binary yet. See
   [docs/gateway-fly.md](docs/gateway-fly.md).
-- `graphrt-provider-api` (internal crate): the `Provider` / `DeployDriver`
+- `graphrt-provider-api` crate: the `Provider` / `DeployDriver`
   traits, capabilities and error kinds of the upcoming `graphrt gateway`, the
   shared provider HTTP layer (token bucket per provider API, jittered retry,
   token cache with one refresh on 401) and the C1–C13 provider conformance
@@ -225,7 +256,7 @@ releases may contain breaking changes; they are called out under **Changed**.
   until retired) and Secret Manager references. Conformance C1–C12 against fake Google APIs; see
   [docs/gateway-cloud-run.md](docs/gateway-cloud-run.md) for IAM roles and what
   still needs a real project.
-- `graphrt-provider-k8s` (internal crate): the Kubernetes provider of the
+- `graphrt-provider-k8s` crate: the Kubernetes provider of the
   upcoming gateway, for self-hosted clusters, kind/k3s, GKE, EKS and AKS.
   Scales a version's Deployment 0↔N through the `scale` subresource
   (compare-and-swap, singleflight per version), picks the released replica
@@ -282,7 +313,7 @@ releases may contain breaking changes; they are called out under **Changed**.
   exec→`/healthz` p95, and banned crates (cloud SDKs, Kubernetes clients, `h2`),
   run as the `budgets` job for Linux musl x86_64 and aarch64. Baseline in
   `bench/baseline/`.
-- `graphrt-provider-aws` (internal crate): AWS targets of the upcoming
+- `graphrt-provider-aws` crate: AWS targets of the upcoming
   gateway without the AWS SDK. `auth-aws` is a hand-rolled SigV4 signer
   (header and presigned), the credential chain env → container endpoint (ECS
   task role, EKS Pod Identity) → STS web identity (IRSA) → IMDSv2 with caching,
@@ -328,7 +359,7 @@ releases may contain breaking changes; they are called out under **Changed**.
   `graphrt gateway --ha-node`, `graphrt gateway ha status|promote`. Docs with
   systemd units and unsupported volumes (NFS, SMB, RWX) in
   [docs/gateway-ha.md](docs/gateway-ha.md).
-- `graphrt-provider-api` (internal crate): the `Provider` / `DeployDriver`
+- `graphrt-provider-api` crate: the `Provider` / `DeployDriver`
   traits, capabilities and error kinds of the upcoming `graphrt gateway`, the
   shared provider HTTP layer (token bucket per provider API, jittered retry,
   token cache with one refresh on 401) and the C1–C13 provider conformance
@@ -336,7 +367,7 @@ releases may contain breaking changes; they are called out under **Changed**.
   platform without an HTTP address (Lambda) carry the gateway's requests, and
   `max_grace_secs = 0` marks a platform where no preemption is possible.
   No user-visible change yet.
-- `graphrt-provider-azure` (internal crate): the Azure provider family of the
+- `graphrt-provider-azure` crate: the Azure provider family of the
   upcoming gateway, without an Azure SDK. `auth-azure`: Entra ID tokens from
   managed identity (`IDENTITY_ENDPOINT`, IMDS), client secret, PS256
   certificate assertion and workload identity federation, cached until
@@ -1504,7 +1535,8 @@ laptop, a server, a container, the edge or a phone.
   credentials, plugins, WebAssembly runtime, document extraction and retrieval,
   with regression tests for every finding.
 
-[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.0...v0.3.1

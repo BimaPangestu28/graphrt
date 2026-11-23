@@ -2,6 +2,8 @@
 name = "graphrt-provider-fly"
 description = "Fly Machines provider of the graphrt gateway: a pool of pre-created Machines woken with start, released with suspend (falling back to stop), addressed over 6PN."
 readme = "README.md"
+homepage = "https://github.com/BimaPangestu28/graphrt"
+documentation = "https://docs.rs/graphrt-provider-fly"
 keywords = ["workflow", "agent", "gateway", "fly", "scale-to-zero"]
 categories = ["development-tools"]
 version.workspace = true
@@ -9,8 +11,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-# Internal to the gateway until the provider API has settled through F2.
-publish = false
 
 [features]
 default = ["deploy"]

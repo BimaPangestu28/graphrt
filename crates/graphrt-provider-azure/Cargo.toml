@@ -2,6 +2,7 @@
 name = "graphrt-provider-azure"
 description = "Azure provider family for the graphrt gateway: Entra ID / managed identity auth, and Azure Container Apps (scale-to-zero, revisions, Key Vault secret references) over hand-rolled ARM REST."
 readme = "README.md"
+documentation = "https://docs.rs/graphrt-provider-azure"
 homepage = "https://github.com/BimaPangestu28/graphrt"
 keywords = ["azure", "container-apps", "entra", "managed-identity", "graphrt"]
 categories = ["api-bindings", "asynchronous"]
@@ -10,8 +11,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-# Depends on the internal graphrt-provider-api; not on crates.io until F2 settles.
-publish = false
 
 [features]
 default = []

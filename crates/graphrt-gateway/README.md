@@ -1,9 +1,10 @@
 # graphrt-gateway
 
 The always-on front of scale-to-zero graphrt agents (`graphrt gateway`,
-feature `gateway` of `graphrt-cli`). Internal crate (`publish = false`).
+feature `gateway` of `graphrt-cli`). Its Rust API is mainly for the CLI and may
+change between minor releases.
 
-User documentation: [docs/gateway.md](../../docs/gateway.md).
+User documentation: [docs/gateway.md](https://github.com/BimaPangestu28/graphrt/blob/main/docs/gateway.md).
 
 | Module | |
 | --- | --- |

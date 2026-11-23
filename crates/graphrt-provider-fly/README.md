@@ -1,6 +1,7 @@
 # graphrt-provider-fly
 
-Fly Machines provider of the graphrt gateway (internal, `publish = false`).
+Fly Machines provider of the graphrt gateway. Its API follows
+`graphrt-provider-api` and may change between minor releases.
 
 ## Overview
 
@@ -37,7 +38,7 @@ This runs the C1–C13 conformance harness and the Fly-specific tests against a 
 
 ## Documentation
 
-Behaviour, setup, drain guidance, size and the real-Fly verification list: [docs/gateway-fly.md](../../docs/gateway-fly.md).
+Behaviour, setup, drain guidance, size and the real-Fly verification list: [docs/gateway-fly.md](https://github.com/BimaPangestu28/graphrt/blob/main/docs/gateway-fly.md).
 
 ## License
 

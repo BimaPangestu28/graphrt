@@ -1,7 +1,8 @@
 #!/bin/sh
 # Smoke test for a packaged release binary: it starts, reports the workspace
 # version and the release features (`SMOKE_REQUIRED_FEATURES`, default
-# `eval online-eval`), validates and runs the offline hello workflow.
+# `eval online-eval`; with `gateway`, also the gateway and deploy commands),
+# validates and runs the offline hello workflow.
 #   scripts/smoke-release-binary.sh dist/graphrt-x86_64-unknown-linux-musl/graphrt
 # Used by .github/workflows/release.yml; POSIX sh (Git Bash on Windows).
 set -eu
@@ -30,6 +31,15 @@ for feature in ${SMOKE_REQUIRED_FEATURES-eval online-eval}; do
         *) fail "\`version\` printed \`$features_output\`, expected the \`$feature\` feature" ;;
     esac
 done
+
+# The gateway build (`SMOKE_REQUIRED_FEATURES` names `gateway`) also has the
+# `gateway` and `deploy` commands.
+case " ${SMOKE_REQUIRED_FEATURES-} " in
+    *" gateway "*)
+        "$binary" gateway --help >/dev/null || fail "\`gateway --help\` exited with $?"
+        "$binary" deploy --help >/dev/null || fail "\`deploy --help\` exited with $?"
+        ;;
+esac
 
 "$binary" validate "$workflow" >/dev/null || fail "\`validate $workflow\` exited with $?"
 

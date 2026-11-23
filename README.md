@@ -54,6 +54,8 @@ start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
 ```sh
 # Linux / macOS: prebuilt static binary (verifies SHA256SUMS)
 curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/install.sh | sh
+# the gateway build: the same CLI plus `graphrt gateway` / `graphrt deploy`, every provider
+curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/install.sh | sh -s -- --gateway
 
 # Homebrew (macOS, Linux)
 brew install bimapangestu28/graphrt/graphrt
@@ -61,15 +63,20 @@ brew install bimapangestu28/graphrt/graphrt
 # with Rust (1.89+)
 cargo install graphrt-cli            # installs the `graphrt` binary
 cargo install graphrt-cli --features eval,online-eval   # + `graphrt eval` and `serve --evaluators`
+cargo install graphrt-cli --features gateway-all        # + `graphrt gateway` and `graphrt deploy`
 
 # container (linux/amd64, linux/arm64)
 docker run --rm -p 8080:8080 -v "$PWD/flows:/workflows" ghcr.io/bimapangestu28/graphrt
+docker run --rm ghcr.io/bimapangestu28/graphrt:gateway gateway --help   # gateway build
 ```
 
 Linux (x86_64, aarch64; static musl), macOS (x86_64, aarch64) and Windows (x86_64,
 `.zip`, no Visual C++ runtime needed) archives with `SHA256SUMS` are on the
-[releases page](https://github.com/BimaPangestu28/graphrt/releases). The release
-workflow builds them on each OS after the test suite passed on Linux, macOS and Windows.
+[releases page](https://github.com/BimaPangestu28/graphrt/releases). Two builds per
+platform: `graphrt-<target>` (the agent: run, serve, eval) and `graphrt-gateway-<target>`
+(the same CLI plus the gateway and `graphrt deploy` with every provider; it links mimalloc,
+which agents leave out). The release workflow builds them on each OS after the test suite
+passed on Linux, macOS and Windows.
 Libraries are on crates.io: `graphrt-core` (runtime) plus integration crates such as
 `graphrt-llm`, `graphrt-http`, `graphrt-rag`.
 
@@ -483,8 +490,12 @@ graphrt-plugin  process / HTTP plugin host; graphrt-wasm: sandboxed WebAssembly 
 graphrt-bundle  portable .grt bundles; graphrt-otel: OpenTelemetry export
 graphrt-eval    eval harness: test suites, assertions, trajectories, retrieval metrics, CI gate
 graphrt-ffi     Kotlin / Swift bindings for Android and iOS
-graphrt-gcp     gateway on Google Cloud: GCP auth, Cloud Run provider + deploy driver
-graphrt-cli     `graphrt` binary: run, validate, inspect, serve, eval, kb, plugin, bundle
+graphrt-gateway always-on front of scale-to-zero agents: run store, auth, limits, wake
+graphrt-provider-api  Provider / DeployDriver traits, shared provider HTTP, conformance
+graphrt-provider-k8s  Kubernetes; graphrt-provider-aws: ECS, Lambda; graphrt-provider-fly: Fly
+graphrt-provider-azure  Azure Container Apps; graphrt-gcp: GCP auth, Cloud Run
+graphrt-cli     `graphrt` binary: run, validate, inspect, serve, eval, kb, plugin, bundle,
+                gateway, deploy
 ```
 
 Read [docs/architecture.md](docs/architecture.md) for the scheduling rules,

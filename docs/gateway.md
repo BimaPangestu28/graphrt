@@ -21,8 +21,9 @@ clients / webhooks / cron ──▶ graphrt gateway (SQLite store, auth, limits,
 ## Quick start
 
 ```sh
-# Not in 0.4.0 on crates.io yet: install from main until the next release.
-cargo install --git https://github.com/BimaPangestu28/graphrt graphrt-cli --features gateway
+# Prebuilt (0.5.0+): the gateway build of the release, every provider included.
+curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/install.sh | sh -s -- --gateway
+# or with Rust: cargo install graphrt-cli --features gateway   (gateway-all: every provider)
 graphrt gateway --dev examples/hello.yaml
 curl -s localhost:8700/v1/deployments/dev/runs -d '{"inputs":{"name":"Ada"}}'
 ```

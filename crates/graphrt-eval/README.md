@@ -11,7 +11,7 @@ agentic AI workflows on servers, containers, the edge and phones.
 
 ```toml
 [dev-dependencies]
-graphrt-eval = "0.4"
+graphrt-eval = "0.5"
 ```
 
 ```rust,ignore
