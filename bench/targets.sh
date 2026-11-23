@@ -110,7 +110,7 @@ python3 scripts/budget-gate.py "${target_args[@]}" --bin-dir "$BIN_DIR" "${deps_
 echo "==> gateway run-time targets" >&2
 k8s_flag=()
 [ -x "$BIN_DIR/graphrt-gateway-k8s" ] && k8s_flag=(--gateway-k8s "$BIN_DIR/graphrt-gateway-k8s")
-python3 bench/gateway/gwbench.py --gateway "$BIN_DIR/graphrt-gateway" --agent "$BIN_DIR/graphrt-agent-slim-gateway" \
+python3 bench/gateway/gwbench.py --gateway "$BIN_DIR/graphrt-gateway-core" --agent "$BIN_DIR/graphrt-agent-slim-gateway" \
   "${k8s_flag[@]}" $QUICK --json "$WORK/gateway.json" --markdown "$WORK/gateway.md" >/dev/null || failed=1
 
 echo "==> JWT verification" >&2

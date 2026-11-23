@@ -168,16 +168,16 @@ sudo bench/targets.sh --bin-dir bins                 # root only for the contain
 
 | Target | How it is measured | aarch64 (2026-11-23) | Target |
 | --- | --- | ---: | ---: |
-| TTFB overhead, gateway → agent on a Unix socket | first `run_started` byte through the gateway minus signed straight to the same agent, interleaved, n = 1,000 | p50 0.23 ms, p95 0.24 ms | ≤ 0.3 / ≤ 1 ms |
+| TTFB overhead, gateway → agent on a Unix socket | first `run_started` byte through the gateway minus signed straight to the same agent, interleaved, n = 1,000 | p50 0.24 ms, p95 0.24 ms | ≤ 0.3 / ≤ 1 ms |
 | TTFB overhead, agent on loopback TCP | the same behind the k8s provider (fake Kubernetes API) | p95 0.23 ms | ≤ 1 ms + 1 RTT |
-| 1,000 concurrent SSE streams | 20 chunks 500 ms apart each (fake OpenAI); gateway peak RSS, stalls | 77.4 MiB, 0 failed, 0 stalled, max gap 544 ms | ≤ 80 MiB (plan); audit: 64 |
-| Cold wake, local provider | request → new agent process → first SSE event, 100 fresh deployments | p95 6.6 ms | ≤ 15 ms |
-| Cold wake + Node.js plugin | request → the plugin node's result | p95 56.9 ms (the plugin alone: 50.8 ms); 57–67 ms across runs | ≤ 60 ms |
+| 1,000 concurrent SSE streams | 20 chunks 500 ms apart each (fake OpenAI); gateway peak RSS, stalls | 77.8 MiB, 0 failed, 0 stalled, max gap 530 ms | ≤ 80 MiB (plan); audit: 64 |
+| Cold wake, local provider | request → new agent process → first SSE event, 100 fresh deployments | p95 6.8 ms | ≤ 15 ms |
+| Cold wake + Node.js plugin | request → the plugin node's result | p95 57.3 ms (the plugin alone: 50.6 ms); 57–67 ms across runs | ≤ 60 ms |
 | Webhook ack | HMAC-signed POST → 202, n = 1,000 | p95 0.52 ms | ≤ 10 ms |
-| Cron lag | 1,000 schedules firing in the same minute → run finished | p95 426 ms | ≤ 1 s |
+| Cron lag | 1,000 schedules firing in the same minute → run finished | p95 433 ms | ≤ 1 s |
 | RS256 JWT verification | cached JWKS key, 5,000 verifications | mean 16.7 µs | ≤ 50 µs |
-| PID 1 drain in a container | `docker stop` of the release image's base with a run in flight | exit 0 in 1.55 s, run paused (drained) | ≤ drain timeout |
-| Gateway binary / idle RSS | `--features gateway`, min-size | 7.77 MiB / 7.1 MiB | ≤ 8 / ≤ 20 MiB |
+| PID 1 drain in a container | `docker stop` of the release image's base with a run in flight | exit 0 in 1.59 s, run paused (drained) | ≤ drain timeout |
+| Gateway binary / idle RSS | `--features gateway` (`gateway-core`), min-size | 7.34 MiB / 6.9 MiB | ≤ 7.55 / ≤ 20 MiB |
 
 Machine: Lima VM (vz, 4 vCPU, 4 GiB, Ubuntu 26.04) on an Apple M3 Pro, static
 musl binaries; raw data in
@@ -189,11 +189,11 @@ laptop single rounds swing by 2x.
   plugin's own start (spawn → `initialize`, no graphrt) takes 50–59 ms on
   this VM depending on load, and graphrt adds 5–8 ms on top: the 60 ms target
   passed in the recorded run and missed in others (57–67 ms). 1,000 streams
-  peak at 75–77 MiB against the audit's 64 MiB: each stream holds
+  peak at 75–78 MiB against the audit's 64 MiB: each stream holds
   two HTTP/1.1 connections (client and agent side) with about 32 KiB of hyper
   buffers between them; the plan's CI budget (80 MiB) is what the gate checks.
 - **x86_64** sizes are measured (`scripts/budget-gate.py --target
-  x86_64-unknown-linux-musl`: gateway 9.09 MiB, all providers 10.08 MiB, within
+  x86_64-unknown-linux-musl`: gateway 8.65 MiB, all providers 9.63 MiB, within
   their x86_64 budgets); x86_64 run-time numbers need a native runner (under
   Rosetta a cold wake takes ~150 ms of translation).
 
