@@ -79,8 +79,10 @@ optional capacity provider (e.g. `FARGATE_SPOT`) and platform version.
 
 **Wake takes tens of seconds** (image pull and ENI attach, typically 20–60 s;
 initial p95 target 45 s). ECS Fargate is the right target for async, webhook and
-cron runs: the gateway prewarms before a cron fire, and chat clients get a
-`: waking` SSE comment meanwhile. For interactive chat prefer Kubernetes,
+cron runs: the gateway prewarms before a cron fire, chat clients can call
+`POST /v1/deployments/{d}/warm` when a user opens the page, `warm.predictive`
+learns recurring traffic (see [Warm-up and cost guards](gateway.md#warm-up-and-cost-guards)),
+and clients get a `: waking` SSE comment meanwhile. For interactive chat prefer Kubernetes,
 Cloud Run or Lambda.
 
 **Grace period**: Fargate's `stopTimeout` is at most **120 s**. Set it to 120 in

@@ -577,3 +577,62 @@ async fn expired_versions_are_retired_on_the_platform_with_retry() {
     graphrt_gateway::app::retire_expired(&deployment, now).await;
     assert_eq!(retirer.calls.lock().unwrap().len(), 2, "nothing left to retire");
 }
+
+fn warm_path() -> String {
+    format!("/v1/deployments/{DEPLOYMENT}/warm")
+}
+
+async fn metrics_text(gateway: &common::TestGateway) -> String {
+    gateway.client().get(format!("{}/metrics", gateway.url)).send().await.unwrap().text().await.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn warm_endpoint_prewarms_and_the_next_run_is_a_hit() {
+    let gateway = start_gateway(Options::default()).await;
+    let unauthorized = gateway.client().post(format!("{}{}", gateway.url, warm_path())).send().await.unwrap();
+    assert_eq!(unauthorized.status().as_u16(), 401, "warm is authenticated like a run");
+    let (status, body) = gateway.post(&warm_path(), json!({})).await;
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(body["status"], "warming");
+    for _ in 0..200 {
+        if gateway.provider.live() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(gateway.provider.live(), 1, "a replica is warm before any run");
+    let (status, body) = gateway.post(&warm_path(), json!({ "replicas": 1 })).await;
+    assert_eq!((status, body["status"].as_str()), (200, Some("warm")), "{body}");
+    let (status, record) = gateway.post(&runs(), json!({ "inputs": { "text": "hi" } })).await;
+    assert_eq!((status, record["status"].as_str()), (200, Some("succeeded")), "{record}");
+    assert_eq!(gateway.provider.wakes.load(Ordering::SeqCst), 1, "the run used the prewarmed replica");
+    let text = metrics_text(&gateway).await;
+    let label = format!("deployment=\"{DEPLOYMENT}\",version=\"v1\",source=\"api\"");
+    assert!(text.contains(&format!("graphrt_gateway_prewarm_started_total{{{label}}} 1")), "{text}");
+    assert!(text.contains(&format!("graphrt_gateway_prewarm_hits_total{{{label}}} 1")), "{text}");
+    let (status, _) = gateway.post(&warm_path(), json!({ "replicas": "many" })).await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spent_warm_budget_refuses_warm_but_never_a_run() {
+    let pool =
+        PoolConfig { warm_budget: Some(Arc::new(graphrt_gateway::warm::WarmBudget::new(0))), ..PoolConfig::default() };
+    let gateway = start_gateway(Options { pool, ..Options::default() }).await;
+    let response = gateway
+        .client()
+        .post(format!("{}{}", gateway.url, warm_path()))
+        .header("x-api-key", API_KEY)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 429);
+    assert!(response.headers().get("retry-after").is_some());
+    let body: Json = response.json().await.unwrap();
+    assert_eq!(body["error_type"], "warm_budget_exhausted");
+    assert_eq!(gateway.provider.wakes.load(Ordering::SeqCst), 0);
+    let (status, record) = gateway.post(&runs(), json!({ "inputs": { "text": "hi" } })).await;
+    assert_eq!((status, record["status"].as_str()), (200, Some("succeeded")), "{record}");
+    let text = metrics_text(&gateway).await;
+    assert!(text.contains("graphrt_gateway_warm_budget_replica_seconds{deployment=\"shop\"} 0"), "{text}");
+}

@@ -106,9 +106,11 @@ pub async fn run_job(gateway: Arc<Gateway>, deployment: Arc<Deployment>, job: Cr
         sleep_until_unix(prewarm_at).await;
         if job.schedule.prewarm_secs > 0
             && let Ok(current) = deployment.current()
-            && let Err(error) = current.pool.prewarm(1).await
         {
-            eprintln!("gateway: cron {}/{} prewarm: {error}", deployment.name, job.schedule.id);
+            // Jittered (below half the prewarm window) so fires at the same minute do not wake together.
+            let window = Duration::from_secs(job.schedule.prewarm_secs) / 2;
+            let request = crate::pool::PrewarmRequest::one(crate::warm::PrewarmSource::Cron, window);
+            current.pool.spawn_prewarm(request);
         }
         sleep_until_unix(due).await;
         fire(&gateway, &deployment, &job, next.at).await;

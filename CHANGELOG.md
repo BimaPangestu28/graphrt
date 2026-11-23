@@ -101,6 +101,24 @@ releases may contain breaking changes; they are called out under **Changed**.
   `langfuse` stay on by default.
 
 ### Added
+- `graphrt gateway` warm-up and cost guards (plan F4), all off or bounded by
+  default ([docs](docs/gateway.md#warm-up-and-cost-guards)):
+  `POST /v1/deployments/{d}/warm` prewarms the current version ahead of
+  traffic; `warm.predictive` learns per-deployment arrival patterns (288
+  five-minute slots, weekdays and weekends apart, 2.3 KiB) and prewarms
+  `lead_secs` before expected traffic (hit rate 81–84 % in the seeded
+  simulation, target ≥ 70 %); `warm.max_warm_replica_secs_per_day` caps the
+  idle replica-seconds kept warm per UTC day (prewarms refused, idle replicas
+  released at once; runs still wake on demand); `wake_storm.max_parallel_wakes`
+  (default 16) bounds provider wakes in flight gateway-wide and
+  `prewarm_jitter_ms` (default 1000) spreads prewarms. Cron prewarms are
+  jittered and no longer delay the fire. New metrics:
+  `graphrt_gateway_prewarm_{started,hits,misses}_total{source}`,
+  `…_warm_replica_seconds`, `…_warm_budget_replica_seconds`,
+  `…_wakes_in_flight`, `…_wakes_gated_total`. Binary (`min-size`,
+  `--features gateway`): +60.8 KiB x86_64 musl (9,441,208 → 9,503,416 B),
+  +48.2 KiB aarch64 musl (8,074,536 → 8,123,944 B), +48.6 KiB macOS arm64
+  (7,011,360 → 7,061,136 B).
 - `graphrt gateway` preempts runs shortly before a platform's request cap
   (Cloud Run 60 min, Container Apps standard ingress 240 s) and re-dispatches
   them, so long runs continue across the cap: the gateway sends
@@ -354,6 +372,11 @@ releases may contain breaking changes; they are called out under **Changed**.
   `crates/graphrt-cli/tests/gateway_dev.rs`, run by the new CI job
   `gateway without default features` (and `scripts/ci-local.sh` job
   `minimal-gateway`).
+- `graphrt gateway`: a prewarm (cron `prewarm_secs`, `min_replicas` of a new
+  version) went around the pool's singleflight and the wake quota, so a prewarm
+  and a cold request at the same moment could start two replicas, and prewarms
+  did not count against `max_wakes_per_hour`. Prewarms now join the in-flight
+  wake and are counted.
 - `graphrt gateway` no longer loses a run without a checkpoint when the gateway
   restarts. Each accepted run request is written to the store in the
   transaction that creates the run (no extra write), without the start inputs

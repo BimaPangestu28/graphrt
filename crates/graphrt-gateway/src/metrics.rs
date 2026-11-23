@@ -60,6 +60,8 @@ pub struct DeploymentGauges {
     pub active_runs: u32,
     /// Requests waiting.
     pub queued: u32,
+    /// Prewarm counters.
+    pub prewarm: crate::pool::PrewarmStats,
 }
 
 impl Metrics {
@@ -130,7 +132,71 @@ impl Metrics {
                 );
             }
         }
+        render_prewarm(&mut out, gauges);
         out
+    }
+}
+
+/// Prewarm counters per deployment version and source. Hit rate:
+/// `sum(rate(…_prewarm_hits_total[1d])) / sum(rate(…_prewarm_started_total[1d]))`.
+fn render_prewarm(out: &mut String, gauges: &[DeploymentGauges]) {
+    use crate::warm::PrewarmSource;
+    for (name, help) in [
+        ("prewarm_started_total", "Replicas started by a prewarm."),
+        ("prewarm_hits_total", "Prewarmed replicas whose first lease came (traffic found them warm)."),
+        ("prewarm_misses_total", "Prewarmed replicas released or lost without a lease."),
+    ] {
+        let _infallible = writeln!(out, "# HELP graphrt_gateway_{name} {help}\n# TYPE graphrt_gateway_{name} counter");
+        for gauge in gauges {
+            let values = match name {
+                "prewarm_started_total" => gauge.prewarm.started,
+                "prewarm_hits_total" => gauge.prewarm.hits,
+                _ => gauge.prewarm.misses,
+            };
+            for source in PrewarmSource::ALL {
+                let _infallible = writeln!(
+                    out,
+                    "graphrt_gateway_{name}{{deployment=\"{}\",version=\"{}\",source=\"{}\"}} {}",
+                    escape(&gauge.deployment),
+                    escape(&gauge.version),
+                    source.label(),
+                    source.value(values)
+                );
+            }
+        }
+    }
+}
+
+/// Keep-warm budgets `(deployment, used today, limit)` in replica-seconds, and the wake gate.
+pub fn render_warm(out: &mut String, budgets: &[(String, u64, u64)], gate: Option<&crate::warm::WakeGate>) {
+    if !budgets.is_empty() {
+        let _infallible = writeln!(
+            out,
+            "# HELP graphrt_gateway_warm_replica_seconds Idle replica-seconds kept warm today (UTC).\n# TYPE graphrt_gateway_warm_replica_seconds gauge"
+        );
+        for (deployment, used, _) in budgets {
+            let _infallible =
+                writeln!(out, "graphrt_gateway_warm_replica_seconds{{deployment=\"{}\"}} {used}", escape(deployment));
+        }
+        let _infallible = writeln!(
+            out,
+            "# HELP graphrt_gateway_warm_budget_replica_seconds Daily keep-warm budget.\n# TYPE graphrt_gateway_warm_budget_replica_seconds gauge"
+        );
+        for (deployment, _, limit) in budgets {
+            let _infallible = writeln!(
+                out,
+                "graphrt_gateway_warm_budget_replica_seconds{{deployment=\"{}\"}} {limit}",
+                escape(deployment)
+            );
+        }
+    }
+    if let Some(gate) = gate {
+        let _infallible = writeln!(
+            out,
+            "# HELP graphrt_gateway_wakes_in_flight Provider wakes in flight.\n# TYPE graphrt_gateway_wakes_in_flight gauge\ngraphrt_gateway_wakes_in_flight {}\n# HELP graphrt_gateway_wakes_gated_total Wakes that waited for the max_parallel_wakes gate.\n# TYPE graphrt_gateway_wakes_gated_total counter\ngraphrt_gateway_wakes_gated_total {}",
+            gate.in_flight(),
+            gate.gated.load(Ordering::Relaxed)
+        );
     }
 }
 
@@ -153,9 +219,16 @@ mod tests {
                 replicas: 2,
                 active_runs: 3,
                 queued: 0,
+                prewarm: crate::pool::PrewarmStats { started: [2, 0, 0, 0], hits: [1, 0, 0, 0], ..Default::default() },
             }],
             3,
         );
+        assert!(text.contains(
+            "graphrt_gateway_prewarm_hits_total{deployment=\"shop\",version=\"v1\",source=\"predictive\"} 1"
+        ));
+        assert!(text.contains(
+            "graphrt_gateway_prewarm_started_total{deployment=\"shop\",version=\"v1\",source=\"predictive\"} 2"
+        ));
         assert!(text.contains("graphrt_gateway_runs_started_total 1"));
         assert!(text.contains("graphrt_gateway_replicas{deployment=\"shop\",version=\"v1\"} 2"));
         assert!(text.contains("graphrt_gateway_live_runs 3"));

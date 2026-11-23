@@ -18,6 +18,7 @@ pub mod retire;
 pub mod signature;
 pub mod store;
 pub mod tz;
+pub mod warm;
 
 /// Installs rustls' ring crypto provider for the process (idempotent). The
 /// gateway's HTTP clients (JWKS, callbacks, provider APIs) need it.

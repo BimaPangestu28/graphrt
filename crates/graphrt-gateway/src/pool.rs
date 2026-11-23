@@ -15,6 +15,14 @@
 //!   drops replicas the provider no longer reports ready (C5) and releases
 //!   replicas the gateway does not know (orphans after a gateway crash, C12).
 //!
+//! - **Prewarm** (cron, `POST …/warm`, predicted traffic, `min_replicas`)
+//!   joins the same singleflight, counts against `max_wakes_per_hour`, and is
+//!   refused once the deployment's keep-warm budget is spent. A replica it
+//!   starts is a *hit* when its first lease comes, a *miss* when it is released
+//!   unused (see [`crate::warm`]).
+//! - **Wake gate**: every provider wake takes a permit of the gateway-wide
+//!   [`WakeGate`] first (wake-storm protection).
+//!
 //! All of it is in memory; nothing here touches the store (I7).
 
 use std::sync::{Arc, Mutex};
@@ -27,6 +35,7 @@ use tokio::sync::Notify;
 use tokio::time::Instant;
 
 use crate::quota::{Quotas, WakeWindow};
+use crate::warm::{PrewarmSource, WakeGate, WarmBudget};
 
 /// Pool settings.
 #[derive(Debug, Clone)]
@@ -43,6 +52,10 @@ pub struct PoolConfig {
     pub wake_timeout: Duration,
     /// Quotas.
     pub quotas: Quotas,
+    /// Keep-warm budget of the deployment (shared by its versions); `None`: unlimited.
+    pub warm_budget: Option<Arc<WarmBudget>>,
+    /// Gateway-wide wake limit; `None`: unlimited.
+    pub wake_gate: Option<Arc<WakeGate>>,
 }
 
 impl Default for PoolConfig {
@@ -54,6 +67,8 @@ impl Default for PoolConfig {
             queue_timeout: Duration::from_secs(30),
             wake_timeout: Duration::from_secs(60),
             quotas: Quotas::default(),
+            warm_budget: None,
+            wake_gate: None,
         }
     }
 }
@@ -95,6 +110,58 @@ struct Slot {
     endpoint: Endpoint,
     active_runs: u32,
     idle_since: Instant,
+    /// Started by a prewarm and not leased yet.
+    prewarmed: Option<PrewarmSource>,
+    /// While unleased after a prewarm, kept at least until then (beyond `idle_timeout`).
+    hold_until: Instant,
+}
+
+/// Prewarm counters per [`PrewarmSource`] (indexed by [`PrewarmSource::index`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PrewarmStats {
+    /// Replicas a prewarm started.
+    pub started: [u64; 4],
+    /// Of those, replicas whose first lease came (traffic found them warm).
+    pub hits: [u64; 4],
+    /// Of those, replicas released or lost without a lease.
+    pub misses: [u64; 4],
+}
+
+/// A background prewarm (see [`Pool::spawn_prewarm`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrewarmRequest {
+    /// Replicas wanted warm.
+    pub replicas: u32,
+    /// Who asks (metric label).
+    pub source: PrewarmSource,
+    /// Upper bound of the random delay (also capped by the gate's `prewarm_jitter_ms`).
+    pub max_delay: Duration,
+    /// Minimum time a started replica stays while unleased.
+    pub hold: Duration,
+}
+
+impl PrewarmRequest {
+    /// One replica for `source`, jittered by up to `max_delay`, no extra hold.
+    pub fn one(source: PrewarmSource, max_delay: Duration) -> Self {
+        Self { replicas: 1, source, max_delay, hold: Duration::ZERO }
+    }
+}
+
+/// What a prewarm did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrewarmOutcome {
+    /// Enough replicas were already warm.
+    AlreadyWarm,
+    /// A wake was already in flight (it brings a replica).
+    InFlight,
+    /// This many new replicas were started.
+    Started(u32),
+    /// The keep-warm budget of today is spent.
+    BudgetExhausted,
+    /// `max_wakes_per_hour` reached.
+    QuotaExhausted,
+    /// The pool is closed (version retired).
+    Closed,
 }
 
 #[derive(Debug, Default)]
@@ -105,6 +172,36 @@ struct PoolState {
     last_wake_error: Option<(Instant, String)>,
     wakes: WakeWindow,
     closed: bool,
+    prewarm: PrewarmStats,
+    /// Last time idle replica-time was charged to the warm budget.
+    charged_at: Option<Instant>,
+}
+
+impl PoolState {
+    /// Counts a replica leaving the pool: a miss when a prewarm started it and no lease came.
+    fn forget(&mut self, slot: &Slot) {
+        if let Some(source) = slot.prewarmed {
+            *source.counter(&mut self.prewarm.misses) += 1;
+        }
+    }
+
+    /// Adds the replicas of a finished wake; returns how many were new.
+    fn adopt(&mut self, endpoints: Vec<Endpoint>, source: Option<PrewarmSource>, hold: Duration) -> u32 {
+        let mut added = 0;
+        let now = Instant::now();
+        for endpoint in endpoints {
+            if !self.slots.iter().any(|slot| slot.endpoint.replica == endpoint.replica) {
+                let slot =
+                    Slot { endpoint, active_runs: 0, idle_since: now, prewarmed: source, hold_until: now + hold };
+                self.slots.push(slot);
+                added += 1;
+            }
+        }
+        if let Some(source) = source {
+            *source.counter(&mut self.prewarm.started) += u64::from(added);
+        }
+        added
+    }
 }
 
 /// Counters for `/metrics`.
@@ -116,6 +213,8 @@ pub struct PoolStats {
     pub active_runs: u32,
     /// Requests waiting.
     pub queued: u32,
+    /// Prewarm counters.
+    pub prewarm: PrewarmStats,
 }
 
 /// Replica pool of one deployment version.
@@ -179,6 +278,11 @@ impl Pool {
         &self.deployment
     }
 
+    /// The pool settings.
+    pub fn config(&self) -> &PoolConfig {
+        &self.config
+    }
+
     /// The provider's capabilities.
     pub fn capabilities(&self) -> &Capabilities {
         &self.capabilities
@@ -209,7 +313,14 @@ impl Pool {
         let slot =
             state.slots.iter_mut().filter(|slot| slot.active_runs < capacity).min_by_key(|slot| slot.active_runs)?;
         slot.active_runs += 1;
+        if let Some(source) = slot.prewarmed.take() {
+            *source.counter(&mut state.prewarm.hits) += 1;
+        }
         Some(slot.endpoint.clone())
+    }
+
+    fn budget_exhausted(&self) -> bool {
+        self.config.warm_budget.as_ref().is_some_and(|budget| budget.exhausted(crate::signature::unix_now()))
     }
 
     /// Hands out a slot, waking a replica when needed (hold + singleflight).
@@ -252,7 +363,7 @@ impl Pool {
                     } else {
                         state.waking = true;
                         let target = state.slots.len() as u32 + 1;
-                        tokio::spawn(Arc::clone(self).wake(target));
+                        tokio::spawn(Arc::clone(self).wake(target, None, Duration::ZERO));
                     }
                 }
             }
@@ -266,40 +377,46 @@ impl Pool {
         result.map(|endpoint| Lease { pool: Arc::clone(self), endpoint, released: false })
     }
 
-    /// The single in-flight wake of this pool.
-    async fn wake(self: Arc<Self>, target: u32) {
+    /// The single in-flight wake of this pool (on demand, or a prewarm by
+    /// `source` holding new replicas for `hold`). Returns the number of replicas it started.
+    async fn wake(self: Arc<Self>, target: u32, source: Option<PrewarmSource>, hold: Duration) -> Result<u32, String> {
+        let permit = match &self.config.wake_gate {
+            Some(gate) => Some(gate.acquire().await),
+            None => None,
+        };
         let outcome =
             tokio::time::timeout(self.config.wake_timeout, self.provider.wake(&self.deployment, target)).await;
+        drop(permit);
         let mut state = self.lock();
         state.waking = false;
-        match outcome {
+        let result = match outcome {
             Ok(Ok(endpoints)) => {
-                let before = state.slots.len();
-                for endpoint in endpoints {
-                    if !state.slots.iter().any(|slot| slot.endpoint.replica == endpoint.replica) {
-                        state.slots.push(Slot { endpoint, active_runs: 0, idle_since: Instant::now() });
-                    }
-                }
-                if state.slots.len() == before {
+                let added = state.adopt(endpoints, source, hold);
+                if added == 0 {
                     // Nothing new was started: the wake does not count against the quota.
                     state.wakes.refund();
                 }
                 state.last_wake_error = None;
+                Ok(added)
             }
-            Ok(Err(error)) => state.last_wake_error = Some((Instant::now(), error.to_string())),
-            Err(_) => {
-                state.last_wake_error =
-                    Some((Instant::now(), format!("wake timed out after {:?}", self.config.wake_timeout)))
-            }
+            Ok(Err(error)) => Err(error.to_string()),
+            Err(_) => Err(format!("wake timed out after {:?}", self.config.wake_timeout)),
+        };
+        if let Err(message) = &result {
+            state.last_wake_error = Some((Instant::now(), message.clone()));
         }
         drop(state);
         self.changed.notify_waiters();
+        result
     }
 
     fn give_back(&self, replica: &ReplicaRef, broken: bool) {
         let mut state = self.lock();
         if broken {
-            state.slots.retain(|slot| slot.endpoint.replica != *replica);
+            if let Some(index) = state.slots.iter().position(|slot| slot.endpoint.replica == *replica) {
+                let slot = state.slots.swap_remove(index);
+                state.forget(&slot);
+            }
         } else if let Some(slot) = state.slots.iter_mut().find(|slot| slot.endpoint.replica == *replica) {
             slot.active_runs = slot.active_runs.saturating_sub(1);
             if slot.active_runs == 0 {
@@ -310,25 +427,106 @@ impl Pool {
         self.changed.notify_waiters();
     }
 
-    /// Wakes `min_replicas` (or one, for a cron prewarm) without taking a slot.
+    /// Wakes up to `replicas` replicas ahead of traffic without taking a slot,
+    /// through the singleflight, the wake quota and the keep-warm budget.
     ///
     /// # Errors
-    /// The provider's error.
-    pub async fn prewarm(self: &Arc<Self>, replicas: u32) -> Result<(), ProviderError> {
-        let wanted = replicas.min(self.max_slots() as u32);
-        if self.lock().slots.len() as u32 >= wanted {
-            return Ok(());
-        }
-        let endpoints = self.provider.wake(&self.deployment, wanted).await?;
-        let mut state = self.lock();
-        for endpoint in endpoints {
-            if !state.slots.iter().any(|slot| slot.endpoint.replica == endpoint.replica) {
-                state.slots.push(Slot { endpoint, active_runs: 0, idle_since: Instant::now() });
+    /// The provider's error (or timeout) as text.
+    pub async fn prewarm(self: &Arc<Self>, replicas: u32, source: PrewarmSource) -> Result<PrewarmOutcome, String> {
+        self.prewarm_holding(replicas, source, Duration::ZERO).await
+    }
+
+    /// [`Pool::prewarm`], keeping each replica it starts for at least `hold`
+    /// while no lease came (a predicted slot may start after `idle_timeout`).
+    ///
+    /// # Errors
+    /// The provider's error (or timeout) as text.
+    pub async fn prewarm_holding(
+        self: &Arc<Self>,
+        replicas: u32,
+        source: PrewarmSource,
+        hold: Duration,
+    ) -> Result<PrewarmOutcome, String> {
+        let target = {
+            let mut state = self.lock();
+            match self.prewarm_precheck(&state, replicas) {
+                PrewarmOutcome::Started(target) => {
+                    if !state.wakes.try_record(Instant::now(), self.config.quotas.max_wakes_per_hour) {
+                        return Ok(PrewarmOutcome::QuotaExhausted);
+                    }
+                    state.waking = true;
+                    target
+                }
+                other => return Ok(other),
             }
+        };
+        // Spawned: `waking` is cleared by the wake itself even if this caller is dropped.
+        let wake = tokio::spawn(Arc::clone(self).wake(target, Some(source), hold));
+        match wake.await {
+            Ok(result) => result.map(PrewarmOutcome::Started),
+            Err(error) => Err(format!("prewarm task failed: {error}")),
         }
-        drop(state);
-        self.changed.notify_waiters();
-        Ok(())
+    }
+
+    /// Runs `request` in the background after a random delay (wake-storm
+    /// jitter); a failure or a refused prewarm is logged. One code path for
+    /// every prewarm source keeps the binary small.
+    pub fn spawn_prewarm(self: &Arc<Self>, request: PrewarmRequest) {
+        let delay = self.config.wake_gate.as_ref().map_or(Duration::ZERO, |gate| gate.jitter(request.max_delay));
+        let pool = Arc::clone(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let name = &pool.deployment.name;
+            let source = request.source.label();
+            match pool.prewarm_holding(request.replicas, request.source, request.hold).await {
+                Ok(PrewarmOutcome::BudgetExhausted) => {
+                    eprintln!("gateway: {source} prewarm of {name} skipped: keep-warm budget spent")
+                }
+                Ok(PrewarmOutcome::QuotaExhausted) => {
+                    eprintln!("gateway: {source} prewarm of {name} skipped: wake quota spent")
+                }
+                Ok(_) => {}
+                Err(error) => eprintln!("gateway: {source} prewarm of {name}: {error}"),
+            }
+        });
+    }
+
+    /// What a prewarm of `replicas` would do now, without doing it
+    /// (`Started(target)` when it would wake).
+    pub fn prewarm_check(&self, replicas: u32) -> PrewarmOutcome {
+        self.prewarm_precheck(&self.lock(), replicas)
+    }
+
+    fn prewarm_precheck(&self, state: &PoolState, replicas: u32) -> PrewarmOutcome {
+        let wanted = replicas.clamp(1, self.max_slots() as u32);
+        if state.closed {
+            PrewarmOutcome::Closed
+        } else if state.slots.len() as u32 >= wanted {
+            PrewarmOutcome::AlreadyWarm
+        } else if state.waking {
+            PrewarmOutcome::InFlight
+        } else if self.budget_exhausted() {
+            PrewarmOutcome::BudgetExhausted
+        } else {
+            PrewarmOutcome::Started(wanted)
+        }
+    }
+
+    /// Charges idle replica-time since the last call to the keep-warm budget.
+    fn charge_warm_time(&self, state: &mut PoolState) {
+        let now = Instant::now();
+        let since = state.charged_at.replace(now);
+        let Some(budget) = &self.config.warm_budget else { return };
+        let Some(since) = since else { return };
+        let idle: Duration = state
+            .slots
+            .iter()
+            .filter(|slot| slot.active_runs == 0)
+            .map(|slot| now.saturating_duration_since(slot.idle_since.max(since)))
+            .sum();
+        if !idle.is_zero() {
+            budget.charge(idle, crate::signature::unix_now());
+        }
     }
 
     /// Releases replicas idle for `idle_timeout`, keeping `min_replicas`.
@@ -339,18 +537,26 @@ impl Pool {
         }
         let victims: Vec<ReplicaRef> = {
             let mut state = self.lock();
-            let mut keep = self.config.min_replicas as usize;
-            let mut victims = Vec::new();
+            self.charge_warm_time(&mut state);
+            // A spent budget releases idle replicas at once, `min_replicas` included.
+            let spent = self.budget_exhausted();
+            let (mut keep, idle_timeout) =
+                if spent { (0, Duration::ZERO) } else { (self.config.min_replicas as usize, self.config.idle_timeout) };
             state.slots.sort_by_key(|slot| std::cmp::Reverse(slot.idle_since));
-            state.slots.retain(|slot| {
-                let idle = slot.active_runs == 0 && slot.idle_since.elapsed() >= self.config.idle_timeout;
+            let now = Instant::now();
+            let mut victims = Vec::new();
+            for slot in std::mem::take(&mut state.slots) {
+                let held = !spent && slot.prewarmed.is_some() && now < slot.hold_until;
+                let idle =
+                    slot.active_runs == 0 && !held && now.saturating_duration_since(slot.idle_since) >= idle_timeout;
                 if !idle || keep > 0 {
                     keep = keep.saturating_sub(1);
-                    return true;
+                    state.slots.push(slot);
+                } else {
+                    state.forget(&slot);
+                    victims.push(slot.endpoint.replica);
                 }
-                victims.push(slot.endpoint.replica.clone());
-                false
-            });
+            }
             victims
         };
         let mode = if self.capabilities.supports_suspend { ReleaseMode::Suspend } else { ReleaseMode::Stop };
@@ -376,9 +582,13 @@ impl Pool {
         let (dropped, orphans) = {
             let mut state = self.lock();
             let before = state.slots.len();
-            state.slots.retain(|slot| {
-                listed.iter().any(|row| row.replica == slot.endpoint.replica && row.phase == ReplicaPhase::Ready)
-            });
+            for slot in std::mem::take(&mut state.slots) {
+                if listed.iter().any(|row| row.replica == slot.endpoint.replica && row.phase == ReplicaPhase::Ready) {
+                    state.slots.push(slot);
+                } else {
+                    state.forget(&slot);
+                }
+            }
             let dropped = before - state.slots.len();
             let orphans: Vec<ReplicaRef> = listed
                 .iter()
@@ -404,7 +614,14 @@ impl Pool {
         let replicas: Vec<ReplicaRef> = {
             let mut state = self.lock();
             state.closed = true;
-            state.slots.drain(..).map(|slot| slot.endpoint.replica).collect()
+            let slots = std::mem::take(&mut state.slots);
+            slots
+                .into_iter()
+                .map(|slot| {
+                    state.forget(&slot);
+                    slot.endpoint.replica
+                })
+                .collect()
         };
         self.changed.notify_waiters();
         if self.capabilities.addressing == Addressing::Url {
@@ -422,6 +639,7 @@ impl Pool {
             replicas: state.slots.len() as u32,
             active_runs: state.slots.iter().map(|slot| slot.active_runs).sum(),
             queued: state.waiters,
+            prewarm: state.prewarm,
         }
     }
 }
@@ -447,7 +665,10 @@ mod tests {
         let leases = futures::future::join_all((0..20).map(|_| pool.acquire())).await;
         assert!(leases.iter().all(Result::is_ok));
         assert_eq!(provider.ready_count(&deployment()), 1);
-        assert_eq!(pool.stats(), PoolStats { replicas: 1, active_runs: 20, queued: 0 });
+        assert_eq!(
+            pool.stats(),
+            PoolStats { replicas: 1, active_runs: 20, queued: 0, prewarm: PrewarmStats::default() }
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -523,5 +744,91 @@ mod tests {
             PoolConfig { quotas: quota, ..PoolConfig::default() },
         );
         assert_eq!(blocked.acquire().await.unwrap_err(), ActivateError::WakeQuota);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn prewarm_hits_and_misses_are_counted() {
+        let provider = Arc::new(MemoryProvider::new(Duration::from_millis(10)));
+        let config = PoolConfig { idle_timeout: Duration::from_secs(60), ..PoolConfig::default() };
+        let pool = pool(provider.clone(), config);
+        assert_eq!(pool.prewarm(1, PrewarmSource::Api).await.unwrap(), PrewarmOutcome::Started(1));
+        assert_eq!(pool.prewarm(1, PrewarmSource::Api).await.unwrap(), PrewarmOutcome::AlreadyWarm);
+        let lease = pool.acquire().await.unwrap();
+        drop(lease);
+        assert_eq!(provider.ready_count(&deployment()), 1, "the request found the prewarmed replica");
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert_eq!(pool.release_idle().await, 1);
+        assert_eq!(pool.prewarm(1, PrewarmSource::Cron).await.unwrap(), PrewarmOutcome::Started(1));
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert_eq!(pool.release_idle().await, 1);
+        let stats = pool.stats().prewarm;
+        assert_eq!(stats.started, [0, 1, 1, 0]);
+        assert_eq!(stats.hits, [0, 0, 1, 0]);
+        assert_eq!(stats.misses, [0, 1, 0, 0]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn prewarm_joins_the_singleflight_and_counts_against_the_quota() {
+        let provider = Arc::new(MemoryProvider::new(Duration::from_millis(100)));
+        let config =
+            PoolConfig { quotas: Quotas { max_wakes_per_hour: 1, ..Quotas::default() }, ..PoolConfig::default() };
+        let pool = pool(provider.clone(), config);
+        let warming = tokio::spawn({
+            let pool = pool.clone();
+            async move { pool.prewarm(1, PrewarmSource::Predictive).await }
+        });
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert_eq!(pool.prewarm_check(1), PrewarmOutcome::InFlight);
+        let lease = pool.acquire().await.unwrap();
+        assert_eq!(warming.await.unwrap().unwrap(), PrewarmOutcome::Started(1));
+        assert_eq!(provider.ready_count(&deployment()), 1, "one wake for prewarm + request");
+        assert_eq!(pool.stats().prewarm.hits, [1, 0, 0, 0], "a request during the prewarm is a hit");
+        drop(lease);
+        pool.close().await;
+        let other = Pool::new(
+            DeploymentRef::new("shop", "v2", "mem"),
+            provider.clone(),
+            PoolConfig { quotas: Quotas { max_wakes_per_hour: 0, ..Quotas::default() }, ..PoolConfig::default() },
+        );
+        assert_eq!(other.prewarm(1, PrewarmSource::Api).await.unwrap(), PrewarmOutcome::QuotaExhausted);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn spent_budget_refuses_prewarms_and_releases_idle_replicas_at_once() {
+        let provider = Arc::new(MemoryProvider::new(Duration::ZERO));
+        let budget = Arc::new(WarmBudget::new(30));
+        let config = PoolConfig {
+            min_replicas: 1,
+            idle_timeout: Duration::from_secs(600),
+            warm_budget: Some(budget.clone()),
+            ..PoolConfig::default()
+        };
+        let pool = pool(provider.clone(), config);
+        assert_eq!(pool.prewarm(1, PrewarmSource::MinReplicas).await.unwrap(), PrewarmOutcome::Started(1));
+        assert_eq!(pool.release_idle().await, 0, "first call only starts the clock");
+        tokio::time::advance(Duration::from_secs(20)).await;
+        assert_eq!(pool.release_idle().await, 0, "20 s of 30 used; min_replicas kept");
+        tokio::time::advance(Duration::from_secs(20)).await;
+        assert_eq!(pool.release_idle().await, 1, "budget spent: min_replicas released too");
+        assert_eq!(provider.ready_count(&deployment()), 0);
+        assert_eq!(pool.prewarm(1, PrewarmSource::Predictive).await.unwrap(), PrewarmOutcome::BudgetExhausted);
+        assert!(pool.acquire().await.is_ok(), "requests still wake on demand");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn busy_replicas_do_not_spend_the_budget() {
+        let provider = Arc::new(MemoryProvider::new(Duration::ZERO));
+        let budget = Arc::new(WarmBudget::new(30));
+        let config = PoolConfig { warm_budget: Some(budget.clone()), ..PoolConfig::default() };
+        let pool = pool(provider, config);
+        let lease = pool.acquire().await.unwrap();
+        pool.release_idle().await;
+        tokio::time::advance(Duration::from_secs(120)).await;
+        pool.release_idle().await;
+        assert_eq!(budget.used_secs(crate::signature::unix_now()), 0);
+        drop(lease);
+        tokio::time::advance(Duration::from_secs(10)).await;
+        pool.release_idle().await;
+        assert_eq!(budget.used_secs(crate::signature::unix_now()), 10);
     }
 }

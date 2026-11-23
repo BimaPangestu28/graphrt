@@ -9,6 +9,7 @@
 //! | POST | `/v1/deployments/{d}/runs/{id}/resume` | resume a paused run (`inputs`, `secrets`) |
 //! | POST | `/v1/deployments/{d}/runs/{id}/abort` | abort |
 //! | POST | `/v1/deployments/{d}/hooks/{hook}` | webhook ingress |
+//! | POST | `/v1/deployments/{d}/warm` | prewarm replicas ahead of traffic (`{"replicas": n}`) |
 //! | POST | `/admin/v1/deployments/{d}/versions` | register a version (admin token) |
 //! | GET | `/metrics`, `/healthz` | |
 //!
@@ -42,9 +43,11 @@ use crate::deployment::{Deployment, VersionError, VersionInfo};
 use crate::limiter::{Decision, Gcra};
 use crate::metrics::{DeploymentGauges, bump};
 use crate::pool::ActivateError;
+use crate::pool::{PrewarmOutcome, PrewarmRequest};
 use crate::signature::unix_now;
 use crate::sse::{Frame, is_after, resume_point};
 use crate::supervisor::{Gateway, LiveRun, RunInput, Settled, StartError, StartOptions, Started};
+use crate::warm::PrewarmSource;
 use crate::webhook::{HookConfig, delivery_key, hook_run_id, verify};
 
 /// Largest request body.
@@ -70,6 +73,8 @@ pub struct App {
     pub hooks: HashMap<(String, String), HookEntry>,
     /// Version registration hook.
     pub on_version: Option<VersionHook>,
+    /// Gateway-wide wake gate (for `/metrics`).
+    pub wake_gate: Option<Arc<crate::warm::WakeGate>>,
     started: tokio::time::Instant,
 }
 
@@ -88,6 +93,7 @@ impl App {
             admin_token_hash: None,
             hooks: HashMap::new(),
             on_version: None,
+            wake_gate: None,
             started: tokio::time::Instant::now(),
         }
     }
@@ -104,6 +110,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/deployments/{deployment}/runs/{run_id}/resume", post(resume_run))
         .route("/v1/deployments/{deployment}/runs/{run_id}/abort", post(abort_run))
         .route("/v1/deployments/{deployment}/hooks/{hook}", post(webhook))
+        .route("/v1/deployments/{deployment}/warm", post(warm))
         .route("/admin/v1/deployments/{deployment}/versions", post(add_version))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app)
@@ -152,7 +159,12 @@ async fn healthz(State(app): State<Arc<App>>) -> Response {
 
 async fn metrics(State(app): State<Arc<App>>) -> Response {
     let mut gauges = Vec::new();
+    let mut budgets = Vec::new();
+    let now = unix_now();
     for deployment in app.gateway.deployments() {
+        if let Some(budget) = &deployment.pool_config.warm_budget {
+            budgets.push((deployment.name.clone(), budget.used_secs(now), budget.limit_secs()));
+        }
         for version in deployment.versions() {
             let stats = version.pool.stats();
             gauges.push(DeploymentGauges {
@@ -161,10 +173,12 @@ async fn metrics(State(app): State<Arc<App>>) -> Response {
                 replicas: stats.replicas,
                 active_runs: stats.active_runs,
                 queued: stats.queued,
+                prewarm: stats.prewarm,
             });
         }
     }
-    let text = app.gateway.metrics.render(&gauges, app.gateway.live_count());
+    let mut text = app.gateway.metrics.render(&gauges, app.gateway.live_count());
+    crate::metrics::render_warm(&mut text, &budgets, app.wake_gate.as_deref());
     ([("content-type", "text/plain; version=0.0.4")], text).into_response()
 }
 
@@ -294,6 +308,7 @@ async fn create_run(
         Ok(principal) => principal,
         Err(response) => return response,
     };
+    deployment.record_arrival(unix_now());
     let object = match parse_object(&body) {
         Ok(object) => object,
         Err(response) => return response,
@@ -512,6 +527,7 @@ async fn resume_run(
             Err(failure) => return error(StatusCode::BAD_REQUEST, "bad_request", &failure.to_string()),
         }
     };
+    deployment.record_arrival(unix_now());
     let fresh = match &principal {
         Principal::User { .. } => Some(run_input(&deployment, &headers, serde_json::Map::new(), &principal)),
         Principal::ApiKey => None,
@@ -574,6 +590,7 @@ async fn webhook(
         bump(&app.gateway.metrics.auth_failures);
         return error(StatusCode::UNAUTHORIZED, "unauthorized", &failure.to_string());
     }
+    deployment.record_arrival(unix_now());
     let payload: Json =
         serde_json::from_slice(&body).unwrap_or_else(|_| Json::from(String::from_utf8_lossy(&body).into_owned()));
     let key = delivery_key(hook, &headers, &body);
@@ -599,6 +616,68 @@ async fn webhook(
                 .into_response()
         }
         Err(failure) => start_error(&app, failure),
+    }
+}
+
+/// `POST /v1/deployments/{d}/warm`: wakes replicas of the current version
+/// ahead of traffic (a chat UI calls it when a user opens the page). It is
+/// authenticated and rate-limited like a run, counts against
+/// `max_wakes_per_hour` and the keep-warm budget, is not an arrival for the
+/// predictive model, and answers without waiting for the wake: `200 warm`,
+/// `202 warming`, `429 warm_budget_exhausted` / `wake_quota_exhausted`.
+async fn warm(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let deployment = match find_deployment(&app, &name) {
+        Ok(deployment) => deployment,
+        Err(response) => return response,
+    };
+    if let Err(response) = admit(&app, peer.ip(), &deployment, &headers).await {
+        return response;
+    }
+    let object = match parse_object(&body) {
+        Ok(object) => object,
+        Err(response) => return response,
+    };
+    // `replicas`: wanted warm (default 1, capped at `max_replicas`).
+    let wanted = match object.get("replicas") {
+        None => 1,
+        Some(value) => match value.as_u64() {
+            Some(count) => u32::try_from(count).unwrap_or(u32::MAX),
+            None => return error(StatusCode::BAD_REQUEST, "bad_request", "replicas must be a positive integer"),
+        },
+    };
+    let current = match deployment.current() {
+        Ok(current) => current,
+        Err(failure) => return start_error(&app, StartError::Version(failure)),
+    };
+    let replicas = wanted.clamp(1, deployment.pool_config.quotas.max_replicas.max(1));
+    let pool = current.pool;
+    match pool.prewarm_check(replicas) {
+        PrewarmOutcome::AlreadyWarm => {
+            (StatusCode::OK, axum::Json(json!({ "status": "warm", "replicas": pool.stats().replicas }))).into_response()
+        }
+        PrewarmOutcome::BudgetExhausted => retry_after(
+            StatusCode::TOO_MANY_REQUESTS,
+            "warm_budget_exhausted",
+            "the keep-warm budget of today is spent",
+            crate::warm::WarmBudget::refill_in_secs(unix_now()),
+        ),
+        PrewarmOutcome::Closed => start_error(&app, StartError::Activate(ActivateError::Closed)),
+        PrewarmOutcome::QuotaExhausted => retry_after(
+            StatusCode::TOO_MANY_REQUESTS,
+            "wake_quota_exhausted",
+            "wake quota exhausted",
+            ActivateError::WakeQuota.retry_after_secs(),
+        ),
+        PrewarmOutcome::InFlight | PrewarmOutcome::Started(_) => {
+            pool.spawn_prewarm(PrewarmRequest { replicas, ..PrewarmRequest::one(PrewarmSource::Api, Duration::MAX) });
+            (StatusCode::ACCEPTED, axum::Json(json!({ "status": "warming", "replicas": replicas }))).into_response()
+        }
     }
 }
 
@@ -683,9 +762,9 @@ async fn add_version(
     }
     let entry = deployment.add_version(info, now_ms());
     if deployment.pool_config.min_replicas > 0 {
-        let pool = entry.pool.clone();
         let replicas = deployment.pool_config.min_replicas;
-        tokio::spawn(async move { pool.prewarm(replicas).await });
+        let request = PrewarmRequest { replicas, ..PrewarmRequest::one(PrewarmSource::MinReplicas, Duration::ZERO) };
+        entry.pool.spawn_prewarm(request);
     }
     eprintln!("{{\"audit\":\"version_added\",\"deployment\":\"{name}\",\"version\":\"{}\"}}", entry.info.version);
     (StatusCode::CREATED, axum::Json(json!({ "deployment": name, "version": entry.info.version, "created": true })))

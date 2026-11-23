@@ -17,11 +17,13 @@ use crate::config::{DeploymentConfig, GatewayConfig};
 use crate::deployment::{Deployment, VersionInfo};
 use crate::limiter::Gcra;
 use crate::local::{LocalProvider, LocalVersion};
+use crate::pool::PrewarmRequest;
 use crate::scheduler::CronJob;
 use crate::server::{App, VersionHook, load_versions, router};
-use crate::signature::parse_keys;
+use crate::signature::{parse_keys, unix_now};
 use crate::store::SqliteStore;
 use crate::supervisor::{Gateway, SupervisorSettings};
+use crate::warm::{ArrivalModel, PrewarmSource, WakeGate};
 
 /// A gateway assembled from its config, not yet listening.
 #[derive(Debug)]
@@ -53,12 +55,19 @@ fn build_deployment(
     config: &DeploymentConfig,
     provider: Arc<dyn graphrt_provider_api::Provider>,
     client: &reqwest::Client,
+    wake_gate: &Arc<WakeGate>,
 ) -> Result<Deployment, String> {
     let keys_text = keys_of(config)?;
     let keys = parse_keys(&keys_text).map_err(|error| format!("{}: {error}", config.name))?;
     let auth = DeploymentAuth::new(config.api_keys.clone(), config.jwt.clone(), client)
         .map_err(|error| format!("{}: {error}", config.name))?;
-    let mut deployment = Deployment::new(&config.name, auth, keys, provider, config.pool_config());
+    let mut pool_config = config.pool_config();
+    pool_config.wake_gate = Some(wake_gate.clone());
+    let mut deployment = Deployment::new(&config.name, auth, keys, provider, pool_config);
+    if config.warm.predictive {
+        let model = ArrivalModel::new(unix_now() as i64, config.warm.alpha, config.warm.threshold);
+        deployment.predictor = Some((std::sync::Mutex::new(model), config.warm.lead_secs));
+    }
     deployment.principal_limiter = config.rate_limit.map(|limit| Gcra::new(limit.into(), 100_000));
     deployment.input_headers = config
         .input_headers
@@ -108,6 +117,8 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
     let client =
         reqwest::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|error| error.to_string())?;
     let mut app = App::new(gateway.clone());
+    let wake_gate = Arc::new(WakeGate::new(config.wake_storm));
+    app.wake_gate = Some(wake_gate.clone());
     let mut crons = Vec::new();
     let mut callback_secrets = HashMap::new();
     let mut keys_by_deployment = HashMap::new();
@@ -136,7 +147,7 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
                 provider.clone()
             }
         };
-        let mut deployment = build_deployment(deployment_config, chosen, &client)?;
+        let mut deployment = build_deployment(deployment_config, chosen, &client, &wake_gate)?;
         deployment.retirer = retirers.get(provider_name).cloned();
         let deployment = Arc::new(deployment);
         if let Some(name) = &deployment_config.callback_secret_env {
@@ -221,7 +232,21 @@ pub async fn retire_expired(deployment: &Deployment, now: u64) {
     }
 }
 
-/// Idle release every 5 s, reconciliation every minute (I7: at most one
+/// Starts a predictive prewarm of `deployment` when its learned pattern
+/// expects traffic within the lead (once per predicted slot), after a random
+/// delay below the gateway's prewarm jitter and half the lead. Returns whether
+/// one was started.
+pub fn prewarm_predicted(deployment: &Deployment, unix_secs: u64) -> bool {
+    let Some(lead) = deployment.predicts_traffic(unix_secs) else { return false };
+    let Ok(current) = deployment.current() else { return false };
+    current.pool.spawn_prewarm(PrewarmRequest {
+        hold: ArrivalModel::hold(lead.as_secs()),
+        ..PrewarmRequest::one(PrewarmSource::Predictive, lead / 2)
+    });
+    true
+}
+
+/// Predictive prewarm check and idle release (charging the keep-warm budget) every 5 s, reconciliation every minute (I7: at most one
 /// `list` per minute per pool), retirement of 7-day-old versions, TTL purge hourly.
 pub async fn maintenance(gateway: Arc<Gateway>, ttl: Duration) {
     let mut tick: u64 = 0;
@@ -229,6 +254,7 @@ pub async fn maintenance(gateway: Arc<Gateway>, ttl: Duration) {
         tokio::time::sleep(Duration::from_secs(5)).await;
         tick += 1;
         for deployment in gateway.deployments() {
+            prewarm_predicted(&deployment, unix_now());
             for version in deployment.versions() {
                 version.pool.release_idle().await;
                 if tick.is_multiple_of(12)
@@ -319,5 +345,55 @@ pub async fn shutdown_signal() {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         () = async { match terminate.as_mut() { Some(signal) => { signal.recv().await; } None => std::future::pending().await } } => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use graphrt_provider_api::conformance::MemoryProvider;
+
+    use super::*;
+    use crate::warm::ArrivalModel;
+
+    #[tokio::test(start_paused = true)]
+    async fn learned_traffic_is_prewarmed_once_per_slot() {
+        let provider = Arc::new(MemoryProvider::new(Duration::from_millis(10)));
+        let key = crate::signature::GatewayKey::new("k", &[7; 32]).unwrap();
+        let mut deployment =
+            Deployment::new("shop", DeploymentAuth::default(), vec![key], provider.clone(), Default::default());
+        // 1970-01-05 was a Monday: the four days below are weekdays.
+        let nine = 4 * 86_400 + 9 * 3600;
+        deployment.predictor = Some((std::sync::Mutex::new(ArrivalModel::new(0, 0.3, 0.6)), 60));
+        let info = VersionInfo {
+            version: "v1".into(),
+            workflow: "wf".into(),
+            fingerprint: String::new(),
+            target: "mem".into(),
+            command: Vec::new(),
+            secret_inputs: None,
+            activated_ms: 0,
+            superseded_ms: None,
+        };
+        deployment.add_version(info, 0);
+        for day in 0..3 {
+            deployment.record_arrival(day * 86_400 + nine + 10);
+        }
+        assert!(!prewarm_predicted(&deployment, 3 * 86_400 + nine - 120), "not yet within the lead");
+        assert!(prewarm_predicted(&deployment, 3 * 86_400 + nine - 60));
+        assert!(!prewarm_predicted(&deployment, 3 * 86_400 + nine - 55), "once per slot");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let pool = deployment.current().unwrap().pool;
+        assert_eq!(pool.stats().replicas, 1);
+        assert_eq!(pool.stats().prewarm.started, [1, 0, 0, 0]);
+        let mut cold = Deployment::new(
+            "cold",
+            DeploymentAuth::default(),
+            vec![crate::signature::GatewayKey::new("k", &[7; 32]).unwrap()],
+            provider,
+            Default::default(),
+        );
+        cold.predictor = None;
+        cold.record_arrival(nine);
+        assert!(!prewarm_predicted(&cold, nine), "predictive prewarm is off without a model");
     }
 }
