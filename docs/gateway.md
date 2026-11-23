@@ -39,6 +39,10 @@ binary, so even a `--no-default-features --features gateway` build serves them.
 `graphrt gateway --config gateway.yaml` (or `$GRAPHRT_GATEWAY_CONFIG`). The
 file holds no secret: only names of environment variables and SHA-256 digests
 of API keys. `graphrt gateway check gateway.yaml` validates it.
+Values are typed as YAML resolves them: quote a string that looks like a
+number (`name: "2024"`). A wrong value is reported with its path and line,
+e.g. `deployments[0].pool.max_active_runs (line 12, column 24): invalid type:
+string "many", expected u32`.
 
 ```yaml
 listen: 127.0.0.1:8700
@@ -317,8 +321,8 @@ crate's conformance tests), and real-cloud verification is pending.
 | First blocking run through `--dev` that wakes a local agent from zero (`examples/hello.yaml`, `curl` included, ~6.8 ms of it is `curl` starting) | p50 17.4 / p95 18.4 ms; warm p50 8.7 ms, n = 20 | macOS arm64, `--no-default-features --features gateway` |
 | HA takeover after `kill -9` of the active, to first `200 /healthz` | 73 ms (`poll_ms: 200`); 41–53 ms (`poll_ms: 50`) | macOS arm64, [gateway-ha.md](gateway-ha.md) |
 | Kubernetes wake 0 → 1 pod, n = 50 | p50 340 ms, p95 812 ms, max 1.17 s (target ≤ 3 s) | local kind v1.36.1 cluster, [kubernetes-provider.md](kubernetes-provider.md#conformance) |
-| Binary: gateway core (`--no-default-features --features gateway`, local agents included) | macOS arm64 6.45 MiB (6,758,752 B), static musl x86_64 8.62 MiB (9,040,840 B), aarch64 7.31 MiB (7,667,392 B) | 2026-11-23, budgets in [bench/budgets.toml](../bench/budgets.toml) (`gateway-core`) |
-| Binary: every provider and deploy driver (`--no-default-features --features gateway-all`) | macOS arm64 7.14 MiB (7,490,736 B), static musl x86_64 9.61 MiB (10,075,080 B), aarch64 8.10 MiB (8,494,912 B) | 2026-11-23, `gateway-all` in [bench/budgets.toml](../bench/budgets.toml) |
+| Binary: gateway core (`--no-default-features --features gateway`, local agents included) | macOS arm64 5.97 MiB (6,259,824 B), static musl x86_64 7.91 MiB (8,291,784 B), aarch64 6.78 MiB (7,112,896 B) | 2026-11-23, budgets in [bench/budgets.toml](../bench/budgets.toml) (`gateway-core`) |
+| Binary: every provider and deploy driver (`--no-default-features --features gateway-all`) | macOS arm64 6.68 MiB (7,008,368 B), static musl x86_64 8.89 MiB (9,324,616 B), aarch64 7.57 MiB (7,938,112 B) | 2026-11-23, `gateway-all` in [bench/budgets.toml](../bench/budgets.toml) |
 | Binary: agent behind a gateway (`serve,llm,plugins,trust-gateway`) | ≈ 6.2 MiB (agent-slim 6.16 MiB + 73.3 KiB) | static musl, Linux arm64 ([bench/budgets.toml](../bench/budgets.toml)) |
 
 Not measured yet: Linux gateway RSS, cold starts on any real

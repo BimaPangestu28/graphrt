@@ -48,29 +48,27 @@ delta_of = "agent-slim"
 delta_kib = { x86_64-linux = 94, aarch64-linux = 77, default = 65 }
 
 # The gateway (plan §9: core ≤ 8 MiB, every provider ≤ 9 MiB). Measured
-# 2026-11-23 after the size pass (SQLite without FTS/R*Tree/STAT4/..., C deps
-# without unwind tables, see .cargo/config.toml; deduplicated base64 / sha2):
+# 2026-11-23 after the monomorphisation pass (one YAML parser instantiation,
+# no serde_path_to_error, one tokio task type for the stores' blocking jobs
+# and the background tasks):
 #
 # | build | x86_64-linux | aarch64-linux | macOS arm64 |
 # | --- | ---: | ---: | ---: |
-# | gateway-core | 8.62 MiB (9,040,840 B) | 7.31 MiB (7,667,392 B) | 6.45 MiB (6,758,752 B) |
-# | gateway-all | 9.61 MiB (10,075,080 B) | 8.10 MiB (8,494,912 B) | 7.14 MiB (7,490,736 B) |
+# | gateway-core | 7.91 MiB (8,291,784 B) | 6.78 MiB (7,112,896 B) | 5.97 MiB (6,259,824 B) |
+# | gateway-all | 8.89 MiB (9,324,616 B) | 7.57 MiB (7,938,112 B) | 6.68 MiB (7,008,368 B) |
 #
-# The Linux budgets are that plus about 3 %, like the agent builds. The plan's
-# 8 / 9 MiB hold on aarch64 and macOS but not on x86_64 musl, whose Rust code is
-# about 30 % larger than aarch64's (LLVM runs its machine outliner at -Oz only
-# on aarch64; forcing it on x86_64 made the binary bigger). The only lever left
-# that reaches 8 MiB there is `panic = "abort"` (7.34 MiB measured), which would
-# turn a panicking node into a crashed server; that is a decision, not a size fix.
+# x86_64 is held to the plan's 8 / 9 MiB (about 1 % headroom); aarch64 to the
+# measured size plus about 2.5 %. x86_64 code stays about 15 % larger than
+# aarch64's: LLVM runs its machine outliner at -Oz only on aarch64.
 [[build]]
 name = "gateway-core"
 features = "gateway"
-binary_mib = { x86_64-linux = 8.9, aarch64-linux = 7.55, default = 8.0 }
+binary_mib = { x86_64-linux = 8.0, aarch64-linux = 6.95, default = 8.0 }
 
 [[build]]
 name = "gateway-all"
 features = "gateway-all"
-binary_mib = { x86_64-linux = 9.9, aarch64-linux = 8.35, default = 9.0 }
+binary_mib = { x86_64-linux = 9.0, aarch64-linux = 7.75, default = 9.0 }
 
 # Time from exec of `graphrt serve` to its first `200` on GET /healthz, p95 over
 # `samples` starts (measured on the agent-slim build).
