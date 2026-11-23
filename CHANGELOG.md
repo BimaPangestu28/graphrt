@@ -24,7 +24,7 @@ releases may contain breaking changes; they are called out under **Changed**.
 - `release.yml` no longer tries to build the gateway archive for Windows: the
   gateway is Unix-only and does not compile there, so a tag build would have
   failed. Windows gets the agent archive only, as in the 0.5.0 release.
-- `graphrt gateway`: warm first-byte overhead down from ~1.5 ms to ~0.23 ms
+- `graphrt gateway`: warm first-byte overhead down from ~1.5 ms to ~0.25 ms
   (p50, Linux aarch64). Each client stream's first frame waited up to 1 ms
   for the heartbeat timer; a fresh run's stream read the store before its
   first frame; `start_run` made two store round trips it does not need
@@ -35,7 +35,7 @@ releases may contain breaking changes; they are called out under **Changed**.
   operations now queue for it. With mimalloc built without transparent huge
   pages, a 32-frame broadcast per live run (a lagging stream catches up from
   the ring) and a smaller supervisor future, the gateway idles at 7 MiB
-  instead of 20 MiB and holds 1,000 streams in ~77 MiB.
+  instead of 20 MiB and holds 1,000 streams in ~76 MiB.
 - `graphrt gateway`: a version's `min_replicas` prewarm that raced its first
   cold request was dropped as "in flight" and the pool stayed at one replica;
   background prewarms (`min_replicas`, cron, predictive) now wait for the
