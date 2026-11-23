@@ -89,6 +89,9 @@ healthz_p95_ms = 10.0
 # Warm TTFB overhead: first `run_started` byte through the gateway minus straight
 # to the same agent, interleaved. TCP: agent on loopback behind the k8s provider;
 # its budget is this plus one measured loopback round trip.
+# Latency scenarios (TTFB, wake, webhook) run this many rounds; the median
+# round is gated, every round is reported.
+rounds = 3
 ttfb_samples = 1000
 ttfb_overhead_uds_p50_ms = 0.3
 ttfb_overhead_uds_p95_ms = 1.0

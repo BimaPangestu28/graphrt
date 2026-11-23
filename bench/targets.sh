@@ -130,9 +130,9 @@ else
 fi
 
 {
-  cat "$WORK/budgets.md"
+  cat "$WORK/budgets.md" 2>/dev/null || echo "**budget-gate failed** (see its output above)."
   echo
-  cat "$WORK/gateway.md"
+  cat "$WORK/gateway.md" 2>/dev/null || echo "**gwbench failed** (see its output above)."
   echo
   echo "### JWT verification (RS256, cached JWKS key)"
   echo

@@ -17,7 +17,8 @@ compares the result with the `[gateway_targets]` table of bench/budgets.toml
   wake        cold wake of the local provider (exec of a new agent -> first SSE event
               of the run), one fresh deployment per sample
   wake-node   the same with a Node.js process plugin: request -> the plugin node's result
-              (the agent starts the plugin host at start-up; `node -e 0` is reported as the floor)
+              (the agent starts the plugin host at start-up; the plugin's own spawn -> initialize
+              time without graphrt is reported as the floor)
   webhook     webhook ack (HMAC-signed POST -> 202), sequential, n = webhook_samples
   cron        lag of cron_fires fires (`* * * * *` schedules with prewarm): fire time
               -> run record created, and -> run finished (gated: an upper bound)
@@ -489,9 +490,8 @@ class Context:
     root: Path
 
     def workspace(self, name: str) -> Workspace:
-        path = self.root / name
-        path.mkdir(parents=True, exist_ok=True)
-        return Workspace(path)
+        """A fresh directory per call (rounds of a scenario never share sockets or stores)."""
+        return Workspace(Path(tempfile.mkdtemp(prefix=f"{name}-", dir=self.root)))
 
     def samples(self, key: str, quick: int) -> int:
         return quick if self.args.quick else int(self.targets[key])
@@ -725,17 +725,25 @@ def scenario_wake_node(ctx: Context) -> dict:
         link.symlink_to(ROOT / "plugins" / "examples" / "node-uppercase")
     result = measure_wakes(ctx, "wake-node", PLUGIN_WORKFLOW, "shout", ["--plugins", str(plugins)],
                            ctx.samples("wake_samples", 20))
-    result["bare_node_start_ms"] = summarize(bare_node_starts(20))
+    result["plugin_handshake_ms"] = summarize(plugin_handshakes(link, 30))
     return result
 
 
-def bare_node_starts(samples: int) -> list[float]:
-    """`node -e 0` on this machine: the floor under any Node.js plugin start."""
+def plugin_handshakes(plugin_dir: Path, samples: int) -> list[float]:
+    """Spawn of the Node.js plugin -> its `initialize` answer, without graphrt:
+    the floor under a cold wake with that plugin on this machine."""
+    request = json.dumps({"jsonrpc": "2.0", "id": "r-1", "method": "initialize",
+                          "params": {"protocol_version": 1, "host": {"name": "gwbench", "version": "0"}}}) + "\n"
     times = []
     for _ in range(samples):
         began = time.perf_counter_ns()
-        subprocess.run(["node", "-e", "0"], check=True)
+        process = subprocess.Popen(["node", "plugin.mjs"], cwd=plugin_dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        process.stdin.write(request.encode())
+        process.stdin.flush()
+        process.stdout.readline()
         times.append((time.perf_counter_ns() - began) / 1e6)
+        process.kill()
+        process.wait()
     return times
 
 
@@ -860,29 +868,58 @@ def checks_for(name: str, result: dict, targets: dict) -> list[Check]:
     return []
 
 
+# Latency scenarios run `rounds` times and report the median round: sub-millisecond
+# timings on a shared machine (a VM on a busy laptop, a CI runner) swing by 2x
+# between rounds a few seconds apart. Every round's values are kept in the JSON.
+ROUNDED = {"ttfb-uds", "ttfb-tcp", "wake", "wake-node", "webhook"}
+
+
+def run_rounds(ctx: Context, name: str) -> tuple[dict, list[Check]]:
+    rounds = 1 if ctx.args.quick or name not in ROUNDED else int(ctx.targets.get("rounds", 1))
+    outcomes = []
+    for _ in range(rounds):
+        result = SCENARIO_FUNCTIONS[name](ctx)
+        outcomes.append((result, checks_for(name, result, ctx.targets)))
+    # The median round by its first (headline) check.
+    outcomes.sort(key=lambda outcome: outcome[1][0].value if outcome[1] else 0)
+    result, checks = outcomes[len(outcomes) // 2]
+    if rounds > 1:
+        result["rounds"] = [[check.value for check in round_checks] for _, round_checks in outcomes]
+    return result, checks
+
+
 def describe(name: str, result: dict) -> str:
     if "skipped" in result:
         return f"skipped: {result['skipped']}"
     if name.startswith("ttfb"):
         g, d = result["gateway_ms"], result["direct_ms"]
         return (f"gateway p50/p95 {g['p50']:.3f}/{g['p95']:.3f} ms, direct {d['p50']:.3f}/{d['p95']:.3f} ms, "
-                f"n={g['n']}")
+                f"n={g['n']}" + rounds_note(result))
     if name == "sse":
         return (f"{result['streams']} streams x {result['chunks_per_stream']} chunks, RSS idle "
                 f"{result['gateway_rss_before_mib']} MiB, max chunk gap {result['max_chunk_gap_ms']} ms")
     if name.startswith("wake"):
         e, f = result["first_event_ms"], result["run_finished_ms"]
         text = f"first event p50/p95 {e['p50']:.2f}/{e['p95']:.2f} ms, run finished p50/p95 {f['p50']:.2f}/{f['p95']:.2f} ms, n={e['n']}"
-        if "bare_node_start_ms" in result:
-            text += f"; bare `node -e 0` p50 {result['bare_node_start_ms']['p50']:.1f} ms"
-        return text
+        if "plugin_handshake_ms" in result:
+            h = result["plugin_handshake_ms"]
+            text += f"; the plugin alone (spawn -> initialize, no graphrt) p50/p95 {h['p50']:.1f}/{h['p95']:.1f} ms"
+        return text + rounds_note(result)
     if name == "webhook":
         a = result["ack_ms"]
-        return f"ack p50 {a['p50']:.3f} ms, p99 {a['p99']:.3f} ms, n={a['n']}"
+        text = f"ack p50 {a['p50']:.3f} ms, p99 {a['p99']:.3f} ms, n={a['n']}"
+        return text + rounds_note(result)
     if name == "cron":
         c = result["created_lag_ms"]
         return f"{result['fires']} simultaneous fires; fire -> record created p50/p95 {c['p50']:.0f}/{c['p95']:.0f} ms"
     return ""
+
+
+def rounds_note(result: dict) -> str:
+    if "rounds" not in result:
+        return ""
+    values = ", ".join("/".join(f"{value:g}" for value in round_values) for round_values in result["rounds"])
+    return f"; median of {len(result['rounds'])} rounds ({values})"
 
 
 def report(results: dict, checks: list[Check], machine: str) -> str:
@@ -947,12 +984,12 @@ def main() -> int:
             print(f"gwbench: {name} ...", file=sys.stderr, flush=True)
             began = time.monotonic()
             try:
-                results[name] = SCENARIO_FUNCTIONS[name](ctx)
+                results[name], round_checks = run_rounds(ctx, name)
             except SkipScenario as skip:
                 results[name] = {"skipped": str(skip)}
                 continue
             print(f"gwbench: {name} done in {time.monotonic() - began:.1f} s", file=sys.stderr, flush=True)
-            checks += checks_for(name, results[name], targets)
+            checks += round_checks
     finally:
         shutil.rmtree(root, ignore_errors=True)
     text = report(results, checks, machine_description())
