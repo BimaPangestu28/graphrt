@@ -921,6 +921,9 @@ impl Gateway {
         }
     }
 
+    // Every await but the pump is boxed: an async fn is as large as its largest
+    // awaited future, and this one lives for the whole run (13.6 KiB per run
+    // before, mostly for `finish`, `fail` and the orphan path).
     async fn executions(
         self: Arc<Self>,
         run: Arc<LiveRun>,
@@ -947,10 +950,11 @@ impl Gateway {
                     return;
                 }
             };
-            let mut stream = match self.open_stream(&run, &version, &record, &mut lease, resume.as_ref()).await {
-                Ok(stream) => stream,
-                Err((error_type, message)) => return self.fail(&run, record, error_type, &message).await,
-            };
+            let mut stream =
+                match Box::pin(self.open_stream(&run, &version, &record, &mut lease, resume.as_ref())).await {
+                    Ok(stream) => stream,
+                    Err((error_type, message)) => return Box::pin(self.fail(&run, record, error_type, &message)).await,
+                };
             let capabilities = version.pool.capabilities().clone();
             let request_cap =
                 capabilities.max_request_secs.filter(|_| !capabilities.can_preempt()).map(Duration::from_secs);
@@ -960,9 +964,13 @@ impl Gateway {
                     Some(cap) => match tokio::time::timeout(cap, self.pump(&run, &mut stream, &mut record)).await {
                         Ok(outcome) => outcome,
                         Err(_) => {
-                            return self
-                                .fail(&run, record, "platform_timeout", "run exceeded the platform's request limit")
-                                .await;
+                            return Box::pin(self.fail(
+                                &run,
+                                record,
+                                "platform_timeout",
+                                "run exceeded the platform's request limit",
+                            ))
+                            .await;
                         }
                     },
                     None => self.pump(&run, &mut stream, &mut record).await,
@@ -970,14 +978,16 @@ impl Gateway {
                 match pumped {
                     Outcome::Finished(event) => break Outcome::Finished(event),
                     Outcome::PlatformTimeout(message) => break Outcome::PlatformTimeout(message),
-                    Outcome::Broken(reason) => match self.reattach(&run, &version, &record, lease.as_ref()).await {
-                        Some(reattached) => stream = reattached,
-                        None => break Outcome::Broken(reason),
-                    },
+                    Outcome::Broken(reason) => {
+                        match Box::pin(self.reattach(&run, &version, &record, lease.as_ref())).await {
+                            Some(reattached) => stream = reattached,
+                            None => break Outcome::Broken(reason),
+                        }
+                    }
                 }
             };
             match outcome {
-                Outcome::Finished(event) => match self.finish(&run, record.clone(), &event).await {
+                Outcome::Finished(event) => match Box::pin(self.finish(&run, record.clone(), &event)).await {
                     Some(next) => {
                         lost = 0;
                         bump(&self.metrics.redispatches);
@@ -990,9 +1000,8 @@ impl Gateway {
                 // Lambda-like platforms end the request themselves: no preemption
                 // happened, so there is nothing to re-dispatch from.
                 Outcome::PlatformTimeout(message) => {
-                    return self
-                        .fail(&run, record, "platform_timeout", &format!("platform ended the run: {message}"))
-                        .await;
+                    let message = format!("platform ended the run: {message}");
+                    return Box::pin(self.fail(&run, record, "platform_timeout", &message)).await;
                 }
                 Outcome::Broken(reason) => {
                     if let Some(broken) = lease.take() {
@@ -1006,21 +1015,22 @@ impl Gateway {
                         let receiver = run.expect_orphan();
                         // Agents never call the gateway: pull the orphan from them.
                         graphrt_core::task::spawn(Arc::clone(&self).keep_polling_orphans(vec![run.run_id.clone()]));
-                        let orphan = self.await_orphan(&run, receiver, record.epoch).await;
+                        let orphan = Box::pin(self.await_orphan(&run, receiver, record.epoch)).await;
                         run.stop_awaiting_orphan();
                         orphan_terminal(orphan.as_ref())
                     };
                     let next = match terminal {
                         Some(event) => {
                             lost = 0;
-                            let Some(next) = self.finish(&run, record.clone(), &event).await else { return };
+                            let Some(next) = Box::pin(self.finish(&run, record.clone(), &event)).await else { return };
                             bump(&self.metrics.redispatches);
                             record = self.store.get(&run.run_id).await.ok().flatten().unwrap_or(record);
                             Some(next)
                         }
                         None => {
                             lost += 1;
-                            let Some((requeued, next)) = self.requeue(&run, record, &reason, lost).await else {
+                            let Some((requeued, next)) = Box::pin(self.requeue(&run, record, &reason, lost)).await
+                            else {
                                 return;
                             };
                             record = requeued;
