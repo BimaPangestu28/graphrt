@@ -36,7 +36,7 @@ serde_json = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 ring = { version = "0.17", optional = true, default-features = false, features = ["alloc"] }
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23", optional = true }
 tokio = { workspace = true, optional = true, features = ["time", "sync", "fs"] }
 
 [dev-dependencies]

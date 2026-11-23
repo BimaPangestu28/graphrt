@@ -228,12 +228,6 @@ checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
 name = "base64"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
-
-[[package]]
-name = "base64"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
@@ -1526,7 +1520,7 @@ name = "graphrt-cli"
 version = "0.4.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "flate2",
  "futures",
@@ -1658,7 +1652,7 @@ name = "graphrt-gateway"
 version = "0.4.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "futures",
  "graphrt-core",
@@ -1688,7 +1682,7 @@ name = "graphrt-gcp"
 version = "0.4.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "futures",
  "graphrt-provider-api",
  "reqwest",
@@ -1704,7 +1698,7 @@ dependencies = [
 name = "graphrt-http"
 version = "0.4.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "futures",
  "graphrt-core",
  "indexmap",
@@ -1807,7 +1801,7 @@ name = "graphrt-provider-aws"
 version = "0.4.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "futures",
  "graphrt-provider-api",
@@ -1815,7 +1809,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tokio",
  "tracing",
 ]
@@ -1825,7 +1819,7 @@ name = "graphrt-provider-azure"
 version = "0.4.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "futures",
  "graphrt-provider-api",
  "reqwest",
@@ -1854,7 +1848,7 @@ name = "graphrt-provider-k8s"
 version = "0.4.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "futures",
  "graphrt-provider-api",
  "graphrt-provider-k8s",
