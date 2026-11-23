@@ -7,6 +7,11 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Fixed
+- `release.yml` no longer tries to build the gateway archive for Windows: the
+  gateway is Unix-only and does not compile there, so a tag build would have
+  failed. Windows gets the agent archive only, as in the 0.5.0 release.
+
 ## [0.5.0] - 2026-11-23
 
 Scale to zero, everywhere. `graphrt gateway` (preview) is an always-on front of

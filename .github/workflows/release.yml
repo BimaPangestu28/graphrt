@@ -116,8 +116,12 @@ jobs:
           ext=""
           case "${{ matrix.target }}" in *windows*) ext=".exe" ;; esac
           mkdir -p dist
-          # archive-prefix:features (the agent first, then the gateway build)
-          for spec in "${BIN}:$EXTRA_FEATURES" "${BIN}-gateway:$GATEWAY_FEATURES"; do
+          # archive-prefix:features (the agent first, then the gateway build).
+          # The gateway is Unix-only (Unix sockets, file ownership checks), so
+          # Windows gets the agent archive only.
+          specs=("${BIN}:$EXTRA_FEATURES")
+          case "${{ matrix.target }}" in *windows*) ;; *) specs+=("${BIN}-gateway:$GATEWAY_FEATURES") ;; esac
+          for spec in "${specs[@]}"; do
             prefix=${spec%%:*}
             features=${spec#*:}
             if [ "${{ matrix.zig }}" = "true" ]; then
@@ -138,13 +142,17 @@ jobs:
             )
           done
           echo "agent=dist/${BIN}-${{ matrix.target }}/${BIN}${ext}" >> "$GITHUB_OUTPUT"
-          echo "gateway=dist/${BIN}-gateway-${{ matrix.target }}/${BIN}${ext}" >> "$GITHUB_OUTPUT"
+          if [ ${#specs[@]} -gt 1 ]; then
+            echo "gateway=dist/${BIN}-gateway-${{ matrix.target }}/${BIN}${ext}" >> "$GITHUB_OUTPUT"
+          fi
       - name: Smoke test the packaged binaries
         if: matrix.smoke
         shell: bash
         run: |
           sh scripts/smoke-release-binary.sh "${{ steps.package.outputs.agent }}"
-          SMOKE_REQUIRED_FEATURES="eval online-eval gateway" sh scripts/smoke-release-binary.sh "${{ steps.package.outputs.gateway }}"
+          if [ -n "${{ steps.package.outputs.gateway }}" ]; then
+            SMOKE_REQUIRED_FEATURES="eval online-eval gateway" sh scripts/smoke-release-binary.sh "${{ steps.package.outputs.gateway }}"
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.target }}
