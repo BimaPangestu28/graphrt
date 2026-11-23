@@ -338,7 +338,7 @@ impl Provider for LocalProvider {
             self.released.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(state.pid);
             signal_group(state.pid, "TERM").await;
             let grace = self.grace;
-            tokio::spawn(async move {
+            graphrt_core::task::spawn(async move {
                 let exited = match state.child.as_mut() {
                     Some(child) => tokio::time::timeout(grace, child.wait()).await.is_ok(),
                     None => {

@@ -101,7 +101,7 @@ impl LangfuseUploader {
         let counters = Arc::new(Counters::default());
         let (tx, rx) = mpsc::channel(QUEUE);
         let target = Target { url: url.clone(), authorization, client, backoff };
-        tokio::spawn(deliver_all(rx, target, Arc::clone(&counters)));
+        graphrt_core::task::spawn(deliver_all(rx, target, Arc::clone(&counters)));
         Ok(Self { tx, counters, url: shown })
     }
 

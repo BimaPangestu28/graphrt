@@ -174,7 +174,7 @@ impl SqliteStore {
         F: FnOnce(&mut Connection) -> StoreResult<T> + Send + 'static,
     {
         let connection = self.connection.clone();
-        tokio::task::spawn_blocking(move || {
+        graphrt_core::task::spawn_blocking(move || {
             let mut guard = connection.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             operation(&mut guard)
         })

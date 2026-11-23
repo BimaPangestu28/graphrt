@@ -34,13 +34,18 @@ pub mod source_map;
 pub mod store;
 #[cfg(feature = "store-conformance")]
 pub mod store_conformance;
+#[cfg(feature = "tokio")]
+pub mod task;
 pub mod template;
 pub mod tool;
 pub mod tool_node;
 pub mod urls;
 pub mod validate;
 pub mod value;
+pub mod value_path;
 pub mod variables;
+#[cfg(feature = "yaml")]
+pub mod yaml;
 
 pub use dsl::Workflow;
 pub use engine::{Engine, RunHandle, RunInput, RunStream};

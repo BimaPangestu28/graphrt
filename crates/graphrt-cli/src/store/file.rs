@@ -96,7 +96,7 @@ impl FileStore {
     {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
+            graphrt_core::task::spawn_blocking(move || {
                 let _lock = inner.lock()?;
                 op(&inner)
             })
@@ -358,7 +358,7 @@ impl CoordinationStore for FileStore {
             let mut out = Vec::new();
             Inner::walk_objects(&dir, base, &mut out)?;
             out.retain(|(key, _)| key.starts_with(&prefix));
-            out.sort_by(|a, b| a.0.cmp(&b.0));
+            out.sort_unstable_by(|a, b| a.0.cmp(&b.0));
             Ok(out)
         })
     }

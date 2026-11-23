@@ -66,7 +66,7 @@ impl StoredRequest {
             }
             None => {}
         }
-        needs_secrets.sort();
+        needs_secrets.sort_unstable();
         Self { body, expires_at: input.expires_at, needs_secrets }
     }
 

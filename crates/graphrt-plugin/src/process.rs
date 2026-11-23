@@ -236,7 +236,7 @@ impl ProcessTransport {
             tail.clear();
         }
         let sink = self.stderr.clone();
-        tokio::spawn(async move {
+        graphrt_core::task::spawn(async move {
             let mut buf = [0u8; 4096];
             while let Ok(n) = stderr.read(&mut buf).await {
                 if n == 0 {
@@ -287,7 +287,7 @@ fn supervise(
     exit_status: Arc<Mutex<Option<String>>>,
 ) -> tokio::sync::oneshot::Sender<()> {
     let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
-    tokio::spawn(async move {
+    graphrt_core::task::spawn(async move {
         let status = tokio::select! {
             status = child.wait() => status,
             _ = kill_rx => {

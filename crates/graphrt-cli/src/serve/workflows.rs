@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use crate::http_input::JsonBody;
 use axum::Json;
 use axum::extract::State;
 use graphrt_core::Graph;
@@ -56,7 +57,7 @@ pub(super) async fn list_nodes(State(state): State<Arc<AppState>>) -> Json<serde
 /// The body is either the document itself (JSON) or `{"document": "<YAML or JSON text>"}`.
 pub(super) async fn validate_workflow(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<serde_json::Value>,
+    JsonBody(body): JsonBody<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     Json(validation_report(body, &state.extensions.registry))
 }

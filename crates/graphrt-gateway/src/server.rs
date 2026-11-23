@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -379,19 +379,28 @@ async fn get_run(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct EventsQuery {
-    #[serde(default)]
-    from: Option<u64>,
+/// `from=N` of the events query (parsed by hand: one field does not need a
+/// query deserializer compiled for it). `400` when it is not a number.
+fn events_from(raw: Option<&str>) -> Result<Option<u64>, Response> {
+    let Some(value) = raw.unwrap_or_default().split('&').find_map(|pair| pair.strip_prefix("from=")) else {
+        return Ok(None);
+    };
+    value.parse().map(Some).map_err(|failure: std::num::ParseIntError| {
+        error(StatusCode::BAD_REQUEST, "bad_request", &format!("from: {failure}"))
+    })
 }
 
 async fn run_events(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((name, run_id)): Path<(String, String)>,
-    Query(query): Query<EventsQuery>,
+    RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
+    let from = match events_from(query.as_deref()) {
+        Ok(from) => from,
+        Err(response) => return response,
+    };
     let deployment = match find_deployment(&app, &name) {
         Ok(deployment) => deployment,
         Err(response) => return response,
@@ -402,8 +411,7 @@ async fn run_events(
     if let Err(response) = load_run(&app, &deployment, &run_id).await {
         return response;
     }
-    let (start, chunks) =
-        header(&headers, "last-event-id").and_then(resume_point).unwrap_or((query.from.unwrap_or(0), None));
+    let (start, chunks) = header(&headers, "last-event-id").and_then(resume_point).unwrap_or((from.unwrap_or(0), None));
     let live = app.gateway.live_run(&run_id);
     client_stream(app.gateway.clone(), run_id, live, start, chunks)
 }
@@ -420,7 +428,7 @@ fn client_stream(
     chunks: Option<u64>,
 ) -> Response {
     let (mut sender, receiver) = futures::channel::mpsc::channel::<Bytes>(CLIENT_BUFFER_FRAMES);
-    tokio::spawn(async move {
+    graphrt_core::task::spawn(async move {
         use futures::SinkExt as _;
         bump(&gateway.metrics.client_streams);
         let mut cursor = (start, chunks);

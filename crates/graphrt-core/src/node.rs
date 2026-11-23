@@ -681,7 +681,7 @@ pub struct Registry {
 impl fmt::Debug for Registry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut kinds: Vec<&String> = self.factories.keys().collect();
-        kinds.sort();
+        kinds.sort_unstable();
         f.debug_struct("Registry").field("kinds", &kinds).finish()
     }
 }
@@ -768,7 +768,7 @@ impl Registry {
     /// Catalog of every registered kind, sorted by kind.
     pub fn descriptors(&self) -> Vec<crate::catalog::NodeDescriptor> {
         let mut kinds: Vec<&String> = self.factories.keys().collect();
-        kinds.sort();
+        kinds.sort_unstable();
         kinds.into_iter().filter_map(|k| self.descriptor(k)).collect()
     }
 

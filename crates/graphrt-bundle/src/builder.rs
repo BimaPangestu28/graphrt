@@ -263,8 +263,7 @@ fn parse_structured(text: &str, what: &str) -> Result<serde_json::Value, BundleE
     if text.trim_start().starts_with(['{', '[']) {
         return serde_json::from_str(text).map_err(|e| BundleError::Build(format!("invalid {what}: {e}")));
     }
-    let options = serde_saphyr::options! { strict_booleans: true };
-    serde_saphyr::from_str_with_options(text, options).map_err(|e| BundleError::Build(format!("invalid {what}: {e}")))
+    graphrt_core::yaml::to_value(text, true).map_err(|e| BundleError::Build(format!("invalid {what}: {e}")))
 }
 
 fn read_plugin_manifest(dir: &Path) -> Result<serde_json::Value, BundleError> {

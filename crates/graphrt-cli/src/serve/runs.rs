@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path as UrlPath, Query, State};
+use axum::extract::{Path as UrlPath, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use graphrt_core::store::{RunFilter, RunRecord, RunStatus};
@@ -33,7 +33,29 @@ pub struct ListQuery {
     pub cursor: Option<String>,
 }
 
-pub(super) async fn list_runs(State(state): State<Arc<AppState>>, Query(query): Query<ListQuery>) -> Response {
+impl ListQuery {
+    /// Reads `workflow`, `status`, `limit` and `cursor` from a raw query string.
+    ///
+    /// # Errors
+    /// `400` when `limit` is not a number.
+    #[allow(clippy::result_large_err)]
+    pub fn from_query(raw: Option<&str>) -> Result<Self, Response> {
+        let params = crate::http_input::QueryParams::parse(raw);
+        let limit = params.number("limit")?.map_or(0, |limit| usize::try_from(limit).unwrap_or(usize::MAX));
+        Ok(Self {
+            workflow: params.string("workflow"),
+            status: params.string("status"),
+            limit,
+            cursor: params.string("cursor"),
+        })
+    }
+}
+
+pub(super) async fn list_runs(State(state): State<Arc<AppState>>, RawQuery(raw): RawQuery) -> Response {
+    let query = match ListQuery::from_query(raw.as_deref()) {
+        Ok(query) => query,
+        Err(refused) => return refused,
+    };
     let status = match query.status.as_deref().map(|s| (s, RunStatus::parse(s))) {
         Some((raw, None)) => return error_response(StatusCode::BAD_REQUEST, &format!("unknown status `{raw}`")),
         Some((_, parsed)) => parsed,

@@ -411,7 +411,7 @@ impl Gateway {
         run.settled.send_replace(Settled::Done(Box::new(record)));
         let gateway = Arc::clone(self);
         let run = Arc::clone(run);
-        tokio::spawn(async move {
+        graphrt_core::task::spawn(async move {
             if keep_input {
                 // A paused run keeps its inputs (credentials) in memory until they expire.
                 let expires_at = run.input().and_then(|input| input.expires_at).unwrap_or(0);
@@ -483,7 +483,7 @@ impl Gateway {
         self.register(&run);
         let gateway = Arc::clone(self);
         let supervised = run.clone();
-        tokio::spawn(async move { gateway.supervise(supervised, version, record, lease, None).await });
+        graphrt_core::task::spawn(async move { gateway.supervise(supervised, version, record, lease, None).await });
         Ok(Started::New(run))
     }
 
@@ -526,9 +526,9 @@ impl Gateway {
         let resume = serde_json::json!({ "snapshot": snapshot, "inputs": inputs, "secrets": secrets });
         let gateway = Arc::clone(self);
         let supervised = run.clone();
-        tokio::spawn(
-            async move { gateway.supervise_claimed(supervised, version, record, Some(lease), Some(resume)).await },
-        );
+        graphrt_core::task::spawn(async move {
+            gateway.supervise_claimed(supervised, version, record, Some(lease), Some(resume)).await
+        });
         Ok(run)
     }
 
@@ -948,7 +948,7 @@ impl Gateway {
                     } else {
                         let receiver = run.expect_orphan();
                         // Agents never call the gateway: pull the orphan from them.
-                        tokio::spawn(Arc::clone(&self).keep_polling_orphans(vec![run.run_id.clone()]));
+                        graphrt_core::task::spawn(Arc::clone(&self).keep_polling_orphans(vec![run.run_id.clone()]));
                         let orphan = self.await_orphan(&run, receiver, record.epoch).await;
                         run.stop_awaiting_orphan();
                         orphan_terminal(orphan.as_ref())
@@ -1129,7 +1129,7 @@ impl Gateway {
                 .load_snapshot(&record.run_id)
                 .await?
                 .map(|snapshot| serde_json::json!({ "snapshot": snapshot }));
-            tokio::spawn(Arc::clone(self).supervise(run, version, record.clone(), None, resume));
+            graphrt_core::task::spawn(Arc::clone(self).supervise(run, version, record.clone(), None, resume));
         }
         let mut waiting = Vec::new();
         for record in &running {
@@ -1146,10 +1146,10 @@ impl Gateway {
             waiting.push(record.run_id.clone());
             let gateway = Arc::clone(self);
             let record = record.clone();
-            tokio::spawn(async move { gateway.reclaim(run, record, receiver).await });
+            graphrt_core::task::spawn(async move { gateway.reclaim(run, record, receiver).await });
         }
         self.poll_orphans(&waiting).await;
-        tokio::spawn(Arc::clone(self).keep_polling_orphans(waiting));
+        graphrt_core::task::spawn(Arc::clone(self).keep_polling_orphans(waiting));
         Ok((queued.len(), running.len()))
     }
 

@@ -6,7 +6,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path as UrlPath, Query, State};
+use axum::extract::{Path as UrlPath, RawQuery, State};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
@@ -27,13 +27,29 @@ pub struct EventsQuery {
     pub stream: Option<bool>,
 }
 
+impl EventsQuery {
+    /// Reads `from` and `stream` from a raw query string.
+    ///
+    /// # Errors
+    /// `400` naming the field that is not a number / boolean.
+    #[allow(clippy::result_large_err)]
+    pub fn from_query(raw: Option<&str>) -> Result<Self, Response> {
+        let params = crate::http_input::QueryParams::parse(raw);
+        Ok(Self { from: params.number("from")?.unwrap_or(0), stream: params.boolean("stream")? })
+    }
+}
+
 /// `GET /v1/runs/{run_id}/events`.
 pub(super) async fn run_events(
     State(state): State<Arc<AppState>>,
     UrlPath(run_id): UrlPath<String>,
-    Query(query): Query<EventsQuery>,
+    RawQuery(raw): RawQuery,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    let query = match EventsQuery::from_query(raw.as_deref()) {
+        Ok(query) => query,
+        Err(refused) => return refused,
+    };
     // A reconnecting SSE client names the last event it saw.
     let from = query.from.max(crate::sse_ids::resume_index_of(&headers).unwrap_or(0));
     events_response(&state, &run_id, from, query.stream == Some(false)).await

@@ -24,6 +24,8 @@ pub mod gateway_cmd;
 pub mod header_inputs;
 #[cfg(any(feature = "serve", feature = "telemetry"))]
 pub mod hex;
+#[cfg(feature = "serve")]
+pub mod http_input;
 pub mod inspect;
 #[cfg(feature = "rag")]
 pub mod kb;

@@ -290,7 +290,7 @@ impl Schedule {
         let split = missed.len().saturating_sub(keep);
         plan.skipped.extend(missed.iter().take(split).map(|at| SkippedFire { at: *at, reason: "missed_while_down" }));
         plan.run = missed.into_iter().skip(split).collect();
-        plan.skipped.sort_by_key(|skipped| skipped.at);
+        plan.skipped.sort_unstable_by_key(|skipped| skipped.at);
         plan
     }
 }

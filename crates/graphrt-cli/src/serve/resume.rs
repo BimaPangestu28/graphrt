@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use axum::Json;
+use crate::http_input::JsonBody;
 use axum::extract::{Path as UrlPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -49,7 +49,7 @@ pub(super) async fn resume_run(
     State(state): State<Arc<AppState>>,
     UrlPath(run_id): UrlPath<String>,
     headers: axum::http::HeaderMap,
-    Json(body): Json<ResumeRequest>,
+    JsonBody(body): JsonBody<ResumeRequest>,
 ) -> Response {
     if let Some(refused) = refuse_resume(&state, &run_id, body.snapshot.as_ref()) {
         return refused;

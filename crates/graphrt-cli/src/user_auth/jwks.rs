@@ -133,7 +133,7 @@ impl RemoteKeySet {
     /// Refresh every [`REFRESH_INTERVAL`] for as long as the set is in use.
     pub fn spawn_refresh(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
+        graphrt_core::task::spawn(async move {
             let mut ticker = tokio::time::interval(REFRESH_INTERVAL);
             ticker.tick().await; // the first tick is immediate; the set was just fetched
             loop {

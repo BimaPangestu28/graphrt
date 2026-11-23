@@ -106,7 +106,7 @@ fn canonical_request(req: &SigningRequest<'_>) -> (String, String) {
 
     let mut query: Vec<(String, String)> =
         req.query.iter().map(|(k, v)| (uri_encode(k, false), uri_encode(v, false))).collect();
-    query.sort();
+    query.sort_unstable();
     let canonical_query: Vec<String> = query.iter().map(|(k, v)| format!("{k}={v}")).collect();
 
     let mut headers: Vec<(String, String)> = req
@@ -114,7 +114,7 @@ fn canonical_request(req: &SigningRequest<'_>) -> (String, String) {
         .iter()
         .map(|(k, v)| (k.to_ascii_lowercase(), v.split_whitespace().collect::<Vec<_>>().join(" ")))
         .collect();
-    headers.sort();
+    headers.sort_unstable();
     let mut canonical_headers = String::new();
     for (k, v) in &headers {
         canonical_headers.push_str(k);

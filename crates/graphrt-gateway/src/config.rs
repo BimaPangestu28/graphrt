@@ -277,7 +277,8 @@ impl GatewayConfig {
     /// # Errors
     /// A message naming the problem.
     pub fn from_yaml(text: &str) -> Result<Self, String> {
-        let config: Self = serde_saphyr::from_str(text).map_err(|error| format!("gateway config: {error}"))?;
+        let config: Self =
+            graphrt_core::yaml::from_str(text, false).map_err(|error| format!("gateway config: {error}"))?;
         config.validate()?;
         Ok(config)
     }

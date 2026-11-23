@@ -390,7 +390,7 @@ impl VariablePool {
     pub fn to_snapshot(&self) -> PoolSnapshot {
         let mut out: IndexMap<String, IndexMap<String, Value>> = IndexMap::new();
         let mut entries: Vec<(&Arc<str>, &Namespace)> = self.namespaces.iter().collect();
-        entries.sort_by(|a, b| a.0.cmp(b.0));
+        entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
         for (ns, vars) in entries {
             if ns.as_ref() == ENV {
                 continue;

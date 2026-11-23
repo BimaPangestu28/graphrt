@@ -46,8 +46,7 @@ fn example_eval_files_validate_and_load() {
     assert!(files.len() >= 4, "{files:?}");
     for file in files {
         let text = std::fs::read_to_string(&file).unwrap();
-        let options = serde_saphyr::options! { strict_booleans: true };
-        let value: serde_json::Value = serde_saphyr::from_str_with_options(&text, options).unwrap();
+        let value = graphrt_core::yaml::to_value(&text, true).unwrap();
         let errors: Vec<String> = validator.iter_errors(&value).map(|e| e.to_string()).collect();
         assert!(errors.is_empty(), "{}: {errors:?}", file.display());
         let suite = EvalSuite::load(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));

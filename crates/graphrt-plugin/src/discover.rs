@@ -40,7 +40,7 @@ pub fn discover(paths: &[PathBuf]) -> Vec<PathBuf> {
         }
         let Ok(entries) = std::fs::read_dir(path) else { continue };
         let mut dirs: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.is_dir()).collect();
-        dirs.sort();
+        dirs.sort_unstable();
         found.extend(dirs.iter().filter_map(|d| manifest_in(d)));
     }
     found

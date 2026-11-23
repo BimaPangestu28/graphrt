@@ -376,8 +376,8 @@ fn ha(action: &HaAction, config: Option<PathBuf>) -> Result<u8, CliError> {
 fn dev_config(workflow: &std::path::Path) -> Result<(GatewayConfig, Vec<(String, VersionInfo)>), CliError> {
     let mut config = GatewayConfig::from_yaml("store: .graphrt/gateway-dev.db").map_err(CliError::invalid)?;
     config.inline_admin_token = Some(random_hex(16)?);
-    let deployment: DeploymentConfig = serde_saphyr::from_str("name: dev\nkeys_env: unused\nopen: true\n")
-        .map_err(|error| CliError::failed(error.to_string()))?;
+    let deployment: DeploymentConfig =
+        graphrt_core::yaml::from_str("name: dev\nkeys_env: unused\nopen: true\n", false).map_err(CliError::failed)?;
     let deployment = DeploymentConfig {
         inline_keys: Some(format!("dev:{}", random_hex(32)?)),
         pool: PoolFileConfig { idle_timeout_secs: 120, ..PoolFileConfig::default() },

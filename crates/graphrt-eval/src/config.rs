@@ -481,8 +481,7 @@ pub fn parse_structured(text: &str) -> Result<Json, EvalError> {
     if text.trim_start().starts_with(['{', '[']) {
         return serde_json::from_str(text).map_err(|e| EvalError::invalid(format!("invalid JSON: {e}")));
     }
-    let options = serde_saphyr::options! { strict_booleans: true };
-    serde_saphyr::from_str_with_options(text, options).map_err(|e| EvalError::invalid(format!("invalid YAML: {e}")))
+    graphrt_core::yaml::to_value(text, true).map_err(|e| EvalError::invalid(format!("invalid YAML: {e}")))
 }
 
 /// Start inputs for the engine.
