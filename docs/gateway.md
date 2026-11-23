@@ -364,8 +364,8 @@ Warm-up: per deployment version and `source`,
 
 Measured on Linux aarch64 with `bench/targets.sh`
 ([details](benchmarks.md#gateway-targets-on-linux)): the gateway adds about
-0.25 ms to the first byte of a warm run (Unix socket or loopback TCP), wakes a
+0.23 ms to the first byte of a warm run (Unix socket or loopback TCP), wakes a
 local agent in ~7 ms (p95), acks a webhook in 0.5 ms, idles at 7 MiB and holds
-1,000 concurrent streams in ~75 MiB (about 68 KiB per stream, half of it two
+1,000 concurrent streams in ~77 MiB (about 70 KiB per stream, half of it two
 HTTP/1.1 connections). An agent started by the gateway starts its process
 plugins at once, alongside the dispatch of the run that woke it.

@@ -15,8 +15,8 @@
         "binary_bytes": 6513584,
         "binary_mib": 6.212,
         "idle_rss_mib": 4.82,
-        "healthz_p50_ms": 1.26,
-        "healthz_p95_ms": 1.71,
+        "healthz_p50_ms": 1.8,
+        "healthz_p95_ms": 4.28,
         "healthz_samples": 30
       },
       "agent-slim-gateway": {
@@ -25,18 +25,18 @@
         "binary_mib": 6.283,
         "delta_kib": 73.3,
         "delta_of": "agent-slim",
-        "idle_rss_mib": 4.86
+        "idle_rss_mib": 4.87
       },
       "gateway": {
         "features": "gateway",
-        "binary_bytes": 8031144,
-        "binary_mib": 7.659,
-        "idle_rss_mib": 7.01
+        "binary_bytes": 8149288,
+        "binary_mib": 7.772,
+        "idle_rss_mib": 7.07
       },
       "gateway-all": {
         "features": "gateway-all",
-        "binary_bytes": 8859432,
-        "binary_mib": 8.449
+        "binary_bytes": 8979624,
+        "binary_mib": 8.564
       }
     },
     "violations": []
@@ -48,66 +48,66 @@
       "ttfb-uds": {
         "gateway_ms": {
           "n": 1000,
-          "p50": 0.4752,
-          "p95": 0.5258,
-          "p99": 0.7353,
-          "max": 0.8596,
-          "mean": 0.4822
+          "p50": 0.4411,
+          "p95": 0.4845,
+          "p99": 0.682,
+          "max": 2.4437,
+          "mean": 0.4483
         },
         "direct_ms": {
           "n": 1000,
-          "p50": 0.2236,
-          "p95": 0.281,
-          "p99": 0.3465,
-          "max": 1.3405,
-          "mean": 0.2328
+          "p50": 0.2064,
+          "p95": 0.2473,
+          "p99": 0.3349,
+          "max": 0.7486,
+          "mean": 0.2136
         },
-        "overhead_p50_ms": 0.2516,
-        "overhead_p95_ms": 0.2448,
+        "overhead_p50_ms": 0.2347,
+        "overhead_p95_ms": 0.2372,
         "rounds": [
           [
-            0.2514,
-            0.2673
+            0.2328,
+            0.2261
           ],
           [
-            0.2516,
-            0.2448
+            0.2347,
+            0.2372
           ],
           [
-            0.2518,
-            0.2511
+            0.2361,
+            0.2396
           ]
         ]
       },
       "ttfb-tcp": {
         "gateway_ms": {
           "n": 1000,
-          "p50": 0.4692,
-          "p95": 0.5088,
-          "p99": 0.7248,
-          "max": 0.8866,
-          "mean": 0.4729
+          "p50": 0.4489,
+          "p95": 0.4998,
+          "p99": 0.6697,
+          "max": 0.8175,
+          "mean": 0.4554
         },
         "direct_ms": {
           "n": 1000,
-          "p50": 0.2268,
-          "p95": 0.2695,
-          "p99": 0.349,
-          "max": 0.8558,
-          "mean": 0.2342
+          "p50": 0.221,
+          "p95": 0.2709,
+          "p99": 0.355,
+          "max": 0.9633,
+          "mean": 0.2301
         },
-        "overhead_p50_ms": 0.2424,
-        "overhead_p95_ms": 0.2393,
-        "loopback_rtt_ms": 0.0153,
+        "overhead_p50_ms": 0.2279,
+        "overhead_p95_ms": 0.2289,
+        "loopback_rtt_ms": 0.0123,
         "rounds": [
           [
-            0.236
+            0.2262
           ],
           [
-            0.2393
+            0.2289
           ],
           [
-            0.2446
+            0.2321
           ]
         ]
       },
@@ -115,130 +115,130 @@
         "streams": 1000,
         "chunks_per_stream": 20,
         "chunk_interval_ms": 500,
-        "gateway_rss_before_mib": 8.16,
-        "gateway_rss_max_sampled_mib": 75.94,
-        "gateway_peak_rss_mib": 75.45,
+        "gateway_rss_before_mib": 8.28,
+        "gateway_rss_max_sampled_mib": 77.75,
+        "gateway_peak_rss_mib": 77.38,
         "failed_streams": 0,
         "failure_examples": [],
         "stalled_streams": 0,
-        "max_chunk_gap_ms": 533.9,
+        "max_chunk_gap_ms": 544.4,
         "first_chunk_ms": {
           "n": 1000,
-          "p50": 131.6669,
-          "p95": 1143.1249,
-          "p99": 1151.9046,
-          "max": 1153.4979,
-          "mean": 589.7569
+          "p50": 155.0324,
+          "p95": 1086.7271,
+          "p99": 1102.4509,
+          "max": 1106.0475,
+          "mean": 253.9099
         }
       },
       "wake": {
         "first_event_ms": {
           "n": 100,
-          "p50": 6.366,
-          "p95": 7.126,
-          "p99": 7.7086,
-          "max": 9.5141,
-          "mean": 6.4421
+          "p50": 5.6936,
+          "p95": 6.5821,
+          "p99": 7.2439,
+          "max": 10.473,
+          "mean": 5.8267
         },
         "run_finished_ms": {
           "n": 100,
-          "p50": 6.4954,
-          "p95": 7.2829,
-          "p99": 7.8595,
-          "max": 9.6906,
-          "mean": 6.5833
+          "p50": 5.792,
+          "p95": 6.7113,
+          "p99": 7.3821,
+          "max": 10.5698,
+          "mean": 5.9487
         },
         "rounds": [
           [
-            7.0725
+            6.3875
           ],
           [
-            7.126
+            6.5821
           ],
           [
-            7.2973
+            6.6109
           ]
         ]
       },
       "wake-node": {
         "first_event_ms": {
           "n": 100,
-          "p50": 6.5348,
-          "p95": 10.06,
-          "p99": 10.2097,
-          "max": 10.6147,
-          "mean": 7.1968
+          "p50": 5.8664,
+          "p95": 7.7005,
+          "p99": 9.8036,
+          "max": 18.1361,
+          "mean": 6.2857
         },
         "run_finished_ms": {
           "n": 100,
-          "p50": 61.207,
-          "p95": 66.8418,
-          "p99": 69.8678,
-          "max": 70.5561,
-          "mean": 61.7857
+          "p50": 55.4586,
+          "p95": 56.8785,
+          "p99": 59.4791,
+          "max": 66.7755,
+          "mean": 55.7077
         },
         "plugin_handshake_ms": {
           "n": 30,
-          "p50": 57.1834,
-          "p95": 58.8669,
-          "p99": 59.8819,
-          "max": 59.8819,
-          "mean": 56.9876
+          "p50": 50.3785,
+          "p95": 50.8059,
+          "p99": 50.8668,
+          "max": 50.8668,
+          "mean": 50.4196
         },
         "rounds": [
           [
-            62.6791
+            56.5255
           ],
           [
-            66.8418
+            56.8785
           ],
           [
-            71.1216
+            59.0376
           ]
         ]
       },
       "webhook": {
         "ack_ms": {
           "n": 1000,
-          "p50": 0.306,
-          "p95": 0.5168,
-          "p99": 0.7421,
-          "max": 1.0378,
-          "mean": 0.3226
+          "p50": 0.3491,
+          "p95": 0.5229,
+          "p99": 0.6819,
+          "max": 1.0214,
+          "mean": 0.3647
         },
         "statuses": {
           "202": 1020
         },
         "rounds": [
           [
-            0.5113
+            0.5185
           ],
           [
-            0.5168
+            0.5229
           ],
           [
-            0.5428
+            0.5296
           ]
         ]
       },
       "cron": {
         "fires": 1000,
-        "fire_time": 1795401000,
+        "fire_time": 1795403340,
         "created_lag_ms": {
           "n": 1000,
-          "p50": 27,
-          "p95": 48,
-          "p99": 49,
-          "max": 50,
-          "mean": 27.166
+          "p50": 47,
+          "p95": 70,
+          "p99": 72,
+          "max": 72,
+          "mean": 45.185
         },
         "finished_lag_ms": {
           "n": 1000,
-          "p50": 374,
-          "p95": 418,
-          "p99": 422,
-          "max": 423,
-          "mean": 374.201
+          "p50": 385,
+          "p95": 426,
+          "p99": 430,
+          "max": 431,
+          "mean": 384.608
         }
       }
     },
@@ -246,7 +246,7 @@
       {
         "scenario": "ttfb-uds",
         "metric": "overhead p50",
-        "value": 0.2516,
+        "value": 0.2347,
         "budget": 0.3,
         "unit": "ms",
         "gated": true,
@@ -255,7 +255,7 @@
       {
         "scenario": "ttfb-uds",
         "metric": "overhead p95",
-        "value": 0.2448,
+        "value": 0.2372,
         "budget": 1.0,
         "unit": "ms",
         "gated": true,
@@ -264,8 +264,8 @@
       {
         "scenario": "ttfb-tcp",
         "metric": "overhead p95 (budget + 1 RTT)",
-        "value": 0.2393,
-        "budget": 1.0153,
+        "value": 0.2289,
+        "budget": 1.0123,
         "unit": "ms",
         "gated": true,
         "ok": true
@@ -273,7 +273,7 @@
       {
         "scenario": "sse",
         "metric": "gateway peak RSS",
-        "value": 75.45,
+        "value": 77.38,
         "budget": 80.0,
         "unit": "MiB",
         "gated": true,
@@ -282,7 +282,7 @@
       {
         "scenario": "sse",
         "metric": "gateway peak RSS (audit target, not gated)",
-        "value": 75.45,
+        "value": 77.38,
         "budget": 64.0,
         "unit": "MiB",
         "gated": false,
@@ -309,7 +309,7 @@
       {
         "scenario": "wake",
         "metric": "p95 to first event",
-        "value": 7.126,
+        "value": 6.5821,
         "budget": 15.0,
         "unit": "ms",
         "gated": true,
@@ -318,16 +318,16 @@
       {
         "scenario": "wake-node",
         "metric": "p95 to plugin result",
-        "value": 66.8418,
+        "value": 56.8785,
         "budget": 60.0,
         "unit": "ms",
         "gated": true,
-        "ok": false
+        "ok": true
       },
       {
         "scenario": "webhook",
         "metric": "ack p95",
-        "value": 0.5168,
+        "value": 0.5229,
         "budget": 10.0,
         "unit": "ms",
         "gated": true,
@@ -336,7 +336,7 @@
       {
         "scenario": "cron",
         "metric": "lag p95 (fire -> run finished)",
-        "value": 418,
+        "value": 426,
         "budget": 1000.0,
         "unit": "ms",
         "gated": true,

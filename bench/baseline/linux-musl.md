@@ -28,12 +28,12 @@ so the drain adds 43 KiB and 38 KiB (33 KiB on macOS arm64: 3,352,128 →
 ## Gateway (2026-11-23)
 
 `--features gateway` (SQLite, mimalloc without transparent huge pages,
-local provider) and `gateway-all` (every provider), min-size, `cargo zigbuild`:
+local provider, `trust-gateway` for its local agents) and `gateway-all` (every provider), min-size, `cargo zigbuild`:
 
 | Build | x86_64 binary | aarch64 binary | aarch64 idle RSS |
 | --- | ---: | ---: | ---: |
-| gateway | 8.95 MiB (9,386,808 B) | 7.66 MiB (8,031,144 B) | 7.0 MiB |
-| gateway-all | 9.94 MiB (10,423,352 B) | 8.45 MiB (8,859,432 B) | – |
+| gateway | 9.09 MiB (9,532,984 B) | 7.77 MiB (8,149,288 B) | 7.1 MiB |
+| gateway-all | 10.08 MiB (10,572,088 B) | 8.56 MiB (8,979,624 B) | – |
 | agent-slim-gateway | +88.1 KiB over agent-slim | +73.3 KiB over agent-slim | 4.86 MiB |
 
 Run-time targets of the gateway: [docs/benchmarks.md](../../docs/benchmarks.md#gateway-targets-on-linux)

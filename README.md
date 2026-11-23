@@ -462,9 +462,9 @@ machine load, the ratio is what to read.
 | `graphrt serve`, synchronous runs, 1 CPU | 13,837 req/s | **15,540 req/s** |
 | `graphrt serve`, streaming (SSE) runs, 1 CPU | 2,996 req/s | **7,639 req/s** |
 
-Behind `graphrt gateway` (Linux arm64, static musl): ~0.25 ms added to the
+Behind `graphrt gateway` (Linux arm64, static musl): ~0.23 ms added to the
 first byte of a warm run, a cold local agent in ~7 ms (p95), 1,000 concurrent
-streams in ~75 MiB of gateway memory; `bench/targets.sh` checks every gateway
+streams in ~77 MiB of gateway memory; `bench/targets.sh` checks every gateway
 target against `bench/budgets.toml`
 ([numbers](docs/benchmarks.md#gateway-targets-on-linux)).
 

@@ -466,7 +466,7 @@ breaking changes (see **Changed (Breaking)**).
   and a cold request at the same moment could start two replicas, and prewarms
   did not count against `max_wakes_per_hour`. Prewarms now join the in-flight
   wake and are counted.
-- `graphrt gateway`: warm first-byte overhead down from ~1.5 ms to ~0.25 ms
+- `graphrt gateway`: warm first-byte overhead down from ~1.5 ms to ~0.23 ms
   (p50, Linux aarch64). Each client stream's first frame waited up to 1 ms
   for the heartbeat timer; a fresh run's stream read the store before its
   first frame; `start_run` made two store round trips it does not need
@@ -477,7 +477,11 @@ breaking changes (see **Changed (Breaking)**).
   operations now queue for it. With mimalloc built without transparent huge
   pages, a 32-frame broadcast per live run (a lagging stream catches up from
   the ring) and a smaller supervisor future, the gateway idles at 7 MiB
-  instead of 20 MiB and holds 1,000 streams in ~75 MiB.
+  instead of 20 MiB and holds 1,000 streams in ~77 MiB.
+- `graphrt gateway`: a version's `min_replicas` prewarm that raced its first
+  cold request was dropped as "in flight" and the pool stayed at one replica;
+  background prewarms (`min_replicas`, cron, predictive) now wait for the
+  in-flight wake and top up.
 - `graphrt gateway` no longer loses a run without a checkpoint when the gateway
   restarts. Each accepted run request is written to the store in the
   transaction that creates the run (no extra write), without the start inputs
