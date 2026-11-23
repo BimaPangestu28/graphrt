@@ -34,6 +34,9 @@ const HMAC_KEYS: &str = "k1:00112233445566778899aabbccddeeff00112233445566778899
 
 struct World {
     dir: PathBuf,
+    /// Agent sockets: a short directory, so socket paths fit `sun_path` and
+    /// the gateway uses it as configured (pid files for the cleanup below).
+    sockets: PathBuf,
     port: u16,
     children: Vec<Child>,
 }
@@ -45,7 +48,7 @@ impl Drop for World {
             let _reaped = child.wait();
         }
         // Agents run in their own process groups: kill them through their pid files.
-        if let Ok(entries) = std::fs::read_dir(self.dir.join("sockets")) {
+        if let Ok(entries) = std::fs::read_dir(&self.sockets) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().is_some_and(|extension| extension == "pid")
@@ -59,6 +62,7 @@ impl Drop for World {
             }
         }
         let _cleanup = std::fs::remove_dir_all(&self.dir);
+        let _cleanup = std::fs::remove_dir_all(&self.sockets);
     }
 }
 
@@ -94,6 +98,9 @@ impl World {
     fn new() -> Self {
         let dir = std::env::temp_dir().join(format!("graphrt-gw-failover-{}", std::process::id()));
         let _cleanup = std::fs::remove_dir_all(&dir);
+        let short_base = if Path::new("/tmp").is_dir() { PathBuf::from("/tmp") } else { std::env::temp_dir() };
+        let sockets = short_base.join(format!("grt-fo-{}", std::process::id()));
+        let _cleanup = std::fs::remove_dir_all(&sockets);
         std::fs::create_dir_all(&dir).unwrap();
         let port = free_port();
         let upstream = slow_upstream();
@@ -135,12 +142,12 @@ deployments:
     hooks: [{{ id: orders, scheme: none, idempotency_header: x-delivery }}]
 "#,
             store = dir.join("data/gateway.db").display(),
-            sockets = dir.join("sockets").display(),
+            sockets = sockets.display(),
             backups = dir.join("backups").display(),
             api_key = sha256_hex(API_KEY),
         );
         std::fs::write(dir.join("gateway.yaml"), config).unwrap();
-        Self { dir, port, children: Vec::new() }
+        Self { dir, sockets, port, children: Vec::new() }
     }
 
     fn gateway(&mut self, node: &str) -> u32 {
