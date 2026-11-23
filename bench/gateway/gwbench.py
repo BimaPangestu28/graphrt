@@ -868,10 +868,11 @@ def checks_for(name: str, result: dict, targets: dict) -> list[Check]:
     return []
 
 
-# Latency scenarios run `rounds` times and report the median round: sub-millisecond
+# Latency scenarios (and the 1,000-stream peak RSS, which varies by a few MiB with
+# allocator timing) run `rounds` times and report the median round: sub-millisecond
 # timings on a shared machine (a VM on a busy laptop, a CI runner) swing by 2x
 # between rounds a few seconds apart. Every round's values are kept in the JSON.
-ROUNDED = {"ttfb-uds", "ttfb-tcp", "wake", "wake-node", "webhook"}
+ROUNDED = {"ttfb-uds", "ttfb-tcp", "sse", "wake", "wake-node", "webhook"}
 
 
 def run_rounds(ctx: Context, name: str) -> tuple[dict, list[Check]]:
@@ -897,7 +898,8 @@ def describe(name: str, result: dict) -> str:
                 f"n={g['n']}" + rounds_note(result))
     if name == "sse":
         return (f"{result['streams']} streams x {result['chunks_per_stream']} chunks, RSS idle "
-                f"{result['gateway_rss_before_mib']} MiB, max chunk gap {result['max_chunk_gap_ms']} ms")
+                f"{result['gateway_rss_before_mib']} MiB, max chunk gap {result['max_chunk_gap_ms']} ms"
+                + rounds_note(result))
     if name.startswith("wake"):
         e, f = result["first_event_ms"], result["run_finished_ms"]
         text = f"first event p50/p95 {e['p50']:.2f}/{e['p95']:.2f} ms, run finished p50/p95 {f['p50']:.2f}/{f['p95']:.2f} ms, n={e['n']}"
