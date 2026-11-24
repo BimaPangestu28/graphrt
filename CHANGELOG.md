@@ -8,6 +8,23 @@ releases may contain breaking changes; they are called out under **Changed**.
 ## [Unreleased]
 
 ### Added
+- `graphrt deploy --target fly --direct` (preview, in the default build:
+  feature `deploy-fly`): puts one agent online at `https://<app>.fly.dev`
+  with no gateway. Creates the Fly app and its public IPs, writes `--secret
+  NAME` values and a generated API key as Fly secrets (the key is printed
+  once), and runs the published graphrt image with the `.grt` bundle or
+  workflow file delivered in the Machine's `config.files`, a `/readyz`
+  readiness check and always-on or scale-to-zero (Fly proxy autostop) mode.
+  A version becomes current only once healthy; older versions stay as
+  stopped standby Machines without services. `graphrt deploy status |
+  list-versions | rollback <v> | pause | resume | remove --direct` manage it.
+  `--json` prints JSON Lines (`step` events, then one `result` or `error`)
+  specified by `docs/schemas/deploy-direct.schema.json`; see
+  [docs/deploy-direct.md](docs/deploy-direct.md). Tested against a fake
+  Machines API, not yet on real Fly.
+- `graphrt-provider-fly`: `direct` feature (`FlyDirect`), Machines API calls
+  for machine update, metadata, IP assignments and app deletion, and the
+  fake Machines API as the `fake` feature for tests of other crates.
 - `graphrt serve --plugin-pool <n>` keeps `n` processes of each process plugin
   (up to 32) started from startup and replaces one that exits in the
   background, so no run on a running agent waits for a plugin to start (a

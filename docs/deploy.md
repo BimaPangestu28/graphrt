@@ -139,6 +139,11 @@ network on the build host has no DNS. Build with `docker build --network host .`
 Mount secrets as environment variables or files; snapshots returned by paused
 runs never contain secret values.
 
+To put one agent online on Fly.io without building an image or running a
+gateway, use `graphrt deploy --target fly --direct` ([deploy-direct.md](deploy-direct.md)):
+it runs the published image with the agent file delivered in the Machine
+config, Fly secrets, an API key and scale-to-zero.
+
 A complete service image, `graphrt serve` with only the `llm`, `serve`, `jwt`
 and `plugins` features plus a Node.js plugin on distroless Node, with Fly.io,
 Cloud Run and VPS notes, is in
