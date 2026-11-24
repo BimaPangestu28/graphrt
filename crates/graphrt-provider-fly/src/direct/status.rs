@@ -26,8 +26,8 @@ pub enum DeploymentState {
     Deploying,
     /// The current version is down (crashed, failing `/readyz`, or always-on but stopped).
     Failed,
-    /// The app exists but has no current version (e.g. its first deploy failed).
-    NotDeployed,
+    /// Nothing serves: the app exists but has no current version (e.g. its first deploy failed).
+    Offline,
 }
 
 /// One Machine in a status report.
@@ -51,20 +51,21 @@ pub struct DeploymentStatus {
     pub url: String,
     pub status: DeploymentState,
     /// Current version label.
-    pub version: Option<String>,
+    pub current_version: Option<String>,
     /// Workflow name of the current version.
     pub workflow: Option<String>,
     /// `always-on` or `scale-to-zero`.
     pub mode: Option<String>,
     /// When the current version was deployed (RFC 3339, UTC).
-    pub deployed_at: Option<String>,
+    pub last_deployed_at: Option<String>,
     pub machines: Vec<MachineSummary>,
 }
 
 /// One entry of `graphrt deploy list-versions --direct`, newest first.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct VersionSummary {
-    pub version: String,
+    /// Version label.
+    pub label: String,
     pub deployed_at: Option<String>,
     pub current: bool,
     /// `current`, `candidate` or `standby`.
@@ -110,10 +111,10 @@ pub(super) fn deployment_status(app: &str, url: String, machines: &[Machine], no
         app: app.to_owned(),
         url,
         status: derive_state(machines, &current, now_ms),
-        version: newest_current.and_then(version_of).map(str::to_owned),
+        current_version: newest_current.and_then(version_of).map(str::to_owned),
         workflow: newest_current.and_then(|machine| metadata(machine, META_WORKFLOW)).map(str::to_owned),
         mode: newest_current.and_then(|machine| metadata(machine, META_MODE)).map(str::to_owned),
-        deployed_at: newest_current.map(|machine| format_rfc3339_ms(deployed_at_ms(machine))),
+        last_deployed_at: newest_current.map(|machine| format_rfc3339_ms(deployed_at_ms(machine))),
         machines: machines.iter().map(summarize).collect(),
     }
 }
@@ -126,7 +127,7 @@ fn derive_state(machines: &[Machine], current: &[&Machine], now_ms: u64) -> Depl
         return DeploymentState::Deploying;
     }
     if current.is_empty() {
-        return DeploymentState::NotDeployed;
+        return DeploymentState::Offline;
     }
     if current.iter().all(|machine| metadata(machine, META_PAUSED) == Some("1")) {
         return DeploymentState::Paused;
@@ -169,7 +170,7 @@ pub(super) fn version_history(machines: &[Machine]) -> Vec<VersionSummary> {
     versions
         .into_iter()
         .map(|(version, machine)| VersionSummary {
-            version: version.to_owned(),
+            label: version.to_owned(),
             deployed_at: Some(deployed_at_ms(machine)).filter(|ms| *ms > 0).map(format_rfc3339_ms),
             current: has_role(machine, Role::Current),
             role: metadata(machine, META_ROLE).unwrap_or("unknown").to_owned(),
@@ -231,17 +232,17 @@ mod tests {
         let machines = [machine("standby", "v1", "stopped", 1_000, ""), machine("current", "v2", "stopped", 2_000, "")];
         let status = deployment_status("app", "https://app.fly.dev".into(), &machines, 3_000);
         assert_eq!(status.status, DeploymentState::Online);
-        assert_eq!(status.version.as_deref(), Some("v2"));
+        assert_eq!(status.current_version.as_deref(), Some("v2"));
         let history = version_history(&machines);
-        assert_eq!(history.iter().map(|entry| entry.version.as_str()).collect::<Vec<_>>(), ["v2", "v1"]);
+        assert_eq!(history.iter().map(|entry| entry.label.as_str()).collect::<Vec<_>>(), ["v2", "v1"]);
         assert!(history[0].current && !history[1].current);
     }
 
     #[test]
-    fn derives_deploying_failed_and_not_deployed() {
+    fn derives_deploying_failed_and_offline() {
         let fresh_candidate = [machine("candidate", "v3", "starting", 10_000, "")];
         assert_eq!(derive_state(&fresh_candidate, &[], 20_000), DeploymentState::Deploying);
-        assert_eq!(derive_state(&fresh_candidate, &[], 10_000 + STALE_CANDIDATE_MS), DeploymentState::NotDeployed);
+        assert_eq!(derive_state(&fresh_candidate, &[], 10_000 + STALE_CANDIDATE_MS), DeploymentState::Offline);
         let crashed = machine("current", "v2", "failed", 1, "");
         assert_eq!(derive_state(&[], &[&crashed], 2), DeploymentState::Failed);
         let unhealthy = machine("current", "v2", "started", 1, r#""checks":[{"name":"readyz","status":"critical"}],"#);

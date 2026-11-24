@@ -20,8 +20,13 @@ releases may contain breaking changes; they are called out under **Changed**.
   list-versions | rollback <v> | pause | resume | remove --direct` manage it.
   `--json` prints JSON Lines (`step` events, then one `result` or `error`)
   specified by `docs/schemas/deploy-direct.schema.json`; see
-  [docs/deploy-direct.md](docs/deploy-direct.md). Tested against a fake
-  Machines API, not yet on real Fly.
+  [docs/deploy-direct.md](docs/deploy-direct.md). `status` reports
+  `status` (online/paused/deploying/failed/offline), `current_version`,
+  `last_deployed_at` and the Machines; `list-versions` reports
+  `versions[{label, deployed_at, current, …}]`. A deploy that fails after
+  storing a new API key prints it once in a `{"type":"api_key"}` line before
+  the error, never in the error line. Tested against a fake Machines API,
+  not yet on real Fly.
 - `graphrt-provider-fly`: `direct` feature (`FlyDirect`), Machines API calls
   for machine update, metadata, IP assignments and app deletion, and the
   fake Machines API as the `fake` feature for tests of other crates.

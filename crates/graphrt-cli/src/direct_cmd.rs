@@ -3,7 +3,8 @@
 //! documented in `docs/deploy-direct.md` and pinned by `tests/deploy_direct.rs`.
 //!
 //! Output: with `--json`, stdout carries JSON Lines only: `step` events, then
-//! exactly one `result` or `error` line. Without it, progress goes to stderr
+//! exactly one `result` or `error` line (an error after a new API key was
+//! stored is preceded by one `api_key` line). Without it, progress goes to stderr
 //! and a short summary to stdout. Secret values never reach either stream:
 //! every line except the API key field of the final line is scrubbed of them.
 
@@ -145,10 +146,11 @@ impl Reporter {
     fn error(&self, failure: &Failure) -> CliError {
         let message = self.scrub(&failure.message);
         if self.json {
-            let mut line = json!({"type": "error", "code": failure.code, "message": message});
-            if let (Some(api_key), Some(object)) = (&failure.api_key, line.as_object_mut()) {
-                object.insert("api_key".to_owned(), Value::from(api_key.as_str()));
+            // A key stored before the failure gets its own line, never the error line.
+            if let Some(api_key) = &failure.api_key {
+                self.stdout_line(&json!({"type": "api_key", "api_key": api_key}).to_string());
             }
+            let line = json!({"type": "error", "code": failure.code, "message": message});
             self.stdout_line(&line.to_string());
         } else if let Some(api_key) = &failure.api_key {
             self.stdout_line(&format!("API key (stored before the failure, shown once): {api_key}"));
@@ -243,8 +245,8 @@ fn run_action(action: &DeployAction, reporter: &Reporter) -> Result<(), Failure>
                 status.app,
                 serde_json::to_value(status.status).unwrap_or(Value::Null).as_str().unwrap_or("unknown"),
                 status.url,
-                status.version.as_deref().unwrap_or("-"),
-                status.deployed_at.as_deref().unwrap_or("-")
+                status.current_version.as_deref().unwrap_or("-"),
+                status.last_deployed_at.as_deref().unwrap_or("-")
             );
             (serde_json::to_value(&status).unwrap_or(Value::Null), human)
         }
@@ -256,14 +258,18 @@ fn run_action(action: &DeployAction, reporter: &Reporter) -> Result<(), Failure>
                     let marker = if entry.current { "*" } else { " " };
                     format!(
                         "{marker} {}  {}  {}",
-                        entry.version,
+                        entry.label,
                         entry.deployed_at.as_deref().unwrap_or("-"),
                         entry.state
                     )
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            (json!({"app": direct.app_name(), "url": direct.url(), "versions": versions}), human)
+            let current_version = versions.iter().find(|entry| entry.current).map(|entry| entry.label.clone());
+            let fields = json!({
+                "app": direct.app_name(), "url": direct.url(), "current_version": current_version, "versions": versions,
+            });
+            (fields, human)
         }
         DeployAction::Rollback { version, .. } => {
             let serving = runtime.block_on(direct.rollback(version, &mut progress))?;

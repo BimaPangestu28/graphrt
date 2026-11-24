@@ -15,7 +15,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use graphrt_provider_api::conformance::{FakeResponse, FakeServer, RecordedRequest};
+use graphrt_provider_api::conformance::RecordedRequest;
+// Re-exported so other crates can inject faults without depending on the harness.
+pub use graphrt_provider_api::conformance::{FakeResponse, FakeServer, Fault};
 use serde_json::{Value, json};
 
 pub const APP: &str = "chat-agents";
