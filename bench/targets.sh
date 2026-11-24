@@ -4,8 +4,9 @@
 #   1. sizes, idle RSS and exec -> /healthz of the agent and gateway builds
 #      (scripts/budget-gate.py);
 #   2. gateway run-time targets: TTFB overhead over a Unix socket and loopback
-#      TCP, 1,000 concurrent SSE streams, cold wake (with and without a Node.js
-#      plugin), webhook ack, cron lag (bench/gateway/gwbench.py);
+#      TCP, 1,000 concurrent SSE streams, cold wake (without a plugin, with a
+#      Node.js plugin, with a WebAssembly plugin), the warm plugin pool
+#      (`serve --plugin-pool`), webhook ack, cron lag (bench/gateway/gwbench.py);
 #   3. RS256 JWT verification microbench (crates/graphrt-gateway/tests/jwt_verify_bench.rs);
 #   4. SIGTERM drain of graphrt as PID 1 of a real container
 #      (scripts/test-pid1-container.sh), else of a PID namespace (scripts/test-pid1.sh).
@@ -18,9 +19,10 @@
 #   bench/targets.sh --quick                 # fewer samples, never fails (smoke run)
 #
 # A --bin-dir holds graphrt-<build> for every [[build]] of bench/budgets.toml,
-# graphrt-gateway-k8s (features gateway,gateway-k8s) and jwt-verify-bench (the
-# test binary); bench/targets.sh --build-only --bin-dir DIR writes exactly that,
-# e.g. on a Mac with cargo-zigbuild, to copy into a Linux VM.
+# graphrt-gateway-k8s (features gateway,gateway-k8s), graphrt-agent-wasm-gateway
+# (serve,llm,wasm,trust-gateway; optional) and jwt-verify-bench (the test
+# binary); bench/targets.sh --build-only --bin-dir DIR writes exactly that, e.g.
+# on a Mac with cargo-zigbuild, to copy into a Linux VM.
 #
 # Needs Linux, Python 3.11+, curl, node (wake-node) and, for the container
 # test, root and docker (CONTAINER_CLI). Results: bench/results/targets-<date>-<host>.{md,json}.
@@ -41,7 +43,7 @@ while [ $# -gt 0 ]; do
     --build-cmd) BUILD_CMD="$2"; shift 2 ;;
     --quick) QUICK="--quick"; shift ;;
     --build-only) BUILD_ONLY=1; shift ;;
-    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "targets.sh: unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -62,6 +64,11 @@ build_all() {
   $BUILD_CMD -q -p graphrt-cli --locked --profile min-size --no-default-features \
     --features gateway,gateway-k8s "${target_args[@]}"
   cp "$CARGO_TARGET_DIR/${TARGET:+$TARGET/}min-size/graphrt" "$out/graphrt-gateway-k8s"
+  echo "==> agent with WebAssembly plugins (wake-wasm, a reference for the WASM path)" >&2
+  # shellcheck disable=SC2086
+  $BUILD_CMD -q -p graphrt-cli --locked --profile min-size --no-default-features \
+    --features serve,llm,wasm,trust-gateway "${target_args[@]}"
+  cp "$CARGO_TARGET_DIR/${TARGET:+$TARGET/}min-size/graphrt" "$out/graphrt-agent-wasm-gateway"
   echo "==> JWT verification microbench (test binary, release)" >&2
   # shellcheck disable=SC2086
   local bench
@@ -110,6 +117,7 @@ python3 scripts/budget-gate.py "${target_args[@]}" --bin-dir "$BIN_DIR" "${deps_
 echo "==> gateway run-time targets" >&2
 k8s_flag=()
 [ -x "$BIN_DIR/graphrt-gateway-k8s" ] && k8s_flag=(--gateway-k8s "$BIN_DIR/graphrt-gateway-k8s")
+[ -x "$BIN_DIR/graphrt-agent-wasm-gateway" ] && k8s_flag+=(--agent-wasm "$BIN_DIR/graphrt-agent-wasm-gateway")
 python3 bench/gateway/gwbench.py --gateway "$BIN_DIR/graphrt-gateway-core" --agent "$BIN_DIR/graphrt-agent-slim-gateway" \
   "${k8s_flag[@]}" $QUICK --json "$WORK/gateway.json" --markdown "$WORK/gateway.md" >/dev/null || failed=1
 

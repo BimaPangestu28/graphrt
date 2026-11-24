@@ -47,7 +47,10 @@ enum Stopped {
 /// Execute `graphrt serve`.
 pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let mut options = service_options(&args.services)?;
-    options.plugins.pool = plugin_pool(&args)?;
+    #[cfg(feature = "plugins")]
+    {
+        options.plugins.pool = plugin_pool(&args)?;
+    }
     let files = discover(&args.path)?;
     let api_key = lookup_env(&options, &args.api_key_env).filter(|key| !key.is_empty());
     #[cfg(feature = "jwt")]
@@ -102,6 +105,7 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
 /// `--plugin-pool` and `--plugin-idle`.
 ///
 /// @throws CliError (usage) - `--plugin-idle` without a pool.
+#[cfg(feature = "plugins")]
 fn plugin_pool(args: &ServeArgs) -> Result<crate::extensions::PluginPool, CliError> {
     let idle_timeout = args.plugin_idle.filter(|idle| !idle.is_zero());
     if idle_timeout.is_some() && args.plugin_pool == 0 {

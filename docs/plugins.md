@@ -323,7 +323,9 @@ are reported as non-retryable `plugin_protocol` errors.
 Transport failures are retryable: if the process exits, every in-flight request
 fails with `plugin_crashed` (the message includes the exit code or signal and
 the end of stderr), and the next request restarts the process (with a backoff
-of up to 5 seconds after repeated crashes). On Unix the plugin runs in its own
+of up to 5 seconds after repeated crashes; with `serve --plugin-pool` a
+replacement starts in the background at once, see
+[Warm process pool](#warm-process-pool)). On Unix the plugin runs in its own
 process group, and the whole group is killed on crash, restart or shutdown, so
 wrapper commands (`sh run.sh`, `npx`, `uv run`) do not leave the real plugin
 running.
@@ -331,6 +333,83 @@ running.
 HTTP plugins: a non-2xx response whose body is a JSON-RPC error keeps that
 error's `kind` and `retryable`; otherwise the first 4 KiB of the body are
 included in the message. 4xx statuses (except 408 and 429) are not retried.
+
+## Warm process pool
+
+A process plugin starts at its first node and then serves every run of the
+process that loaded it. Starting it is the plugin's own start-up: a Node.js
+host takes ~50 ms (~51 ms spawn → `initialize` for
+[`node-uppercase`](../plugins/examples/node-uppercase), Linux aarch64), and
+graphrt adds ~5 ms around it. `graphrt serve --plugin-pool <n>` moves that
+start off the request path whenever the agent is already running:
+
+```sh
+graphrt serve app.yaml --plugins ./plugins --plugin-pool 1                    # started at startup, kept up
+graphrt serve app.yaml --plugins ./plugins --plugin-pool 2 --plugin-idle 5m   # two per plugin, stopped after 5 min idle
+```
+
+- **Members.** Each process plugin gets `n` processes (up to 32), started at
+  startup. A request goes to a started process with the fewest requests in
+  flight, so CPU-bound plugins (one Node.js thread each) run `n` requests in
+  parallel. A request id names the process that served it: three timeouts in
+  a row restart that process only.
+- **Replacement.** A process that exits (crash, or killed after
+  [three timeouts](#manifest)) is started again in the background at once, so
+  the next run does not pay the start. A process that dies within a second of
+  its start counts as a failure: the pool backs off (200 ms doubling to 5 s)
+  and after six in a row stops restarting; requests then start the plugin on
+  demand, as without a pool, until the next warm hint.
+- **Idle stop.** With `--plugin-idle <d>`, a pool that served no request for
+  `d` stops its processes, freeing their memory. The next request starts its
+  process (and waits for it); a **warm hint** starts them ahead of it: the
+  gateway sends one (`POST /internal/v1/warm`, see
+  [gateway-protocol.md](gateway-protocol.md#endpoints)) to the agents a
+  prewarm (`POST …/warm`, cron `prewarm_secs`, predictive prewarm) finds
+  already up. A hint counts as use: the pool stays up for `d` after it.
+- **Isolation.** The processes share nothing, and the protocol keeps no state
+  in a process between requests: a paused node's state travels with the
+  host's resume request, and cancellation goes to the process that runs the
+  request. Any process may serve any request, including a resume. A plugin
+  that keeps its own state in memory (a cache, a connection) holds one copy
+  per process.
+- **Default.** `0`: one process, started at its first node (behind a gateway,
+  `--trust-gateway`, at startup, since a run is on its way), kept until the
+  server stops. HTTP and WebAssembly plugins have no start to hide and are
+  not pooled.
+
+**Memory.** Each pooled process costs the plugin's resident memory. Measured
+with `bench/targets.sh` (`plugin-pool`, Linux aarch64, static musl agent
+`serve,llm,plugins,trust-gateway`, Node.js 22, 2026-11-24):
+
+| Agent behind a gateway, kept warm | RSS of the agent and its plugin processes |
+| --- | ---: |
+| default (`--plugin-pool 0`: one process, started at startup) | 73.5 MiB |
+| `--plugin-pool 1` | 73.5 MiB |
+| `--plugin-pool 2` | 141.0 MiB |
+| `--plugin-pool 1 --plugin-idle 1s`, after the idle stop | 5.9 MiB |
+
+| Run with the Node.js plugin node, through the gateway (n = 20) | p50 / p95 |
+| --- | ---: |
+| on a warm pool | 1.71 / 3.94 ms |
+| after the idle stop, no hint (the run starts Node.js) | 87.3 / 96.2 ms |
+| after the idle stop, 300 ms after a warm hint | 6.34 / 10.46 ms |
+| cold wake of a new agent (`wake-node`, unchanged by the pool) | 56.4 / 59.7 ms |
+
+What a pool does not change: the cold wake of a *new* agent (scale to zero,
+no prediction). That agent starts its plugins at startup either way, and the
+run waits for Node.js itself (`wake-node` with and without the pool code,
+three to four runs of 3 × 100 wakes each: p50 55–59 ms on both, the plugin's
+own spawn → `initialize` p50 51–54 ms in the quiet runs). Hiding it needs the plugin process up before the wake
+(`min_replicas`, a prewarm, or a pool on an agent that stays up) or a runtime
+that starts in microseconds: [WebAssembly](wasm-plugins.md#cold-start-the-path-for-hot-plugins)
+(a cold wake with the WebAssembly example plugin: p95 15 ms). A Node.js start
+on an idle machine is also slower than back to back (85–200 ms in the
+benchmark VM after 2 s idle, which is the "no hint" row above): a hint ahead
+of predicted traffic avoids both.
+
+From Rust: `PluginHost::new().with_pool(PoolConfig { size, idle_timeout })`
+before loading, then `PluginHost::prewarm()` (also the warm hint);
+`PluginHost::warm_plugins()` lists the plugins whose process is up.
 
 ## Security model
 

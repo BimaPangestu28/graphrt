@@ -589,11 +589,13 @@ pub struct ServeArgs {
     /// processes. Each costs the plugin's memory (a Node.js host ~40 MiB). 0 (the
     /// default): one process, started at the first plugin node (behind a gateway:
     /// at startup). See docs/plugins.md.
+    #[cfg(feature = "plugins")]
     #[arg(long, value_name = "N", default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=32))]
     pub plugin_pool: u8,
     /// With `--plugin-pool`: stop a plugin's processes after this long without a
     /// request, freeing their memory; the next request, or a gateway warm hint,
     /// starts them again. Accepts `500ms`, `30s`, `5m` or plain seconds. Default: never.
+    #[cfg(feature = "plugins")]
     #[arg(long, value_name = "DURATION", value_parser = crate::drain::parse_duration)]
     pub plugin_idle: Option<std::time::Duration>,
     /// On SIGTERM / SIGINT, finish within this long: new runs get `503`, active runs

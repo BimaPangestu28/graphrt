@@ -316,6 +316,7 @@ fn serve_refuses_an_invalid_deployment_name() {
     assert!(stderr(&out).contains("invalid deployment name `shop/eu`"), "{}", stderr(&out));
 }
 
+#[cfg(feature = "plugins")]
 #[test]
 fn serve_refuses_a_plugin_idle_timeout_without_a_pool_and_an_oversized_pool() {
     let path = example("hello.yaml");

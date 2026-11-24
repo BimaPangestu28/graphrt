@@ -1,0 +1,456 @@
+{
+  "budgets": {
+    "target": "aarch64-linux (host)",
+    "platform": "aarch64-linux",
+    "profile": "min-size",
+    "builds": {
+      "agent-minimal": {
+        "features": "serve",
+        "binary_bytes": 3784712,
+        "binary_mib": 3.609,
+        "idle_rss_mib": 3.11
+      },
+      "agent-slim": {
+        "features": "serve,llm,plugins",
+        "binary_bytes": 6321256,
+        "binary_mib": 6.028,
+        "idle_rss_mib": 4.81,
+        "healthz_p50_ms": 1.67,
+        "healthz_p95_ms": 4.31,
+        "healthz_samples": 30
+      },
+      "agent-slim-gateway": {
+        "features": "serve,llm,plugins,trust-gateway",
+        "binary_bytes": 6395096,
+        "binary_mib": 6.099,
+        "delta_kib": 72.1,
+        "delta_of": "agent-slim",
+        "idle_rss_mib": 4.86
+      },
+      "gateway-core": {
+        "features": "gateway",
+        "binary_bytes": 7132096,
+        "binary_mib": 6.802,
+        "idle_rss_mib": 6.6
+      },
+      "gateway-all": {
+        "features": "gateway-all",
+        "binary_bytes": 7955136,
+        "binary_mib": 7.587
+      }
+    },
+    "violations": []
+  },
+  "gateway": {
+    "machine": "aarch64, 4 CPUs, Linux 7.0.0-15-generic",
+    "quick": false,
+    "results": {
+      "ttfb-uds": {
+        "gateway_ms": {
+          "n": 1000,
+          "p50": 0.4329,
+          "p95": 0.4866,
+          "p99": 0.6741,
+          "max": 1.9425,
+          "mean": 0.442
+        },
+        "direct_ms": {
+          "n": 1000,
+          "p50": 0.1975,
+          "p95": 0.2391,
+          "p99": 0.3645,
+          "max": 0.8764,
+          "mean": 0.2049
+        },
+        "overhead_p50_ms": 0.2354,
+        "overhead_p95_ms": 0.2475,
+        "rounds": [
+          [
+            0.2348,
+            0.2447
+          ],
+          [
+            0.2354,
+            0.2475
+          ],
+          [
+            0.2375,
+            0.2354
+          ]
+        ]
+      },
+      "ttfb-tcp": {
+        "gateway_ms": {
+          "n": 1000,
+          "p50": 0.4313,
+          "p95": 0.5089,
+          "p99": 0.7777,
+          "max": 1.2121,
+          "mean": 0.4264
+        },
+        "direct_ms": {
+          "n": 1000,
+          "p50": 0.2142,
+          "p95": 0.262,
+          "p99": 0.4383,
+          "max": 0.7888,
+          "mean": 0.2228
+        },
+        "overhead_p50_ms": 0.2171,
+        "overhead_p95_ms": 0.2469,
+        "loopback_rtt_ms": 0.0138,
+        "rounds": [
+          [
+            0.2231
+          ],
+          [
+            0.2469
+          ],
+          [
+            0.5264
+          ]
+        ]
+      },
+      "sse": {
+        "streams": 1000,
+        "chunks_per_stream": 20,
+        "chunk_interval_ms": 500,
+        "gateway_rss_before_mib": 7.71,
+        "gateway_rss_max_sampled_mib": 74.65,
+        "gateway_peak_rss_mib": 74.2,
+        "failed_streams": 0,
+        "failure_examples": [],
+        "stalled_streams": 0,
+        "max_chunk_gap_ms": 524.8,
+        "first_chunk_ms": {
+          "n": 1000,
+          "p50": 156.7492,
+          "p95": 1136.8067,
+          "p99": 1156.1987,
+          "max": 1162.8909,
+          "mean": 345.8777
+        },
+        "rounds": [
+          [
+            73.65,
+            73.65,
+            0,
+            0
+          ],
+          [
+            74.2,
+            74.2,
+            0,
+            0
+          ],
+          [
+            76.44,
+            76.44,
+            0,
+            0
+          ]
+        ]
+      },
+      "wake": {
+        "first_event_ms": {
+          "n": 100,
+          "p50": 5.593,
+          "p95": 6.6639,
+          "p99": 6.9684,
+          "max": 8.0627,
+          "mean": 5.6828
+        },
+        "run_finished_ms": {
+          "n": 100,
+          "p50": 5.7248,
+          "p95": 6.9152,
+          "p99": 7.7373,
+          "max": 8.1643,
+          "mean": 5.8279
+        },
+        "rounds": [
+          [
+            6.5246
+          ],
+          [
+            6.6639
+          ],
+          [
+            6.8021
+          ]
+        ]
+      },
+      "wake-node": {
+        "first_event_ms": {
+          "n": 100,
+          "p50": 5.9485,
+          "p95": 9.4094,
+          "p99": 12.0825,
+          "max": 16.6726,
+          "mean": 6.6281
+        },
+        "run_finished_ms": {
+          "n": 100,
+          "p50": 56.3647,
+          "p95": 59.6784,
+          "p99": 64.4318,
+          "max": 66.6056,
+          "mean": 56.9409
+        },
+        "plugin_handshake_ms": {
+          "n": 30,
+          "p50": 50.6946,
+          "p95": 51.621,
+          "p99": 53.7607,
+          "max": 53.7607,
+          "mean": 50.8164
+        },
+        "rounds": [
+          [
+            57.8163
+          ],
+          [
+            59.6784
+          ],
+          [
+            74.0049
+          ]
+        ]
+      },
+      "wake-wasm": {
+        "first_event_ms": {
+          "n": 100,
+          "p50": 11.7938,
+          "p95": 13.9204,
+          "p99": 15.5155,
+          "max": 18.7613,
+          "mean": 11.4143
+        },
+        "run_finished_ms": {
+          "n": 100,
+          "p50": 13.3988,
+          "p95": 15.0902,
+          "p99": 17.7406,
+          "max": 20.7804,
+          "mean": 12.9503
+        },
+        "rounds": [
+          [
+            14.8823
+          ],
+          [
+            15.0902
+          ],
+          [
+            15.7018
+          ]
+        ]
+      },
+      "plugin-pool": {
+        "rss_mib_by_pool_size": {
+          "0": 73.52,
+          "1": 73.48,
+          "2": 141.0
+        },
+        "agent_only_rss_mib": 5.89,
+        "warm_run_ms": {
+          "n": 20,
+          "p50": 1.7145,
+          "p95": 3.9411,
+          "p99": 7.8989,
+          "max": 7.8989,
+          "mean": 2.3154
+        },
+        "cold_pool_run_ms": {
+          "n": 20,
+          "p50": 87.333,
+          "p95": 96.1746,
+          "p99": 100.9261,
+          "max": 100.9261,
+          "mean": 82.435
+        },
+        "hinted_run_ms": {
+          "n": 20,
+          "p50": 6.3433,
+          "p95": 10.4622,
+          "p99": 10.6605,
+          "max": 10.6605,
+          "mean": 6.2497
+        },
+        "hint_lead_ms": 300.0
+      },
+      "webhook": {
+        "ack_ms": {
+          "n": 1000,
+          "p50": 0.3615,
+          "p95": 0.5867,
+          "p99": 0.8877,
+          "max": 1.6662,
+          "mean": 0.3797
+        },
+        "statuses": {
+          "202": 1020
+        },
+        "rounds": [
+          [
+            0.5752
+          ],
+          [
+            0.5867
+          ],
+          [
+            0.6405
+          ]
+        ]
+      },
+      "cron": {
+        "fires": 1000,
+        "fire_time": 1795479600,
+        "created_lag_ms": {
+          "n": 1000,
+          "p50": 65,
+          "p95": 90,
+          "p99": 92,
+          "max": 93,
+          "mean": 61.691
+        },
+        "finished_lag_ms": {
+          "n": 1000,
+          "p50": 381,
+          "p95": 420,
+          "p99": 424,
+          "max": 425,
+          "mean": 381.108
+        }
+      }
+    },
+    "checks": [
+      {
+        "scenario": "ttfb-uds",
+        "metric": "overhead p50",
+        "value": 0.2354,
+        "budget": 0.3,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "ttfb-uds",
+        "metric": "overhead p95",
+        "value": 0.2475,
+        "budget": 1.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "ttfb-tcp",
+        "metric": "overhead p95 (budget + 1 RTT)",
+        "value": 0.2469,
+        "budget": 1.0138,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "sse",
+        "metric": "gateway peak RSS",
+        "value": 74.2,
+        "budget": 80.0,
+        "unit": "MiB",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "sse",
+        "metric": "gateway peak RSS (audit target, not gated)",
+        "value": 74.2,
+        "budget": 64.0,
+        "unit": "MiB",
+        "gated": false,
+        "ok": false
+      },
+      {
+        "scenario": "sse",
+        "metric": "failed streams",
+        "value": 0,
+        "budget": 0,
+        "unit": "",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "sse",
+        "metric": "stalled streams",
+        "value": 0,
+        "budget": 0,
+        "unit": "",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "wake",
+        "metric": "p95 to first event",
+        "value": 6.6639,
+        "budget": 15.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "wake-node",
+        "metric": "p95 to plugin result",
+        "value": 59.6784,
+        "budget": 60.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "wake-wasm",
+        "metric": "p95 to plugin result (reference, not gated)",
+        "value": 15.0902,
+        "budget": 60.0,
+        "unit": "ms",
+        "gated": false,
+        "ok": true
+      },
+      {
+        "scenario": "plugin-pool",
+        "metric": "p95 run after a warm hint",
+        "value": 10.4622,
+        "budget": 15.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "plugin-pool",
+        "metric": "p95 run on a warm pool",
+        "value": 3.9411,
+        "budget": 15.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "webhook",
+        "metric": "ack p95",
+        "value": 0.5867,
+        "budget": 10.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "cron",
+        "metric": "lag p95 (fire -> run finished)",
+        "value": 420,
+        "budget": 1000.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      }
+    ]
+  }
+}

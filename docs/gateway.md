@@ -152,6 +152,13 @@ same credentials and rate limits as a run, answers at once (the wake goes on in
 the background), counts against `max_wakes_per_hour`, and is not an arrival
 for the predictive model.
 
+A prewarm that finds the replicas already up (`200 warm`, or a cron or
+predictive prewarm with nothing to start) sends each of them a **warm hint**
+(`POST /internal/v1/warm`): agents run with `--plugin-pool … --plugin-idle …`
+start the plugin processes their idle pool stopped, so the expected run does
+not wait for a Node.js start (~50 ms, more on an idle machine). See
+[Warm process pool](plugins.md#warm-process-pool).
+
 **Cron prewarm** wakes one replica `prewarm_secs` before a fire, after a
 random delay below half of `prewarm_secs` (and below `prewarm_jitter_ms`), so
 many schedules on the same minute do not wake together.

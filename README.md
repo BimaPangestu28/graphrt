@@ -340,7 +340,8 @@ graphrt nodes                                # plugin kinds show up next to buil
 ```
 
 Plugin nodes stream, branch, pause for approval, report errors with retry hints,
-and expose tools to `agent` nodes. WebAssembly plugins run sandboxed in-process
+and expose tools to `agent` nodes; `graphrt serve --plugin-pool` keeps process
+plugins warm so no run waits for their start. WebAssembly plugins run sandboxed in-process
 (fuel and memory limits, no system access) — drop a `.wasm` file into a plugin
 directory. See [docs/plugins.md](docs/plugins.md), the
 [manifest specification](docs/plugin-manifest.md),

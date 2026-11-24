@@ -19,6 +19,8 @@ compares the result with the `[gateway_targets]` table of bench/budgets.toml
   wake-node   the same with a Node.js process plugin: request -> the plugin node's result
               (the agent starts the plugin host at start-up; the plugin's own spawn -> initialize
               time without graphrt is reported as the floor)
+  wake-wasm   the same with a WebAssembly plugin (plugins/examples/wasm-text-tools) instead of
+              Node.js; needs --agent-wasm (an agent build with the `wasm` feature), not gated
   plugin-pool a kept-warm agent with the Node.js plugin and `--plugin-pool`: RSS of the agent
               and its plugin processes for pool sizes 0/1/2, a run on the warm pool, and after the
               idle stop (`--plugin-idle`) a run cold vs. after a gateway warm hint (POST .../warm)
@@ -60,7 +62,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SCENARIOS = ["ttfb-uds", "ttfb-tcp", "sse", "wake", "wake-node", "plugin-pool", "webhook", "cron"]
+SCENARIOS = ["ttfb-uds", "ttfb-tcp", "sse", "wake", "wake-node", "wake-wasm", "plugin-pool", "webhook", "cron"]
 ADMIN_TOKEN = secrets.token_hex(16)
 API_KEY = "bench-" + secrets.token_hex(16)
 AGENT_KEY_HEX = secrets.token_hex(32)
@@ -107,6 +109,18 @@ graph:
   edges:
     - { source: start, target: shout }
     - { source: shout, target: end }
+"""
+
+WASM_WORKFLOW = """version: "1"
+name: slug
+graph:
+  nodes:
+    - { id: start, type: start, variables: [] }
+    - { id: slug, type: slugify, text: "Hello from WebAssembly" }
+    - { id: end, type: end, outputs: [{ variable: slug, value_selector: [slug, slug] }] }
+  edges:
+    - { source: start, target: slug }
+    - { source: slug, target: end }
 """
 
 # A chat-completions stream: `chunks` deltas `interval_ms` apart (argv: port chunks interval_ms).
@@ -738,6 +752,17 @@ def scenario_wake_node(ctx: Context) -> dict:
     return result
 
 
+def scenario_wake_wasm(ctx: Context) -> dict:
+    if not ctx.args.agent_wasm:
+        raise SkipScenario("needs --agent-wasm (an agent build with the wasm feature)")
+    plugins = ctx.workspace("wake-wasm").root / "plugins"
+    plugins.mkdir(exist_ok=True)
+    (plugins / "text-tools").symlink_to(ROOT / "plugins" / "examples" / "wasm-text-tools")
+    wasm_ctx = Context(argparse.Namespace(**{**vars(ctx.args), "agent": ctx.args.agent_wasm}), ctx.targets, ctx.root)
+    return measure_wakes(wasm_ctx, "wake-wasm", WASM_WORKFLOW, "slug", ["--plugins", str(plugins)],
+                         ctx.samples("wake_samples", 20))
+
+
 def node_plugins_dir(ctx: Context, name: str) -> Path:
     plugins = ctx.workspace(name).root / "plugins"
     plugins.mkdir(exist_ok=True)
@@ -971,6 +996,9 @@ def checks_for(name: str, result: dict, targets: dict) -> list[Check]:
                 Check(name, "stalled streams", result["stalled_streams"], 0, "")]
     if name == "wake":
         return [Check(name, "p95 to first event", result["first_event_ms"]["p95"], t["wake_p95_ms"], "ms")]
+    if name == "wake-wasm":
+        return [Check(name, "p95 to plugin result (reference, not gated)", result["run_finished_ms"]["p95"],
+                      t["wake_node_p95_ms"], "ms", gated=False)]
     if name == "wake-node":
         # The plugin node's result, not the first event: the Node.js host must be up.
         return [Check(name, "p95 to plugin result", result["run_finished_ms"]["p95"], t["wake_node_p95_ms"], "ms")]
@@ -988,7 +1016,7 @@ def checks_for(name: str, result: dict, targets: dict) -> list[Check]:
 # allocator timing) run `rounds` times and report the median round: sub-millisecond
 # timings on a shared machine (a VM on a busy laptop, a CI runner) swing by 2x
 # between rounds a few seconds apart. Every round's values are kept in the JSON.
-ROUNDED = {"ttfb-uds", "ttfb-tcp", "sse", "wake", "wake-node", "webhook"}
+ROUNDED = {"ttfb-uds", "ttfb-tcp", "sse", "wake", "wake-node", "wake-wasm", "webhook"}
 
 
 def run_rounds(ctx: Context, name: str) -> tuple[dict, list[Check]]:
@@ -1078,6 +1106,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gateway", type=Path, required=True, help="graphrt built with --features gateway")
     parser.add_argument("--gateway-k8s", type=Path, help="graphrt built with gateway,gateway-k8s (for ttfb-tcp)")
     parser.add_argument("--agent", type=Path, required=True, help="agent build with serve,llm,plugins,trust-gateway")
+    parser.add_argument("--agent-wasm", type=Path, help="agent build with serve,llm,wasm,trust-gateway (for wake-wasm)")
     parser.add_argument("--budgets", type=Path, default=ROOT / "bench" / "budgets.toml")
     parser.add_argument("--only", help=f"comma-separated scenarios ({', '.join(SCENARIOS)})")
     parser.add_argument("--quick", action="store_true", help="fewer samples (not for gating)")
@@ -1093,6 +1122,7 @@ def main() -> int:
         return 2
     args.gateway, args.agent = args.gateway.resolve(), args.agent.resolve()
     args.gateway_k8s = args.gateway_k8s.resolve() if args.gateway_k8s else None
+    args.agent_wasm = args.agent_wasm.resolve() if args.agent_wasm else None
     targets = tomllib.loads(args.budgets.read_text())["gateway_targets"]
     selected = args.only.split(",") if args.only else SCENARIOS
     unknown = set(selected) - set(SCENARIOS)
@@ -1136,6 +1166,7 @@ SCENARIO_FUNCTIONS = {
     "sse": scenario_sse,
     "wake": scenario_wake,
     "wake-node": scenario_wake_node,
+    "wake-wasm": scenario_wake_wasm,
     "plugin-pool": scenario_plugin_pool,
     "webhook": scenario_webhook,
     "cron": scenario_cron,

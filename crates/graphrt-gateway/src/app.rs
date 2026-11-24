@@ -97,8 +97,10 @@ pub fn warm_hint(
         graphrt_core::task::spawn(async move {
             let Some(gateway) = gateway.upgrade() else { return };
             for address in addresses {
-                if let Err(error) = gateway.agents.warm(&address, &key, &name).await {
-                    eprintln!("gateway: warm hint to {name}: {error}");
+                match gateway.agents.warm(&address, &key, &name).await {
+                    // An agent older than the hint: nothing to warm there.
+                    Ok(()) | Err(crate::agent_client::AgentError::Refused { status: 404, .. }) => {}
+                    Err(error) => eprintln!("gateway: warm hint to {name}: {error}"),
                 }
             }
         });
