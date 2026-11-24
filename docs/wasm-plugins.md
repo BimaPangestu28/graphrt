@@ -316,6 +316,16 @@ written into a buffer the host gets from `graphrt_alloc`:
 {"error": {"kind": "egress_denied", "message": "address 127.0.0.1 is not a public address ..."}}
 ```
 
+Binary bodies go as base64: the request sets `body_base64` instead of `body`,
+and `"response_encoding": "base64"` returns the response as `body_base64`
+instead of `body` (without it, a body that is not UTF-8 is an `http_error`).
+`http_request_bytes` counts the decoded bytes.
+
+```json
+{"method": "POST", "url": "https://x.supabase.co/storage/v1/object/b/a.png", "body_base64": "iVBORw0KGgo=", "response_encoding": "base64"}
+{"status": 200, "headers": {"content-type": "application/json"}, "body_base64": "eyJLZXkiOiJiL2EucG5nIn0="}
+```
+
 Error kinds: `invalid_request`, `egress_denied`, `timeout`, `too_large`,
 `http_error`. The call blocks the guest (which runs on Tokio's blocking pool),
 not the host's async workers.

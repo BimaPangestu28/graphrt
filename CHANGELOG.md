@@ -7,6 +7,18 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- WebAssembly plugins can send and receive binary HTTP bodies: `graphrt::http`
+  takes `body_base64` and, with `"response_encoding": "base64"`, answers with
+  `body_base64` (guest SDK: `HttpRequest::body_base64`,
+  `HttpRequest::response_encoding`, `HttpResponse::body_base64`). Text bodies
+  work as before. Used by the supabase WebAssembly build's `upload_object`.
+
+### Changed
+- graphrt-wasm: `HttpRequest::body` is `Option<Vec<u8>>` and
+  `HttpResponse::body` is `Vec<u8>`, so an embedder's `HttpEgress` passes bytes
+  and no longer checks UTF-8 (the host does, for guests that ask for text).
+
 ## [0.6.1] - 2026-11-24
 
 WebAssembly plugins as agent tools: a module can offer tools to the `agent`
