@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use graphrt_core::child_env::minimal_env;
+use graphrt_core::child_env::{EnvFix, apply_env_fixes, host_env_fixes, set_child_env_with};
 use graphrt_core::node::Clock;
 use tokio::io::AsyncReadExt;
 
@@ -215,6 +215,11 @@ impl ProcessTransport {
     /// The configured command: arguments, working directory, environment,
     /// piped stdio and its own process group.
     fn command(&self, program: &Path) -> tokio::process::Command {
+        self.command_with(program, host_env_fixes())
+    }
+
+    /// [`Self::command`] with explicit AppImage `fixes` (see `graphrt_core::child_env`).
+    fn command_with(&self, program: &Path, fixes: &[EnvFix]) -> tokio::process::Command {
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(&self.runtime.args);
         let cwd = match &self.runtime.cwd {
@@ -222,10 +227,8 @@ impl ProcessTransport {
             None => self.plugin.dir.clone(),
         };
         cmd.current_dir(&cwd);
-        if !self.runtime.inherit_env {
-            cmd.env_clear();
-            cmd.envs(minimal_env(self.plugin.manifest.permissions.env.iter().map(String::as_str)));
-        }
+        let pass_env = self.plugin.manifest.permissions.env.iter().map(String::as_str);
+        set_child_env_with(cmd.as_std_mut(), self.runtime.inherit_env, pass_env, fixes);
         cmd.envs(&self.runtime.env);
         cmd.env("GRAPHRT_PLUGIN", &self.plugin.manifest.name);
         cmd.env("GRAPHRT_PLUGIN_PROTOCOL", crate::manifest::PROTOCOL_VERSION.to_string());
@@ -361,12 +364,16 @@ fn kill_tree(pid: Option<u32>) {
 }
 
 #[cfg(any(unix, windows))]
+/// Runs `command` (`kill`, `taskkill`) with the computer's own environment and
+/// no output; its exit status does not matter.
 fn run_quietly(command: &mut std::process::Command) {
-    let _no_process_left = command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    quiet_command(command, host_env_fixes());
+    let _no_process_left = command.status();
+}
+
+fn quiet_command(command: &mut std::process::Command, fixes: &[EnvFix]) {
+    apply_env_fixes(command, fixes);
+    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
 }
 
 fn describe_exit(status: &std::process::ExitStatus) -> String {
@@ -448,6 +455,53 @@ impl Transport for ProcessTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn env_of(command: &std::process::Command) -> Vec<(String, Option<String>)> {
+        command
+            .get_envs()
+            .map(|(name, value)| {
+                (name.to_string_lossy().into_owned(), value.map(|value| value.to_string_lossy().into_owned()))
+            })
+            .collect()
+    }
+
+    fn transport(inherit_env: bool) -> ProcessTransport {
+        let manifest = crate::PluginManifest::from_yaml(&format!(
+            "name: acme\nruntime: process\ncommand: node\nargs: [p.mjs]\ninherit_env: {inherit_env}\nenv: {{FOO: bar}}\n"
+        ))
+        .unwrap();
+        let crate::manifest::Runtime::Process(runtime) = manifest.runtime.clone() else { panic!("process runtime") };
+        ProcessTransport::new(LoadedManifest { manifest, dir: PathBuf::from(".") }, runtime)
+    }
+
+    /// What an AppImage's `AppRun` leaves for the plugin (see `graphrt_core::child_env`).
+    fn appimage_fixes() -> Vec<EnvFix> {
+        vec![EnvFix::Remove("LD_LIBRARY_PATH".into()), EnvFix::Set("PATH".into(), "/usr/bin".into())]
+    }
+
+    #[test]
+    fn an_inheriting_plugin_gets_the_host_env_without_the_appimage() {
+        let command = transport(true).command_with(Path::new("node"), &appimage_fixes());
+        let env = env_of(command.as_std());
+        assert!(env.contains(&("LD_LIBRARY_PATH".into(), None)), "{env:?}");
+        assert!(env.contains(&("PATH".into(), Some("/usr/bin".into()))), "{env:?}");
+        assert!(env.contains(&("FOO".into(), Some("bar".into()))), "the manifest's own env still applies");
+    }
+
+    #[test]
+    fn a_minimal_plugin_gets_the_fixed_path() {
+        let command = transport(false).command_with(Path::new("node"), &appimage_fixes());
+        let env = env_of(command.as_std());
+        assert!(env.contains(&("PATH".into(), Some("/usr/bin".into()))), "{env:?}");
+        assert!(env.iter().all(|(name, _)| name != "LD_LIBRARY_PATH"), "{env:?}");
+    }
+
+    #[test]
+    fn kill_runs_with_the_host_env_without_the_appimage() {
+        let mut command = std::process::Command::new("kill");
+        quiet_command(&mut command, &appimage_fixes());
+        assert_eq!(env_of(&command), [("LD_LIBRARY_PATH".into(), None), ("PATH".into(), Some("/usr/bin".into()))]);
+    }
 
     #[test]
     fn restart_backoff_doubles_up_to_the_cap() {
