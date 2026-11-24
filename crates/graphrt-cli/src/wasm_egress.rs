@@ -5,7 +5,8 @@
 //! DNS answers checked before connecting (no rebinding), proxy variables
 //! ignored. Redirects are never followed: a 3xx goes back to the guest, so a
 //! credential header such as Supabase's `apikey` cannot be replayed to another
-//! host. The body is read up to the plugin's limit.
+//! host. The body is read up to the plugin's limit, as bytes (the guest decides
+//! whether it gets text or base64).
 
 use std::time::Duration;
 
@@ -76,8 +77,6 @@ impl ClientEgress {
             }
             body.extend_from_slice(&chunk);
         }
-        let body =
-            String::from_utf8(body).map_err(|_| HttpError::new("http_error", "response body is not UTF-8 text"))?;
         Ok(HttpResponse { status, headers, body })
     }
 }
@@ -134,7 +133,7 @@ mod tests {
             method: "POST".into(),
             url: url.into(),
             headers: vec![("apikey".into(), "pk".into())],
-            body: Some("{}".into()),
+            body: Some(b"{}".to_vec()),
             timeout: Duration::from_secs(5),
             max_response_bytes: 1024,
         }
@@ -151,7 +150,7 @@ mod tests {
             serve_once("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n[]");
         let response = send(ClientEgress::new(true).unwrap(), request(&url)).unwrap();
         assert_eq!(response.status, 200);
-        assert_eq!(response.body, "[]");
+        assert_eq!(response.body, b"[]");
         let raw = server.join().unwrap().to_ascii_lowercase();
         assert!(raw.starts_with("post /rest/v1/rpc/get_balance") && raw.contains("apikey: pk"), "{raw}");
     }

@@ -360,9 +360,16 @@ pub struct HttpRequest {
     pub headers: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// Binary body, base64 (standard alphabet, padded); set this or `body`, not both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_base64: Option<String>,
     /// Deadline in ms; the host caps it (30 s by default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// `Some("base64")`: the response body comes back as [`HttpResponse::body_base64`]
+    /// (any bytes) instead of UTF-8 [`HttpResponse::body`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_encoding: Option<String>,
 }
 
 /// A response from [`http`].
@@ -374,6 +381,9 @@ pub struct HttpResponse {
     pub headers: BTreeMap<String, String>,
     #[serde(default)]
     pub body: String,
+    /// The body as base64, when the request asked for `response_encoding: "base64"`.
+    #[serde(default)]
+    pub body_base64: Option<String>,
 }
 
 /// Why [`http`] failed: `invalid_request`, `egress_denied`, `timeout`, `too_large` or `http_error`.

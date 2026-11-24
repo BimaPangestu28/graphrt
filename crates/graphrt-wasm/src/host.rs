@@ -17,7 +17,7 @@ use wasmi::{
 use crate::abi::{ABI_VERSION, HOST_MODULE, pack, unpack};
 use crate::error::WasmError;
 use crate::limits::WasmLimits;
-use crate::net::{self, HttpEgress, HttpError, HttpResponse};
+use crate::net::{self, HttpEgress, HttpError};
 
 /// Imports every module may use.
 const BASE_IMPORTS: &[&str] = &["log", "chunk", "progress"];
@@ -381,18 +381,27 @@ fn len_of(len: i32) -> u64 {
 /// Room for the method, URL and headers next to a request body.
 const HTTP_ENVELOPE_BYTES: usize = 64 * 1024;
 
-/// Validate one `graphrt::http` request and send it through the egress.
-fn send_http(state: &mut HostState, request: &[u8]) -> Result<HttpResponse, HttpError> {
+/// Largest request JSON for a body of `body_bytes`: base64 (`body_base64`) takes 4 bytes per 3.
+fn http_request_json_limit(body_bytes: usize) -> usize {
+    body_bytes.div_ceil(3).saturating_mul(4).saturating_add(HTTP_ENVELOPE_BYTES)
+}
+
+/// Validate one `graphrt::http` request, send it through the egress and encode the reply.
+fn send_http(state: &mut HostState, request: &[u8]) -> Vec<u8> {
     let Some(egress) = state.egress.clone() else {
-        return Err(HttpError::new("egress_denied", "outbound HTTP is not available in this call"));
+        let refused = HttpError::new("egress_denied", "outbound HTTP is not available in this call");
+        return net::encode_result(Err(refused), net::ResponseEncoding::Utf8);
     };
     let max = state.http_limits.max_http_requests;
     if state.http_requests >= max {
-        return Err(HttpError::new("too_large", format!("more than {max} HTTP requests in one call")));
+        let refused = HttpError::new("too_large", format!("more than {max} HTTP requests in one call"));
+        return net::encode_result(Err(refused), net::ResponseEncoding::Utf8);
     }
     state.http_requests += 1;
-    let request = net::parse_request(request, &state.http_limits)?;
-    egress.send(request)
+    match net::parse_request(request, &state.http_limits) {
+        Ok(call) => net::encode_result(egress.send(call.request), call.response_encoding),
+        Err(error) => net::encode_result(Err(error), net::ResponseEncoding::Utf8),
+    }
 }
 
 /// Copy `bytes` into a buffer the guest allocates with `graphrt_alloc`; returns it packed.
@@ -480,10 +489,9 @@ fn build_linker(engine: &Engine) -> Result<Linker<HostState>, WasmError> {
     linker
         .func_wrap(HOST_MODULE, HTTP_IMPORT, |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| {
             charge(&mut caller, len_of(len))?;
-            let limit = caller.data().http_limits.http_request_bytes.saturating_add(HTTP_ENVELOPE_BYTES);
+            let limit = http_request_json_limit(caller.data().http_limits.http_request_bytes);
             let request = read_guest_up_to(&caller, (ptr, len), limit, "http request")?;
-            let result = send_http(caller.data_mut(), &request);
-            let encoded = net::encode_result(&result);
+            let encoded = send_http(caller.data_mut(), &request);
             charge(&mut caller, u64::try_from(encoded.len()).unwrap_or(u64::MAX))?;
             write_to_guest(&mut caller, &encoded)
         })

@@ -10,12 +10,18 @@
 //! by [`crate::WasmLimits::http_timeout_ms`]) and the body sizes. The egress then
 //! applies its destination policy (scheme, hosts, public addresses only, no
 //! redirects).
+//!
+//! Bodies are bytes. A guest sends text as `body` or bytes as `body_base64`,
+//! and gets the response as UTF-8 `body` (a non-UTF-8 body is an error) unless
+//! it asks for `"response_encoding": "base64"`, which returns `body_base64`.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Serialize};
 
 use crate::limits::WasmLimits;
@@ -45,8 +51,8 @@ pub struct HttpRequest {
     pub url: String,
     /// Header name (lower-case) and value pairs.
     pub headers: Vec<(String, String)>,
-    /// UTF-8 request body.
-    pub body: Option<String>,
+    /// Request body bytes.
+    pub body: Option<Vec<u8>>,
     /// Total deadline of the request.
     pub timeout: Duration,
     /// Largest response body accepted, in bytes.
@@ -67,13 +73,13 @@ impl fmt::Debug for HttpRequest {
 }
 
 /// A response handed back to the guest.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpResponse {
     pub status: u16,
     /// Header name (lower-case) and value pairs.
     pub headers: Vec<(String, String)>,
-    /// UTF-8 response body.
-    pub body: String,
+    /// Response body bytes.
+    pub body: Vec<u8>,
 }
 
 /// Why a request failed. The guest receives `kind` and `message`.
@@ -99,7 +105,7 @@ pub trait HttpEgress: Send + Sync + fmt::Debug {
     /// Send `request` and wait for the response.
     ///
     /// @throws HttpError - The destination is refused, the request timed out or failed,
-    /// or the body is too large or not UTF-8.
+    /// or the body is too large.
     fn send(&self, request: HttpRequest) -> Result<HttpResponse, HttpError>;
 }
 
@@ -147,8 +153,32 @@ struct GuestRequest {
     headers: BTreeMap<String, String>,
     #[serde(default)]
     body: Option<String>,
+    /// Binary body, base64 (standard alphabet, padded); exclusive with `body`.
+    #[serde(default)]
+    body_base64: Option<String>,
     #[serde(default)]
     timeout_ms: Option<u64>,
+    /// `utf8` (default): the response is `body` text; `base64`: `body_base64`.
+    #[serde(default)]
+    response_encoding: ResponseEncoding,
+}
+
+/// How the response body is written back to the guest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ResponseEncoding {
+    /// `body`, UTF-8 text; any other body is an `http_error`.
+    #[default]
+    Utf8,
+    /// `body_base64`, any bytes.
+    Base64,
+}
+
+/// A validated guest request and how its response goes back.
+#[derive(Debug)]
+pub(crate) struct GuestHttpCall {
+    pub request: HttpRequest,
+    pub response_encoding: ResponseEncoding,
 }
 
 fn default_method() -> String {
@@ -158,8 +188,9 @@ fn default_method() -> String {
 /// Parse and validate the request JSON written by the guest.
 ///
 /// @throws HttpError kind `invalid_request` - Malformed JSON, a method or header the
-/// guest may not use, or a body above the limit.
-pub(crate) fn parse_request(bytes: &[u8], limits: &WasmLimits) -> Result<HttpRequest, HttpError> {
+/// guest may not use, both `body` and `body_base64`, or base64 that does not decode.
+/// @throws HttpError kind `too_large` - A body above `http_request_bytes`.
+pub(crate) fn parse_request(bytes: &[u8], limits: &WasmLimits) -> Result<GuestHttpCall, HttpError> {
     let request: GuestRequest =
         serde_json::from_slice(bytes).map_err(|e| HttpError::new("invalid_request", format!("request JSON: {e}")))?;
     let method = request.method.to_ascii_uppercase();
@@ -174,7 +205,9 @@ pub(crate) fn parse_request(bytes: &[u8], limits: &WasmLimits) -> Result<HttpReq
         }
         headers.push((name, value));
     }
-    if let Some(body) = &request.body
+    let response_encoding = request.response_encoding;
+    let body = request_body(request.body, request.body_base64)?;
+    if let Some(body) = &body
         && body.len() > limits.http_request_bytes
     {
         return Err(HttpError::new(
@@ -184,35 +217,66 @@ pub(crate) fn parse_request(bytes: &[u8], limits: &WasmLimits) -> Result<HttpReq
     }
     let cap = limits.http_timeout_ms.max(1);
     let timeout_ms = request.timeout_ms.unwrap_or(cap).clamp(1, cap);
-    Ok(HttpRequest {
+    let request = HttpRequest {
         method,
         url: request.url,
         headers,
-        body: request.body,
+        body,
         timeout: Duration::from_millis(timeout_ms),
         max_response_bytes: limits.http_response_bytes,
-    })
+    };
+    Ok(GuestHttpCall { request, response_encoding })
 }
 
-/// The JSON written back to the guest: `{status, headers, body}` or `{error: {kind, message}}`.
-pub(crate) fn encode_result(result: &Result<HttpResponse, HttpError>) -> Vec<u8> {
-    let value = match result {
-        Ok(response) => serde_json::json!({
-            "status": response.status,
-            "headers": response.headers.iter().cloned().collect::<BTreeMap<_, _>>(),
-            "body": response.body,
-        }),
+fn request_body(text: Option<String>, base64: Option<String>) -> Result<Option<Vec<u8>>, HttpError> {
+    match (text, base64) {
+        (Some(_), Some(_)) => Err(HttpError::new("invalid_request", "set `body` or `body_base64`, not both")),
+        (Some(text), None) => Ok(Some(text.into_bytes())),
+        (None, Some(encoded)) => BASE64
+            .decode(encoded.as_bytes())
+            .map(Some)
+            .map_err(|e| HttpError::new("invalid_request", format!("body_base64: {e}"))),
+        (None, None) => Ok(None),
+    }
+}
+
+/// The JSON written back to the guest: `{status, headers, body}` (or `body_base64`) or
+/// `{error: {kind, message}}`.
+pub(crate) fn encode_result(result: Result<HttpResponse, HttpError>, encoding: ResponseEncoding) -> Vec<u8> {
+    let value = match result.and_then(|response| encode_response(response, encoding)) {
+        Ok(value) => value,
         Err(error) => serde_json::json!({ "error": error }),
     };
     serde_json::to_vec(&value).unwrap_or_default()
+}
+
+fn encode_response(response: HttpResponse, encoding: ResponseEncoding) -> Result<serde_json::Value, HttpError> {
+    let headers = response.headers.into_iter().collect::<BTreeMap<_, _>>();
+    let (field, body) = match encoding {
+        ResponseEncoding::Utf8 => {
+            let text = String::from_utf8(response.body).map_err(|_| {
+                HttpError::new(
+                    "http_error",
+                    "response body is not UTF-8 text; ask for \"response_encoding\": \"base64\"",
+                )
+            })?;
+            ("body", text)
+        }
+        ResponseEncoding::Base64 => ("body_base64", BASE64.encode(&response.body)),
+    };
+    Ok(serde_json::json!({ "status": response.status, "headers": headers, field: body }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse(json: &str) -> Result<HttpRequest, HttpError> {
+    fn parse_call(json: &str) -> Result<GuestHttpCall, HttpError> {
         parse_request(json.as_bytes(), &WasmLimits::default())
+    }
+
+    fn parse(json: &str) -> Result<HttpRequest, HttpError> {
+        parse_call(json).map(|call| call.request)
     }
 
     #[test]
@@ -252,16 +316,53 @@ mod tests {
 
     #[test]
     fn encodes_both_shapes() {
-        let ok = encode_result(&Ok(HttpResponse {
-            status: 200,
-            headers: vec![("a".into(), "b".into())],
-            body: "hi".into(),
-        }));
+        let ok = encode_result(
+            Ok(HttpResponse { status: 200, headers: vec![("a".into(), "b".into())], body: b"hi".to_vec() }),
+            ResponseEncoding::Utf8,
+        );
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&ok).unwrap(),
             serde_json::json!({"status":200,"headers":{"a":"b"},"body":"hi"})
         );
-        let err = encode_result(&Err(HttpError::new("timeout", "slow")));
+        let err = encode_result(Err(HttpError::new("timeout", "slow")), ResponseEncoding::Utf8);
         assert_eq!(serde_json::from_slice::<serde_json::Value>(&err).unwrap()["error"]["kind"], "timeout");
+    }
+
+    #[test]
+    fn binary_bodies_go_both_ways_as_base64() {
+        let call = parse_call(
+            r#"{"method":"PUT","url":"https://x.test/o","body_base64":"/wAB","response_encoding":"base64"}"#,
+        )
+        .unwrap();
+        assert_eq!(call.request.body, Some(vec![0xff, 0x00, 0x01]));
+        assert_eq!(call.response_encoding, ResponseEncoding::Base64);
+        let binary = HttpResponse { status: 200, headers: Vec::new(), body: vec![0x89, b'P', b'N', b'G'] };
+        let reply = encode_result(Ok(binary.clone()), ResponseEncoding::Base64);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&reply).unwrap(),
+            serde_json::json!({"status":200,"headers":{},"body_base64":"iVBORw=="})
+        );
+        let refused = encode_result(Ok(binary), ResponseEncoding::Utf8);
+        let refused = serde_json::from_slice::<serde_json::Value>(&refused).unwrap();
+        assert_eq!(refused["error"]["kind"], "http_error");
+        assert!(refused["error"]["message"].as_str().unwrap().contains("response_encoding"));
+    }
+
+    #[test]
+    fn refuses_bad_binary_bodies() {
+        assert_eq!(
+            parse(r#"{"url":"https://x.test","body":"a","body_base64":"YQ=="}"#).unwrap_err().kind,
+            "invalid_request"
+        );
+        assert_eq!(
+            parse(r#"{"url":"https://x.test","body_base64":"not base64!"}"#).unwrap_err().kind,
+            "invalid_request"
+        );
+        assert_eq!(parse(r#"{"url":"https://x.test","response_encoding":"hex"}"#).unwrap_err().kind, "invalid_request");
+        // The limit counts decoded bytes.
+        let limits = WasmLimits { http_request_bytes: 3, ..WasmLimits::default() };
+        assert!(parse_request(br#"{"url":"https://x.test","body_base64":"YWJj"}"#, &limits).is_ok());
+        let error = parse_request(br#"{"url":"https://x.test","body_base64":"YWJjZA=="}"#, &limits).unwrap_err();
+        assert_eq!(error.kind, "too_large");
     }
 }

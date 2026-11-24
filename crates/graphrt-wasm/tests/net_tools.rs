@@ -35,8 +35,13 @@ const REQUEST: &str = r#"{"method":"post","url":"https://api.example.test/rpc","
 /// A guest whose tool calls `graphrt::http` `calls` times with [`REQUEST`] and returns the
 /// last HTTP result verbatim as its tool response (so `{error}` becomes a refused call).
 fn http_tool_module(calls: u32) -> Vec<u8> {
+    http_tool_module_sending(REQUEST, calls)
+}
+
+/// [`http_tool_module`] with another request JSON.
+fn http_tool_module_sending(request_json: &str, calls: u32) -> Vec<u8> {
     let manifest = MANIFEST.replace('"', "\\\"");
-    let request = REQUEST.replace('"', "\\\"");
+    let request = request_json.replace('"', "\\\"");
     let text = format!(
         r#"(module
   (import "graphrt" "http" (func $http (param i32 i32) (result i64)))
@@ -62,7 +67,7 @@ fn http_tool_module(calls: u32) -> Vec<u8> {
     (local.get $out))
 )"#,
         manifest_len = MANIFEST.len(),
-        request_len = REQUEST.len(),
+        request_len = request_json.len(),
     );
     wat::parse_str(text).expect("valid wat")
 }
@@ -96,7 +101,7 @@ async fn http_requests_are_validated_capped_and_answered_in_guest_memory() {
 
 #[tokio::test]
 async fn a_successful_response_reaches_the_guest() {
-    let reply = HttpResponse { status: 200, headers: Vec::new(), body: "[]".into() };
+    let reply = HttpResponse { status: 200, headers: Vec::new(), body: b"[]".to_vec() };
     let plugin = load(&http_tool_module(1), Some(RecordingEgress::new(Ok(reply))), WasmLimits::default()).unwrap();
     // `{status, headers, body}` read back as a tool response has no `error`: an empty, successful result.
     let output = plugin.tools().unwrap().call("fetch", serde_json::json!({}), ToolCallContext::empty()).await.unwrap();
@@ -104,8 +109,20 @@ async fn a_successful_response_reaches_the_guest() {
 }
 
 #[tokio::test]
+async fn binary_bodies_cross_as_base64() {
+    let reply = HttpResponse { status: 201, headers: Vec::new(), body: vec![0xff, 0xd8, 0xff] };
+    let egress = RecordingEgress::new(Ok(reply));
+    let request =
+        r#"{"method":"POST","url":"https://api.example.test/o","body_base64":"iVBORw==","response_encoding":"base64"}"#;
+    let plugin = load(&http_tool_module_sending(request, 1), Some(egress.clone()), WasmLimits::default()).unwrap();
+    let output = plugin.tools().unwrap().call("fetch", serde_json::json!({}), ToolCallContext::empty()).await.unwrap();
+    assert!(!output.is_error);
+    assert_eq!(egress.seen.lock().unwrap()[0].body, Some(vec![0x89, b'P', b'N', b'G']), "decoded before the egress");
+}
+
+#[tokio::test]
 async fn requests_per_call_are_capped() {
-    let egress = RecordingEgress::new(Ok(HttpResponse { status: 200, headers: Vec::new(), body: String::new() }));
+    let egress = RecordingEgress::new(Ok(HttpResponse { status: 200, headers: Vec::new(), body: Vec::new() }));
     let limits = WasmLimits { max_http_requests: 2, ..WasmLimits::default() };
     let plugin = load(&http_tool_module(3), Some(egress.clone()), limits).unwrap();
     let error =

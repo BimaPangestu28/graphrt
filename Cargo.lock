@@ -1885,6 +1885,7 @@ dependencies = [
 name = "graphrt-wasm"
 version = "0.6.1"
 dependencies = [
+ "base64 0.23.1",
  "futures",
  "graphrt-core",
  "serde",
