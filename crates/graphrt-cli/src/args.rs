@@ -49,11 +49,13 @@ pub enum Command {
     /// zero-config local setup.
     #[cfg(feature = "gateway")]
     Gateway(Box<crate::gateway_cmd::GatewayArgs>),
-    /// Deploy a new immutable version of a deployment (`--target local`).
+    /// Deploy a new immutable version of a deployment, through a gateway or
+    /// with `--direct` straight to Fly.io; manage direct deployments
+    /// (status, list-versions, rollback, pause, resume, remove).
     // `--version` names the deployment version here, not the binary's.
-    #[cfg(feature = "gateway")]
+    #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
     #[command(disable_version_flag = true)]
-    Deploy(Box<crate::gateway_cmd::DeployArgs>),
+    Deploy(Box<crate::deploy_cmd::DeployArgs>),
     /// Print version and enabled features.
     Version,
 }

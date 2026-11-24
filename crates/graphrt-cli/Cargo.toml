@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -104,10 +104,15 @@ gateway-k8s-in-cluster = ["gateway", "graphrt-gateway/gw-k8s"]
 gateway-cloud-run = ["gateway", "graphrt-gateway/deploy-cloud-run"]
 gateway-ecs = ["gateway", "graphrt-gateway/deploy-ecs"]
 gateway-lambda = ["gateway", "graphrt-gateway/deploy-lambda"]
-gateway-fly = ["gateway", "graphrt-gateway/deploy-fly"]
+gateway-fly = ["gateway", "graphrt-gateway/deploy-fly", "deploy-fly"]
 gateway-aca = ["gateway", "graphrt-gateway/deploy-aca"]
 # Every provider (plan §9 budget: ≤ 9 MiB).
 gateway-all = ["gateway-k8s", "gateway-cloud-run", "gateway-ecs", "gateway-lambda", "gateway-fly", "gateway-aca"]
+# `graphrt deploy --target fly --direct` (and `deploy status|list-versions|rollback|
+# pause|resume|remove`): an agent served by the Fly proxy at https://<app>.fly.dev,
+# no gateway. A small Machines REST client over the reqwest + rustls `http` already
+# links; see docs/deploy-direct.md.
+deploy-fly = ["dep:graphrt-provider-fly", "graphrt-provider-fly/direct", "dep:reqwest", "dep:rustls", "dep:getrandom"]
 # Opt-in anonymous usage telemetry of the CLI binary (`graphrt telemetry`). Off
 # by default and inert unless an endpoint is configured; see docs/telemetry.md.
 telemetry = ["http", "dep:getrandom"]
@@ -128,6 +133,7 @@ graphrt-bundle = { workspace = true, optional = true }
 graphrt-eval = { workspace = true, optional = true }
 graphrt-gateway = { workspace = true, optional = true }
 graphrt-provider-api = { workspace = true, optional = true }
+graphrt-provider-fly = { workspace = true, optional = true }
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 tokio = { workspace = true, features = ["rt", "time", "signal", "fs", "io-util"] }
 futures.workspace = true
@@ -150,6 +156,8 @@ axum ={ version = "0.8", optional = true, default-features = false, features = [
 http-body = { version = "1", optional = true }
 
 [dev-dependencies]
+# The fake Fly Machines API for the `graphrt deploy --direct` contract tests.
+graphrt-provider-fly = { workspace = true, features = ["fake"] }
 # The abstract store conformance suite runs against the memory and directory stores.
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio", "store-conformance"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }

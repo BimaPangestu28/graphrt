@@ -10,16 +10,18 @@
 //! - `graphrt gateway ha status|promote --config gateway.yaml`: active/passive
 //!   lease (see `docs/gateway-ha.md`).
 //! - `graphrt deploy --target local --deployment <d> --version <v> <workflow>`:
-//!   registers a new immutable version with a running gateway.
+//!   registers a new immutable version with a running gateway (arguments in
+//!   [`crate::deploy_cmd`]).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 use graphrt_gateway::config::{DeploymentConfig, GatewayConfig, PoolFileConfig};
 use graphrt_gateway::deployment::VersionInfo;
 use graphrt_provider_api::{DeployDriver, DeploymentSpec, Resources};
 
+use crate::deploy_cmd::{DeployRunArgs as DeployArgs, DeployTarget};
 use crate::error::CliError;
 
 /// Exit code of success.
@@ -105,96 +107,6 @@ pub enum KeyKind {
         #[arg(long, default_value = "k1")]
         kid: String,
     },
-}
-
-/// Deploy targets of this build.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-#[value(rename_all = "kebab-case")]
-pub enum DeployTarget {
-    /// local-process agents managed by the gateway.
-    Local,
-    /// Kubernetes Deployment (feature `gateway-k8s`).
-    K8s,
-    /// Cloud Run service (feature `gateway-cloud-run`).
-    CloudRun,
-    /// ECS Fargate task definition (feature `gateway-ecs`).
-    Ecs,
-    /// Lambda function version (feature `gateway-lambda`).
-    Lambda,
-    /// Fly app and Machine pool (feature `gateway-fly`).
-    Fly,
-    /// Azure Container App revision (feature `gateway-aca`).
-    Aca,
-}
-
-impl DeployTarget {
-    fn kind(self) -> &'static str {
-        match self {
-            Self::Local => "local",
-            Self::K8s => "k8s",
-            Self::CloudRun => "cloud_run",
-            Self::Ecs => "ecs",
-            Self::Lambda => "lambda",
-            Self::Fly => "fly",
-            Self::Aca => "aca",
-        }
-    }
-}
-
-/// Options of `graphrt deploy`.
-#[derive(Debug, Args)]
-pub struct DeployArgs {
-    /// Workflow file the agents serve.
-    #[arg(value_name = "WORKFLOW")]
-    pub workflow: PathBuf,
-    /// Target platform.
-    #[arg(long, value_enum, default_value = "local")]
-    pub target: DeployTarget,
-    /// Deployment name (configured in the gateway).
-    #[arg(long)]
-    pub deployment: String,
-    /// New immutable version id (default: a timestamp).
-    #[arg(long)]
-    pub version: Option<String>,
-    /// Gateway URL; default `$GRAPHRT_GATEWAY_URL` or `http://127.0.0.1:8700`.
-    #[arg(long)]
-    pub gateway: Option<String>,
-    /// Environment variable holding the admin token.
-    #[arg(long, default_value = "GRAPHRT_GATEWAY_ADMIN_TOKEN")]
-    pub token_env: String,
-    /// Gateway configuration with the operator's `providers:` (remote targets).
-    #[arg(long, value_name = "FILE")]
-    pub config: Option<PathBuf>,
-    /// Entry under `providers:` (default: the only one of the target's kind).
-    #[arg(long)]
-    pub provider: Option<String>,
-    /// Container image (container targets).
-    #[arg(long)]
-    pub image: Option<String>,
-    /// Provider setting `KEY=VALUE` (JSON values allowed), repeatable.
-    #[arg(long = "set", value_name = "KEY=VALUE")]
-    pub settings: Vec<String>,
-    /// Plain environment `NAME=VALUE` of the agents, repeatable (never secrets).
-    #[arg(long = "env", value_name = "NAME=VALUE")]
-    pub env: Vec<String>,
-    /// Secret `ENV=REFERENCE` (secret store reference, never a value), repeatable.
-    #[arg(long = "secret", value_name = "ENV=REFERENCE")]
-    pub secrets: Vec<String>,
-    /// Concurrent runs per replica.
-    #[arg(long, default_value_t = 8)]
-    pub max_active_runs: u32,
-    /// Warm replicas.
-    #[arg(long, default_value_t = 0)]
-    pub min_replicas: u32,
-    /// Upper bound of replicas.
-    #[arg(long, default_value_t = 4)]
-    pub max_replicas: u32,
-    /// SIGTERM → SIGKILL grace set on the platform.
-    #[arg(long, default_value_t = 30)]
-    pub grace_secs: u64,
-    /// Extra arguments for `graphrt serve` (local), or the container command (remote targets).
-    #[arg(last = true)]
-    pub serve_args: Vec<String>,
 }
 
 fn split_pair<'a>(text: &'a str, what: &str) -> Result<(&'a str, &'a str), CliError> {
@@ -412,16 +324,18 @@ fn import(from: &std::path::Path, store: &std::path::Path, deployment: &str) -> 
     Ok(EXIT_OK)
 }
 
-/// `graphrt deploy`.
+/// `graphrt deploy` through a gateway.
 ///
 /// # Errors
 /// Missing token, unreachable gateway, refused spec.
 pub fn deploy(args: DeployArgs) -> Result<u8, CliError> {
+    let workflow = args.workflow.clone().ok_or_else(|| CliError::usage("graphrt deploy needs a workflow file"))?;
+    let deployment = args.deployment.clone().ok_or_else(|| CliError::usage("graphrt deploy needs --deployment"))?;
     let token = std::env::var(&args.token_env)
         .map_err(|_| CliError::usage(format!("set {} to the gateway's admin token", args.token_env)))?;
     let version = args.version.clone().unwrap_or_else(|| format!("v{}", graphrt_core::store::now_ms() / 1000));
     let mut provider_settings = BTreeMap::new();
-    provider_settings.insert("workflow".to_owned(), serde_json::Value::from(workflow_name(&args.workflow)));
+    provider_settings.insert("workflow".to_owned(), serde_json::Value::from(workflow_name(&workflow)));
     for setting in &args.settings {
         let (key, value) = split_pair(setting, "--set")?;
         let value = serde_json::from_str(value).unwrap_or_else(|_| serde_json::Value::from(value));
@@ -438,9 +352,9 @@ pub fn deploy(args: DeployArgs) -> Result<u8, CliError> {
         secrets.push(graphrt_provider_api::SecretRef { env: name.to_owned(), reference: reference.to_owned() });
     }
     let local = args.target == DeployTarget::Local;
-    let command = if local { agent_command(&args.workflow, &args.serve_args)? } else { args.serve_args.clone() };
+    let command = if local { agent_command(&workflow, &args.serve_args)? } else { args.serve_args.clone() };
     let spec = DeploymentSpec {
-        name: args.deployment.clone(),
+        name: deployment,
         version: version.clone(),
         image: args.image.clone(),
         command,
@@ -461,7 +375,7 @@ pub fn deploy(args: DeployArgs) -> Result<u8, CliError> {
         .or_else(|| std::env::var("GRAPHRT_GATEWAY_URL").ok())
         .unwrap_or_else(|| "http://127.0.0.1:8700".to_owned());
     let registrar = graphrt_gateway::deploy::LocalDeployDriver::new(&gateway, &token)
-        .with_secret_inputs(declared_secret_inputs(&args.workflow));
+        .with_secret_inputs(declared_secret_inputs(&workflow));
     let driver: Box<dyn DeployDriver> = if local {
         Box::new(registrar)
     } else {

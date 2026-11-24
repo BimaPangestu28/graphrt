@@ -1536,6 +1536,7 @@ dependencies = [
  "graphrt-otel",
  "graphrt-plugin",
  "graphrt-provider-api",
+ "graphrt-provider-fly",
  "graphrt-rag",
  "graphrt-wasm",
  "http-body",
