@@ -76,6 +76,19 @@ fixes they found, and a fix for a crash on crafted redirects
   with a Node.js plugin no longer waits for the host after the dispatch.
 
 ### Fixed
+- Programs graphrt starts no longer get an AppImage's environment. An
+  application packaged as a Linux AppImage (e.g. the graphrt desktop app)
+  runs with the bundle's folders in front of `LD_LIBRARY_PATH`, `PATH`,
+  `PYTHONPATH`, … and `PYTHONHOME`, `GTK_PATH`, … pointing into it; plugin
+  processes and stdio MCP servers (`inherit_env: true`, and the `PATH` /
+  `HOME` … of the minimal environment), the `kill` of a plugin's process group
+  and `git clone` of `install_from_git` inherited them, so the computer's own
+  programs loaded the bundle's older libraries and failed (``libsystemd.so.0:
+  version `LIBSYSTEMD_254' not found``). When the running binary is inside
+  `$APPDIR`, every entry inside it is dropped for children; elsewhere nothing
+  changes. New in `graphrt_core::child_env`: `apply_host_env`,
+  `set_child_env`, `host_var`, `host_vars`, `host_env_fixes` and the
+  `*_with` / `apply_env_fixes` variants taking explicit fixes.
 - `release.yml` no longer tries to build the gateway archive for Windows: the
   gateway is Unix-only and does not compile there, so a tag build would have
   failed. Windows gets the agent archive only, as in the 0.5.0 release.

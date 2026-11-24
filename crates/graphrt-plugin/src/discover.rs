@@ -185,14 +185,28 @@ fn create_private_temp_dir() -> Result<PathBuf, PluginError> {
         .map_err(|e| PluginError::Io { path: std::env::temp_dir(), message: e.to_string() })
 }
 
+/// `git clone` of `url` into `checkout`, with the computer's own environment
+/// (without an AppImage's entries, see `graphrt_core::child_env`).
 #[cfg(feature = "git")]
-fn clone_repository(url: &str, rev: Option<&str>, checkout: &Path) -> Result<(), PluginError> {
+fn clone_command(
+    url: &str,
+    rev: Option<&str>,
+    checkout: &Path,
+    fixes: &[graphrt_core::child_env::EnvFix],
+) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
+    graphrt_core::child_env::apply_env_fixes(&mut cmd, fixes);
     cmd.args(["clone", "--depth", "1", "--quiet"]);
     if let Some(rev) = rev {
         cmd.args(["--branch", rev]);
     }
     cmd.arg("--").arg(url).arg(checkout);
+    cmd
+}
+
+#[cfg(feature = "git")]
+fn clone_repository(url: &str, rev: Option<&str>, checkout: &Path) -> Result<(), PluginError> {
+    let mut cmd = clone_command(url, rev, checkout, graphrt_core::child_env::host_env_fixes());
     let output = cmd.output().map_err(|e| PluginError::Install(format!("cannot run git: {e}")))?;
     if !output.status.success() {
         return Err(PluginError::Install(format!(
@@ -337,6 +351,26 @@ mod tests {
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn git_clone_runs_with_the_host_env_without_the_appimage() {
+        use graphrt_core::child_env::EnvFix;
+        let fixes = [EnvFix::Remove("LD_LIBRARY_PATH".into()), EnvFix::Set("PATH".into(), "/usr/bin".into())];
+        let command = clone_command("https://example.com/p.git", Some("v1"), Path::new("/tmp/checkout"), &fixes);
+        let env: Vec<(String, Option<String>)> = command
+            .get_envs()
+            .map(|(name, value)| {
+                (name.to_string_lossy().into_owned(), value.map(|value| value.to_string_lossy().into_owned()))
+            })
+            .collect();
+        assert_eq!(env, [("LD_LIBRARY_PATH".into(), None), ("PATH".into(), Some("/usr/bin".into()))]);
+        let args: Vec<String> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(
+            args,
+            ["clone", "--depth", "1", "--quiet", "--branch", "v1", "--", "https://example.com/p.git", "/tmp/checkout"]
+        );
     }
 
     /// Run `git` in `dir`, with an identity so commits work on any machine.

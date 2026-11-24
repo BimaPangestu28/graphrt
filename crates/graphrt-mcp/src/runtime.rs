@@ -77,16 +77,7 @@ impl McpToolRuntime {
     async fn connect_stdio(config: &McpServerConfig, stdio: &crate::config::StdioConfig) -> Result<Self, McpError> {
         use std::process::Stdio;
 
-        let mut cmd = tokio::process::Command::new(&stdio.command);
-        cmd.args(&stdio.args);
-        if !stdio.inherit_env {
-            cmd.env_clear();
-            cmd.envs(graphrt_core::child_env::minimal_env(stdio.pass_env.iter().map(String::as_str)));
-        }
-        cmd.envs(&stdio.env);
-        if let Some(dir) = &stdio.cwd {
-            cmd.current_dir(dir);
-        }
+        let cmd = stdio_command(stdio, graphrt_core::child_env::host_env_fixes());
         let stderr = if stdio.show_stderr { Stdio::inherit() } else { Stdio::null() };
         let (transport, _stderr) = rmcp::transport::TokioChildProcess::builder(cmd)
             .stderr(stderr)
@@ -229,4 +220,73 @@ impl ToolRuntime for McpToolRuntime {
 /// `None` when `fut` does not finish within `timeout`.
 async fn with_timeout<F: Future>(timeout: Duration, fut: F) -> Option<F::Output> {
     tokio::time::timeout(timeout, fut).await.ok()
+}
+
+/// The command of a stdio server: its arguments, working directory and
+/// environment (the host's, or the minimal one, without an AppImage's entries:
+/// see `graphrt_core::child_env`; then the configured variables).
+#[cfg(feature = "stdio")]
+fn stdio_command(
+    stdio: &crate::config::StdioConfig,
+    fixes: &[graphrt_core::child_env::EnvFix],
+) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(&stdio.command);
+    cmd.args(&stdio.args);
+    let pass_env = stdio.pass_env.iter().map(String::as_str);
+    graphrt_core::child_env::set_child_env_with(cmd.as_std_mut(), stdio.inherit_env, pass_env, fixes);
+    cmd.envs(&stdio.env);
+    if let Some(dir) = &stdio.cwd {
+        cmd.current_dir(dir);
+    }
+    cmd
+}
+
+#[cfg(all(test, feature = "stdio"))]
+mod stdio_env_tests {
+    use graphrt_core::child_env::EnvFix;
+
+    use super::stdio_command;
+    use crate::config::StdioConfig;
+
+    fn stdio(inherit_env: bool) -> StdioConfig {
+        StdioConfig {
+            command: "npx".into(),
+            args: vec!["-y".into(), "server".into()],
+            env: [("TOKEN".to_owned(), "t".to_owned())].into_iter().collect(),
+            pass_env: Vec::new(),
+            inherit_env,
+            cwd: None,
+            show_stderr: false,
+        }
+    }
+
+    fn env_of(command: &tokio::process::Command) -> Vec<(String, Option<String>)> {
+        command
+            .as_std()
+            .get_envs()
+            .map(|(name, value)| {
+                (name.to_string_lossy().into_owned(), value.map(|value| value.to_string_lossy().into_owned()))
+            })
+            .collect()
+    }
+
+    /// What an AppImage's `AppRun` leaves for the server (see `graphrt_core::child_env`).
+    fn appimage_fixes() -> Vec<EnvFix> {
+        vec![EnvFix::Remove("LD_LIBRARY_PATH".into()), EnvFix::Set("PATH".into(), "/usr/bin".into())]
+    }
+
+    #[test]
+    fn an_inheriting_server_gets_the_host_env_without_the_appimage() {
+        let env = env_of(&stdio_command(&stdio(true), &appimage_fixes()));
+        assert!(env.contains(&("LD_LIBRARY_PATH".into(), None)), "{env:?}");
+        assert!(env.contains(&("PATH".into(), Some("/usr/bin".into()))), "{env:?}");
+        assert!(env.contains(&("TOKEN".into(), Some("t".into()))), "configured variables still apply");
+    }
+
+    #[test]
+    fn a_minimal_server_gets_the_fixed_path() {
+        let env = env_of(&stdio_command(&stdio(false), &appimage_fixes()));
+        assert!(env.contains(&("PATH".into(), Some("/usr/bin".into()))), "{env:?}");
+        assert!(env.iter().all(|(name, _)| name != "LD_LIBRARY_PATH"), "{env:?}");
+    }
 }
