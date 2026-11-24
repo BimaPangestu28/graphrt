@@ -104,7 +104,7 @@ the workflow has loaded.
 On screen, under the buttons:
 
 ```text
-graphrt 0.6.1 loaded workflow 'hello'
+graphrt 0.6.2 loaded workflow 'hello'
 Result
 status: succeeded
 greeting: Hello, Grace.
