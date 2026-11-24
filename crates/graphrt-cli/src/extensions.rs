@@ -314,7 +314,7 @@ mod tests {
         std::fs::write(root.join("loose.wasm"), b"\0asm").unwrap();
         std::fs::write(plugin.join("text_tools.wasm"), b"\0asm").unwrap();
         std::fs::write(plugin.join("graphrt-plugin.json"), b"{}").unwrap();
-        assert_eq!(bare_wasm_modules(&[root.clone()]), vec![root.join("loose.wasm")]);
+        assert_eq!(bare_wasm_modules(std::slice::from_ref(&root)), vec![root.join("loose.wasm")]);
         assert!(bare_wasm_modules(&[plugin]).is_empty(), "the module belongs to the manifest");
         std::fs::remove_dir_all(&root).unwrap();
     }

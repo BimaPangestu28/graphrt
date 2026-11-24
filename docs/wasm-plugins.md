@@ -109,7 +109,7 @@ plugins have a WebAssembly build. Tools and `graphrt::http` themselves cost
 The [supabase](https://github.com/BimaPangestu28/graphrt-plugins/tree/main/supabase)
 plugin's per-user `call_function` tool (`SUPABASE_TOOL_MODE=user_rpc`) has a
 WebAssembly build ([`wasm/supabase-rpc`](https://github.com/BimaPangestu28/graphrt-plugins/tree/main/wasm/supabase-rpc),
-Rust, 214 KiB module) with the same env, tool, errors and HTTP requests (the
+Rust, ≈214 KB module) with the same env, tool, errors and HTTP requests (the
 same test cases run against both). Measured with
 [`bench/wasm-plugin/supabase_tool.py`](../bench/wasm-plugin/supabase_tool.py):
 `examples/supabase-chatbot/agent.yaml`, one tool call per run, mock model and
