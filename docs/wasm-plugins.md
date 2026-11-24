@@ -208,7 +208,7 @@ Guests never need to free: the instance is discarded after each call.
 | `http` | `(ptr, len: i32) -> i64` | Outbound HTTP; plugins with `permissions.network` only ([below](#outbound-http)). |
 
 `tools`, `graphrt_tool_call`, `env` and `http` were added to version 1 in
-graphrt 0.6: older hosts ignore `tools` and refuse a module importing `http`.
+graphrt 0.7: older hosts ignore `tools` and refuse a module importing `http`.
 
 ### Manifest (`graphrt_describe`)
 
