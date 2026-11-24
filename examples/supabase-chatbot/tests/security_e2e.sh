@@ -127,7 +127,7 @@ start_serve() { # $1 = name, $2 = allowlist; sets SERVE_PORT
     --input-header user_jwt=X-User-Authorization \
     --verify-jwt user_jwt --jwt-secret-env SUPABASE_JWT_SECRET \
     --jwt-issuer "$ISSUER" --jwt-audience authenticated \
-    --user-rate-limit 20 --max-body-bytes 65536 >"$WORK/$1/serve.log" 2>&1 &
+    --user-rate-limit 20 --max-body-bytes 65536 ${SERVE_EXTRA_ARGS:-} >"$WORK/$1/serve.log" 2>&1 &
   wait_for "http://127.0.0.1:$port/healthz"
   SERVE_PORT=$port
 }

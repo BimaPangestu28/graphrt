@@ -166,6 +166,7 @@ async fn serve_loads_bundles_from_a_directory() {
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         ..ServiceOptions::default()
     };

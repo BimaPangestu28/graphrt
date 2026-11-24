@@ -116,6 +116,7 @@ async fn app_with(store: Arc<dyn RunStore>, tag: &str) -> (axum::Router, PathBuf
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         ..ServiceOptions::default()
     };
@@ -269,6 +270,7 @@ graph:
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         ..ServiceOptions::default()
     };

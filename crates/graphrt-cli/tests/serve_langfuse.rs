@@ -78,6 +78,7 @@ async fn online_and_human_scores_reach_langfuse() {
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         ..ServiceOptions::default()
     };

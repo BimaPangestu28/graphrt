@@ -46,7 +46,10 @@ pub fn service_options(args: &ServiceArgs) -> Result<ServiceOptions, CliError> {
         model_override: args.model.clone(),
         knowledge: args.knowledge.clone(),
         files_dir: args.files_dir.clone(),
-        plugins: args.plugins.options(),
+        plugins: crate::extensions::PluginOptions {
+            allow_private_network: args.allow_private_network,
+            ..args.plugins.options()
+        },
         trust_keys: args.trust_key.clone(),
         capture_content: false,
     })

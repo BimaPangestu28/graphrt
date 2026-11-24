@@ -87,6 +87,7 @@ async fn state_for(flows: &Path, specs: &[&str]) -> Result<AppState, graphrt_cli
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         ..ServiceOptions::default()
     };

@@ -35,6 +35,9 @@ pub struct PluginOptions {
     pub trusted: Vec<String>,
     /// Warm process pool of each process plugin (`serve --plugin-pool`).
     pub pool: PluginPool,
+    /// WebAssembly plugins with `permissions.network` may reach private
+    /// addresses (`--allow-private-network`).
+    pub allow_private_network: bool,
 }
 
 /// How `serve` keeps process plugins warm (`--plugin-pool`, `--plugin-idle`).
@@ -131,7 +134,7 @@ impl Extensions {
             let paths = options.search_paths();
             let trusted = options.trusted_names();
             for manifest in graphrt_plugin::discover(&paths) {
-                ext.add_manifest(&manifest, &trusted, options.pool);
+                ext.add_manifest(&manifest, &trusted, options);
             }
             #[cfg(feature = "wasm")]
             for module in bare_wasm_modules(&paths) {
@@ -182,7 +185,8 @@ impl Extensions {
     }
 
     #[cfg(any(feature = "plugins", feature = "wasm"))]
-    fn add_manifest(&mut self, manifest: &Path, trusted: &[String], pool: PluginPool) {
+    fn add_manifest(&mut self, manifest: &Path, trusted: &[String], options: &PluginOptions) {
+        let pool = options.pool;
         let mut summary = PluginSummary { path: manifest.to_path_buf(), ..PluginSummary::default() };
         // One host per plugin: a failing plugin never leaves another half-registered.
         #[allow(unused_mut)]
@@ -195,7 +199,8 @@ impl Extensions {
         let _ = pool;
         #[cfg(feature = "wasm")]
         {
-            host = host.with_loader(std::sync::Arc::new(crate::wasm_loader::WasmLoader::default()));
+            let loader = crate::wasm_loader::WasmLoader::default().with_private_network(options.allow_private_network);
+            host = host.with_loader(std::sync::Arc::new(loader));
         }
         let info = match host.load(manifest) {
             Ok(info) => info,
@@ -269,6 +274,11 @@ fn bare_wasm_modules(paths: &[PathBuf]) -> Vec<PathBuf> {
             found.push(path.clone());
             continue;
         }
+        // A plugin directory (`--plugins <dir with graphrt-plugin.json>`): its module
+        // belongs to the manifest, which loads it with its permissions.
+        if graphrt_plugin::manifest_in(path).is_some() {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(path) else { continue };
         let mut modules: Vec<PathBuf> =
             entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| is_wasm(p)).collect();
@@ -287,5 +297,25 @@ pub fn explain_unknown_kind(message: String) -> String {
         )
     } else {
         message
+    }
+}
+
+#[cfg(all(test, feature = "wasm"))]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn a_plugin_directory_does_not_also_count_as_bare_modules() {
+        let root = std::env::temp_dir().join(format!("graphrt-bare-wasm-{}", std::process::id()));
+        let plugin = root.join("text-tools");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(root.join("loose.wasm"), b"\0asm").unwrap();
+        std::fs::write(plugin.join("text_tools.wasm"), b"\0asm").unwrap();
+        std::fs::write(plugin.join("graphrt-plugin.json"), b"{}").unwrap();
+        assert_eq!(bare_wasm_modules(std::slice::from_ref(&root)), vec![root.join("loose.wasm")]);
+        assert!(bare_wasm_modules(&[plugin]).is_empty(), "the module belongs to the manifest");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

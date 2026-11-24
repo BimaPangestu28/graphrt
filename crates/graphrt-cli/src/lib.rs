@@ -60,6 +60,8 @@ pub mod store;
 pub mod telemetry;
 #[cfg(feature = "jwt")]
 pub mod user_auth;
+#[cfg(all(feature = "wasm", feature = "http"))]
+pub mod wasm_egress;
 #[cfg(feature = "wasm")]
 pub mod wasm_loader;
 #[cfg(feature = "serve")]

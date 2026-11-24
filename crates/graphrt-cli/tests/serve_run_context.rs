@@ -49,6 +49,7 @@ async fn app(tag: &str, store_inputs: bool, exporter: &InMemoryExporter) -> axum
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         capture_content: true,
         ..ServiceOptions::default()

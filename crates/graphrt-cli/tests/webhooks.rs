@@ -122,6 +122,7 @@ async fn state_with(
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         allow_private_network: allow_private,
         ..ServiceOptions::default()
@@ -362,6 +363,7 @@ async fn hooks_must_name_served_workflows() {
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         ..ServiceOptions::default()
     };
@@ -529,6 +531,7 @@ async fn a_deployment_namespaces_idempotent_run_ids_like_the_gateway() {
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         ..ServiceOptions::default()
     };

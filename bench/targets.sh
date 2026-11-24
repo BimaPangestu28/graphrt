@@ -57,7 +57,7 @@ build_all() {
   mkdir -p "$out"
   echo "==> agent and gateway builds (min-size)" >&2
   # Exit 1 is a size over budget: measured (and reported) by the measurement run.
-  python3 scripts/budget-gate.py "${target_args[@]}" --build-cmd "$BUILD_CMD" --keep-bins "$out" --skip-run --skip-deps >/dev/null \
+  python3 scripts/budget-gate.py "${target_args[@]}" --build-cmd "$BUILD_CMD" --keep-bins "$out" --skip-run --skip-deps --optional >/dev/null \
     || [ $? -eq 1 ]
   echo "==> gateway with the Kubernetes provider (ttfb-tcp)" >&2
   # shellcheck disable=SC2086

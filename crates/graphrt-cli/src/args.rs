@@ -265,6 +265,7 @@ impl PluginArgs {
             no_default: self.no_default_plugins,
             trusted: self.trusted.clone(),
             pool: crate::extensions::PluginPool::default(),
+            allow_private_network: false,
         }
     }
 }

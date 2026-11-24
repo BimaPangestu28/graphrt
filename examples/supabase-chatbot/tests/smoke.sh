@@ -54,7 +54,7 @@ SUPABASE_JWT_SECRET="$JWT_SECRET" \
   --input-header user_jwt=X-User-Authorization \
   --verify-jwt user_jwt --jwt-secret-env SUPABASE_JWT_SECRET \
   --jwt-issuer "$ISSUER" --jwt-audience authenticated \
-  --user-rate-limit 3 --max-body-bytes 65536 2>"$WORK/serve.log" &
+  --user-rate-limit 3 --max-body-bytes 65536 ${SERVE_EXTRA_ARGS:-} 2>"$WORK/serve.log" &
 for _ in $(seq 50); do curl -fs "http://127.0.0.1:$SERVE_PORT/healthz" >/dev/null && break; sleep 0.1; done
 
 URL="http://127.0.0.1:$SERVE_PORT/v1/workflows/agent/runs"

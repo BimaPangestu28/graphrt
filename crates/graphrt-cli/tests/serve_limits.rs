@@ -47,6 +47,7 @@ async fn runs_beyond_the_active_limit_are_refused() {
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         ..ServiceOptions::default()
     };

@@ -20,11 +20,13 @@ use crate::abi::{Manifest, ResumeData, RunRequest, RunResponse};
 use crate::error::WasmError;
 use crate::host::{Call, CallOutput, Compiled, LogLine};
 use crate::limits::WasmLimits;
+use crate::net::WasmHost;
 use crate::resolve::{collect_selectors, resolve_config};
 
-struct Inner {
-    compiled: Compiled,
-    manifest: Manifest,
+pub(crate) struct Inner {
+    pub(crate) compiled: Compiled,
+    pub(crate) manifest: Manifest,
+    pub(crate) host: WasmHost,
 }
 
 /// A loaded WebAssembly plugin. Cheap to clone; safe to share across runs and threads.
@@ -43,16 +45,35 @@ impl fmt::Debug for WasmPlugin {
 impl WasmPlugin {
     /// Validate, compile and describe a module from memory.
     pub fn load(bytes: &[u8], limits: WasmLimits) -> Result<Self, WasmError> {
-        let compiled = Compiled::new(bytes, limits)?;
+        Self::load_with_host(bytes, limits, WasmHost::default())
+    }
+
+    /// Like [`WasmPlugin::load`], granting the plugin `host` services: outbound
+    /// HTTP (`graphrt::http`) and host variables (`env`).
+    ///
+    /// @throws WasmError::InvalidModule - The module imports `graphrt::http` and `host` has no egress.
+    /// @throws WasmError::MissingExport - The manifest lists tools but `graphrt_tool_call` is missing.
+    pub fn load_with_host(bytes: &[u8], limits: WasmLimits, host: WasmHost) -> Result<Self, WasmError> {
+        let compiled = Compiled::new(bytes, limits, host.egress.is_some())?;
         let out = compiled.call(Call::Describe, None)?;
         let mut manifest: Manifest =
             serde_json::from_slice(&out.bytes).map_err(|e| WasmError::Manifest(e.to_string()))?;
         validate_manifest(&mut manifest)?;
-        Ok(Self { inner: Arc::new(Inner { compiled, manifest }) })
+        if !manifest.tools.is_empty() && !compiled.exports("graphrt_tool_call") {
+            return Err(WasmError::MissingExport(
+                "graphrt_tool_call: (i32, i32) -> i64 (the manifest lists tools)".into(),
+            ));
+        }
+        Ok(Self { inner: Arc::new(Inner { compiled, manifest, host }) })
     }
 
     /// Read and load a `.wasm` file.
     pub fn load_file(path: impl AsRef<Path>, limits: WasmLimits) -> Result<Self, WasmError> {
+        Self::load_file_with_host(path, limits, WasmHost::default())
+    }
+
+    /// Read and load a `.wasm` file with host services (see [`WasmPlugin::load_with_host`]).
+    pub fn load_file_with_host(path: impl AsRef<Path>, limits: WasmLimits, host: WasmHost) -> Result<Self, WasmError> {
         let path = path.as_ref();
         let io = |e: std::io::Error| WasmError::Io { path: path.display().to_string(), message: e.to_string() };
         let size = std::fs::metadata(path).map_err(io)?.len();
@@ -63,7 +84,20 @@ impl WasmPlugin {
             });
         }
         let bytes = std::fs::read(path).map_err(io)?;
-        Self::load(&bytes, limits)
+        Self::load_with_host(&bytes, limits, host)
+    }
+
+    /// The plugin's tools as a [`graphrt_core::tool::ToolRuntime`], when its manifest lists any.
+    pub fn tools(&self) -> Option<Arc<dyn graphrt_core::tool::ToolRuntime>> {
+        if self.inner.manifest.tools.is_empty() {
+            return None;
+        }
+        Some(Arc::new(crate::tools::WasmTools::new(self.inner.clone())))
+    }
+
+    /// Whether the module makes outbound HTTP requests (imports `graphrt::http`).
+    pub fn uses_network(&self) -> bool {
+        self.inner.compiled.imports_http()
     }
 
     /// The plugin manifest.
@@ -137,8 +171,14 @@ fn validate_manifest(manifest: &mut Manifest) -> Result<(), WasmError> {
     if manifest.name.trim().is_empty() {
         return Err(WasmError::Manifest("`name` must not be empty".into()));
     }
-    if manifest.nodes.is_empty() {
-        return Err(WasmError::Manifest("plugin declares no node kinds".into()));
+    if manifest.nodes.is_empty() && manifest.tools.is_empty() {
+        return Err(WasmError::Manifest("plugin declares no node kinds and no tools".into()));
+    }
+    let mut tool_names = HashSet::new();
+    for tool in &manifest.tools {
+        if tool.name.trim().is_empty() || !tool_names.insert(tool.name.as_str()) {
+            return Err(WasmError::Manifest(format!("tool name `{}` is empty or declared twice", tool.name)));
+        }
     }
     let mut seen = HashSet::new();
     let prefix = format!("{}.", manifest.name);
@@ -211,6 +251,7 @@ impl Node for WasmNode {
                 attempt: ctx.attempt,
                 idempotency_key: ctx.idempotency_key(),
                 resume,
+                env: self.inner.host.env.clone(),
             };
             let input = serde_json::to_vec(&request)
                 .map_err(|e| NodeError::fatal("wasm_internal", format!("encoding request: {e}")))?;
@@ -311,16 +352,23 @@ fn with_logs(mut err: NodeError, logs: &[LogLine]) -> NodeError {
 /// timeouts; otherwise it runs inline. Either way the call is bounded by fuel.
 async fn execute(inner: Arc<Inner>, input: Vec<u8>, ctx: NodeContext) -> Result<CallOutput, NodeError> {
     let into_error = |f: crate::host::CallFailure| with_logs(NodeError::from(f.error), &f.logs);
+    off_the_runtime(move || {
+        let egress = inner.host.egress.clone();
+        inner.compiled.call_logged(Call::Run(&input), Some(ctx), egress)
+    })
+    .await
+    .map_err(|e| NodeError::fatal("wasm_internal", e))?
+    .map_err(into_error)
+}
+
+/// Run a guest call on Tokio's blocking pool when inside a Tokio runtime (feature
+/// `tokio`), inline otherwise. Fails only when the blocking task panicked.
+pub(crate) async fn off_the_runtime<T: Send + 'static>(call: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
     #[cfg(feature = "tokio")]
     {
         if tokio::runtime::Handle::try_current().is_ok() {
-            let joined =
-                tokio::task::spawn_blocking(move || inner.compiled.call_logged(Call::Run(&input), Some(ctx))).await;
-            return match joined {
-                Ok(result) => result.map_err(into_error),
-                Err(e) => Err(NodeError::fatal("wasm_internal", format!("guest task failed: {e}"))),
-            };
+            return tokio::task::spawn_blocking(call).await.map_err(|e| format!("guest task failed: {e}"));
         }
     }
-    inner.compiled.call_logged(Call::Run(&input), Some(ctx)).map_err(into_error)
+    Ok(call())
 }

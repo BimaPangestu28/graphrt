@@ -343,7 +343,8 @@ Plugin nodes stream, branch, pause for approval, report errors with retry hints,
 and expose tools to `agent` nodes; `graphrt serve --plugin-pool` keeps process
 plugins warm so no run waits for their start. WebAssembly plugins run sandboxed in-process
 (fuel and memory limits, no system access) — drop a `.wasm` file into a plugin
-directory. See [docs/plugins.md](docs/plugins.md), the
+directory; with a manifest they can also offer agent tools (with the per-call
+`tool_context`) and make HTTP requests through graphrt's SSRF-safe egress. See [docs/plugins.md](docs/plugins.md), the
 [manifest specification](docs/plugin-manifest.md),
 [docs/wasm-plugins.md](docs/wasm-plugins.md) and
 [`plugins/examples`](plugins/examples).
@@ -389,7 +390,7 @@ Custom nodes, services, model providers and native tools are covered in
 | Templates | `{{#…#}}` placeholders are parsed once; resolved values are never re-parsed (no prompt/template injection). Jinja runs without filesystem access, with a fuel budget and output cap. |
 | Code | QuickJS on its own stack-sized thread with memory, stack and time limits that workflows can only lower (and never switch off), no filesystem, network, environment, timers or modules; a fresh runtime per execution. |
 | MCP | stdio servers start with an empty environment plus an explicit allow-list; every call has a timeout; tools can be allow-listed. |
-| Plugins | Process plugins start lazily with an empty environment plus the variables their manifest lists, optional `checksums` verified before every start, per-request timeouts and message size caps; secrets are masked unless the manifest asks for them. WebAssembly plugins run in an interpreter with fuel and memory limits and no system imports. A plugin can never replace a built-in or another plugin's node kind. |
+| Plugins | Process plugins start lazily with an empty environment plus the variables their manifest lists, optional `checksums` verified before every start, per-request timeouts and message size caps; secrets are masked unless the manifest asks for them. WebAssembly plugins run in an interpreter with fuel and memory limits and no system imports; outbound HTTP only when the manifest asks for `network`, through the egress policy above, without redirects. A plugin can never replace a built-in or another plugin's node kind. |
 | Server | Optional bearer auth (constant-time comparison); without a key, a loopback server only accepts loopback `Host` names (DNS rebinding). Body and upload limits, a cap on concurrently executing runs (`--max-active-runs`), no CORS, env values cannot be set by requests. Per-user credentials mapped from headers (`--input-header`) are secrets, never stored or logged in plaintext; `--verify-jwt` verifies them as JWTs (a valid token may only start runs and rate its own runs) and `--user-rate-limit` limits each user. Webhooks verify HMAC-SHA256 signatures in constant time with a replay window; completion callbacks are signed and go through the egress policy. |
 | Limits | Step budget, run duration, per-node timeouts, container depth, iteration/loop caps. |
 
