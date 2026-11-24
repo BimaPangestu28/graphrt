@@ -123,7 +123,7 @@ async fn a_crashed_process_is_replaced_before_the_next_request() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_idle_pool_stops_its_processes_and_a_request_refills_it() {
-    let pool = pooled(1, Some(Duration::from_millis(300)));
+    let pool = pooled(1, Some(Duration::from_millis(800)));
     pool.host.prewarm().await;
     pool.wait_until_warm(true).await;
     pool.wait_until_warm(false).await;
@@ -151,8 +151,8 @@ async fn requests_spread_over_the_processes_of_a_pool() {
     let doc = json!({"graph": {
         "nodes": [
             {"id": "start", "type": "start", "variables": []},
-            {"id": "a", "type": "testkit.hang", "seconds": 0.6},
-            {"id": "b", "type": "testkit.hang", "seconds": 0.6},
+            {"id": "a", "type": "testkit.hang", "seconds": 1.5},
+            {"id": "b", "type": "testkit.hang", "seconds": 1.5},
             {"id": "end", "type": "end", "outputs": []}
         ],
         "edges": [
@@ -163,7 +163,8 @@ async fn requests_spread_over_the_processes_of_a_pool() {
     let started = Instant::now();
     let events = pool.run(doc).await;
     assert!(matches!(events.last().unwrap(), Event::RunSucceeded { .. }), "{:?}", events.last());
-    assert!(started.elapsed() < Duration::from_millis(1100), "served one after the other: {:?}", started.elapsed());
+    // One after the other takes 3 s.
+    assert!(started.elapsed() < Duration::from_millis(2600), "served one after the other: {:?}", started.elapsed());
 }
 
 /// Distinct process start times seen over a few parallel requests.

@@ -14,7 +14,8 @@
 //!   [`MAX_KEEPER_FAILURES`] in a row it stops and requests start the plugin
 //!   lazily, as without a pool, until the next warm hint.
 //! - **Idle.** With an idle timeout, the keeper stops every process once the pool
-//!   served no request for that long, freeing their memory. The next request (or
+//!   served no request for that long (counted from the last request, warm
+//!   hint or finished start), freeing their memory. The next request (or
 //!   warm hint, e.g. from a gateway prewarm) fills the pool again.
 //! - **Isolation.** Members share nothing. The plugin protocol keeps no state in
 //!   a process between requests (a paused node's state travels with the host's
@@ -169,9 +170,14 @@ impl ProcessPool {
     }
 
     fn touch(&self) {
-        let now = u64::try_from(self.inner.epoch.elapsed().as_millis()).unwrap_or(u64::MAX);
-        self.inner.signals.last_used_ms.store(now, Ordering::Relaxed);
+        touch(&self.inner.signals, self.inner.epoch);
     }
+}
+
+/// Records a use now (a request, a warm hint, a finished fill).
+fn touch(signals: &Signals, epoch: Instant) {
+    let now = u64::try_from(epoch.elapsed().as_millis()).unwrap_or(u64::MAX);
+    signals.last_used_ms.store(now, Ordering::Relaxed);
 }
 
 /// Counts a request in flight until dropped (also when the caller abandons it).
@@ -286,6 +292,9 @@ async fn keep(pool: Weak<Inner>, signals: Arc<Signals>) {
         let idle_timeout = inner.idle_timeout;
         let epoch = inner.epoch;
         drop(inner);
+        // The idle clock starts once the processes are up: a start slower than
+        // the idle timeout must not stop them before anything could use them.
+        touch(&signals, epoch);
         if !complete {
             failures += 1;
         }

@@ -365,7 +365,8 @@ graphrt serve app.yaml --plugins ./plugins --plugin-pool 2 --plugin-idle 5m   # 
   gateway sends one (`POST /internal/v1/warm`, see
   [gateway-protocol.md](gateway-protocol.md#endpoints)) to the agents a
   prewarm (`POST …/warm`, cron `prewarm_secs`, predictive prewarm) finds
-  already up. A hint counts as use: the pool stays up for `d` after it.
+  already up. A hint counts as use: the pool stays up for `d` after it (counted
+  from when its processes are up, so a slow start never ends in an idle stop).
 - **Isolation.** The processes share nothing, and the protocol keeps no state
   in a process between requests: a paused node's state travels with the
   host's resume request, and cancellation goes to the process that runs the
