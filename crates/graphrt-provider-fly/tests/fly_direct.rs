@@ -178,13 +178,14 @@ async fn rollback_brings_a_standby_version_back_and_demotes_the_current_one() {
     assert_eq!(events.last().map(|event| (event.step, event.status)), Some((Step::Checking, StepStatus::Done)));
     let status = direct.status(3_000).await.unwrap();
     assert_eq!(status.version.as_deref(), Some("v1"));
-    let state = fake.state();
-    let v1 = state.machines.iter().find(|machine| machine.metadata("graphrt_version") == Some("v1")).unwrap();
-    assert_eq!(v1.config["files"][0]["raw_value"], "IyB2MQo=", "v1 runs its own agent file again");
-    assert_eq!(v1.config["services"][0]["autostart"], true);
-    let v2 = state.machines.iter().find(|machine| machine.metadata("graphrt_version") == Some("v2")).unwrap();
-    assert_eq!(v2.metadata("graphrt_role"), Some("standby"));
-    drop(state);
+    {
+        let state = fake.state();
+        let v1 = state.machines.iter().find(|machine| machine.metadata("graphrt_version") == Some("v1")).unwrap();
+        assert_eq!(v1.config["files"][0]["raw_value"], "IyB2MQo=", "v1 runs its own agent file again");
+        assert_eq!(v1.config["services"][0]["autostart"], true);
+        let v2 = state.machines.iter().find(|machine| machine.metadata("graphrt_version") == Some("v2")).unwrap();
+        assert_eq!(v2.metadata("graphrt_role"), Some("standby"));
+    }
     let unknown = direct.rollback("v9", &mut |_| {}).await.unwrap_err();
     assert_eq!(unknown.code, ErrorCode::NotFound);
 }
