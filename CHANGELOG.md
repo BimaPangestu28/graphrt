@@ -7,6 +7,20 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-24
+
+WebAssembly plugins as agent tools: a module can offer tools to the `agent`
+node and make outbound HTTP requests through the same SSRF-safe egress as
+`http-request` (additions to plugin ABI version 1). The supabase `user_rpc`
+tool of graphrt-plugins (`wasm/supabase-rpc`) needs this release; against the
+Node.js plugin it cuts a cold `graphrt run` from 118.8 to 18.4 ms p50 and the
+agent's RSS from 127.0 to 9.2 MiB (Linux aarch64). `graphrt gateway` holds
+1,000 concurrent SSE streams in ~45 MiB instead of ~76 MiB. Also: children no
+longer inherit an AppImage's environment, and `--plugins` pointing at a
+WebAssembly plugin's directory keeps its manifest permissions. The gateway's
+cloud providers are still tested against API fakes; real-cloud verification is
+pending. No breaking changes.
+
 ### Added
 - WebAssembly plugins can offer agent tools and make outbound HTTP requests.
   A module lists `tools` in its manifest and exports `graphrt_tool_call`; the
@@ -1689,7 +1703,8 @@ laptop, a server, a container, the edge or a phone.
   credentials, plugins, WebAssembly runtime, document extraction and retrieval,
   with regression tests for every finding.
 
-[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/BimaPangestu28/graphrt/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.2...v0.4.0
