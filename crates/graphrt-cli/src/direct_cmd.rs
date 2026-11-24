@@ -37,6 +37,17 @@ struct Failure {
     api_key: Option<String>,
 }
 
+impl std::fmt::Debug for Failure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Failure")
+            .field("code", &self.code)
+            .field("message", &self.message)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 impl Failure {
     fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self { code, message: message.into(), api_key: None }

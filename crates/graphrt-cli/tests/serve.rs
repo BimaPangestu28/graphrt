@@ -157,7 +157,8 @@ async fn runs_listing_serves_remote_clients_with_the_api_key() {
     assert!(run["created_ms"].as_u64().unwrap() <= run["updated_ms"].as_u64().unwrap());
     let cursor = page["next_cursor"].as_str().expect("a second page");
 
-    let request = authorized(Request::get(format!("/v1/runs?limit=1&cursor={cursor}"))).body(Body::empty()).expect("request");
+    let request =
+        authorized(Request::get(format!("/v1/runs?limit=1&cursor={cursor}"))).body(Body::empty()).expect("request");
     let (_, body) = send(app, request).await;
     let rest: serde_json::Value = serde_json::from_str(&body).expect("json");
     assert_eq!(rest["runs"].as_array().map(Vec::len), Some(1));
