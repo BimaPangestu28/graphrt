@@ -173,6 +173,9 @@ fn run_deploy(args: &DeployRunArgs, reporter: &mut Reporter) -> Result<(), Failu
     }
     let agent = read_agent(&workflow_path)?;
     let direct = direct_for(&deployment, args.app.as_deref())?;
+    let api_key_candidate = generate_api_key()?;
+    // Hidden everywhere except the field that hands it over.
+    reporter.hide(&api_key_candidate);
     let request = DeployRequest {
         deployment,
         version,
@@ -184,7 +187,7 @@ fn run_deploy(args: &DeployRunArgs, reporter: &mut Reporter) -> Result<(), Failu
         org_slug: args.org.clone().unwrap_or_else(|| DEFAULT_ORG.to_owned()),
         image: args.image.clone().unwrap_or_else(default_image),
         secrets,
-        api_key_candidate: generate_api_key()?,
+        api_key_candidate,
         rotate_api_key: args.rotate_api_key,
         agent,
         now_ms: graphrt_core::store::now_ms(),
