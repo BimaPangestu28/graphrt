@@ -17,6 +17,14 @@ default = ["deploy"]
 # `FlyDeployDriver` (`graphrt deploy --target fly`): app creation, Fly secrets,
 # pool creation. Off in a gateway-only build, which needs only `FlyProvider`.
 deploy = []
+# `FlyDirect` (`graphrt deploy --target fly --direct`): an app served straight
+# by the Fly proxy, no gateway: public IPs, Fly secrets, per-version Machines
+# with the agent bundle in `config.files`, health-checked promotion, rollback,
+# pause/resume and removal.
+direct = []
+# The stateful fake Machines API (`fake::FakeFly`) for tests of this crate and
+# of the CLI. Never in a binary.
+fake = ["graphrt-provider-api/conformance"]
 
 [dependencies]
 graphrt-provider-api = { workspace = true, features = ["http"] }
@@ -29,6 +37,8 @@ tokio = { workspace = true, features = ["time", "sync"] }
 
 [dev-dependencies]
 graphrt-provider-api = { workspace = true, features = ["http", "conformance"] }
+# The crate itself with its test-only features, so `cargo test -p graphrt-provider-fly` needs no flags.
+graphrt-provider-fly = { path = ".", features = ["fake", "deploy", "direct"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "sync"] }
 # Installs the ring crypto provider reqwest needs in tests (the binary does it in main).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
@@ -43,3 +53,7 @@ required-features = ["deploy"]
 [[test]]
 name = "fly_pool"
 required-features = ["deploy"]
+
+[[test]]
+name = "fly_direct"
+required-features = ["direct"]

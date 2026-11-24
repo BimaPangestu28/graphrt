@@ -1830,6 +1830,7 @@ name = "graphrt-provider-fly"
 version = "0.5.0"
 dependencies = [
  "graphrt-provider-api",
+ "graphrt-provider-fly",
  "reqwest",
  "rustls",
  "serde",
