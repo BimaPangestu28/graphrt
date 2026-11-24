@@ -55,6 +55,7 @@ async fn state(fixture: &Fixture, with_knowledge: bool) -> Arc<AppState> {
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         knowledge: with_knowledge.then(|| fixture.path().join("knowledge.json")),
         ..ServiceOptions::default()

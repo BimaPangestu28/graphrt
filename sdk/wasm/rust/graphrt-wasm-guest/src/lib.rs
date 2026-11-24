@@ -23,11 +23,18 @@
 //! Build with `cargo build --release --target wasm32-unknown-unknown` and a
 //! `[lib] crate-type = ["cdylib"]` section.
 //!
+//! A plugin may also offer tools to `agent` nodes: list them with
+//! [`Manifest::tool`] and implement [`Plugin::call_tool`]. Plugins granted
+//! network access (`permissions.network` in `graphrt-plugin.json`) can make
+//! outbound requests with [`http`].
+//!
 //! Each node run uses a fresh instance, so the SDK never frees buffers it hands
 //! to the host: memory is reclaimed when the instance is dropped.
 
-pub use serde_json::{self, json, Map, Value};
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+pub use serde_json::{self, json, Map, Value};
 
 /// ABI version implemented by this SDK.
 pub const ABI_VERSION: i32 = 1;
@@ -40,11 +47,34 @@ pub struct Manifest {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub description: String,
     pub nodes: Vec<NodeSpec>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolSpec>,
+}
+
+/// One tool for `agent` nodes.
+#[derive(Clone, Debug, Serialize)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema of the arguments object.
+    pub parameters: Value,
 }
 
 impl Manifest {
     pub fn new(name: &str, version: &str) -> Self {
-        Self { name: name.into(), version: version.into(), description: String::new(), nodes: Vec::new() }
+        Self {
+            name: name.into(),
+            version: version.into(),
+            description: String::new(),
+            nodes: Vec::new(),
+            tools: Vec::new(),
+        }
+    }
+
+    /// Offer a tool (served by [`Plugin::call_tool`]).
+    pub fn tool(mut self, name: &str, description: &str, parameters: Value) -> Self {
+        self.tools.push(ToolSpec { name: name.into(), description: description.into(), parameters });
+        self
     }
 
     pub fn describe(mut self, description: &str) -> Self {
@@ -143,6 +173,70 @@ pub struct Request {
     pub idempotency_key: String,
     #[serde(default)]
     pub resume: Option<Resume>,
+    /// Host variables the manifest declares in `permissions.env` (those set on
+    /// the host), as strings; read them with [`Request::env`].
+    #[serde(default, rename = "env")]
+    pub env_vars: Map<String, Value>,
+}
+
+/// A tool call from an `agent` node.
+#[derive(Clone, Deserialize)]
+pub struct ToolCall {
+    pub name: String,
+    /// Arguments written by the model: untrusted input.
+    #[serde(default)]
+    pub arguments: Value,
+    /// Per-call values the model never sees (the agent's `tool_context`); only
+    /// sent to plugins the operator trusts with secrets.
+    #[serde(default)]
+    pub context: ToolContext,
+    /// Host variables the manifest declares in `permissions.env`; read them with [`ToolCall::env`].
+    #[serde(default, rename = "env")]
+    pub env_vars: Map<String, Value>,
+}
+
+impl ToolCall {
+    /// A host variable granted by `permissions.env`.
+    pub fn env(&self, name: &str) -> Option<&str> {
+        self.env_vars.get(name).and_then(Value::as_str)
+    }
+
+    /// A tool context secret, e.g. `user_jwt`.
+    pub fn secret(&self, name: &str) -> Option<&str> {
+        self.context.secrets.get(name).and_then(Value::as_str)
+    }
+}
+
+impl std::fmt::Debug for ToolCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolCall").field("name", &self.name).finish_non_exhaustive()
+    }
+}
+
+/// `context` of a [`ToolCall`].
+#[derive(Clone, Default, Deserialize)]
+pub struct ToolContext {
+    /// Secret name -> plaintext, e.g. `user_jwt`.
+    #[serde(default)]
+    pub secrets: Map<String, Value>,
+}
+
+/// Result of a tool call.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ToolResult {
+    /// Text handed to the model.
+    pub text: String,
+    #[serde(skip_serializing_if = "Value::is_null")]
+    pub data: Value,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub is_error: bool,
+}
+
+impl ToolResult {
+    /// A result whose text is `data` as JSON.
+    pub fn json(data: Value) -> Self {
+        Self { text: data.to_string(), data, is_error: false }
+    }
 }
 
 /// Data handed back after a pause.
@@ -154,6 +248,11 @@ pub struct Resume {
 }
 
 impl Request {
+    /// A host variable granted by `permissions.env`.
+    pub fn env(&self, name: &str) -> Option<&str> {
+        self.env_vars.get(name).and_then(Value::as_str)
+    }
+
     /// A config field.
     pub fn config(&self, key: &str) -> Option<&Value> {
         self.config.get(key)
@@ -234,6 +333,11 @@ impl PluginError {
 pub trait Plugin {
     fn manifest() -> Manifest;
     fn run(request: Request) -> Result<Output, PluginError>;
+
+    /// Serve a tool listed in the manifest. The default refuses every call.
+    fn call_tool(call: ToolCall) -> Result<ToolResult, PluginError> {
+        Err(PluginError::new("unknown_tool", format!("no tool `{}`", call.name)))
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -243,7 +347,80 @@ mod imports {
         pub fn log(level: i32, ptr: i32, len: i32);
         pub fn chunk(field_ptr: i32, field_len: i32, ptr: i32, len: i32);
         pub fn progress(name_ptr: i32, name_len: i32, ptr: i32, len: i32);
+        pub fn http(ptr: i32, len: i32) -> i64;
     }
+}
+
+/// An outbound HTTP request (see [`http`]).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct HttpRequest {
+    pub method: String,
+    pub url: String,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// Deadline in ms; the host caps it (30 s by default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+/// A response from [`http`].
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct HttpResponse {
+    pub status: u16,
+    /// Lower-case header names.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default)]
+    pub body: String,
+}
+
+/// Why [`http`] failed: `invalid_request`, `egress_denied`, `timeout`, `too_large` or `http_error`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct HttpError {
+    pub kind: String,
+    pub message: String,
+}
+
+#[derive(Deserialize)]
+struct HttpReply {
+    #[serde(default)]
+    error: Option<HttpError>,
+    #[serde(flatten)]
+    response: Option<HttpResponse>,
+}
+
+/// Send an HTTP request through the host (`graphrt::http`).
+///
+/// Needs `permissions.network` in the plugin manifest; the host applies its
+/// egress policy (public addresses only by default, no redirects) and limits.
+pub fn http(request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+    let payload = serde_json::to_vec(request)
+        .map_err(|e| HttpError { kind: "invalid_request".into(), message: e.to_string() })?;
+    let reply = send_http(&payload);
+    let reply: HttpReply = serde_json::from_slice(&reply)
+        .map_err(|e| HttpError { kind: "http_error".into(), message: format!("host reply: {e}") })?;
+    match (reply.error, reply.response) {
+        (Some(error), _) => Err(error),
+        (None, Some(response)) => Ok(response),
+        (None, None) => Err(HttpError { kind: "http_error".into(), message: "empty host reply".into() }),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn send_http(payload: &[u8]) -> Vec<u8> {
+    // SAFETY: the host returns a buffer it wrote through `graphrt_alloc`, which is never freed.
+    unsafe {
+        let packed = imports::http(payload.as_ptr() as usize as i32, payload.len() as i32) as u64;
+        let (ptr, len) = ((packed >> 32) as usize, (packed & 0xffff_ffff) as usize);
+        std::slice::from_raw_parts(ptr as *const u8, len).to_vec()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn send_http(_payload: &[u8]) -> Vec<u8> {
+    br#"{"error":{"kind":"egress_denied","message":"no host outside wasm32"}}"#.to_vec()
 }
 
 fn raw(s: &str) -> (i32, i32) {
@@ -330,11 +507,29 @@ pub fn __run<P: Plugin>(ptr: i32, len: i32) -> i64 {
     leak(serde_json::to_vec(&response).unwrap_or_default())
 }
 
+#[doc(hidden)]
+pub fn __tool_call<P: Plugin>(ptr: i32, len: i32) -> i64 {
+    // SAFETY: the host wrote `len` bytes at `ptr`, a buffer obtained from `__alloc`.
+    let input = unsafe { std::slice::from_raw_parts(ptr as usize as *const u8, len.max(0) as usize) };
+    let response = match serde_json::from_slice::<ToolCall>(input) {
+        Ok(call) => match P::call_tool(call) {
+            Ok(result) => serde_json::to_value(&result).unwrap_or_else(|e| error_json("internal", &e.to_string())),
+            Err(err) => json!({ "error": err }),
+        },
+        Err(e) => error_json("invalid_request", &e.to_string()),
+    };
+    leak(serde_json::to_vec(&response).unwrap_or_default())
+}
+
 fn error_json(kind: &str, message: &str) -> Value {
     json!({"error": {"kind": kind, "message": message, "retryable": false}})
 }
 
 /// Export the ABI functions for a [`Plugin`] type.
+///
+/// `export_plugin!(MyPlugin, tools)` also exports `graphrt_tool_call` for a
+/// plugin whose manifest lists tools (kept out of node-only modules: it adds
+/// about 16 KiB).
 #[macro_export]
 macro_rules! export_plugin {
     ($plugin:ty) => {
@@ -353,6 +548,13 @@ macro_rules! export_plugin {
         #[no_mangle]
         pub extern "C" fn graphrt_run(ptr: i32, len: i32) -> i64 {
             $crate::__run::<$plugin>(ptr, len)
+        }
+    };
+    ($plugin:ty, tools) => {
+        $crate::export_plugin!($plugin);
+        #[no_mangle]
+        pub extern "C" fn graphrt_tool_call(ptr: i32, len: i32) -> i64 {
+            $crate::__tool_call::<$plugin>(ptr, len)
         }
     };
 }

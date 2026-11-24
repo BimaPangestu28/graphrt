@@ -26,6 +26,7 @@ async fn state(api_key: Option<&str>) -> Arc<AppState> {
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         ..ServiceOptions::default()
     };

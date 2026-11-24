@@ -25,6 +25,7 @@ fn options() -> ServiceOptions {
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         ..ServiceOptions::default()
     }

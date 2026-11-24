@@ -9,6 +9,7 @@
 //! | `graphrt_alloc` | `(len: i32) -> i32` | Allocate `len` bytes for a host-written buffer. |
 //! | `graphrt_describe` | `() -> i64` | Packed `(ptr << 32) \| len` of a [`Manifest`] JSON. |
 //! | `graphrt_run` | `(ptr: i32, len: i32) -> i64` | Run one node: reads a [`RunRequest`] JSON, returns a packed [`RunResponse`] JSON. |
+//! | `graphrt_tool_call` | `(ptr: i32, len: i32) -> i64` | Optional, required when the manifest lists `tools`: reads a [`ToolCallRequest`], returns a packed [`ToolCallResponse`]. |
 //!
 //! # Host imports (module `graphrt`)
 //!
@@ -17,11 +18,17 @@
 //! | `log` | `(level: i32, ptr: i32, len: i32)` | UTF-8 log line; level 0=trace .. 4=error. |
 //! | `chunk` | `(field_ptr: i32, field_len: i32, ptr: i32, len: i32)` | Stream text for output `field`. |
 //! | `progress` | `(name_ptr: i32, name_len: i32, ptr: i32, len: i32)` | Structured progress, JSON payload. |
+//! | `http` | `(ptr: i32, len: i32) -> i64` | Outbound HTTP request JSON in, packed response JSON out (written with `graphrt_alloc`). Only for plugins granted network access; see [`crate::net`]. |
 //!
 //! Guests may import any subset of these; importing anything else fails at load.
+//! `tools`, `graphrt_tool_call`, `env` and `http` are additions to version 1:
+//! older hosts ignore `tools` and refuse modules importing `http`.
+
+use std::collections::BTreeMap;
 
 use graphrt_core::catalog::NodeDescriptor;
 use graphrt_core::indexmap::IndexMap;
+use graphrt_core::tool::{ToolImage, ToolSpec};
 use serde::{Deserialize, Serialize};
 
 /// ABI version implemented by this host.
@@ -40,7 +47,11 @@ pub struct Manifest {
     #[serde(default)]
     pub description: String,
     /// Node kinds implemented by the module.
+    #[serde(default)]
     pub nodes: Vec<NodeDescriptor>,
+    /// Tools for `agent` / `tool` nodes, called through `graphrt_tool_call`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolSpec>,
 }
 
 /// Input for one node run.
@@ -62,6 +73,72 @@ pub struct RunRequest {
     /// Present when resuming after the node paused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume: Option<ResumeData>,
+    /// Host variables granted to the plugin (its manifest's `permissions.env`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+}
+
+/// Input for one tool call (`graphrt_tool_call`).
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCallRequest {
+    /// Tool name from the manifest's `tools`.
+    pub name: String,
+    /// Arguments object written by the model.
+    pub arguments: serde_json::Value,
+    /// Per-call values the model never sees (agent `tool_context`); only sent to
+    /// plugins trusted with plaintext secrets.
+    #[serde(default, skip_serializing_if = "ToolCallContextData::is_empty")]
+    pub context: ToolCallContextData,
+    /// Host variables granted to the plugin (its manifest's `permissions.env`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for ToolCallRequest {
+    /// Context secrets and env values are never printed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolCallRequest")
+            .field("name", &self.name)
+            .field("context", &self.context.secrets.keys().collect::<Vec<_>>())
+            .field("env", &self.env.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
+
+/// `context` of a [`ToolCallRequest`].
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCallContextData {
+    /// Secret name -> plaintext (e.g. `user_jwt`).
+    #[serde(default)]
+    pub secrets: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for ToolCallContextData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolCallContextData").field("secrets", &self.secrets.keys().collect::<Vec<_>>()).finish()
+    }
+}
+
+impl ToolCallContextData {
+    pub fn is_empty(&self) -> bool {
+        self.secrets.is_empty()
+    }
+}
+
+/// Guest result of a tool call: the shape of a process plugin's `tool.call` result,
+/// or `error` for a call the tool refused.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolCallResponse {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub data: serde_json::Value,
+    #[serde(default)]
+    pub is_error: bool,
+    #[serde(default)]
+    pub images: Vec<ToolImage>,
+    #[serde(default)]
+    pub error: Option<ErrorData>,
 }
 
 /// Resume data handed back to a guest that paused.

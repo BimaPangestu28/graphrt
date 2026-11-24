@@ -9,6 +9,9 @@
 # ~/.graphrt/plugins/supabase, else fetched at the commit the Dockerfile pins
 # (PLUGINS_REV). SKIP_SECURITY_E2E=1 runs only the smoke test (no Postgres or
 # PostgREST needed). No LLM key, no Supabase project, no network except that fetch.
+# SERVE_EXTRA_ARGS adds `graphrt serve` flags, e.g. `--allow-private-network` for the
+# WebAssembly build of the plugin (graphrt-plugins wasm/supabase-rpc), whose requests go
+# through graphrt's egress policy and would otherwise be refused on 127.0.0.1.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)

@@ -5,6 +5,7 @@
 //! observe another.
 
 use std::fmt;
+use std::sync::Arc;
 
 use graphrt_core::node::NodeContext;
 use graphrt_core::value::Value;
@@ -13,9 +14,15 @@ use wasmi::{
     Caller, Config, EnforcedLimits, Engine, Extern, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, TrapCode,
 };
 
-use crate::abi::{ABI_VERSION, HOST_MODULE, unpack};
+use crate::abi::{ABI_VERSION, HOST_MODULE, pack, unpack};
 use crate::error::WasmError;
 use crate::limits::WasmLimits;
+use crate::net::{self, HttpEgress, HttpError, HttpResponse};
+
+/// Imports every module may use.
+const BASE_IMPORTS: &[&str] = &["log", "chunk", "progress"];
+/// Import of plugins granted network access.
+const HTTP_IMPORT: &str = "http";
 
 /// One log line written by a guest.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +43,9 @@ pub(crate) struct HostState {
     events: usize,
     max_stream_bytes: usize,
     stream_bytes: usize,
+    egress: Option<Arc<dyn HttpEgress>>,
+    http_requests: usize,
+    http_limits: WasmLimits,
 }
 
 /// Fixed fuel charged for every host call, on top of one unit per byte copied.
@@ -59,6 +69,8 @@ impl wasmi::errors::HostError for HostTrap {}
 pub(crate) enum Call<'a> {
     Describe,
     Run(&'a [u8]),
+    /// `graphrt_tool_call` with a tool request.
+    Tool(&'a [u8]),
 }
 
 /// Output of a guest call.
@@ -74,6 +86,7 @@ pub(crate) struct Compiled {
     module: Module,
     linker: Linker<HostState>,
     limits: WasmLimits,
+    imports_http: bool,
 }
 
 impl fmt::Debug for Compiled {
@@ -83,8 +96,8 @@ impl fmt::Debug for Compiled {
 }
 
 impl Compiled {
-    /// Validate and compile `bytes`.
-    pub(crate) fn new(bytes: &[u8], limits: WasmLimits) -> Result<Self, WasmError> {
+    /// Validate and compile `bytes`. `network` allows the `graphrt::http` import.
+    pub(crate) fn new(bytes: &[u8], limits: WasmLimits, network: bool) -> Result<Self, WasmError> {
         if bytes.len() > limits.module_bytes {
             return Err(WasmError::ModuleTooLarge { size: bytes.len(), limit: limits.module_bytes });
         }
@@ -95,17 +108,39 @@ impl Compiled {
             .set_max_recursion_depth(limits.max_recursion_depth);
         let engine = Engine::new(&config);
         let module = Module::new(&engine, bytes).map_err(|e| WasmError::InvalidModule(e.to_string()))?;
+        let mut imports_http = false;
         for import in module.imports() {
-            if import.module() != HOST_MODULE || !matches!(import.name(), "log" | "chunk" | "progress") {
+            let host = import.module() == HOST_MODULE;
+            if host && import.name() == HTTP_IMPORT {
+                if !network {
+                    return Err(WasmError::InvalidModule(format!(
+                        "module imports `{HOST_MODULE}::{HTTP_IMPORT}`, but the plugin has no network access \
+                         (`permissions.network` in its manifest, on a host built with outbound HTTP)"
+                    )));
+                }
+                imports_http = true;
+                continue;
+            }
+            if !host || !BASE_IMPORTS.contains(&import.name()) {
                 return Err(WasmError::InvalidModule(format!(
-                    "unsupported import `{}::{}` (only `{HOST_MODULE}::log|chunk|progress` are provided)",
+                    "unsupported import `{}::{}` (only `{HOST_MODULE}::log|chunk|progress|http` are provided)",
                     import.module(),
                     import.name()
                 )));
             }
         }
         let linker = build_linker(&engine)?;
-        Ok(Self { engine, module, linker, limits })
+        Ok(Self { engine, module, linker, limits, imports_http })
+    }
+
+    /// Whether the module imports `graphrt::http`.
+    pub(crate) fn imports_http(&self) -> bool {
+        self.imports_http
+    }
+
+    /// Whether the module exports `name`.
+    pub(crate) fn exports(&self, name: &str) -> bool {
+        self.module.exports().any(|export| export.name() == name)
     }
 
     pub(crate) fn limits(&self) -> &WasmLimits {
@@ -114,13 +149,19 @@ impl Compiled {
 
     /// Instantiate a fresh copy of the module and call one entry point.
     pub(crate) fn call(&self, call: Call<'_>, ctx: Option<NodeContext>) -> Result<CallOutput, WasmError> {
-        self.call_logged(call, ctx).map_err(|f| f.error)
+        self.call_logged(call, ctx, None).map_err(|f| f.error)
     }
 
     /// Like [`Compiled::call`], but a failure keeps the log lines the guest wrote
     /// before it failed: those usually explain the failure.
-    pub(crate) fn call_logged(&self, call: Call<'_>, ctx: Option<NodeContext>) -> Result<CallOutput, CallFailure> {
-        let mut store = self.new_store(ctx).map_err(|error| CallFailure { error, logs: Vec::new() })?;
+    /// `egress` serves the guest's `graphrt::http` requests; without it they fail.
+    pub(crate) fn call_logged(
+        &self,
+        call: Call<'_>,
+        ctx: Option<NodeContext>,
+        egress: Option<Arc<dyn HttpEgress>>,
+    ) -> Result<CallOutput, CallFailure> {
+        let mut store = self.new_store(ctx, egress).map_err(|error| CallFailure { error, logs: Vec::new() })?;
         match self.call_in(&mut store, call) {
             Ok(bytes) => {
                 let state = store.into_data();
@@ -130,7 +171,11 @@ impl Compiled {
         }
     }
 
-    fn new_store(&self, ctx: Option<NodeContext>) -> Result<Store<HostState>, WasmError> {
+    fn new_store(
+        &self,
+        ctx: Option<NodeContext>,
+        egress: Option<Arc<dyn HttpEgress>>,
+    ) -> Result<Store<HostState>, WasmError> {
         let limits = &self.limits;
         let state = HostState {
             limits: StoreLimitsBuilder::new()
@@ -152,6 +197,9 @@ impl Compiled {
             events: 0,
             max_stream_bytes: limits.max_stream_bytes,
             stream_bytes: 0,
+            egress,
+            http_requests: 0,
+            http_limits: limits.clone(),
         };
         let mut store = Store::new(&self.engine, state);
         store.limiter(|s| &mut s.limits);
@@ -184,7 +232,11 @@ impl Compiled {
                 .map_err(|_| WasmError::MissingExport("graphrt_describe: () -> i64".into()))?
                 .call(&mut store, ())
                 .map_err(|e| call_error(&e))?,
-            Call::Run(input) => {
+            Call::Run(input) | Call::Tool(input) => {
+                let (export, signature) = match call {
+                    Call::Tool(_) => ("graphrt_tool_call", "graphrt_tool_call: (i32, i32) -> i64"),
+                    _ => ("graphrt_run", "graphrt_run: (i32, i32) -> i64"),
+                };
                 if input.len() > limits.input_bytes {
                     return Err(WasmError::TooLarge { what: "request", size: input.len(), limit: limits.input_bytes });
                 }
@@ -203,8 +255,8 @@ impl Compiled {
                     .write(&mut store, offset, input)
                     .map_err(|_| WasmError::OutOfBounds { ptr: as_u32(ptr), len: as_u32(len) })?;
                 instance
-                    .get_typed_func::<(i32, i32), i64>(&store, "graphrt_run")
-                    .map_err(|_| WasmError::MissingExport("graphrt_run: (i32, i32) -> i64".into()))?
+                    .get_typed_func::<(i32, i32), i64>(&store, export)
+                    .map_err(|_| WasmError::MissingExport(signature.into()))?
                     .call(&mut store, (ptr, len))
                     .map_err(|e| call_error(&e))?
             }
@@ -255,10 +307,19 @@ fn host_trap(err: WasmError) -> wasmi::Error {
     wasmi::Error::host(HostTrap(err))
 }
 
-/// Copy `len` bytes at `ptr` out of the caller's memory.
+/// Copy `len` bytes at `ptr` out of the caller's memory (at most `message_bytes`).
 fn read_guest(caller: &Caller<'_, HostState>, ptr: i32, len: i32, what: &'static str) -> Result<Vec<u8>, wasmi::Error> {
+    read_guest_up_to(caller, (ptr, len), caller.data().message_bytes, what)
+}
+
+/// Copy the `(ptr, len)` buffer out of the caller's memory, refusing more than `limit` bytes.
+fn read_guest_up_to(
+    caller: &Caller<'_, HostState>,
+    (ptr, len): (i32, i32),
+    limit: usize,
+    what: &'static str,
+) -> Result<Vec<u8>, wasmi::Error> {
     let (ptr, len) = (as_u32(ptr), as_u32(len));
-    let limit = caller.data().message_bytes;
     let size = usize::try_from(len).map_err(|e| host_trap(WasmError::Internal(e.to_string())))?;
     if size > limit {
         return Err(host_trap(WasmError::TooLarge { what, size, limit }));
@@ -315,6 +376,44 @@ fn reserve_event(caller: &mut Caller<'_, HostState>, bytes: u64) -> Result<(), w
 
 fn len_of(len: i32) -> u64 {
     u64::from(as_u32(len))
+}
+
+/// Room for the method, URL and headers next to a request body.
+const HTTP_ENVELOPE_BYTES: usize = 64 * 1024;
+
+/// Validate one `graphrt::http` request and send it through the egress.
+fn send_http(state: &mut HostState, request: &[u8]) -> Result<HttpResponse, HttpError> {
+    let Some(egress) = state.egress.clone() else {
+        return Err(HttpError::new("egress_denied", "outbound HTTP is not available in this call"));
+    };
+    let max = state.http_limits.max_http_requests;
+    if state.http_requests >= max {
+        return Err(HttpError::new("too_large", format!("more than {max} HTTP requests in one call")));
+    }
+    state.http_requests += 1;
+    let request = net::parse_request(request, &state.http_limits)?;
+    egress.send(request)
+}
+
+/// Copy `bytes` into a buffer the guest allocates with `graphrt_alloc`; returns it packed.
+fn write_to_guest(caller: &mut Caller<'_, HostState>, bytes: &[u8]) -> Result<i64, wasmi::Error> {
+    let len = u32::try_from(bytes.len()).map_err(|e| host_trap(WasmError::Internal(e.to_string())))?;
+    let alloc = caller
+        .get_export("graphrt_alloc")
+        .and_then(Extern::into_func)
+        .ok_or_else(|| host_trap(WasmError::MissingExport("graphrt_alloc: (i32) -> i32".into())))?
+        .typed::<i32, i32>(&*caller)
+        .map_err(|_| host_trap(WasmError::MissingExport("graphrt_alloc: (i32) -> i32".into())))?;
+    let ptr = alloc.call(&mut *caller, i32::from_ne_bytes(len.to_ne_bytes()))?;
+    let memory = caller
+        .get_export("memory")
+        .and_then(Extern::into_memory)
+        .ok_or_else(|| host_trap(WasmError::MissingExport("memory".into())))?;
+    let offset = usize::try_from(as_u32(ptr)).map_err(|e| host_trap(WasmError::Internal(e.to_string())))?;
+    memory
+        .write(&mut *caller, offset, bytes)
+        .map_err(|_| host_trap(WasmError::OutOfBounds { ptr: as_u32(ptr), len }))?;
+    Ok(pack(as_u32(ptr), len))
 }
 
 fn build_linker(engine: &Engine) -> Result<Linker<HostState>, WasmError> {
@@ -377,6 +476,17 @@ fn build_linker(engine: &Engine) -> Result<Linker<HostState>, WasmError> {
                 Ok(())
             },
         )
+        .map_err(link_err)?;
+    linker
+        .func_wrap(HOST_MODULE, HTTP_IMPORT, |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| {
+            charge(&mut caller, len_of(len))?;
+            let limit = caller.data().http_limits.http_request_bytes.saturating_add(HTTP_ENVELOPE_BYTES);
+            let request = read_guest_up_to(&caller, (ptr, len), limit, "http request")?;
+            let result = send_http(caller.data_mut(), &request);
+            let encoded = net::encode_result(&result);
+            charge(&mut caller, u64::try_from(encoded.len()).unwrap_or(u64::MAX))?;
+            write_to_guest(&mut caller, &encoded)
+        })
         .map_err(link_err)?;
     Ok(linker)
 }

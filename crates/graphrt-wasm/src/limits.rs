@@ -30,6 +30,14 @@ pub struct WasmLimits {
     /// Hand plaintext secrets to the guest when its config references them.
     /// Default `false`: secrets are masked. Enable only for plugins you trust.
     pub expose_secrets: bool,
+    /// Maximum `graphrt::http` requests per call (plugins granted network access only). Default 16.
+    pub max_http_requests: usize,
+    /// Upper bound of one guest HTTP request's timeout, in ms; the guest may ask for less. Default 30 000.
+    pub http_timeout_ms: u64,
+    /// Maximum request body a guest may send, in bytes. Default 1 MiB.
+    pub http_request_bytes: usize,
+    /// Maximum response body handed back to a guest, in bytes. Default 4 MiB.
+    pub http_response_bytes: usize,
 }
 
 impl Default for WasmLimits {
@@ -46,6 +54,10 @@ impl Default for WasmLimits {
             max_stream_bytes: 16 * 1024 * 1024,
             max_recursion_depth: 1024,
             expose_secrets: false,
+            max_http_requests: 16,
+            http_timeout_ms: 30_000,
+            http_request_bytes: 1024 * 1024,
+            http_response_bytes: 4 * 1024 * 1024,
         }
     }
 }

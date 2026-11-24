@@ -111,6 +111,7 @@ async fn app_with_events(dir: &TempDir, per_minute: u32, events: UserEvents) -> 
             no_default: true,
             trusted: Vec::new(),
             pool: Default::default(),
+            allow_private_network: false,
         },
         ..ServiceOptions::default()
     };
