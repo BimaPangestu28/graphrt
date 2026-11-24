@@ -7,6 +7,15 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-24
+
+Faster plugin cold starts and deploys without a gateway: a warm process pool
+for plugins in `graphrt serve` (`--plugin-pool`, `--plugin-idle`) with gateway
+warm hints and a faster WebAssembly cold-start path, and `graphrt deploy
+--target fly --direct` (preview), which puts one agent online on Fly.io with no
+gateway. Also the Linux budgets of the gateway plan (`bench/targets.sh`) and the
+fixes they found. No breaking changes.
+
 ### Added
 - `graphrt deploy --target fly --direct` (preview, in the default build:
   feature `deploy-fly`): puts one agent online at `https://<app>.fly.dev`
@@ -1614,7 +1623,8 @@ laptop, a server, a container, the edge or a phone.
   credentials, plugins, WebAssembly runtime, document extraction and retrieval,
   with regression tests for every finding.
 
-[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.1...v0.3.2

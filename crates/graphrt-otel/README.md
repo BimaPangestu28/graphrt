@@ -7,7 +7,7 @@ agentic AI workflows on servers, containers, the edge and phones.
 
 ```toml
 [dependencies]
-graphrt-otel = "0.5"
+graphrt-otel = "0.6"
 ```
 
 - Documentation: <https://docs.rs/graphrt-otel>

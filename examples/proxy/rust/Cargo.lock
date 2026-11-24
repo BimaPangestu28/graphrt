@@ -326,20 +326,19 @@ dependencies = [
 
 [[package]]
 name = "graphrt-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "futures",
  "indexmap",
  "serde",
  "serde_json",
- "serde_path_to_error",
  "smallvec",
  "thiserror",
 ]
 
 [[package]]
 name = "graphrt-llm"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "futures",
  "graphrt-core",

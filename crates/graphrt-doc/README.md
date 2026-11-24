@@ -7,7 +7,7 @@ agentic AI workflows on servers, containers, the edge and phones.
 
 ```toml
 [dependencies]
-graphrt-doc = "0.5"
+graphrt-doc = "0.6"
 ```
 
 - Documentation: <https://docs.rs/graphrt-doc>
