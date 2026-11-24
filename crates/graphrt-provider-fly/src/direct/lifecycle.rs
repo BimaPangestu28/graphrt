@@ -392,7 +392,8 @@ impl FlyDirect {
         for machine in &previous {
             self.demote(&machine.id).await?;
         }
-        let pruned = self.prune_standby(&machines, &candidate.id).await?;
+        let after_demotion = self.direct_machines().await?;
+        let pruned = self.prune_standby(&after_demotion, &candidate.id).await?;
         Ok(((), format!("version {version} is live; {} version(s) demoted, {pruned} pruned", previous.len())))
     }
 
