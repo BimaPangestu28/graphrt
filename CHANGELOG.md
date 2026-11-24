@@ -14,7 +14,8 @@ for plugins in `graphrt serve` (`--plugin-pool`, `--plugin-idle`) with gateway
 warm hints and a faster WebAssembly cold-start path, and `graphrt deploy
 --target fly --direct` (preview), which puts one agent online on Fly.io with no
 gateway. Also the Linux budgets of the gateway plan (`bench/targets.sh`) and the
-fixes they found. No breaking changes.
+fixes they found, and a fix for a crash on crafted redirects
+(RUSTSEC-2026-0592). No breaking changes.
 
 ### Added
 - `graphrt deploy --target fly --direct` (preview, in the default build:
@@ -94,6 +95,12 @@ fixes they found. No breaking changes.
   cold request was dropped as "in flight" and the pool stayed at one replica;
   background prewarms (`min_replicas`, cron, predictive) now wait for the
   in-flight wake and top up.
+
+### Security
+- Dependencies: `url` 2.5.8 -> 2.5.9 (RUSTSEC-2026-0592: stack overflow in
+  `Url::origin()` on nested `blob:` URLs). The `http-request` node compares the
+  origin of each redirect target, which a remote server chooses, so a crafted
+  `Location` header could crash the process. Affects 0.5.0 and earlier.
 
 ## [0.5.0] - 2026-11-23
 
