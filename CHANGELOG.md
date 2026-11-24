@@ -7,6 +7,24 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-24
+
+Binary HTTP bodies for WebAssembly plugins (`body_base64`, `"response_encoding":
+"base64"`), which the supabase WebAssembly build needs for `upload_object`.
+With it, graphrt-plugins ships WebAssembly builds of every supabase agent tool
+and, on its new declarative `rest-kit` runtime, of open-meteo, currency-rates,
+wikipedia and web-search. Measured there against the Node.js plugins (Linux
+aarch64, 4-vCPU VM, mock upstream, min-size musl build): a cold `graphrt run`
+of supabase `select_rows` takes 23.5 instead of 116.6 ms (p50) and serve plus
+plugin hold 10.2 instead of 129.3 MiB after the runs; open-meteo,
+currency-rates and web-search run cold in 16.3–18.1 instead of 102.9–106.3 ms
+(p50, as workflow nodes) and hold 9.3–10.1 instead of 112.2–126.4 MiB. A warm
+call is 1–3 ms slower than on Node.js (a fresh module instance per call). One
+Rust API change for embedders: graphrt-wasm's `HttpRequest::body` and
+`HttpResponse::body` are bytes (see **Changed**); plugins and the CLI are
+unaffected. The gateway's cloud providers are still tested against API fakes;
+real-cloud verification is pending.
+
 ### Added
 - WebAssembly plugins can send and receive binary HTTP bodies: `graphrt::http`
   takes `body_base64` and, with `"response_encoding": "base64"`, answers with
@@ -1715,7 +1733,8 @@ laptop, a server, a container, the edge or a phone.
   credentials, plugins, WebAssembly runtime, document extraction and retrieval,
   with regression tests for every finding.
 
-[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/BimaPangestu28/graphrt/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/BimaPangestu28/graphrt/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.4.0...v0.5.0
