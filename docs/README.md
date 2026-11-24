@@ -18,6 +18,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 - [The `graphrt` CLI](cli.md): every command and flag
 - [Serving workflows](serving.md): HTTP API, SSE, run store, per-user tokens (`--verify-jwt`), webhooks, knowledge base
 - [Deploying graphrt](deploy.md): container, Fly.io, Cloud Run, systemd
+- [Direct deploys to Fly.io](deploy-direct.md) (preview): `graphrt deploy --target fly --direct`, no gateway; JSON Lines contract for apps (status, versions, rollback, pause/resume, remove), API key, least-privilege tokens
 - [Gateway](gateway.md) (preview): always-on front of scale-to-zero agents, SQLite store, auth, limits, webhooks, cron, `graphrt deploy --target local|k8s|cloud-run|aca|ecs|lambda|fly`, measured cold starts
 - [Gateway active/passive](gateway-ha.md) (preview): on-prem HA on a shared volume, fenced lease, systemd units, volumes not to use
 - [Gateway protocol](gateway-protocol.md): `serve --trust-gateway`, signed `/internal/v1` API, run store contract (epochs, idempotent appends, coordination store), SSE ids and `Last-Event-ID`

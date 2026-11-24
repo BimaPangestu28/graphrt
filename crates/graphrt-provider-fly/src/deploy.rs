@@ -291,7 +291,13 @@ async fn create_pool(
         if existing_names.contains(&name) {
             continue;
         }
-        let request = CreateMachineRequest { name, region: &plan.region, config: &config, skip_launch: true };
+        let request = CreateMachineRequest {
+            name,
+            region: &plan.region,
+            config: &config,
+            skip_launch: true,
+            min_secrets_version: None,
+        };
         match client.create_machine(&request).await {
             Err(error) if !is_name_taken(&error) => return Err(error.into()),
             _ => {}

@@ -21,8 +21,9 @@ use serde::Serialize;
 
 use crate::error::{classify_fly_response, decode_error};
 use crate::model::{
-    CreateAppRequest, CreateMachineRequest, ListSecretsResponse, METADATA_DEPLOYMENT, METADATA_POOL, METADATA_VERSION,
-    Machine, MachineState, StopMachineRequest, UpdateSecretsRequest,
+    AssignIpRequest, CreateAppRequest, CreateMachineRequest, IpAssignment, ListIpAssignmentsResponse,
+    ListSecretsResponse, METADATA_DEPLOYMENT, METADATA_POOL, METADATA_VERSION, Machine, MachineState,
+    SetMetadataRequest, StopMachineRequest, UpdateMachineRequest, UpdateSecretsRequest, UpdateSecretsResponse,
 };
 use crate::token::{FlyToken, TokenOrigin};
 
@@ -127,6 +128,37 @@ impl MachinesClient {
         serde_json::from_slice(&body).map_err(|error| decode_error("machine list", &error))
     }
 
+    /// `GET /apps/{app}/machines?metadata.{key}={value}`: Machines carrying one metadata value.
+    ///
+    /// @param key - metadata key (&str)
+    /// @param value - metadata value (&str)
+    /// @returns Machines of the app (callers re-check metadata: the filter is a hint)
+    pub async fn list_machines_with_metadata(&self, key: &str, value: &str) -> Result<Vec<Machine>, ProviderError> {
+        let path = format!("{}?metadata.{}={}", self.machines_path(), percent_encode(key), percent_encode(value));
+        let body = self.send(reqwest::Method::GET, &path, None).await?;
+        serde_json::from_slice(&body).map_err(|error| decode_error("machine list", &error))
+    }
+
+    /// `POST /apps/{app}/machines/{id}`: replaces the Machine's config (a running Machine reboots).
+    pub async fn update_machine(
+        &self,
+        machine_id: &str,
+        request: &UpdateMachineRequest<'_>,
+    ) -> Result<Machine, ProviderError> {
+        let body =
+            self.send(reqwest::Method::POST, &self.machine_path(machine_id, "")?, Some(encode(request)?)).await?;
+        serde_json::from_slice(&body).map_err(|error| decode_error("updated machine", &error))
+    }
+
+    /// `POST /apps/{app}/machines/{id}/metadata/{key}`: sets one metadata value without a reboot.
+    pub async fn set_machine_metadata(&self, machine_id: &str, key: &str, value: &str) -> Result<(), ProviderError> {
+        let suffix = format!("/metadata/{}", percent_encode(key));
+        let request = SetMetadataRequest { value };
+        self.send(reqwest::Method::POST, &self.machine_path(machine_id, &suffix)?, Some(encode(&request)?))
+            .await
+            .map(drop)
+    }
+
     /// `GET /apps/{app}/machines/{id}`.
     pub async fn get_machine(&self, machine_id: &str) -> Result<Machine, ProviderError> {
         let body = self.send(reqwest::Method::GET, &self.machine_path(machine_id, "")?, None).await?;
@@ -196,11 +228,37 @@ impl MachinesClient {
         self.send(reqwest::Method::POST, "/v1/apps", Some(encode(&request)?)).await.map(drop)
     }
 
+    /// `DELETE /apps/{app}?force=true`: stops every Machine and deletes the app
+    /// with its secrets, IPs and Machines.
+    pub async fn delete_app(&self) -> Result<(), ProviderError> {
+        let path = format!("/v1/apps/{}?force=true", self.app_name);
+        self.send(reqwest::Method::DELETE, &path, None).await.map(drop)
+    }
+
+    /// `GET /apps/{app}/ip_assignments`: the app's IPs.
+    pub async fn list_ip_assignments(&self) -> Result<Vec<IpAssignment>, ProviderError> {
+        let path = format!("/v1/apps/{}/ip_assignments", self.app_name);
+        let body = self.send(reqwest::Method::GET, &path, None).await?;
+        let listing: ListIpAssignmentsResponse =
+            serde_json::from_slice(&body).map_err(|error| decode_error("IP list", &error))?;
+        Ok(listing.ips)
+    }
+
+    /// `POST /apps/{app}/ip_assignments`: allocates a public IP (`shared_v4` or `v6`).
+    pub async fn assign_ip(&self, ip_type: &str) -> Result<(), ProviderError> {
+        let path = format!("/v1/apps/{}/ip_assignments", self.app_name);
+        self.send(reqwest::Method::POST, &path, Some(encode(&AssignIpRequest { ip_type })?)).await.map(drop)
+    }
+
     /// `POST /apps/{app}/secrets`: sets (or, with `None`, deletes) app secrets in
     /// one call. Fly injects them as environment variables into Machines on boot.
-    pub async fn update_secrets(&self, values: BTreeMap<&str, Option<&str>>) -> Result<(), ProviderError> {
+    ///
+    /// @returns The secrets version after the update, when Fly reports one
+    pub async fn update_secrets(&self, values: BTreeMap<&str, Option<&str>>) -> Result<Option<u64>, ProviderError> {
         let path = format!("/v1/apps/{}/secrets", self.app_name);
-        self.send(reqwest::Method::POST, &path, Some(encode(&UpdateSecretsRequest { values })?)).await.map(drop)
+        let body = self.send(reqwest::Method::POST, &path, Some(encode(&UpdateSecretsRequest { values })?)).await?;
+        // An empty or unexpected body is not an error: the version is only a hint.
+        Ok(serde_json::from_slice::<UpdateSecretsResponse>(&body).ok().and_then(|response| response.version))
     }
 
     /// `GET /apps/{app}/secrets`: names of the app's secrets (values are never requested).

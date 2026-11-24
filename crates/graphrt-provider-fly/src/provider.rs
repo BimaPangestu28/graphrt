@@ -230,6 +230,7 @@ impl FlyProvider {
                 region: &template.region,
                 config,
                 skip_launch: false,
+                min_secrets_version: None,
             };
             *next_index += 1;
             match client.create_machine(&request).await {

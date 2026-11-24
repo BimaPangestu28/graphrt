@@ -6,7 +6,11 @@ pub mod args;
 pub mod body_drain;
 pub mod bundle_cmd;
 pub mod catalog;
+#[cfg(any(feature = "gateway", feature = "deploy-fly"))]
+pub mod deploy_cmd;
 pub mod diagnostics;
+#[cfg(feature = "deploy-fly")]
+pub mod direct_cmd;
 #[cfg(feature = "serve")]
 pub mod drain;
 pub mod error;
@@ -124,6 +128,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "gateway") {
         features.push("gateway");
     }
+    if cfg!(feature = "deploy-fly") {
+        features.push("deploy-fly");
+    }
     if cfg!(feature = "mimalloc") {
         features.push("mimalloc");
     }
@@ -157,8 +164,8 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         Command::Kb(args) => block_on_current_thread(kb::kb(*args)),
         #[cfg(feature = "gateway")]
         Command::Gateway(args) => gateway_cmd::gateway(*args),
-        #[cfg(feature = "gateway")]
-        Command::Deploy(args) => gateway_cmd::deploy(*args),
+        #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
+        Command::Deploy(args) => deploy_cmd::deploy(*args),
         #[cfg(feature = "serve")]
         Command::Serve(args) => {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(runtime_error)?;

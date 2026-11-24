@@ -6,6 +6,9 @@
 > suite against a fake Machines API. See [docs/gateway.md](gateway.md#providers).
 > This page describes how the Fly target behaves and how to set it up.
 
+For a single agent served straight by the Fly proxy, without a gateway, see
+[direct deploys](deploy-direct.md) (`graphrt deploy --target fly --direct`).
+
 The `graphrt gateway` stays on all the time and wakes agents
 (`graphrt serve --trust-gateway`) only when there is work. On Fly, each
 deployment version is a **pool of Fly Machines** in one app:

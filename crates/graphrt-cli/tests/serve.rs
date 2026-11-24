@@ -129,6 +129,42 @@ async fn auth_is_enforced_except_health() {
     assert_eq!(send(app, req).await.0, StatusCode::OK);
 }
 
+/// What a remote client (the desktop app's "cloud runs") reads from a direct
+/// deployment: `GET /v1/runs` behind the API key, each run with its id,
+/// workflow, status and start/update times, paged by `cursor`.
+#[tokio::test]
+async fn runs_listing_serves_remote_clients_with_the_api_key() {
+    let app = router(state(Some("s3cret")).await, 1 << 20);
+    let authorized = |request: axum::http::request::Builder| request.header("authorization", "Bearer s3cret");
+    for name in ["Ada", "Grace"] {
+        let body = serde_json::json!({"inputs": {"name": name}}).to_string();
+        let request = authorized(Request::post("/v1/workflows/hello/runs"))
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .expect("request");
+        assert_eq!(send(app.clone(), request).await.0, StatusCode::OK);
+    }
+    let unauthorized = Request::get("/v1/runs?limit=1").body(Body::empty()).expect("request");
+    assert_eq!(send(app.clone(), unauthorized).await.0, StatusCode::UNAUTHORIZED);
+
+    let request = authorized(Request::get("/v1/runs?limit=1")).body(Body::empty()).expect("request");
+    let (status, body) = send(app.clone(), request).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let run = &page["runs"][0];
+    assert!(run["run_id"].is_string(), "{run}");
+    assert_eq!((run["workflow"].as_str(), run["status"].as_str()), (Some("hello"), Some("succeeded")));
+    assert!(run["created_ms"].as_u64().unwrap() <= run["updated_ms"].as_u64().unwrap());
+    let cursor = page["next_cursor"].as_str().expect("a second page");
+
+    let request =
+        authorized(Request::get(format!("/v1/runs?limit=1&cursor={cursor}"))).body(Body::empty()).expect("request");
+    let (_, body) = send(app, request).await;
+    let rest: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(rest["runs"].as_array().map(Vec::len), Some(1));
+    assert_ne!(rest["runs"][0]["run_id"], run["run_id"]);
+}
+
 /// Every `/v1` route answers `401` without the key before it looks at the
 /// body (none here has a JSON content type), so a route added outside the
 /// auth layer cannot go unnoticed.

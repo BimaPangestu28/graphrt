@@ -151,7 +151,7 @@ jobs:
         run: |
           sh scripts/smoke-release-binary.sh "${{ steps.package.outputs.agent }}"
           if [ -n "${{ steps.package.outputs.gateway }}" ]; then
-            SMOKE_REQUIRED_FEATURES="eval online-eval gateway" sh scripts/smoke-release-binary.sh "${{ steps.package.outputs.gateway }}"
+            SMOKE_REQUIRED_FEATURES="eval online-eval deploy-fly gateway" sh scripts/smoke-release-binary.sh "${{ steps.package.outputs.gateway }}"
           fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

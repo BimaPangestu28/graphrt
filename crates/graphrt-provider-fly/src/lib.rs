@@ -26,7 +26,11 @@ mod client;
 mod config;
 #[cfg(feature = "deploy")]
 mod deploy;
+#[cfg(feature = "direct")]
+pub mod direct;
 mod error;
+#[cfg(feature = "fake")]
+pub mod fake;
 pub mod model;
 mod provider;
 mod token;

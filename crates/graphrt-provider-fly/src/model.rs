@@ -83,6 +83,29 @@ pub struct Machine {
     /// returned (services, mounts, files...), not just the ones modelled here.
     #[serde(default)]
     pub config: Option<serde_json::Value>,
+    /// Status of the Machine's health checks (empty until Fly ran them).
+    #[serde(default)]
+    pub checks: Vec<CheckStatus>,
+}
+
+/// One health check result of a Machine, as `GET /machines/{id}` reports it.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CheckStatus {
+    #[serde(default)]
+    pub name: String,
+    /// `passing`, `warning` or `critical`.
+    #[serde(default)]
+    pub status: String,
+    /// What the check saw (an HTTP status line, a connection error...).
+    #[serde(default, skip_serializing)]
+    pub output: String,
+}
+
+impl CheckStatus {
+    /// Whether Fly reports the check as passing.
+    pub fn is_passing(&self) -> bool {
+        self.status == "passing"
+    }
 }
 
 impl Machine {
@@ -161,6 +184,69 @@ pub struct CreateMachineRequest<'request> {
     pub config: &'request serde_json::Value,
     /// Create the Machine without booting it: a pooled replica costs only its rootfs.
     pub skip_launch: bool,
+    /// Secrets version the Machine must see (from the last secrets update), so
+    /// it never boots with secrets older than the ones just written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_secrets_version: Option<u64>,
+}
+
+/// Body of `POST /apps/{app}/machines/{id}` (update; the full config, no partial updates).
+#[derive(Clone, Debug, Serialize)]
+pub struct UpdateMachineRequest<'request> {
+    pub config: &'request serde_json::Value,
+    /// Keep a stopped Machine stopped (a running one reboots on any update).
+    pub skip_launch: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_secrets_version: Option<u64>,
+}
+
+/// Body of `POST /apps/{app}/machines/{id}/metadata/{key}` (no reboot).
+#[derive(Clone, Debug, Serialize)]
+pub struct SetMetadataRequest<'request> {
+    pub value: &'request str,
+}
+
+/// Response of `POST /apps/{app}/secrets`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct UpdateSecretsResponse {
+    /// Secrets version after the update (`min_secrets_version` of later Machines).
+    #[serde(default)]
+    pub version: Option<u64>,
+}
+
+/// Response of `GET /apps/{app}/ip_assignments`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ListIpAssignmentsResponse {
+    #[serde(default)]
+    pub ips: Vec<IpAssignment>,
+}
+
+/// One public (or Flycast) IP of an app.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct IpAssignment {
+    pub ip: String,
+    #[serde(default)]
+    pub shared: bool,
+}
+
+impl IpAssignment {
+    /// Whether this is a public address (not Flycast `fdaa:` and not egress-only).
+    pub fn is_public(&self) -> bool {
+        !self.ip.starts_with("fdaa:")
+    }
+
+    /// Whether this is an IPv6 address.
+    pub fn is_v6(&self) -> bool {
+        self.ip.contains(':')
+    }
+}
+
+/// Body of `POST /apps/{app}/ip_assignments`.
+#[derive(Clone, Debug, Serialize)]
+pub struct AssignIpRequest<'request> {
+    /// `shared_v4` (free, shared anycast IPv4) or `v6` (dedicated anycast IPv6).
+    #[serde(rename = "type")]
+    pub ip_type: &'request str,
 }
 
 /// Body of `POST /apps/{app}/machines/{id}/stop`.

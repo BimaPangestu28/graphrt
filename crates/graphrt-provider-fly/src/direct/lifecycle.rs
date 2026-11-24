@@ -1,0 +1,530 @@
+//! The operations of [`FlyDirect`]: deploy, status, versions, rollback,
+//! pause, resume and remove.
+
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+
+use graphrt_provider_api::ProviderErrorKind;
+use serde::Serialize;
+
+use super::machine_config::{
+    META_DIRECT, META_MODE, META_PAUSED, Role, machine_name_for, new_machine_config, paused, validate_request,
+    with_role, workflow_name_of,
+};
+use super::status::{
+    DeploymentStatus, VersionSummary, deployed_at_ms, deployment_status, has_role, is_direct, metadata,
+    version_history, version_of,
+};
+use super::{
+    API_KEY_SECRET, DeployOutcome, DeployRequest, DirectError, ErrorCode, FlyDirect, ServiceMode, Step, StepEvent,
+    StepStatus,
+};
+use crate::client::MAX_WAIT_SECS;
+use crate::error::is_name_taken;
+use crate::model::{CreateMachineRequest, Machine, MachineState, StopMachineRequest, UpdateMachineRequest};
+
+/// Receives progress events.
+pub type Progress<'callback> = &'callback mut dyn FnMut(StepEvent);
+
+/// A failed deploy. `api_key` is set when the deploy already stored a new API
+/// key before failing: it is the only time the caller can learn it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DeployFailure {
+    pub error: DirectError,
+    pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for DeployFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DeployFailure")
+            .field("error", &self.error)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+impl std::fmt::Display for DeployFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for DeployFailure {}
+
+/// Result of a rollback or resume: the version now serving.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ServingVersion {
+    pub app: String,
+    pub url: String,
+    pub version: String,
+    pub workflow: Option<String>,
+}
+
+/// The Machine a deploy is bringing up.
+struct Candidate {
+    id: String,
+    /// An existing Machine of the same version was updated instead of a new one created.
+    reused: bool,
+}
+
+fn emit(progress: Progress<'_>, step: Step, status: StepStatus, message: impl Into<String>) {
+    progress(StepEvent { step, status, message: message.into() });
+}
+
+/// Reports the end of a step: `done` with its message, or `failed` with the error.
+fn finish<T>(progress: Progress<'_>, step: Step, result: Result<(T, String), DirectError>) -> Result<T, DirectError> {
+    match result {
+        Ok((value, message)) => {
+            emit(progress, step, StepStatus::Done, message);
+            Ok(value)
+        }
+        Err(error) => {
+            emit(progress, step, StepStatus::Failed, error.message.clone());
+            Err(error)
+        }
+    }
+}
+
+impl FlyDirect {
+    /// Deploys `request.version` and makes it current once `/readyz` passes.
+    ///
+    /// Idempotent: the app, IPs and the version's Machine are reused when they
+    /// exist. On failure the previous version keeps serving.
+    ///
+    /// @param request - what to deploy (&DeployRequest)
+    /// @param progress - receives one `running` and one `done`/`failed` event per step
+    /// @returns The URL, version, workflow name and (first deploy or rotation only) the API key
+    /// @throws DeployFailure - with a stable [`ErrorCode`]; carries the API key if it was already stored
+    pub async fn deploy(
+        &self,
+        request: &DeployRequest,
+        progress: Progress<'_>,
+    ) -> Result<DeployOutcome, DeployFailure> {
+        let fail = |error| DeployFailure { error, api_key: None };
+        emit(progress, Step::Preparing, StepStatus::Running, format!("Preparing Fly app {}", self.app_name()));
+        finish(progress, Step::Preparing, self.prepare(request).await).map_err(fail)?;
+        emit(progress, Step::Secrets, StepStatus::Running, "Writing Fly secrets");
+        let (secrets_version, api_key) =
+            finish(progress, Step::Secrets, self.write_secrets(request).await).map_err(fail)?;
+        let fail = |error| DeployFailure { error, api_key: api_key.clone() };
+        emit(progress, Step::Starting, StepStatus::Running, format!("Starting version {}", request.version));
+        let workflow = workflow_name_of(&request.agent.file_name);
+        let started = self.start_candidate(request, &workflow, secrets_version).await;
+        let candidate = finish(progress, Step::Starting, started).map_err(fail)?;
+        emit(progress, Step::Checking, StepStatus::Running, "Waiting for GET /readyz to pass");
+        let promoted = self.check_and_promote(&candidate, &request.version).await;
+        finish(progress, Step::Checking, promoted).map_err(fail)?;
+        Ok(DeployOutcome {
+            app: self.app_name().to_owned(),
+            url: self.url(),
+            version: request.version.clone(),
+            workflow,
+            api_key,
+        })
+    }
+
+    /// The deployment's state, current version and Machines.
+    ///
+    /// @param now_ms - wall clock in Unix ms (u64)
+    /// @throws DirectError(NotFound) - the app does not exist
+    pub async fn status(&self, now_ms: u64) -> Result<DeploymentStatus, DirectError> {
+        let machines = self.direct_machines().await?;
+        Ok(deployment_status(self.app_name(), self.url(), &machines, now_ms))
+    }
+
+    /// Every version still kept (current and standby), newest deploy first.
+    pub async fn list_versions(&self) -> Result<Vec<VersionSummary>, DirectError> {
+        Ok(version_history(&self.direct_machines().await?))
+    }
+
+    /// Makes a kept version current again (its own agent file and config).
+    ///
+    /// @param version - a label from [`FlyDirect::list_versions`] (&str)
+    /// @throws DirectError(NotFound) - the version is not kept; HealthCheckFailed - it did not get healthy (the current version keeps serving)
+    pub async fn rollback(&self, version: &str, progress: Progress<'_>) -> Result<ServingVersion, DirectError> {
+        let machines = self.direct_machines().await?;
+        let target = machines
+            .iter()
+            .filter(|machine| version_of(machine) == Some(version))
+            .max_by_key(|machine| deployed_at_ms(machine))
+            .ok_or_else(|| DirectError::new(ErrorCode::NotFound, format!("version {version} is not kept on Fly")))?;
+        if has_role(target, Role::Current) {
+            return Ok(self.serving(target));
+        }
+        let mode = machines
+            .iter()
+            .filter(|machine| has_role(machine, Role::Current))
+            .chain(std::iter::once(target))
+            .find_map(|machine| metadata(machine, META_MODE).and_then(ServiceMode::parse))
+            .unwrap_or(ServiceMode::ScaleToZero);
+        emit(progress, Step::Starting, StepStatus::Running, format!("Starting version {version}"));
+        let started =
+            self.relaunch(&target.id, Role::Candidate, mode).await.map(|()| ((), "Machine started".to_owned()));
+        finish(progress, Step::Starting, started)?;
+        emit(progress, Step::Checking, StepStatus::Running, "Waiting for GET /readyz to pass");
+        let candidate = Candidate { id: target.id.clone(), reused: true };
+        finish(progress, Step::Checking, self.check_and_promote(&candidate, version).await)?;
+        Ok(self.serving(target))
+    }
+
+    /// Stops the current version and takes it off the Fly proxy (no autostart).
+    ///
+    /// @returns `false` when it was already paused
+    /// @throws DirectError(NotFound) - nothing is deployed
+    pub async fn pause(&self) -> Result<bool, DirectError> {
+        let current = self.current_machines().await?;
+        let running: Vec<&Machine> =
+            current.iter().filter(|machine| metadata(machine, META_PAUSED) != Some("1")).collect();
+        for machine in &running {
+            self.halt(&machine.id).await?;
+            let fresh = self.client.get_machine(&machine.id).await?;
+            let config = paused(fresh.config.as_ref().unwrap_or(&serde_json::Value::Null));
+            let update = UpdateMachineRequest { config: &config, skip_launch: true, min_secrets_version: None };
+            self.client.update_machine(&machine.id, &update).await?;
+        }
+        Ok(!running.is_empty())
+    }
+
+    /// Puts a paused deployment back on the Fly proxy and waits for `/readyz`.
+    ///
+    /// @returns The serving version, or `None` when it was not paused
+    pub async fn resume(&self, progress: Progress<'_>) -> Result<Option<ServingVersion>, DirectError> {
+        let current = self.current_machines().await?;
+        let paused_machines: Vec<&Machine> =
+            current.iter().filter(|machine| metadata(machine, META_PAUSED) == Some("1")).collect();
+        let Some(first) = paused_machines.first() else { return Ok(None) };
+        emit(progress, Step::Starting, StepStatus::Running, "Starting the paused version");
+        let mut started = Ok(((), "Machine started".to_owned()));
+        for machine in &paused_machines {
+            let mode = metadata(machine, META_MODE).and_then(ServiceMode::parse).unwrap_or(ServiceMode::ScaleToZero);
+            if let Err(error) = self.relaunch(&machine.id, Role::Current, mode).await {
+                started = Err(error);
+                break;
+            }
+        }
+        finish(progress, Step::Starting, started)?;
+        emit(progress, Step::Checking, StepStatus::Running, "Waiting for GET /readyz to pass");
+        let mut healthy = Ok(((), "Online".to_owned()));
+        for machine in &paused_machines {
+            if let Err(error) = self.wait_healthy(&machine.id).await {
+                healthy = Err(error);
+                break;
+            }
+        }
+        finish(progress, Step::Checking, healthy)?;
+        Ok(Some(self.serving(first)))
+    }
+
+    /// Deletes the app with its Machines, secrets and IPs.
+    ///
+    /// @returns `false` when the app did not exist
+    pub async fn remove(&self) -> Result<bool, DirectError> {
+        match self.client.delete_app().await {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind == ProviderErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn serving(&self, machine: &Machine) -> ServingVersion {
+        ServingVersion {
+            app: self.app_name().to_owned(),
+            url: self.url(),
+            version: version_of(machine).unwrap_or_default().to_owned(),
+            workflow: metadata(machine, super::machine_config::META_WORKFLOW).map(str::to_owned),
+        }
+    }
+
+    async fn direct_machines(&self) -> Result<Vec<Machine>, DirectError> {
+        match self.client.list_machines_with_metadata(META_DIRECT, "1").await {
+            Ok(machines) => Ok(machines.into_iter().filter(is_direct).collect()),
+            Err(error) if error.kind == ProviderErrorKind::NotFound => Err(DirectError::new(
+                ErrorCode::NotFound,
+                format!("Fly app {} does not exist (nothing deployed)", self.app_name()),
+            )),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn current_machines(&self) -> Result<Vec<Machine>, DirectError> {
+        let current: Vec<Machine> =
+            self.direct_machines().await?.into_iter().filter(|machine| has_role(machine, Role::Current)).collect();
+        if current.is_empty() {
+            return Err(DirectError::new(ErrorCode::NotFound, format!("nothing is deployed on {}", self.app_name())));
+        }
+        Ok(current)
+    }
+
+    /// Validates the request, creates the app when missing and gives it public IPs.
+    async fn prepare(&self, request: &DeployRequest) -> Result<((), String), DirectError> {
+        validate_request(request)?;
+        let created = self.ensure_app(&request.org_slug).await?;
+        let allocated = self.ensure_public_ips().await?;
+        let app_note = if created { format!("created app {}", self.app_name()) } else { "app exists".to_owned() };
+        Ok(((), format!("{app_note}; {allocated} public IP(s) allocated")))
+    }
+
+    async fn ensure_app(&self, org_slug: &str) -> Result<bool, DirectError> {
+        if self.client.app_exists().await? {
+            return Ok(false);
+        }
+        match self.client.create_app(org_slug, "").await {
+            Ok(()) => Ok(true),
+            Err(error) if error.message.contains("taken") || error.message.contains("already exists") => {
+                Err(DirectError::new(
+                    ErrorCode::AppNameTaken,
+                    format!(
+                        "the Fly app name {} belongs to someone else; pick another deployment name",
+                        self.app_name()
+                    ),
+                ))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// A dedicated IPv6 and a shared IPv4 (both free), so `<app>.fly.dev` resolves.
+    async fn ensure_public_ips(&self) -> Result<usize, DirectError> {
+        let ips = self.client.list_ip_assignments().await?;
+        let mut allocated = 0;
+        if !ips.iter().any(|ip| ip.is_public() && ip.is_v6()) {
+            self.client.assign_ip("v6").await?;
+            allocated += 1;
+        }
+        if !ips.iter().any(|ip| ip.is_public() && !ip.is_v6()) {
+            self.client.assign_ip("shared_v4").await?;
+            allocated += 1;
+        }
+        Ok(allocated)
+    }
+
+    /// Writes the user's secrets and, when the app has none (or on rotation), the API key.
+    async fn write_secrets(
+        &self,
+        request: &DeployRequest,
+    ) -> Result<((Option<u64>, Option<String>), String), DirectError> {
+        let existing = self.client.list_secret_names().await?;
+        let store_key = request.rotate_api_key || !existing.iter().any(|name| name == API_KEY_SECRET);
+        let mut values: BTreeMap<&str, Option<&str>> =
+            request.secrets.iter().map(|(name, value)| (name.as_str(), Some(value.as_str()))).collect();
+        if store_key {
+            if request.api_key_candidate.len() < 32 {
+                return Err(DirectError::invalid("the generated API key is too short"));
+            }
+            values.insert(API_KEY_SECRET, Some(request.api_key_candidate.as_str()));
+        }
+        if values.is_empty() {
+            return Ok(((None, None), "no secrets to write".to_owned()));
+        }
+        let names: Vec<&str> = values.keys().copied().collect();
+        let version = self.client.update_secrets(values).await?;
+        let api_key = store_key.then(|| request.api_key_candidate.clone());
+        Ok(((version, api_key), format!("set {}", names.join(", "))))
+    }
+
+    /// Creates the version's Machine (or updates the one it already has) and waits for it to boot.
+    async fn start_candidate(
+        &self,
+        request: &DeployRequest,
+        workflow: &str,
+        secrets_version: Option<u64>,
+    ) -> Result<(Candidate, String), DirectError> {
+        let config = new_machine_config(request, workflow);
+        let existing = self
+            .direct_machines()
+            .await?
+            .into_iter()
+            .find(|machine| version_of(machine) == Some(request.version.as_str()));
+        let candidate = match existing {
+            Some(machine) => {
+                if !machine.state.is_startable() && machine.state != MachineState::Started {
+                    self.halt(&machine.id).await?;
+                }
+                let update =
+                    UpdateMachineRequest { config: &config, skip_launch: false, min_secrets_version: secrets_version };
+                self.client.update_machine(&machine.id, &update).await?;
+                Candidate { id: machine.id, reused: true }
+            }
+            None => {
+                let create = CreateMachineRequest {
+                    name: machine_name_for(&request.version),
+                    region: &request.region,
+                    config: &config,
+                    skip_launch: false,
+                    min_secrets_version: secrets_version,
+                };
+                let machine = self.client.create_machine(&create).await.map_err(|error| {
+                    if is_name_taken(&error) {
+                        DirectError::invalid(format!(
+                            "a Machine named {} exists in {} but is not managed by graphrt",
+                            create.name,
+                            self.app_name()
+                        ))
+                    } else {
+                        error.into()
+                    }
+                })?;
+                Candidate { id: machine.id, reused: false }
+            }
+        };
+        self.wait_started(&candidate.id).await?;
+        let verb = if candidate.reused { "updated" } else { "created" };
+        let message = format!("{verb} Machine {} and booted it", candidate.id);
+        Ok((candidate, message))
+    }
+
+    /// Waits for health, then makes the candidate current and the rest standby.
+    /// An unhealthy candidate is discarded and the previous version keeps serving.
+    async fn check_and_promote(&self, candidate: &Candidate, version: &str) -> Result<((), String), DirectError> {
+        if let Err(error) = self.wait_healthy(&candidate.id).await {
+            return Err(self.discard_candidate(candidate, error).await);
+        }
+        self.client
+            .set_machine_metadata(&candidate.id, super::machine_config::META_ROLE, Role::Current.as_str())
+            .await?;
+        let machines = self.direct_machines().await?;
+        let previous: Vec<&Machine> = machines
+            .iter()
+            .filter(|machine| machine.id != candidate.id)
+            .filter(|machine| has_role(machine, Role::Current) || has_role(machine, Role::Candidate))
+            .collect();
+        for machine in &previous {
+            self.demote(&machine.id).await?;
+        }
+        let after_demotion = self.direct_machines().await?;
+        let pruned = self.prune_standby(&after_demotion, &candidate.id).await?;
+        Ok(((), format!("version {version} is live; {} version(s) demoted, {pruned} pruned", previous.len())))
+    }
+
+    /// Removes a candidate that failed its checks: destroyed when new, kept as standby when reused.
+    async fn discard_candidate(&self, candidate: &Candidate, cause: DirectError) -> DirectError {
+        let cleanup = if candidate.reused {
+            self.demote(&candidate.id).await
+        } else {
+            self.client.destroy_machine(&candidate.id).await.map_err(DirectError::from)
+        };
+        match cleanup {
+            Ok(()) => cause,
+            Err(cleanup_error) => DirectError::new(
+                cause.code,
+                format!(
+                    "{}; cleaning up Machine {} also failed: {}",
+                    cause.message, candidate.id, cleanup_error.message
+                ),
+            ),
+        }
+    }
+
+    /// Stops a Machine and removes its services so nothing routes to or autostarts it.
+    async fn demote(&self, machine_id: &str) -> Result<(), DirectError> {
+        self.halt(machine_id).await?;
+        let fresh = self.client.get_machine(machine_id).await?;
+        let config = with_role(fresh.config.as_ref().unwrap_or(&serde_json::Value::Null), Role::Standby, None);
+        let update = UpdateMachineRequest { config: &config, skip_launch: true, min_secrets_version: None };
+        self.client.update_machine(machine_id, &update).await?;
+        Ok(())
+    }
+
+    /// Re-adds services to a kept Machine with `role` and boots it.
+    async fn relaunch(&self, machine_id: &str, role: Role, mode: ServiceMode) -> Result<(), DirectError> {
+        let fresh = self.client.get_machine(machine_id).await?;
+        let config = with_role(fresh.config.as_ref().unwrap_or(&serde_json::Value::Null), role, Some(mode));
+        let update = UpdateMachineRequest { config: &config, skip_launch: false, min_secrets_version: None };
+        self.client.update_machine(machine_id, &update).await?;
+        self.wait_started(machine_id).await
+    }
+
+    /// Destroys standby versions beyond `keep_versions`, oldest first.
+    async fn prune_standby(&self, machines: &[Machine], keep_id: &str) -> Result<usize, DirectError> {
+        let mut standby: Vec<&Machine> = machines
+            .iter()
+            .filter(|machine| machine.id != keep_id && !has_role(machine, Role::Current))
+            .filter(|machine| has_role(machine, Role::Standby) || has_role(machine, Role::Candidate))
+            .collect();
+        standby.sort_by_key(|machine| std::cmp::Reverse(deployed_at_ms(machine)));
+        let mut pruned = 0;
+        for machine in standby.iter().skip(self.settings.keep_versions) {
+            match self.client.destroy_machine(&machine.id).await {
+                Ok(()) => pruned += 1,
+                Err(error) if error.kind == ProviderErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(pruned)
+    }
+
+    /// Stops a Machine (SIGTERM, then Fly's grace) unless it is already down.
+    async fn halt(&self, machine_id: &str) -> Result<(), DirectError> {
+        let machine = self.client.get_machine(machine_id).await?;
+        if matches!(machine.state, MachineState::Stopped | MachineState::Created | MachineState::Suspended) {
+            return Ok(());
+        }
+        let stop = StopMachineRequest { signal: "SIGTERM".to_owned(), timeout: "30s".to_owned() };
+        self.client.stop_machine(machine_id, &stop).await?;
+        self.client.wait_machine(machine_id, MachineState::Stopped, Duration::from_secs(MAX_WAIT_SECS)).await?;
+        Ok(())
+    }
+
+    /// Waits until the Machine reports `started`, in `/wait` calls of at most 60 s.
+    async fn wait_started(&self, machine_id: &str) -> Result<(), DirectError> {
+        let deadline = Instant::now() + self.settings.start_timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(DirectError::new(
+                    ErrorCode::StartTimeout,
+                    format!("Machine {machine_id} did not start within {} s", self.settings.start_timeout.as_secs()),
+                ));
+            }
+            match self.client.wait_machine(machine_id, MachineState::Started, remaining).await {
+                Ok(()) => return Ok(()),
+                Err(error) if error.kind == ProviderErrorKind::Transient => {
+                    let machine = self.client.get_machine(machine_id).await?;
+                    if machine.state == MachineState::Failed {
+                        return Err(DirectError::new(
+                            ErrorCode::StartTimeout,
+                            format!("Machine {machine_id} failed to boot (see `fly logs -a {}`)", self.app_name()),
+                        ));
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    /// Polls the Machine until every health check passes.
+    async fn wait_healthy(&self, machine_id: &str) -> Result<(), DirectError> {
+        let deadline = Instant::now() + self.settings.health_timeout;
+        let mut last_seen = "no check result yet".to_owned();
+        loop {
+            let machine = self.client.get_machine(machine_id).await?;
+            if !matches!(machine.state, MachineState::Started | MachineState::Starting) {
+                return Err(DirectError::new(
+                    ErrorCode::HealthCheckFailed,
+                    format!(
+                        "Machine {machine_id} is {} instead of running (see `fly logs -a {}`)",
+                        machine.state.as_api_str(),
+                        self.app_name()
+                    ),
+                ));
+            }
+            if !machine.checks.is_empty() && machine.checks.iter().all(|check| check.is_passing()) {
+                return Ok(());
+            }
+            if let Some(check) = machine.checks.iter().find(|check| !check.is_passing()) {
+                last_seen = format!("check {} is {}: {}", check.name, check.status, check.output);
+            }
+            if Instant::now() >= deadline {
+                return Err(DirectError::new(
+                    ErrorCode::HealthCheckFailed,
+                    format!(
+                        "GET /readyz did not pass within {} s ({last_seen})",
+                        self.settings.health_timeout.as_secs()
+                    ),
+                ));
+            }
+            tokio::time::sleep(self.settings.poll_interval).await;
+        }
+    }
+}
