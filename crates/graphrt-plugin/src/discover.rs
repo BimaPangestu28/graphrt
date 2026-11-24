@@ -122,6 +122,7 @@ pub fn install_from_git(url: &str, rev: Option<&str>, dest_root: &Path) -> Resul
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
     ));
     let mut cmd = std::process::Command::new("git");
+    graphrt_core::child_env::apply_host_env(&mut cmd);
     cmd.args(["clone", "--depth", "1", "--quiet"]);
     if let Some(rev) = rev {
         cmd.args(["--branch", rev]);

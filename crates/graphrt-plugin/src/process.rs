@@ -17,7 +17,7 @@ use crate::manifest::{LoadedManifest, ProcessRuntime};
 use crate::transport::{INITIALIZE_TIMEOUT, Transport, check_initialize, initialize_params, with_timeout};
 
 /// Host variables always passed to plugin processes.
-pub const DEFAULT_PASS_ENV: &[&str] = &["PATH", "HOME", "LANG", "TMPDIR", "SYSTEMROOT", "USERPROFILE", "APPDATA"];
+pub use graphrt_core::child_env::DEFAULT_PASS_ENV;
 
 /// How much plugin stderr is kept for diagnostics.
 const STDERR_TAIL_BYTES: usize = 64 * 1024;
@@ -170,16 +170,8 @@ impl ProcessTransport {
             None => self.plugin.dir.clone(),
         };
         cmd.current_dir(&cwd);
-        if !self.runtime.inherit_env {
-            cmd.env_clear();
-            let names =
-                DEFAULT_PASS_ENV.iter().copied().chain(self.plugin.manifest.permissions.env.iter().map(String::as_str));
-            for var in names {
-                if let Some(value) = std::env::var_os(var) {
-                    cmd.env(var, value);
-                }
-            }
-        }
+        let pass_env = self.plugin.manifest.permissions.env.iter().map(String::as_str);
+        graphrt_core::child_env::set_child_env(cmd.as_std_mut(), self.runtime.inherit_env, pass_env);
         cmd.envs(&self.runtime.env);
         cmd.env("GRAPHRT_PLUGIN", name);
         cmd.env("GRAPHRT_PLUGIN_PROTOCOL", crate::manifest::PROTOCOL_VERSION.to_string());
@@ -277,7 +269,9 @@ impl ProcessTransport {
 fn kill_group(pid: Option<u32>) {
     #[cfg(unix)]
     if let Some(pid) = pid {
-        let _no_group_left = std::process::Command::new("kill")
+        let mut kill = std::process::Command::new("kill");
+        graphrt_core::child_env::apply_host_env(&mut kill);
+        let _no_group_left = kill
             .args(["-s", "KILL", "--", &format!("-{pid}")])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())

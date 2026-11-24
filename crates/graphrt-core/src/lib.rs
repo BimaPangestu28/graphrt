@@ -13,6 +13,7 @@
 //! [`node::Services`] and [`node::Registry`].
 
 pub mod catalog;
+pub mod child_env;
 pub mod condition;
 pub mod dsl;
 pub mod engine;

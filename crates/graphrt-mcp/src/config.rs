@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 /// Default per-call timeout.
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
-/// Host variables passed to stdio servers when `inherit_env` is false.
-/// Most launchers (`npx`, `uvx`, `docker`) need these to start at all.
-pub const DEFAULT_PASS_ENV: &[&str] = &["PATH", "HOME", "LANG", "TMPDIR", "SYSTEMROOT", "USERPROFILE", "APPDATA"];
+/// Host variables passed to stdio servers when `inherit_env` is false
+/// (shared with plugin processes; see [`graphrt_core::child_env`]).
+pub use graphrt_core::child_env::DEFAULT_PASS_ENV;
 
 /// One MCP server.
 ///
