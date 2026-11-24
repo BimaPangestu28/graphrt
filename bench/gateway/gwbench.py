@@ -989,11 +989,12 @@ def checks_for(name: str, result: dict, targets: dict) -> list[Check]:
         budget = t["ttfb_overhead_tcp_p95_ms"] + result["loopback_rtt_ms"]
         return [Check(name, "overhead p95 (budget + 1 RTT)", result["overhead_p95_ms"], round(budget, 4), "ms")]
     if name == "sse":
-        return [Check(name, "gateway peak RSS", result["gateway_peak_rss_mib"], t["sse_rss_mib"], "MiB"),
-                Check(name, "gateway peak RSS (audit target, not gated)", result["gateway_peak_rss_mib"],
-                      t.get("sse_rss_target_mib", t["sse_rss_mib"]), "MiB", gated=False),
-                Check(name, "failed streams", result["failed_streams"], 0, ""),
-                Check(name, "stalled streams", result["stalled_streams"], 0, "")]
+        checks = [Check(name, "gateway peak RSS", result["gateway_peak_rss_mib"], t["sse_rss_mib"], "MiB")]
+        if "sse_rss_target_mib" in t:
+            checks.append(Check(name, "gateway peak RSS (target, not gated)", result["gateway_peak_rss_mib"],
+                                t["sse_rss_target_mib"], "MiB", gated=False))
+        return checks + [Check(name, "failed streams", result["failed_streams"], 0, ""),
+                         Check(name, "stalled streams", result["stalled_streams"], 0, "")]
     if name == "wake":
         return [Check(name, "p95 to first event", result["first_event_ms"]["p95"], t["wake_p95_ms"], "ms")]
     if name == "wake-wasm":

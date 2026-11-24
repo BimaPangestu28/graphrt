@@ -143,11 +143,11 @@ sse_streams = 1000
 sse_chunks = 20
 sse_chunk_interval_ms = 500
 sse_max_gap_ms = 2500
-# Gate: the CI budget of the plan (§9, 80 MiB). The audit's target (§4.2,
-# 64 MiB) is reported next to it and not met yet: two HTTP/1.1 connections per
-# stream (client and agent side) keep ~32 KiB of hyper buffers each stream.
-sse_rss_mib = 80.0
-sse_rss_target_mib = 64.0
+# Gate: the audit's target (§4.2, 64 MiB), tighter than the plan's CI budget
+# (§9, 80 MiB). ~44 MiB since the lean agent stream client (one 2 KiB read
+# buffer per agent connection instead of ~34 KiB of hyper/reqwest state); the
+# client side still holds hyper's server buffers, ~25 KiB per stream.
+sse_rss_mib = 64.0
 # Cold wake of the local provider: request -> new agent process -> first SSE
 # event, one fresh deployment per sample. With a Node.js process plugin the
 # clock stops at the plugin node's result (its host must be up).

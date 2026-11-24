@@ -166,37 +166,59 @@ bench/targets.sh --build-only --target aarch64-unknown-linux-musl \
 sudo bench/targets.sh --bin-dir bins                 # root only for the container drain test
 ```
 
-| Target | How it is measured | aarch64 (2026-11-23) | Target |
+| Target | How it is measured | aarch64 (2026-11-24) | Target |
 | --- | --- | ---: | ---: |
-| TTFB overhead, gateway → agent on a Unix socket | first `run_started` byte through the gateway minus signed straight to the same agent, interleaved, n = 1,000 | p50 0.25 ms, p95 0.31 ms | ≤ 0.3 / ≤ 1 ms |
-| TTFB overhead, agent on loopback TCP | the same behind the k8s provider (fake Kubernetes API) | p95 0.39 ms | ≤ 1 ms + 1 RTT |
-| 1,000 concurrent SSE streams | 20 chunks 500 ms apart each (fake OpenAI); gateway peak RSS, stalls | 76.2 MiB (median of 3 rounds: 74.3–76.3), 0 failed, 0 stalled, max gap 559 ms | ≤ 80 MiB (plan); audit: 64 |
-| Cold wake, local provider | request → new agent process → first SSE event, 100 fresh deployments | p95 6.6 ms | ≤ 15 ms |
-| Cold wake + Node.js plugin | request → the plugin node's result | **p95 67.9 ms, missed** (the plugin alone, no graphrt, in the same run: 67.5 ms); 56.9–67.9 ms across runs | ≤ 60 ms |
-| Webhook ack | HMAC-signed POST → 202, n = 1,000 | p95 0.67 ms | ≤ 10 ms |
-| Cron lag | 1,000 schedules firing in the same minute → run finished | p95 460 ms | ≤ 1 s |
-| RS256 JWT verification | cached JWKS key, 5,000 verifications | mean 16.6 µs | ≤ 50 µs |
-| PID 1 drain in a container | `docker stop` of the release image's base with a run in flight | exit 0 in 1.59 s, run paused (drained) | ≤ drain timeout |
-| Gateway binary / idle RSS | `--features gateway` (`gateway-core`), min-size | 6.80 MiB / 6.6 MiB | ≤ 6.95 / ≤ 20 MiB |
+| TTFB overhead, gateway → agent on a Unix socket | first `run_started` byte through the gateway minus signed straight to the same agent, interleaved, n = 1,000 | p50 0.24 ms, p95 0.28 ms | ≤ 0.3 / ≤ 1 ms |
+| TTFB overhead, agent on loopback TCP | the same behind the k8s provider (fake Kubernetes API) | p95 0.29 ms | ≤ 1 ms + 1 RTT |
+| 1,000 concurrent SSE streams | 20 chunks 500 ms apart each (fake OpenAI); gateway peak RSS, stalls | 44.5 MiB (median of 3 rounds: 44.4–44.8), 0 failed, 0 stalled, max gap 513 ms | ≤ 64 MiB (audit; plan: 80) |
+| Cold wake, local provider | request → new agent process → first SSE event, 100 fresh deployments | p95 5.3 ms | ≤ 15 ms |
+| Cold wake + Node.js plugin | request → the plugin node's result | **p95 70.5 ms, missed** (the plugin alone, no graphrt, in the same run: 61.6 ms); 56.9–90.6 ms across runs | ≤ 60 ms |
+| Webhook ack | HMAC-signed POST → 202, n = 1,000 | p95 0.54 ms | ≤ 10 ms |
+| Cron lag | 1,000 schedules firing in the same minute → run finished | p95 448 ms | ≤ 1 s |
+| RS256 JWT verification | cached JWKS key, 5,000 verifications | mean 16.9 µs | ≤ 50 µs |
+| PID 1 drain in a container | `docker stop` of the release image's base with a run in flight | exit 0 in 1.58 s, run paused (drained) | ≤ drain timeout |
+| Gateway binary / idle RSS | `--features gateway` (`gateway-core`), min-size | 6.84 MiB / 6.7 MiB | ≤ 6.95 / ≤ 20 MiB |
 
 Machine: Lima VM (vz, 4 vCPU, 4 GiB, Ubuntu 26.04) on an Apple M3 Pro, static
 musl binaries; raw data in
-[bench/results/targets-2026-11-23-lima-gbench-aarch64.md](../bench/results/targets-2026-11-23-lima-gbench-aarch64.md).
+[bench/results/targets-2026-11-24-lima-gbench-aarch64-lean-streams.md](../bench/results/targets-2026-11-24-lima-gbench-aarch64-lean-streams.md)
+(the same day before the lean stream client: [targets-2026-11-24-lima-gbench-aarch64.md](../bench/results/targets-2026-11-24-lima-gbench-aarch64.md)).
 Latency targets run three rounds and gate the median one: in a VM on a busy
 laptop single rounds swing by 2x.
 
-- **Two targets are at or past their limit.** With a Node.js plugin the
-  plugin's own start (spawn → `initialize`, no graphrt) takes 50–68 ms on
-  this VM depending on load, and graphrt adds 0–8 ms on top: the 60 ms target
-  passed in quiet runs (56.9, 57.3 ms) and missed in the recorded one
-  (67.9 ms, with the plugin alone at 67.5 ms). 1,000 streams peak at
-  74–80 MiB against the audit's 64 MiB: each stream holds
-  two HTTP/1.1 connections (client and agent side) with about 32 KiB of hyper
-  buffers between them; the plan's CI budget (80 MiB) is what the gate checks.
+- **One target is past its limit.** With a Node.js plugin the plugin's own
+  start (spawn → `initialize`, no graphrt) takes 50–68 ms on this VM
+  depending on load (61.6 ms at p95 in the recorded run, so the 60 ms target
+  cannot pass there), and graphrt adds 0–12 ms on top: the target passed in
+  quiet runs (56.9, 57.3, 58.5, 59.7 ms).
+- **1,000 streams: 76 → 45 MiB.** Same window, same agents, median of 3 rounds,
+  interleaved: 74.6–77.6 MiB with the gateway of `main` before the change,
+  44.4–47.8 MiB with the lean agent stream client. Per stream (heaptrack, glibc
+  build without mimalloc): before, ~73 KiB of heap, of which ~34 KiB for the
+  agent connection (hyper's 8 KiB read, head and write buffers and a 9 KiB
+  dispatch-channel block through reqwest), ~25 KiB for the client connection
+  (hyper server) and 9 KiB for the run's supervisor task; after, 2 KiB for the
+  agent connection, 3.6 KiB for the supervisor task, the client connection
+  unchanged. hyper allocates the client side's 8 KiB write and 8–16 KiB read
+  buffers whatever `max_buf_size` says (its minimum is 8 KiB), so the remaining
+  ~25 KiB per stream would need another HTTP server; HTTP/2 between gateway and
+  agents (one connection per agent) would need the `h2` crate, which the plan's
+  dependency gate excludes.
+- **Throughput and latency of the change.** Same window, interleaved runs
+  against `main` before the change: warm TTFB overhead p50 0.257 → 0.247 ms and
+  p95 0.31 → 0.30 ms (Unix socket, median of 4 pairs), loopback TCP p95 0.29 ms
+  for both; 1,000 streams × 100 chunks 5 ms apart: gateway CPU 27.1–28.2 →
+  24.9–25.3 µs per chunk, 0 failed streams, peak RSS of that burst 117–119 →
+  87–90 MiB; cron lag p95 unchanged (451–903 vs 430–929 ms across pairs). A
+  run's frames read in one go are handed to its client streams one by one
+  (after a frame that woke a client stream the reader goes to the back of its
+  worker's queue before the next buffered one), as hyper's body channel did:
+  without it a hello run's first event reached the client ~45 µs later. Runs
+  without a client stream (cron, webhooks) never yield.
 - **x86_64** sizes are measured (`scripts/budget-gate.py --target
-  x86_64-unknown-linux-musl`: gateway 7.93 MiB, all providers 8.91 MiB, within
-  their x86_64 budgets); x86_64 run-time numbers need a native runner (under
-  Rosetta a cold wake takes ~150 ms of translation).
+  x86_64-unknown-linux-musl`: gateway 7.98 MiB, all providers 8.97 MiB, within
+  their x86_64 budgets of 8 and 9 MiB); x86_64 run-time numbers need a native
+  runner (under Rosetta a cold wake takes ~150 ms of translation).
 
 ## Caveats
 

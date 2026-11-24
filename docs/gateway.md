@@ -371,8 +371,23 @@ Warm-up: per deployment version and `source`,
 
 Measured on Linux aarch64 with `bench/targets.sh`
 ([details](benchmarks.md#gateway-targets-on-linux)): the gateway adds about
-0.25 ms to the first byte of a warm run (Unix socket or loopback TCP), wakes a
-local agent in ~7 ms (p95), acks a webhook in under 1 ms, idles at 7 MiB and holds
-1,000 concurrent streams in ~76 MiB (about 70 KiB per stream, half of it two
-HTTP/1.1 connections). An agent started by the gateway starts its process
-plugins at once, alongside the dispatch of the run that woke it.
+0.24 ms to the first byte of a warm run (Unix socket or loopback TCP), wakes a
+local agent in 5–13 ms (p95, depending on host load), acks a webhook in under 1 ms, idles at 7 MiB and holds
+1,000 concurrent streams in ~45 MiB (about 37 KiB per stream, two thirds of it
+the client's HTTP/1.1 connection). An agent started by the gateway starts its
+process plugins at once, alongside the dispatch of the run that woke it.
+
+Run streams from Unix-socket and `http://` agents go through a lean HTTP/1.1
+client (`graphrt_gateway::stream_conn`): one 2 KiB read buffer per stream,
+grown only while an event is larger (up to 64 KiB per read) and shrunk back
+after it, with the agent's frames parsed straight out of it. Finished streams
+leave their connection for the next run (keep-alive, at most 32 idle per agent,
+closed after 60 s idle). `https://` agents (Cloud Run, Container Apps) and the
+short control calls (`hello`, `orphans`, `drain`, `abort`) use reqwest.
+
+Per-stream memory is bounded under slow clients: a client stream buffers at
+most 64 frames; one that falls behind the 32-frame live broadcast catches up
+from the run's replay ring or is disconnected and resumes from the store with
+`Last-Event-ID`. The agent is never slowed down by a client: its frames are
+read, stored and broadcast at its own pace. One event from an agent may not
+exceed 4 MiB.

@@ -145,6 +145,8 @@ async fn start_run(State(state): State<Arc<AgentState>>, headers: HeaderMap, bod
     let preempt_after = request["preempt_after_ms"].as_u64().map(Duration::from_millis);
     state.world.preempt_after.lock().unwrap().push(request["preempt_after_ms"].as_u64());
     let delay = Duration::from_millis(inputs["delay_ms"].as_u64().unwrap_or(0));
+    // `pad_bytes`: size of each response chunk's text (large events, slow clients).
+    let pad = "x".repeat(usize::try_from(inputs["pad_bytes"].as_u64().unwrap_or(0)).unwrap());
     let base = request["event_index"].as_u64().unwrap_or(0);
     let resumed = request.get("resume").is_some();
     let (mut sender, receiver) = futures::channel::mpsc::channel::<Bytes>(16);
@@ -173,7 +175,7 @@ async fn start_run(State(state): State<Arc<AgentState>>, headers: HeaderMap, bod
             }
             let (kind, id, data) = emit(json!({ "type": "node_succeeded", "step": step, "execution": previous }));
             let _ = sender
-                .send(frame("response", Some(format!("{id}.0")), &json!({ "text": format!("chunk{step}") })))
+                .send(frame("response", Some(format!("{id}.0")), &json!({ "text": format!("chunk{step}{pad}") })))
                 .await;
             if sender.send(frame(&kind, Some(id.to_string()), &data)).await.is_err() {
                 return;

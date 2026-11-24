@@ -161,7 +161,9 @@ impl LiveRun {
         })
     }
 
-    fn publish(&self, frame: Frame) {
+    /// Appends `frame` to the ring and broadcasts it; `true` when a client
+    /// stream was subscribed (and is now woken).
+    fn publish(&self, frame: Frame) -> bool {
         let frame = Arc::new(frame);
         {
             let mut ring = self.ring.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -170,7 +172,7 @@ impl LiveRun {
             }
             ring.push_back(frame.clone());
         }
-        let _no_subscribers = self.frames.send(frame);
+        self.frames.send(frame).is_ok()
     }
 
     /// Subscribes to new frames and returns the buffered ones (oldest first).
@@ -535,11 +537,9 @@ impl Gateway {
         let gateway = Arc::clone(self);
         let supervised = run.clone();
         if claimed {
-            graphrt_core::task::spawn(async move {
-                gateway.supervise_claimed(supervised, version, record, lease, None).await;
-            });
+            graphrt_core::task::spawn(gateway.supervise_claimed(supervised, version, record, lease, None));
         } else {
-            graphrt_core::task::spawn(async move { gateway.supervise(supervised, version, record, lease, None).await });
+            graphrt_core::task::spawn(gateway.supervise(supervised, version, record, lease, None));
         }
         Ok(Started::New(run))
     }
@@ -583,9 +583,7 @@ impl Gateway {
         let resume = serde_json::json!({ "snapshot": snapshot, "inputs": inputs, "secrets": secrets });
         let gateway = Arc::clone(self);
         let supervised = run.clone();
-        graphrt_core::task::spawn(async move {
-            gateway.supervise_claimed(supervised, version, record, Some(lease), Some(resume)).await
-        });
+        graphrt_core::task::spawn(gateway.supervise_claimed(supervised, version, record, Some(lease), Some(resume)));
         Ok(run)
     }
 
@@ -719,7 +717,9 @@ impl Gateway {
                 continue;
             }
             let Some(index) = frame.event_index() else {
-                run.publish(frame);
+                if run.publish(frame) {
+                    stream.handed_to_clients();
+                }
                 continue;
             };
             if index < record.event_count + buffer.len() as u64 {
@@ -734,7 +734,9 @@ impl Gateway {
             } else {
                 frame
             };
-            run.publish(public);
+            if run.publish(public) {
+                stream.handed_to_clients();
+            }
             if let Some(event) = terminal {
                 if let Some(count) = self.flush(&run.run_id, &mut buffer).await {
                     record.event_count = count;
@@ -874,125 +876,150 @@ impl Gateway {
     }
 
     /// Drives `record` through executions until it settles.
-    async fn supervise(
+    fn supervise(
         self: Arc<Self>,
         run: Arc<LiveRun>,
         version: VersionEntry,
         record: RunRecord,
         lease: Option<Lease>,
         resume: Option<Json>,
-    ) {
-        self.supervise_inner(run, version, record, lease, resume, false).await;
+    ) -> impl Future<Output = ()> + Send + 'static {
+        self.supervise_with(run, version, record, lease, resume, false)
     }
 
     /// [`Self::supervise`] for a record already claimed at its current epoch.
-    async fn supervise_claimed(
+    fn supervise_claimed(
         self: Arc<Self>,
         run: Arc<LiveRun>,
         version: VersionEntry,
         record: RunRecord,
         lease: Option<Lease>,
         resume: Option<Json>,
-    ) {
-        self.supervise_inner(run, version, record, lease, resume, true).await;
+    ) -> impl Future<Output = ()> + Send + 'static {
+        self.supervise_with(run, version, record, lease, resume, true)
     }
 
-    async fn supervise_inner(
-        self: Arc<Self>,
-        run: Arc<LiveRun>,
-        version: VersionEntry,
-        record: RunRecord,
-        lease: Option<Lease>,
-        resume: Option<Json>,
-        claimed: bool,
-    ) {
-        let deadline = Instant::now() + self.settings.run_timeout;
-        match tokio::time::timeout_at(
-            deadline,
-            self.clone().executions(run.clone(), version, record.clone(), lease, resume, claimed),
-        )
-        .await
-        {
-            Ok(()) => {}
-            Err(_) => {
-                let current = self.store.get(&run.run_id).await.ok().flatten().unwrap_or(record);
-                self.fail(&run, current, "run_timeout", "run exceeded the gateway run timeout").await;
-            }
-        }
-    }
-
-    // Every await but the pump is boxed: an async fn is as large as its largest
-    // awaited future, and this one lives for the whole run (13.6 KiB per run
-    // before, mostly for `finish`, `fail` and the orphan path).
-    async fn executions(
+    // This future lives for the whole run, one per streaming client: keep it
+    // small (plan §4.2, 1,000 streams). Not an `async fn`: those store their
+    // arguments twice (as arguments and as locals); the block captures them once
+    // and `executions` works on them by reference. Every await but the pump is
+    // boxed: an async fn is as large as its largest awaited future.
+    #[allow(clippy::manual_async_fn)]
+    fn supervise_with(
         self: Arc<Self>,
         run: Arc<LiveRun>,
         version: VersionEntry,
         mut record: RunRecord,
         mut lease: Option<Lease>,
         mut resume: Option<Json>,
+        claimed: bool,
+    ) -> impl Future<Output = ()> + Send + 'static {
+        async move {
+            let deadline = Instant::now() + self.settings.run_timeout;
+            let executions = self.executions(&run, &version, &mut record, &mut lease, &mut resume, claimed);
+            if tokio::time::timeout_at(deadline, executions).await.is_err() {
+                // As when the timed-out execution owned it: its replica slot first.
+                drop(lease.take());
+                Box::pin(self.time_out(&run, &record)).await;
+            }
+        }
+    }
+
+    async fn time_out(self: &Arc<Self>, run: &Arc<LiveRun>, record: &RunRecord) {
+        let current = self.store.get(&run.run_id).await.ok().flatten().unwrap_or_else(|| record.clone());
+        self.fail(run, current, "run_timeout", "run exceeded the gateway run timeout").await;
+    }
+
+    /// Claims the dispatch of the next execution into `record` (`claimed`:
+    /// already held). Writes in place: a `Result<RunRecord, _>` would be held in
+    /// the long-lived [`Self::executions`] future.
+    async fn claim(
+        &self,
+        run: &LiveRun,
+        record: &mut RunRecord,
+        lease: Option<&Lease>,
+        claimed: bool,
+    ) -> Result<(), StoreError> {
+        if claimed {
+            return Ok(());
+        }
+        let owner = lease.map(|lease| lease.endpoint.replica.id.clone());
+        *record = self.store.claim_dispatch(&run.run_id, record.epoch, owner, now_ms()).await?;
+        Ok(())
+    }
+
+    async fn claim_refused(&self, run: &LiveRun, record: &RunRecord, error: StoreError) {
+        eprintln!("gateway: run {}: dispatch claim refused: {error}", run.run_id);
+        let current = self.store.get(&run.run_id).await.ok().flatten().unwrap_or_else(|| record.clone());
+        run.settled.send_replace(Settled::Done(Box::new(current)));
+    }
+
+    /// `record` as stored now (after a terminal event moved it on), else as is.
+    async fn reload(&self, run: &LiveRun, record: &mut RunRecord) {
+        if let Some(current) = self.store.get(&run.run_id).await.ok().flatten() {
+            *record = current;
+        }
+    }
+
+    async fn executions(
+        self: &Arc<Self>,
+        run: &Arc<LiveRun>,
+        version: &VersionEntry,
+        record: &mut RunRecord,
+        lease: &mut Option<Lease>,
+        resume: &mut Option<Json>,
         mut claimed: bool,
     ) {
         let mut lost = 0u32;
         loop {
-            let owner = lease.as_ref().map(|lease| lease.endpoint.replica.id.clone());
-            let claim = if std::mem::take(&mut claimed) {
-                Ok(record.clone())
-            } else {
-                self.store.claim_dispatch(&run.run_id, record.epoch, owner, now_ms()).await
-            };
-            record = match claim {
-                Ok(claimed) => claimed,
-                Err(error) => {
-                    eprintln!("gateway: run {}: dispatch claim refused: {error}", run.run_id);
-                    let current = self.store.get(&run.run_id).await.ok().flatten();
-                    run.settled.send_replace(Settled::Done(Box::new(current.unwrap_or(record))));
-                    return;
+            if let Err(error) = Box::pin(self.claim(run, record, lease.as_ref(), std::mem::take(&mut claimed))).await {
+                return Box::pin(self.claim_refused(run, record, error)).await;
+            }
+            let mut stream = match Box::pin(self.open_stream(run, version, record, lease, resume.as_ref())).await {
+                Ok(stream) => stream,
+                Err((error_type, message)) => {
+                    return Box::pin(self.fail(run, record.clone(), error_type, &message)).await;
                 }
             };
-            let mut stream =
-                match Box::pin(self.open_stream(&run, &version, &record, &mut lease, resume.as_ref())).await {
-                    Ok(stream) => stream,
-                    Err((error_type, message)) => return Box::pin(self.fail(&run, record, error_type, &message)).await,
-                };
-            let capabilities = version.pool.capabilities().clone();
+            let capabilities = version.pool.capabilities();
             let request_cap =
                 capabilities.max_request_secs.filter(|_| !capabilities.can_preempt()).map(Duration::from_secs);
+            let url_addressing = capabilities.addressing == Addressing::Url;
             let outcome = loop {
                 let pumped = match request_cap {
                     // No grace, no preemption (Lambda): the platform kills the run at its cap.
-                    Some(cap) => match tokio::time::timeout(cap, self.pump(&run, &mut stream, &mut record)).await {
+                    Some(cap) => match tokio::time::timeout(cap, self.pump(run, &mut stream, record)).await {
                         Ok(outcome) => outcome,
                         Err(_) => {
-                            return Box::pin(self.fail(
-                                &run,
-                                record,
-                                "platform_timeout",
-                                "run exceeded the platform's request limit",
-                            ))
-                            .await;
+                            let message = "run exceeded the platform's request limit";
+                            return Box::pin(self.fail(run, record.clone(), "platform_timeout", message)).await;
                         }
                     },
-                    None => self.pump(&run, &mut stream, &mut record).await,
+                    None => self.pump(run, &mut stream, record).await,
                 };
                 match pumped {
                     Outcome::Finished(event) => break Outcome::Finished(event),
                     Outcome::PlatformTimeout(message) => break Outcome::PlatformTimeout(message),
                     Outcome::Broken(reason) => {
-                        match Box::pin(self.reattach(&run, &version, &record, lease.as_ref())).await {
+                        match Box::pin(self.reattach(run, version, record, lease.as_ref())).await {
                             Some(reattached) => stream = reattached,
                             None => break Outcome::Broken(reason),
                         }
                     }
                 }
             };
+            if matches!(outcome, Outcome::Finished(_)) {
+                stream.recycle();
+            } else {
+                drop(stream);
+            }
             match outcome {
-                Outcome::Finished(event) => match Box::pin(self.finish(&run, record.clone(), &event)).await {
+                Outcome::Finished(event) => match Box::pin(self.finish(run, record.clone(), &event)).await {
                     Some(next) => {
                         lost = 0;
                         bump(&self.metrics.redispatches);
-                        record = self.store.get(&run.run_id).await.ok().flatten().unwrap_or(record);
-                        resume = Some(next);
+                        Box::pin(self.reload(run, record)).await;
+                        *resume = Some(next);
                         drop(lease.take());
                     }
                     None => return,
@@ -1001,43 +1028,44 @@ impl Gateway {
                 // happened, so there is nothing to re-dispatch from.
                 Outcome::PlatformTimeout(message) => {
                     let message = format!("platform ended the run: {message}");
-                    return Box::pin(self.fail(&run, record, "platform_timeout", &message)).await;
+                    return Box::pin(self.fail(run, record.clone(), "platform_timeout", &message)).await;
                 }
                 Outcome::Broken(reason) => {
                     if let Some(broken) = lease.take() {
                         self.agents.forget(&broken.endpoint.address);
                         broken.release_broken();
                     }
-                    let terminal = if capabilities.addressing == Addressing::Url {
+                    let terminal = if url_addressing {
                         // No instance can be addressed to pull an orphan from.
                         None
                     } else {
                         let receiver = run.expect_orphan();
                         // Agents never call the gateway: pull the orphan from them.
-                        graphrt_core::task::spawn(Arc::clone(&self).keep_polling_orphans(vec![run.run_id.clone()]));
-                        let orphan = Box::pin(self.await_orphan(&run, receiver, record.epoch)).await;
+                        graphrt_core::task::spawn(Arc::clone(self).keep_polling_orphans(vec![run.run_id.clone()]));
+                        let orphan = Box::pin(self.await_orphan(run, receiver, record.epoch)).await;
                         run.stop_awaiting_orphan();
                         orphan_terminal(orphan.as_ref())
                     };
                     let next = match terminal {
                         Some(event) => {
                             lost = 0;
-                            let Some(next) = Box::pin(self.finish(&run, record.clone(), &event)).await else { return };
+                            let Some(next) = Box::pin(self.finish(run, record.clone(), &event)).await else { return };
                             bump(&self.metrics.redispatches);
-                            record = self.store.get(&run.run_id).await.ok().flatten().unwrap_or(record);
+                            Box::pin(self.reload(run, record)).await;
                             Some(next)
                         }
                         None => {
                             lost += 1;
-                            let Some((requeued, next)) = Box::pin(self.requeue(&run, record, &reason, lost)).await
+                            let Some((requeued, next)) =
+                                Box::pin(self.requeue(run, record.clone(), &reason, lost)).await
                             else {
                                 return;
                             };
-                            record = requeued;
+                            *record = requeued;
                             next
                         }
                     };
-                    resume = next;
+                    *resume = next;
                 }
             }
         }
@@ -1213,7 +1241,7 @@ impl Gateway {
             waiting.push(record.run_id.clone());
             let gateway = Arc::clone(self);
             let record = record.clone();
-            graphrt_core::task::spawn(async move { gateway.reclaim(run, record, receiver).await });
+            graphrt_core::task::spawn(gateway.reclaim(run, record, receiver));
         }
         self.poll_orphans(&waiting).await;
         graphrt_core::task::spawn(Arc::clone(self).keep_polling_orphans(waiting));
@@ -1263,7 +1291,7 @@ impl Gateway {
                 requeued
             }
         };
-        self.supervise(run, version, current, None, next).await;
+        Box::pin(self.supervise(run, version, current, None, next)).await;
     }
 
     /// Asks every listed replica of every deployment for orphans of `run_ids`.
@@ -1348,7 +1376,8 @@ mod live_run_tests {
 
     fn publish(run: &LiveRun, events: std::ops::Range<u64>) {
         for index in events {
-            run.publish(Frame { event: "node_succeeded".into(), id: Some(index.to_string()), data: "{}".into() });
+            let _subscribed =
+                run.publish(Frame { event: "node_succeeded".into(), id: Some(index.to_string()), data: "{}".into() });
         }
     }
 
