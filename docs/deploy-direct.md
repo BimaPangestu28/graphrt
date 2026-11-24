@@ -33,6 +33,27 @@ curl -s https://support-bot.fly.dev/v1/workflows/support/runs \
 The direct deploy is in the default build (cargo feature `deploy-fly`) and
 in both release builds (`graphrt-<target>` and `graphrt-gateway-<target>`).
 
+## Getting the CLI
+
+Prebuilt binaries are attached to each GitHub release
+(`https://github.com/BimaPangestu28/graphrt/releases/download/v<version>/<asset>`).
+Asset names carry the target but **not** the version:
+
+| Platform | Agent build (has `deploy --direct`) | Gateway build |
+| --- | --- | --- |
+| macOS arm64 | `graphrt-aarch64-apple-darwin.tar.gz` | `graphrt-gateway-aarch64-apple-darwin.tar.gz` |
+| macOS x86_64 | `graphrt-x86_64-apple-darwin.tar.gz` | `graphrt-gateway-x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 (static musl) | `graphrt-x86_64-unknown-linux-musl.tar.gz` | `graphrt-gateway-x86_64-unknown-linux-musl.tar.gz` |
+| Linux arm64 (static musl) | `graphrt-aarch64-unknown-linux-musl.tar.gz` | `graphrt-gateway-aarch64-unknown-linux-musl.tar.gz` |
+| Windows x86_64 | `graphrt-x86_64-pc-windows-msvc.zip` | – |
+
+Each archive holds one directory named like the archive without extension
+(`graphrt-aarch64-apple-darwin/`) with `graphrt` (`graphrt.exe`), `LICENSE`,
+`README.md` and `CHANGELOG.md`. The release's `SHA256SUMS` lists every asset
+in `sha256sum` format (`<64 hex>  <asset name>`, two spaces). Releases are
+not signed. `graphrt version` lists `deploy-fly` among the features when
+direct deploys are available (releases after 0.5.0).
+
 ## Commands
 
 ```text
@@ -68,7 +89,9 @@ base URL; default `https://api.machines.dev`, used by tests and for
 ## JSON Lines contract
 
 With `--json`, stdout carries only JSON objects, one per line: zero or more
-`step` lines, then exactly **one** final `result` or `error` line. stderr is
+`step` lines, then exactly **one** final `result` or `error` line (a failed
+deploy that already stored a new API key prints one
+[`api_key` line](#the-api-key-on-failure) right before its `error`). stderr is
 free-form (an `error: …` line on failure). Every line validates against
 [`schemas/deploy-direct.schema.json`](schemas/deploy-direct.schema.json)
 (JSON Schema 2020-12), which the contract tests enforce
@@ -107,8 +130,8 @@ before the first step (only the `error` line is printed). `rollback` and
 | Command | Final line |
 | --- | --- |
 | deploy | `{"type":"result","action":"deploy","url":"https://support-bot.fly.dev","version":"v1","app":"support-bot","workflow":"support","api_key":"grk_…"}` |
-| status | `{"type":"result","action":"status","app":…,"url":…,"status":"online","version":"v2","workflow":"support","mode":"scale-to-zero","deployed_at":"2026-11-24T16:00:00.123Z","machines":[{"id":…,"name":…,"state":"stopped","region":"ams","version":"v2","role":"current","checks":[{"name":"readyz","status":"passing"}]}, …]}` |
-| list-versions | `{"type":"result","action":"list-versions","app":…,"url":…,"versions":[{"version":"v2","deployed_at":…,"current":true,"role":"current","mode":"scale-to-zero","workflow":"support","state":"stopped"}, …]}` (newest first) |
+| status | see [status](#status-and-list-versions) |
+| list-versions | see [list-versions](#status-and-list-versions) |
 | rollback | `{"type":"result","action":"rollback","app":…,"url":…,"version":"v1","workflow":"support"}` |
 | pause | `{"type":"result","action":"pause","app":…,"url":…,"status":"paused","changed":true}` |
 | resume | `{"type":"result","action":"resume","app":…,"url":…,"status":"online","version":"v1","changed":true}` |
@@ -125,10 +148,8 @@ before the first step (only the `error` line is printed). `rollback` and
   next request), `paused`, `deploying` (a version is being started; a
   candidate older than 15 minutes counts as abandoned), `failed` (the current
   Machine crashed, its check is `critical`, or an always-on Machine is not
-  running) or `not_deployed` (the app exists but nothing is current, e.g.
-  after a failed first deploy).
-- `deployed_at`: when the current version was first deployed (RFC 3339, UTC);
-  a rollback keeps the version's original time.
+  running) or `offline` (the app exists but nothing is current, e.g. after a
+  failed first deploy).
 - `changed: false`: pause of a paused deployment, resume of a running one.
 - `removed: false`: the app did not exist.
 
@@ -153,9 +174,78 @@ before the first step (only the `error` line is printed). `rollback` and
 | `fly_api` | another refusal by the Machines API (4xx), with Fly's message |
 | `internal` | no random source or async runtime on this machine |
 
-A deploy that already stored a **new** API key before failing (for example a
-first deploy whose health check failed) adds `"api_key"` to the error line:
-it is stored on Fly and will not be shown again.
+The API key is **never** in an `error` line.
+
+### The API key on failure
+
+A deploy stores a new API key in the `secrets` step (first deploy, or
+`--rotate-api-key`). If a later step fails, the key is already live on Fly
+and cannot be read back (and the previous one, on rotation, is gone), so it
+is not rolled back: it is handed over in one dedicated line printed
+immediately before the `error` line:
+
+```json
+{"type":"api_key","api_key":"grk_…"}
+{"type":"error","code":"health_check_failed","message":"…"}
+```
+
+On success there is no `api_key` line: the key is in the result's
+`api_key`. Either way it is printed exactly once; the next deploy reports
+`api_key: null`.
+
+### status and list-versions
+
+`graphrt deploy status --json`, final line (every field always present, `null` when unknown):
+
+```json
+{
+  "type": "result",
+  "action": "status",
+  "app": "support-bot",
+  "url": "https://support-bot.fly.dev",
+  "status": "online",
+  "current_version": "v2",
+  "workflow": "support",
+  "mode": "scale-to-zero",
+  "last_deployed_at": "2026-11-24T16:00:00.123Z",
+  "machines": [
+    {"id": "148e…", "name": "graphrt-v2-1a2b3c4d", "state": "stopped", "region": "ams",
+     "version": "v2", "role": "current", "checks": [{"name": "readyz", "status": "passing"}]},
+    {"id": "9080…", "name": "graphrt-v1-5e6f7a8b", "state": "stopped", "region": "ams",
+     "version": "v1", "role": "standby", "checks": []}
+  ]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `status` | `online` \| `paused` \| `deploying` \| `failed` \| `offline` | see above |
+| `current_version` | string \| null | label of the version serving (null when `offline`) |
+| `last_deployed_at` | RFC 3339 UTC string \| null | when the current version was deployed; a rollback keeps that version's original time |
+| `mode` | `always-on` \| `scale-to-zero` \| null | mode of the current version |
+| `machines[]` | `{id, state, region, …}` | every Machine of the app (current and standby); `state` is Fly's (`started`, `stopped`, `suspended`, `starting`, `failed`…), plus `name`, `version`, `role` (`current`/`candidate`/`standby`) and `checks[{name, status}]` |
+
+`graphrt deploy list-versions --json`, final line (newest deploy first):
+
+```json
+{
+  "type": "result",
+  "action": "list-versions",
+  "app": "support-bot",
+  "url": "https://support-bot.fly.dev",
+  "current_version": "v2",
+  "versions": [
+    {"label": "v2", "deployed_at": "2026-11-24T16:00:00.123Z", "current": true, "role": "current",
+     "mode": "scale-to-zero", "workflow": "support", "state": "stopped"},
+    {"label": "v1", "deployed_at": "2026-11-23T09:12:00.000Z", "current": false, "role": "standby",
+     "mode": "scale-to-zero", "workflow": "support", "state": "stopped"}
+  ]
+}
+```
+
+`versions[]` always has `label`, `deployed_at`, `current`, plus `role`,
+`mode`, `workflow` and `state` (the version's Machine). Only these versions
+can be passed to `rollback`.
 
 ## How it works
 

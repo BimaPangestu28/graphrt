@@ -153,10 +153,10 @@ async fn new_version_demotes_the_old_one_to_a_stopped_standby_without_services()
 
     let status = direct.status(3_000).await.unwrap();
     assert_eq!(status.status, DeploymentState::Online);
-    assert_eq!(status.version.as_deref(), Some("v2"));
-    assert_eq!(status.deployed_at.as_deref(), Some("1970-01-01T00:00:02.000Z"));
+    assert_eq!(status.current_version.as_deref(), Some("v2"));
+    assert_eq!(status.last_deployed_at.as_deref(), Some("1970-01-01T00:00:02.000Z"));
     let versions = direct.list_versions().await.unwrap();
-    assert_eq!(versions.iter().map(|version| version.version.as_str()).collect::<Vec<_>>(), ["v2", "v1"]);
+    assert_eq!(versions.iter().map(|version| version.label.as_str()).collect::<Vec<_>>(), ["v2", "v1"]);
     let state = fake.state();
     let old = state.machines.iter().find(|machine| machine.metadata("graphrt_version") == Some("v1")).unwrap();
     assert_eq!(old.state, "stopped");
@@ -177,7 +177,7 @@ async fn rollback_brings_a_standby_version_back_and_demotes_the_current_one() {
     assert_eq!(serving.version, "v1");
     assert_eq!(events.last().map(|event| (event.step, event.status)), Some((Step::Checking, StepStatus::Done)));
     let status = direct.status(3_000).await.unwrap();
-    assert_eq!(status.version.as_deref(), Some("v1"));
+    assert_eq!(status.current_version.as_deref(), Some("v1"));
     {
         let state = fake.state();
         let v1 = state.machines.iter().find(|machine| machine.metadata("graphrt_version") == Some("v1")).unwrap();
@@ -205,7 +205,7 @@ async fn unhealthy_version_is_discarded_and_the_previous_one_keeps_serving() {
     assert!(failed.message.contains("/readyz"), "{}", failed.message);
     fake.state().failing_checks = false;
     let status = direct.status(3_000).await.unwrap();
-    assert_eq!(status.version.as_deref(), Some("v1"));
+    assert_eq!(status.current_version.as_deref(), Some("v1"));
     assert_eq!(fake.state().machines.len(), 1, "the failed candidate was destroyed");
 }
 
@@ -282,7 +282,7 @@ async fn failure_after_storing_a_new_key_still_hands_the_key_over() {
 
     assert_eq!(failure.error.code, ErrorCode::HealthCheckFailed);
     assert_eq!(failure.api_key.as_deref(), Some(API_KEY), "otherwise the stored key could never be learned");
-    assert_eq!(direct(&fake).status(2_000).await.unwrap().status, DeploymentState::NotDeployed);
+    assert_eq!(direct(&fake).status(2_000).await.unwrap().status, DeploymentState::Offline);
 }
 
 #[tokio::test]
@@ -297,5 +297,5 @@ async fn keeps_only_the_configured_number_of_standby_versions() {
 
     let versions = direct.list_versions().await.unwrap();
 
-    assert_eq!(versions.iter().map(|version| version.version.as_str()).collect::<Vec<_>>(), ["v5", "v4", "v3"]);
+    assert_eq!(versions.iter().map(|version| version.label.as_str()).collect::<Vec<_>>(), ["v5", "v4", "v3"]);
 }

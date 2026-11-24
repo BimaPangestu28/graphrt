@@ -151,7 +151,7 @@ pub struct DeployRunArgs {
 /// Management subcommands of a direct deployment.
 #[derive(Debug, Subcommand)]
 pub enum DeployAction {
-    /// State (online, paused, deploying, failed, not_deployed), URL, current version and Machines.
+    /// State (online, paused, deploying, failed, offline), URL, current version and Machines.
     Status(DirectTargetArgs),
     /// Versions kept for rollback, newest first.
     ListVersions(DirectTargetArgs),
