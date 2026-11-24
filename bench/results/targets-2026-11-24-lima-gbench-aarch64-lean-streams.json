@@ -1,0 +1,444 @@
+{
+  "budgets": {
+    "target": "aarch64-linux (host)",
+    "platform": "aarch64-linux",
+    "profile": "min-size",
+    "builds": {
+      "agent-minimal": {
+        "features": "serve",
+        "binary_bytes": 3784712,
+        "binary_mib": 3.609,
+        "idle_rss_mib": 3.11
+      },
+      "agent-slim": {
+        "features": "serve,llm,plugins",
+        "binary_bytes": 6321384,
+        "binary_mib": 6.029,
+        "idle_rss_mib": 4.82,
+        "healthz_p50_ms": 1.89,
+        "healthz_p95_ms": 6.11,
+        "healthz_samples": 30
+      },
+      "agent-slim-gateway": {
+        "features": "serve,llm,plugins,trust-gateway",
+        "binary_bytes": 6395288,
+        "binary_mib": 6.099,
+        "delta_kib": 72.2,
+        "delta_of": "agent-slim",
+        "idle_rss_mib": 4.87
+      },
+      "gateway-core": {
+        "features": "gateway",
+        "binary_bytes": 7174336,
+        "binary_mib": 6.842,
+        "idle_rss_mib": 6.66
+      },
+      "gateway-all": {
+        "features": "gateway-all",
+        "binary_bytes": 8002112,
+        "binary_mib": 7.631
+      }
+    },
+    "violations": []
+  },
+  "gateway": {
+    "machine": "aarch64, 4 CPUs, Linux 7.0.0-15-generic",
+    "quick": false,
+    "results": {
+      "ttfb-uds": {
+        "gateway_ms": {
+          "n": 1000,
+          "p50": 0.4627,
+          "p95": 0.5635,
+          "p99": 0.7286,
+          "max": 1.0171,
+          "mean": 0.4725
+        },
+        "direct_ms": {
+          "n": 1000,
+          "p50": 0.2215,
+          "p95": 0.2859,
+          "p99": 0.4119,
+          "max": 1.8694,
+          "mean": 0.232
+        },
+        "overhead_p50_ms": 0.2412,
+        "overhead_p95_ms": 0.2776,
+        "rounds": [
+          [
+            0.2406,
+            0.2915
+          ],
+          [
+            0.2412,
+            0.2776
+          ],
+          [
+            0.2455,
+            0.2696
+          ]
+        ]
+      },
+      "ttfb-tcp": {
+        "gateway_ms": {
+          "n": 1000,
+          "p50": 0.4787,
+          "p95": 0.6562,
+          "p99": 1.0352,
+          "max": 2.2187,
+          "mean": 0.5066
+        },
+        "direct_ms": {
+          "n": 1000,
+          "p50": 0.2497,
+          "p95": 0.3703,
+          "p99": 0.632,
+          "max": 1.7437,
+          "mean": 0.27
+        },
+        "overhead_p50_ms": 0.229,
+        "overhead_p95_ms": 0.2859,
+        "loopback_rtt_ms": 0.0149,
+        "rounds": [
+          [
+            0.2639
+          ],
+          [
+            0.2859
+          ],
+          [
+            0.2914
+          ]
+        ]
+      },
+      "sse": {
+        "streams": 1000,
+        "chunks_per_stream": 20,
+        "chunk_interval_ms": 500,
+        "gateway_rss_before_mib": 7.27,
+        "gateway_rss_max_sampled_mib": 44.89,
+        "gateway_peak_rss_mib": 44.53,
+        "failed_streams": 0,
+        "failure_examples": [],
+        "stalled_streams": 0,
+        "max_chunk_gap_ms": 513.1,
+        "first_chunk_ms": {
+          "n": 1000,
+          "p50": 176.3698,
+          "p95": 288.7061,
+          "p99": 1038.4823,
+          "max": 1039.9042,
+          "mean": 212.8841
+        },
+        "rounds": [
+          [
+            44.36,
+            0,
+            0
+          ],
+          [
+            44.53,
+            0,
+            0
+          ],
+          [
+            44.79,
+            0,
+            0
+          ]
+        ]
+      },
+      "wake": {
+        "first_event_ms": {
+          "n": 100,
+          "p50": 4.2787,
+          "p95": 5.2691,
+          "p99": 9.4779,
+          "max": 13.0417,
+          "mean": 4.5082
+        },
+        "run_finished_ms": {
+          "n": 100,
+          "p50": 4.4247,
+          "p95": 5.4394,
+          "p99": 9.6054,
+          "max": 13.174,
+          "mean": 4.6171
+        },
+        "rounds": [
+          [
+            5.0895
+          ],
+          [
+            5.2691
+          ],
+          [
+            5.4215
+          ]
+        ]
+      },
+      "wake-node": {
+        "first_event_ms": {
+          "n": 100,
+          "p50": 7.3614,
+          "p95": 8.9091,
+          "p99": 9.3466,
+          "max": 9.7072,
+          "mean": 6.7407
+        },
+        "run_finished_ms": {
+          "n": 100,
+          "p50": 64.7529,
+          "p95": 70.5162,
+          "p99": 72.7585,
+          "max": 73.8959,
+          "mean": 65.4033
+        },
+        "plugin_handshake_ms": {
+          "n": 30,
+          "p50": 59.1041,
+          "p95": 61.5911,
+          "p99": 67.1456,
+          "max": 67.1456,
+          "mean": 59.7741
+        },
+        "rounds": [
+          [
+            70.0704
+          ],
+          [
+            70.5162
+          ],
+          [
+            70.7567
+          ]
+        ]
+      },
+      "wake-wasm": {
+        "first_event_ms": {
+          "n": 100,
+          "p50": 10.6836,
+          "p95": 11.9364,
+          "p99": 15.0357,
+          "max": 18.9715,
+          "mean": 10.7765
+        },
+        "run_finished_ms": {
+          "n": 100,
+          "p50": 12.2666,
+          "p95": 13.0594,
+          "p99": 16.8351,
+          "max": 20.6011,
+          "mean": 12.3461
+        },
+        "rounds": [
+          [
+            12.9862
+          ],
+          [
+            13.0594
+          ],
+          [
+            13.265
+          ]
+        ]
+      },
+      "plugin-pool": {
+        "rss_mib_by_pool_size": {
+          "0": 73.32,
+          "1": 74.39,
+          "2": 140.13
+        },
+        "agent_only_rss_mib": 5.89,
+        "warm_run_ms": {
+          "n": 20,
+          "p50": 1.0685,
+          "p95": 3.7195,
+          "p99": 8.8022,
+          "max": 8.8022,
+          "mean": 1.954
+        },
+        "cold_pool_run_ms": {
+          "n": 20,
+          "p50": 94.8713,
+          "p95": 109.446,
+          "p99": 180.6268,
+          "max": 180.6268,
+          "mean": 97.4602
+        },
+        "hinted_run_ms": {
+          "n": 20,
+          "p50": 6.6165,
+          "p95": 10.628,
+          "p99": 15.3484,
+          "max": 15.3484,
+          "mean": 6.8946
+        },
+        "hint_lead_ms": 300.0
+      },
+      "webhook": {
+        "ack_ms": {
+          "n": 1000,
+          "p50": 0.3081,
+          "p95": 0.544,
+          "p99": 0.7631,
+          "max": 1.3023,
+          "mean": 0.3275
+        },
+        "statuses": {
+          "202": 1020
+        },
+        "rounds": [
+          [
+            0.5123
+          ],
+          [
+            0.544
+          ],
+          [
+            0.5584
+          ]
+        ]
+      },
+      "cron": {
+        "fires": 1000,
+        "fire_time": 1795491120,
+        "created_lag_ms": {
+          "n": 1000,
+          "p50": 62,
+          "p95": 86,
+          "p99": 88,
+          "max": 88,
+          "mean": 58.346
+        },
+        "finished_lag_ms": {
+          "n": 1000,
+          "p50": 405,
+          "p95": 448,
+          "p99": 452,
+          "max": 454,
+          "mean": 404.261
+        }
+      }
+    },
+    "checks": [
+      {
+        "scenario": "ttfb-uds",
+        "metric": "overhead p50",
+        "value": 0.2412,
+        "budget": 0.3,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "ttfb-uds",
+        "metric": "overhead p95",
+        "value": 0.2776,
+        "budget": 1.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "ttfb-tcp",
+        "metric": "overhead p95 (budget + 1 RTT)",
+        "value": 0.2859,
+        "budget": 1.0149,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "sse",
+        "metric": "gateway peak RSS",
+        "value": 44.53,
+        "budget": 64.0,
+        "unit": "MiB",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "sse",
+        "metric": "failed streams",
+        "value": 0,
+        "budget": 0,
+        "unit": "",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "sse",
+        "metric": "stalled streams",
+        "value": 0,
+        "budget": 0,
+        "unit": "",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "wake",
+        "metric": "p95 to first event",
+        "value": 5.2691,
+        "budget": 15.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "wake-node",
+        "metric": "p95 to plugin result",
+        "value": 70.5162,
+        "budget": 60.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": false
+      },
+      {
+        "scenario": "wake-wasm",
+        "metric": "p95 to plugin result (reference, not gated)",
+        "value": 13.0594,
+        "budget": 60.0,
+        "unit": "ms",
+        "gated": false,
+        "ok": true
+      },
+      {
+        "scenario": "plugin-pool",
+        "metric": "p95 run after a warm hint",
+        "value": 10.628,
+        "budget": 15.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "plugin-pool",
+        "metric": "p95 run on a warm pool",
+        "value": 3.7195,
+        "budget": 15.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "webhook",
+        "metric": "ack p95",
+        "value": 0.544,
+        "budget": 10.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      },
+      {
+        "scenario": "cron",
+        "metric": "lag p95 (fire -> run finished)",
+        "value": 448,
+        "budget": 1000.0,
+        "unit": "ms",
+        "gated": true,
+        "ok": true
+      }
+    ]
+  }
+}

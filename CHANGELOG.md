@@ -34,6 +34,21 @@ releases may contain breaking changes; they are called out under **Changed**.
 - `examples/supabase-chatbot/tests` take `SERVE_EXTRA_ARGS` (e.g.
   `--allow-private-network` for the WebAssembly plugin); both tests pass with it.
 
+### Changed
+- `graphrt gateway` holds 1,000 concurrent SSE streams in ~45 MiB instead of
+  ~76 MiB (Linux aarch64, peak RSS; plan §4.2 target 64 MiB, now the gate of
+  `bench/budgets.toml`). Run streams from Unix-socket and `http://` agents go
+  through a lean HTTP/1.1 client (`graphrt_gateway::stream_conn`, `httparse`
+  only, already in the tree): one 2 KiB adaptive read buffer per stream instead
+  of ~34 KiB of hyper and reqwest state (read, write and head buffers, the
+  dispatch channel), agent frames parsed straight out of it, keep-alive reuse of
+  finished streams' connections. The per-run supervisor future is 3.5 KiB
+  instead of 7.9 KiB (no doubly stored `async fn` arguments). Warm TTFB
+  overhead is unchanged or lower (Unix socket p50 0.247 vs 0.257 ms, loopback
+  TCP p95 0.29 ms for both), gateway CPU per streamed chunk 8–10 % lower;
+  binary +18 KiB (`gateway-core`, aarch64; +28 KiB on x86_64, 7.98 of 8 MiB).
+  `https://` agents and the control calls keep using reqwest.
+
 ### Fixed
 - `--plugins <dir>` pointing at a WebAssembly plugin's own directory no longer
   also loads its `.wasm` as a bare module (which lost the manifest's permissions).

@@ -1660,6 +1660,7 @@ dependencies = [
  "graphrt-provider-fly",
  "graphrt-provider-k8s",
  "http-body-util",
+ "httparse",
  "indexmap",
  "reqwest",
  "ring",

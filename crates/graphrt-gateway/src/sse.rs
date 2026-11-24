@@ -8,6 +8,10 @@
 /// Largest single event accepted from an agent.
 pub const MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
 
+/// A partial-line buffer that grew past this is freed once the line is done
+/// instead of kept for the rest of the stream.
+const SHRINK_ABOVE: usize = 16 * 1024;
+
 /// One SSE event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
@@ -72,23 +76,50 @@ impl Parser {
     /// # Errors
     /// [`SseError::TooLarge`].
     pub fn feed(&mut self, chunk: &[u8]) -> Result<Vec<Frame>, SseError> {
-        self.buffer.extend_from_slice(chunk);
-        let mut frames = Vec::new();
-        while let Some(end) = self.buffer.iter().position(|byte| *byte == b'\n') {
-            let mut line: Vec<u8> = self.buffer.drain(..=end).collect();
-            line.pop();
-            if line.last() == Some(&b'\r') {
-                line.pop();
-            }
-            let line = String::from_utf8_lossy(&line).into_owned();
-            if let Some(frame) = self.line(&line)? {
-                frames.push(frame);
+        let mut frames = std::collections::VecDeque::new();
+        self.feed_into(chunk, &mut frames)?;
+        Ok(frames.into())
+    }
+
+    /// Feeds a chunk and appends the frames it completed to `frames`.
+    ///
+    /// Lines are parsed straight out of `chunk`; only a trailing partial
+    /// line is copied (into the parser's own buffer, until its end arrives).
+    ///
+    /// # Errors
+    /// [`SseError::TooLarge`].
+    pub fn feed_into(&mut self, chunk: &[u8], frames: &mut std::collections::VecDeque<Frame>) -> Result<(), SseError> {
+        let mut rest = chunk;
+        while let Some(end) = rest.iter().position(|byte| *byte == b'\n') {
+            let (line, tail) = rest.split_at(end);
+            rest = tail.get(1..).unwrap_or_default();
+            if self.buffer.is_empty() {
+                self.raw_line(line, frames)?;
+            } else {
+                let mut joined = std::mem::take(&mut self.buffer);
+                joined.extend_from_slice(line);
+                self.raw_line(&joined, frames)?;
+                joined.clear();
+                if joined.capacity() <= SHRINK_ABOVE {
+                    // Reuse the allocation for the next partial line.
+                    self.buffer = joined;
+                }
             }
         }
-        if self.buffer.len() + self.data_bytes > MAX_EVENT_BYTES {
+        if self.buffer.len() + rest.len() + self.data_bytes > MAX_EVENT_BYTES {
             return Err(SseError::TooLarge);
         }
-        Ok(frames)
+        self.buffer.extend_from_slice(rest);
+        Ok(())
+    }
+
+    fn raw_line(&mut self, line: &[u8], frames: &mut std::collections::VecDeque<Frame>) -> Result<(), SseError> {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let line = String::from_utf8_lossy(line);
+        if let Some(frame) = self.line(&line)? {
+            frames.push_back(frame);
+        }
+        Ok(())
     }
 
     fn line(&mut self, line: &str) -> Result<Option<Frame>, SseError> {
@@ -164,6 +195,24 @@ mod tests {
         assert_eq!(frames[1].event_index(), Some(3));
         assert_eq!(frames[1].data, "a\nb");
         assert_eq!(Parser::default().feed(frames[1].encode().as_bytes()).unwrap(), vec![frames[1].clone()]);
+    }
+
+    #[test]
+    fn same_frames_at_every_split_point() {
+        let input = b"event: a\r\nid: 1\ndata: x\ndata: y\n\n: beat\n\nevent: b\ndata: \xff\n\n";
+        let whole = Parser::default().feed(input).unwrap();
+        assert_eq!(whole.len(), 2);
+        assert_eq!(whole[1].data, "\u{fffd}");
+        for split in 0..input.len() {
+            let mut parser = Parser::default();
+            let mut frames = parser.feed(&input[..split]).unwrap();
+            frames.extend(parser.feed(&input[split..]).unwrap());
+            assert_eq!(frames, whole, "split at {split}");
+        }
+        // Byte by byte.
+        let mut parser = Parser::default();
+        let frames: Vec<Frame> = input.iter().flat_map(|byte| parser.feed(&[*byte]).unwrap()).collect();
+        assert_eq!(frames, whole);
     }
 
     #[test]

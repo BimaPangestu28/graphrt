@@ -39,5 +39,6 @@ pub mod scheduler;
 pub mod server;
 pub mod sse;
 pub mod stored_request;
+pub mod stream_conn;
 pub mod supervisor;
 pub mod webhook;

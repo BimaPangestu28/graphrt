@@ -2,6 +2,10 @@
 //! HTTP/1.1 keep-alive on a Unix socket or a private network, every request
 //! signed with the deployment's key. Agent addresses come only from the
 //! provider (never from the agent itself, plan §3.2).
+//!
+//! Run streams (start and reattach) to a Unix socket or `http://` agent go
+//! through the lean client of [`crate::stream_conn`] (one small buffer per
+//! stream); `https://` agents and the short control calls through reqwest.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -14,6 +18,7 @@ use crate::signature::{
     Signed, sign, unix_now,
 };
 use crate::sse::{Frame, Parser, SseError};
+use crate::stream_conn::{self, IdlePool, OpenError, ResponseBody, Target};
 
 /// Failure talking to an agent.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -62,13 +67,23 @@ pub struct RunScope<'a> {
     pub epoch: Option<u64>,
 }
 
+/// How long [`AgentStream::recycle`] waits for the end of a finished stream.
+const RECYCLE_WAIT: Duration = Duration::from_secs(2);
+/// How much of a finished stream [`AgentStream::recycle`] reads before it gives up on it.
+const RECYCLE_BYTES: usize = 64 * 1024;
+
 /// Signed client of the agents of all deployments.
 #[derive(Debug, Default)]
 pub struct AgentClient {
     clients: Mutex<HashMap<EndpointAddress, reqwest::Client>>,
+    /// Keep-alive connections of the lean run streams.
+    streams: Arc<IdlePool>,
 }
 
 enum StreamSource {
+    /// Unix socket / `http://`: the lean client.
+    Lean(ResponseBody),
+    /// `https://`: reqwest.
     Http(reqwest::Response),
     Invoke(graphrt_provider_api::ByteStream),
 }
@@ -78,6 +93,9 @@ pub struct AgentStream {
     source: StreamSource,
     parser: Parser,
     pending: std::collections::VecDeque<Frame>,
+    /// The last frame went to client streams and the reader has not waited
+    /// for the agent since.
+    handed_out: bool,
 }
 
 impl std::fmt::Debug for AgentStream {
@@ -87,8 +105,25 @@ impl std::fmt::Debug for AgentStream {
 }
 
 impl AgentStream {
-    fn http(response: reqwest::Response) -> Self {
-        Self { source: StreamSource::Http(response), parser: Parser::default(), pending: Default::default() }
+    fn new(source: StreamSource) -> Self {
+        Self { source, parser: Parser::default(), pending: Default::default(), handed_out: false }
+    }
+
+    /// Ends the use of a stream after its terminal event. A lean stream reads
+    /// the rest of its body in the background (bounded in bytes and time) so
+    /// its connection can serve the next run: a new connection per run costs a
+    /// connect and the agent's accept on the latency path of the next request.
+    pub fn recycle(self) {
+        let StreamSource::Lean(body) = self.source else { return };
+        graphrt_core::task::spawn(async move {
+            let _kept = tokio::time::timeout(RECYCLE_WAIT, body.drain(RECYCLE_BYTES)).await;
+        });
+    }
+
+    /// The frame returned last was handed to client streams (they are woken):
+    /// the next frame, when already buffered, waits for them to run first.
+    pub fn handed_to_clients(&mut self) {
+        self.handed_out = true;
     }
 
     /// The next frame; `Ok(None)` when the agent closed the stream.
@@ -98,26 +133,92 @@ impl AgentStream {
     pub async fn next_frame(&mut self) -> Result<Option<Frame>, AgentError> {
         use futures::StreamExt as _;
         loop {
-            if let Some(frame) = self.pending.pop_front() {
-                return Ok(Some(frame));
-            }
-            let chunk = match &mut self.source {
-                StreamSource::Http(response) => response
-                    .chunk()
-                    .await
-                    .map(|chunk| chunk.map(|bytes| bytes.to_vec()))
-                    .map_err(|error| AgentError::Stream(error.to_string())),
-                StreamSource::Invoke(stream) => {
-                    stream.next().await.transpose().map_err(|error| invoke_error(&error, AgentError::Stream))
+            if !self.pending.is_empty() {
+                if self.handed_out {
+                    // The next frame is already here (one read carries many)
+                    // and the previous one woke client streams: let them write
+                    // it first. Without this the reader handles (and stores)
+                    // every buffered frame before any client sees the first:
+                    // +45 µs TTFB on a hello run, where hyper's body channel
+                    // used to hand over one frame at a time. Before the frame
+                    // is taken: the pump races this future against its flush
+                    // timer, and a dropped future must not lose a frame.
+                    reschedule().await;
+                    self.handed_out = false;
                 }
+                return Ok(self.pending.pop_front());
+            }
+            let buffered = match &self.source {
+                StreamSource::Lean(body) => body.has_buffered(),
+                StreamSource::Http(_) | StreamSource::Invoke(_) => false,
             };
-            match chunk {
-                Ok(Some(chunk)) => self.pending.extend(self.parser.feed(&chunk)?),
-                Ok(None) => return Ok(None),
-                Err(error) => return Err(error),
+            if !buffered {
+                self.handed_out = false;
+            }
+            let fed = match &mut self.source {
+                // Parsed straight out of the connection's read buffer.
+                StreamSource::Lean(body) => match body.next_data().await {
+                    Ok(Some(data)) => self.parser.feed_into(data, &mut self.pending).map(|()| true),
+                    Ok(None) => Ok(false),
+                    Err(error) => return Err(AgentError::Stream(error.to_string())),
+                },
+                StreamSource::Http(response) => match response.chunk().await {
+                    Ok(Some(chunk)) => self.parser.feed_into(&chunk, &mut self.pending).map(|()| true),
+                    Ok(None) => Ok(false),
+                    Err(error) => return Err(AgentError::Stream(error.to_string())),
+                },
+                StreamSource::Invoke(stream) => match stream.next().await {
+                    Some(Ok(chunk)) => self.parser.feed_into(&chunk, &mut self.pending).map(|()| true),
+                    None => Ok(false),
+                    Some(Err(error)) => return Err(invoke_error(&error, AgentError::Stream)),
+                },
+            };
+            if !fed? {
+                return Ok(None);
             }
         }
     }
+}
+
+/// Returns `Pending` once with the task woken at once: it goes to the back of
+/// its worker's queue, behind the tasks it just woke. Unlike
+/// `tokio::task::yield_now`, which waits until the worker ran out of work and
+/// polled the driver: under load (1,000 cron runs) that held runs back.
+async fn reschedule() {
+    let mut yielded = false;
+    std::future::poll_fn(|cx| {
+        if std::mem::replace(&mut yielded, true) {
+            return std::task::Poll::Ready(());
+        }
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    })
+    .await;
+}
+
+/// The protocol headers of a signed request (plan §3.1).
+fn signed_headers(
+    key: &GatewayKey,
+    deployment: &str,
+    method: &str,
+    path: &str,
+    scope: RunScope<'_>,
+    body: &[u8],
+) -> Vec<(&'static str, String)> {
+    let epoch = scope.epoch.map(|epoch| epoch.to_string()).unwrap_or_default();
+    let signed = Signed { deployment, method, path, run_id: scope.run_id, epoch: &epoch, body };
+    let mut headers = vec![
+        (PROTOCOL_HEADER, PROTOCOL_VERSION.to_string()),
+        (SIGNATURE_HEADER, sign(key, unix_now(), &signed)),
+        (DEPLOYMENT_HEADER, deployment.to_owned()),
+    ];
+    if !scope.run_id.is_empty() {
+        headers.push((RUN_ID_HEADER, scope.run_id.to_owned()));
+    }
+    if !epoch.is_empty() {
+        headers.push((EPOCH_HEADER, epoch));
+    }
+    headers
 }
 
 fn base_url(address: &EndpointAddress) -> String {
@@ -149,9 +250,42 @@ impl AgentClient {
         Ok(client)
     }
 
-    /// Forgets the connection pool of a replica that went away.
+    /// Forgets the connection pools of a replica that went away.
     pub fn forget(&self, address: &EndpointAddress) {
         self.clients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(address);
+        self.streams.forget(address);
+    }
+
+    /// Idle keep-alive connections of finished lean run streams (all agents).
+    pub fn idle_stream_connections(&self) -> usize {
+        self.streams.idle_count()
+    }
+
+    /// Opens a run stream: the lean client for Unix sockets and `http://`,
+    /// reqwest for the rest.
+    #[allow(clippy::too_many_arguments)]
+    async fn open_stream(
+        &self,
+        address: &EndpointAddress,
+        key: &GatewayKey,
+        deployment: &str,
+        method: reqwest::Method,
+        path: &str,
+        scope: RunScope<'_>,
+        body: Vec<u8>,
+    ) -> Result<AgentStream, AgentError> {
+        let Some(target) = Target::of(address) else {
+            let response = self.send(address, key, deployment, method, path, scope, body).await?;
+            return Ok(AgentStream::new(StreamSource::Http(response)));
+        };
+        let headers = signed_headers(key, deployment, method.as_str(), path, scope, &body);
+        let headers: Vec<(&str, &str)> = headers.iter().map(|(name, value)| (*name, value.as_str())).collect();
+        let request = stream_conn::Request { method: method.as_str(), path, headers: &headers, body: &body };
+        match stream_conn::open(&self.streams, &target, request).await {
+            Ok(response) => Ok(AgentStream::new(StreamSource::Lean(response))),
+            Err(OpenError::Unreachable(error)) => Err(AgentError::Unreachable(error)),
+            Err(OpenError::Refused { status, body }) => Err(AgentError::Refused { status, body }),
+        }
     }
 
     // One private call site per protocol operation; a parameter struct would only rename them.
@@ -167,19 +301,9 @@ impl AgentClient {
         body: Vec<u8>,
     ) -> Result<reqwest::Response, AgentError> {
         let client = self.client(address)?;
-        let epoch = scope.epoch.map(|epoch| epoch.to_string()).unwrap_or_default();
-        let signed =
-            Signed { deployment, method: method.as_str(), path, run_id: scope.run_id, epoch: &epoch, body: &body };
-        let mut request = client
-            .request(method.clone(), format!("{}{path}", base_url(address)))
-            .header(PROTOCOL_HEADER, PROTOCOL_VERSION.to_string())
-            .header(SIGNATURE_HEADER, sign(key, unix_now(), &signed))
-            .header(DEPLOYMENT_HEADER, deployment);
-        if !scope.run_id.is_empty() {
-            request = request.header(RUN_ID_HEADER, scope.run_id);
-        }
-        if !epoch.is_empty() {
-            request = request.header(EPOCH_HEADER, &epoch);
+        let mut request = client.request(method.clone(), format!("{}{path}", base_url(address)));
+        for (name, value) in signed_headers(key, deployment, method.as_str(), path, scope, &body) {
+            request = request.header(name, value);
         }
         if !body.is_empty() {
             request = request.header("content-type", "application/json").body(body);
@@ -206,9 +330,7 @@ impl AgentClient {
         body: &serde_json::Value,
     ) -> Result<AgentStream, AgentError> {
         let bytes = serde_json::to_vec(body).map_err(|error| AgentError::Stream(error.to_string()))?;
-        let response =
-            self.send(address, key, deployment, reqwest::Method::POST, "/internal/v1/runs", scope, bytes).await?;
-        Ok(AgentStream::http(response))
+        self.open_stream(address, key, deployment, reqwest::Method::POST, "/internal/v1/runs", scope, bytes).await
     }
 
     /// `POST /internal/v1/runs` through `provider`'s own transport when it has
@@ -245,11 +367,7 @@ impl AgentClient {
         if !(200..300).contains(&response.status) {
             return Err(AgentError::Refused { status: response.status, body: String::new() });
         }
-        Ok(AgentStream {
-            source: StreamSource::Invoke(response.body),
-            parser: Parser::default(),
-            pending: Default::default(),
-        })
+        Ok(AgentStream::new(StreamSource::Invoke(response.body)))
     }
 
     /// `GET /internal/v1/runs/{id}/stream?from=N`: reattach after a lost connection.
@@ -265,8 +383,7 @@ impl AgentClient {
         from: u64,
     ) -> Result<AgentStream, AgentError> {
         let path = format!("/internal/v1/runs/{}/stream?from={from}", scope.run_id);
-        let response = self.send(address, key, deployment, reqwest::Method::GET, &path, scope, Vec::new()).await?;
-        Ok(AgentStream::http(response))
+        self.open_stream(address, key, deployment, reqwest::Method::GET, &path, scope, Vec::new()).await
     }
 
     /// `POST /internal/v1/runs/{id}/abort`.
@@ -373,3 +490,59 @@ impl AgentClient {
 
 /// Shared handle.
 pub type SharedAgentClient = Arc<AgentClient>;
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    /// The supervisor's pump races `next_frame` against its flush timer: a
+    /// call dropped while it yields between buffered frames loses none.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn next_frame_is_cancel_safe() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = EndpointAddress::Http(format!("http://{}", listener.local_addr().unwrap()));
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0u8; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
+            let mut body = String::new();
+            for id in 0..50 {
+                let frame = format!("event: node_succeeded\nid: {id}\ndata: {{}}\n\n");
+                body.push_str(&format!("{:x}\r\n{frame}\r\n", frame.len()));
+            }
+            body.push_str("0\r\n\r\n");
+            let response = format!("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n{body}");
+            socket.write_all(response.as_bytes()).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let client = AgentClient::default();
+        let key = crate::signature::GatewayKey::new("k1", &[7u8; 32]).unwrap();
+        let scope = RunScope { run_id: "r", epoch: Some(1) };
+        let mut stream = client.start_run(&address, &key, "d", scope, &serde_json::json!({})).await.unwrap();
+        let (mut ids, mut cancelled) = (Vec::new(), 0);
+        for round in 0.. {
+            if ids.len() == 50 {
+                break;
+            }
+            if round % 2 == 0 {
+                ids.push(stream.next_frame().await.unwrap().unwrap().event_index().unwrap());
+                stream.handed_to_clients();
+                continue;
+            }
+            // Dropped at its first `Pending` (the yield between buffered frames).
+            tokio::select! {
+                biased;
+                frame = stream.next_frame() => {
+                    ids.push(frame.unwrap().unwrap().event_index().unwrap());
+                    stream.handed_to_clients();
+                }
+                () = std::future::ready(()) => cancelled += 1,
+            }
+        }
+        assert!(cancelled > 0, "the race never dropped a pending call");
+        assert_eq!(ids, (0..50).collect::<Vec<u64>>());
+    }
+}
