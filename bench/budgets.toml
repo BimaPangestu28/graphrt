@@ -114,6 +114,11 @@ sse_rss_target_mib = 64.0
 wake_samples = 100
 wake_p95_ms = 15.0
 wake_node_p95_ms = 60.0
+# `--plugin-pool` on a kept-warm agent with the Node.js plugin: a run on the warm
+# pool and a run 300 ms after a gateway warm hint (the pool had stopped for
+# idleness) never wait for the plugin's start. RSS per pool size is reported.
+plugin_pool_samples = 20
+plugin_pool_hinted_p95_ms = 15.0
 # Webhook ack (HMAC-signed POST -> 202), sequential.
 webhook_samples = 1000
 webhook_ack_p95_ms = 10.0

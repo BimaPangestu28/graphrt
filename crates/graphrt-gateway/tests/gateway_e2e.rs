@@ -601,8 +601,17 @@ async fn warm_endpoint_prewarms_and_the_next_run_is_a_hit() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(gateway.provider.live(), 1, "a replica is warm before any run");
+    assert_eq!(gateway.provider.world.warm_hints.load(Ordering::SeqCst), 0, "a replica it starts needs no hint");
     let (status, body) = gateway.post(&warm_path(), json!({ "replicas": 1 })).await;
     assert_eq!((status, body["status"].as_str()), (200, Some("warm")), "{body}");
+    // A warm replica gets a warm hint, so its agent restarts plugins an idle pool stopped.
+    for _ in 0..200 {
+        if gateway.provider.world.warm_hints.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(gateway.provider.world.warm_hints.load(Ordering::SeqCst), 1, "the warm replica got a hint");
     let (status, record) = gateway.post(&runs(), json!({ "inputs": { "text": "hi" } })).await;
     assert_eq!((status, record["status"].as_str()), (200, Some("succeeded")), "{record}");
     assert_eq!(gateway.provider.wakes.load(Ordering::SeqCst), 1, "the run used the prewarmed replica");

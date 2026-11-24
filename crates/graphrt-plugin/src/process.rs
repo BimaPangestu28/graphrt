@@ -86,7 +86,7 @@ impl ProcessTransport {
     ///
     /// When the connection lock is busy the kill is recorded and performed by the
     /// next `connection()` call, so a wedged process is never silently kept.
-    fn kill_current(&self, reason: &str) {
+    pub(crate) fn kill_current(&self, reason: &str) {
         match self.live.try_lock() {
             Ok(mut live) => {
                 if let Some(l) = live.take() {
@@ -110,6 +110,17 @@ impl ProcessTransport {
     /// Recent `log` notifications of the running process.
     pub async fn recent_logs(&self) -> Vec<String> {
         self.live.lock().await.as_ref().map(|l| l.conn.recent_logs()).unwrap_or_default()
+    }
+
+    /// Whether a started, initialized process is up right now (`false` while
+    /// one is starting).
+    pub fn is_ready(&self) -> bool {
+        self.live.try_lock().is_ok_and(|live| live.as_ref().is_some_and(|l| !l.conn.is_closed()))
+    }
+
+    /// The live connection, starting the process if needed (for the pool's keeper).
+    pub(crate) async fn started(&self, clock: &Arc<dyn Clock>) -> Result<Arc<Connection>, CallError> {
+        self.connection(clock).await.map(|(conn, _init)| conn)
     }
 
     /// Return a live, initialized connection, starting the process if needed.
@@ -271,7 +282,7 @@ impl ProcessTransport {
 
 /// Delay before the next start after `failures` consecutive failed starts or
 /// crashes: none for the first start, then 200 ms doubling up to [`MAX_BACKOFF`].
-fn restart_backoff(failures: u64) -> Option<Duration> {
+pub(crate) fn restart_backoff(failures: u64) -> Option<Duration> {
     if failures == 0 {
         return None;
     }
@@ -427,6 +438,10 @@ impl Transport for ProcessTransport {
 
     fn note_answer(&self) {
         self.timeouts.store(0, Ordering::SeqCst);
+    }
+
+    fn is_warm(&self) -> bool {
+        self.is_ready()
     }
 }
 

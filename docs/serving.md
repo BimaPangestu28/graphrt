@@ -18,6 +18,8 @@ graphrt serve examples/ --store ./runs --store-ttl-days 30
 | `--store-inputs` | Keep each run's inputs (secrets masked) in its record; see [Run context and evaluation data](#run-context-and-evaluation-data). |
 | `--max-runs <n>` | In-memory store only: keep at most `n` runs (default 1000, `0` = unlimited). The oldest finished runs are dropped first; running and paused runs are always kept. |
 | `--max-active-runs <n>` | At most `n` runs execute at once (default 256, `0` = unlimited); further starts and resumes get `429 Too Many Requests`. Paused runs do not count. |
+| `--plugin-pool <n>` | Keep `n` processes (up to 32) of each process plugin started from startup and replaced in the background when they exit, so no run waits for a plugin to start; requests spread over the `n` processes. Default `0`: one process, started at its first node (behind a gateway: at startup). Each process costs the plugin's memory. See [Warm process pool](plugins.md#warm-process-pool). |
+| `--plugin-idle <d>` | With `--plugin-pool`: stop a plugin's processes after `d` without a request (`30s`, `5m`); the next request or a gateway warm hint starts them again. Default: never. |
 | `--drain-timeout <d>` | On SIGTERM / SIGINT, pause or preempt active runs and exit within `d` (default `4s`; `500ms`, `30s`, `2m`). See [Shutdown and restarts](#shutdown-and-restarts). |
 | `--no-resume-drained` | Leave async and webhook runs drained by a previous shutdown paused instead of resuming them at startup. |
 | `--listen unix:/path` | Listen on a Unix socket (mode `0600`) instead of TCP (`--listen` is an alias of `--addr`). |

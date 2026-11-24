@@ -124,7 +124,8 @@ gateway (it strips them).
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/internal/v1/hello` | `{protocol, version, deployment, workflows: [{name, fingerprint}], max_active_runs, active_runs, warm_plugins, draining}` |
+| GET | `/internal/v1/hello` | `{protocol, version, deployment, workflows: [{name, fingerprint}], max_active_runs, active_runs, warm_plugins, draining}`; `warm_plugins` names the plugins that would serve a node without starting a process (in-process and HTTP plugins always; process plugins while their process is up) |
+| POST | `/internal/v1/warm` | Warm hint: runs are expected soon. Starts plugin processes that are not up (a pool stopped by `--plugin-idle`, a plugin not used yet) and answers `202 {warm_plugins}` at once. The gateway sends it to the replicas a prewarm (`POST …/warm`, cron, predictive) found already up; agents older than this endpoint answer `404`, which the gateway ignores |
 | POST | `/internal/v1/runs` | Start or resume run `Graphrt-Run-Id` at `Graphrt-Epoch`; the response is the run's SSE stream |
 | GET | `/internal/v1/runs/{id}/stream?from=N` | Reattach to a running execution after a lost connection (or `Last-Event-ID`); `409 finished` once it ended |
 | POST | `/internal/v1/runs/{id}/abort` | Abort the execution at `Graphrt-Epoch` |

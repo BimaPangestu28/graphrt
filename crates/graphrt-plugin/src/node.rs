@@ -183,12 +183,13 @@ impl Node for PluginNode {
                 transport: Arc::clone(&self.shared.transport),
                 clock: Arc::clone(&ctx.clock),
                 deadline_ms: ctx.deadline_ms,
+                id: id.clone(),
                 settled: false,
             };
             let call = self.shared.transport.call(id, "node.run", params, Some(sink), true, &ctx.clock);
             let result = with_timeout(&ctx.clock, timeout, call).await;
             guard.settled = true;
-            track(self.shared.transport.as_ref(), &result);
+            track(self.shared.transport.as_ref(), &guard.id, &result);
             let result = result.map_err(|e| e.into_node_error(plugin))?;
             outcome_from(plugin, result, self.role, self.fixed_handles.as_deref())
         })
@@ -202,6 +203,8 @@ struct TimeoutGuard {
     transport: Arc<dyn Transport>,
     clock: Arc<dyn graphrt_core::node::Clock>,
     deadline_ms: Option<u64>,
+    /// The request, so a pooled transport blames the process that served it.
+    id: String,
     settled: bool,
 }
 
@@ -213,16 +216,16 @@ impl Drop for TimeoutGuard {
         if let Some(deadline) = self.deadline_ms
             && self.clock.now_ms() >= deadline
         {
-            self.transport.note_timeout();
+            self.transport.note_timeout_of(&self.id);
         }
     }
 }
 
 /// Feed request outcomes to the transport's liveness tracking.
-fn track<T>(transport: &dyn Transport, result: &Result<T, CallError>) {
+fn track<T>(transport: &dyn Transport, id: &str, result: &Result<T, CallError>) {
     match result {
-        Err(CallError::Timeout(_)) => transport.note_timeout(),
-        Ok(_) | Err(CallError::Remote { .. }) => transport.note_answer(),
+        Err(CallError::Timeout(_)) => transport.note_timeout_of(id),
+        Ok(_) | Err(CallError::Remote { .. }) => transport.note_answer_of(id),
         Err(_) => {}
     }
 }
@@ -341,10 +344,16 @@ impl ToolRuntime for PluginTools {
                 }
                 params.insert("context".into(), serde_json::json!({"secrets": context.secrets}));
             }
-            let call =
-                self.shared.transport.call(id, "tool.call", serde_json::Value::Object(params), None, true, &clock);
+            let call = self.shared.transport.call(
+                id.clone(),
+                "tool.call",
+                serde_json::Value::Object(params),
+                None,
+                true,
+                &clock,
+            );
             let result = with_timeout(&clock, self.shared.timeout, call).await;
-            track(self.shared.transport.as_ref(), &result);
+            track(self.shared.transport.as_ref(), &id, &result);
             let result = result.map_err(|e| self.error(name, e))?;
             let msg = ToolResultMsg::parse(result).map_err(|e| self.error(name, e))?;
             Ok(ToolOutput {

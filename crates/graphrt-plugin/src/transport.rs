@@ -41,6 +41,25 @@ pub trait Transport: Send + Sync + fmt::Debug {
 
     /// A request completed (successfully or with a plugin error). Default: no-op.
     fn note_answer(&self) {}
+
+    /// [`Transport::note_timeout`] for request `id`, so a transport over several
+    /// processes blames the one that served it. Default: `note_timeout`.
+    fn note_timeout_of(&self, id: &str) {
+        let _ = id;
+        self.note_timeout();
+    }
+
+    /// [`Transport::note_answer`] for request `id`. Default: `note_answer`.
+    fn note_answer_of(&self, id: &str) {
+        let _ = id;
+        self.note_answer();
+    }
+
+    /// Whether a request would be served without starting anything (a process
+    /// plugin whose process is up). Default: `true`.
+    fn is_warm(&self) -> bool {
+        true
+    }
 }
 
 /// Optional protocol features this host supports, announced in `initialize`

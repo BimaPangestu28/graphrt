@@ -8,7 +8,8 @@
 //!
 //! | Method | Path | Purpose |
 //! | --- | --- | --- |
-//! | GET | `/internal/v1/hello` | protocol, version, workflow fingerprints, load, draining |
+//! | GET | `/internal/v1/hello` | protocol, version, workflow fingerprints, load, warm plugins, draining |
+//! | POST | `/internal/v1/warm` | warm hint: start plugin processes that are not up |
 //! | POST | `/internal/v1/runs` | start (or resume, with the snapshot inline) run `Graphrt-Run-Id` at `Graphrt-Epoch`; SSE |
 //! | GET | `/internal/v1/runs/{id}/stream?from=N` | reattach to an execution after a lost connection |
 //! | POST | `/internal/v1/runs/{id}/abort` | abort the execution at `Graphrt-Epoch` |

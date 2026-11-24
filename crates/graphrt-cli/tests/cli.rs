@@ -315,3 +315,22 @@ fn serve_refuses_an_invalid_deployment_name() {
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(stderr(&out).contains("invalid deployment name `shop/eu`"), "{}", stderr(&out));
 }
+
+#[cfg(feature = "plugins")]
+#[test]
+fn serve_refuses_a_plugin_idle_timeout_without_a_pool_and_an_oversized_pool() {
+    let path = example("hello.yaml");
+    let serve = |extra: &[&str]| {
+        bin()
+            .args(["serve", path.to_str().expect("utf8"), "--addr", "127.0.0.1:0", "--no-default-plugins"])
+            .args(extra)
+            .output()
+            .expect("spawn graphrt")
+    };
+    let out = serve(&["--plugin-idle", "30s"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("`--plugin-idle` needs `--plugin-pool 1` or more"), "{}", stderr(&out));
+    let out = serve(&["--plugin-pool", "33"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("--plugin-pool"), "{}", stderr(&out));
+}

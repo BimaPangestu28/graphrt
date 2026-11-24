@@ -8,6 +8,29 @@ releases may contain breaking changes; they are called out under **Changed**.
 ## [Unreleased]
 
 ### Added
+- `graphrt serve --plugin-pool <n>` keeps `n` processes of each process plugin
+  (up to 32) started from startup and replaces one that exits in the
+  background, so no run on a running agent waits for a plugin to start (a
+  Node.js host takes ~50 ms); requests spread over the processes, and a
+  timeout restarts only the process that served it. `--plugin-idle <d>` stops
+  an idle pool's processes (agent + Node.js plugin 73.5 MiB → 5.9 MiB) until
+  the next request or warm hint. Default `0`: unchanged (one process, started
+  at its first node). From Rust: `PluginHost::with_pool(PoolConfig)`,
+  `ProcessPool`, `PluginHost::warm_plugins()`. Measured on Linux aarch64: a
+  run on a warm pool p95 3.9 ms, 300 ms after a warm hint p95 10.5 ms, vs.
+  96 ms when the run has to start Node.js after an idle stop. Agent
+  `serve,llm,plugins,trust-gateway` +27.1 KiB (aarch64 musl). The cold wake of
+  a new agent is unchanged (Node.js's own start, ~51 ms, is its floor); see
+  docs/plugins.md for that limit and docs/wasm-plugins.md for the WebAssembly
+  path (cold wake p95 15 ms).
+- Agent `POST /internal/v1/warm` (warm hint); the gateway sends it to the
+  replicas a prewarm (`POST …/warm`, cron, predictive) finds already up
+  (gateway core +3.1 KiB). `hello`'s `warm_plugins` now lists the plugins
+  whose process is up instead of every loaded plugin.
+- `bench/gateway/gwbench.py` scenarios `plugin-pool` (RSS per pool size, warm,
+  cold and hinted runs; gated: p95 ≤ 15 ms) and `wake-wasm` (cold wake with
+  the WebAssembly example plugin, reference); `bench/targets.sh` builds the
+  `serve,llm,wasm,trust-gateway` agent for it.
 - `bench/targets.sh` checks every measurable target of the gateway plan on
   Linux against `bench/budgets.toml` and exits 1 on a miss: sizes and idle RSS
   of the agent and gateway builds (`budget-gate.py` now runs `graphrt gateway`

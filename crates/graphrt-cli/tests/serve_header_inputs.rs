@@ -82,7 +82,12 @@ graph:
 async fn state_for(flows: &Path, specs: &[&str]) -> Result<AppState, graphrt_cli::error::CliError> {
     let files = discover(flows).expect("discover");
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     };
     let specs: Vec<HeaderInputSpec> = specs.iter().map(|s| s.parse().expect("spec")).collect();

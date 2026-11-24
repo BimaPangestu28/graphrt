@@ -275,7 +275,7 @@ fn explicit_kinds(dirs: &[PathBuf]) -> Result<Vec<String>, CliError> {
     if dirs.is_empty() {
         return Ok(Vec::new());
     }
-    let options = crate::extensions::PluginOptions { dirs: dirs.to_vec(), no_default: true, trusted: Vec::new() };
+    let options = crate::extensions::PluginOptions { dirs: dirs.to_vec(), no_default: true, ..Default::default() };
     let ext = crate::extensions::Extensions::load(&options)?;
     Ok(ext.plugins.iter().flat_map(|p| p.nodes.clone()).collect())
 }

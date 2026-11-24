@@ -33,6 +33,17 @@ pub struct PluginOptions {
     /// Plugins the operator trusts (`--trust-plugin`, `$GRAPHRT_TRUSTED_PLUGINS`): only
     /// these may receive plaintext secrets or send host variables as bearer tokens.
     pub trusted: Vec<String>,
+    /// Warm process pool of each process plugin (`serve --plugin-pool`).
+    pub pool: PluginPool,
+}
+
+/// How `serve` keeps process plugins warm (`--plugin-pool`, `--plugin-idle`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PluginPool {
+    /// Processes kept started per process plugin (0: one, started at its first node).
+    pub size: usize,
+    /// Stop a pool's processes after this long without a request.
+    pub idle_timeout: Option<std::time::Duration>,
 }
 
 /// Comma-separated plugin names trusted in addition to `--trust-plugin`.
@@ -120,7 +131,7 @@ impl Extensions {
             let paths = options.search_paths();
             let trusted = options.trusted_names();
             for manifest in graphrt_plugin::discover(&paths) {
-                ext.add_manifest(&manifest, &trusted);
+                ext.add_manifest(&manifest, &trusted, options.pool);
             }
             #[cfg(feature = "wasm")]
             for module in bare_wasm_modules(&paths) {
@@ -152,17 +163,36 @@ impl Extensions {
         }
     }
 
+    /// Names of the loaded plugins that would serve a node without starting a
+    /// process first (see [`graphrt_plugin::PluginHost::warm_plugins`]).
+    pub fn warm_plugins(&self) -> Vec<String> {
+        #[cfg(any(feature = "plugins", feature = "wasm"))]
+        {
+            self.hosts.iter().flat_map(graphrt_plugin::PluginHost::warm_plugins).collect()
+        }
+        #[cfg(not(any(feature = "plugins", feature = "wasm")))]
+        {
+            Vec::new()
+        }
+    }
+
     /// Successfully loaded plugins.
     pub fn loaded(&self) -> impl Iterator<Item = &PluginSummary> {
         self.plugins.iter().filter(|p| p.error.is_none())
     }
 
     #[cfg(any(feature = "plugins", feature = "wasm"))]
-    fn add_manifest(&mut self, manifest: &Path, trusted: &[String]) {
+    fn add_manifest(&mut self, manifest: &Path, trusted: &[String], pool: PluginPool) {
         let mut summary = PluginSummary { path: manifest.to_path_buf(), ..PluginSummary::default() };
         // One host per plugin: a failing plugin never leaves another half-registered.
         #[allow(unused_mut)]
         let mut host = graphrt_plugin::PluginHost::new().with_trusted(trusted.iter().cloned());
+        #[cfg(feature = "plugins")]
+        {
+            host = host.with_pool(graphrt_plugin::PoolConfig { size: pool.size, idle_timeout: pool.idle_timeout });
+        }
+        #[cfg(not(feature = "plugins"))]
+        let _ = pool;
         #[cfg(feature = "wasm")]
         {
             host = host.with_loader(std::sync::Arc::new(crate::wasm_loader::WasmLoader::default()));

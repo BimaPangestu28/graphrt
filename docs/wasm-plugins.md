@@ -67,6 +67,34 @@ formatting, routing, validation) between I/O-bound model and HTTP calls.
 Measured per-run overhead for the example plugin (fresh instance + JSON
 request/response, release build): **~0.13 ms**.
 
+## Cold start: the path for hot plugins
+
+A WebAssembly plugin runs in the agent's process: there is no second process
+to start, so a cold wake pays only the module's instantiation. Measured with
+`bench/targets.sh` (`wake-wasm` and `wake-node`, Linux aarch64, static musl,
+2026-11-24, 3 rounds of 100 wakes, median round):
+
+| Cold wake of a new agent (request → plugin node's result) | p50 / p95 |
+| --- | ---: |
+| no plugin (`wake`, first event) | 5.6 / 6.7 ms |
+| [`wasm-text-tools`](../plugins/examples/wasm-text-tools) (`slugify`, 152 KiB module), agent `serve,llm,wasm,trust-gateway` | 13.4 / 15.1 ms |
+| [`node-uppercase`](../plugins/examples/node-uppercase) (Node.js 22 process plugin), agent `serve,llm,plugins,trust-gateway` | 56.4 / 59.7 ms |
+
+The interpreter costs binary size instead: the agent with `wasm` is 6.62 MiB
+(6,937,800 B) against 6.10 MiB (6,395,096 B) with process plugins
+(`serve,llm,plugins,trust-gateway`, aarch64 musl), +530 KiB for wasmi.
+
+For a plugin on the hot path of a scale-to-zero deployment (every request a
+possible cold wake), prefer a WebAssembly build when the plugin is pure
+computation (parsing, formatting, validation, routing). Plugins that need
+network access, a native SDK or a JavaScript library stay process plugins:
+keep them warm with [`serve --plugin-pool`](plugins.md#warm-process-pool),
+`min_replicas` or a prewarm, or run them as a shared HTTP plugin. None of the
+[graphrt-plugins](https://github.com/BimaPangestu28/graphrt-plugins) catalog
+plugins has a WebAssembly build yet (all are Node.js process plugins, most of
+them API clients that need the network), so the example above is the
+reference measurement.
+
 ## Security model
 
 - **No ambient capabilities.** Guests can only import `graphrt::log`,

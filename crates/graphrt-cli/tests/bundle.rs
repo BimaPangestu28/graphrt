@@ -161,7 +161,12 @@ async fn serve_loads_bundles_from_a_directory() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].0, "greeter");
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     };
     let state = build_state(&files, &options, graphrt_core::engine::Limits::default(), None).await;

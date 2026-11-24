@@ -44,7 +44,12 @@ graph:
 async fn app(tag: &str, store_inputs: bool, exporter: &InMemoryExporter) -> axum::Router {
     let files = discover(&workflows_dir(tag)).expect("discover");
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         capture_content: true,
         ..ServiceOptions::default()
     };

@@ -64,7 +64,12 @@ async fn state_with(workflows: &Path, store: Arc<dyn RunStore>) -> Arc<AppState>
     let files = discover(workflows).expect("discover");
     let options = ServiceOptions {
         env_file: vec![("API_KEY".to_owned(), SECRET.to_owned())],
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     };
     let state = build_state(&files, &options, Limits::default(), None).await.expect("state").with_store(store);

@@ -5,7 +5,8 @@
 //! implemented by:
 //!
 //! - **process**: an executable in any language speaking newline-delimited
-//!   JSON-RPC 2.0 over stdio (started lazily, restarted after crashes);
+//!   JSON-RPC 2.0 over stdio (started lazily, restarted after crashes; or kept
+//!   warm by a [`ProcessPool`], see [`PluginHost::with_pool`]);
 //! - **http**: a remote service receiving JSON-RPC over `POST`;
 //! - **wasm** (or any custom runtime): a [`PluginLoader`] registered on the host.
 //!
@@ -33,6 +34,8 @@ mod http;
 mod manifest;
 mod node;
 #[cfg(feature = "process")]
+mod pool;
+#[cfg(feature = "process")]
 mod process;
 mod protocol;
 mod render;
@@ -53,6 +56,8 @@ pub use manifest::{
     HttpRuntime, Limits, LoadedManifest, MANIFEST_FILES, PROTOCOL_VERSION, Permissions, PluginManifest, ProcessRuntime,
     Runtime, WasmRuntime, is_valid_name, manifest_in,
 };
+#[cfg(feature = "process")]
+pub use pool::{MAX_POOL_SIZE, PoolConfig, ProcessPool};
 #[cfg(feature = "process")]
 pub use process::{DEFAULT_PASS_ENV, MAX_CONSECUTIVE_TIMEOUTS, ProcessTransport};
 pub use protocol::Notification;

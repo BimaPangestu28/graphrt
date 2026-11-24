@@ -73,7 +73,12 @@ async fn online_and_human_scores_reach_langfuse() {
     std::fs::write(&config, "evaluators: [{name: fast, assert: {type: latency, threshold: 60000}}]").unwrap();
     let hello = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello.yaml");
     let options = ServiceOptions {
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     };
     let exporter = graphrt_otel::InMemoryExporter::new();

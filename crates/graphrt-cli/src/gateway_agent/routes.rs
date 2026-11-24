@@ -39,6 +39,7 @@ pub(super) fn dispatch(
     let done = |response: Response| -> BoxFuture<'static, Response> { Box::pin(std::future::ready(response)) };
     match segments.as_slice() {
         ["hello"] if method == Method::GET => done(hello(&state, &agent)),
+        ["warm"] if method == Method::POST => done(warm(&state)),
         ["runs"] if method == Method::POST => match super::body::run(&body) {
             Ok(run) => {
                 let trace = traceparent(&parts.headers);
@@ -87,11 +88,6 @@ fn hello(state: &AppState, agent: &GatewayAgent) -> Response {
     let workflows = state.served_workflows().map(|(name, w)| {
         json::Object::new().str("name", name).str("fingerprint", w.engine.graph().fingerprint()).finish()
     });
-    let plugins = state.warm_plugins().into_iter().map(|name| {
-        let mut text = String::new();
-        json::push_str(&mut text, &name);
-        text
-    });
     let body = json::Object::new()
         .num("protocol", PROTOCOL_VERSION.into())
         .str("version", env!("CARGO_PKG_VERSION"))
@@ -99,10 +95,28 @@ fn hello(state: &AppState, agent: &GatewayAgent) -> Response {
         .raw("workflows", &json::array(workflows))
         .num("max_active_runs", state.max_active_runs() as u64)
         .num("active_runs", state.active_runs() as u64)
-        .raw("warm_plugins", &json::array(plugins))
+        .raw("warm_plugins", &plugin_names(state))
         .bool("draining", state.is_draining())
         .finish();
     json::response(StatusCode::OK, body)
+}
+
+/// `POST /internal/v1/warm`: a warm hint (the gateway expects runs soon).
+/// Starts the plugin processes that are not up (a pool stopped for idleness,
+/// a plugin never used yet) and answers at once with the plugins already warm.
+fn warm(state: &AppState) -> Response {
+    state.prewarm_plugins();
+    json::response(StatusCode::ACCEPTED, json::Object::new().raw("warm_plugins", &plugin_names(state)).finish())
+}
+
+/// `warm_plugins` of `hello` and `warm`: a JSON array of names.
+fn plugin_names(state: &AppState) -> String {
+    let plugins = state.warm_plugins().into_iter().map(|name| {
+        let mut text = String::new();
+        json::push_str(&mut text, &name);
+        text
+    });
+    json::array(plugins)
 }
 
 fn run_and_epoch(request: &GatewayRequest) -> Result<(String, u64), Response> {

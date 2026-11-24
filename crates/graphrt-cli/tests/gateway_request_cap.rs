@@ -64,7 +64,12 @@ graph:
     let files = discover(&dir).expect("discover");
     let options = ServiceOptions {
         allow_private_network: true,
-        plugins: graphrt_cli::extensions::PluginOptions { dirs: Vec::new(), no_default: true, trusted: Vec::new() },
+        plugins: graphrt_cli::extensions::PluginOptions {
+            dirs: Vec::new(),
+            no_default: true,
+            trusted: Vec::new(),
+            pool: Default::default(),
+        },
         ..ServiceOptions::default()
     };
     let state = build_state(&files, &options, Limits::default(), None).await.expect("state");
