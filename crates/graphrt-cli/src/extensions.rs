@@ -299,3 +299,23 @@ pub fn explain_unknown_kind(message: String) -> String {
         message
     }
 }
+
+#[cfg(all(test, feature = "wasm"))]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn a_plugin_directory_does_not_also_count_as_bare_modules() {
+        let root = std::env::temp_dir().join(format!("graphrt-bare-wasm-{}", std::process::id()));
+        let plugin = root.join("text-tools");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(root.join("loose.wasm"), b"\0asm").unwrap();
+        std::fs::write(plugin.join("text_tools.wasm"), b"\0asm").unwrap();
+        std::fs::write(plugin.join("graphrt-plugin.json"), b"{}").unwrap();
+        assert_eq!(bare_wasm_modules(&[root.clone()]), vec![root.join("loose.wasm")]);
+        assert!(bare_wasm_modules(&[plugin]).is_empty(), "the module belongs to the manifest");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}

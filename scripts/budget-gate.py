@@ -16,11 +16,13 @@ prebuilt binary from --bin-dir), then measures:
 
 Run-time measurements need a binary that runs on this machine; a cross build
 gets its size checked only (--skip-run is implied when it cannot execute).
-It also checks that no banned crate is in the dependency tree.
+It also checks that no banned crate is in the dependency tree. Builds marked
+`optional = true` (the WebAssembly agent profile) run only with --optional, or
+with --bin-dir when their binary is there.
 
 Usage:
   scripts/budget-gate.py [--target TRIPLE] [--build-cmd "cargo zigbuild"]
-                         [--bin-dir DIR] [--keep-bins DIR] [--skip-run] [--skip-deps]
+                         [--bin-dir DIR] [--keep-bins DIR] [--skip-run] [--skip-deps] [--optional]
                          [--json OUT.json] [--markdown OUT.md]
 
 Environment: CARGO_TARGET_DIR (default: target). Exit status 1 when a budget is
@@ -65,6 +67,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bin-dir", type=Path, help="use prebuilt binaries <dir>/graphrt-<build name>")
     parser.add_argument("--skip-run", action="store_true", help="check sizes only")
     parser.add_argument("--skip-deps", action="store_true", help="skip the dependency check")
+    parser.add_argument(
+        "--optional", action="store_true",
+        help="also build and gate the builds marked `optional = true` (with --bin-dir they run when their binary is there)",
+    )
     parser.add_argument("--keep-bins", type=Path, help="copy the measured binaries into this directory")
     parser.add_argument("--json", type=Path, help="write the measurements as JSON")
     parser.add_argument("--markdown", type=Path, help="write the result table as Markdown")
@@ -202,6 +208,8 @@ def main() -> int:
         (work / "workflows" / "hello.yaml").write_text(WORKFLOW)
         startup = budgets.get("startup", {})
         for spec in budgets["build"]:
+            if spec.get("optional") and not wants_optional(spec, args):
+                continue
             binary = build(spec, args, work)
             if args.keep_bins:
                 args.keep_bins.mkdir(parents=True, exist_ok=True)
@@ -244,6 +252,13 @@ def main() -> int:
         shutil.rmtree(work, ignore_errors=True)
     report(results, args)
     return 1 if results["violations"] else 0
+
+
+def wants_optional(spec: dict, args: argparse.Namespace) -> bool:
+    """An optional build is measured with --optional, or when --bin-dir has its binary."""
+    if args.optional:
+        return True
+    return bool(args.bin_dir and (args.bin_dir / f"graphrt-{spec['name']}").is_file())
 
 
 def platform_key(target: str | None) -> str:

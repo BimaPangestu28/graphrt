@@ -47,6 +47,46 @@ features = "serve,llm,plugins,trust-gateway"
 delta_of = "agent-slim"
 delta_kib = { x86_64-linux = 94, aarch64-linux = 77, default = 65 }
 
+# Optional profile: the slim agents with sandboxed WebAssembly plugins (`wasm`:
+# the wasmi interpreter, tools and `graphrt::http`). Measured only with
+# `budget-gate.py --optional` (bench/targets.sh passes it), so the default gate
+# and the default agent stay without wasm. `agent-slim-gateway-wasm-net` adds
+# `http`, the SSRF-safe egress that serves `graphrt::http` (without it, modules
+# importing it are refused at load). Measured 2026-11-24 (min-size; Linux in the
+# Lima VM, macOS arm64 native):
+#
+# | build | x86_64-linux | aarch64-linux | macOS arm64 | idle RSS aarch64 |
+# | --- | ---: | ---: | ---: | ---: |
+# | agent-slim (base) | 7.216 MiB | 6.029 MiB | 5.325 MiB | 4.80 MiB |
+# | agent-slim-wasm | +1050.6 KiB | +848.9 KiB | +684.5 KiB | 5.27 MiB |
+# | agent-slim-gateway-wasm (over agent-slim-gateway) | +1050.3 KiB | +849.5 KiB | +684.5 KiB | 5.32 MiB |
+# | agent-slim-gateway-wasm-net (over agent-slim-gateway) | +1269.1 KiB | +1022.6 KiB | +846.9 KiB | 5.28 MiB |
+#
+# Budgets are those plus about 5 %.
+[[build]]
+name = "agent-slim-wasm"
+features = "serve,llm,plugins,wasm"
+optional = true
+delta_of = "agent-slim"
+delta_kib = { x86_64-linux = 1103, aarch64-linux = 892, default = 720 }
+idle_rss_mib = 6.0
+
+[[build]]
+name = "agent-slim-gateway-wasm"
+features = "serve,llm,plugins,trust-gateway,wasm"
+optional = true
+delta_of = "agent-slim-gateway"
+delta_kib = { x86_64-linux = 1103, aarch64-linux = 892, default = 720 }
+idle_rss_mib = 6.0
+
+[[build]]
+name = "agent-slim-gateway-wasm-net"
+features = "serve,llm,plugins,trust-gateway,wasm,http"
+optional = true
+delta_of = "agent-slim-gateway"
+delta_kib = { x86_64-linux = 1333, aarch64-linux = 1074, default = 890 }
+idle_rss_mib = 6.0
+
 # The gateway (plan §9: core ≤ 8 MiB, every provider ≤ 9 MiB). Measured
 # 2026-11-23 after the monomorphisation pass (one YAML parser instantiation,
 # no serde_path_to_error, one tokio task type for the stores' blocking jobs

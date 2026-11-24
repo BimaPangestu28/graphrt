@@ -7,7 +7,36 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+- WebAssembly plugins can offer agent tools and make outbound HTTP requests.
+  A module lists `tools` in its manifest and exports `graphrt_tool_call`; the
+  agent's per-call `tool_context` (e.g. an end user's JWT) reaches it only when
+  the plugin has `permissions.secrets` and is trusted, and the host scrubs
+  context values from tool results and errors. `graphrt::http` (plugins with
+  `permissions.network`, builds with `http`) goes through the same SSRF-safe
+  egress as `http-request`: public addresses unless `--allow-private-network`,
+  no redirects, host-owned framing headers, at most 16 requests per call, a
+  30 s timeout cap and body caps (new `WasmLimits` fields). `permissions.env`
+  variables are handed to the guest as `env`. The Rust guest SDK gains
+  `Manifest::tool`, `Plugin::call_tool`, `export_plugin!(P, tools)` and
+  `http()`. From Rust: `WasmPlugin::load_with_host(.., WasmHost)`,
+  `WasmPlugin::tools()`, the `HttpEgress` trait. Additions to ABI version 1;
+  docs/wasm-plugins.md. Cost: +57.7 KiB (aarch64 musl `serve,llm,wasm,trust-gateway`).
+  The pilot port, the supabase `user_rpc` tool in graphrt-plugins
+  `wasm/supabase-rpc`, cuts a cold `graphrt run` from 118.8 to 18.4 ms p50 and
+  the agent's RSS after runs from 127.0 to 9.2 MiB against the Node.js plugin
+  (Linux aarch64).
+- Optional profile in `bench/budgets.toml`: `agent-slim-wasm`,
+  `agent-slim-gateway-wasm`, `agent-slim-gateway-wasm-net` (wasm +848.9 KiB,
+  +http +1022.6 KiB on aarch64 musl), gated with `scripts/budget-gate.py
+  --optional` (bench/targets.sh passes it). `bench/wasm-plugin/supabase_tool.py`
+  compares a Node.js and a WebAssembly plugin through a real agent.
+- `examples/supabase-chatbot/tests` take `SERVE_EXTRA_ARGS` (e.g.
+  `--allow-private-network` for the WebAssembly plugin); both tests pass with it.
+
 ### Fixed
+- `--plugins <dir>` pointing at a WebAssembly plugin's own directory no longer
+  also loads its `.wasm` as a bare module (which lost the manifest's permissions).
 - Programs graphrt starts no longer get an AppImage's environment. An
   application packaged as a Linux AppImage (e.g. the graphrt desktop app)
   runs with the bundle's folders in front of `LD_LIBRARY_PATH`, `PATH`,

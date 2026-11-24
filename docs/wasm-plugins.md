@@ -33,11 +33,20 @@ Two ways to ship a module to the `graphrt` CLI:
   module describes its own nodes.
 - **Manifest:** a directory with `graphrt-plugin.json` using `"runtime": "wasm"`
   and `"module": "my_plugin.wasm"`. This adds versioned installs
-  (`graphrt plugin install`), `checksums`, and `permissions.secrets` (granted
+  (`graphrt plugin install`), `checksums`, host variables and outbound HTTP
+  through `permissions` (below), and `permissions.secrets` (granted
   only to plugins the operator trusts: `--trust-plugin <name>`). Node kinds
   must start with `<name>.`; with `allow_unprefixed_kinds` plain names without
   `.` are also accepted. The CLI ships the loader for `runtime: wasm`.
   See [`plugins/examples/wasm-text-tools`](../plugins/examples/wasm-text-tools).
+
+A manifest's `permissions` decide what the module gets:
+
+| Permission | WebAssembly plugin gets |
+| --- | --- |
+| `env: [NAME, ...]` | Those host variables (when set) in every request's `env`, like a process plugin's environment. |
+| `network: true` | The `graphrt::http` import, served by graphrt's SSRF-safe egress (builds with the `http` feature). Without it, a module importing `http` is refused at load. |
+| `secrets: true` + `--trust-plugin <name>` | Plaintext secrets in node configs and the agent's per-call `tool_context` (e.g. an end user's JWT) in tool calls. |
 
 Either way, a module's kinds never replace built-in nodes or another plugin's
 nodes (`WasmPlugin::register` fails with `KindConflict`), and a namespaced kind
@@ -80,27 +89,72 @@ to start, so a cold wake pays only the module's instantiation. Measured with
 | [`wasm-text-tools`](../plugins/examples/wasm-text-tools) (`slugify`, 152 KiB module), agent `serve,llm,wasm,trust-gateway` | 13.4 / 15.1 ms |
 | [`node-uppercase`](../plugins/examples/node-uppercase) (Node.js 22 process plugin), agent `serve,llm,plugins,trust-gateway` | 56.4 / 59.7 ms |
 
-The interpreter costs binary size instead: the agent with `wasm` is 6.62 MiB
-(6,937,800 B) against 6.10 MiB (6,395,096 B) with process plugins
-(`serve,llm,plugins,trust-gateway`, aarch64 musl), +530 KiB for wasmi.
+The interpreter costs binary size instead. `wasm` on the slim agents
+(min-size; optional profile of `bench/budgets.toml`, measured 2026-11-24):
+
+| Build | x86_64 musl | aarch64 musl | macOS arm64 | idle RSS (aarch64) |
+| --- | ---: | ---: | ---: | ---: |
+| `serve,llm,plugins` (agent-slim) | 7.22 MiB | 6.03 MiB | 5.33 MiB | 4.80 MiB |
+| + `wasm` | +1050.6 KiB | +848.9 KiB | +684.5 KiB | 5.27 MiB |
+| + `trust-gateway,wasm` (over agent-slim-gateway) | +1050.3 KiB | +849.5 KiB | +684.5 KiB | 5.32 MiB |
+| + `trust-gateway,wasm,http` (egress for `graphrt::http`) | +1269.1 KiB | +1022.6 KiB | +846.9 KiB | 5.28 MiB |
+
+`wasm` stays off in the default agent builds; turn it on for agents whose hot
+plugins have a WebAssembly build. Tools and `graphrt::http` themselves cost
++57.7 KiB (aarch64 musl `serve,llm,wasm,trust-gateway`: 6,937,800 →
+6,996,928 B).
+
+### Node.js vs WebAssembly: the supabase tool
+
+The [supabase](https://github.com/BimaPangestu28/graphrt-plugins/tree/main/supabase)
+plugin's per-user `call_function` tool (`SUPABASE_TOOL_MODE=user_rpc`) has a
+WebAssembly build ([`wasm/supabase-rpc`](https://github.com/BimaPangestu28/graphrt-plugins/tree/main/wasm/supabase-rpc),
+Rust, 214 KiB module) with the same env, tool, errors and HTTP requests (the
+same test cases run against both). Measured with
+[`bench/wasm-plugin/supabase_tool.py`](../bench/wasm-plugin/supabase_tool.py):
+`examples/supabase-chatbot/agent.yaml`, one tool call per run, mock model and
+Supabase (sub-millisecond), agent `serve,llm,plugins,trust-gateway,wasm,http`,
+Linux aarch64 musl in a 4-vCPU VM, Node.js 22:
+
+| | Node.js plugin | WebAssembly build |
+| --- | ---: | ---: |
+| Plugin on disk | 370 KB (+ Node.js runtime, 61 MiB `libnode`) | 220 KB (`.wasm` 214 KB; runtime in graphrt, +1.0 MiB) |
+| Cold run, `graphrt run` exec → exit, p50 / p95 (n=50) | 118.8 / 122.2 ms | 18.4 / 19.4 ms |
+| First run on a fresh `serve` | 172.9 ms | 10.9 ms |
+| Warm run on `serve`, p50 / p95 (n=300) | 1.80 / 2.75 ms | 1.79 / 2.06 ms |
+| RSS (serve + plugin processes), idle → after the runs | 6.6 → 127.0 MiB | 6.8 → 9.2 MiB |
 
 For a plugin on the hot path of a scale-to-zero deployment (every request a
-possible cold wake), prefer a WebAssembly build when the plugin is pure
-computation (parsing, formatting, validation, routing). Plugins that need
-network access, a native SDK or a JavaScript library stay process plugins:
-keep them warm with [`serve --plugin-pool`](plugins.md#warm-process-pool),
-`min_replicas` or a prewarm, or run them as a shared HTTP plugin. None of the
-[graphrt-plugins](https://github.com/BimaPangestu28/graphrt-plugins) catalog
-plugins has a WebAssembly build yet (all are Node.js process plugins, most of
-them API clients that need the network), so the example above is the
-reference measurement.
+possible cold wake), prefer a WebAssembly build: pure computation (parsing,
+formatting, validation, routing) and HTTP API clients both fit now. Plugins
+that need a native SDK, a JavaScript library, a browser or the filesystem stay
+process plugins: keep them warm with [`serve --plugin-pool`](plugins.md#warm-process-pool),
+`min_replicas` or a prewarm, or run them as a shared HTTP plugin.
 
 ## Security model
 
 - **No ambient capabilities.** Guests can only import `graphrt::log`,
-  `graphrt::chunk` and `graphrt::progress`. Modules importing anything else
-  (WASI, `env`, ...) are rejected at load. No filesystem, network, clock or
-  randomness.
+  `graphrt::chunk`, `graphrt::progress` and, when granted, `graphrt::http`.
+  Modules importing anything else (WASI, `env`, ...) are rejected at load. No
+  filesystem, clock or randomness, and no network unless granted.
+- **Network (`graphrt::http`, `permissions.network`).** Every request goes
+  through the same egress layer as the `http-request` node (graphrt-http):
+  http/https only, public addresses only unless the operator passes
+  `--allow-private-network`, DNS answers checked before connecting (no
+  rebinding), proxy variables ignored, and **no redirects** (a 3xx goes back
+  to the guest, so a credential header such as Supabase's `apikey` is never
+  replayed to another host). The host also checks each request: methods GET,
+  HEAD, POST, PUT, PATCH, DELETE; framing and hop-by-hop headers (`host`,
+  `content-length`, `transfer-encoding`, `connection`, ...) belong to the host;
+  at most `max_http_requests` per call; the guest's timeout is capped by
+  `http_timeout_ms`; request and response bodies are capped
+  (`http_request_bytes`, `http_response_bytes`) and must be UTF-8. Bare
+  `.wasm` modules never get the network. Time spent waiting on the network
+  does not consume fuel; the request count and timeout bound it instead.
+- **Tool context.** A tool call carries the agent's `tool_context` only to a
+  plugin with `permissions.secrets` that the operator trusts (otherwise the
+  call is refused, as for process plugins), and the host replaces every
+  context value found in the tool's result or error with `******`.
 - **CPU:** fuel metering (≈1 unit per instruction). Exhausting fuel aborts the
   run with `wasm_fuel_exhausted` (fatal, not retried). Fuel also bounds the
   module's start function. Host imports are charged too: every `log`, `chunk`
@@ -140,6 +194,7 @@ value is `(ptr << 32) | len` as `i64`.
 | `graphrt_alloc` | `(len: i32) -> i32` | Return a buffer of `len` bytes the host writes the request into. |
 | `graphrt_describe` | `() -> i64` | Packed pointer to the manifest JSON. |
 | `graphrt_run` | `(ptr: i32, len: i32) -> i64` | Run one node; packed pointer to the response JSON. |
+| `graphrt_tool_call` | `(ptr: i32, len: i32) -> i64` | Optional; required when the manifest lists `tools`. One tool call ([below](#tools)). |
 
 Guests never need to free: the instance is discarded after each call.
 
@@ -150,6 +205,10 @@ Guests never need to free: the instance is discarded after each call.
 | `log` | `(level: i32, ptr: i32, len: i32)` | Log line, level 0 (trace) .. 4 (error). Returned in the node's `metadata.logs`; when the run fails, the last lines are appended to the error message. |
 | `chunk` | `(field_ptr, field_len, ptr, len: i32)` | Stream text for output `field` (emits `node_chunk` events immediately). |
 | `progress` | `(name_ptr, name_len, ptr, len: i32)` | Structured progress (`node_progress` event); payload is JSON. |
+| `http` | `(ptr, len: i32) -> i64` | Outbound HTTP; plugins with `permissions.network` only ([below](#outbound-http)). |
+
+`tools`, `graphrt_tool_call`, `env` and `http` were added to version 1 in
+graphrt 0.6: older hosts ignore `tools` and refuse a module importing `http`.
 
 ### Manifest (`graphrt_describe`)
 
@@ -207,7 +266,8 @@ resolution:
 The host also uses these references for build-time validation: a plugin node
 referencing an unknown namespace fails `Graph::build`.
 
-`resume` is present only when the node previously paused.
+`resume` is present only when the node previously paused. `env` holds the
+host variables of the manifest's `permissions.env` (omitted when empty).
 
 ### Response
 
@@ -221,6 +281,44 @@ One of:
 
 `error` wins over `pause`, which wins over `outputs`. A response with none of
 them is rejected (`wasm_invalid_output`).
+
+### Tools
+
+A manifest may list tools for `agent` nodes next to (or instead of) node kinds:
+
+```json
+{"name": "supabase", "nodes": [], "tools": [{"name": "call_function", "description": "...", "parameters": {"type": "object"}}]}
+```
+
+They are registered under the plugin's name (`supabase/call_function` in an
+agent's `tools`), like a process plugin's. Each call instantiates the module and
+calls `graphrt_tool_call` with:
+
+```json
+{"name": "call_function", "arguments": {"function_name": "get_balance"}, "context": {"secrets": {"user_jwt": "eyJ..."}}, "env": {"SUPABASE_URL": "https://..."}}
+```
+
+and expects a process plugin's `tool.call` result, or `error` for a refused call:
+
+```json
+{"text": "...", "data": {}, "is_error": false, "images": []}
+{"error": {"kind": "permission_denied", "message": "Function \"x\" is not allowed"}}
+```
+
+### Outbound HTTP
+
+`graphrt::http` takes a request JSON and returns a packed pointer to the reply,
+written into a buffer the host gets from `graphrt_alloc`:
+
+```json
+{"method": "POST", "url": "https://x.supabase.co/rest/v1/rpc/get_balance", "headers": {"apikey": "..."}, "body": "{}", "timeout_ms": 30000}
+{"status": 200, "headers": {"content-type": "application/json"}, "body": "[...]"}
+{"error": {"kind": "egress_denied", "message": "address 127.0.0.1 is not a public address ..."}}
+```
+
+Error kinds: `invalid_request`, `egress_denied`, `timeout`, `too_large`,
+`http_error`. The call blocks the guest (which runs on Tokio's blocking pool),
+not the host's async workers.
 
 ## Writing a plugin in Rust
 
@@ -264,6 +362,14 @@ cargo build --release --target wasm32-unknown-unknown
 See [`sdk/wasm/examples/text-tools`](../sdk/wasm/examples/text-tools) for a
 complete plugin with a streaming node and a branching node (≈150 KB `.wasm`).
 
+Tools: list them with `Manifest::tool(name, description, parameters)`,
+implement `Plugin::call_tool(ToolCall) -> Result<ToolResult, PluginError>`
+(`call.env("NAME")`, `call.secret("user_jwt")`) and export with
+`export_plugin!(MyPlugin, tools)`. Outbound HTTP:
+`graphrt_wasm_guest::http(&HttpRequest { .. })`. The
+[supabase WebAssembly build](https://github.com/BimaPangestu28/graphrt-plugins/tree/main/wasm/supabase-rpc)
+is a complete tool plugin with HTTP.
+
 ## Other languages
 
 Any toolchain that emits a `wasm32-unknown-unknown` module (no WASI imports)
@@ -286,6 +392,10 @@ which doubles as a minimal reference.
 | `max_stream_bytes` | 16 MiB | Bytes streamed through `chunk` + `progress` per call. |
 | `max_recursion_depth` | 1024 | Wasm call depth. |
 | `expose_secrets` | `false` | Hand plaintext secrets to the guest. |
+| `max_http_requests` | 16 | `graphrt::http` requests per call. |
+| `http_timeout_ms` | 30 000 | Upper bound of a guest request's timeout. |
+| `http_request_bytes` | 1 MiB | Request body cap. |
+| `http_response_bytes` | 4 MiB | Response body cap. |
 
 With the `tokio` feature (on by default), guest calls run on Tokio's blocking
 pool when a Tokio runtime is active, so long computations never stall other

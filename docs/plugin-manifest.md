@@ -100,7 +100,7 @@ Unknown keys are errors.
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `network` | boolean | `false` | Informational: the plugin makes network calls. |
+| `network` | boolean | `false` | Process and HTTP plugins: informational (they make network calls). WebAssembly plugins: grants the `graphrt::http` import through graphrt's egress policy ([wasm-plugins.md](wasm-plugins.md#outbound-http)); without it a module importing `http` does not load. |
 | `env` | array of strings | `[]` | Host environment variables passed to a process plugin. Lists `bearer_token_env` for HTTP plugins. |
 | `secrets` | boolean | `false` | Plaintext secrets in node config, resume input and `tool.call` `context` (an `agent` node's `tool_context`). Granted only to trusted plugins; others receive `******`. |
 
