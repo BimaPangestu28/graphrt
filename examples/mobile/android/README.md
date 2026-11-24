@@ -78,7 +78,7 @@ examples/mobile/android/scripts/smoke-test.sh   # from the repository root
 On screen, under the buttons:
 
 ```text
-graphrt 0.6.0 loaded workflow 'hello'
+graphrt 0.6.1 loaded workflow 'hello'
 status: succeeded
 greeting: Hello, Grace.
 {"elapsed_ms":1,"outputs":{"greeting":"Hello, Grace."},...,"status":"succeeded","answer":""}
