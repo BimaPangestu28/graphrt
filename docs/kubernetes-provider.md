@@ -184,30 +184,10 @@ built-in scaler is the supported path.
 
 ## Conformance
 
-`cargo test -p graphrt-provider-k8s` runs:
-
-- the shared suite of `graphrt-provider-api` (`run_conformance`, C1–C13)
-  against an emulated cluster behind the harness's scripted fake server, with
-  its fault injection (401, 429, 5xx, 400) and request scan;
-- deeper Kubernetes checks against a streaming fake API server that models
-  scale CAS, the ReplicaSet victim order, EndpointSlice watches with
-  `410 Gone`, server-side apply, token checks, capacity (unschedulable) and
-  ResourceQuota (`ReplicaFailure`).
-
-| Check | What is verified |
-| --- | --- |
-| C1 | 20 concurrent wakes from zero: one scale patch, exactly 1 replica |
-| C2 | 50 wakes from zero: the provider's own latency on top of pod readiness |
-| C4 | scale-in removes only the released replica; idempotent; 409 conflicts retried |
-| C5 | a pod killed outside the gateway is seen by the readiness watch, also across a `410 Gone` relist |
-| C8 | a rejected token is refreshed exactly once; revoked credentials give `Auth`; no token in errors, `Debug` or requests |
-| C9 | 503/429/500 retried with backoff, 400/403 not retried; unschedulable and exceeded quota are `Capacity` |
-| C10 | the applied Deployment carries Secret references only; re-deploy keeps replicas |
-| C12 | `list` reports every replica for reconciliation; releasing from the list reaches zero |
-
-C3, C6, C7 and C11 exercise the gateway's run supervisor (drain, long streams,
-request caps, the version pool) and are reported as skipped until the
-gateway's harness exists. C13 is the binary-size gate.
+`cargo test -p graphrt-provider-k8s` runs the shared C1–C13 conformance
+suite of `graphrt-provider-api` plus Kubernetes-specific checks (scale-in
+victim order, readiness watches, capacity and quota errors); see
+[CONTRIBUTING.md](../CONTRIBUTING.md#provider-conformance-tests).
 
 Against a real cluster (opt-in; kind uses a client certificate and an inline
 CA from the kubeconfig):

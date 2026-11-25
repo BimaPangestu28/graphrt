@@ -4,7 +4,7 @@ These numbers describe the **runtime itself**: scheduling, variable handling,
 streaming, memory and startup. Every model call goes to an in-process mock, so
 nothing here measures a model provider, the network or a real tool. The
 [comparison with Python agent stacks](#graphrt-vs-python-agent-stacks) at the
-end is the exception: both sides call a local fake HTTP server there.
+end is the exception: both sides call a local HTTP test server there.
 
 Reproduce on your own machine:
 
@@ -169,8 +169,8 @@ sudo bench/targets.sh --bin-dir bins                 # root only for the contain
 | Target | How it is measured | aarch64 (2026-11-24) | Target |
 | --- | --- | ---: | ---: |
 | TTFB overhead, gateway → agent on a Unix socket | first `run_started` byte through the gateway minus signed straight to the same agent, interleaved, n = 1,000 | p50 0.24 ms, p95 0.28 ms | ≤ 0.3 / ≤ 1 ms |
-| TTFB overhead, agent on loopback TCP | the same behind the k8s provider (fake Kubernetes API) | p95 0.29 ms | ≤ 1 ms + 1 RTT |
-| 1,000 concurrent SSE streams | 20 chunks 500 ms apart each (fake OpenAI); gateway peak RSS, stalls | 44.5 MiB (median of 3 rounds: 44.4–44.8), 0 failed, 0 stalled, max gap 513 ms | ≤ 64 MiB (audit; plan: 80) |
+| TTFB overhead, agent on loopback TCP | the same behind the k8s provider (local Kubernetes API test server) | p95 0.29 ms | ≤ 1 ms + 1 RTT |
+| 1,000 concurrent SSE streams | 20 chunks 500 ms apart each (local OpenAI-compatible test server); gateway peak RSS, stalls | 44.5 MiB (median of 3 rounds: 44.4–44.8), 0 failed, 0 stalled, max gap 513 ms | ≤ 64 MiB (audit; plan: 80) |
 | Cold wake, local provider | request → new agent process → first SSE event, 100 fresh deployments | p95 5.3 ms | ≤ 15 ms |
 | Cold wake + Node.js plugin | request → the plugin node's result | **p95 70.5 ms, missed** (the plugin alone, no graphrt, in the same run: 61.6 ms); 56.9–90.6 ms across runs | ≤ 60 ms |
 | Webhook ack | HMAC-signed POST → 202, n = 1,000 | p95 0.54 ms | ≤ 10 ms |
@@ -238,7 +238,7 @@ laptop single rounds swing by 2x.
 
 The same graph shapes in graphrt, [LangGraph](https://github.com/langchain-ai/langgraph)
 (with `langchain-openai` for the model node) and plain LangChain LCEL runnables,
-all calling one local fake OpenAI-compatible HTTP server that streams 10 deltas.
+all calling one local OpenAI-compatible HTTP test server that streams 10 deltas.
 Reproduce with `bench/compare/run.sh --docker`; the scripts, both sides' graph
 definitions and the fairness rules are in [`bench/compare/`](../bench/compare/README.md).
 Raw data: [`bench/results/2026-11-19-Bima-Pangestu-vs-python.json`](../bench/results/2026-11-19-Bima-Pangestu-vs-python.json)
@@ -302,7 +302,7 @@ shapes, sync LangGraph, every concurrency level) are in the results file.
   each side. Python runs on one asyncio event loop, as LangGraph is normally
   served; graphrt is reported on all cores and on one worker thread, which is
   the like-for-like comparison with one CPython thread.
-- **Fairness**: same fake server, same latency and response bytes, streaming
+- **Fairness**: same test server, same latency and response bytes, streaming
   on both sides; Python uses async nodes and `ainvoke`, a compiled graph
   reused across runs, no checkpointer, no debug, `max_retries=0`, LangSmith
   tracing explicitly off (`LANGCHAIN_TRACING_V2=false`,
@@ -331,7 +331,7 @@ shapes, sync LangGraph, every concurrency level) are in the results file.
 
 - One laptop, in use during the run; no CPU pinning. The Linux numbers come
   from a VM on the same laptop, not from a small device.
-- The fake server answers on loopback in microseconds; real networks and
+- The test server answers on loopback in microseconds; real networks and
   providers dominate real runs.
 - Python was measured with the stock asyncio loop on CPython 3.11. uvloop,
   newer CPython versions, PyPy and multi-process deployments (several

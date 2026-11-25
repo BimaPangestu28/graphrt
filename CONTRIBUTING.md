@@ -35,6 +35,21 @@ GRAPHRT_LIVE_PROVIDERS=1 ANTHROPIC_API_KEY=... \
   cargo test -p graphrt-llm --features gemini,bedrock --test live_providers -- --nocapture anthropic::
 ```
 
+## Provider conformance tests
+
+The gateway's cloud providers (Kubernetes, Cloud Run, Container Apps, ECS,
+Lambda, Fly) run the shared C1–C13 conformance suite of
+`graphrt-provider-api` plus provider-specific checks on every PR, against
+local fake servers that model each cloud API. They need no cloud account.
+Passing them does not verify a provider on the real platform: the cloud
+targets stay "preview" until they have been checked on real accounts, and each
+provider page under `docs/` lists what that still needs. The commands, the
+fake servers and the per-case results are in
+[crates/graphrt-provider-api/CONFORMANCE.md](crates/graphrt-provider-api/CONFORMANCE.md).
+
+Keep that wording out of `docs/` and the README: those pages are published on
+the project site, which describes the cloud targets as preview only.
+
 ## Code guidelines
 
 - No `unwrap()`, `expect()`, `panic!()` or unchecked indexing outside tests

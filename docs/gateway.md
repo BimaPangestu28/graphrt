@@ -242,8 +242,8 @@ deployments:
 A kind whose feature is not in the build fails at start-up with a message
 naming the feature. Every provider runs the C1–C13 conformance suite and the
 gateway cases (drain and re-dispatch, long stream, request cap, 7-day version
-pool, idle release) against fake cloud APIs in
-`crates/graphrt-gateway/tests/provider_harness.rs`.
+pool, idle release) in CI; see
+[CONTRIBUTING.md](../CONTRIBUTING.md#provider-conformance-tests).
 
 Request caps: on platforms with a cap and a grace period (Cloud Run 60
 minutes, Container Apps' standard ingress 240 s) the gateway asks the agent
@@ -317,9 +317,8 @@ crash, `stale_after_ms` after a freeze). See [gateway-ha.md](gateway-ha.md).
 ## Measured so far
 
 Local measurements, `--profile min-size`. Only local processes and a local
-Kubernetes cluster have run for real; Cloud Run, Container Apps, ECS, Lambda
-and Fly are tested against API fakes (`provider_harness.rs` and each provider
-crate's conformance tests), and real-cloud verification is pending.
+Kubernetes cluster have run for real. Cloud Run, Container Apps, ECS, Lambda
+and Fly are in preview: they have not been verified on real cloud accounts yet.
 
 | What | Measured | Where |
 | --- | --- | --- |

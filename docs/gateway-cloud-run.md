@@ -171,35 +171,11 @@ reference (C10).
 
 The gateway never holds deploy-time roles and never sees a secret value.
 
-## Conformance
+## Not yet verified on real GCP
 
-`cargo test -p graphrt-gcp --features deploy-cloud-run` runs the shared
-`graphrt-provider-api` harness (`tests/cloud_run_harness.rs`) and the Cloud
-Run-specific C1–C12 checks (`tests/cloud_run_conformance.rs`; C8 also runs
-for `auth-gcp` alone) against fake Google APIs (metadata server, token
-endpoint that verifies the RS256 signature, Admin API v2, Secret Manager) and a
-fake Cloud Run instance. C13 is the size table above (the harness checks the
-measured `gw-cloudrun` delta against its budget).
-
-| ID | Fake-server test | Covers |
-| --- | --- | --- |
-| C1 | 20 concurrent wakes from zero, 300 ms cold start | one `/healthz`, one `services.get`, one ID token |
-| C2 | 50 wakes | wake overhead p95 (fake, warm instance) |
-| C3 | capabilities + rendered spec | grace 10 s → preempt; no grace field sent |
-| C4 | `release` during an open stream | no API call, stream completes |
-| C5 | service deleted out of band | `list` empty, `NotFound` |
-| C6 | 200 events of 1 KB, 10 ms apart, through the invoke auth path | delivery lag p95 ≤ 50 ms, no buffering |
-| C7 | timeout 3600 / 900 | `max_request_secs`, rendered `timeout`, preempt at cap − 60 |
-| C8 | token caching, refresh before exp, ±5 min skew, 401/403 refresh once, log scan | auth rules above |
-| C9 | 503 ×2, 429 + `Retry-After`, invoke 429, Admin API bucket | jittered backoff, `Capacity` not retried, quota |
-| C10 | Secret Manager writes + deploy | only references reach the Admin API; plaintext refs refused |
-| C11 | deploy v1, v2; wake both; retire v1 | old tag wakeable, then `NotFound` |
-| C12 | rendered scaling + drift + fresh provider | min 0, `cpuIdle`, drift warnings, nothing to clean after `kill -9` |
-
-### Real-GCP verification (nightly, needs a sandbox project)
-
-The fakes follow Google's documented API shapes; these need a real project
-before the provider is marked stable:
+Cloud Run support is in preview. These need a real sandbox project (nightly)
+before the provider is marked stable (how the provider tests run is in
+[CONTRIBUTING.md](../CONTRIBUTING.md#provider-conformance-tests)):
 
 1. Cloud Run accepts ID tokens whose `aud` is the **custom audience**
    `graphrt/<p>/<r>/<service>` on the service URL **and on tag URLs**.

@@ -339,27 +339,10 @@ referenced secrets, and `kms:Encrypt` / `kms:CreateGrant` on `kms_key_arn`.
 The ECS execution role (not the deployer) needs `secretsmanager:GetSecretValue`
 / `ssm:GetParameters` on the referenced secrets.
 
-## Conformance (plan §7)
+## Not yet verified on real AWS
 
-Every case runs per PR against fake AWS endpoints (ECS JSON 1.1, Lambda event
-stream, STS, IMDSv2, container credentials) that verify each SigV4 signature
-and the ±5 min clock window: `cargo test -p graphrt-provider-aws --features provider-ecs,provider-lambda`.
-
-| Case | ECS Fargate | Lambda |
-| --- | --- | --- |
-| C1 20 concurrent wakes | pass (exactly the requested tasks) | pass (no-op) |
-| C2 wake latency n=50 | pass on the fake; **real p95 needs Fargate** | pass (no-op); real cold start needs AWS |
-| C3 grace / SIGTERM | `StopTask` + `stopTimeout ≤ 120` checked; migration needs the gateway | n/a (no grace, no preempt) |
-| C4 scale-in | pass (only the chosen task stops) | pass (no-op) |
-| C5 external kill | pass (one `list` sees it; replaced on next wake) | n/a (`Url`) |
-| C6 long stream, no buffering | n/a (gateway talks to the task IP) | pass on the fake (per-event overhead, buffering detection); **real 14-min stream needs AWS** |
-| C7 request cap | n/a (no cap) | pass (`platform_timeout` from Lambda and from the gateway cap) |
-| C8 auth | pass (refresh before exp, 403 → refresh once, skew ±5 min, no secrets in errors/`Debug`) | pass |
-| C9 API errors | pass (throttle/5xx backoff, `RateLimited`, `Capacity`, no doubled tasks) | pass (throttle retried, 5xx not) |
-| C10 secrets | pass (no credential in `Debug`/errors) | pass |
-| C11 old-version pool | pass (version N−1 starts its own revision); day-6/day-8 needs the gateway | qualifier per version |
-| C12 orphans | pass (tasks of a killed gateway listed and stopped) | n/a |
-| C13 size | see the table below | see the table below |
+ECS Fargate and Lambda are in preview. How the provider tests run is in
+[CONTRIBUTING.md](../CONTRIBUTING.md#provider-conformance-tests).
 
 **Needs real AWS** (nightly, credentials via OIDC federation): Fargate wake p95
 (target 45 s) and capacity errors; `stopTimeout` behaviour under SIGTERM;
@@ -370,15 +353,6 @@ throttling; IRSA, Pod Identity and IMDSv2 on real hosts; the IAM policies above
 against real ECS / Lambda (task definition accepted by Fargate, image function
 create/update timings, Lambda Web Adapter readiness on `/healthz`, Function URL
 streaming, KMS-encrypted environment with `resolve-to-env`).
-
-The deploy drivers are tested end to end on the fakes
-(`cargo test -p graphrt-provider-aws --features deploy`): ECS registers a
-revision with secrets as `valueFrom` and `stopTimeout`, and `EcsProvider`
-starts exactly that ARN; Lambda creates, waits out `InProgress`, updates,
-publishes, aliases, adds the streaming IAM Function URL, and `LambdaProvider`
-invokes `function:alias`; re-apply is a no-op, a reused version name with new
-code is refused, a create race falls back to update, secrets are refused
-unless `resolve-to-env`, and invalid specs make no AWS call.
 
 ## Binary size (C13)
 
