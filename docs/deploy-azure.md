@@ -16,9 +16,9 @@ No Azure SDK: about ten REST calls over the `reqwest`/`rustls`/`ring` the
 workspace already links. Measured sizes are at the end of this page.
 
 > Status: preview. The provider implements the `Provider` / `DeployDriver` traits of
-> `graphrt-provider-api` and passes the shared conformance suite. The gateway and
-> `graphrt deploy` wiring land separately; until then the crate is a library
-> only. It has not been verified on a real Azure subscription yet: see
+> `graphrt-provider-api` and passes the shared conformance suite. `graphrt gateway`
+> (`kind: aca`) and `graphrt deploy --target aca` use it, as described above.
+> It has not been verified on a real Azure subscription yet: see
 > [What still needs real Azure](#what-still-needs-real-azure).
 
 ## How a deployment maps to Container Apps
