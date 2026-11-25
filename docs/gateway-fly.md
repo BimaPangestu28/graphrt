@@ -2,8 +2,9 @@
 
 > Status: preview. `graphrt gateway` uses this provider with
 > `--features gateway-fly` (`kind: fly` under `providers:`) and
-> `graphrt deploy --target fly` deploys versions; both pass the conformance
-> suite against a fake Machines API. See [docs/gateway.md](gateway.md#providers).
+> `graphrt deploy --target fly` deploys versions. It has not been verified
+> on real Fly.io yet: see [Not yet verified on real Fly](#not-yet-verified-on-real-fly).
+> See [docs/gateway.md](gateway.md#providers).
 > This page describes how the Fly target behaves and how to set it up.
 
 For a single agent served straight by the Fly proxy, without a gateway, see
@@ -117,38 +118,14 @@ suspend works; above that every release is a cold `stop`.
   forward and connections it held are gone. That is why suspend is used only
   on idle replicas.
 
-## Conformance
+## Not yet verified on real Fly
 
-Results of `cargo test -p graphrt-provider-fly` against the fake Machines API:
-
-| Case | Result |
-| --- | --- |
-| C1 20 concurrent wakes → 1 Machine | pass |
-| C2 wake latency | pass (provider overhead: 3 calls; real p95 to be measured on Fly) |
-| C4 scale-in releases only the victim; releasing again is `Ok` | pass |
-| C5 Machine stopped outside the gateway is detected | pass |
-| C8 one 401 → token reload → success; persistent 401 → `Auth`, no token in URLs or errors | pass |
-| C9 429/503 retried, 400 not retried, full host → `Capacity` | pass |
-| C10 no secret or token in gateway requests | pass |
-| C12 release → 0 live Machines | pass (idle/orphan half needs the gateway) |
-| C3, C6, C7, C11 | gateway harness (`graphrt-gateway`) |
-| C13 size | measured separately, see below |
-
-Fly-specific tests cover:
-
-- suspended before stopped;
-- the suspend → stop fallback, and remembering it;
-- `SIGTERM` + `300s` on stop;
-- capacity fallback and pool growth;
-- version isolation, and waking an N−1 pool;
-- refusing apps that are not configured;
-- deploy idempotency, secrets sent only to `/secrets`, `fly:` references
-  checked, and retire.
-
-### Still to verify on real Fly (nightly, needs an org token)
+The Fly target is in preview. These need a real Fly org (nightly, with an org
+token) before it is marked stable. How the provider tests run is described in
+[CONTRIBUTING.md](../CONTRIBUTING.md#provider-conformance-tests).
 
 - C2 on real Machines: n ≥ 50 suspend→resume and stop→start wakes in one
-  region, to lock the p95 numbers above.
+  region, to measure the real wake p95.
 - Suspend refusal: the real status and body for > 2 GB guests and swap
   (assumed: a 4xx classified `Fatal` → stop fallback).
 - The `metadata.<key>=` list filter (the provider re-checks metadata itself

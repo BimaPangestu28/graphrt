@@ -20,7 +20,7 @@ or embedded in your own Rust program.
 | Where | How |
 | --- | --- |
 | Laptop / server | `graphrt run flow.yaml` or `graphrt serve flows/` (single static binary) |
-| Scale to zero | `graphrt gateway` (preview, `--features gateway`): one always-on front that holds every run's stream and wakes agents on demand on local processes, Kubernetes, Cloud Run, ECS Fargate, Lambda, Fly or Azure Container Apps (`gateway-k8s`, `gateway-cloud-run`, `gateway-ecs`, `gateway-lambda`, `gateway-fly`, `gateway-aca`, `gateway-all`); runs survive drains, lost replicas and gateway restarts; on-prem active/passive with a fenced lease ([docs/gateway-ha.md](docs/gateway-ha.md)); `graphrt deploy --target local\|k8s\|cloud-run\|aca\|ecs\|lambda\|fly` ships immutable versions. Measured locally: agent exec → `/healthz` ~6 ms, gateway restart 350 ms, HA takeover 73 ms, Kubernetes (kind) wake p95 812 ms; the cloud targets are tested against API fakes, real-cloud verification pending ([measurements](docs/gateway.md#measured-so-far)) — see [docs/gateway.md](docs/gateway.md) |
+| Scale to zero | `graphrt gateway` (preview, `--features gateway`): one always-on front that holds every run's stream and wakes agents on demand on local processes, Kubernetes, Cloud Run, ECS Fargate, Lambda, Fly or Azure Container Apps (`gateway-k8s`, `gateway-cloud-run`, `gateway-ecs`, `gateway-lambda`, `gateway-fly`, `gateway-aca`, `gateway-all`); runs survive drains, lost replicas and gateway restarts; on-prem active/passive with a fenced lease ([docs/gateway-ha.md](docs/gateway-ha.md)); `graphrt deploy --target local\|k8s\|cloud-run\|aca\|ecs\|lambda\|fly` ships immutable versions. Measured locally: agent exec → `/healthz` ~6 ms, gateway restart 350 ms, HA takeover 73 ms, Kubernetes (kind) wake p95 812 ms; the cloud targets (Cloud Run, Container Apps, ECS, Lambda, Fly) are in preview and not yet verified on real cloud accounts ([measurements](docs/gateway.md#measured-so-far)) — see [docs/gateway.md](docs/gateway.md) |
 | Container | ~17 MB distroless image (linux/amd64, linux/arm64) — see [docs/deploy.md](docs/deploy.md) |
 | Small devices / IoT | A 6 MiB build serves workflows in a 16 MiB memory limit on a tenth of a core — see [docs/serving.md](docs/serving.md#small-devices) |
 | Phone | Embed `graphrt-ffi` in an Android or iOS app — see [docs/mobile.md](docs/mobile.md) and the [sample apps](examples/mobile/), smoke-tested in an Android emulator and an iOS simulator by the [mobile CI workflow](.github/workflows/mobile.yml); or chat with a served agent from Flutter / React Native — see [docs/chatbot-supabase.md](docs/chatbot-supabase.md) |
@@ -476,7 +476,7 @@ steady memory, and stays up under a 16 MiB limit at a tenth of a core
 ([details](docs/serving.md#small-devices)).
 
 Against LangGraph 1.2 (CPython 3.11, async, tracing off) on the same laptop,
-both calling one local fake OpenAI server: a 3-node LLM workflow cold-starts in
+both calling one local OpenAI-compatible test server: a 3-node LLM workflow cold-starts in
 5 ms vs 728 ms with 13 vs 101 MiB peak RSS, orchestration costs ~0.4 µs vs
 ~100–200 µs per node, and with 50 ms model latency 1,000 concurrent runs reach
 ~17k vs ~210 runs/s. With one run in flight against a slow model the stacks are

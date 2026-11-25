@@ -1,7 +1,6 @@
 # Direct deploys to Fly.io (`graphrt deploy --direct`)
 
-> Status: preview. Tested against a fake Fly Machines API (unit, integration
-> and JSON-contract tests). **Not yet verified against real Fly.io**: see
+> Status: preview. **Not yet verified against real Fly.io**: see
 > [Unverified on real Fly](#unverified-on-real-fly).
 
 A direct deploy puts one agent online at `https://<app>.fly.dev` with no
@@ -367,11 +366,8 @@ is never printed; `FlyV1 fm2_…` macaroons are sent with the `FlyV1` scheme.
 
 ## Unverified on real Fly
 
-Everything above runs against the fake Machines API in
-`crates/graphrt-provider-fly/src/fake.rs`
-(`cargo test -p graphrt-provider-fly --test fly_direct`,
-`cargo test -p graphrt-cli --test deploy_direct`). To verify with a real
-org token:
+Direct deploys are in preview. These need a real org token before they are
+marked stable (how the tests run is in [CONTRIBUTING.md](../CONTRIBUTING.md#provider-conformance-tests)):
 
 - `POST /v1/apps/{app}/ip_assignments` with `{type: "v6"}` / `{type: "shared_v4"}` (modelled on flyctl's `flaps` client) and the delay until `<app>.fly.dev` answers;
 - the error body and status Fly returns for a globally taken app name (matched on `taken` / `already exists`);

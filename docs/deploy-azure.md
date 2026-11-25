@@ -15,11 +15,10 @@ versions; see [docs/gateway.md](gateway.md#providers). It has three cargo featur
 No Azure SDK: about ten REST calls over the `reqwest`/`rustls`/`ring` the
 workspace already links. Measured sizes are at the end of this page.
 
-> Status: the provider implements the `Provider` / `DeployDriver` traits of
-> `graphrt-provider-api` and passes the shared conformance harness
-> (`run_conformance`) plus Azure-specific C1–C13 tests against fake Azure
-> servers. The gateway and `graphrt deploy` wiring land separately; until then
-> the crate is a library only. Items that only real Azure can prove are listed under
+> Status: preview. The provider implements the `Provider` / `DeployDriver` traits of
+> `graphrt-provider-api` and passes the shared conformance suite. The gateway and
+> `graphrt deploy` wiring land separately; until then the crate is a library
+> only. It has not been verified on a real Azure subscription yet: see
 > [What still needs real Azure](#what-still-needs-real-azure).
 
 ## How a deployment maps to Container Apps
@@ -163,54 +162,10 @@ Operator`: their `Microsoft.App/containerApps/*/action` wildcard includes
 `Microsoft.App` resource provider's naming; confirm them with
 `az provider operation show --namespace Microsoft.App` before creating the role.
 
-## Conformance (C1–C13)
-
-`cargo test -p graphrt-provider-azure --features deploy-aca` runs two suites.
-
-The shared harness of `graphrt-provider-api` (`tests/harness.rs`) drives the
-provider against its `FakeServer` (managed identity endpoint, ARM, ingress)
-with its own fault injection:
-
-```text
-C1   pass  20 concurrent wakes answered (platform scaler)
-C2   pass  p95 0.0 ms (target 10000 ms, n=50)
-C3   skip  needs the gateway harness (graphrt-gateway)
-C4   pass  release is a no-op for Url addressing
-C5   skip  Url addressing: the platform replaces instances
-C6   skip  needs the gateway harness (graphrt-gateway)
-C7   skip  needs the gateway harness (graphrt-gateway)
-C8   pass  401 → one refresh, no credentials in logs
-C9   pass  429/5xx retried with backoff, 400 not retried
-C10  pass  17 log lines / requests scanned
-C11  skip  needs the gateway harness (graphrt-gateway)
-C12  pass  release → 0 live replicas
-C13  pass  gw-aca: Δ 48 KiB, budget 80 KiB   (with GRAPHRT_SIZE_DELTA_GW_ACA from measure-size.sh; skipped without it)
-```
-
-The Azure suite (`tests/conformance.rs`, `tests/idle_timeout.rs`) adds a
-fuller fake of Entra, managed identity, IMDS, ARM (with long-running
-operations), Key Vault and a scale-from-zero ingress (`tests/common/mod.rs`),
-and covers the provider half of the cases the shared harness leaves to the gateway:
-
-| ID | Test | Against the fakes |
-| --- | --- | --- |
-| C1 | 20 concurrent wakes from 0 | 1 token, 1 ARM read, 1 warm-up, 1 replica |
-| C2 | wake latency, n = 50 | p95 25.6 ms with a 20 ms fake cold start (provider overhead ≈ 5 ms); target 10 s |
-| C3 | grace | `terminationGracePeriodSeconds` 120 rendered and reported; > 600 rejected |
-| C4 | scale-in | `release` makes no Azure call; no stream cut |
-| C5 | replica killed outside the gateway | `list` drops it; the next wake brings one back |
-| C6 | long stream, idle-timeout ingress | see [Ingress timeouts](#ingress-timeouts-and-long-streams) |
-| C7 | request cap | `Standard` → preempt at 180 s; `Premium`/verified → none |
-| C8 | auth | refresh 5 min before `exp`; ±5 min skew; 401 → one refresh, a second 401 is an `Auth` error; all five credential kinds; no secret or token in `Debug`, errors or request lines |
-| C9 | API errors | 429/503/500 retried with backoff; persistent 429 → `RateLimited` after 4 attempts; quota codes → `Capacity` |
-| C10 | secrets | only Key Vault references reach ARM; clear secret env values rejected without echoing them |
-| C11 | old-version pool | version N-1 wakes on day 6; retired on day 8 → `NotFound` (410) |
-| C12 | idle and leaks | `minReplicas 0`; stray revisions deactivated by reconciliation |
-| C13 | binary size | `crates/graphrt-provider-azure/measure-size.sh`, below |
-
 ## What still needs real Azure
 
-These need a subscription and are not covered by the fakes:
+Container Apps support is in preview. These need a subscription before it is
+marked stable (how the provider tests run is in [CONTRIBUTING.md](../CONTRIBUTING.md#provider-conformance-tests)):
 
 1. **C6 for real**: whether standard ingress's 240 s is idle-only
    (`c06_real_azure_stream_outlives_240s` with `GRAPHRT_AZURE_C6_URL`), and that
