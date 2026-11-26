@@ -4,7 +4,7 @@ Thanks for helping improve graphrt.
 
 ## Setup
 
-Install a stable Rust toolchain (MSRV 1.85 for `graphrt-core`). Then:
+Install a stable Rust toolchain (MSRV 1.89 for `graphrt-core`: its default `yaml` feature uses serde-saphyr 2). Then:
 
 ```sh
 cargo test --workspace
