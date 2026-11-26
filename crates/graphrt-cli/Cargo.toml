@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -45,6 +45,8 @@ plugins = [
     "dep:reqwest", "dep:rustls", "dep:flate2", "dep:sha2",
 ]
 # Sandboxed WebAssembly plugins (manifests with `runtime: wasm`, or bare `.wasm` files).
+# Accept MCP server preset plugins (`runtime: mcp`) and plugin `templates` in `plugin install/list`.
+mcp-presets = ["dep:graphrt-plugin", "graphrt-plugin/mcp-presets"]
 wasm = ["dep:graphrt-plugin", "graphrt-plugin/yaml", "dep:graphrt-wasm", "graphrt-wasm/tokio"]
 # Portable bundles (`.grt`): `graphrt bundle`, and running / serving bundles directly.
 bundle = ["wasm", "dep:graphrt-bundle", "graphrt-bundle/wasm"]

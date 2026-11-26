@@ -46,13 +46,14 @@ data model first, with YAML 1.2 boolean spellings only (`true` / `false`;
 | `license` | string \| null | `null` | SPDX expression recommended. |
 | `homepage` | string \| null | `null` | |
 | `protocol_version` | integer | `1` | Must equal the host's version, currently `1`. See [Compatibility](#compatibility-policy). |
-| `runtime` | string | required | `process`, `http` or `wasm`. Selects which [runtime fields](#runtime-fields) apply. |
+| `runtime` | string | required | `process`, `http`, `wasm` or `mcp`. Selects which [runtime fields](#runtime-fields) apply. |
 | `permissions` | object | all off | See [`permissions`](#permissions). |
 | `limits` | object | defaults below | See [`limits`](#limits). |
 | `checksums` | object | `{}` | See [`checksums`](#checksums). |
 | `nodes` | array | `[]` | [Node descriptors](#nodes). |
 | `tools` | array | `[]` | [Tools](#tools). |
 | `allow_unprefixed_kinds` | boolean | `false` | See [Node kinds](#node-kinds). |
+| `templates` | array | `[]` | [Templates](#templates): starter prompts a host may offer. Any runtime. |
 
 ## Runtime fields
 
@@ -92,6 +93,56 @@ ships one; see [WebAssembly plugins](wasm-plugins.md)).
 | Field | Type | Default | Constraints |
 | --- | --- | --- | --- |
 | `module` | string | required | A [relative path](#relative-paths). |
+
+### `runtime: mcp`
+
+No code: the plugin declares a remote [MCP](https://modelcontextprotocol.io) server
+(an *MCP server preset*, e.g. an official Upwork, Notion or Linear server). A host
+with an MCP client registers it as a tool provider named after the plugin when the
+plugin is installed, and removes it (signing out) when the plugin is removed. The
+tools come from the server, so `nodes` and `tools` must be empty. The graphrt
+plugin host loads such a plugin but registers nothing for it. `runtime: mcp` and
+[`templates`](#templates) need graphrt-plugin's `mcp-presets` feature (on by
+default and in the CLI's default build); without it they are unknown fields.
+
+| Field | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `mcp` | object | required | The server, below. |
+| `mcp.url` | string | required | Streamable HTTP endpoint. `https://`, or `http://` to a loopback address. |
+| `mcp.transport` | string | `streamable-http` | The only transport for now. |
+| `mcp.auth` | string | `none` | `none`, `bearer` (a token from `mcp.bearer_token_env`) or `oauth` (the host signs the user in following the MCP authorization spec: discovery, PKCE, refresh). |
+| `mcp.bearer_token_env` | string \| null | `null` | Only with `auth: bearer`; must also be listed in `permissions.env`. |
+| `mcp.approval.default` | string | `ask` | What a host does with a tool no pattern matches: `ask` the user first, or `by_name` (the host's own name rule). |
+| `mcp.approval.read_only` | array of strings | `[]` | Tools that only read and may run without asking: exact names or `prefix*` patterns (`[A-Za-z0-9_.-]`, one trailing `*`). A host should still ask for a matching tool whose name says it sends. |
+| `mcp.approval.ask_first` | array of strings | `[]` | Tools that always ask first; wins over `read_only`. |
+| `mcp.guide` | string \| null | `null` | A [relative](#relative-paths) `.md` file with guidance for an agent builder (how to use the tools safely); `{server}` stands for the server name. Hosts read at most 32 KiB. |
+
+```json
+{
+  "name": "upwork",
+  "version": "1.0.0",
+  "runtime": "mcp",
+  "permissions": { "network": true },
+  "mcp": {
+    "url": "https://mcp.upwork.com/mcp",
+    "auth": "oauth",
+    "approval": { "default": "ask", "read_only": ["find_*", "get_*", "list_*", "search_*"] },
+    "guide": "guide.md"
+  }
+}
+```
+
+## Templates
+
+`templates` are starter prompts a host may show (for example on its "new agent"
+screen) while the plugin is installed. At most 20; unknown keys are errors.
+
+| Field | Type | Constraints |
+| --- | --- | --- |
+| `id` | string | `[a-z0-9-]{1,64}`, unique in the plugin. |
+| `title` | string | 1-120 characters. |
+| `description` | string | 1-400 characters. |
+| `prompt` | string | 1-4000 characters; the job description the host puts into its prompt box. No control characters except newlines. |
 
 ## `permissions`
 
@@ -281,3 +332,4 @@ becomes a guarantee.
 | Format | graphrt | Changes |
 | --- | --- | --- |
 | 1 | 0.2.0 | First specified version. |
+| 1 | unreleased | `runtime: mcp` (MCP server presets) and `templates` (new optional field and value, not breaking). |

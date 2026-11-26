@@ -123,12 +123,21 @@ fn schema_lists_exactly_the_fields_the_parser_accepts() {
     let unknown_output_field = with_node(
         json!({ "kind": "acme.x", "title": "X", "outputs": [{ "name": "o", "type": "string", "zz_unknown": 1 }] }),
     );
+    let unknown_mcp_field = json!({ "name": "acme", "runtime": "mcp", "mcp": { "url": "https://x", "zz_unknown": 1 } });
+    let unknown_approval_field =
+        json!({ "name": "acme", "runtime": "mcp", "mcp": { "url": "https://x", "approval": { "zz_unknown": 1 } } });
+    let mut unknown_template_field = base_manifest();
+    unknown_template_field["templates"] =
+        json!([{ "id": "a", "title": "T", "description": "D", "prompt": "P", "zz_unknown": 1 }]);
     let cases = [
         ("manifest", &unknown_top_level, &schema),
         ("permissions", &unknown_permission, &definitions["permissions"]),
         ("limits", &unknown_limit, &definitions["limits"]),
         ("node", &unknown_node_field, &definitions["node"]),
         ("output", &unknown_output_field, &definitions["output"]),
+        ("mcp server", &unknown_mcp_field, &definitions["mcp_server"]),
+        ("mcp approval", &unknown_approval_field, &definitions["mcp_approval"]),
+        ("template", &unknown_template_field, &definitions["template"]),
     ];
     for (label, manifest, schema_object) in cases {
         assert_eq!(schema_properties(schema_object), fields_the_parser_accepts(manifest), "{label} fields");
@@ -227,6 +236,51 @@ fn agreement_cases() -> Vec<(&'static str, Value)> {
         ("tool without parameters", edit(|m| m["tools"] = json!([{ "name": "t", "description": "d" }]))),
         ("tool with empty name", edit(|m| m["tools"] = json!([{ "name": " ", "description": "d", "parameters": {} }]))),
         ("allow_unprefixed_kinds", edit(|m| m["allow_unprefixed_kinds"] = json!(true))),
+        (
+            "mcp preset",
+            json!({ "name": "acme", "runtime": "mcp", "mcp": {
+                "url": "https://mcp.example.com/mcp", "transport": "streamable-http", "auth": "oauth",
+                "approval": { "default": "ask", "read_only": ["get_*", "list_items"], "ask_first": ["get_key"] },
+                "guide": "guide.md"
+            } }),
+        ),
+        ("mcp without server", json!({ "name": "acme", "runtime": "mcp" })),
+        ("mcp unknown field", json!({ "name": "acme", "runtime": "mcp", "mcp": { "url": "https://x", "zz": 1 } })),
+        ("mcp bad auth", json!({ "name": "acme", "runtime": "mcp", "mcp": { "url": "https://x", "auth": "basic" } })),
+        (
+            "mcp bad transport",
+            json!({ "name": "acme", "runtime": "mcp", "mcp": { "url": "https://x", "transport": "sse" } }),
+        ),
+        (
+            "mcp bad pattern",
+            json!({ "name": "acme", "runtime": "mcp", "mcp": { "url": "https://x", "approval": { "read_only": ["a*b"] } } }),
+        ),
+        (
+            "mcp with command",
+            json!({ "name": "acme", "runtime": "mcp", "command": "x", "mcp": { "url": "https://x" } }),
+        ),
+        ("mcp on process", edit(|m| m["mcp"] = json!({ "url": "https://x" }))),
+        (
+            "mcp with tools",
+            json!({ "name": "acme", "runtime": "mcp", "mcp": { "url": "https://x" },
+                "tools": [{ "name": "t", "description": "d", "parameters": {} }] }),
+        ),
+        (
+            "templates",
+            edit(|m| m["templates"] = json!([{ "id": "start-1", "title": "T", "description": "D", "prompt": "P" }])),
+        ),
+        (
+            "template bad id",
+            edit(|m| m["templates"] = json!([{ "id": "Start", "title": "T", "description": "D", "prompt": "P" }])),
+        ),
+        (
+            "template missing prompt",
+            edit(|m| m["templates"] = json!([{ "id": "a", "title": "T", "description": "D" }])),
+        ),
+        (
+            "template unknown field",
+            edit(|m| m["templates"] = json!([{ "id": "a", "title": "T", "description": "D", "prompt": "P", "z": 1 }])),
+        ),
     ]
 }
 
