@@ -61,6 +61,10 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ### Fixed
 
+- `graphrt serve`'s drain report could count a run that had just finished as
+  `unfinished`: a run leaves the active list just before it marks itself
+  done, and the drain stopped in between. The drain now waits for both (still
+  bounded by its timeout).
 - `graphrt gateway` sets `TCP_NODELAY` on its public connections, as
   `graphrt serve` does: small SSE writes no longer wait up to ~40 ms for the
   client's delayed ACK (the end of most streams and the first token of some).
