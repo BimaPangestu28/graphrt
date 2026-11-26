@@ -169,6 +169,25 @@ A skill that an agent lists but that is not installed fails the node
 (`skill_not_found`), so a typo never runs an agent without the skill its author
 expected. A disabled skill is left out silently.
 
+## HTTP API
+
+`graphrt serve` in a build with the `skills` feature serves the default skill
+store. Every route needs the API key.
+
+| Method | Path | Body | Response |
+| --- | --- | --- | --- |
+| GET | `/v1/skills` | | `{skills: [...]}` |
+| GET | `/v1/skills/{name}` | | The skill with its tool requests, grants, files and findings |
+| POST | `/v1/skills/drafts` | `{name, description, body, requested_tools?}` | The draft, checked and scanned. Nothing is installed |
+| POST | `/v1/skills` | `{draft: {...}, grants?, accept_findings?, replace?}` | `201` and the installed skill (origin `authored`) |
+| PATCH | `/v1/skills/{name}` | `{enabled?, grants?}` | The updated skill |
+| DELETE | `/v1/skills/{name}` | | `204` |
+
+A skill is sent as text and passes the same validation, scan and grant rules
+as one installed from a directory. `409` with the `findings` means the scan
+found something that needs `accept_findings`. Installing a package from a
+catalog and drafting with a model are not offered over HTTP.
+
 ## Limits
 
 | Limit | Value |

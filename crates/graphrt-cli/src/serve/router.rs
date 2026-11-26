@@ -76,6 +76,10 @@ fn key_only_routes(max_upload_bytes: usize) -> Router<Arc<AppState>> {
     let _ = max_upload_bytes;
     #[cfg(feature = "scores")]
     let api = api.route("/v1/runs/{run_id}/scores", get(crate::scores::get_scores));
+    #[cfg(feature = "skills")]
+    let api = with_skill_routes(api);
+    #[cfg(feature = "learning")]
+    let api = with_learning_routes(api);
     api.route("/v1/hooks", get(crate::webhooks::list_hooks))
 }
 
@@ -97,6 +101,33 @@ fn with_knowledge_routes(api: Router<Arc<AppState>>, max_upload_bytes: usize) ->
             axum::routing::put(k::put_file_document).layer(DefaultBodyLimit::max(max_upload_bytes)),
         )
         .route("/v1/knowledge/retrieve", post(k::retrieve))
+}
+
+/// The skill store API under `/v1/skills` (owner actions: API key only).
+#[cfg(feature = "skills")]
+fn with_skill_routes(api: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    use crate::skills_api as s;
+    api.route("/v1/skills", get(s::list_skills).post(s::install_skill))
+        .route("/v1/skills/drafts", post(s::check_draft))
+        .route(
+            "/v1/skills/{name}",
+            get(s::get_skill).merge(axum::routing::patch(s::patch_skill)).merge(delete(s::delete_skill)),
+        )
+}
+
+/// The lesson store API under `/v1/learning` (owner actions: API key only).
+#[cfg(feature = "learning")]
+fn with_learning_routes(api: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    use crate::learning_api as l;
+    api.route("/v1/learning/{agent}/lessons", get(l::list_lessons).post(l::add_lesson))
+        .route(
+            "/v1/learning/{agent}/lessons/{id}",
+            axum::routing::patch(l::patch_lesson).merge(delete(l::delete_lesson)),
+        )
+        .route("/v1/learning/{agent}/forget", post(l::forget))
+        .route("/v1/learning/{agent}/distill", post(l::distill))
+        .route("/v1/learning/{agent}/policy", get(l::get_policy).merge(axum::routing::patch(l::patch_policy)))
+        .route("/v1/learning/{agent}/audit", get(l::audit))
 }
 
 /// Routes that authenticate on their own rather than by the API key alone.
