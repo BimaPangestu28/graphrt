@@ -214,7 +214,11 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
         let Some(keys) = keys_by_deployment.get(&deployment.name).cloned() else { return };
         local.register(
             &info.reference(&deployment.name),
-            LocalVersion { command: info.command.clone(), keys, env: Vec::new() },
+            LocalVersion {
+                command: agent_command(&info.command, deployment.pool_config.max_active_runs),
+                keys,
+                env: Vec::new(),
+            },
         );
     });
     load_versions(&gateway, Some(&hook)).await.map_err(|error| error.to_string())?;
@@ -231,6 +235,20 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
         backup,
         ttl: Duration::from_secs(config.store_ttl_days * 86_400),
     })
+}
+
+/// The command of a local agent: `command` with `--max-active-runs` set to the
+/// pool's limit when it does not set one itself. Otherwise an agent below the
+/// pool's limit refuses the runs above its own (`429`) that the pool hands it.
+pub fn agent_command(command: &[String], max_active_runs: u32) -> Vec<String> {
+    let mut command = command.to_vec();
+    let sets_limit =
+        command.iter().any(|argument| argument == "--max-active-runs" || argument.starts_with("--max-active-runs="));
+    if !sets_limit && !command.is_empty() {
+        command.push("--max-active-runs".to_owned());
+        command.push(max_active_runs.max(1).to_string());
+    }
+    command
 }
 
 /// Retires versions whose 7-day pool expired: closes their pool (replicas
@@ -411,6 +429,20 @@ mod tests {
 
     use super::*;
     use crate::warm::ArrivalModel;
+
+    #[test]
+    fn local_agents_get_the_pool_limit_unless_their_command_sets_one() {
+        let command = |items: &[&str]| items.iter().map(|item| (*item).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            agent_command(&command(&["graphrt", "serve", "a.yaml"]), 1000),
+            command(&["graphrt", "serve", "a.yaml", "--max-active-runs", "1000"])
+        );
+        let own = command(&["graphrt", "serve", "a.yaml", "--max-active-runs", "4"]);
+        assert_eq!(agent_command(&own, 1000), own);
+        let own = command(&["graphrt", "serve", "--max-active-runs=4", "a.yaml"]);
+        assert_eq!(agent_command(&own, 1000), own);
+        assert!(agent_command(&[], 8).is_empty());
+    }
 
     #[tokio::test]
     async fn public_connections_have_tcp_nodelay() {

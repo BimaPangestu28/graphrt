@@ -78,6 +78,8 @@ pub struct AgentWorld {
     /// Starts to refuse with `409 epoch_conflict`, like an agent that still holds
     /// the lost execution of the previous epoch until it preempted it.
     pub epoch_conflicts: AtomicU32,
+    /// Starts to refuse with `429`, like an agent at its `max_active_runs`.
+    pub busy_refusals: AtomicU32,
     /// Warm hints (`POST /internal/v1/warm`) received.
     pub warm_hints: AtomicU32,
 }
@@ -125,6 +127,12 @@ async fn start_run(State(state): State<Arc<AgentState>>, headers: HeaderMap, bod
     if conflict.is_ok() {
         let body = json!({ "error": "the run is executing at another epoch", "error_type": "epoch_conflict" });
         return (StatusCode::CONFLICT, axum::Json(body)).into_response();
+    }
+    #[allow(deprecated)]
+    let busy = state.world.busy_refusals.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+    if busy.is_ok() {
+        let body = json!({ "error": "the server is already executing 1 runs; retry later" });
+        return (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
     }
     let request: Json = serde_json::from_slice(&body).unwrap();
     state.world.bodies.lock().unwrap().push(request.clone());

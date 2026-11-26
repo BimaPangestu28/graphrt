@@ -49,6 +49,10 @@ use crate::stored_request::{CREDENTIALS_REQUIRED, StoredRequest};
 /// from the ring instead ([`LiveRun::catch_up`]).
 pub const LIVE_FRAMES: usize = 32;
 
+/// First wait before a run refused by a busy or draining agent is offered
+/// again (doubled per attempt: 50, 100 ms with the default 3 attempts).
+const DISPATCH_BACKOFF: Duration = Duration::from_millis(25);
+
 /// Buffered frames (oldest first) and the receiver of the next ones.
 pub type Subscription = (Vec<Arc<Frame>>, broadcast::Receiver<Arc<Frame>>);
 
@@ -801,7 +805,15 @@ impl Gateway {
                     self.agents.forget(&current.endpoint.address);
                     current.release_broken();
                 }
-                Err(AgentError::Refused { status: 503, body }) => last_error = body,
+                // Draining (`503`) or at its `max_active_runs` (`429`): another
+                // replica, or the same one a moment later, may take it.
+                Err(AgentError::Refused { status: status @ (429 | 503), body }) => {
+                    last_error = format!("{status} {body}");
+                    drop(current);
+                    if attempts < self.settings.max_dispatch_attempts {
+                        tokio::time::sleep(DISPATCH_BACKOFF * (1 << attempts.min(8))).await;
+                    }
+                }
                 Err(AgentError::Refused { status: 409, body })
                     if body.contains("epoch_conflict") && Instant::now() < conflict_deadline =>
                 {

@@ -271,3 +271,22 @@ async fn a_run_the_gateway_fails_ends_its_streams_with_run_failed() {
     let ok = gateway.sse(&runs(), Some(json!({ "stream": true, "inputs": { "events": 1 } })), None).await;
     assert_eq!(ok.iter().filter(|(_, event, _)| event.starts_with("run_s")).count(), 2, "{ok:?}");
 }
+
+/// An agent that is momentarily full (`429`) gets the run again after a short
+/// wait instead of the run failing at once; one that stays full fails it with
+/// an explicit `run_failed` (`dispatch_failed`), never an empty `200`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_busy_agent_is_retried_and_a_full_one_fails_the_run_explicitly() {
+    let gateway = start_gateway(Options::default()).await;
+    let world = &gateway.provider.world;
+    world.busy_refusals.store(2, Ordering::SeqCst);
+    let body = json!({ "stream": true, "inputs": { "events": 1 } });
+    let retried = gateway.sse(&runs(), Some(body.clone()), None).await;
+    assert_eq!(retried.last().unwrap().1, "run_succeeded", "{retried:?}");
+    world.busy_refusals.store(100, Ordering::SeqCst);
+    let refused = gateway.sse(&runs(), Some(body), None).await;
+    let (id, event, data) = refused.last().unwrap();
+    assert_eq!((id.as_deref(), event.as_str()), (None, "run_failed"), "{refused:?}");
+    assert_eq!(data["error_type"], "dispatch_failed");
+    assert!(data["error"].as_str().unwrap().contains("429"), "{data}");
+}
