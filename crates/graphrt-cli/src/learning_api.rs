@@ -10,7 +10,7 @@
 //! | PATCH | `/v1/learning/{agent}/lessons/{id}` | one of `{decision}`, `{text}`, `{promote: true}` | `Lesson` |
 //! | DELETE | `/v1/learning/{agent}/lessons/{id}` | – | `204` |
 //! | POST | `/v1/learning/{agent}/forget` | `{user}` or `{run_id}` | `{removed}` |
-//! | POST | `/v1/learning/{agent}/distill` | – | `{observations, lessons, skipped}` |
+//! | POST | `/v1/learning/{agent}/distill` | – | `{observations, lessons, skipped, kept}` |
 //! | GET | `/v1/learning/{agent}/policy` | – | `LearningPolicy` |
 //! | PATCH | `/v1/learning/{agent}/policy` | `{auto_approve_user_feedback}` | `LearningPolicy` |
 //! | GET | `/v1/learning/{agent}/audit` | – | `{entries: [AuditEntry]}` |
@@ -249,6 +249,7 @@ pub async fn distill(State(state): State<Arc<AppState>>, UrlPath(agent): UrlPath
             "observations": report.observations,
             "lessons": report.lessons.iter().map(lesson_json).collect::<Vec<_>>(),
             "skipped": report.skipped,
+            "kept": report.kept,
         }))
         .into_response(),
         Err(error) => learn_error(&error),

@@ -98,7 +98,8 @@ fn approved_shared_procedures_become_a_draft_installed_as_learned() {
     assert!(!asked.contains("Answer in Indonesian"), "preferences stay lessons: {asked}");
 
     let skills = SkillStore::open(world.root.join("skills"));
-    let origin = SkillOrigin { kind: OriginKind::Learned, detail: Some(AGENT.into()), verified: true, publisher: None };
+    let origin =
+        SkillOrigin { kind: OriginKind::Learned, detail: Some(AGENT.into()), verified: true, ..Default::default() };
     let entry = skills.install_draft(&draft, InstallOptions { origin, ..InstallOptions::default() }).unwrap();
     assert_eq!((entry.origin.kind, entry.origin.verified), (OriginKind::Learned, false));
     assert!(entry.grants.is_empty(), "a learned skill gets no tool by being installed");

@@ -206,21 +206,27 @@ fn assemble(files: Vec<SkillFile>, contents: Vec<Vec<u8>>) -> Result<SkillPackag
     }
     if has_scripts {
         let count = files.iter().filter(|file| file.path.starts_with("scripts/")).count();
-        findings.push(Finding::new(
-            Severity::Info,
-            "scripts_not_run",
-            format!("Contains {count} script file(s). Graphrt does not run scripts from skills."),
-        ));
+        findings.push(
+            Finding::new(
+                Severity::Info,
+                "scripts_not_run",
+                format!("Contains {count} script file(s). Graphrt does not run scripts from skills."),
+            )
+            .with_param("count", vec![count.to_string()]),
+        );
     }
     if !unsupported_tools.is_empty() {
-        findings.push(Finding::new(
-            Severity::Info,
-            "unsupported_tools",
-            format!(
-                "Asks for tools of another product that Graphrt cannot grant: {}.",
-                crate::text::shorten(&unsupported_tools.join(", "), 300)
-            ),
-        ));
+        findings.push(
+            Finding::new(
+                Severity::Info,
+                "unsupported_tools",
+                format!(
+                    "Asks for tools of another product that Graphrt cannot grant: {}.",
+                    crate::text::shorten(&unsupported_tools.join(", "), 300)
+                ),
+            )
+            .with_param("tools", unsupported_tools.clone()),
+        );
     }
     let digest = package_digest(&files);
     Ok(SkillPackage { parsed, files, digest, requested_tools, unsupported_tools, has_scripts, findings, contents })

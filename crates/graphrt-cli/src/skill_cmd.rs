@@ -247,6 +247,7 @@ fn install(store: &SkillStore, request: &InstallRequest<'_>, json: bool, out: &m
         detail: Some(request.path.display().to_string()),
         publisher: found.plugin.as_ref().and_then(|plugin| plugin.name.clone()),
         verified: false,
+        version: None,
     };
     let mut installed = Vec::with_capacity(found.skills.len());
     for (dir, review) in found.skills.iter().zip(&reviews) {
@@ -299,12 +300,17 @@ fn print_package_notes(found: &Discovered, out: &mut impl Write) -> Result<(), C
 
 fn print_details(details: &SkillDetails, out: &mut impl Write) -> Result<(), CliError> {
     let entry = &details.entry;
-    let state = match (details.installed, entry.enabled) {
-        (true, true) => "installed, on",
-        (true, false) => "installed, off",
-        (false, _) if details.changes.is_some() => "not installed (would replace the installed version)",
-        (false, _) => "not installed",
+    // `changes` is only set when a directory is reviewed against an installed skill.
+    let state = match (&details.changes, details.installed, entry.enabled) {
+        (Some(changes), _, _) if changes.is_empty() => "this version is installed",
+        (Some(_), _, _) => "not installed (would replace the installed version)",
+        (None, true, true) => "installed, on",
+        (None, true, false) => "installed, off",
+        (None, false, _) => "not installed",
     };
+    if let Some(title) = &entry.title {
+        writeln!(out, "{title}").map_err(io_error)?;
+    }
     writeln!(out, "{}  [{state}]", entry.name).map_err(io_error)?;
     writeln!(out, "  {}", entry.description).map_err(io_error)?;
     for (label, value) in [

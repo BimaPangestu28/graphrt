@@ -73,6 +73,11 @@ pub struct SkillOrigin {
     /// Whether the host verified a signature covering this content before installing.
     #[serde(default)]
     pub verified: bool,
+    /// The version the source lists for this skill (a catalog entry's
+    /// version), when the host knows one. The skill's own `metadata.version`
+    /// is [`SkillEntry::version`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// How calls of a granted tool are handled.
@@ -115,6 +120,11 @@ pub struct SkillEntry {
     pub name: String,
     /// What it does and when to use it.
     pub description: String,
+    /// A name to show to people, when the skill gives one:
+    /// `metadata.display_name` (what the Graphrt catalog uses), else
+    /// `metadata.title`. `name` stays the identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Where it came from.
     #[serde(default)]
     pub origin: SkillOrigin,
@@ -163,6 +173,10 @@ impl SkillEntry {
         Self {
             name: manifest.name.clone(),
             description: manifest.description.clone(),
+            title: ["display_name", "title"]
+                .iter()
+                .find_map(|key| manifest.metadata.get(*key).filter(|title| !title.is_empty()))
+                .cloned(),
             origin: SkillOrigin::default(),
             installed_at_ms: 0,
             enabled: false,
@@ -257,7 +271,9 @@ impl SkillChanges {
 pub struct SkillDetails {
     /// The installed entry, or the entry an install would create.
     pub entry: SkillEntry,
-    /// Whether `entry` is installed in this store.
+    /// Whether a skill of this name is installed in this store. For a
+    /// directory that is being reviewed, `changes` says how it differs from
+    /// the installed one (empty: the same content).
     pub installed: bool,
     /// Whether an install needs `accept_findings` because the scan found something blocking.
     pub blocked: bool,
@@ -366,7 +382,7 @@ impl SkillStore {
         let installed = self.index()?.skills.get(&entry.name).cloned();
         let changes = installed.as_ref().map(|installed| SkillChanges::between(installed, &entry));
         let blocked = entry.findings.iter().any(Finding::is_blocking);
-        Ok(SkillDetails { entry, installed: false, blocked, changes })
+        Ok(SkillDetails { entry, installed: installed.is_some(), blocked, changes })
     }
 
     /// Install the skill in `dir`.

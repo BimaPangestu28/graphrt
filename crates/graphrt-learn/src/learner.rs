@@ -122,6 +122,11 @@ pub struct DistillReport {
     pub lessons: Vec<Lesson>,
     /// Suggestions that were not recorded, with the reason.
     pub skipped: Vec<String>,
+    /// Feedback comments that could not be recorded for now (too many open
+    /// proposals, a full scope, a write error) and stay in the queue for the
+    /// next pass. A comment that can never be recorded (text that is not
+    /// valid) is dropped and only listed in `skipped`.
+    pub kept: usize,
 }
 
 /// Records signals and turns them into proposals.
@@ -203,6 +208,7 @@ impl Learner {
         if observations.is_empty() {
             return Ok(report);
         }
+        let mut kept: Vec<Observation> = Vec::new();
         for observation in &observations {
             let ObservationKind::Feedback { comment: Some(comment), author, authenticated, .. } = &observation.kind
             else {
@@ -222,7 +228,9 @@ impl Learner {
                 author_authenticated: *authenticated,
                 evidence: observation.excerpt.clone(),
             };
-            self.record(proposal, &mut report);
+            if !self.record(proposal, &mut report) {
+                kept.push(observation.clone());
+            }
         }
         if let Some(distiller) = distiller {
             match distiller.distill(agent, &observations).await {
@@ -252,19 +260,50 @@ impl Learner {
                 Err(message) => report.skipped.push(format!("the distiller failed: {}", cut(&message))),
             }
         }
-        self.clear(agent)?;
+        report.kept = kept.len();
+        self.requeue(agent, &kept)?;
         Ok(report)
     }
 
-    fn record(&self, proposal: Proposal, report: &mut DistillReport) {
+    /// Propose and note the outcome in `report`. Returns `false` when the
+    /// proposal failed for a reason that may pass later, so its signal is
+    /// worth keeping.
+    fn record(&self, proposal: Proposal, report: &mut DistillReport) -> bool {
         match self.store.propose(proposal) {
             Ok(lesson) => {
                 if !report.lessons.iter().any(|known| known.id == lesson.id) {
                     report.lessons.push(lesson);
                 }
+                true
             }
-            Err(error) => report.skipped.push(error.to_string()),
+            Err(error) => {
+                let retry = matches!(error, Error::TooManyProposals { .. } | Error::Full { .. } | Error::Io { .. });
+                report.skipped.push(error.to_string());
+                !retry
+            }
         }
+    }
+
+    /// Replace the queue with `kept` (empty: remove it).
+    fn requeue(&self, agent: &str, kept: &[Observation]) -> Result<(), Error> {
+        if kept.is_empty() {
+            return self.clear(agent);
+        }
+        let dir = self.store.agent_dir(agent);
+        let path = dir.join(OBSERVATIONS_FILE);
+        let mut text = String::new();
+        for observation in kept {
+            let line = serde_json::to_string(observation).map_err(|e| Error::Damaged(e.to_string()))?;
+            text.push_str(&line);
+            text.push('\n');
+        }
+        // A new file renamed over the old one: a crash leaves the old queue or the new one.
+        let temporary = dir.join(format!("{OBSERVATIONS_FILE}.{}.tmp", std::process::id()));
+        private_fs::write(&temporary, text).map_err(|e| Error::io(&temporary, &e))?;
+        std::fs::rename(&temporary, &path).map_err(|error| {
+            let _ = std::fs::remove_file(&temporary);
+            Error::io(path, &error)
+        })
     }
 
     fn clear(&self, agent: &str) -> Result<(), Error> {
