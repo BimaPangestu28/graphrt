@@ -343,6 +343,7 @@ packages an `agent` node loads on demand (`skills: [name]`).
 | `graphrt skill list` | Installed skills. |
 | `graphrt skill inspect <name\|dir>` | A skill before or after installing: tool requests, files, findings. |
 | `graphrt skill install <dir> [--grant T]... [--allow T]... [--accept-findings] [--replace]` | Install a skill directory or the skills of an Agent Plugins package. |
+| `graphrt skill draft --model P/N (--describe TEXT \| --conversation FILE)` | Write a new skill from plain language or an example conversation, as a folder to review and install. |
 | `graphrt skill grant <name> [--grant T]... [--allow T]...` | Replace the tools granted to a skill. |
 | `graphrt skill enable\|disable\|remove <name>` | Manage an installed skill. |
 

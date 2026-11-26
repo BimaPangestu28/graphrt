@@ -355,6 +355,34 @@ pub enum SkillCommand {
         #[arg(long)]
         replace: bool,
     },
+    /// Write a new skill from a description in plain language or from an
+    /// example conversation, with a model. The result is a folder to read,
+    /// edit and then install with `graphrt skill install`.
+    ///
+    /// Examples:
+    ///   graphrt skill draft --model openai/gpt-4.1 --describe "When a customer asks for a refund, check the order date first"
+    ///   graphrt skill draft --model anthropic/claude-sonnet-4-5 --conversation chat.json --tool orders/lookup
+    #[command(verbatim_doc_comment)]
+    Draft {
+        /// The model that writes the draft (`provider/name`).
+        #[arg(long, value_name = "PROVIDER/NAME")]
+        model: String,
+        /// What the skill should do, in plain language.
+        #[arg(long, value_name = "TEXT", conflicts_with = "conversation", required_unless_present = "conversation")]
+        describe: Option<String>,
+        /// A JSON file with an example conversation: `[{"role": "user", "content": "..."}, ...]`.
+        #[arg(long, value_name = "FILE")]
+        conversation: Option<PathBuf>,
+        /// A tool the skill may ask for (`provider/tool`). Asking grants nothing.
+        #[arg(long = "tool", value_name = "TOOL")]
+        tools: Vec<String>,
+        /// Directory to write `<name>/SKILL.md` into.
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        out: PathBuf,
+        /// Model providers file (YAML or JSON) layered over the environment-based providers.
+        #[arg(long, value_name = "FILE")]
+        providers: Option<PathBuf>,
+    },
     /// Replace the tools granted to an installed skill (no flags: grant nothing).
     Grant {
         /// Skill name.

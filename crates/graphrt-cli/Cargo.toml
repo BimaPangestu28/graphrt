@@ -65,7 +65,7 @@ replay = ["llm", "graphrt-llm/replay"]
 # Agent skills (preview, opt-in): `graphrt skill` and the `skills` field of `agent`
 # nodes, served from the skill store in `$GRAPHRT_SKILLS_DIR` or `~/.graphrt/skills`.
 # See docs/skills.md.
-skills = ["llm", "graphrt-llm/skills", "dep:graphrt-skill"]
+skills = ["llm", "graphrt-llm/skills", "graphrt-llm/text-model", "dep:graphrt-skill"]
 # Self learning (preview, opt-in): `graphrt learn` and the `learning` field of
 # `agent` nodes, served from the lesson store in `$GRAPHRT_LEARNING_DIR` or
 # `~/.graphrt/learning`. See docs/learning.md.

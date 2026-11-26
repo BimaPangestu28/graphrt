@@ -79,6 +79,9 @@ pub enum Error {
         /// The binary file.
         file: String,
     },
+    /// A draft could not be written: the model failed or its answer is not a skill.
+    #[error("the skill could not be drafted: {0}")]
+    Draft(String),
     /// The store's index file cannot be understood.
     #[error("the skill index is damaged: {0}")]
     Index(String),
