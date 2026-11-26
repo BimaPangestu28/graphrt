@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://graphrt.dev/schemas/ui/diagram.v1.json",
+  "title": "graphrt UI block: diagram",
+  "description": "A diagram written as Mermaid text. Text only: no HTML (except <br>), links, callbacks, config or colours.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$ui", "version", "syntax", "source"],
+  "properties": {
+    "$ui": { "const": "diagram" },
+    "version": { "const": 1 },
+    "title": { "type": "string", "maxLength": 300 },
+    "subtitle": { "type": "string", "maxLength": 300 },
+    "fallback_text": { "type": "string", "maxLength": 10000, "description": "What to say where the diagram cannot be drawn (text-only channels)" },
+    "syntax": { "enum": ["mermaid"] },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000,
+      "description": "Mermaid text, at most 500 lines. Starts with the diagram type: flowchart, graph, sequenceDiagram, classDiagram, stateDiagram, stateDiagram-v2, erDiagram, gantt, pie, mindmap, timeline, quadrantChart or gitGraph."
+    }
+  }
+}

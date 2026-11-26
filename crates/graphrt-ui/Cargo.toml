@@ -12,11 +12,22 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# `png::chart_png`: charts drawn as PNG images, for channels that send media but cannot
+# draw blocks (WhatsApp). Off by default: it brings a rasterizer and a 77 KB font.
+png = ["dep:tiny-skia", "dep:fontdue"]
+
 [dependencies]
 graphrt-core.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tiny-skia = { version = "0.12", default-features = false, features = ["std", "png-format"], optional = true }
+fontdue = { version = "0.9", optional = true }
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dev-dependencies]
 jsonschema = { version = "0.61", default-features = false }
