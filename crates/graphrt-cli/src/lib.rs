@@ -104,6 +104,8 @@ pub fn enabled_features() -> Vec<&'static str> {
     }
     #[cfg(feature = "files")]
     features.push("files");
+    #[cfg(feature = "image")]
+    features.push("image");
     if cfg!(feature = "rag") {
         features.push("rag");
     }

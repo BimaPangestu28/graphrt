@@ -657,6 +657,17 @@ pub struct ServiceArgs {
     #[cfg(feature = "files")]
     #[arg(long, requires = "workspace")]
     pub workspace_per_user: bool,
+    /// Add the `image` tools to the workspace: `image/info`, `view` (the model
+    /// sees the image), `resize`, `convert` and `thumbnail`.
+    #[cfg(feature = "image")]
+    #[arg(long, requires = "workspace")]
+    pub image_tools: bool,
+    /// Add `image/generate`, backed by this model of the OpenAI images API
+    /// (for example `gpt-image-2`). Key from `$OPENAI_API_KEY`, endpoint from
+    /// `$OPENAI_BASE_URL` (default https://api.openai.com/v1).
+    #[cfg(feature = "image")]
+    #[arg(long, value_name = "NAME", requires = "image_tools")]
+    pub image_model: Option<String>,
     /// Abort a run after this many milliseconds.
     #[arg(long, value_name = "MS")]
     pub timeout_ms: Option<u64>,

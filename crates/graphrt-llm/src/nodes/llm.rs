@@ -111,6 +111,9 @@ impl LlmNode {
         let cfg = &self.config;
         let pool = &ctx.pool;
         let context = cfg.context.resolve(pool);
+        #[cfg(feature = "vision-preparer")]
+        let images = cfg.vision.prepared_image_parts(&ctx).await?;
+        #[cfg(not(feature = "vision-preparer"))]
         let images = cfg.vision.image_parts(pool)?;
         let messages = build_messages(&cfg.prompt_template, pool, context.as_deref(), cfg.memory.as_ref(), images)?;
         if messages.is_empty() {

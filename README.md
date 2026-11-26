@@ -497,6 +497,7 @@ graphrt-code    code node (QuickJS) and remote sandbox hook
 graphrt-mcp     MCP tool provider
 graphrt-doc     document-extractor node (PDF, Office, HTML, EPUB, e-mail...)
 graphrt-files   file workspaces for agents: sandboxed store, quotas, the `files` tools
+graphrt-image   images for agents: checked and resized vision input, EXIF removal, the `image` tools
 graphrt-rag     knowledge-retrieval node, stores, embedders, ingestion
 graphrt-plugin  process / HTTP plugin host; graphrt-wasm: sandboxed WebAssembly plugins
 graphrt-bundle  portable .grt bundles; graphrt-otel: OpenTelemetry export

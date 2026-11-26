@@ -95,3 +95,60 @@ fn per_user_needs_a_scope_and_modifiers_need_a_workspace() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("--workspace"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A 1x1 PNG with a text chunk appended by hand would need a CRC, so the
+/// metadata checks live in graphrt-image. Here: the tools through the binary.
+#[cfg(feature = "image")]
+#[test]
+fn image_tools_inspect_and_thumbnail_a_workspace_image() {
+    const PNG_1X1: &str =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let dir = temp_dir("images");
+    std::fs::write(dir.join("dot.png"), graphrt_core::file::base64_decode(PNG_1X1).unwrap()).unwrap();
+    let workflow = example("images.yaml");
+    let run = |extra: &[&str]| {
+        let mut args = vec!["run", workflow.to_str().unwrap(), "--input", "path=dot.png", "-o", "json"];
+        args.extend(["--workspace", dir.to_str().unwrap()]);
+        args.extend(extra);
+        Command::new(env!("CARGO_BIN_EXE_graphrt")).args(args).output().unwrap()
+    };
+
+    let out = run(&["--image-tools"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["outputs"]["info"]["mime_type"], "image/png");
+    assert_eq!(json["outputs"]["info"]["width"], 1);
+    assert_eq!(json["outputs"]["files"][0]["reference"], "workspace:dot-thumb.png");
+    assert_eq!(json["outputs"]["files"][0]["kind"], "image");
+    let thumbnail = std::fs::read(dir.join("dot-thumb.png")).unwrap();
+    assert!(thumbnail.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+    // Without `--image-tools` a workspace has file tools only.
+    let out = run(&[]);
+    assert!(!out.status.success());
+    let report = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(report.contains("unknown tool provider `image`"), "{report}");
+
+    // A file that is not an image is refused whatever it is called.
+    std::fs::write(dir.join("dot.png"), b"<svg xmlns='http://www.w3.org/2000/svg'/>").unwrap();
+    let out = run(&["--image-tools"]);
+    assert!(!out.status.success());
+    let report = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(report.contains("unsupported image"), "{report}");
+
+    // `--image-model` needs a key, and both flags need a workspace.
+    let out = Command::new(env!("CARGO_BIN_EXE_graphrt"))
+        .args(["run", workflow.to_str().unwrap(), "--input", "path=dot.png"])
+        .args(["--workspace", dir.to_str().unwrap(), "--image-tools", "--image-model", "gpt-image-2"])
+        .env_remove("OPENAI_API_KEY")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("OPENAI_API_KEY"));
+    let out = Command::new(env!("CARGO_BIN_EXE_graphrt"))
+        .args(["run", workflow.to_str().unwrap(), "--image-tools"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}

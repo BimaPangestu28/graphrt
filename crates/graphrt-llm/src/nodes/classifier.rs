@@ -25,7 +25,7 @@ use serde_json::Value as Json;
 use super::common::{
     MemoryConfig, ModelConfig, StreamMode, VisionConfig, extract_json, invoke, model_for, usage_value,
 };
-use crate::types::{ContentPart, Message};
+use crate::types::Message;
 
 /// One class.
 #[derive(Clone, Debug, Deserialize)]
@@ -214,8 +214,10 @@ impl ClassifierNode {
             messages.extend(memory.history(pool)?);
         }
         let mut user = Message::user(query);
-        user.content
-            .extend(cfg.vision.image_parts(pool)?.into_iter().filter(|p| matches!(p, ContentPart::Image { .. })));
+        #[cfg(feature = "vision-preparer")]
+        user.content.extend(cfg.vision.prepared_image_parts(&ctx).await?);
+        #[cfg(not(feature = "vision-preparer"))]
+        user.content.extend(cfg.vision.image_parts(pool)?);
         messages.push(user);
 
         let model = model_for(&ctx, &cfg.model)?;

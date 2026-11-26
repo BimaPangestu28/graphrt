@@ -51,6 +51,10 @@ pub fn service_options(args: &ServiceArgs) -> Result<ServiceOptions, CliError> {
             dir,
             read_only: args.workspace_read_only,
             per_user: args.workspace_per_user,
+            #[cfg(feature = "image")]
+            image_tools: args.image_tools,
+            #[cfg(feature = "image")]
+            image_model: args.image_model.clone(),
         }),
         plugins: crate::extensions::PluginOptions {
             allow_private_network: args.allow_private_network,

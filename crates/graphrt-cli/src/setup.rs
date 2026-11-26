@@ -50,6 +50,12 @@ pub struct WorkspaceOptions {
     pub read_only: bool,
     /// `--workspace-per-user`.
     pub per_user: bool,
+    /// `--image-tools`.
+    #[cfg(feature = "image")]
+    pub image_tools: bool,
+    /// `--image-model`.
+    #[cfg(feature = "image")]
+    pub image_model: Option<String>,
 }
 
 /// Environment variable naming a default providers file.
@@ -245,7 +251,7 @@ pub async fn services(
     #[cfg(feature = "files")]
     if let Some(workspace) = &options.workspace {
         // Before `--files-dir`, which would look for a `workspace:` reference on disk.
-        files = files.then(install_workspace(workspace, &mut plugin_tools)?);
+        files = files.then(install_workspace(workspace, &options.all_vars(), &mut plugin_tools)?);
     }
     if let Some(dir) = &options.files_dir {
         if !dir.is_dir() {
@@ -261,6 +267,14 @@ pub async fn services(
         services.insert(client);
     }
     let files: Arc<dyn graphrt_core::file::FileResolver> = Arc::new(files);
+    // Every image a model node sends goes through the same check: real type,
+    // bounded size and pixels, no metadata, downscaled when too large.
+    #[cfg(feature = "image")]
+    {
+        let preparer: Arc<dyn graphrt_core::file::ImagePreparer> =
+            Arc::new(graphrt_image::VisionPreparer::new(Arc::clone(&files), graphrt_image::ImageLimits::default()));
+        services.insert(preparer);
+    }
     services.insert(files);
     if let Some(path) = &options.knowledge {
         #[cfg(feature = "rag")]
@@ -309,6 +323,7 @@ pub async fn services(
 #[cfg(feature = "files")]
 fn install_workspace(
     options: &WorkspaceOptions,
+    vars: &[(String, String)],
     tools: &mut graphrt_core::tool::ToolRegistry,
 ) -> Result<Arc<dyn graphrt_core::file::FileResolver>, CliError> {
     use graphrt_files::{FileTools, PROVIDER, Workspace, WorkspaceLimits, WorkspaceResolver};
@@ -320,6 +335,10 @@ fn install_workspace(
             "tool provider `{PROVIDER}` is defined by a plugin and by `--workspace`; rename the plugin's provider"
         )));
     }
+    #[cfg(feature = "image")]
+    install_image_tools(options, vars, &workspace, tools)?;
+    #[cfg(not(feature = "image"))]
+    let _ = vars;
     let file_tools = FileTools::new(workspace.clone());
     let (file_tools, resolver) = if options.per_user {
         (file_tools.scoped_by_context(), WorkspaceResolver::across_scopes(workspace))
@@ -328,6 +347,43 @@ fn install_workspace(
     };
     tools.add(PROVIDER, Arc::new(file_tools));
     Ok(Arc::new(resolver))
+}
+
+/// Register the `image` tool provider over the workspace (`--image-tools`),
+/// with a generator when `--image-model` names one.
+#[cfg(feature = "image")]
+fn install_image_tools(
+    options: &WorkspaceOptions,
+    vars: &[(String, String)],
+    workspace: &graphrt_files::Workspace,
+    tools: &mut graphrt_core::tool::ToolRegistry,
+) -> Result<(), CliError> {
+    use graphrt_image::{ImageGenerator, ImageTools, OpenAiImages, PROVIDER};
+    if !options.image_tools {
+        return Ok(());
+    }
+    if tools.get(PROVIDER).is_some() {
+        return Err(CliError::usage(format!(
+            "tool provider `{PROVIDER}` is defined by a plugin and by `--image-tools`; rename the plugin's provider"
+        )));
+    }
+    let lookup = |name: &str| vars.iter().rev().find(|(key, _)| key == name).map(|(_, value)| value.clone());
+    let mut image_tools = ImageTools::new(workspace.clone());
+    if let Some(model) = &options.image_model {
+        let key = lookup("OPENAI_API_KEY").filter(|key| !key.is_empty()).ok_or_else(|| {
+            CliError::usage("`--image-model` needs `OPENAI_API_KEY` in the environment or the env file")
+        })?;
+        let base_url = lookup("OPENAI_BASE_URL")
+            .filter(|url| !url.is_empty())
+            .unwrap_or_else(|| "https://api.openai.com/v1".to_owned());
+        let generator: Arc<dyn ImageGenerator> = Arc::new(OpenAiImages::new(base_url, key, model.clone()));
+        image_tools = image_tools.with_generator(generator);
+    }
+    if options.per_user {
+        image_tools = image_tools.scoped_by_context();
+    }
+    tools.add(PROVIDER, Arc::new(image_tools));
+    Ok(())
 }
 
 /// Add every provider of `extra` to `base`; a provider name used by both is an error.

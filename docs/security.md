@@ -123,6 +123,29 @@ They are off without the flag.
   not remove them: put destructive and outbound tools under
   `require_approval`.
 
+## Images
+
+With the `image` feature (crate `graphrt-image`, in the default CLI) every
+image a model node sends through `vision`, every image the `image` tools
+read, and every image a generator returns passes the same checks:
+
+- **Type.** PNG, JPEG, GIF or WebP by magic number. SVG, HTML and HEIC are
+  refused whatever MIME type they came with.
+- **Size.** At most 20 MiB, 12,000 pixels per side and 25 megapixels, read
+  from the header. An image bomb is refused before any decoder runs. Decoders
+  run with hard limits, behind a panic boundary, on the blocking pool.
+- **Metadata.** EXIF (GPS position, device, time), XMP, IPTC, text chunks,
+  comments and anything appended after the image are removed before an image
+  leaves the runtime. Files the tools write carry none.
+- **Remote images.** `https` image URLs are fetched by the model provider,
+  not by graphrt. A generator answer that holds a URL is refused, not
+  fetched.
+- **Refusals are final.** An image that fails a check fails the node. It is
+  never sent as it was.
+
+Text inside an image can try to steer a model, like text inside a file. The
+same advice holds: `require_approval` for tools that destroy or publish.
+
 The threat model, the tests behind each line and the residual risks (races on
 intermediate directories for a local attacker, hard links) are in
 [files-and-images-design.md](files-and-images-design.md#threat-model).
@@ -363,6 +386,8 @@ See [learning.md](learning.md).
 | Code limits ceiling | register a `CodeLimits` service (embedders) | 10 s / 64 MiB / 1 MiB stack / 4 MiB result |
 | Python subprocess | `--allow-python-subprocess` | off |
 | Agent file workspace | `--workspace`, `--workspace-read-only`, `--workspace-per-user` | off |
+| Image tools and generation | `--image-tools`, `--image-model` | off |
+| Image limits | `ImageLimits` (embedders) | 20 MiB, 25 megapixels, 1,568 px to models, metadata removed |
 | Concurrent runs | `--max-active-runs` | 256 |
 | End-user JWTs, per-user rate limit | `--verify-jwt`, `--jwt-*`, `--user-rate-limit` | off |
 | Kept runs | `--max-runs`, `--store-ttl-days` | 1,000 in memory / forever on disk |
