@@ -9,6 +9,16 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ### Added
 
+- PDF page numbers for knowledge passages. graphrt-doc's new
+  `Options::page_markers` (off by default) starts every PDF page with a
+  private-use marker carrying its 1-based number (`page_marker`).
+  `DocExtractor` turns it on, and the `Ingestor` removes the markers from each
+  chunk and records `page` (first page) and, for a chunk that spans pages,
+  `pages` in its metadata, so retrieval hits and the `knowledge-retrieval`
+  node can cite `file.pdf · p12`. Text without markers is stored exactly as
+  before, and existing indexes keep working (their chunks simply have no page
+  until the document is ingested again). `strip_page_markers` cleans extracted
+  text shown anywhere else.
 - UI blocks: rich visual output any node or tool can emit for hosts to
   render, as objects whose `"$ui"` key names the kind. The new `graphrt-ui`
   crate holds the kinds (`adaptive_card`, `chart`, `table`, `stats`), their

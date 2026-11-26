@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::chunker::{ChunkerConfig, chunk_text};
 use crate::error::RagError;
+use crate::pages::{PAGE_KEY, PAGES_KEY, PageTracker};
 use crate::types::{Embedder, Extractor, Metadata, StoredChunk, VectorStore, check_vector, content_hash};
 
 /// A document to ingest.
@@ -14,7 +15,8 @@ pub struct Document {
     pub document_id: String,
     pub title: String,
     pub text: String,
-    /// Copied onto every chunk (plus `heading` and `chunk_index`).
+    /// Copied onto every chunk (plus `heading`, `chunk_index`, and `page` /
+    /// `pages` when the text has page markers, see [`crate::PAGE_MARKER_START`]).
     pub metadata: Metadata,
 }
 
@@ -111,7 +113,17 @@ impl Ingestor {
         let mut seen: HashSet<String> = HashSet::new();
         let mut fresh: Vec<StoredChunk> = Vec::new();
         let mut refreshed: Vec<StoredChunk> = Vec::new();
-        for chunk in chunk_text(&doc.text, &self.chunker) {
+        let mut page_tracker = PageTracker::default();
+        for mut chunk in chunk_text(&doc.text, &self.chunker) {
+            let (stripped, pages) = page_tracker.take(&chunk.text);
+            if let Some(text) = stripped {
+                // Markers removed: a chunk that was only a marker has nothing to store.
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                chunk.text = trimmed.to_owned();
+            }
             let hash = content_hash(&doc.dataset_id, &chunk.text);
             let id = format!("{}:{}:{hash}", doc.dataset_id, doc.document_id);
             if !seen.insert(id.clone()) {
@@ -122,6 +134,12 @@ impl Ingestor {
             metadata.insert("chunk_index".into(), serde_json::Value::from(chunk.index));
             if let Some(h) = &chunk.heading {
                 metadata.insert("heading".into(), serde_json::Value::String(h.clone()));
+            }
+            if let Some(first_page) = pages.first() {
+                metadata.insert(PAGE_KEY.into(), serde_json::Value::from(*first_page));
+                if pages.len() > 1 {
+                    metadata.insert(PAGES_KEY.into(), serde_json::Value::from(pages.clone()));
+                }
             }
             let mut stored = StoredChunk {
                 id,

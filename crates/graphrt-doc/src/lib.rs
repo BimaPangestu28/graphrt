@@ -64,6 +64,20 @@ pub struct Options {
     pub max_zip_entries: usize,
     /// Maximum total decompressed bytes read from a zip container.
     pub max_decompressed_bytes: u64,
+    /// Start every PDF page with a [`page_marker`] so indexers can tell which
+    /// page text came from (off by default: the markers are not meant for readers).
+    pub page_markers: bool,
+}
+
+/// First character of a page marker (Unicode private use, never in real text).
+pub const PAGE_MARKER_START: char = '\u{E000}';
+/// Last character of a page marker.
+pub const PAGE_MARKER_END: char = '\u{E001}';
+
+/// The marker that starts page `number` (1-based) with [`Options::page_markers`]:
+/// [`PAGE_MARKER_START`], the number in decimal, [`PAGE_MARKER_END`].
+pub fn page_marker(number: u32) -> String {
+    format!("{PAGE_MARKER_START}{number}{PAGE_MARKER_END}")
 }
 
 impl Default for Options {
@@ -78,6 +92,7 @@ impl Default for Options {
             max_cells: 2_000_000,
             max_zip_entries: 10_000,
             max_decompressed_bytes: 256 * 1024 * 1024,
+            page_markers: false,
         }
     }
 }
@@ -90,6 +105,12 @@ impl Options {
 
     pub fn with_max_output_chars(mut self, max: usize) -> Self {
         self.max_output_chars = max;
+        self
+    }
+
+    /// See [`Options::page_markers`].
+    pub fn with_page_markers(mut self, page_markers: bool) -> Self {
+        self.page_markers = page_markers;
         self
     }
 }
