@@ -67,6 +67,9 @@ struct LocalReplica {
     /// Where the agent listens: `Unix(socket)` (next to the pid file) or `Pipe(name)`.
     address: EndpointAddress,
     phase: ReplicaPhase,
+    /// When it was frozen (`Suspended`): the oldest is stopped first when
+    /// `max_frozen_agents` is reached.
+    frozen_at: Option<std::time::Instant>,
 }
 
 impl LocalReplica {
@@ -94,7 +97,14 @@ pub struct LocalProvider {
     released: Mutex<std::collections::HashSet<u32>>,
     /// Pre-started standby agents, when enabled.
     standby: Option<std::sync::Arc<Standbys>>,
+    /// Most agents kept frozen at once (`max_frozen_agents`).
+    max_frozen: usize,
+    /// Deployment versions whose pid files were read (agents left by an earlier
+    /// gateway process): once each, not on every reconciliation.
+    adopted: Mutex<std::collections::HashSet<DeploymentRef>>,
 }
+
+pub use crate::config::DEFAULT_MAX_FROZEN_AGENTS;
 
 /// Agents started ahead of demand (`<program> agent-standby`): a process with
 /// its runtime and model HTTP client up but no deployment, no workflow and no
@@ -334,6 +344,19 @@ fn probe_until(mut ready: impl FnMut() -> bool, window: Duration, interval: Dura
     }
 }
 
+/// Sends `signal` to agent `pid`'s process group (each agent has its own).
+#[cfg(unix)]
+fn signal_agent(pid: u32, signal: rustix::process::Signal) -> bool {
+    let Some(pid) = i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw) else { return false };
+    rustix::process::kill_process_group(pid, signal).is_ok()
+}
+
+/// Continues a frozen agent (harmless on one that runs).
+#[cfg(unix)]
+fn thaw_agent(pid: u32) {
+    let _gone_or_running = signal_agent(pid, rustix::process::Signal::CONT);
+}
+
 /// `ERROR_PIPE_BUSY` (Windows).
 const ERROR_PIPE_BUSY: i32 = 231;
 
@@ -365,7 +388,36 @@ impl LocalProvider {
             next_socket: std::sync::atomic::AtomicU64::new(0),
             released: Mutex::new(std::collections::HashSet::new()),
             standby: None,
+            max_frozen: DEFAULT_MAX_FROZEN_AGENTS,
+            adopted: Mutex::new(std::collections::HashSet::new()),
         })
+    }
+
+    /// Keeps at most `count` agents frozen at once (`pool.idle_mode: freeze`);
+    /// beyond it the agent frozen longest ago is stopped. `0`: idle agents are
+    /// stopped as without the mode.
+    #[must_use]
+    pub fn with_freeze_limit(mut self, count: usize) -> Self {
+        self.max_frozen = count;
+        self
+    }
+
+    /// Frozen agents, per deployment version, and the limit (for `/metrics`).
+    pub fn frozen_stats(&self) -> crate::metrics::FrozenStats {
+        let replicas = self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut per_version: Vec<(String, String, usize)> = Vec::new();
+        for replica in replicas.iter().filter(|(_, state)| state.phase == ReplicaPhase::Suspended).map(|(r, _)| r) {
+            match per_version
+                .iter_mut()
+                .find(|(name, version, _)| *name == replica.deployment.name && *version == replica.deployment.version)
+            {
+                Some((_, _, count)) => *count += 1,
+                None => per_version.push((replica.deployment.name.clone(), replica.deployment.version.clone(), 1)),
+            }
+        }
+        per_version.sort();
+        let total = per_version.iter().map(|(_, _, count)| count).sum();
+        crate::metrics::FrozenStats { total, limit: self.max_frozen, per_version }
     }
 
     /// Keeps `count` standby agents of `program` (the gateway's own binary)
@@ -528,6 +580,7 @@ impl LocalProvider {
                 pid_file: pid_file.clone(),
                 address: address.clone(),
                 phase: ReplicaPhase::Starting,
+                frozen_at: None,
             },
         );
         let deadline = tokio::time::Instant::now() + self.ready_timeout;
@@ -589,12 +642,71 @@ impl LocalProvider {
             .is_ok_and(|sent| sent.is_ok())
     }
 
+    /// Freezes `replica` (`pool.idle_mode: freeze`): its process group is
+    /// stopped on Unix (no CPU, memory kept); on Windows, which has no such
+    /// signal, it is kept idle as it is. `false` when it is unknown or could not
+    /// be stopped (gone): it is then released as a stopped one. Also returns
+    /// the agent to stop to stay within `max_frozen_agents`, if any.
+    fn freeze(&self, replica: &ReplicaRef) -> (bool, Option<ReplicaRef>) {
+        if self.max_frozen == 0 {
+            return (false, None);
+        }
+        let mut replicas = self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !replicas.contains_key(replica) {
+            return (false, None);
+        }
+        // At the limit: the agent frozen longest ago makes room (stopped by the caller).
+        let frozen = replicas.values().filter(|state| state.phase == ReplicaPhase::Suspended).count();
+        let evict = (frozen >= self.max_frozen)
+            .then(|| {
+                replicas
+                    .iter()
+                    .filter(|(_, state)| state.phase == ReplicaPhase::Suspended)
+                    .min_by_key(|(_, state)| state.frozen_at)
+                    .map(|(oldest, _)| oldest.clone())
+            })
+            .flatten();
+        let Some(state) = replicas.get_mut(replica) else { return (false, evict) };
+        #[cfg(unix)]
+        if !signal_agent(state.pid, rustix::process::Signal::STOP) {
+            return (false, evict);
+        }
+        state.phase = ReplicaPhase::Suspended;
+        state.frozen_at = Some(std::time::Instant::now());
+        (true, evict)
+    }
+
+    /// Thaws up to `count` frozen replicas of `deployment` (continued on Unix):
+    /// they listen already, so they are ready at once.
+    fn thaw(&self, deployment: &DeploymentRef, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let mut replicas = self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let frozen = replicas
+            .iter_mut()
+            .filter(|(replica, state)| replica.deployment == *deployment && state.phase == ReplicaPhase::Suspended)
+            .take(count);
+        for (_, state) in frozen {
+            #[cfg(unix)]
+            thaw_agent(state.pid);
+            state.phase = ReplicaPhase::Ready;
+            state.frozen_at = None;
+        }
+    }
+
     fn forget(&self, replica: &ReplicaRef) -> Option<LocalReplica> {
         self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(replica)
     }
 
     /// Replicas recorded by `.pid` files (possibly of a previous gateway process).
     fn adopt_from_disk(&self, deployment: &DeploymentRef) {
+        // Only an earlier gateway process leaves agents this one does not know:
+        // their pid files are read once per deployment version (frozen agents
+        // keep theirs, and a directory scan per version every minute added up).
+        if !self.adopted.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(deployment.clone()) {
+            return;
+        }
         let prefix = version_prefix(deployment);
         let Ok(entries) = std::fs::read_dir(&self.socket_dir) else { return };
         for entry in entries.flatten() {
@@ -617,12 +729,18 @@ impl LocalProvider {
                 EndpointAddress::Unix(path.with_extension("sock"))
             };
             let mut replicas = self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            replicas.entry(replica).or_insert_with(|| LocalReplica {
-                child: None,
-                pid,
-                pid_file: path.clone(),
-                address,
-                phase: ReplicaPhase::Ready,
+            replicas.entry(replica).or_insert_with(|| {
+                // An agent frozen by the previous gateway process serves again.
+                #[cfg(unix)]
+                thaw_agent(pid);
+                LocalReplica {
+                    child: None,
+                    pid,
+                    pid_file: path.clone(),
+                    address,
+                    phase: ReplicaPhase::Ready,
+                    frozen_at: None,
+                }
             });
         }
     }
@@ -677,6 +795,7 @@ impl Provider for LocalProvider {
                 ProviderError::not_found(format!("{}@{} is not registered", deployment.name, deployment.version))
             })?;
             self.refresh(deployment);
+            self.thaw(deployment, (replicas as usize).saturating_sub(self.ready_count(deployment)));
             let missing = (replicas as usize).saturating_sub(self.ready_count(deployment));
             let started = futures::future::join_all((0..missing).map(|_| self.spawn_one(deployment, &version))).await;
             if let Some(Err(error)) = started.into_iter().find(Result::is_err)
@@ -693,43 +812,18 @@ impl Provider for LocalProvider {
         })
     }
 
-    fn release<'a>(&'a self, replica: &'a ReplicaRef, _mode: ReleaseMode) -> BoxFuture<'a, Result<(), ProviderError>> {
+    fn release<'a>(&'a self, replica: &'a ReplicaRef, mode: ReleaseMode) -> BoxFuture<'a, Result<(), ProviderError>> {
         Box::pin(async move {
-            let Some(mut state) = self.forget(replica) else { return Ok(()) };
-            self.released.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(state.pid);
-            #[cfg(unix)]
-            let asked = crate::os::signal_group(state.pid, "TERM").await;
-            #[cfg(not(unix))]
-            let asked = self.request_stop(&replica.deployment, &state.address).await;
-            let grace = self.grace;
-            graphrt_core::task::spawn(async move {
-                let exited = match state.child.as_mut() {
-                    Some(child) => tokio::time::timeout(grace, child.wait()).await.is_ok(),
-                    // Adopted: on Windows it is gone once its pipe is; on Unix
-                    // the grace is waited out as before.
-                    None if cfg!(windows) && asked => {
-                        let address = state.address.clone();
-                        tokio::time::timeout(grace, async move {
-                            while is_listening(&address) {
-                                tokio::time::sleep(Duration::from_millis(50)).await;
-                            }
-                        })
-                        .await
-                        .is_ok()
-                    }
-                    None => {
-                        tokio::time::sleep(grace).await;
-                        false
-                    }
-                };
-                if !exited {
-                    kill_agent(state.pid).await;
+            if mode == ReleaseMode::Suspend {
+                let (frozen, evicted) = self.freeze(replica);
+                if let Some(evicted) = evicted {
+                    self.stop_replica(&evicted).await;
                 }
-                if let Some(child) = state.child.as_mut() {
-                    let _reaped = child.wait().await;
+                if frozen {
+                    return Ok(());
                 }
-                state.remove_files();
-            });
+            }
+            self.stop_replica(replica).await;
             Ok(())
         })
     }
@@ -750,6 +844,64 @@ impl Provider for LocalProvider {
                 })
                 .collect())
         })
+    }
+}
+
+impl LocalProvider {
+    /// Stops `replica`: `SIGTERM` to its group (Unix; `SIGKILL` at once when it
+    /// is frozen, so idle) or a signed stop request (Windows), `SIGKILL` /
+    /// `taskkill` after the grace, files removed. Unknown replicas are left alone.
+    async fn stop_replica(&self, replica: &ReplicaRef) {
+        let Some(mut state) = self.forget(replica) else { return };
+        self.released.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(state.pid);
+        // A frozen agent is idle (frozen only without runs; their state is the
+        // gateway's): nothing to drain, so its group is killed as it is, without
+        // waking it to handle a SIGTERM (an eviction then costs no CPU next to
+        // the wakes going on).
+        #[cfg(unix)]
+        if state.phase == ReplicaPhase::Suspended {
+            let _killed = signal_agent(state.pid, rustix::process::Signal::KILL);
+            graphrt_core::task::spawn(async move {
+                if let Some(child) = state.child.as_mut() {
+                    let _reaped = child.wait().await;
+                }
+                state.remove_files();
+            });
+            return;
+        }
+        #[cfg(unix)]
+        let asked = crate::os::signal_group(state.pid, "TERM").await;
+        #[cfg(not(unix))]
+        let asked = self.request_stop(&replica.deployment, &state.address).await;
+        let grace = self.grace;
+        graphrt_core::task::spawn(async move {
+            let exited = match state.child.as_mut() {
+                Some(child) => tokio::time::timeout(grace, child.wait()).await.is_ok(),
+                // Adopted: on Windows it is gone once its pipe is; on Unix
+                // the grace is waited out as before.
+                None if cfg!(windows) && asked => {
+                    let address = state.address.clone();
+                    tokio::time::timeout(grace, async move {
+                        while is_listening(&address) {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                    })
+                    .await
+                    .is_ok()
+                }
+                None => {
+                    tokio::time::sleep(grace).await;
+                    false
+                }
+            };
+            if !exited {
+                kill_agent(state.pid).await;
+            }
+            if let Some(child) = state.child.as_mut() {
+                let _reaped = child.wait().await;
+            }
+            state.remove_files();
+        });
     }
 }
 

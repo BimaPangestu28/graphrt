@@ -62,6 +62,9 @@ pub type HookEntry = (HookConfig, Option<Vec<u8>>);
 /// Called when a version is registered (the local provider learns its command).
 pub type VersionHook = Arc<dyn Fn(&Deployment, &VersionInfo) + Send + Sync>;
 
+/// Reads the frozen-agent gauges.
+pub type FrozenStatsFn = Arc<dyn Fn() -> crate::metrics::FrozenStats + Send + Sync>;
+
 /// Shared state of the HTTP server.
 pub struct App {
     /// The core.
@@ -77,6 +80,8 @@ pub struct App {
     /// Gateway-wide wake gate (for `/metrics`).
     pub wake_gate: Option<Arc<crate::warm::WakeGate>>,
     started: tokio::time::Instant,
+    /// Frozen-agent gauges of the local provider (`pool.idle_mode: freeze`).
+    pub frozen_stats: Option<FrozenStatsFn>,
 }
 
 impl std::fmt::Debug for App {
@@ -95,6 +100,7 @@ impl App {
             hooks: HashMap::new(),
             on_version: None,
             wake_gate: None,
+            frozen_stats: None,
             started: tokio::time::Instant::now(),
         }
     }
@@ -180,6 +186,9 @@ async fn metrics(State(app): State<Arc<App>>) -> Response {
     }
     let mut text = app.gateway.metrics.render(&gauges, app.gateway.live_count());
     crate::metrics::render_warm(&mut text, &budgets, app.wake_gate.as_deref());
+    if let Some(frozen) = &app.frozen_stats {
+        crate::metrics::render_frozen(&mut text, &frozen());
+    }
     ([("content-type", "text/plain; version=0.0.4")], text).into_response()
 }
 

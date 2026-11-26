@@ -19,6 +19,16 @@ releases may contain breaking changes; they are called out under **Changed**.
   sent to the model), and `human-input` takes an optional `card` that is
   passed to the host in the pause data (Adaptive Card actions answer with the
   node's action ids).
+- `graphrt gateway`: `pool.idle_mode: freeze` (opt-in per deployment; the
+  default stays `stop`). An idle local agent is frozen (`SIGSTOP` of its
+  process group on Linux and macOS, kept idle on Windows) instead of stopped,
+  and the next run thaws it without starting a process: wake to first token
+  p50 0.8 ms, p99 under 2 ms in the internal benchmark. A frozen agent keeps
+  its memory (~4 MiB each, against ~6 KiB for a stopped one);
+  `max_frozen_agents` (default 16) caps them across deployments, the oldest
+  frozen one is stopped first. New gauges `graphrt_gateway_frozen_agents`,
+  `graphrt_gateway_frozen_agents_limit` and `graphrt_gateway_frozen_replicas`.
+  See `docs/gateway.md#frozen-agents-idle_mode-freeze`.
 - `graphrt gateway` keeps standby agents (`standby_agents`, default `1`,
   `0` = off): local agent processes of its own binary started ahead of demand
   (`graphrt agent-standby`, internal) with no deployment, no keys and none of

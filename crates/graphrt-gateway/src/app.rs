@@ -138,7 +138,8 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
     let gateway = Gateway::new(store, settings);
     let provider = Arc::new(standby_of(
         LocalProvider::new(&config.socket_dir, Duration::from_secs(config.local_grace_secs))
-            .map_err(|error| format!("socket dir: {error}"))?,
+            .map_err(|error| format!("socket dir: {error}"))?
+            .with_freeze_limit(config.max_frozen_agents),
         config.standby_agents,
         gateway_secret_env(config),
     ));
@@ -154,6 +155,8 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
     let mut app = App::new(gateway.clone());
     let wake_gate = Arc::new(WakeGate::new(config.wake_storm));
     app.wake_gate = Some(wake_gate.clone());
+    let frozen = Arc::clone(&provider);
+    app.frozen_stats = Some(Arc::new(move || frozen.frozen_stats()));
     let mut crons = Vec::new();
     let mut callback_secrets = HashMap::new();
     let mut keys_by_deployment = HashMap::new();

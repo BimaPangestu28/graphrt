@@ -1677,6 +1677,7 @@ dependencies = [
  "reqwest",
  "ring",
  "rusqlite",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

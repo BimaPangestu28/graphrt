@@ -50,6 +50,9 @@ pub struct PoolConfig {
     pub queue_timeout: Duration,
     /// Longest one wake may take before it counts as failed.
     pub wake_timeout: Duration,
+    /// Idle replicas are frozen (`ReleaseMode::Suspend`) instead of stopped,
+    /// and a wake thaws one (`pool.idle_mode: freeze`).
+    pub freeze_idle: bool,
     /// Quotas.
     pub quotas: Quotas,
     /// Keep-warm budget of the deployment (shared by its versions); `None`: unlimited.
@@ -80,6 +83,7 @@ impl Default for PoolConfig {
             idle_timeout: Duration::from_secs(300),
             queue_timeout: Duration::from_secs(30),
             wake_timeout: Duration::from_secs(60),
+            freeze_idle: false,
             quotas: Quotas::default(),
             warm_budget: None,
             wake_gate: None,
@@ -190,6 +194,9 @@ struct PoolState {
     prewarm: PrewarmStats,
     /// Last time idle replica-time was charged to the warm budget.
     charged_at: Option<Instant>,
+    /// Replicas this pool froze (`ReleaseMode::Suspend`) and the provider keeps:
+    /// a wake thaws them; closing the pool stops them.
+    frozen: Vec<ReplicaRef>,
 }
 
 impl PoolState {
@@ -205,6 +212,8 @@ impl PoolState {
         let mut added = 0;
         let now = Instant::now();
         for endpoint in endpoints {
+            // A thawed replica is live again.
+            self.frozen.retain(|frozen| *frozen != endpoint.replica);
             if !self.slots.iter().any(|slot| slot.endpoint.replica == endpoint.replica) {
                 let slot =
                     Slot { endpoint, active_runs: 0, idle_since: now, prewarmed: source, hold_until: now + hold };
@@ -605,10 +614,15 @@ impl Pool {
             }
             victims
         };
-        let mode = if self.capabilities.supports_suspend { ReleaseMode::Suspend } else { ReleaseMode::Stop };
+        let freeze = self.config.freeze_idle || self.capabilities.supports_suspend;
+        let mode = if freeze { ReleaseMode::Suspend } else { ReleaseMode::Stop };
         for replica in &victims {
-            if let Err(error) = self.provider.release(replica, mode).await {
-                eprintln!("gateway: releasing idle replica {} of {}: {error}", replica.id, self.deployment.name);
+            match self.provider.release(replica, mode).await {
+                Ok(()) if self.config.freeze_idle => self.lock().frozen.push(replica.clone()),
+                Ok(()) => {}
+                Err(error) => {
+                    eprintln!("gateway: releasing idle replica {} of {}: {error}", replica.id, self.deployment.name)
+                }
             }
         }
         victims.len()
@@ -661,13 +675,16 @@ impl Pool {
             let mut state = self.lock();
             state.closed = true;
             let slots = std::mem::take(&mut state.slots);
-            slots
+            let mut replicas: Vec<ReplicaRef> = slots
                 .into_iter()
                 .map(|slot| {
                     state.forget(&slot);
                     slot.endpoint.replica
                 })
-                .collect()
+                .collect();
+            // Frozen replicas of a closed pool are stopped too.
+            replicas.append(&mut state.frozen);
+            replicas
         };
         self.changed.notify_waiters();
         if self.capabilities.addressing == Addressing::Url {

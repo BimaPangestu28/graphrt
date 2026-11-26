@@ -88,6 +88,21 @@ pub struct PoolFileConfig {
     pub queue_timeout_secs: u64,
     /// Seconds a wake may take.
     pub wake_timeout_secs: u64,
+    /// What an idle replica becomes: `stop` (default, scale to zero) or
+    /// `freeze` (kept frozen and thawed on the next wake; see docs).
+    pub idle_mode: IdleMode,
+}
+
+/// What the gateway does with a replica idle for `idle_timeout_secs`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IdleMode {
+    /// Stop it: nothing of the agent stays (scale to zero).
+    #[default]
+    Stop,
+    /// Freeze it (a stopped process on Unix), keeping its memory, and thaw it
+    /// on the next wake instead of starting an agent.
+    Freeze,
 }
 
 impl Default for PoolFileConfig {
@@ -99,6 +114,7 @@ impl Default for PoolFileConfig {
             idle_timeout_secs: defaults.idle_timeout.as_secs(),
             queue_timeout_secs: defaults.queue_timeout.as_secs(),
             wake_timeout_secs: defaults.wake_timeout.as_secs(),
+            idle_mode: IdleMode::Stop,
         }
     }
 }
@@ -194,6 +210,7 @@ impl DeploymentConfig {
             idle_timeout: Duration::from_secs(self.pool.idle_timeout_secs),
             queue_timeout: Duration::from_secs(self.pool.queue_timeout_secs.max(1)),
             wake_timeout: Duration::from_secs(self.pool.wake_timeout_secs.max(1)),
+            freeze_idle: self.pool.idle_mode == IdleMode::Freeze,
             quotas: self.quotas,
             warm_budget: self
                 .warm
@@ -235,6 +252,11 @@ pub struct GatewayConfig {
     /// starts every agent on demand.
     #[serde(default = "default_standby_agents")]
     pub standby_agents: usize,
+    /// Most local agents kept frozen at once across deployments with
+    /// `pool.idle_mode: freeze` (each keeps its memory, ~4 MiB); beyond it the
+    /// agent frozen longest ago is stopped. `0`: idle agents are always stopped.
+    #[serde(default = "default_max_frozen_agents")]
+    pub max_frozen_agents: usize,
     /// Days finished runs (and webhook markers) are kept; at least 3 (Stripe retries).
     #[serde(default = "default_ttl_days")]
     pub store_ttl_days: u64,
@@ -267,6 +289,13 @@ fn default_store() -> PathBuf {
 fn default_socket_dir() -> PathBuf {
     std::env::temp_dir().join("graphrt-gateway")
 }
+/// Default `max_frozen_agents` (each frozen agent keeps its ~4 MiB).
+pub const DEFAULT_MAX_FROZEN_AGENTS: usize = 16;
+
+fn default_max_frozen_agents() -> usize {
+    DEFAULT_MAX_FROZEN_AGENTS
+}
+
 fn default_standby_agents() -> usize {
     1
 }
@@ -367,6 +396,8 @@ deployments:
         assert_eq!(config.deployments[0].crons[0].catchup, Catchup::Latest);
         assert!(!config.deployments[0].warm.predictive, "predictive prewarm is off by default");
         assert!(config.deployments[0].pool_config().warm_budget.is_none(), "no budget by default");
+        assert!(!config.deployments[0].pool_config().freeze_idle, "idle agents are stopped by default");
+        assert_eq!(config.max_frozen_agents, DEFAULT_MAX_FROZEN_AGENTS);
         assert_eq!(config.wake_storm.max_parallel_wakes, 16);
     }
 
@@ -384,5 +415,18 @@ deployments:
         assert!(error.contains("invalid type: string \"many\""), "{error}");
         let threshold = "deployments: [{ name: shop, keys_env: K, open: true, warm: { threshold: 2 } }]";
         assert!(GatewayConfig::from_yaml(threshold).unwrap_err().contains("warm.threshold"));
+    }
+
+    #[test]
+    fn idle_mode_freeze_is_opt_in_per_deployment() {
+        let yaml = "max_frozen_agents: 4\ndeployments:\n  - name: fast\n    keys_env: K\n    open: true\n    pool: { idle_mode: freeze }\n  - name: slow\n    keys_env: K\n    open: true\n";
+        let config = GatewayConfig::from_yaml(yaml).unwrap();
+        assert_eq!(config.max_frozen_agents, 4);
+        assert!(config.deployments[0].pool_config().freeze_idle);
+        assert!(!config.deployments[1].pool_config().freeze_idle);
+        let error =
+            GatewayConfig::from_yaml("deployments:\n  - name: x\n    keys_env: K\n    pool: { idle_mode: nap }\n")
+                .unwrap_err();
+        assert!(error.contains("idle_mode"), "{error}");
     }
 }
