@@ -34,6 +34,9 @@ skills = []
 # (needs a `graphrt_core::learning::Lessons` service, for example from graphrt-learn). Off
 # by default: without it the node refuses a document that sets `learning`.
 learning = []
+# `text_model::ChatTextModel`: a chat model as a `graphrt_core::text_model::TextModel`, for
+# work outside a run such as drafting a skill. No dependencies.
+text-model = []
 # Shared HTTP transport (reqwest + rustls with the ring crypto provider).
 http = ["dep:reqwest", "dep:rustls", "dep:tokio"]
 
