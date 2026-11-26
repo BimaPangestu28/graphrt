@@ -385,7 +385,12 @@ Measured on Linux aarch64 with `bench/targets.sh`
 local agent in 5–13 ms (p95, depending on host load), acks a webhook in under 1 ms, idles at 7 MiB and holds
 1,000 concurrent streams in ~45 MiB (about 37 KiB per stream, two thirds of it
 the client's HTTP/1.1 connection). An agent started by the gateway starts its
-process plugins at once, alongside the dispatch of the run that woke it.
+process plugins at once, alongside the dispatch of the run that woke it, and
+loads the model HTTP client (the system trust store) on a background thread
+while it builds its flows and binds, instead of in the run's first model call.
+The gateway checks a starting agent every 200 µs, so a ready agent gets its run
+at once. All public connections have `TCP_NODELAY`: small SSE writes never wait
+for the client's delayed ACK.
 
 Run streams from Unix-socket and `http://` agents go through a lean HTTP/1.1
 client (`graphrt_gateway::stream_conn`): one 2 KiB read buffer per stream,

@@ -46,6 +46,14 @@ enum Stopped {
 
 /// Execute `graphrt serve`.
 pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
+    // An agent behind a gateway is started because a run is on its way: the
+    // model HTTP client (the system trust store, ~2 ms of certificate files)
+    // loads alongside the flow build and the bind instead of in the run's first
+    // model call.
+    #[cfg(all(feature = "llm", feature = "trust-gateway"))]
+    if args.gateway.trust_gateway {
+        graphrt_llm::prewarm_http_client();
+    }
     let mut options = service_options(&args.services)?;
     #[cfg(feature = "plugins")]
     {
