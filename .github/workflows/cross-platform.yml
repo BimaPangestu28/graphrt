@@ -3,12 +3,14 @@ name: Cross-platform tests
 # The workspace test suite on Windows and macOS (Linux runs in ci.yml).
 # The release workflow calls this with `linux: true`, so every tagged binary is
 # built only after the tests passed on the OS it targets.
+#
+# No workflow level path filter: a pull request that changes only prose still gets
+# these checks, reported as skipped by the `changes` job (.github/path-filters.yml).
+# Pushes to main and the release workflow always run the full matrix.
 on:
   pull_request:
-    paths-ignore: ["**.md", "docs/**", "examples/**/*.md"]
   push:
     branches: [main]
-    paths-ignore: ["**.md", "docs/**", "examples/**/*.md"]
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -25,8 +27,10 @@ permissions:
   contents: read
 
 concurrency:
-  # Called from the release workflow the group is the caller's, so no clash with PR runs.
-  group: cross-platform-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # A new push to a pull request cancels the run of its previous push. Every other run
+  # (main, manual, called from the release workflow) gets a group of its own, so it is
+  # never cancelled or replaced.
+  group: cross-platform-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -38,9 +42,35 @@ env:
   CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
+  # What the pull request changes. Git diff instead of the API: no pull-requests
+  # permission, which the release workflow does not grant to the jobs it calls.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
+    steps:
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github
+      - if: github.event_name == 'pull_request'
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          token: ""
+          filters: .github/path-filters.yml
+          predicate-quantifier: some-with-excludes
+
   test:
     name: test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
+    # Windows takes about 10 minutes with a warm cache and 25 without one.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -64,6 +94,7 @@ jobs:
           # cache, but what they save stays with their own ref, so only main
           # runs refresh the cache the others start from.
           shared-key: cross-platform
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Plugin and code-node tests start `python3`; Windows images only ship `python.exe`.
       - name: Provide python3 on Windows
         if: runner.os == 'Windows'

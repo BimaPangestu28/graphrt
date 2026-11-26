@@ -1,10 +1,13 @@
+# Every update PR runs the full CI matrix (macOS and Windows included), so updates
+# come in few, grouped PRs: minor and patch bumps share one PR per ecosystem, and at
+# most 3 update PRs per ecosystem are open at once.
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 3
     groups:
       minor-and-patch:
         update-types: [minor, patch]
@@ -12,15 +15,33 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
   - package-ecosystem: npm
     directory: /sdk/typescript
     schedule:
+      # The SDKs change rarely: monthly is enough.
       interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
   - package-ecosystem: pip
     directory: /sdk/python
     schedule:
+      # The SDKs change rarely: monthly is enough.
       interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]

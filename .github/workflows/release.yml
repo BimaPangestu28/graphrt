@@ -39,6 +39,7 @@ jobs:
   tag:
     name: resolve the release tag
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       ref: ${{ steps.resolve.outputs.ref }}
@@ -73,6 +74,7 @@ jobs:
     name: build ${{ matrix.target }}
     needs: [tag, test]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     env:
       # Link the C runtime statically: the .exe then runs without the Visual C++
       # redistributable (no VCRUNTIME140.dll).
@@ -164,6 +166,7 @@ jobs:
     name: GitHub Release
     needs: [tag, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -204,6 +207,8 @@ jobs:
     name: Container image (GHCR, ${{ matrix.flavor }})
     needs: [tag, test]
     runs-on: ubuntu-latest
+    # Both architectures build in one job, arm64 under QEMU.
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
@@ -254,6 +259,7 @@ jobs:
     name: Publish to crates.io
     needs: [tag, release]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     # Opt-in: set repository variable PUBLISH_CRATES=true and secret CARGO_REGISTRY_TOKEN.
     if: ${{ vars.PUBLISH_CRATES == 'true' }}
     steps:

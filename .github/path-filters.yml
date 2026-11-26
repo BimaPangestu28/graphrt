@@ -1,0 +1,34 @@
+# Path filters of the `changes` jobs in ci.yml, cross-platform.yml and mobile.yml
+# (dorny/paths-filter with `predicate-quantifier: some-with-excludes`): a changed file
+# belongs to a filter when it matches one of its patterns and none of its `!` patterns.
+#
+# Only pull requests are filtered. Pushes to main, tags and the release workflow run
+# every job. Keep the `!` patterns to files no build or test reads: tests read
+# docs/schemas/*.json, examples/**/*.md and plugins/**, so those stay in.
+
+# Anything but prose, images and GitHub templates.
+code:
+  - "**"
+  - "!*.md"
+  - "!LICENSE"
+  - "!docs/**/*.md"
+  - "!docs/**/*.{png,jpg,jpeg,gif,svg,webp}"
+  - "!crates/*/README.md"
+  - "!sdk/*/README.md"
+  - "!bench/results/**"
+  - "!.github/ISSUE_TEMPLATE/**"
+  - "!.github/pull_request_template.md"
+
+# What graphrt-ffi, the bindings and the sample apps in examples/mobile are built from.
+mobile:
+  - "crates/**"
+  - "bindings/kotlin/**"
+  - "bindings/swift/**"
+  - "examples/hello.yaml"
+  - "examples/mobile/**"
+  - "Cargo.toml"
+  - "Cargo.lock"
+  - ".cargo/**"
+  - ".github/workflows/mobile.yml"
+  - ".github/path-filters.yml"
+  - "!**/*.md"
