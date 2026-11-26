@@ -50,6 +50,33 @@ pub fn pdf_with_content_stream(dict_entries: &str, data: &[u8]) -> Vec<u8> {
     pdf_of(&objects)
 }
 
+/// A PDF with one page per entry of `pages`, each showing that text (empty: a page without text).
+pub fn pdf_with_pages(pages: &[&str]) -> Vec<u8> {
+    let count = pages.len();
+    // Objects: 1 catalog, 2 pages, 3 font, then a page and its content stream per page.
+    let kids: Vec<String> = (0..count).map(|i| format!("{} 0 R", 4 + 2 * i)).collect();
+    let mut objects: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        format!("<< /Type /Pages /Kids [{}] /Count {count} >>", kids.join(" ")).into_bytes(),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+    ];
+    for (i, text) in pages.iter().enumerate() {
+        objects.push(
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
+                5 + 2 * i
+            )
+            .into_bytes(),
+        );
+        let content = if text.is_empty() { String::new() } else { format!("BT /F1 24 Tf 72 720 Td ({text}) Tj ET") };
+        let mut stream = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+        stream.extend_from_slice(content.as_bytes());
+        stream.extend_from_slice(b"\nendstream");
+        objects.push(stream);
+    }
+    pdf_of(&objects)
+}
+
 /// A PDF of `objects` (numbered from 1, the first is the catalog) with its xref table.
 fn pdf_of(objects: &[Vec<u8>]) -> Vec<u8> {
     let mut out = b"%PDF-1.4\n".to_vec();

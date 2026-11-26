@@ -297,7 +297,9 @@ fn render_range(
     Ok(Some(format!("{}\n{}", sheet_heading(name, opts), table.finish())))
 }
 
-/// PDF text, page by page (pages separated by a blank line).
+/// PDF text, page by page (pages separated by a blank line). With
+/// [`Options::page_markers`] each page starts with its [`crate::page_marker`]
+/// (page numbers count from 1 and include pages without text).
 #[cfg(feature = "pdf")]
 pub(crate) fn pdf(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
     crate::pdf_budget::check_raw_streams(bytes, opts.max_decompressed_bytes)?;
@@ -317,7 +319,7 @@ pub(crate) fn pdf(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
         let mut out: Vec<String> = Vec::new();
         let mut chars = 0usize;
         let mut first_error: Option<String> = None;
-        for page in pages.keys() {
+        for (page, number) in pages.keys().zip(1u32..) {
             let mut text = String::new();
             let result = {
                 let mut output = pdf_extract::PlainTextOutput::new(&mut text);
@@ -332,7 +334,7 @@ pub(crate) fn pdf(bytes: &[u8], opts: &Options) -> Result<String, DocError> {
                 continue;
             }
             chars = chars.saturating_add(text.chars().count());
-            out.push(text);
+            out.push(if opts.page_markers { format!("{}{text}", crate::page_marker(number)) } else { text });
             if chars > opts.max_output_chars {
                 break;
             }
