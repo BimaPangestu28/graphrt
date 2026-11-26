@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Until 1.0, minor
 releases may contain breaking changes; they are called out under **Changed**.
+Entries of the next release also wait in `changelog.d/` (one fragment per
+change) until it is cut; `scripts/changelog.py preview` shows them together.
 
 ## [Unreleased]
 

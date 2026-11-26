@@ -11,6 +11,6 @@
 - [ ] `cargo fmt --all` and `cargo clippy --workspace --all-targets` are clean
 - [ ] `cargo test --workspace` passes
 - [ ] New behaviour has tests; public API changes have doc comments
-- [ ] Docs updated (`docs/`, README, CHANGELOG `Unreleased` section) where relevant
+- [ ] Docs updated (`docs/`, README) and a changelog fragment added (`changelog.d/<slug>.<kind>.md`) where relevant
 - [ ] No secrets, keys or personal data in code, tests or fixtures
 - [ ] Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:` ...)
