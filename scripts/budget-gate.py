@@ -7,10 +7,14 @@ prebuilt binary from --bin-dir), then measures:
 
 - binary size, and for a build with `delta_of`, its size minus that earlier
   build's (`delta_kib`: what a feature costs, independent of the base growing);
-- idle RSS of `graphrt serve` (or, for a build with `run = "gateway"`, of
+- idle memory of `graphrt serve` (or, for a build with `run = "gateway"`, of
   `graphrt gateway` with one deployment and no agent) one second after it
-  became healthy, the median over [startup].rss_samples starts (default 5, one
-  start alone varies by a few pages) (`run = "none"`: size only);
+  became healthy, the median over [startup].rss_samples starts (default 5)
+  (`run = "none"`: size only). The budget (`idle_anon_mib`) is on anonymous
+  memory (`RssAnon`: heap, stacks, written data pages), what each process
+  costs on its own. Total RSS is reported too, but not gated: most of it is
+  the binary's code pages, shared and file backed, and it moves by tens of
+  KiB with code layout alone (the binary size budgets cover code);
 - exec -> first 200 on GET /healthz, p95 over [startup].samples starts;
 - that SIGTERM makes the server exit 0 (the drain path; a PID-1 run is covered
   by scripts/test-pid1.sh).
@@ -124,14 +128,19 @@ def healthz_ok(port: int) -> bool:
         return False
 
 
-def rss_mib(pid: int) -> float:
+def memory_mib(pid: int) -> tuple[float, float | None]:
+    """Total RSS and anonymous RSS of `pid` in MiB. Without /proc (macOS) only
+    the total is known (from ps) and the anonymous figure is `None`."""
     status = Path(f"/proc/{pid}/status")
     if status.exists():
+        fields = {}
         for line in status.read_text().splitlines():
-            if line.startswith("VmRSS:"):
-                return int(line.split()[1]) / 1024
+            name, _, value = line.partition(":")
+            if name in ("VmRSS", "RssAnon"):
+                fields[name] = int(value.split()[0]) / 1024
+        return fields["VmRSS"], fields.get("RssAnon")
     out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True).stdout
-    return int(out.strip()) / 1024
+    return int(out.strip()) / 1024, None
 
 
 def gateway_config(work: Path, port: int) -> Path:
@@ -147,8 +156,10 @@ def gateway_config(work: Path, port: int) -> Path:
     return path
 
 
-def serve_once(binary: Path, workflows: Path, measure_rss: bool, mode: str = "serve") -> tuple[float, float | None]:
-    """Start `graphrt serve` (or `graphrt gateway`), time exec -> healthy, optionally read idle RSS, then SIGTERM it."""
+def serve_once(
+    binary: Path, workflows: Path, measure_rss: bool, mode: str = "serve"
+) -> tuple[float, tuple[float, float | None] | None]:
+    """Start `graphrt serve` (or `graphrt gateway`), time exec -> healthy, optionally read idle memory, then SIGTERM it."""
     port = free_port()
     env = {k: v for k, v in os.environ.items() if not k.startswith("GRAPHRT_")}
     if mode == "gateway":
@@ -169,7 +180,7 @@ def serve_once(binary: Path, workflows: Path, measure_rss: bool, mode: str = "se
         rss = None
         if measure_rss:
             time.sleep(1.0)
-            rss = rss_mib(process.pid)
+            rss = memory_mib(process.pid)
         process.send_signal(signal.SIGTERM)
         code = process.wait(timeout=10)
         if code != 0:
@@ -233,16 +244,21 @@ def main() -> int:
                 timed = spec["name"] == startup.get("build")
                 rss_samples = int(startup.get("rss_samples", 5))
                 samples = max(int(startup.get("samples", 30)), rss_samples) if timed else rss_samples
-                times, rss_values = [], []
+                times, rss_values, anon_values = [], [], []
                 for i in range(samples):
                     ms, measured = serve_once(binary, work / "workflows", measure_rss=(i < rss_samples), mode=mode)
                     times.append(ms)
                     if measured is not None:
-                        rss_values.append(measured)
-                rss = statistics.median(rss_values)
-                entry["idle_rss_mib"] = round(rss, 2)
+                        rss_values.append(measured[0])
+                        if measured[1] is not None:
+                            anon_values.append(measured[1])
+                entry["idle_rss_mib"] = round(statistics.median(rss_values), 2)
                 entry["idle_rss_samples"] = len(rss_values)
-                check(results, spec["name"], "idle RSS", rss, budget_for(spec.get("idle_rss_mib"), key), "MiB")
+                if anon_values:
+                    anon = statistics.median(anon_values)
+                    entry["idle_anon_mib"] = round(anon, 2)
+                    budget = budget_for(spec.get("idle_anon_mib"), key)
+                    check(results, spec["name"], "idle anonymous memory", anon, budget, "MiB")
                 if timed:
                     entry["healthz_p50_ms"] = round(sorted(times)[len(times) // 2], 2)
                     entry["healthz_p95_ms"] = round(p95(times), 2)
@@ -293,12 +309,13 @@ def report(results: dict, args: argparse.Namespace) -> None:
     lines = [
         f"### graphrt budgets ({results['target']}, min-size)",
         "",
-        "| Build | Features | Binary (MiB) | Budget | Idle RSS (MiB) | Budget | exec→/healthz p50 / p95 (ms) |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Build | Features | Binary (MiB) | Budget | Idle anon (MiB) | Budget | Idle RSS (MiB) | exec→/healthz p50 / p95 (ms) |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     key = results["platform"]
     for name, entry in results["builds"].items():
         budget = {k: budget_for(v, key) for k, v in budgets.get(name, {}).items()}
+        anon = entry.get("idle_anon_mib", "–")
         rss = entry.get("idle_rss_mib", "–")
         startup = f"{entry['healthz_p50_ms']} / {entry['healthz_p95_ms']}" if "healthz_p95_ms" in entry else "–"
         size_budget = budget.get("binary_mib", "–")
@@ -306,7 +323,7 @@ def report(results: dict, args: argparse.Namespace) -> None:
             size_budget = f"+{entry['delta_kib']} KiB over {entry['delta_of']} (budget +{budget.get('delta_kib', '–')})"
         lines.append(
             f"| {name} | `{entry['features']}` | {entry['binary_mib']} | {size_budget} "
-            f"| {rss} | {budget.get('idle_rss_mib', '–')} | {startup} |"
+            f"| {anon} | {budget.get('idle_anon_mib', '–')} | {rss} | {startup} |"
         )
     if "banned_dependencies" in results:
         lines += ["", f"Banned crates found: {', '.join(results['banned_dependencies']) or 'none'}"]

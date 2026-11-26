@@ -6,7 +6,18 @@
 # explicit decision, made in the same pull request with the reason in its
 # description. The measured baseline lives in bench/baseline/.
 #
-# Units: binary size in MiB (1 MiB = 1 048 576 bytes), RSS in MiB, times in ms.
+# Units: binary size in MiB (1 MiB = 1 048 576 bytes), memory in MiB, times in ms.
+#
+# Idle memory budgets (`idle_anon_mib`) are on anonymous memory (`RssAnon`): heap,
+# stacks and written data pages, what each process costs on its own. Total RSS is
+# reported next to it but not gated: about 4.6 of agent-slim's 5.8 MiB are the
+# binary's code pages (file backed, shared between processes of one binary), and
+# that figure moved by 40 to 80 KiB when a change only moved functions around
+# (6.02 / 6.08 MiB against a 6.0 MiB budget for 15 KiB more code). Code is held
+# by the binary size budgets. Measured 2026-11-27 (x86_64 musl, 4 CPUs, median
+# of 5 starts): agent-minimal 0.57, agent-slim and its gateway and wasm variants
+# 0.61 to 0.63, gateway-core 1.59 to 1.63 MiB (mimalloc). The budgets give each
+# about 20 % (agents) and 25 % (gateway) on top.
 
 # Builds of the graphrt CLI to measure. `features` are the cargo features of
 # graphrt-cli, built with --no-default-features. A budget is a number, or a table
@@ -23,13 +34,13 @@
 name = "agent-minimal"
 features = "serve"
 binary_mib = { x86_64-linux = 4.5, aarch64-linux = 3.85, default = 3.4 }
-idle_rss_mib = 5.0
+idle_anon_mib = 0.7
 
 [[build]]
 name = "agent-slim"
 features = "serve,llm,plugins"
 binary_mib = { x86_64-linux = 7.6, aarch64-linux = 6.35, default = 5.6 }
-idle_rss_mib = 6.0
+idle_anon_mib = 0.75
 
 # The slim agent behind a graphrt gateway: what `trust-gateway` costs on top of
 # agent-slim (`delta_of`), so the budget holds however the base grows.
@@ -55,7 +66,7 @@ delta_kib = { x86_64-linux = 94, aarch64-linux = 77, default = 65 }
 # importing it are refused at load). Measured 2026-11-24 (min-size; Linux in the
 # Lima VM, macOS arm64 native):
 #
-# | build | x86_64-linux | aarch64-linux | macOS arm64 | idle RSS aarch64 |
+# | build | x86_64-linux | aarch64-linux | macOS arm64 | idle RSS (total) aarch64 |
 # | --- | ---: | ---: | ---: | ---: |
 # | agent-slim (base) | 7.216 MiB | 6.029 MiB | 5.325 MiB | 4.80 MiB |
 # | agent-slim-wasm | +1050.6 KiB | +848.9 KiB | +684.5 KiB | 5.27 MiB |
@@ -69,7 +80,7 @@ features = "serve,llm,plugins,wasm"
 optional = true
 delta_of = "agent-slim"
 delta_kib = { x86_64-linux = 1103, aarch64-linux = 892, default = 720 }
-idle_rss_mib = 6.0
+idle_anon_mib = 0.75
 
 [[build]]
 name = "agent-slim-gateway-wasm"
@@ -77,7 +88,7 @@ features = "serve,llm,plugins,trust-gateway,wasm"
 optional = true
 delta_of = "agent-slim-gateway"
 delta_kib = { x86_64-linux = 1103, aarch64-linux = 892, default = 720 }
-idle_rss_mib = 6.0
+idle_anon_mib = 0.75
 
 [[build]]
 name = "agent-slim-gateway-wasm-net"
@@ -85,7 +96,7 @@ features = "serve,llm,plugins,trust-gateway,wasm,http"
 optional = true
 delta_of = "agent-slim-gateway"
 delta_kib = { x86_64-linux = 1333, aarch64-linux = 1074, default = 890 }
-idle_rss_mib = 6.0
+idle_anon_mib = 0.75
 
 # The gateway (plan §9: core ≤ 8 MiB, every provider ≤ 9 MiB). Measured
 # 2026-11-23 after the monomorphisation pass (one YAML parser instantiation,
@@ -103,10 +114,10 @@ idle_rss_mib = 6.0
 [[build]]
 name = "gateway-core"
 features = "gateway"
-# Idle RSS: `graphrt gateway` with one deployment and no agent (mimalloc built
+# Idle memory: `graphrt gateway` with one deployment and no agent (mimalloc built
 # without transparent huge pages).
 run = "gateway"
-idle_rss_mib = 20.0
+idle_anon_mib = 2.0
 binary_mib = { x86_64-linux = 8.0, aarch64-linux = 6.95, default = 8.0 }
 
 [[build]]
@@ -116,8 +127,8 @@ run = "none"
 binary_mib = { x86_64-linux = 9.0, aarch64-linux = 7.75, default = 9.0 }
 
 # Time from exec of `graphrt serve` to its first `200` on GET /healthz, p95 over
-# `samples` starts (measured on the agent-slim build). Idle RSS of every build is
-# the median of `rss_samples` starts.
+# `samples` starts (measured on the agent-slim build). Idle memory of every build
+# is the median of `rss_samples` starts.
 [startup]
 build = "agent-slim"
 samples = 30
