@@ -12,6 +12,7 @@
 //! - [`scan`]: plain language findings shown before an install.
 //! - [`store`]: install, list, grant, remove. Every file is pinned by hash.
 //! - [`runtime`]: the catalog and the `load_skill` / `read_skill_file` tools.
+//! - [`draft`]: write a skill from plain language or an example conversation.
 //!
 //! What a skill can do is limited by construction, not by the scan:
 //!
@@ -37,6 +38,7 @@
 //! # }
 //! ```
 
+pub mod draft;
 pub mod error;
 pub mod manifest;
 pub mod package;
@@ -45,6 +47,7 @@ pub mod scan;
 pub mod store;
 pub mod text;
 
+pub use draft::{DraftRequest, DraftSource, SkillDraft, Turn, draft_skill};
 pub use error::Error;
 pub use manifest::{ParsedSkill, SKILL_FILE, SkillManifest, is_valid_name, parse_skill_file};
 pub use package::{Discovered, PackageLimits, PluginPackage, SkillFile, SkillPackage, discover, read_package};

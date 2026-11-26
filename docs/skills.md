@@ -61,6 +61,33 @@ What happens in a run:
 
 An agent without `skills` behaves exactly as before.
 
+## Writing a skill from plain language
+
+Nobody has to write `SKILL.md` by hand. A model drafts it from a description,
+or from a conversation that shows how the task is done:
+
+```sh
+graphrt skill draft --model openai/gpt-4.1 \
+  --describe "When a customer asks for a refund, look the order up first. Orders older than 30 days get store credit."
+graphrt skill draft --model openai/gpt-4.1 --conversation chat.json --tool orders/lookup
+```
+
+The result is a folder (`<name>/SKILL.md`) to read and edit. It becomes a skill
+only through `graphrt skill install`, so a draft passes the same validation and
+scan as any other skill, and gets no tool unless you grant it.
+
+A conversation can contain text that someone planted, so it is handled as
+untrusted material:
+
+- It is passed to the model as a quoted block, with the instruction that it is
+  not addressed to the model.
+- A draft can only ask for tools you listed with `--tool`. Anything else the
+  model names is dropped, and asking grants nothing.
+- Nothing is installed until a person has seen the draft.
+
+`--conversation` takes a JSON array of `{"role": ..., "content": ...}` objects.
+The latest 60 turns and about 24,000 characters are used.
+
 ## What a skill can and cannot do
 
 | A skill can | A skill cannot |
@@ -129,6 +156,7 @@ Every subcommand takes `--dir <DIR>` (the skill store) and `--json`.
 | `graphrt skill list` | Installed skills: state, granted and requested tools, description. |
 | `graphrt skill inspect <name\|dir>` | One skill, installed or not: description, tool requests and grants, files, findings, and the changes against the installed version. Writes nothing. |
 | `graphrt skill install <dir> [--grant T]... [--allow T]... [--accept-findings] [--replace]` | Install a skill directory or every skill of an Agent Plugins package. |
+| `graphrt skill draft --model P/N (--describe TEXT \| --conversation FILE) [--tool T]... [--out DIR] [--providers FILE]` | Write a new skill with a model. The folder is then installed with `install`. |
 | `graphrt skill grant <name> [--grant T]... [--allow T]...` | Replace the grants of an installed skill. No flags: grant nothing. |
 | `graphrt skill disable <name>` / `enable <name>` | Hide a skill from every agent, or show it again. |
 | `graphrt skill remove <name>` | Delete an installed skill. |
@@ -180,6 +208,9 @@ services.insert(SkillSet::new(Arc::clone(&store)).into_service());
 | `SkillStore::inspect_dir` | The review screen before an install or an update |
 | `SkillStore::install`, `install_package` | Install with explicit grants and an origin (`OriginKind::Catalog`, `verified: true` when the host checked a signature) |
 | `SkillStore::set_grants`, `set_enabled`, `remove` | Manage |
+| `draft_skill(&model, &DraftRequest)` | A `SkillDraft` (name, description, body, requested tools, findings) from a description or a conversation. `model` is any `graphrt_core::text_model::TextModel`, for example `graphrt_llm::text_model::ChatTextModel` (feature `text-model`) |
+| `SkillDraft::new` | Rebuild a draft after the user edited it. Same validation and scan |
+| `SkillStore::install_draft` | Install a draft with origin `authored`. `SkillDraft::write_to` writes it as a folder instead |
 | `SkillSet::into_service` | The `Skills` service `agent` nodes look up |
 
 `SkillEntry`, `SkillDetails`, `Finding` and `SkillChanges` serialize to JSON
