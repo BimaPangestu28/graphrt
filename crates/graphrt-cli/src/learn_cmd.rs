@@ -97,6 +97,7 @@ pub async fn learn(args: LearnCmdArgs) -> Result<u8, CliError> {
             if json {
                 let value = json!({
                     "observations": report.observations, "lessons": report.lessons, "skipped": report.skipped,
+                    "kept": report.kept,
                 });
                 return print_json(&value, &mut out);
             }
@@ -104,6 +105,9 @@ pub async fn learn(args: LearnCmdArgs) -> Result<u8, CliError> {
                 .map_err(io_error)?;
             for skipped in &report.skipped {
                 writeln!(out, "  skipped: {skipped}").map_err(io_error)?;
+            }
+            if report.kept > 0 {
+                writeln!(out, "  {} comment(s) stay in the queue for the next pass", report.kept).map_err(io_error)?;
             }
             print_lessons(&report.lessons, false, &mut out)
         }

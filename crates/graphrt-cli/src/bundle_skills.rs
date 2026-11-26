@@ -139,6 +139,7 @@ pub fn install_from_bundle(bundle: &graphrt_bundle::Bundle, private_dir: &Path) 
             detail: Some(format!("bundle {}", bundle.manifest().name)),
             publisher: None,
             verified: signed,
+            version: None,
         };
         let options =
             InstallOptions { grants: bundled.grants, accept_findings: bundled.accept_findings, replace: false, origin };

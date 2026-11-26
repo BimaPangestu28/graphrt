@@ -83,7 +83,8 @@ scan flags it. The check knows English and Indonesian words. It errs towards
 Each reason is a `{code, message}` pair in `risk_reasons`. The message is plain
 English. The code is stable, for hosts that show it in another language:
 `sending`, `money`, `approval`, `changes_records`, `credentials`,
-`tools_or_instructions`, `web_address`, `email_address`, `long_number`, or the
+`tools_or_instructions`, `web_address`, `email_address`, `long_number`,
+`masked_secret` (a value the host already masked, such as `[redacted]`), or the
 code of a skill scan finding (`overrides_instructions`, `hides_from_user`,
 `skips_approval`, `touches_credentials`, `hidden_characters`,
 `download_and_run`).
@@ -114,6 +115,15 @@ not trusted yet, and one user's lesson may hold that user's data, which must
 not end up in a skill every run can load. The draft is a normal skill draft:
 a person reads it, the same scan runs, and installing grants no tool. See
 [skills.md](skills.md#writing-a-skill-from-plain-language).
+
+A feedback comment that cannot be recorded for now, because too many proposals
+are open or the scope is full, stays in the queue and is tried again on the
+next `distill` (`kept` in the report). A comment that can never be a lesson is
+dropped and listed in `skipped`.
+
+`Lesson::origin_sentence` is an English sentence. Hosts in another language
+build their own from `origin.signal`, `origin.author`, `origin.run_id` and
+`created_at_ms`.
 
 ## `graphrt learn`
 
@@ -153,7 +163,7 @@ may carry `actor`, the name recorded in the audit log (default `api`).
 | PATCH | `/v1/learning/{agent}/lessons/{id}` | one of `{decision: approve\|reject\|retire}`, `{text}`, `{promote: true}` | The lesson |
 | DELETE | `/v1/learning/{agent}/lessons/{id}` | | `204` |
 | POST | `/v1/learning/{agent}/forget` | `{user}` or `{run_id}` | `{removed}` |
-| POST | `/v1/learning/{agent}/distill` | | `{observations, lessons, skipped}` |
+| POST | `/v1/learning/{agent}/distill` | | `{observations, lessons, skipped, kept}` |
 | GET, PATCH | `/v1/learning/{agent}/policy` | `{auto_approve_user_feedback}` | The policy |
 | GET | `/v1/learning/{agent}/audit` | | `{entries: [...]}` |
 

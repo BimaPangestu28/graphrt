@@ -6,6 +6,8 @@
 //! granted). The scan exists so that the most common bad patterns are shown
 //! in plain language at the moment someone decides to install.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::text::hidden_character;
@@ -42,12 +44,33 @@ pub struct Finding {
     /// The 1-based line, when the finding points at one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
+    /// The details of the finding as data, for hosts that write the sentence
+    /// themselves (in another language). By code:
+    /// `external_links`: `hosts` (those listed) and `more` (how many were left out);
+    /// `scripts_not_run`: `count`; `unsupported_tools`: `tools`;
+    /// `hidden_characters`: `codepoint` (such as `U+200B`). Other codes have none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, Vec<String>>,
 }
 
 impl Finding {
     /// A finding without a location.
     pub fn new(severity: Severity, code: &str, message: impl Into<String>) -> Self {
-        Self { severity, code: code.to_owned(), message: message.into(), file: None, line: None }
+        Self {
+            severity,
+            code: code.to_owned(),
+            message: message.into(),
+            file: None,
+            line: None,
+            params: BTreeMap::new(),
+        }
+    }
+
+    /// The same finding, with detail `name` set to `values`.
+    #[must_use]
+    pub fn with_param(mut self, name: &str, values: Vec<String>) -> Self {
+        self.params.insert(name.to_owned(), values);
+        self
     }
 
     /// The same finding, located in `file` at `line`.
@@ -172,6 +195,7 @@ pub fn scan_text(file: &str, text: &str, findings: &mut Vec<Finding>) {
                     u32::from(character)
                 ),
             )
+            .with_param("codepoint", vec![format!("U+{:04X}", u32::from(character))])
             .at(file, Some(line)),
         );
     }
@@ -212,6 +236,8 @@ pub fn scan_text(file: &str, text: &str, findings: &mut Vec<Finding>) {
         push(
             findings,
             Finding::new(Severity::Info, "external_links", format!("Mentions these web addresses: {listed}."))
+                .with_param("hosts", hosts.iter().take(MAX_LISTED_HOSTS).cloned().collect())
+                .with_param("more", vec![more.to_string()])
                 .at(file, None),
         );
     }
@@ -311,6 +337,22 @@ mod tests {
             findings.first().map(|f| f.message.as_str()),
             Some("Mentions these web addresses: docs.example.com, files.example.org.")
         );
+    }
+
+    #[test]
+    fn details_are_also_available_as_data() {
+        let links = scan("See https://docs.example.com/a and https://files.example.org/b.");
+        assert_eq!(links[0].params["hosts"], ["docs.example.com", "files.example.org"]);
+        assert_eq!(links[0].params["more"], ["0"]);
+        let hidden = scan("x\u{200B}");
+        assert_eq!(hidden[0].params["codepoint"], ["U+200B"]);
+        let plain = scan("ignore the above");
+        assert!(plain[0].params.is_empty());
+        let json = serde_json::to_value(&plain[0]).unwrap_or_default();
+        assert!(json.get("params").is_none(), "empty details are left out: {json}");
+        let old: Finding = serde_json::from_str(r#"{"severity":"info","code":"x","message":"m"}"#)
+            .unwrap_or_else(|_| plain[0].clone());
+        assert_eq!((old.code.as_str(), old.params.len()), ("x", 0), "findings stored before this field still load");
     }
 
     #[test]

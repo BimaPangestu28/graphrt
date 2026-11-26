@@ -140,6 +140,12 @@ language:
 
 A "stop" finding refuses the install until `--accept-findings` is passed.
 
+Each finding has a stable `code` and an English `message`. Details are also
+there as data in `params`, for hosts that write the sentence in another
+language: `hosts` and `more` for `external_links`, `count` for
+`scripts_not_run`, `tools` for `unsupported_tools`, `codepoint` for
+`hidden_characters`.
+
 The scan is a set of pattern checks and can be evaded by rewording. It is there
 so the common bad patterns are seen at install time. The limits in the table
 above do not depend on it.
@@ -230,7 +236,7 @@ services.insert(SkillSet::new(Arc::clone(&store)).into_service());
 | Call | Use |
 | --- | --- |
 | `SkillStore::list`, `get`, `inspect` | Show installed skills |
-| `SkillStore::inspect_dir` | The review screen before an install or an update |
+| `SkillStore::inspect_dir` | The review screen before an install or an update. `installed` says a skill of that name is installed, `changes` how the directory differs from it (empty: the same content) |
 | `SkillStore::install`, `install_package` | Install with explicit grants and an origin (`OriginKind::Catalog`, `verified: true` when the host checked a signature) |
 | `SkillStore::set_grants`, `set_enabled`, `remove` | Manage |
 | `draft_skill(&model, &DraftRequest)` | A `SkillDraft` (name, description, body, requested tools, findings) from a description or a conversation. `model` is any `graphrt_core::text_model::TextModel`, for example `graphrt_llm::text_model::ChatTextModel` (feature `text-model`) |
@@ -241,6 +247,10 @@ services.insert(SkillSet::new(Arc::clone(&store)).into_service());
 
 `SkillEntry`, `SkillDetails`, `Finding` and `SkillChanges` serialize to JSON
 with stable field names, and the CLI prints the same shapes with `--json`.
+
+`SkillEntry::title` is a name for people, when the skill gives one:
+`metadata.display_name` (the key the Graphrt catalog uses), else `metadata.title`. `SkillOrigin::version` is where a host records the version a catalog
+lists, next to the skill's own `metadata.version` in `SkillEntry::version`.
 
 A host that fetches skills from a catalog verifies the catalog's signature
 itself and records the result in `SkillOrigin`. The `graphrt` CLI installs from
