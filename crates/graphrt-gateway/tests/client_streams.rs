@@ -215,3 +215,27 @@ async fn a_busy_agent_is_retried_and_a_full_one_fails_the_run_explicitly() {
     assert_eq!(data["error_type"], "dispatch_failed");
     assert!(data["error"].as_str().unwrap().contains("429"), "{data}");
 }
+
+/// A burst of short runs keeps at most `MAX_LINGERING_RUNS` finished runs (and
+/// their replay rings) in memory; a late reconnect to one whose linger ended
+/// early still gets every event up to the terminal one, from the store.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_burst_of_finished_runs_lingers_in_bounded_memory() {
+    let gateway = start_gateway(Options::default()).await;
+    let total = graphrt_gateway::supervisor::MAX_LINGERING_RUNS + 44;
+    let mut run_ids = Vec::new();
+    for _ in 0..total {
+        let (status, record) = gateway.post(&runs(), json!({ "inputs": { "events": 2 } })).await;
+        assert_eq!((status, record["status"].as_str()), (200, Some("succeeded")), "{record}");
+        run_ids.push(record["run_id"].as_str().unwrap().to_owned());
+    }
+    let lingering = gateway.gateway.live_count();
+    assert!(lingering <= graphrt_gateway::supervisor::MAX_LINGERING_RUNS, "{lingering} finished runs in memory");
+    let first = &run_ids[0];
+    assert!(gateway.gateway.live_run(first).is_none(), "the oldest linger ended early");
+    let replayed = gateway.sse(&format!("{}/{first}/events", runs()), None, None).await;
+    assert_eq!(engine_ids(&replayed), (0..4).collect::<Vec<_>>(), "{replayed:?}");
+    assert_eq!(replayed.last().unwrap().1, "run_succeeded");
+    // The newest ones still replay from their ring.
+    assert!(gateway.gateway.live_run(run_ids.last().unwrap()).is_some());
+}
