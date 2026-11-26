@@ -66,8 +66,9 @@ pub struct PluginManifest {
 /// kinds, which the host calls outside any workflow run, over and over, with
 /// `config` plus `cursor` (the `cursor` the previous call returned; absent on the
 /// first call). The node long-polls and completes with the outputs `events` (a list
-/// of objects, possibly empty) and `cursor` (a string to resume from). Each event
-/// object starts one run of the workflows that chose the trigger, as their inputs.
+/// of objects, possibly empty) and `cursor` (a string to resume from), directly or
+/// under a `data` output. Each event object starts one run of the workflows that chose
+/// the trigger, as their inputs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TriggerDescriptor {
