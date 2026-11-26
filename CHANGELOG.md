@@ -17,6 +17,13 @@ releases may contain breaking changes; they are called out under **Changed**.
   system shutdown as well as Ctrl+C. Releases ship a
   `graphrt-gateway-x86_64-pc-windows-msvc` archive. See
   `docs/windows-gateway.md`.
+- graphrt-mcp: dynamic access tokens for Streamable HTTP servers.
+  `HttpConfig::token_source` takes a `TokenProvider` (set in code, never
+  parsed from a config file) that is asked for the token before every request
+  and, after an HTTP 401, once for a new one before the request is retried
+  once. Hosts use it for OAuth sign-in with refresh tokens; the crate itself
+  stays free of OAuth dependencies. A static `bearer_token` and a token source
+  cannot be combined. The token client never follows redirects.
 
 ### Changed
 
