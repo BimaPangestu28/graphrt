@@ -9,7 +9,8 @@ prebuilt binary from --bin-dir), then measures:
   build's (`delta_kib`: what a feature costs, independent of the base growing);
 - idle RSS of `graphrt serve` (or, for a build with `run = "gateway"`, of
   `graphrt gateway` with one deployment and no agent) one second after it
-  became healthy (`run = "none"`: size only);
+  became healthy, the median over [startup].rss_samples starts (default 5, one
+  start alone varies by a few pages) (`run = "none"`: size only);
 - exec -> first 200 on GET /healthz, p95 over [startup].samples starts;
 - that SIGTERM makes the server exit 0 (the drain path; a PID-1 run is covered
   by scripts/test-pid1.sh).
@@ -38,6 +39,7 @@ import platform
 import shlex
 import shutil
 import signal
+import statistics
 import socket
 import subprocess
 import sys
@@ -229,13 +231,17 @@ def main() -> int:
             mode = spec.get("run", "serve")
             if not args.skip_run and mode != "none" and runs_here(binary):
                 timed = spec["name"] == startup.get("build")
-                samples = int(startup.get("samples", 30)) if timed else 1
-                times, rss = [], None
+                rss_samples = int(startup.get("rss_samples", 5))
+                samples = max(int(startup.get("samples", 30)), rss_samples) if timed else rss_samples
+                times, rss_values = [], []
                 for i in range(samples):
-                    ms, measured = serve_once(binary, work / "workflows", measure_rss=(i == 0), mode=mode)
+                    ms, measured = serve_once(binary, work / "workflows", measure_rss=(i < rss_samples), mode=mode)
                     times.append(ms)
-                    rss = measured if measured is not None else rss
+                    if measured is not None:
+                        rss_values.append(measured)
+                rss = statistics.median(rss_values)
                 entry["idle_rss_mib"] = round(rss, 2)
+                entry["idle_rss_samples"] = len(rss_values)
                 check(results, spec["name"], "idle RSS", rss, budget_for(spec.get("idle_rss_mib"), key), "MiB")
                 if timed:
                     entry["healthz_p50_ms"] = round(sorted(times)[len(times) // 2], 2)

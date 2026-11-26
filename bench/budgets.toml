@@ -116,10 +116,12 @@ run = "none"
 binary_mib = { x86_64-linux = 9.0, aarch64-linux = 7.75, default = 9.0 }
 
 # Time from exec of `graphrt serve` to its first `200` on GET /healthz, p95 over
-# `samples` starts (measured on the agent-slim build).
+# `samples` starts (measured on the agent-slim build). Idle RSS of every build is
+# the median of `rss_samples` starts.
 [startup]
 build = "agent-slim"
 samples = 30
+rss_samples = 5
 healthz_p95_ms = 10.0
 
 # Run-time targets of `graphrt gateway` on Linux (audit of the deploy/gateway plan,
