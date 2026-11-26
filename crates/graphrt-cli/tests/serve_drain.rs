@@ -301,10 +301,10 @@ async fn the_binary_drains_on_sigterm_and_resumes_after_restart() {
     let began = Instant::now();
     let killed = std::process::Command::new("kill").args(["-TERM", &server.id().to_string()]).status().unwrap();
     assert!(killed.success());
-    let exit = wait_exit(&mut server, Duration::from_secs(5)).await;
+    let exit = wait_exit(&mut server, DRAIN_TIMEOUT + Duration::from_secs(5)).await;
     assert!(exit.success(), "exit status {exit:?}");
-    // --drain-timeout 1s, plus process start-up noise.
-    assert!(began.elapsed() < Duration::from_millis(1800), "took {:?}", began.elapsed());
+    // Within --drain-timeout, plus process start-up noise.
+    assert!(began.elapsed() < DRAIN_TIMEOUT + Duration::from_millis(800), "took {:?}", began.elapsed());
     let record: Json = serde_json::from_str(
         &std::fs::read_to_string(store_dir.join("runs").join(&run_id).join("record.json")).unwrap(),
     )
@@ -327,11 +327,18 @@ async fn the_binary_drains_on_sigterm_and_resumes_after_restart() {
     }
     assert_eq!(settled["status"], "succeeded", "{settled}");
     let _ = std::process::Command::new("kill").args(["-INT", &server.id().to_string()]).status();
-    let exit = wait_exit(&mut server, Duration::from_secs(5)).await;
+    let exit = wait_exit(&mut server, DRAIN_TIMEOUT + Duration::from_secs(5)).await;
     assert!(exit.success(), "SIGINT exit {exit:?}");
     let _ = std::fs::remove_dir_all(&wf);
     let _ = std::fs::remove_dir_all(&store_dir);
 }
+
+/// `--drain-timeout` of the binary. The run waits on a hanging call, so it is
+/// preempted a quarter of the timeout before the end (at least 0.5 s): with
+/// 1 s, cancelling and storing it on a CI runner busy with other test binaries
+/// sometimes took longer than that, and the run was left `running`.
+#[cfg(unix)]
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(4);
 
 #[cfg(unix)]
 fn free_addr() -> String {
@@ -343,7 +350,8 @@ fn free_addr() -> String {
 fn spawn_server(workflows: &Path, store: &Path, addr: &str) -> std::process::Child {
     std::process::Command::new(env!("CARGO_BIN_EXE_graphrt"))
         .args(["serve", workflows.to_str().unwrap(), "--addr", addr, "--store", store.to_str().unwrap()])
-        .args(["--drain-timeout", "1s", "--allow-private-network", "--no-default-plugins"])
+        .args(["--drain-timeout", &format!("{}ms", DRAIN_TIMEOUT.as_millis())])
+        .args(["--allow-private-network", "--no-default-plugins"])
         .env_remove("GRAPHRT_API_KEY")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
