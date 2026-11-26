@@ -157,6 +157,9 @@ mod client {
 
     /// A 401: with a `WWW-Authenticate` challenge (`AuthRequired`) or without
     /// one (rmcp reports the bare status in the message).
+    ///
+    /// The last case matches rmcp's message text (`HTTP 401 …`, rmcp 3.10): check
+    /// it when upgrading rmcp (`recognizes_every_shape_of_a_401` covers it).
     fn is_unauthorized<E: std::error::Error + Send + Sync + 'static>(error: &StreamableHttpError<E>) -> bool {
         match error {
             StreamableHttpError::AuthRequired(_) => true,
