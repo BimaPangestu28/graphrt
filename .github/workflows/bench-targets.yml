@@ -56,7 +56,7 @@ jobs:
       - name: Measure
         # Root for the container drain test; the runner's docker is rootful.
         run: sudo -E env "PATH=$PATH" bench/targets.sh --bin-dir bench-bins ${{ inputs.quick && '--quick' || '' }} | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: bench-targets-${{ matrix.target }}
