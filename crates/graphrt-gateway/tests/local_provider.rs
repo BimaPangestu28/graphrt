@@ -273,3 +273,113 @@ async fn windows_agents_listen_on_private_pipes_and_stop_on_request() {
     assert!(began.elapsed() < Duration::from_secs(5), "stopped on request, not after the 10 s grace");
     let _cleanup = std::fs::remove_dir_all(&dir);
 }
+
+/// Process state letter of `pid` (`T`: stopped), Linux only.
+#[cfg(target_os = "linux")]
+fn process_state(pid: &str) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.get(stat.rfind(')')? + 2..)?.chars().next()
+}
+
+/// `pool.idle_mode: freeze`: a released (`Suspend`) replica is kept frozen
+/// (stopped, listed as `Suspended`), the next wake thaws it instead of starting
+/// a process, and stopping a frozen replica still ends it.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_frozen_replica_is_thawed_by_the_next_wake() {
+    use graphrt_provider_api::{ReleaseMode, ReplicaPhase};
+    let Some(python) = python() else { return };
+    let dir = std::env::temp_dir().join(format!("gwlf-{}", std::process::id()));
+    let _cleanup = std::fs::remove_dir_all(&dir);
+    let provider = LocalProvider::new(&dir, Duration::from_secs(2)).unwrap();
+    let deployment = DeploymentRef::new("shop", "v1", "local");
+    provider.register(
+        &deployment,
+        LocalVersion { command: vec![python, "-c".into(), AGENT.into()], keys: String::new(), env: Vec::new() },
+    );
+    let first = provider.wake(&deployment, 1).await.unwrap();
+    let replica = first[0].replica.clone();
+    provider.release(&replica, ReleaseMode::Suspend).await.unwrap();
+    let states = provider.list(&deployment).await.unwrap();
+    assert_eq!(states.iter().map(|state| state.phase).collect::<Vec<_>>(), [ReplicaPhase::Suspended]);
+    // SIGSTOP is delivered asynchronously.
+    #[cfg(target_os = "linux")]
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while process_state(&replica.id) != Some('T') {
+            assert!(std::time::Instant::now() < deadline, "not frozen: {:?}", process_state(&replica.id));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    let again = provider.wake(&deployment, 1).await.unwrap();
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0].replica, replica, "the frozen process serves again, none started");
+    #[cfg(target_os = "linux")]
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while process_state(&replica.id) == Some('T') {
+            assert!(std::time::Instant::now() < deadline, "not thawed");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    assert!(std::os::unix::net::UnixStream::connect(socket_of(&again[0])).is_ok());
+    // Frozen again, then stopped: the stop thaws it so it can exit.
+    provider.release(&replica, ReleaseMode::Suspend).await.unwrap();
+    provider.release(&replica, ReleaseMode::Stop).await.unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while provider.list(&deployment).await.unwrap().iter().any(|state| state.replica == replica)
+        || std::path::Path::new(&format!("/proc/{}", replica.id)).exists() && cfg!(target_os = "linux")
+    {
+        assert!(std::time::Instant::now() < deadline, "the frozen replica did not stop");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let _cleanup = std::fs::remove_dir_all(&dir);
+}
+
+/// `max_frozen_agents`: beyond the limit the agent frozen longest ago is
+/// stopped; a limit of 0 stops idle agents as without the freeze mode.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn frozen_agents_stay_within_the_limit() {
+    use graphrt_provider_api::{ReleaseMode, ReplicaPhase};
+    let Some(python) = python() else { return };
+    let dir = std::env::temp_dir().join(format!("gwlm-{}", std::process::id()));
+    let _cleanup = std::fs::remove_dir_all(&dir);
+    let provider = LocalProvider::new(&dir, Duration::from_secs(2)).unwrap().with_freeze_limit(1);
+    let (shop, blog) = (DeploymentRef::new("shop", "v1", "local"), DeploymentRef::new("blog", "v1", "local"));
+    for deployment in [&shop, &blog] {
+        provider.register(
+            deployment,
+            LocalVersion {
+                command: vec![python.clone(), "-c".into(), AGENT.into()],
+                keys: String::new(),
+                env: Vec::new(),
+            },
+        );
+    }
+    let shop_replica = provider.wake(&shop, 1).await.unwrap()[0].replica.clone();
+    let blog_replica = provider.wake(&blog, 1).await.unwrap()[0].replica.clone();
+    provider.release(&shop_replica, ReleaseMode::Suspend).await.unwrap();
+    assert_eq!(provider.frozen_stats().total, 1);
+    // A second frozen agent: the first (frozen longest ago) is stopped.
+    provider.release(&blog_replica, ReleaseMode::Suspend).await.unwrap();
+    let stats = provider.frozen_stats();
+    assert_eq!((stats.total, stats.limit), (1, 1));
+    assert_eq!(stats.per_version, vec![("blog".to_owned(), "v1".to_owned(), 1)]);
+    assert!(provider.list(&shop).await.unwrap().is_empty(), "the oldest frozen agent was stopped");
+    let blog_states = provider.list(&blog).await.unwrap();
+    assert_eq!(blog_states.iter().map(|state| state.phase).collect::<Vec<_>>(), [ReplicaPhase::Suspended]);
+    provider.release(&blog_replica, ReleaseMode::Stop).await.unwrap();
+
+    let never = LocalProvider::new(&dir.join("never"), Duration::from_secs(2)).unwrap().with_freeze_limit(0);
+    never.register(
+        &shop,
+        LocalVersion { command: vec![python, "-c".into(), AGENT.into()], keys: String::new(), env: Vec::new() },
+    );
+    let replica = never.wake(&shop, 1).await.unwrap()[0].replica.clone();
+    never.release(&replica, ReleaseMode::Suspend).await.unwrap();
+    assert!(never.list(&shop).await.unwrap().is_empty(), "limit 0: stopped, not frozen");
+    assert_eq!(never.frozen_stats().total, 0);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let _cleanup = std::fs::remove_dir_all(&dir);
+}

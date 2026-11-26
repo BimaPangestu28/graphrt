@@ -53,6 +53,7 @@ admin_token_env: GRAPHRT_GATEWAY_ADMIN_TOKEN   # for graphrt deploy
 per_ip: { per_second: 20, burst: 40 }
 socket_dir: /run/graphrt                 # Unix sockets of local agents (see below when it is long)
 standby_agents: 1                        # local agents started ahead of demand; 0 = off (see Standby agents)
+max_frozen_agents: 16                    # cap of frozen agents across deployments (see Frozen agents)
 store_ttl_days: 7                        # ≥ 3: webhook senders retry for days
 wake_storm: { max_parallel_wakes: 16, prewarm_jitter_ms: 1000 }   # see Warm-up and cost guards
 deployments:
@@ -62,7 +63,7 @@ deployments:
     jwt: { issuer: https://auth.example, audience: shop, jwks_url: https://auth.example/.well-known/jwks.json }
     rate_limit: { per_second: 2, burst: 10 }          # per JWT subject / per API-key client
     input_headers: [{ header: authorization, input: user_jwt, strip_bearer: true }]
-    pool: { max_active_runs: 8, min_replicas: 0, idle_timeout_secs: 300, queue_timeout_secs: 30 }
+    pool: { max_active_runs: 8, min_replicas: 0, idle_timeout_secs: 300, queue_timeout_secs: 30, idle_mode: stop }   # idle_mode: freeze, see Frozen agents
     quotas: { max_replicas: 4, max_queued: 256, max_wakes_per_hour: 600 }
     callback_secret_env: SHOP_CALLBACK_SECRET
     hooks:
@@ -116,6 +117,43 @@ background.
 - **Cost.** Each standby is one idle process: about 13 MiB of RSS on Linux
   x86_64. With the default of one, that is constant, not per deployment.
   Set `standby_agents: 0` to start every agent on demand.
+
+### Frozen agents (`idle_mode: freeze`)
+
+By default an idle local agent is stopped (`pool.idle_mode: stop`): nothing of
+it stays, a sleeping agent costs the gateway about 6 KiB, and its next run
+waits for an agent to start (a [standby](#standby-agents) takes most of that).
+A deployment that needs the lowest wake latency can opt in to
+`pool.idle_mode: freeze`:
+
+- **What happens.** After `idle_timeout_secs` the agent is frozen instead of
+  stopped: on Linux and macOS its process group is stopped (`SIGSTOP`, no CPU
+  at all) and kept with its listener, flows and model connections set up. The
+  next run of the deployment thaws it (`SIGCONT`) and is dispatched at once:
+  no process starts, no flow is built. Measured with the internal benchmark
+  harness: wake to first token p50 0.8 ms, p99 1.3–1.9 ms (stopped: p50
+  2.7 ms, p99 4.8–5.1 ms).
+- **Cost.** A frozen agent keeps its memory: about **4 MiB per frozen agent**
+  (proportional set size; its RSS shows ~20 MiB because the binary's pages are
+  shared by every agent), against **~6 KiB** per stopped one. Use it for the
+  deployments whose first token matters, not for thousands of rarely used
+  ones.
+- **Limit.** At most `max_frozen_agents` (gateway setting, default `16`, so
+  ~64 MiB) are frozen at once across all deployments; freezing one more stops
+  the agent frozen longest ago. `0` turns freezing off everywhere.
+- **Isolation and security** are those of a running agent: a frozen agent is
+  the same process of the same deployment, with the same keys; it is never
+  given to another deployment.
+- **Connections.** Model and HTTP connections a provider closed while the agent
+  was frozen are not reused: the first run after a thaw opens new ones.
+- **Stop, retire, restart.** A frozen agent is always idle (it is frozen only
+  without runs, and a run's state is the gateway's), so stopping it (its
+  version retired, the limit reached) ends its process group at once without
+  waking it. A gateway that restarts continues the frozen agents it adopts.
+- **Windows** has no equivalent signal: there a "frozen" agent is kept idle as
+  it is (keep-warm, using no CPU but its idle timers), within the same limit.
+- **Metrics:** `graphrt_gateway_frozen_agents`, `graphrt_gateway_frozen_agents_limit`
+  and `graphrt_gateway_frozen_replicas{deployment,version}`.
 
 Keys: `graphrt gateway key new` prints a client API key and its digest;
 `graphrt gateway key hmac` prints an agent key (`k1:<64 hex>`). Two agent keys

@@ -40,6 +40,10 @@ deploy-lambda = ["gw-lambda", "graphrt-provider-aws/deploy-lambda"]
 deploy-fly = ["gw-fly", "graphrt-provider-fly/deploy"]
 deploy-aca = ["gw-aca", "graphrt-provider-azure/deploy-aca"]
 
+[target.'cfg(unix)'.dependencies]
+# SIGSTOP / SIGCONT of frozen local agents (`pool.idle_mode: freeze`) without `unsafe`.
+rustix = { version = "1", default-features = false, features = ["std", "process"] }
+
 [dependencies]
 graphrt-core = { workspace = true, features = ["tokio", "yaml"] }
 graphrt-provider-api = { workspace = true }

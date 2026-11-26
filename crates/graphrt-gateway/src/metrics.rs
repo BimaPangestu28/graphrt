@@ -167,6 +167,38 @@ fn render_prewarm(out: &mut String, gauges: &[DeploymentGauges]) {
     }
 }
 
+/// Frozen agents of the local provider (`pool.idle_mode: freeze`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FrozenStats {
+    /// Frozen agents of this gateway.
+    pub total: usize,
+    /// `max_frozen_agents`.
+    pub limit: usize,
+    /// Frozen agents per `(deployment, version)`.
+    pub per_version: Vec<(String, String, usize)>,
+}
+
+/// The frozen-agent gauges.
+pub fn render_frozen(out: &mut String, frozen: &FrozenStats) {
+    let _infallible = writeln!(
+        out,
+        "# HELP graphrt_gateway_frozen_agents Local agents kept frozen (pool.idle_mode: freeze).\n# TYPE graphrt_gateway_frozen_agents gauge\ngraphrt_gateway_frozen_agents {}\n# HELP graphrt_gateway_frozen_agents_limit Most local agents kept frozen at once (max_frozen_agents).\n# TYPE graphrt_gateway_frozen_agents_limit gauge\ngraphrt_gateway_frozen_agents_limit {}",
+        frozen.total, frozen.limit
+    );
+    let _infallible = writeln!(
+        out,
+        "# HELP graphrt_gateway_frozen_replicas Frozen local agents per deployment version.\n# TYPE graphrt_gateway_frozen_replicas gauge"
+    );
+    for (deployment, version, count) in &frozen.per_version {
+        let _infallible = writeln!(
+            out,
+            "graphrt_gateway_frozen_replicas{{deployment=\"{}\",version=\"{}\"}} {count}",
+            escape(deployment),
+            escape(version)
+        );
+    }
+}
+
 /// Keep-warm budgets `(deployment, used today, limit)` in replica-seconds, and the wake gate.
 pub fn render_warm(out: &mut String, budgets: &[(String, u64, u64)], gate: Option<&crate::warm::WakeGate>) {
     if !budgets.is_empty() {
