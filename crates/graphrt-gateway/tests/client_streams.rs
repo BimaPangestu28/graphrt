@@ -149,13 +149,19 @@ async fn thousand_concurrent_streams() {
     let events = 5u64;
     let interval_ms = 200u64;
     let inputs = json!({ "events": events, "delay_ms": interval_ms });
+    // One HTTP client per stream: one connection per stream, as browsers do.
+    // Built before the streams start and off the runtime: each one costs about
+    // 13 ms of CPU in a debug build, and building them inside the streams kept
+    // the gateway and the agents of this process from running for seconds.
+    let clients = tokio::task::spawn_blocking(move || (0..streams).map(|_| reqwest::Client::new()).collect::<Vec<_>>())
+        .await
+        .unwrap();
     let started = Instant::now();
-    let tasks: Vec<_> = (0..streams)
-        .map(|_| {
+    let tasks: Vec<_> = clients
+        .into_iter()
+        .map(|client| {
             let (url, body) = (gateway.url.clone(), json!({ "stream": true, "inputs": inputs.clone() }));
-            // One HTTP client per stream: one connection per stream, as browsers do.
             tokio::spawn(async move {
-                let client = reqwest::Client::new();
                 let response = client
                     .post(format!("{url}{}", runs()))
                     .header("x-api-key", API_KEY)
