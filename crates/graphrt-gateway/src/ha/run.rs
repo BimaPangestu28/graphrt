@@ -136,7 +136,9 @@ async fn serve_fenced(
     let service = router(built.app.clone()).into_make_service_with_connect_info::<SocketAddr>();
     let graceful = stop.clone();
     let mut server = tokio::spawn(async move {
-        axum::serve(listener, service).with_graceful_shutdown(async move { graceful.notified().await }).await
+        axum::serve(crate::app::public_listener(listener), service)
+            .with_graceful_shutdown(async move { graceful.notified().await })
+            .await
     });
     tokio::select! {
         () = shutdown_signal() => {}

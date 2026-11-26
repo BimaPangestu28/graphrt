@@ -337,7 +337,7 @@ async fn create_run(
         return (StatusCode::ACCEPTED, axum::Json(json!({ "run_id": run.run_id, "status": "queued" }))).into_response();
     }
     if stream {
-        return client_stream(app.gateway.clone(), run.run_id.clone(), Some(run), 0, None);
+        return client_stream(app.gateway.clone(), run.run_id.clone(), Some(run), 0, None, None);
     }
     let mut settled = run.settled();
     let record = loop {
@@ -409,65 +409,113 @@ async fn run_events(
     if let Err(response) = admit(&app, peer.ip(), &deployment, &headers).await {
         return response;
     }
-    if let Err(response) = load_run(&app, &deployment, &run_id).await {
-        return response;
-    }
+    let record = match load_run(&app, &deployment, &run_id).await {
+        Ok(record) => record,
+        Err(response) => return response,
+    };
     let (start, chunks) = header(&headers, "last-event-id").and_then(resume_point).unwrap_or((from.unwrap_or(0), None));
     let live = app.gateway.live_run(&run_id);
-    client_stream(app.gateway.clone(), run_id, live, start, chunks)
+    client_stream(app.gateway.clone(), run_id, live, start, chunks, Some(record))
+}
+
+/// Where a client stream is (as in [`is_after`]) and whether it sent the
+/// run's terminal event.
+struct Cursor {
+    position: (u64, Option<u64>),
+    terminal_sent: bool,
+}
+
+impl Cursor {
+    /// The encoded `frame` when it is after the cursor (which moves past it).
+    fn send(&mut self, frame: &Frame) -> Option<Bytes> {
+        let id = frame.id.as_deref()?;
+        if !is_after(id, self.position.0, self.position.1) {
+            return None;
+        }
+        self.position = match id.split_once('.') {
+            Some((index, chunk)) => (index.parse().unwrap_or(self.position.0), chunk.parse().ok()),
+            None => (id.parse::<u64>().map_or(self.position.0, |index| index + 1), None),
+        };
+        self.terminal_sent |= is_terminal_frame(&frame.event);
+        Some(Bytes::from(frame.encode()))
+    }
+}
+
+/// The terminal event of a run that settled without one from an agent (the
+/// gateway failed it: no replica took it, a timeout, a lost executor), built
+/// from its record, unless the stream already sent one or, for a stream that
+/// resumed past index 0, the stored events end with one. It has no id, like
+/// the other events the gateway makes up: a reconnect gets it again.
+async fn missing_terminal(gateway: &Gateway, record: &RunRecord, cursor: &Cursor, start: u64) -> Option<Bytes> {
+    if cursor.terminal_sent || !matches!(record.status, RunStatus::Failed | RunStatus::Aborted) {
+        return None;
+    }
+    if start > 0 && record.event_count > 0 {
+        let last = stored_frames(gateway, &record.run_id, record.event_count - 1).await;
+        if last.last().is_none_or(|frame| is_terminal_frame(&frame.event)) {
+            return None;
+        }
+    }
+    let elapsed_ms = record.updated_ms.saturating_sub(record.created_ms);
+    let (kind, event) = if record.status == RunStatus::Failed {
+        let event = json!({
+            "type": "run_failed", "error": record.error.clone().unwrap_or_default(),
+            "error_type": record.error_type.clone().unwrap_or_default(), "usage": record.usage, "elapsed_ms": elapsed_ms,
+        });
+        ("run_failed", event)
+    } else {
+        let event = json!({ "type": "run_aborted", "reason": record.error.clone().unwrap_or_default(), "elapsed_ms": elapsed_ms });
+        ("run_aborted", event)
+    };
+    Some(Bytes::from(Frame { event: kind.to_owned(), id: None, data: event.to_string() }.encode()))
+}
+
+fn is_terminal_frame(event: &str) -> bool {
+    matches!(event, "run_succeeded" | "run_failed" | "run_aborted" | "run_paused")
 }
 
 /// A client SSE stream: stored events from `start` (when the in-memory ring
 /// does not reach back far enough), the ring, then the live tail, without gaps
 /// or duplicates (I5). The per-client buffer is bounded; a client too slow for
 /// the broadcast is disconnected and reconnects with `Last-Event-ID` (D10).
+/// A stream of a finished run always ends with its terminal event (`stored`:
+/// the record of a run no longer in memory).
 fn client_stream(
     gateway: Arc<Gateway>,
     run_id: String,
     live: Option<Arc<LiveRun>>,
     start: u64,
     chunks: Option<u64>,
+    stored: Option<RunRecord>,
 ) -> Response {
     let (mut sender, receiver) = futures::channel::mpsc::channel::<Bytes>(CLIENT_BUFFER_FRAMES);
     graphrt_core::task::spawn(async move {
         use futures::SinkExt as _;
         bump(&gateway.metrics.client_streams);
-        let mut cursor = (start, chunks);
+        let mut cursor = Cursor { position: (start, chunks), terminal_sent: false };
         let subscription = live.as_ref().map(|run| (run.subscribe(), run.settled()));
         // A run this request just created streams from its ring alone: one
         // store read (and its wait for the connection) fewer before the first byte.
-        let needs_store = live.as_ref().is_none_or(|run| run.needs_store_from(cursor.0));
-        let send = |frame: &Frame, cursor: &mut (u64, Option<u64>)| -> Option<Bytes> {
-            let id = frame.id.as_deref()?;
-            if !is_after(id, cursor.0, cursor.1) {
-                return None;
-            }
-            *cursor = match id.split_once('.') {
-                Some((index, chunk)) => (index.parse().unwrap_or(cursor.0), chunk.parse().ok()),
-                None => (id.parse::<u64>().map_or(cursor.0, |index| index + 1), None),
-            };
-            Some(Bytes::from(frame.encode()))
-        };
-        if needs_store && let Ok(events) = gateway.store.events(&run_id, cursor.0).await {
-            let base = cursor.0;
-            for (offset, event) in events.iter().enumerate() {
-                let index = base + offset as u64;
-                let frame = Frame {
-                    event: stored_event_type(event).unwrap_or("event").to_owned(),
-                    id: Some(index.to_string()),
-                    data: event.get().to_owned(),
-                };
-                if let Some(bytes) = send(&frame, &mut cursor.clone()) {
-                    cursor = (index + 1, None);
-                    if sender.send(bytes).await.is_err() {
-                        return finish_stream(&gateway);
-                    }
+        let needs_store = live.as_ref().is_none_or(|run| run.needs_store_from(cursor.position.0));
+        if needs_store {
+            for frame in stored_frames(&gateway, &run_id, cursor.position.0).await {
+                if let Some(bytes) = cursor.send(&frame)
+                    && sender.send(bytes).await.is_err()
+                {
+                    return finish_stream(&gateway);
                 }
             }
         }
-        let Some(((buffered, mut frames), mut settled)) = subscription else { return finish_stream(&gateway) };
+        let Some(((buffered, mut frames), mut settled)) = subscription else {
+            if let Some(record) = &stored
+                && let Some(bytes) = missing_terminal(&gateway, record, &cursor, start).await
+            {
+                let _client_gone = sender.send(bytes).await;
+            }
+            return finish_stream(&gateway);
+        };
         for frame in &buffered {
-            if let Some(bytes) = send(frame, &mut cursor)
+            if let Some(bytes) = cursor.send(frame)
                 && sender.send(bytes).await.is_err()
             {
                 return finish_stream(&gateway);
@@ -479,25 +527,69 @@ fn client_stream(
         let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
         loop {
             if !matches!(*settled.borrow(), Settled::Running) {
-                while let Ok(frame) = frames.try_recv() {
-                    if let Some(bytes) = send(&frame, &mut cursor) {
-                        let _client_gone = sender.send(bytes).await;
+                // The run is over: send what is left up to its last frame. A
+                // subscriber that lagged meanwhile continues from the ring, or
+                // from the store when the ring no longer reaches back to it
+                // (never a stream that just stops: a client cannot tell a
+                // cut-off answer from a short one).
+                loop {
+                    match frames.try_recv() {
+                        Ok(frame) => {
+                            if let Some(bytes) = cursor.send(&frame)
+                                && sender.send(bytes).await.is_err()
+                            {
+                                return finish_stream(&gateway);
+                            }
+                        }
+                        Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                            let rest = match live.as_ref().and_then(|run| run.catch_up(cursor.position)) {
+                                Some((buffered, receiver)) => {
+                                    frames = receiver;
+                                    buffered
+                                }
+                                None => stored_frames(&gateway, &run_id, cursor.position.0)
+                                    .await
+                                    .into_iter()
+                                    .map(Arc::new)
+                                    .collect(),
+                            };
+                            for frame in &rest {
+                                if let Some(bytes) = cursor.send(frame)
+                                    && sender.send(bytes).await.is_err()
+                                {
+                                    return finish_stream(&gateway);
+                                }
+                            }
+                        }
+                        Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
+                            // A run the gateway itself ended (no replica took it, timeout,
+                            // lost executor) has no terminal event from an agent.
+                            let record = match &*settled.borrow() {
+                                Settled::Done(record) => Some(record.clone()),
+                                Settled::Running => None,
+                            };
+                            if let Some(record) = record
+                                && let Some(bytes) = missing_terminal(&gateway, &record, &cursor, start).await
+                            {
+                                let _client_gone = sender.send(bytes).await;
+                            }
+                            return finish_stream(&gateway);
+                        }
                     }
                 }
-                return finish_stream(&gateway);
             }
             tokio::select! {
                 frame = frames.recv() => match frame {
-                    Ok(frame) => if let Some(bytes) = send(&frame, &mut cursor) && sender.send(bytes).await.is_err() { return finish_stream(&gateway) },
+                    Ok(frame) => if let Some(bytes) = cursor.send(&frame) && sender.send(bytes).await.is_err() { return finish_stream(&gateway) },
                     // Lagged: continue from the ring when it still holds the frames after the cursor.
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        let Some((buffered, receiver)) = live.as_ref().and_then(|run| run.catch_up(cursor)) else {
+                        let Some((buffered, receiver)) = live.as_ref().and_then(|run| run.catch_up(cursor.position)) else {
                             // The client resumes with Last-Event-ID (from the store).
                             return finish_stream(&gateway);
                         };
                         frames = receiver;
                         for frame in &buffered {
-                            if let Some(bytes) = send(frame, &mut cursor) && sender.send(bytes).await.is_err() {
+                            if let Some(bytes) = cursor.send(frame) && sender.send(bytes).await.is_err() {
                                 return finish_stream(&gateway);
                             }
                         }
@@ -512,6 +604,21 @@ fn client_stream(
     let body = Body::from_stream(receiver.map(Ok::<_, Infallible>));
     ([("content-type", "text/event-stream"), ("cache-control", "no-cache"), ("x-accel-buffering", "no")], body)
         .into_response()
+}
+
+/// The stored events of `run_id` from index `from` as client frames (empty
+/// when the store cannot be read: the client resumes with `Last-Event-ID`).
+async fn stored_frames(gateway: &Gateway, run_id: &str, from: u64) -> Vec<Frame> {
+    let Ok(events) = gateway.store.events(run_id, from).await else { return Vec::new() };
+    events
+        .iter()
+        .enumerate()
+        .map(|(offset, event)| Frame {
+            event: stored_event_type(event).unwrap_or("event").to_owned(),
+            id: Some((from + offset as u64).to_string()),
+            data: event.get().to_owned(),
+        })
+        .collect()
 }
 
 fn finish_stream(gateway: &Gateway) {
@@ -560,7 +667,7 @@ async fn resume_run(
     match app.gateway.resume_run(&deployment, &run_id, inputs, request.secrets, fresh).await {
         Ok(run) if request.stream => {
             let start = app.gateway.store.get(&run_id).await.ok().flatten().map_or(0, |record| record.event_count);
-            client_stream(app.gateway.clone(), run_id, Some(run), start, None)
+            client_stream(app.gateway.clone(), run_id, Some(run), start, None, None)
         }
         Ok(run) => {
             (StatusCode::ACCEPTED, axum::Json(json!({ "run_id": run.run_id, "status": "running" }))).into_response()

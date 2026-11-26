@@ -508,7 +508,7 @@ pub async fn start_gateway(options: Options) -> TestGateway {
     let url = format!("http://{}", listener.local_addr().unwrap());
     let service = router(app.clone()).into_make_service_with_connect_info::<SocketAddr>();
     let task = tokio::spawn(async move {
-        let _ = axum::serve(listener, service).await;
+        let _ = axum::serve(graphrt_gateway::app::public_listener(listener), service).await;
     });
     TestGateway { url, gateway, app, provider, deployment, http: reqwest::Client::new(), task }
 }
