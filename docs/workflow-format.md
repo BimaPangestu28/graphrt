@@ -389,6 +389,9 @@ stream_tool_turns: true   # optional (default true): stream every turn's text pe
 tool_context:         # optional: per-run values sent to a provider's tools outside the arguments
   crm: { user_jwt: "{{#start.user_jwt#}}" }
 skills: [refund-policy]   # optional (preview): installed skills the agent loads on demand
+learning:                 # optional (preview): read approved lessons into the system prompt
+  agent: support-bot
+  user: "{{#sys.user_id#}}"
 ```
 
 Runs a tool-calling loop until the model answers without tools (the last
@@ -430,6 +433,11 @@ skill, the model loads a skill's instructions with the `load_skill` tool when a
 task needs them, and tools the owner granted to a skill are offered only after
 that skill was loaded. It needs a host with a skill store (the `skills` cargo
 feature of the CLI). See [skills.md](skills.md).
+
+`learning` (preview) adds the approved lessons of `agent`, and of `user` when
+given, to the system prompt after the instruction. The node only reads lessons.
+It needs a host with a lesson store (the `learning` cargo feature of the CLI).
+See [learning.md](learning.md).
 
 ### `question-classifier` (branch)
 

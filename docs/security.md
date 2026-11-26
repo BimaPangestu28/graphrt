@@ -297,6 +297,32 @@ A skill is treated as untrusted content that the owner chose to install.
 
 See [skills.md](skills.md).
 
+## Self learning (preview)
+
+What an agent learned is treated as untrusted until a person approved it.
+
+- **Runs only read.** An `agent` node never writes a lesson. Signals are
+  recorded by the host and turned into proposals outside the run.
+- **Only approved lessons are used.** Proposed, rejected and retired lessons
+  never reach a prompt.
+- **Derived content never approves itself.** A lesson built from tool results,
+  documents, model output or feedback that was not authenticated can only be a
+  proposal, whatever the policy says.
+- **Scope is exact.** A run reads the lessons of its agent and of its own user.
+  A lesson that came from one user stays with that user until the owner
+  promotes it. Agent names are validated before any path is built.
+- **Prompt text.** A lesson is one line of at most 500 characters without
+  invisible characters or markup tags, placed in a section that says it does
+  not override the instruction or approval rules.
+- **Removal.** Lessons can be retired, deleted, or forgotten by user or by
+  run. Every change is appended to an audit log.
+- **Not covered.** The owner can approve a harmful lesson. The risk label and
+  its reasons are there to help that decision and can be evaded by rewording.
+  The host must mask secrets in what it records and must say truthfully
+  whether a feedback author was authenticated.
+
+See [learning.md](learning.md).
+
 ## Hardening checklist for deployers
 
 | Knob | Where | Default |

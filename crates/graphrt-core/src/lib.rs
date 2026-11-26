@@ -23,6 +23,7 @@ pub mod engine;
 pub mod event;
 pub mod file;
 pub mod graph;
+pub mod learning;
 pub mod node;
 pub mod nodes;
 pub mod pool;

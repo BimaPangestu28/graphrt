@@ -33,6 +33,10 @@ typesafe = ["http"]
 # `graphrt_core::skill::Skills` service, for example from graphrt-skill). Off by default:
 # without it the node refuses a document that lists skills.
 skills = []
+# The `learning` field of the `agent` node: approved lessons read into the system prompt
+# (needs a `graphrt_core::learning::Lessons` service, for example from graphrt-learn). Off
+# by default: without it the node refuses a document that sets `learning`.
+learning = []
 # Shared HTTP transport (reqwest + rustls with the ring crypto provider).
 http = ["dep:reqwest", "dep:rustls", "dep:tokio"]
 
@@ -53,6 +57,7 @@ tokio = { workspace = true, optional = true, features = ["time", "rt"] }
 graphrt-core = { workspace = true, features = ["tokio", "jinja", "yaml"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
 graphrt-skill = { workspace = true }
+graphrt-learn = { workspace = true }
 
 [lints]
 workspace = true

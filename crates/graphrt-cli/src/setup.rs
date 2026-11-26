@@ -215,6 +215,12 @@ pub async fn services(
         let store = Arc::new(graphrt_skill::SkillStore::open(root));
         services.insert(graphrt_skill::SkillSet::new(store).into_service());
     }
+    // Self learning: the store is opened lazily, so this costs nothing until an
+    // `agent` node has `learning`.
+    #[cfg(feature = "learning")]
+    if let Some(root) = graphrt_learn::LessonStore::default_root() {
+        services.insert(Arc::new(graphrt_learn::LessonStore::open(root)).into_service());
+    }
     // File access: inline data URLs, then `--files-dir`, then policy-checked HTTP URLs.
     #[allow(unused_mut)]
     let mut files = graphrt_core::file::ChainResolver::with_data_urls();

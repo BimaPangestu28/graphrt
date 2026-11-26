@@ -570,6 +570,22 @@
           "items": {
             "type": "string"
           }
+        },
+        "learning": {
+          "type": "object",
+          "properties": {
+            "agent": {
+              "type": "string",
+              "description": "The agent whose approved lessons are added to the system prompt"
+            },
+            "user": {
+              "type": "string",
+              "description": "The user the run is for; that user's lessons are added too"
+            }
+          },
+          "required": [
+            "agent"
+          ]
         }
       },
       "required": [
