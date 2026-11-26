@@ -396,3 +396,4 @@ from the run's replay ring or is disconnected and resumes from the store with
 `Last-Event-ID`. The agent is never slowed down by a client: its frames are
 read, stored and broadcast at its own pace. One event from an agent may not
 exceed 4 MiB.
+
