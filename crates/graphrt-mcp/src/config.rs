@@ -87,6 +87,11 @@ pub struct HttpConfig {
     /// Bearer token for the `Authorization` header (without the `Bearer ` prefix).
     #[serde(default, alias = "bearerToken")]
     pub bearer_token: Option<String>,
+    /// Dynamic access tokens (e.g. OAuth with refresh), set in code only:
+    /// asked before every request and once more after a 401. Cannot be
+    /// combined with `bearer_token`. See [`crate::auth`].
+    #[serde(skip)]
+    pub token_source: Option<crate::auth::TokenSource>,
 }
 
 /// Every key a server entry may contain, used to validate configs strictly.
@@ -172,6 +177,7 @@ impl TryFrom<RawServer> for McpServerConfig {
                     url,
                     headers: raw.headers.unwrap_or_default(),
                     bearer_token: raw.bearer_token,
+                    token_source: None,
                 })
             }
         };

@@ -118,8 +118,27 @@ impl McpToolRuntime {
         }
         let mut transport_cfg =
             StreamableHttpClientTransportConfig::with_uri(http_cfg.url.as_str()).custom_headers(headers);
-        if let Some(token) = &http_cfg.bearer_token {
-            transport_cfg = transport_cfg.auth_header(token.clone());
+        match (&http_cfg.bearer_token, &http_cfg.token_source) {
+            (Some(_), Some(_)) => {
+                return Err(McpError::Config(format!(
+                    "MCP server `{}`: set either `bearer_token` or a token source, not both",
+                    config.name
+                )));
+            }
+            (None, Some(source)) => {
+                let inner = reqwest::Client::builder()
+                    // Same as rmcp's default client: no idle pooling (avoids delayed-ACK stalls).
+                    .pool_max_idle_per_host(0)
+                    // Never replay the access token to another location.
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .map_err(|e| McpError::Initialize { server: config.name.clone(), message: e.to_string() })?;
+                let client = crate::auth::TokenAuthClient::new(inner, source.clone());
+                let transport = StreamableHttpClientTransport::with_client(client, transport_cfg);
+                return Self::from_transport(config, transport).await;
+            }
+            (Some(token), None) => transport_cfg = transport_cfg.auth_header(token.clone()),
+            (None, None) => {}
         }
         let transport = StreamableHttpClientTransport::from_config(transport_cfg);
         Self::from_transport(config, transport).await

@@ -27,6 +27,7 @@
 //! listed variables; every request has a timeout; `allowed_tools` restricts
 //! which tools are exposed.
 
+pub mod auth;
 pub mod config;
 pub mod content;
 pub mod runtime;
@@ -35,6 +36,7 @@ use std::sync::Arc;
 
 use graphrt_core::tool::ToolRegistry;
 
+pub use auth::{TokenError, TokenProvider, TokenSource};
 pub use config::{HttpConfig, McpServerConfig, McpServers, McpTransport, StdioConfig};
 pub use runtime::{McpError, McpToolRuntime};
 

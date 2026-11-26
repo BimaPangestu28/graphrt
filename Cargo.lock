@@ -1218,10 +1218,12 @@ dependencies = [
  "graphrt-core",
  "http",
  "indexmap",
+ "reqwest",
  "rmcp",
  "rustls",
  "serde",
  "serde_json",
+ "sse-stream",
  "thiserror",
  "tokio",
 ]

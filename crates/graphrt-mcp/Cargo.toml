@@ -17,7 +17,7 @@ default = ["stdio", "http"]
 # Launch MCP servers as child processes and talk over stdio.
 stdio = ["rmcp/transport-child-process", "tokio/process"]
 # Connect to remote MCP servers over Streamable HTTP.
-http = ["rmcp/transport-streamable-http-client-reqwest", "rmcp/reqwest-tls-no-provider", "dep:http", "dep:rustls"]
+http = ["rmcp/transport-streamable-http-client-reqwest", "rmcp/reqwest-tls-no-provider", "dep:http", "dep:rustls", "dep:reqwest", "dep:sse-stream"]
 
 [dependencies]
 graphrt-core.workspace = true
@@ -31,6 +31,10 @@ indexmap.workspace = true
 http = { version = "1", optional = true }
 # TLS crypto provider for HTTPS MCP servers (ring keeps the binary smaller than aws-lc).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+# The HTTP client wrapped by `auth::TokenAuthClient` (same reqwest as rmcp's transport) and the
+# SSE event type in its signatures.
+reqwest = { workspace = true, optional = true }
+sse-stream = { version = "0.2.4", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "io-util"] }
