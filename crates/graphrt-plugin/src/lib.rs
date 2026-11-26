@@ -55,7 +55,7 @@ pub use http::HttpTransport;
 pub use manifest::McpRuntime;
 pub use manifest::{
     HttpRuntime, Limits, LoadedManifest, MANIFEST_FILES, PROTOCOL_VERSION, Permissions, PluginManifest, ProcessRuntime,
-    Runtime, WasmRuntime, is_valid_name, manifest_in,
+    Runtime, TriggerDescriptor, WasmRuntime, is_valid_name, manifest_in,
 };
 #[cfg(feature = "mcp-presets")]
 pub use mcp_preset::{McpApproval, McpApprovalDefault, McpAuth, McpServerSpec, McpTransportKind, PluginTemplate};
