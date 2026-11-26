@@ -8,6 +8,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::PluginError;
+use crate::mcp_preset::{McpServerSpec, PluginTemplate};
 
 /// Protocol version spoken by this host.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -55,6 +56,9 @@ pub struct PluginManifest {
     /// Allow node kinds that do not start with `<name>.`.
     #[serde(default)]
     pub allow_unprefixed_kinds: bool,
+    /// Starter prompts a host may offer while the plugin is installed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub templates: Vec<PluginTemplate>,
 }
 
 fn default_protocol() -> u32 {
@@ -101,6 +105,11 @@ struct RawManifest {
     // wasm
     #[serde(default)]
     module: Option<String>,
+    // mcp
+    #[serde(default)]
+    mcp: Option<McpServerSpec>,
+    #[serde(default)]
+    templates: Vec<PluginTemplate>,
     #[serde(default)]
     permissions: Permissions,
     #[serde(default)]
@@ -138,10 +147,12 @@ impl TryFrom<RawManifest> for PluginManifest {
             ("bearer_token_env", raw.bearer_token_env.is_some()),
         ];
         let wasm_fields = [("module", raw.module.is_some())];
+        let mcp_fields = [("mcp", raw.mcp.is_some())];
         let runtime = match raw.runtime.as_str() {
             "process" => {
                 misplaced("process", &http_fields)?;
                 misplaced("process", &wasm_fields)?;
+                misplaced("process", &mcp_fields)?;
                 Runtime::Process(ProcessRuntime {
                     command: raw.command.ok_or("runtime `process` requires `command`")?,
                     args: raw.args,
@@ -153,6 +164,7 @@ impl TryFrom<RawManifest> for PluginManifest {
             "http" => {
                 misplaced("http", &process_fields)?;
                 misplaced("http", &wasm_fields)?;
+                misplaced("http", &mcp_fields)?;
                 Runtime::Http(HttpRuntime {
                     url: raw.url.ok_or("runtime `http` requires `url`")?,
                     headers: raw.headers,
@@ -162,9 +174,16 @@ impl TryFrom<RawManifest> for PluginManifest {
             "wasm" => {
                 misplaced("wasm", &process_fields)?;
                 misplaced("wasm", &http_fields)?;
+                misplaced("wasm", &mcp_fields)?;
                 Runtime::Wasm(WasmRuntime { module: raw.module.ok_or("runtime `wasm` requires `module`")? })
             }
-            other => return Err(format!("unknown runtime `{other}` (expected process, http or wasm)")),
+            "mcp" => {
+                misplaced("mcp", &process_fields)?;
+                misplaced("mcp", &http_fields)?;
+                misplaced("mcp", &wasm_fields)?;
+                Runtime::Mcp(McpRuntime { mcp: raw.mcp.ok_or("runtime `mcp` requires `mcp` (the server)")? })
+            }
+            other => return Err(format!("unknown runtime `{other}` (expected process, http, wasm or mcp)")),
         };
         Ok(Self {
             name: raw.name,
@@ -181,6 +200,7 @@ impl TryFrom<RawManifest> for PluginManifest {
             nodes: raw.nodes,
             tools: raw.tools,
             allow_unprefixed_kinds: raw.allow_unprefixed_kinds,
+            templates: raw.templates,
         })
     }
 }
@@ -196,6 +216,9 @@ pub enum Runtime {
     Http(HttpRuntime),
     /// A WebAssembly module, executed by a [`crate::PluginLoader`] registered for `wasm`.
     Wasm(WasmRuntime),
+    /// No code: a remote MCP server the host registers as a tool provider
+    /// (see [`crate::mcp_preset`]). The plugin host itself loads nothing for it.
+    Mcp(McpRuntime),
 }
 
 impl Runtime {
@@ -205,6 +228,7 @@ impl Runtime {
             Runtime::Process(_) => "process",
             Runtime::Http(_) => "http",
             Runtime::Wasm(_) => "wasm",
+            Runtime::Mcp(_) => "mcp",
         }
     }
 }
@@ -242,6 +266,13 @@ pub struct HttpRuntime {
 pub struct WasmRuntime {
     /// Module path relative to the plugin directory.
     pub module: String,
+}
+
+/// `runtime: mcp` settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpRuntime {
+    /// The server the plugin declares.
+    pub mcp: McpServerSpec,
 }
 
 /// What the plugin may access.
@@ -395,8 +426,13 @@ impl PluginManifest {
             Runtime::Wasm(w) if !is_inside(&w.module) => {
                 bad(format!("`module` `{}` must be relative and inside the plugin directory", w.module))
             }
+            Runtime::Mcp(_) if !self.nodes.is_empty() || !self.tools.is_empty() => {
+                bad("runtime `mcp` takes its tools from the server: `nodes` and `tools` must be empty".into())
+            }
+            Runtime::Mcp(m) => m.mcp.validate(&self.permissions.env).or_else(bad),
             _ => Ok(()),
         }?;
+        crate::mcp_preset::validate_templates(&self.templates).or_else(bad)?;
         for path in self.checksums.keys() {
             if !is_inside(path) {
                 return bad(format!("checksum path `{path}` must be relative and inside the plugin directory"));
@@ -443,12 +479,12 @@ impl PluginManifest {
 }
 
 /// Relative path without `..` segments.
-fn is_inside(path: &str) -> bool {
+pub(crate) fn is_inside(path: &str) -> bool {
     !path.trim().is_empty() && !Path::new(path).is_absolute() && !path.split(['/', '\\']).any(|seg| seg == "..")
 }
 
 /// Whether an http(s) URL points at the local machine.
-fn is_loopback_url(url: &str) -> bool {
+pub(crate) fn is_loopback_url(url: &str) -> bool {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);

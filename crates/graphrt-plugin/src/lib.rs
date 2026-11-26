@@ -31,6 +31,7 @@ mod host;
 #[cfg(feature = "http")]
 mod http;
 mod manifest;
+pub mod mcp_preset;
 mod node;
 #[cfg(feature = "process")]
 mod process;
@@ -50,9 +51,10 @@ pub use host::{LoadedPlugin, PluginHost, PluginInfo, PluginLoader};
 #[cfg(feature = "http")]
 pub use http::HttpTransport;
 pub use manifest::{
-    HttpRuntime, Limits, LoadedManifest, MANIFEST_FILES, PROTOCOL_VERSION, Permissions, PluginManifest, ProcessRuntime,
-    Runtime, WasmRuntime, is_valid_name, manifest_in,
+    HttpRuntime, Limits, LoadedManifest, MANIFEST_FILES, McpRuntime, PROTOCOL_VERSION, Permissions, PluginManifest,
+    ProcessRuntime, Runtime, WasmRuntime, is_valid_name, manifest_in,
 };
+pub use mcp_preset::{McpApproval, McpApprovalDefault, McpAuth, McpServerSpec, McpTransportKind, PluginTemplate};
 #[cfg(feature = "process")]
 pub use process::{DEFAULT_PASS_ENV, MAX_CONSECUTIVE_TIMEOUTS, ProcessTransport};
 pub use protocol::Notification;
