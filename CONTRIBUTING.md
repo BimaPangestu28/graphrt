@@ -80,10 +80,20 @@ cargo deny check          # advisories, licenses (deny.toml), duplicate versions
 New dependencies must use a license in the `deny.toml` allow-list. Keep
 `graphrt-core` dependencies minimal.
 
+## Changelog
+
+A pull request with a user-visible change adds a fragment to `changelog.d/`
+(`<slug>.<kind>.md`, kind one of `added`, `changed`, `deprecated`, `removed`,
+`fixed`, `security`; Markdown bullets) instead of editing `CHANGELOG.md`, so
+pull requests in parallel do not conflict. See `changelog.d/README.md`;
+`scripts/changelog.py check` validates them.
+
 ## Releasing (maintainers)
 
-1. Update `CHANGELOG.md` (move `Unreleased` into a new version section) and bump
-   `version` in the root `Cargo.toml` `[workspace.package]` and `[workspace.dependencies]`.
+1. Run `scripts/changelog.py release X.Y.Z`: it moves `Unreleased` and the
+   fragments in `changelog.d/` into a new version section of `CHANGELOG.md`
+   and deletes the fragments. Then bump `version` in the root `Cargo.toml`
+   `[workspace.package]` and `[workspace.dependencies]`.
    The section becomes the GitHub Release body, so start it with a short summary
    paragraph (2 to 4 sentences: what is new and why it matters), then `### Added` /
    `### Changed` / `### Fixed` / `### Security` with short bullets. Check how it

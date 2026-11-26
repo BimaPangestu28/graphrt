@@ -72,6 +72,7 @@ jobs:
         with:
           persist-credentials: false
       - run: scripts/test-release-notes.sh
+      - run: scripts/test-changelog.sh
 
   msrv:
     name: MSRV (1.89, every crate)

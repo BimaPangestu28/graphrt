@@ -10,6 +10,7 @@
 code:
   - "**"
   - "!*.md"
+  - "!changelog.d/**"
   - "!LICENSE"
   - "!docs/**/*.md"
   - "!docs/**/*.{png,jpg,jpeg,gif,svg,webp}"
