@@ -52,6 +52,7 @@ backup: { dir: /backup/graphrt, interval_secs: 300, keep: 12 }
 admin_token_env: GRAPHRT_GATEWAY_ADMIN_TOKEN   # for graphrt deploy
 per_ip: { per_second: 20, burst: 40 }
 socket_dir: /run/graphrt                 # Unix sockets of local agents (see below when it is long)
+standby_agents: 1                        # local agents started ahead of demand; 0 = off (see Standby agents)
 store_ttl_days: 7                        # ≥ 3: webhook senders retry for days
 wake_storm: { max_parallel_wakes: 16, prewarm_jitter_ms: 1000 }   # see Warm-up and cost guards
 deployments:
@@ -83,6 +84,38 @@ with 128 random bits) instead, `socket_dir` holds only their pid files, and
 the gateway stops them with a signed `POST /internal/v1/stop` (then
 `taskkill /F /T` after the grace) where Unix sends `SIGTERM`; see
 [windows-gateway.md](windows-gateway.md).
+
+### Standby agents
+
+A cold wake of a local agent used to start a process: binary, runtime, model
+HTTP client, then the flow and the listener, about 4–5 ms before the first
+run could start. With `standby_agents: N` (default `1`, `0` turns it off) the
+gateway keeps N agent processes of its own binary started ahead of demand
+(`graphrt agent-standby`, only in builds with the `gateway` feature: agent-only
+builds stay their size), and a wake hands one of them the deployment instead
+of starting a process. The gateway then starts the next standby in the
+background.
+
+- **One deployment, once.** A standby is assigned to one deployment version
+  on one wake and is that deployment's agent from then on, exactly as a
+  started one: the same `serve` arguments and the same keys. It is never
+  reused for another deployment.
+- **Nothing before the assignment.** A standby has no workflow, no deployment
+  and no keys. It starts without `GRAPHRT_GATEWAY_KEYS` and without the
+  gateway's own secrets (every deployment's `keys_env`, `admin_token_env`,
+  `callback_secret_env` and webhook `secret_env`). The deployment's keys reach
+  it in its assignment over its stdin pipe, never in its environment or
+  command line. Otherwise it has the environment every local agent gets (the
+  gateway's).
+- **Failures are not reused.** A standby that exited, or whose assignment
+  could not be written, is killed and the wake starts a process as before. A
+  standby whose gateway stops (its stdin closes) exits.
+- **Only what a standby can be.** Versions whose command is `serve` of the
+  gateway's own binary with no extra environment use standbys; any other
+  command (another binary, a wrapper) starts a process as before.
+- **Cost.** Each standby is one idle process: about 13 MiB of RSS on Linux
+  x86_64. With the default of one, that is constant, not per deployment.
+  Set `standby_agents: 0` to start every agent on demand.
 
 Keys: `graphrt gateway key new` prints a client API key and its digest;
 `graphrt gateway key hmac` prints an agent key (`k1:<64 hex>`). Two agent keys
@@ -389,7 +422,8 @@ process plugins at once, alongside the dispatch of the run that woke it, and
 loads the model HTTP client (the system trust store) on a background thread
 while it builds its flows and binds, instead of in the run's first model call.
 The gateway checks a starting agent every 200 µs, so a ready agent gets its run
-at once. All public connections have `TCP_NODELAY`: small SSE writes never wait
+at once, and a [standby agent](#standby-agents) takes the process start off a
+cold wake. All public connections have `TCP_NODELAY`: small SSE writes never wait
 for the client's delayed ACK.
 
 Run streams from Unix-socket and `http://` agents go through a lean HTTP/1.1

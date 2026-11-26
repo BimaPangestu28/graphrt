@@ -149,9 +149,14 @@ impl GatewayAgentConfig {
         }
         let deployment = deployment
             .ok_or_else(|| CliError::usage("--trust-gateway needs --deployment NAME (or $GRAPHRT_DEPLOYMENT)"))?;
-        let keys_text = lookup_env(&args.gateway_keys_env).filter(|k| !k.is_empty()).ok_or_else(|| {
-            CliError::usage(format!("--trust-gateway needs the gateway keys in ${}", args.gateway_keys_env))
-        })?;
+        #[cfg(feature = "gateway")]
+        let assigned = args.assigned_keys.as_ref().map(|keys| keys.expose().to_owned());
+        #[cfg(not(feature = "gateway"))]
+        let assigned: Option<String> = None;
+        let keys_text =
+            assigned.or_else(|| lookup_env(&args.gateway_keys_env)).filter(|k| !k.is_empty()).ok_or_else(|| {
+                CliError::usage(format!("--trust-gateway needs the gateway keys in ${}", args.gateway_keys_env))
+            })?;
         let keys = signature::parse_keys(&keys_text)
             .map_err(|e| CliError::usage(format!("${}: {e}", args.gateway_keys_env)))?;
         Ok(Some(Self {

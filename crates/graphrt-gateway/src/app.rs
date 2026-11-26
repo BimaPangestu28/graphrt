@@ -136,10 +136,12 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
         ..SupervisorSettings::default()
     };
     let gateway = Gateway::new(store, settings);
-    let provider = Arc::new(
+    let provider = Arc::new(standby_of(
         LocalProvider::new(&config.socket_dir, Duration::from_secs(config.local_grace_secs))
             .map_err(|error| format!("socket dir: {error}"))?,
-    );
+        config.standby_agents,
+        gateway_secret_env(config),
+    ));
     if provider.socket_dir() != config.socket_dir.as_path() {
         eprintln!(
             "graphrt gateway: socket_dir {} is too long for Unix sockets; agents listen in {}",
@@ -235,6 +237,34 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
         backup,
         ttl: Duration::from_secs(config.store_ttl_days * 86_400),
     })
+}
+
+/// `provider` keeping `count` standby agents of this binary (see
+/// [`LocalProvider::with_standby`]); none when the binary's path is unknown.
+fn standby_of(provider: LocalProvider, count: usize, hidden_env: Vec<String>) -> LocalProvider {
+    match std::env::current_exe() {
+        Ok(program) => provider.with_standby(&program, count, hidden_env),
+        Err(error) => {
+            if count > 0 {
+                eprintln!("gateway: no standby agents (the gateway's own binary: {error})");
+            }
+            provider
+        }
+    }
+}
+
+/// Names of the environment variables holding the gateway's own secrets:
+/// every deployment's keys, the admin token, callback and webhook secrets.
+fn gateway_secret_env(config: &GatewayConfig) -> Vec<String> {
+    let mut names: Vec<String> = config.admin_token_env.iter().cloned().collect();
+    for deployment in &config.deployments {
+        names.push(deployment.keys_env.clone());
+        names.extend(deployment.callback_secret_env.iter().cloned());
+        names.extend(deployment.hooks.iter().filter_map(|hook| hook.secret_env.clone()));
+    }
+    names.sort_unstable();
+    names.dedup();
+    names
 }
 
 /// The command of a local agent: `command` with `--max-active-runs` set to the

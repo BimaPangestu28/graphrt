@@ -219,6 +219,13 @@ They honour standard proxy environment variables, except the OTel exporter and
   ingress on top. Agents never call the gateway (it pulls orphans from them),
   so an agent needs no gateway address and no outbound access. `--trust-gateway` and
   `--verify-jwt` are exclusive. See [gateway-protocol.md](gateway-protocol.md#signatures).
+- **Standby agents.** A gateway's pre-started local agents
+  (`standby_agents`, see [gateway.md](gateway.md#standby-agents)) start with
+  no deployment, no keys and without the gateway's own secret variables
+  (deployment keys, admin token, callback and webhook secrets). A standby gets
+  one deployment's keys in its assignment over its stdin pipe (never in its
+  environment, command line or logs), serves that deployment only and is never
+  reused; one whose assignment fails is killed.
 - **Unix sockets.** `--listen unix:/path` creates the socket mode `0600`.
 - **Named pipes (Windows).** `--listen pipe:\\.\pipe\name` refuses remote
   clients and a name that exists already (first instance only); the default

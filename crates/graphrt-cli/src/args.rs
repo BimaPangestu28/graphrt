@@ -58,6 +58,11 @@ pub enum Command {
     Deploy(Box<crate::deploy_cmd::DeployArgs>),
     /// Print version and enabled features.
     Version,
+    /// Internal: an agent a gateway starts ahead of demand; it waits for one
+    /// assignment (`serve` arguments and gateway keys) on stdin.
+    #[cfg(feature = "gateway")]
+    #[command(name = "agent-standby", hide = true)]
+    AgentStandby,
 }
 
 /// Options of `graphrt telemetry`.
@@ -652,6 +657,31 @@ pub struct ServeArgs {
 
 /// Running behind a graphrt gateway (`graphrt serve --trust-gateway`, see
 /// docs/gateway-protocol.md).
+/// Gateway keys a standby agent received on stdin; never shown by `Debug`.
+#[cfg(feature = "gateway")]
+#[derive(Clone, Default)]
+pub struct AssignedKeys(String);
+
+#[cfg(feature = "gateway")]
+impl AssignedKeys {
+    /// Wraps the keys text (`kid:hex,...`).
+    pub fn new(keys: String) -> Self {
+        Self(keys)
+    }
+
+    /// The keys text.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+#[cfg(feature = "gateway")]
+impl std::fmt::Debug for AssignedKeys {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AssignedKeys(<redacted>)")
+    }
+}
+
 #[cfg(feature = "trust-gateway")]
 #[derive(Debug, Default, Args)]
 pub struct GatewayTrustArgs {
@@ -664,6 +694,11 @@ pub struct GatewayTrustArgs {
     /// Name of the environment variable holding the gateway keys.
     #[arg(long, value_name = "VAR", default_value = crate::gateway_agent::KEYS_ENV)]
     pub gateway_keys_env: String,
+    /// Gateway keys handed over by a gateway's assignment of a standby agent
+    /// (`graphrt agent-standby`, gateway builds only), instead of from the environment.
+    #[cfg(feature = "gateway")]
+    #[arg(skip)]
+    pub assigned_keys: Option<AssignedKeys>,
     /// How long the outcome of a run whose gateway stream broke is kept for the gateway
     /// to reclaim before the run is marked failed (`owner_lost`).
     #[arg(long, value_name = "SECS", default_value_t = crate::gateway_agent::DEFAULT_RECLAIM_GRACE_SECS)]

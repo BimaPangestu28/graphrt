@@ -58,6 +58,9 @@ pub mod serve;
 pub mod setup;
 #[cfg(feature = "serve")]
 pub mod sse_ids;
+// Only the gateway starts standby agents, and only of its own binary.
+#[cfg(feature = "gateway")]
+pub mod standby;
 #[cfg(feature = "serve")]
 pub mod store;
 #[cfg(feature = "telemetry")]
@@ -173,14 +176,42 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
         Command::Deploy(args) => deploy_cmd::deploy(*args),
         #[cfg(feature = "serve")]
-        Command::Serve(args) => {
-            let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(runtime_error)?;
-            let result = runtime.block_on(serve::serve(*args));
-            // A node stuck in blocking code must not hold the exit past the drain deadline.
-            runtime.shutdown_timeout(std::time::Duration::from_millis(500));
-            result
-        }
+        Command::Serve(args) => block_on_serve(serve_from(Some(args))),
+        #[cfg(feature = "gateway")]
+        Command::AgentStandby => block_on_serve(serve_from(None)),
     }
+}
+
+/// `serve` with `args`, or (`None`) with the assignment of a standby agent.
+/// One future type for both, so the binary has one copy of the runtime's
+/// `block_on` for `serve`.
+///
+/// @throws CliError - A bad assignment, or `serve`'s own error.
+#[cfg(feature = "serve")]
+async fn serve_from(args: Option<Box<args::ServeArgs>>) -> Result<u8, CliError> {
+    let args = match args {
+        Some(args) => args,
+        #[cfg(feature = "gateway")]
+        None => match standby::assignment().await? {
+            Some(args) => args,
+            None => return Ok(EXIT_OK),
+        },
+        #[cfg(not(feature = "gateway"))]
+        None => return Ok(EXIT_OK),
+    };
+    serve::serve(*args).await
+}
+
+/// Run `serve` (or a standby agent that becomes one) on a multi-threaded runtime.
+///
+/// @throws CliError - When the runtime cannot start, or the command's own error.
+#[cfg(feature = "serve")]
+fn block_on_serve(command: impl std::future::Future<Output = Result<u8, CliError>>) -> Result<u8, CliError> {
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(runtime_error)?;
+    let result = runtime.block_on(command);
+    // A node stuck in blocking code must not hold the exit past the drain deadline.
+    runtime.shutdown_timeout(std::time::Duration::from_millis(500));
+    result
 }
 
 /// Run a command on a single-threaded runtime: one run or evaluation at a
