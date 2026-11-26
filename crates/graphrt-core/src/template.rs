@@ -181,14 +181,39 @@ mod tests {
         p
     }
 
+    /// `repeats` unclosed `{{#` followed by one placeholder.
+    fn unclosed_source(repeats: usize) -> String {
+        format!("{}{{{{#sys.query#}}}}", "{{#".repeat(repeats))
+    }
+
+    /// Fastest of three parses of `source`. A busy machine only ever adds time,
+    /// so the fastest run is the one closest to the parser's own cost.
+    fn fastest_parse(source: &str) -> std::time::Duration {
+        (0..3)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                std::hint::black_box(Template::parse(std::hint::black_box(source)));
+                started.elapsed()
+            })
+            .min()
+            .unwrap_or_default()
+    }
+
     #[test]
     fn unclosed_placeholders_parse_in_linear_time() {
         // Each `{{#` used to scan to the one `#}}` at the very end: quadratic.
-        let source = format!("{}{{{{#sys.query#}}}}", "{{#".repeat(100_000));
-        let started = std::time::Instant::now();
-        let template = Template::parse(&source);
-        assert!(started.elapsed() < std::time::Duration::from_secs(2), "took {:?}", started.elapsed());
-        assert_eq!(template.render(&pool()), format!("{}hi", "{{#".repeat(100_000)));
+        // Compared with itself rather than with a fixed time, so neither a debug
+        // build nor a loaded machine makes it fail: 8 times the input takes about
+        // 8 times as long when linear and about 64 times as long when quadratic.
+        let (small, large) = (5_000, 40_000);
+        let small_time = fastest_parse(&unclosed_source(small));
+        let large_time = fastest_parse(&unclosed_source(large));
+        assert!(
+            large_time < small_time * 24,
+            "{large} took {large_time:?}, {small} took {small_time:?}: more than linear"
+        );
+        let template = Template::parse(&unclosed_source(small));
+        assert_eq!(template.render(&pool()), format!("{}hi", "{{#".repeat(small)));
         // A closing marker beyond the longest possible body stays literal text.
         let far = format!("{{{{#{}#}}}}", "a".repeat(600));
         assert!(Template::parse(&far).is_static());

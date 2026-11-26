@@ -20,7 +20,8 @@ User documentation: [docs/gateway.md](https://github.com/Graphrt/graphrt/blob/ma
 | `local`, `deploy` | local-process provider (`gw-local`), `graphrt deploy --target local` |
 
 Tests: `tests/gateway_e2e.rs` (client → gateway → fake protocol-1 agents),
-`tests/client_streams.rs` (slow client, disconnect mid-stream, 1,000 concurrent streams),
+`tests/client_streams.rs` (slow client, disconnect mid-stream, lagging client),
+`tests/thousand_streams.rs` (1,000 concurrent streams),
 `tests/simulation.rs` (seeded simulation + invariant checker I1–I7;
 `GRAPHRT_SIM_SEEDS=10000` for the nightly size), `tests/warm_simulation.rs`
 (virtual-time simulation of the wake-storm gate, prewarm jitter and the
