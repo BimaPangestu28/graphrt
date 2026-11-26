@@ -437,6 +437,11 @@ short control calls (`hello`, `orphans`, `drain`, `abort`) use reqwest.
 Per-stream memory is bounded under slow clients: a client stream buffers at
 most 64 frames; one that falls behind the 32-frame live broadcast catches up
 from the run's replay ring (from the store when the run is over) or is
-disconnected and resumes from the store with `Last-Event-ID`. The agent is never slowed down by a client: its frames are
+disconnected and resumes from the store with `Last-Event-ID`. A finished run
+keeps its ring for 30 s for late reconnects, at most 256 finished runs at once
+(the oldest one's ring goes first); after that a reconnect replays from the
+store. A burst of 10,000 short runs therefore leaves the gateway at ~6 KiB of
+RSS per finished run instead of holding every ring (~17 KiB each) and keeping
+the memory. The agent is never slowed down by a client: its frames are
 read, stored and broadcast at its own pace. One event from an agent may not
 exceed 4 MiB.
