@@ -208,15 +208,23 @@ const FAST_PROBE_INTERVAL: Duration = Duration::from_micros(200);
 /// Waits up to `window` for an agent to listen at `address`, probing every
 /// [`FAST_PROBE_INTERVAL`] (blocking). Returns whether it does.
 fn wait_listening(address: &EndpointAddress, window: Duration) -> bool {
+    probe_until(|| is_listening(address), window, FAST_PROBE_INTERVAL).is_some()
+}
+
+/// Calls `ready` every `interval` until it returns `true` (then: how many
+/// calls it took) or `window` passed (`None`). At least one call.
+fn probe_until(mut ready: impl FnMut() -> bool, window: Duration, interval: Duration) -> Option<u32> {
     let deadline = std::time::Instant::now() + window;
+    let mut probes = 0u32;
     loop {
-        if is_listening(address) {
-            return true;
+        probes = probes.saturating_add(1);
+        if ready() {
+            return Some(probes);
         }
         if std::time::Instant::now() >= deadline {
-            return false;
+            return None;
         }
-        std::thread::sleep(FAST_PROBE_INTERVAL);
+        std::thread::sleep(interval);
     }
 }
 
@@ -561,22 +569,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_starting_agent_is_found_within_a_fraction_of_a_millisecond() {
+    fn probing_stops_at_the_first_ready_probe_or_the_window() {
+        let mut calls = 0;
+        let found = probe_until(
+            || {
+                calls += 1;
+                calls == 3
+            },
+            Duration::from_secs(3600),
+            Duration::ZERO,
+        );
+        assert_eq!(found, Some(3));
+        let mut calls = 0;
+        assert_eq!(
+            probe_until(
+                || {
+                    calls += 1;
+                    false
+                },
+                Duration::ZERO,
+                Duration::ZERO
+            ),
+            None
+        );
+        assert_eq!(calls, 1, "at least one probe, none after the window");
+    }
+
+    /// An agent that starts listening between two probes is found by the very
+    /// next one (no wall clock: the probe count shows it).
+    #[test]
+    fn a_starting_agent_is_found_by_the_next_probe() {
         let dir = std::env::temp_dir().join(format!("graphrt-probe-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("a.sock");
         let _stale = std::fs::remove_file(&socket);
         let address = EndpointAddress::Unix(socket.clone());
-        assert!(!wait_listening(&address, Duration::from_millis(5)), "nothing listens yet");
-        let bound = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(3));
-            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-            (std::time::Instant::now(), listener)
-        });
-        assert!(wait_listening(&address, Duration::from_secs(5)));
-        let found = std::time::Instant::now();
-        let (listening, _listener) = bound.join().unwrap();
-        assert!(found.duration_since(listening) < Duration::from_millis(1), "{:?}", found.duration_since(listening));
+        assert!(!wait_listening(&address, Duration::ZERO), "nothing listens yet");
+        let mut listener = None;
+        let mut calls = 0;
+        let found = probe_until(
+            || {
+                calls += 1;
+                if calls == 3 {
+                    listener = Some(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+                }
+                is_listening(&address)
+            },
+            Duration::from_secs(3600),
+            Duration::ZERO,
+        );
+        assert_eq!(found, Some(3), "found by the probe right after the bind");
+        assert!(wait_listening(&address, Duration::ZERO), "a listening agent is found by the first probe");
+        drop(listener);
         let _cleanup = std::fs::remove_dir_all(&dir);
     }
 }
