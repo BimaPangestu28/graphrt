@@ -72,6 +72,15 @@ run_chatbot_e2e() {
     examples/supabase-chatbot/tests/run.sh "$target_dir/debug/graphrt"
 }
 
+# Same two checks as the msrv job of .github/workflows/ci.yml (keep the feature list in
+# sync): `local-embed` (default in graphrt-cli) builds candle-core, which needs Rust
+# 1.94+, so graphrt-cli is checked with its default features minus `local-embed`.
+run_msrv() {
+  cargo "+$MSRV_TOOLCHAIN" check --workspace --exclude graphrt-cli &&
+    cargo "+$MSRV_TOOLCHAIN" check -p graphrt-cli --no-default-features --features \
+      llm,http,code,python,mcp,doc,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly
+}
+
 ensure_toolchain() { rustup toolchain list | grep -q "^$1" || rustup toolchain install --profile minimal "$1"; }
 ensure_wasm_target() { rustup target list --installed | grep -q '^wasm32-unknown-unknown$' || rustup target add wasm32-unknown-unknown; }
 
@@ -81,7 +90,7 @@ for job in "${ALL_JOBS[@]}"; do
     fmt) command=(cargo fmt --all -- --check) ;;
     clippy) command=(cargo clippy --workspace --all-targets --all-features) ;;
     test) command=(cargo test --workspace --all-features --no-fail-fast) ;;
-    msrv) is_skipped msrv || ensure_toolchain "$MSRV_TOOLCHAIN"; command=(cargo "+$MSRV_TOOLCHAIN" check --workspace) ;;
+    msrv) is_skipped msrv || ensure_toolchain "$MSRV_TOOLCHAIN"; command=(run_msrv) ;;
     minimal-core) command=(cargo test -p graphrt-core --no-default-features --no-fail-fast) ;;
     minimal-gateway) command=(cargo test -p graphrt-cli --no-default-features --features gateway --test gateway_dev) ;;
     wasm) is_skipped wasm || ensure_wasm_target

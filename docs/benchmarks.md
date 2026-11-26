@@ -153,7 +153,7 @@ stripped, unwinding kept):
 ## Gateway targets on Linux
 
 `bench/targets.sh` measures every target of the gateway plan on Linux against
-`bench/budgets.toml` (`[[build]]` sizes and idle RSS, `[gateway_targets]`
+`bench/budgets.toml` (`[[build]]` sizes and idle memory, `[gateway_targets]`
 run-time targets) and exits 1 on a miss; the manual workflow **Bench
 targets** runs it on x86_64 and arm64 runners. It drives real
 `graphrt gateway` and `graphrt serve --trust-gateway` processes over plain
@@ -178,6 +178,13 @@ sudo bench/targets.sh --bin-dir bins                 # root only for the contain
 | RS256 JWT verification | cached JWKS key, 5,000 verifications | mean 16.9 µs | ≤ 50 µs |
 | PID 1 drain in a container | `docker stop` of the release image's base with a run in flight | exit 0 in 1.58 s, run paused (drained) | ≤ drain timeout |
 | Gateway binary / idle RSS | `--features gateway` (`gateway-core`), min-size | 6.84 MiB / 6.7 MiB | ≤ 6.95 / ≤ 20 MiB |
+
+The idle memory budgets of `[[build]]` are on anonymous memory (`RssAnon`:
+heap, stacks, written data pages) since 2026-11-27, not on total RSS as in the
+gateway row above. Total RSS is still reported. Most of it is the binary's code
+pages, shared and file backed, and it moved by tens of KiB with code layout
+alone. The binary size budgets cover code (see the comment at the top of
+`bench/budgets.toml`).
 
 Machine: Lima VM (vz, 4 vCPU, 4 GiB, Ubuntu 26.04) on an Apple M3 Pro, static
 musl binaries; raw data in
