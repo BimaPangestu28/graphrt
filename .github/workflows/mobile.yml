@@ -21,15 +21,20 @@ on:
   # jobs of a pull request that does not touch what they build, and they report
   # as skipped (`mobile` in .github/path-filters.yml).
   pull_request:
+    # `labeled` and `unlabeled`: the `macos` label takes effect when it is set, not at the next push.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   # The merge queue runs what the pull request ran (`merge_group` takes no path filter).
   merge_group:
+  schedule:
+    # Every night (02:47 UTC), so an iOS failure is seen within a day.
+    - cron: "47 2 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 # A new push to a pull request cancels the run of its previous push. Every other run
-# (main, merge queue, manual) gets a group of its own, so it is never cancelled or replaced.
+# (main, merge queue, nightly, manual) gets a group of its own, so it is never cancelled or replaced.
 concurrency:
   group: mobile-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -132,19 +137,26 @@ jobs:
   ios:
     name: iOS (device + simulator, simulator smoke test)
     needs: changes
-    if: needs.changes.outputs.mobile == 'true'
-    # Pull requests and the merge queue run on Intel (macos-15-intel): the
-    # arm64 pool is short of capacity and left PR jobs queued for an hour. The
-    # simulator then runs x86_64, so the xcframework gets an x86_64 simulator slice
-    # and the app is built for x86_64. main and manual runs keep arm64 (macos-15).
-    runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'macos-15-intel' || 'macos-15' }}
+    # Optional for a pull request: macOS runners are slow to start and made every
+    # pull request wait. It runs on pushes to main, every night, on manual runs and
+    # on a pull request with the `macos` label (set it when the change touches the
+    # Swift binding or the iOS sample). It never runs in the merge queue and
+    # `mobile-ok` does not need it: an iOS failure on main shows as a failed run
+    # there and does not block a merge.
+    if: >-
+      needs.changes.outputs.mobile == 'true' && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'macos'))
+    # A labelled pull request runs on Intel (macos-15-intel): the arm64 pool is
+    # short of capacity and left PR jobs queued for an hour. The simulator then runs
+    # x86_64, so the xcframework gets an x86_64 simulator slice and the app is built
+    # for x86_64. main, nightly and manual runs keep arm64 (macos-15).
+    runs-on: ${{ github.event_name == 'pull_request' && 'macos-15-intel' || 'macos-15' }}
     timeout-minutes: 45
     env:
       IPHONEOS_DEPLOYMENT_TARGET: "16.0"
       # Simulator architecture of the runner, its Rust target, and the other simulator target (checked only).
-      SIMULATOR_ARCH: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'x86_64' || 'arm64' }}
-      SIMULATOR_TARGET: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'x86_64-apple-ios' || 'aarch64-apple-ios-sim' }}
-      OTHER_SIMULATOR_TARGET: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'aarch64-apple-ios-sim' || 'x86_64-apple-ios' }}
+      SIMULATOR_ARCH: ${{ github.event_name == 'pull_request' && 'x86_64' || 'arm64' }}
+      SIMULATOR_TARGET: ${{ github.event_name == 'pull_request' && 'x86_64-apple-ios' || 'aarch64-apple-ios-sim' }}
+      OTHER_SIMULATOR_TARGET: ${{ github.event_name == 'pull_request' && 'aarch64-apple-ios-sim' || 'x86_64-apple-ios' }}
       # Pinned so the app builds with the SDK of the runtime it runs on. Picking the
       # newest installed runtime ran iOS 26 under the default Xcode 16.4, whose
       # first boot left SpringBoard unable to launch apps for minutes.
@@ -192,11 +204,11 @@ jobs:
   # The one check a ruleset requires for this workflow: its name never changes when
   # a job or a matrix entry is added, renamed or removed. It passes when every job
   # it needs succeeded or was skipped (by the `changes` job), and fails when one
-  # failed or was cancelled.
+  # failed or was cancelled. `ios` is not needed on purpose.
   mobile-ok:
     name: mobile-ok
     if: always()
-    needs: [changes, android, ios]
+    needs: [changes, android]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
