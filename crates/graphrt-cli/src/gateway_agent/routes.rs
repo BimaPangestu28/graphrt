@@ -60,6 +60,7 @@ pub(super) fn dispatch(
             };
             done(drain(&state, deadline_ms))
         }
+        ["stop"] if method == Method::POST => done(stop(&state)),
         ["orphans"] if method == Method::GET => {
             let orphans = agent.orphan_list().iter().map(super::reclaim::Orphan::to_json).collect::<Vec<_>>();
             done(json::response(StatusCode::OK, json::Object::new().raw("orphans", &json::array(orphans)).finish()))
@@ -409,6 +410,14 @@ fn drain(state: &Arc<AppState>, deadline_ms: Option<u64>) -> Response {
         .num("deadline_ms", deadline_ms)
         .finish();
     json::response(StatusCode::ACCEPTED, body)
+}
+
+/// `POST /internal/v1/stop`: drain and exit exactly as on `SIGTERM` (how the
+/// local-process provider stops an agent on Windows, which has no signal to
+/// send). Answers `202` at once.
+fn stop(state: &Arc<AppState>) -> Response {
+    state.request_stop();
+    json::response(StatusCode::ACCEPTED, json::Object::new().bool("stopping", true).finish())
 }
 
 /// `DELETE /internal/v1/orphans/{id}` (at `Graphrt-Epoch`): the gateway took the run over.

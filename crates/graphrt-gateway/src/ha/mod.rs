@@ -175,17 +175,9 @@ pub fn identity(node_id: Option<&str>) -> Identity {
     Identity { node, host, pid }
 }
 
-/// `SIGKILL`s a stale holder (through `/bin/kill`: the workspace forbids `unsafe`).
+/// `SIGKILL`s a stale holder (`taskkill /F` on Windows).
 pub async fn kill_holder(pid: u32) -> bool {
-    tokio::process::Command::new("kill")
-        .arg("-KILL")
-        .arg(pid.to_string())
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .is_ok_and(|status| status.success())
+    crate::os::kill(pid).await
 }
 
 #[cfg(test)]

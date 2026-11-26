@@ -1,9 +1,14 @@
-//! Listening sockets of `graphrt serve`: TCP (`host:port`) or a Unix socket
-//! (`unix:/path/to.sock`, `--listen`).
+//! Listening sockets of `graphrt serve`: TCP (`host:port`), a Unix socket
+//! (`unix:/path/to.sock`, `--listen`) or, on Windows, a named pipe
+//! (`pipe:\\.\pipe\name`).
 //!
 //! A Unix socket is how a gateway on the same host (the `local-process`
 //! provider) reaches its agents: no port to allocate, no network exposure, and
 //! access controlled by file permissions (the socket is created mode 0600).
+//! On Windows the provider uses a named pipe instead: local clients only, the
+//! default pipe DACL (only the owner, SYSTEM and administrators may write),
+//! and created as the first instance of its name, so a pipe another process
+//! made first is an error rather than a server shared with it.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -19,6 +24,12 @@ pub enum Listener {
         listener: tokio::net::UnixListener,
         path: PathBuf,
     },
+    /// The pipe instance waiting for the next client.
+    #[cfg(windows)]
+    Pipe {
+        next: tokio::net::windows::named_pipe::NamedPipeServer,
+        name: String,
+    },
 }
 
 /// The socket path of a `unix:` address, if it is one.
@@ -26,15 +37,25 @@ pub fn unix_path(addr: &str) -> Option<PathBuf> {
     addr.strip_prefix("unix:").filter(|p| !p.is_empty()).map(PathBuf::from)
 }
 
+/// The pipe name of a `pipe:` address, if it is one.
+pub fn pipe_name(addr: &str) -> Option<&str> {
+    addr.strip_prefix("pipe:").filter(|name| !name.is_empty())
+}
+
 impl Listener {
-    /// Bind `addr` (`host:port` or `unix:/path`). A stale socket file left at the
-    /// path by an earlier run is replaced; any other file there is an error.
+    /// Bind `addr` (`host:port`, `unix:/path` or `pipe:\\.\pipe\name`). A stale
+    /// socket file left at the path by an earlier run is replaced; any other
+    /// file there is an error.
     ///
     /// @throws CliError - Usage error when the address cannot be bound.
     pub async fn bind(addr: &str) -> Result<Self, CliError> {
         if addr.starts_with("unix:") {
             let path = unix_path(addr).ok_or_else(|| CliError::usage("`unix:` needs a socket path"))?;
             return Self::bind_unix(path);
+        }
+        if addr.starts_with("pipe:") {
+            let name = pipe_name(addr).ok_or_else(|| CliError::usage("`pipe:` needs a pipe name"))?;
+            return Self::bind_pipe(name);
         }
         tokio::net::TcpListener::bind(addr)
             .await
@@ -67,12 +88,26 @@ impl Listener {
         Err(CliError::usage("Unix socket listeners need a Unix platform"))
     }
 
-    /// Whether only this host can connect (loopback TCP, or any Unix socket).
+    #[cfg(windows)]
+    fn bind_pipe(name: &str) -> Result<Self, CliError> {
+        let next =
+            new_pipe_instance(name, true).map_err(|e| CliError::usage(format!("cannot listen on pipe:{name}: {e}")))?;
+        Ok(Self::Pipe { next, name: name.to_owned() })
+    }
+
+    #[cfg(not(windows))]
+    fn bind_pipe(_name: &str) -> Result<Self, CliError> {
+        Err(CliError::usage("named pipe listeners need Windows"))
+    }
+
+    /// Whether only this host can connect (loopback TCP, any Unix socket or named pipe).
     pub fn is_local(&self) -> bool {
         match self {
             Self::Tcp(listener) => listener.local_addr().map(|a| a.ip().is_loopback()).unwrap_or(false),
             #[cfg(unix)]
             Self::Unix { .. } => true,
+            #[cfg(windows)]
+            Self::Pipe { .. } => true,
         }
     }
 
@@ -116,6 +151,17 @@ pub enum Connection {
     Tcp(tokio::net::TcpStream),
     #[cfg(unix)]
     Unix(tokio::net::UnixStream),
+    #[cfg(windows)]
+    Pipe(tokio::net::windows::named_pipe::NamedPipeServer),
+}
+
+/// A new server instance of pipe `name`; `first` refuses a name that exists already.
+#[cfg(windows)]
+fn new_pipe_instance(name: &str, first: bool) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    tokio::net::windows::named_pipe::ServerOptions::new()
+        .first_pipe_instance(first)
+        .reject_remote_clients(true)
+        .create(name)
 }
 
 /// Pause after an accept error that is not about one connection (out of file
@@ -147,6 +193,21 @@ impl axum::serve::Listener for Listener {
                 Self::Unix { listener, .. } => {
                     tokio::net::UnixListener::accept(listener).await.map(|(unix, _)| Connection::Unix(unix))
                 }
+                // The next instance exists before the connected one is served,
+                // so a client never finds the pipe missing between two accepts.
+                // A failed instance (the client left before the connect
+                // completed) is replaced as well.
+                #[cfg(windows)]
+                Self::Pipe { next, name } => {
+                    let connected = next.connect().await;
+                    match new_pipe_instance(name, false) {
+                        Ok(following) => {
+                            let current = std::mem::replace(next, following);
+                            connected.map(|()| Connection::Pipe(current))
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
             };
             match accepted {
                 Ok(connection) => return (connection, ()),
@@ -166,6 +227,8 @@ macro_rules! each_connection {
             Connection::Tcp($stream) => $body,
             #[cfg(unix)]
             Connection::Unix($stream) => $body,
+            #[cfg(windows)]
+            Connection::Pipe($stream) => $body,
         }
     };
 }

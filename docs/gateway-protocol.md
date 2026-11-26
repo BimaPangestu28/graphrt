@@ -130,6 +130,7 @@ gateway (it strips them).
 | GET | `/internal/v1/runs/{id}/stream?from=N` | Reattach to a running execution after a lost connection (or `Last-Event-ID`); `409 finished` once it ended |
 | POST | `/internal/v1/runs/{id}/abort` | Abort the execution at `Graphrt-Epoch` |
 | POST | `/internal/v1/drain` | `{deadline_ms}`: the shutdown drain of `serve` (no new runs, active runs pause, preempted near the deadline); answers `202` at once |
+| POST | `/internal/v1/stop` | drain and exit exactly as on `SIGTERM` (`--drain-timeout`, pause cause `gateway stop`); answers `202` at once. The local-process provider sends it on Windows, which has no signal to send |
 | GET | `/internal/v1/orphans` | Lost executions held for reclaim |
 | DELETE | `/internal/v1/orphans/{id}` | The gateway took that orphan over (at `Graphrt-Epoch`) |
 

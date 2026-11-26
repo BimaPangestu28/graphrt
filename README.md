@@ -73,11 +73,12 @@ docker run --rm ghcr.io/bimapangestu28/graphrt:gateway gateway --help   # gatewa
 Linux (x86_64, aarch64; static musl), macOS (x86_64, aarch64) and Windows (x86_64,
 `.zip`, no Visual C++ runtime needed) archives with `SHA256SUMS` are on the
 [releases page](https://github.com/BimaPangestu28/graphrt/releases). Two builds per
-platform: `graphrt-<target>` (the agent: run, serve, eval) and, on Linux and macOS,
+platform: `graphrt-<target>` (the agent: run, serve, eval) and
 `graphrt-gateway-<target>` (the same CLI plus the gateway and `graphrt deploy` with every
-provider; it links mimalloc, which agents leave out). The gateway is Unix-only, so Windows
-has the agent archive only. The release workflow builds them on each OS after the test suite
-passed on Linux, macOS and Windows.
+provider; it links mimalloc, which agents leave out). On Windows the gateway's local agents
+listen on named pipes instead of Unix sockets ([docs/windows-gateway.md](docs/windows-gateway.md)).
+The release workflow builds them on each OS after the test suite passed on Linux, macOS and
+Windows.
 Libraries are on crates.io: `graphrt-core` (runtime) plus integration crates such as
 `graphrt-llm`, `graphrt-http`, `graphrt-rag`.
 

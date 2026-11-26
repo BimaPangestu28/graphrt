@@ -53,8 +53,17 @@ impl Drop for DevGateway {
                 && let Some(pid) =
                     std::fs::read_to_string(&path).ok().and_then(|text| text.lines().next().map(str::to_owned))
             {
-                let _killed = Command::new("kill").arg("-KILL").arg(format!("-{pid}")).stderr(Stdio::null()).status();
-                let _killed = Command::new("kill").arg("-KILL").arg(pid).stderr(Stdio::null()).status();
+                if cfg!(windows) {
+                    let _killed = Command::new("taskkill")
+                        .args(["/F", "/T", "/PID", &pid])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                } else {
+                    let _killed =
+                        Command::new("kill").arg("-KILL").arg(format!("-{pid}")).stderr(Stdio::null()).status();
+                    let _killed = Command::new("kill").arg("-KILL").arg(pid).stderr(Stdio::null()).status();
+                }
             }
         }
         let _cleanup = std::fs::remove_dir_all(&self.dir);
@@ -95,8 +104,11 @@ impl DevGateway {
         let child = Command::new(BIN)
             .args(["gateway", "--dev", HELLO_WORKFLOW, "--listen", &format!("127.0.0.1:{port}")])
             .current_dir(&dir)
-            // The default socket directory is `$TMPDIR/graphrt-gateway`: keep it inside the test directory.
+            // The default socket directory is `$TMPDIR/graphrt-gateway` (`%TMP%` on
+            // Windows): keep it inside the test directory.
             .env("TMPDIR", &dir)
+            .env("TMP", &dir)
+            .env("TEMP", &dir)
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(dir.join("gateway.log")).unwrap())
             .spawn()
@@ -132,7 +144,9 @@ fn dev_gateway_wakes_a_local_agent_of_this_binary_and_runs_the_workflow() {
 
 /// Socket paths must fit `sun_path` (104 bytes on macOS, 108 on Linux). With a
 /// socket directory longer than that the agents used to exit with status 2;
-/// the gateway now moves them to a short private directory.
+/// the gateway now moves them to a short private directory. (Windows agents
+/// listen on named pipes, which have no such limit.)
+#[cfg(unix)]
 #[test]
 fn dev_gateway_runs_when_its_socket_dir_is_too_long_for_unix_sockets() {
     let base = std::env::temp_dir().join(format!("grt-gw-long-{}", std::process::id()));

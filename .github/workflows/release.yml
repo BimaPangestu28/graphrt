@@ -117,10 +117,7 @@ jobs:
           case "${{ matrix.target }}" in *windows*) ext=".exe" ;; esac
           mkdir -p dist
           # archive-prefix:features (the agent first, then the gateway build).
-          # The gateway is Unix-only (Unix sockets, file ownership checks), so
-          # Windows gets the agent archive only.
-          specs=("${BIN}:$EXTRA_FEATURES")
-          case "${{ matrix.target }}" in *windows*) ;; *) specs+=("${BIN}-gateway:$GATEWAY_FEATURES") ;; esac
+          specs=("${BIN}:$EXTRA_FEATURES" "${BIN}-gateway:$GATEWAY_FEATURES")
           for spec in "${specs[@]}"; do
             prefix=${spec%%:*}
             features=${spec#*:}
@@ -142,9 +139,7 @@ jobs:
             )
           done
           echo "agent=dist/${BIN}-${{ matrix.target }}/${BIN}${ext}" >> "$GITHUB_OUTPUT"
-          if [ ${#specs[@]} -gt 1 ]; then
-            echo "gateway=dist/${BIN}-gateway-${{ matrix.target }}/${BIN}${ext}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "gateway=dist/${BIN}-gateway-${{ matrix.target }}/${BIN}${ext}" >> "$GITHUB_OUTPUT"
       - name: Smoke test the packaged binaries
         if: matrix.smoke
         shell: bash

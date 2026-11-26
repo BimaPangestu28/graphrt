@@ -53,6 +53,8 @@ pub struct AppState {
     pub(super) max_active_runs: usize,
     /// Set by a shutdown drain: new and resumed runs are refused with `503`.
     pub(super) draining: AtomicBool,
+    /// Stop requests of the gateway (`POST /internal/v1/stop`), handled like `SIGTERM`.
+    pub(super) stop: Arc<tokio::sync::Notify>,
     /// The run store, wrapped in a [`TimedStore`] recording into `store_writes`.
     pub(super) store: Arc<dyn RunStore>,
     /// Recent write latency of `store` (the drain sizes its reserve with it).
@@ -102,6 +104,7 @@ impl AppState {
             runs: Mutex::new(HashMap::new()),
             max_active_runs: 0,
             draining: AtomicBool::new(false),
+            stop: Arc::new(tokio::sync::Notify::new()),
             store: Arc::new(TimedStore::new(memory.clone(), Arc::clone(&store_writes))),
             store_writes,
             #[cfg(feature = "scores")]
@@ -414,6 +417,17 @@ impl AppState {
     /// Stop accepting runs (`503` + `Retry-After`) and report not ready on `/readyz`.
     pub fn begin_drain(&self) {
         self.draining.store(true, Ordering::Release);
+    }
+
+    /// Ask the server to drain and exit, as `SIGTERM` does (the gateway's
+    /// `POST /internal/v1/stop`; [`crate::drain::ShutdownSignals`] delivers it).
+    pub fn request_stop(&self) {
+        self.stop.notify_one();
+    }
+
+    /// Where [`AppState::request_stop`] is delivered.
+    pub fn stop_requests(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.stop)
     }
 
     /// Whether [`AppState::begin_drain`] was called.

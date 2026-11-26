@@ -1,6 +1,8 @@
 //! Conformance of the local-process provider against real processes: a tiny
 //! Python stand-in that listens on the Unix socket the provider passes
-//! (`--listen unix:<path>`). Skipped when `python3` is missing.
+//! (`--listen unix:<path>`), or on Windows on the named pipe
+//! (`--listen pipe:<name>`, stopping on `POST /internal/v1/stop`). Skipped
+//! when `python3` is missing.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::print_stdout)]
 
@@ -11,6 +13,7 @@ use graphrt_gateway::local::{LocalProvider, LocalVersion};
 use graphrt_provider_api::conformance::{CaseId, CaseOutcome, ConformanceConfig, ConformanceTarget, run_conformance};
 use graphrt_provider_api::{BoxFuture, DeploymentRef, Provider, ReplicaRef};
 
+#[cfg(unix)]
 const AGENT: &str = r#"
 import os, signal, socket, sys
 path = next(a[5:] for a in sys.argv if a.startswith("unix:"))
@@ -23,6 +26,37 @@ while True:
     except OSError:
         pass
     c.close()
+"#;
+
+/// The next pipe instance is made before the current client is served, so the
+/// pipe never goes missing between two clients (the provider takes a missing
+/// pipe for an agent that exited).
+#[cfg(windows)]
+const AGENT: &str = r#"
+import _winapi, sys
+name = next(a[5:] for a in sys.argv if a.startswith("pipe:"))
+def instance(first):
+    flags = _winapi.PIPE_ACCESS_DUPLEX | (_winapi.FILE_FLAG_FIRST_PIPE_INSTANCE if first else 0)
+    mode = _winapi.PIPE_TYPE_BYTE | _winapi.PIPE_READMODE_BYTE | _winapi.PIPE_WAIT | 0x8  # PIPE_REJECT_REMOTE_CLIENTS
+    return _winapi.CreateNamedPipe(name, flags, mode, _winapi.PIPE_UNLIMITED_INSTANCES, 65536, 65536, 0, _winapi.NULL)
+pipe = instance(True)
+while True:
+    try:
+        _winapi.ConnectNamedPipe(pipe, False)
+    except OSError:
+        pass  # ERROR_PIPE_CONNECTED: the client came first
+    current, pipe = pipe, instance(False)
+    try:
+        request, _ = _winapi.ReadFile(current, 65536)
+        _winapi.WriteFile(current, b"HTTP/1.1 200 OK
+content-length: 2
+
+{}")
+        if b"/internal/v1/stop" in request:
+            sys.exit(0)
+    except OSError:
+        pass
+    _winapi.CloseHandle(current)
 "#;
 
 fn python() -> Option<String> {
@@ -51,12 +85,16 @@ impl ConformanceTarget for LocalTarget {
     }
     fn kill_externally<'a>(&'a self, replica: &'a ReplicaRef) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            let status = tokio::process::Command::new("kill")
-                .arg("-KILL")
-                .arg(&replica.id)
-                .status()
-                .await
-                .map_err(|error| error.to_string())?;
+            let mut command = if cfg!(windows) {
+                let mut command = tokio::process::Command::new("taskkill");
+                command.args(["/F", "/PID", &replica.id]);
+                command
+            } else {
+                let mut command = tokio::process::Command::new("kill");
+                command.args(["-KILL", &replica.id]);
+                command
+            };
+            let status = command.status().await.map_err(|error| error.to_string())?;
             if status.success() { Ok(()) } else { Err("kill failed".into()) }
         })
     }
@@ -137,8 +175,10 @@ async fn releasing_one_replica_keeps_the_other() {
 
 /// Longest Unix socket path `bind` accepts: `sun_path` is 108 bytes on Linux,
 /// 104 on macOS and the BSDs, including the terminating NUL.
+#[cfg(unix)]
 const MAX_SOCKET_PATH: usize = if cfg!(target_os = "linux") { 107 } else { 103 };
 
+#[cfg(unix)]
 fn socket_of(endpoint: &graphrt_provider_api::Endpoint) -> std::path::PathBuf {
     match &endpoint.address {
         graphrt_provider_api::EndpointAddress::Unix(path) => path.clone(),
@@ -146,6 +186,7 @@ fn socket_of(endpoint: &graphrt_provider_api::Endpoint) -> std::path::PathBuf {
     }
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_socket_dir_too_long_for_sun_path_still_starts_agents() {
     let Some(python) = python() else { return };
@@ -174,6 +215,7 @@ async fn a_socket_dir_too_long_for_sun_path_still_starts_agents() {
     let _cleanup = socket.parent().map(std::fs::remove_dir_all);
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_short_socket_dir_is_used_as_configured() {
     let Some(python) = python() else { return };
@@ -191,5 +233,46 @@ async fn a_short_socket_dir_is_used_as_configured() {
     let endpoints = provider.wake(&deployment, 1).await.unwrap();
     assert_eq!(socket_of(&endpoints[0]).parent(), Some(dir.as_path()));
     provider.release(&endpoints[0].replica, graphrt_provider_api::ReleaseMode::Stop).await.unwrap();
+    let _cleanup = std::fs::remove_dir_all(&dir);
+}
+
+/// Windows: agents listen on named pipes with an unguessable name, recorded in
+/// the pid file next to nothing else (no socket file), and stop on the signed
+/// `POST /internal/v1/stop` well within the grace.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn windows_agents_listen_on_private_pipes_and_stop_on_request() {
+    let Some(python) = python() else { return };
+    let dir = std::env::temp_dir().join(format!("gwlw-{}", std::process::id()));
+    let _cleanup = std::fs::remove_dir_all(&dir);
+    let provider = LocalProvider::new(&dir, Duration::from_secs(10)).unwrap();
+    let deployment = DeploymentRef::new("shop", "v1", "local");
+    provider.register(
+        &deployment,
+        LocalVersion {
+            command: vec![python, "-c".into(), AGENT.into()],
+            keys: format!("k1:{}", "ab".repeat(32)),
+            env: Vec::new(),
+        },
+    );
+    let endpoints = provider.wake(&deployment, 1).await.unwrap();
+    let graphrt_provider_api::EndpointAddress::Pipe(name) = &endpoints[0].address else {
+        panic!("expected a named pipe, got {:?}", endpoints[0].address)
+    };
+    let random = name.rsplit('-').next().unwrap();
+    assert_eq!(random.len(), 32, "128 random bits in {name}");
+    let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|entry| entry.path()).collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(std::fs::read_to_string(&files[0]).unwrap().lines().nth(3) == Some(name.as_str()));
+    let began = std::time::Instant::now();
+    provider.release(&endpoints[0].replica, graphrt_provider_api::ReleaseMode::Stop).await.unwrap();
+    for _ in 0..200 {
+        if provider.list(&deployment).await.unwrap().is_empty() && !files[0].exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(provider.list(&deployment).await.unwrap().is_empty());
+    assert!(began.elapsed() < Duration::from_secs(5), "stopped on request, not after the 10 s grace");
     let _cleanup = std::fs::remove_dir_all(&dir);
 }

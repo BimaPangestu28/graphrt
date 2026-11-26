@@ -3,6 +3,7 @@
 #![cfg(all(feature = "serve", feature = "http"))]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+#[cfg(unix)]
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

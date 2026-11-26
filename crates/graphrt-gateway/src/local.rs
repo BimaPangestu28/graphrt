@@ -1,16 +1,20 @@
 //! `local-process` provider (feature `gw-local`, plan §5): one
 //! `graphrt serve --trust-gateway` process per replica, listening on a Unix
-//! socket the gateway chose, in its own process group.
+//! socket (a named pipe on Windows) the gateway chose, in its own process group.
 //!
 //! - **wake**: spawns the missing processes and waits until their socket
 //!   accepts connections (no plugin: ~10 ms).
 //! - **release**: `SIGTERM` to the process group (the agent drains), `SIGKILL`
 //!   after the grace. Signals go through `/bin/kill` because the workspace
-//!   forbids `unsafe` (no `libc::kill`).
+//!   forbids `unsafe` (no `libc::kill`). On Windows, which has no signal to
+//!   send, a signed `POST /internal/v1/stop` asks the agent to drain and exit,
+//!   and `taskkill /F /T` ends it (and its children) after the grace.
 //! - **list**: every replica of a deployment version, including ones started
 //!   by a previous gateway process: each replica leaves a `.pid` file next to
 //!   its socket, so after a `kill -9` of the gateway the new one can adopt
-//!   their orphans or release them (C12).
+//!   their orphans or release them (C12). On Windows the pid file also names
+//!   the replica's pipe (`\\.\pipe\graphrt-…` with 128 random bits, so no
+//!   other process can create it first).
 //! - **socket paths** must fit in `sun_path` (108 bytes on Linux, 104 on macOS
 //!   and the BSDs, NUL included), or the agent cannot bind and exits. When
 //!   `socket_dir` is too long, sockets and pid files go to a short directory
@@ -28,6 +32,19 @@ use graphrt_provider_api::{
 };
 use tokio::process::{Child, Command};
 
+/// `CREATE_NEW_PROCESS_GROUP` process creation flag (Windows).
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
+/// Whether an agent accepts connections at `address` (start-up readiness).
+async fn accepts(address: &EndpointAddress) -> bool {
+    match address {
+        #[cfg(unix)]
+        EndpointAddress::Unix(socket) => tokio::net::UnixStream::connect(socket).await.is_ok(),
+        _ => is_listening(address),
+    }
+}
+
 /// How the agents of one deployment version are started.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalVersion {
@@ -44,8 +61,21 @@ pub struct LocalVersion {
 struct LocalReplica {
     child: Option<Child>,
     pid: u32,
-    socket: PathBuf,
+    /// The `.pid` file recording the replica for a restarted gateway.
+    pid_file: PathBuf,
+    /// Where the agent listens: `Unix(socket)` (next to the pid file) or `Pipe(name)`.
+    address: EndpointAddress,
     phase: ReplicaPhase,
+}
+
+impl LocalReplica {
+    /// Removes the pid file and, on Unix, the socket file.
+    fn remove_files(&self) {
+        let _cleanup = std::fs::remove_file(&self.pid_file);
+        if let EndpointAddress::Unix(socket) = &self.address {
+            let _cleanup = std::fs::remove_file(socket);
+        }
+    }
 }
 
 /// The local-process provider.
@@ -68,14 +98,18 @@ fn short_hash(text: &str) -> String {
 }
 
 /// Longest Unix socket path `bind` accepts (`sun_path` minus the NUL).
+#[cfg(unix)]
 const MAX_SOCKET_PATH: usize = if cfg!(target_os = "linux") { 107 } else { 103 };
 
 /// Longest file name `spawn_one` creates: `g<10 hex>-<u64::MAX>.sock`.
+#[cfg(unix)]
 const MAX_SOCKET_NAME: usize = "g0123456789-18446744073709551615.sock".len();
 
 /// Base of the short directory used when `socket_dir` is too long.
+#[cfg(unix)]
 const SHORT_SOCKET_BASE: &str = "/tmp";
 
+#[cfg(unix)]
 fn fits_sun_path(directory: &Path) -> bool {
     directory.as_os_str().len() + 1 + MAX_SOCKET_NAME <= MAX_SOCKET_PATH
 }
@@ -88,6 +122,7 @@ fn fits_sun_path(directory: &Path) -> bool {
 /// When a directory cannot be created, or the short one exists but is not a
 /// private directory of this user (another user could otherwise intercept
 /// the agents' sockets).
+#[cfg(unix)]
 fn effective_socket_dir(configured: &Path) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
     std::fs::create_dir_all(configured)?;
@@ -114,12 +149,69 @@ fn effective_socket_dir(configured: &Path) -> std::io::Result<PathBuf> {
     Ok(short)
 }
 
+/// On Windows the directory only holds pid files (pipes have no path length
+/// limit): `configured`, created if missing.
+///
+/// # Errors
+/// When the directory cannot be created.
+#[cfg(not(unix))]
+fn effective_socket_dir(configured: &Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(configured)?;
+    Ok(configured.to_path_buf())
+}
+
 fn version_prefix(deployment: &DeploymentRef) -> String {
     format!("g{}", short_hash(&format!("{}/{}", deployment.name, deployment.version)))
 }
 
-async fn signal_group(pid: u32, signal: &str) {
-    let _best_effort = Command::new("kill").arg(format!("-{signal}")).arg(format!("-{pid}")).status().await;
+/// Ends the agent `pid` and its children at once: `SIGKILL` to its process
+/// group, `taskkill /F /T` on Windows.
+async fn kill_agent(pid: u32) {
+    #[cfg(unix)]
+    let _best_effort = crate::os::signal_group(pid, "KILL").await;
+    #[cfg(windows)]
+    let _best_effort = crate::os::kill_tree(pid).await;
+    #[cfg(not(any(unix, windows)))]
+    let _best_effort = crate::os::kill(pid).await;
+}
+
+/// `--listen` value of an agent listening at `address`.
+fn listen_argument(address: &EndpointAddress) -> String {
+    match address {
+        EndpointAddress::Pipe(name) => format!("pipe:{name}"),
+        EndpointAddress::Unix(socket) => format!("unix:{}", socket.display()),
+        EndpointAddress::Http(url) => url.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Whether an agent accepts connections at `address` right now (blocking, but
+/// immediate: a local socket or pipe answers or refuses at once).
+fn is_listening(address: &EndpointAddress) -> bool {
+    match address {
+        #[cfg(unix)]
+        EndpointAddress::Unix(socket) => std::os::unix::net::UnixStream::connect(socket).is_ok(),
+        // Opening the pipe takes one of its instances (the agent makes the
+        // next one before it serves this one); every instance busy means alive.
+        EndpointAddress::Pipe(name) => match std::fs::OpenOptions::new().read(true).write(true).open(name) {
+            Ok(_client) => true,
+            Err(error) => error.raw_os_error() == Some(ERROR_PIPE_BUSY),
+        },
+        _ => false,
+    }
+}
+
+/// `ERROR_PIPE_BUSY` (Windows).
+const ERROR_PIPE_BUSY: i32 = 231;
+
+/// 128 random bits as hex: the unguessable part of a pipe name.
+fn pipe_nonce() -> Result<String, ProviderError> {
+    use ring::rand::SecureRandom as _;
+    let mut bytes = [0u8; 16];
+    ring::rand::SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| ProviderError::transient("no randomness for the agent's pipe name"))?;
+    Ok(crate::hex::encode(&bytes))
 }
 
 impl LocalProvider {
@@ -171,39 +263,58 @@ impl LocalProvider {
         let prefix = version_prefix(deployment);
         // Concurrent spawns each take their own number; files left by an earlier
         // gateway process are skipped.
-        let socket = loop {
+        let pid_file = loop {
             let number = self.next_socket.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let candidate = self.socket_dir.join(format!("{prefix}-{number}.sock"));
-            if !candidate.exists() && !candidate.with_extension("pid").exists() {
+            let candidate = self.socket_dir.join(format!("{prefix}-{number}.pid"));
+            if !candidate.exists() && !candidate.with_extension("sock").exists() {
                 break candidate;
             }
+        };
+        let address = if cfg!(windows) {
+            let stem = pid_file.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+            EndpointAddress::Pipe(format!(r"\\.\pipe\graphrt-{stem}-{}", pipe_nonce()?))
+        } else {
+            EndpointAddress::Unix(pid_file.with_extension("sock"))
         };
         let mut command = Command::new(program);
         command
             .args(arguments)
             .arg("--listen")
-            .arg(format!("unix:{}", socket.display()))
+            .arg(listen_argument(&address))
             .arg("--trust-gateway")
             .arg("--deployment")
             .arg(&deployment.name)
             .env("GRAPHRT_GATEWAY_KEYS", &version.keys)
             .envs(version.env.iter().map(|(name, value)| (name.as_str(), value.as_str())))
             .stdin(std::process::Stdio::null())
-            .process_group(0)
             .kill_on_drop(false);
+        #[cfg(unix)]
+        command.process_group(0);
+        // Its own group: the console's Ctrl+C reaches the gateway, not the agents.
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP);
         let child = command.spawn().map_err(|error| ProviderError::fatal(format!("spawning the agent: {error}")))?;
         let pid = child.id().ok_or_else(|| ProviderError::transient("agent exited at once"))?;
-        let pid_file = socket.with_extension("pid");
-        std::fs::write(&pid_file, format!("{pid}\n{}\n{}\n", deployment.name, deployment.version))
-            .map_err(|error| ProviderError::transient(error.to_string()))?;
+        let mut record = format!("{pid}\n{}\n{}\n", deployment.name, deployment.version);
+        if let EndpointAddress::Pipe(name) = &address {
+            record.push_str(name);
+            record.push('\n');
+        }
+        std::fs::write(&pid_file, record).map_err(|error| ProviderError::transient(error.to_string()))?;
         let replica = ReplicaRef { deployment: deployment.clone(), id: pid.to_string() };
         self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
             replica.clone(),
-            LocalReplica { child: Some(child), pid, socket: socket.clone(), phase: ReplicaPhase::Starting },
+            LocalReplica {
+                child: Some(child),
+                pid,
+                pid_file: pid_file.clone(),
+                address: address.clone(),
+                phase: ReplicaPhase::Starting,
+            },
         );
         let deadline = tokio::time::Instant::now() + self.ready_timeout;
         loop {
-            if tokio::net::UnixStream::connect(&socket).await.is_ok() {
+            if accepts(&address).await {
                 if let Some(state) =
                     self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(&replica)
                 {
@@ -221,7 +332,7 @@ impl LocalProvider {
             if exited.is_some() || tokio::time::Instant::now() >= deadline {
                 self.forget(&replica);
                 let _cleanup = std::fs::remove_file(&pid_file);
-                signal_group(pid, "KILL").await;
+                kill_agent(pid).await;
                 return Err(ProviderError::transient(match exited {
                     Some(status) => format!("agent exited during start-up ({status})"),
                     None => "agent did not listen in time".to_owned(),
@@ -229,6 +340,27 @@ impl LocalProvider {
             }
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
+    }
+
+    /// Asks the agent at `address` to drain and exit (`POST /internal/v1/stop`,
+    /// signed with the deployment's first key): the Windows stand-in for
+    /// `SIGTERM`. Whether the agent accepted.
+    #[cfg(not(unix))]
+    async fn request_stop(&self, deployment: &DeploymentRef, address: &EndpointAddress) -> bool {
+        let keys = self
+            .versions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(deployment.name.clone(), deployment.version.clone()))
+            .map(|version| version.keys.clone())
+            .unwrap_or_default();
+        let Some(key) = crate::signature::parse_keys(&keys).ok().and_then(|keys| keys.into_iter().next()) else {
+            return false;
+        };
+        let client = crate::agent_client::AgentClient::default();
+        tokio::time::timeout(self.grace, client.stop(address, &key, &deployment.name))
+            .await
+            .is_ok_and(|sent| sent.is_ok())
     }
 
     fn forget(&self, replica: &ReplicaRef) -> Option<LocalReplica> {
@@ -251,12 +383,19 @@ impl LocalProvider {
                 continue;
             }
             let replica = ReplicaRef { deployment: deployment.clone(), id: pid.to_string() };
-            let socket = path.with_extension("sock");
+            let address = if cfg!(windows) {
+                // The fourth line names the pipe; a pid file without one is not ours.
+                let Some(name) = text.lines().nth(3).map(str::trim).filter(|name| !name.is_empty()) else { continue };
+                EndpointAddress::Pipe(name.to_owned())
+            } else {
+                EndpointAddress::Unix(path.with_extension("sock"))
+            };
             let mut replicas = self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             replicas.entry(replica).or_insert_with(|| LocalReplica {
                 child: None,
                 pid,
-                socket,
+                pid_file: path.clone(),
+                address,
                 phase: ReplicaPhase::Ready,
             });
         }
@@ -271,11 +410,10 @@ impl LocalProvider {
             let exited = match state.child.as_mut() {
                 Some(child) => child.try_wait().ok().flatten().is_some(),
                 // Adopted: alive while its socket accepts connections.
-                None => std::os::unix::net::UnixStream::connect(&state.socket).is_err(),
+                None => !is_listening(&state.address),
             };
             if exited {
-                let _cleanup = std::fs::remove_file(state.socket.with_extension("pid"));
-                let _cleanup = std::fs::remove_file(&state.socket);
+                state.remove_files();
             }
             !exited
         });
@@ -324,10 +462,7 @@ impl Provider for LocalProvider {
             Ok(replicas
                 .iter()
                 .filter(|(replica, state)| replica.deployment == *deployment && state.phase == ReplicaPhase::Ready)
-                .map(|(replica, state)| Endpoint {
-                    replica: replica.clone(),
-                    address: EndpointAddress::Unix(state.socket.clone()),
-                })
+                .map(|(replica, state)| Endpoint { replica: replica.clone(), address: state.address.clone() })
                 .collect())
         })
     }
@@ -336,24 +471,38 @@ impl Provider for LocalProvider {
         Box::pin(async move {
             let Some(mut state) = self.forget(replica) else { return Ok(()) };
             self.released.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(state.pid);
-            signal_group(state.pid, "TERM").await;
+            #[cfg(unix)]
+            let asked = crate::os::signal_group(state.pid, "TERM").await;
+            #[cfg(not(unix))]
+            let asked = self.request_stop(&replica.deployment, &state.address).await;
             let grace = self.grace;
             graphrt_core::task::spawn(async move {
                 let exited = match state.child.as_mut() {
                     Some(child) => tokio::time::timeout(grace, child.wait()).await.is_ok(),
+                    // Adopted: on Windows it is gone once its pipe is; on Unix
+                    // the grace is waited out as before.
+                    None if cfg!(windows) && asked => {
+                        let address = state.address.clone();
+                        tokio::time::timeout(grace, async move {
+                            while is_listening(&address) {
+                                tokio::time::sleep(Duration::from_millis(50)).await;
+                            }
+                        })
+                        .await
+                        .is_ok()
+                    }
                     None => {
                         tokio::time::sleep(grace).await;
                         false
                     }
                 };
                 if !exited {
-                    signal_group(state.pid, "KILL").await;
+                    kill_agent(state.pid).await;
                 }
                 if let Some(child) = state.child.as_mut() {
                     let _reaped = child.wait().await;
                 }
-                let _cleanup = std::fs::remove_file(state.socket.with_extension("pid"));
-                let _cleanup = std::fs::remove_file(&state.socket);
+                state.remove_files();
             });
             Ok(())
         })
@@ -370,7 +519,7 @@ impl Provider for LocalProvider {
                 .map(|(replica, state)| ReplicaState {
                     replica: replica.clone(),
                     phase: state.phase,
-                    address: Some(EndpointAddress::Unix(state.socket.clone())),
+                    address: Some(state.address.clone()),
                     started_at_ms: None,
                 })
                 .collect())
