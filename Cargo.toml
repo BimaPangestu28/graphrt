@@ -63,7 +63,8 @@ serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 indexmap = { version = "2", features = ["serde"] }
 smallvec = "1.13"
 minijinja = { version = "3", default-features = false, features = ["builtins", "serde", "json", "fuel", "macros", "multi_template"] }
-serde-saphyr = "2"
+# Workflows and kubeconfigs are only read: no serializer, no comment retention.
+serde-saphyr = { version = "2", default-features = false, features = ["deserialize"] }
 tokio = { version = "1", default-features = false }
 reqwest = { version = "0.13", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
