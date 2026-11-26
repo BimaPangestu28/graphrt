@@ -48,10 +48,7 @@ while True:
     current, pipe = pipe, instance(False)
     try:
         request, _ = _winapi.ReadFile(current, 65536)
-        _winapi.WriteFile(current, b"HTTP/1.1 200 OK
-content-length: 2
-
-{}")
+        _winapi.WriteFile(current, b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")
         if b"/internal/v1/stop" in request:
             sys.exit(0)
     except OSError:

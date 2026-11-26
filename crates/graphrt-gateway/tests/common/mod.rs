@@ -587,10 +587,23 @@ pub fn crash_mid_stream(
     after: Duration,
     url_provider: bool,
 ) -> (String, graphrt_core::store::RunStatus) {
+    crash_mid_execution(path, world, body, after, url_provider, 0)
+}
+
+/// [`crash_mid_stream`] once the run was started `min_executions` times.
+pub fn crash_mid_execution(
+    path: &std::path::Path,
+    world: &Arc<AgentWorld>,
+    body: Json,
+    after: Duration,
+    url_provider: bool,
+    min_executions: usize,
+) -> (String, graphrt_core::store::RunStatus) {
     use graphrt_core::store::RunStore as _;
     let (path, world) = (path.to_owned(), world.clone());
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let watched = world.clone();
         let result = runtime.block_on(async move {
             let first = start_gateway(Options {
                 store: SqliteStore::open(&path).unwrap(),
@@ -602,6 +615,20 @@ pub fn crash_mid_stream(
             let (_, accepted) = first.post(&format!("/v1/deployments/{DEPLOYMENT}/runs"), body).await;
             let run_id = accepted["run_id"].as_str().unwrap().to_owned();
             tokio::time::sleep(after).await;
+            // `min_executions`: wait (up to 10 s more) until the agents started the
+            // run that often, for a crash in a later execution whatever the timer
+            // resolution (Windows sleeps in ~15 ms steps).
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while min_executions > 0
+                && tokio::time::Instant::now() < deadline
+                && watched.executions.lock().unwrap().get(&run_id).map_or(0, Vec::len) < min_executions
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            if min_executions > 0 {
+                // Into that execution, past its first events.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
             let status = first.gateway.store.get(&run_id).await.unwrap().unwrap().status;
             std::mem::forget(first);
             (run_id, status)
