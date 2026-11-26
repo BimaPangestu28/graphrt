@@ -102,6 +102,21 @@ impl ProcessTransport {
         }
     }
 
+    /// Stop the current process (if any) as soon as the connection lock is free.
+    ///
+    /// For a stop that nothing follows up on (an idle pool): a kill that
+    /// [`Self::kill_current`] leaves pending only runs on the next request, so
+    /// the process would stay up while the lock was busy for a moment, even
+    /// just for an [`Self::is_ready`] check.
+    pub(crate) async fn stop(&self, reason: &str) {
+        let mut live = self.live.lock().await;
+        self.kill_requested.store(false, Ordering::SeqCst);
+        self.kill_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(l) = live.take() {
+            l.conn.close(reason);
+        }
+    }
+
     /// The last bytes the plugin wrote to stderr.
     pub fn stderr_tail(&self) -> String {
         stderr_text(&self.stderr)
@@ -501,6 +516,35 @@ mod tests {
         let mut command = std::process::Command::new("kill");
         quiet_command(&mut command, &appimage_fixes());
         assert_eq!(env_of(&command), [("LD_LIBRARY_PATH".into(), None), ("PATH".into(), Some("/usr/bin".into()))]);
+    }
+
+    fn testkit() -> ProcessTransport {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("testkit");
+        let plugin = LoadedManifest::from_dir(&dir).unwrap();
+        let crate::manifest::Runtime::Process(runtime) = plugin.manifest.runtime.clone() else {
+            panic!("process runtime")
+        };
+        ProcessTransport::new(plugin, runtime)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stop_while_the_connection_lock_is_busy_still_stops_the_process() {
+        let transport = Arc::new(testkit());
+        let clock = graphrt_core::node::default_clock();
+        transport.started(&clock).await.unwrap();
+        assert!(transport.is_ready());
+
+        // The lock is busy at the moment of the stop (an `is_ready` check, a request starting).
+        let busy = transport.live.lock().await;
+        let stopping = tokio::spawn({
+            let transport = Arc::clone(&transport);
+            async move { transport.stop("plugin pool idle").await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!stopping.is_finished(), "the stop waits for the lock");
+        drop(busy);
+        tokio::time::timeout(Duration::from_secs(10), stopping).await.unwrap().unwrap();
+        assert!(!transport.is_ready(), "the process is stopped without another request");
     }
 
     #[test]
