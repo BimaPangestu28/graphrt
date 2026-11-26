@@ -51,6 +51,12 @@ releases may contain breaking changes; they are called out under **Changed**.
   and offers a run an agent refused as busy (`429`) or draining (`503`) again
   after a short backoff instead of failing it at once.
 
+- A local agent woken by `graphrt gateway` gets its run sooner: the gateway
+  checks a starting agent every 200 µs instead of every 2 ms, and
+  `serve --trust-gateway` loads the model HTTP client (the system trust
+  store) on a background thread at start instead of in the first model call.
+  Model providers of one process share one HTTP client per connect timeout.
+
 ### Fixed
 
 - `graphrt gateway` sets `TCP_NODELAY` on its public connections, as
