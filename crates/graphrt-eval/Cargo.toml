@@ -27,7 +27,7 @@ regex = { version = "1", default-features = false, features = ["std", "unicode-p
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio"] }
 graphrt-llm = { workspace = true, features = ["mock"] }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
-jsonschema = { version = "0.61", default-features = false }
+jsonschema = { version = "0.63", default-features = false }
 
 [lints]
 workspace = true
