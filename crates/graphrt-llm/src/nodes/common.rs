@@ -2,9 +2,13 @@
 
 use std::sync::{Arc, LazyLock};
 
+#[cfg(feature = "vision-preparer")]
+use futures::future::BoxFuture;
 use graphrt_core::event::Usage;
+#[cfg(feature = "vision-preparer")]
+use graphrt_core::file::{FileError, ImagePreparer};
 use graphrt_core::template::{Part, Template};
-use graphrt_core::value::{FileKind, Value};
+use graphrt_core::value::{File, FileKind, Value};
 use graphrt_core::{NodeContext, NodeError, Selector, VariablePool};
 use serde::Deserialize;
 use serde_json::Value as Json;
@@ -253,37 +257,89 @@ impl VisionConfig {
             .unwrap_or_else(|| Selector::of("sys", "files"))
     }
 
-    /// Image parts for the configured files (default selector `sys.files`).
-    ///
-    /// Non-image files are ignored. An image without a URL (e.g. a host
-    /// storage reference that was not resolved) is an input error rather than
-    /// being dropped silently.
-    pub fn image_parts(&self, pool: &VariablePool) -> Result<Vec<ContentPart>, NodeError> {
+    fn detail(&self) -> Option<String> {
+        self.configs.as_ref().and_then(|c| c.detail.clone()).or_else(|| self.detail.clone())
+    }
+
+    /// The image files among the configured files (default selector `sys.files`).
+    /// Non-image files are ignored.
+    fn image_files(&self, pool: &VariablePool) -> Vec<Arc<File>> {
         if !self.enabled {
-            return Ok(Vec::new());
+            return Vec::new();
         }
-        let detail = self.configs.as_ref().and_then(|c| c.detail.clone()).or_else(|| self.detail.clone());
         let files: Vec<Value> = match pool.get(&self.selector()) {
             Some(Value::Array(items)) => items.iter().cloned().collect(),
             Some(v @ Value::File(_)) => vec![v],
             _ => Vec::new(),
         };
-        let mut parts = Vec::new();
-        for file in files.iter().filter_map(Value::as_file) {
-            let is_image =
-                file.kind == FileKind::Image || file.mime_type.as_deref().is_some_and(|m| m.starts_with("image/"));
-            if !is_image {
-                continue;
+        let is_image = |file: &File| {
+            file.kind == FileKind::Image || file.mime_type.as_deref().is_some_and(|m| m.starts_with("image/"))
+        };
+        files
+            .into_iter()
+            .filter_map(|value| match value {
+                Value::File(file) if is_image(&file) => Some(file),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The file's own URL. An image without one (a host storage reference
+    /// nobody resolved) is an input error rather than being dropped silently.
+    fn own_url(file: &File) -> Result<String, NodeError> {
+        file.url.clone().filter(|u| !u.is_empty()).ok_or_else(|| {
+            NodeError::invalid_input(format!(
+                "image `{}` has no URL; resolve host files to URLs before sending them to a model",
+                file.name
+            ))
+        })
+    }
+
+    /// Image parts for the configured files, each with the file's own URL.
+    ///
+    /// With the `vision-preparer` feature, nodes use `prepared_image_parts`,
+    /// which also lets the host check and resize the images.
+    pub fn image_parts(&self, pool: &VariablePool) -> Result<Vec<ContentPart>, NodeError> {
+        let detail = self.detail();
+        self.image_files(pool)
+            .iter()
+            .map(|file| Ok(ContentPart::Image { url: Self::own_url(file)?, detail: detail.clone() }))
+            .collect()
+    }
+
+    /// Image parts for the configured files, passed through the host's
+    /// [`ImagePreparer`] when one is registered: it checks, bounds and
+    /// re-encodes each image and can read images that live in host storage.
+    /// Without a preparer this is [`VisionConfig::image_parts`].
+    ///
+    /// An image the preparer refuses fails the node. It is never sent as it was.
+    #[cfg(feature = "vision-preparer")]
+    pub fn prepared_image_parts<'a>(
+        &'a self,
+        ctx: &'a NodeContext,
+    ) -> BoxFuture<'a, Result<Vec<ContentPart>, NodeError>> {
+        // One boxed future shared by every model node, and no future at all on the
+        // common path (no preparer, or no vision): the nodes' own state machines
+        // stay as small as they were.
+        let Some(preparer) = ctx.service::<Arc<dyn ImagePreparer>>().filter(|_| self.enabled) else {
+            return Box::pin(std::future::ready(self.image_parts(&ctx.pool)));
+        };
+        Box::pin(async move {
+            let detail = self.detail();
+            let mut parts = Vec::new();
+            for file in self.image_files(&ctx.pool) {
+                let url = match preparer.prepare(&file).await {
+                    Ok(url) => url,
+                    Err(FileError::Unsupported(_)) => Self::own_url(&file)?,
+                    Err(e) if e.is_retryable() => return Err(NodeError::new("file_io", e.to_string())),
+                    Err(e) => {
+                        return Err(NodeError::invalid_input(format!("image `{}` was refused: {e}", file.name)));
+                    }
+                };
+                parts.push(ContentPart::Image { url, detail: detail.clone() });
             }
-            let url = file.url.clone().filter(|u| !u.is_empty()).ok_or_else(|| {
-                NodeError::invalid_input(format!(
-                    "image `{}` has no URL; resolve host files to URLs before sending them to a model",
-                    file.name
-                ))
-            })?;
-            parts.push(ContentPart::Image { url, detail: detail.clone() });
-        }
-        Ok(parts)
+            Ok(parts)
+        })
     }
 
     pub fn selectors(&self) -> Vec<Selector> {
@@ -926,6 +982,90 @@ mod tests {
         let texts: Vec<String> = msgs.iter().map(Message::text).collect();
         assert_eq!(texts, vec!["sys", "old3", "old4", "tmpl", "now"]);
         assert!(matches!(msgs[4].content.last(), Some(ContentPart::Image { .. })));
+    }
+
+    #[cfg(feature = "vision-preparer")]
+    /// A preparer that answers by file name.
+    #[derive(Debug)]
+    struct NamedPreparer;
+
+    #[cfg(feature = "vision-preparer")]
+    impl ImagePreparer for NamedPreparer {
+        fn prepare<'a>(&'a self, file: &'a File) -> BoxFuture<'a, Result<String, FileError>> {
+            let name = file.name.clone();
+            Box::pin(std::future::ready(match name.as_str() {
+                "stored.png" => Ok("data:image/png;base64,UFJFUEFSRUQ=".to_owned()),
+                "remote.png" => Err(FileError::Unsupported(name)),
+                "flaky.png" => Err(FileError::Io { name, message: "disk busy".into() }),
+                _ => Err(FileError::Invalid { name, message: "unsupported image: SVG".into() }),
+            }))
+        }
+    }
+
+    #[cfg(feature = "vision-preparer")]
+    fn vision_ctx(files: Vec<File>, preparer: bool) -> NodeContext {
+        let mut pool = VariablePool::new();
+        pool.insert("sys", "files", Value::array(files.into_iter().map(Value::from)));
+        let mut services = graphrt_core::Services::new();
+        if preparer {
+            services.insert(Arc::new(NamedPreparer) as Arc<dyn ImagePreparer>);
+        }
+        NodeContext::for_test("llm", pool).with_services(Arc::new(services))
+    }
+
+    #[cfg(feature = "vision-preparer")]
+    fn image(name: &str, url: Option<&str>) -> File {
+        File { marker: true, name: name.into(), kind: FileKind::Image, url: url.map(str::to_owned), ..File::default() }
+    }
+
+    #[cfg(feature = "vision-preparer")]
+    fn urls(parts: &[ContentPart]) -> Vec<&str> {
+        parts
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Image { url, .. } => Some(url.as_str()),
+                ContentPart::Text { .. } => None,
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "vision-preparer")]
+    #[tokio::test]
+    async fn a_registered_preparer_decides_what_a_model_receives() {
+        let vision = VisionConfig { enabled: true, detail: Some("high".into()), ..VisionConfig::default() };
+        // A stored image has no URL: the preparer supplies the content. A remote
+        // image it does not handle keeps its own URL.
+        let files = vec![image("stored.png", None), image("remote.png", Some("https://x.test/cat.png"))];
+        let parts = vision.prepared_image_parts(&vision_ctx(files.clone(), true)).await.unwrap();
+        assert_eq!(urls(&parts), ["data:image/png;base64,UFJFUEFSRUQ=", "https://x.test/cat.png"]);
+        assert!(matches!(&parts[0], ContentPart::Image { detail: Some(d), .. } if d == "high"));
+
+        // Without a preparer nothing changes: a stored image is still an input error.
+        let without = vision.prepared_image_parts(&vision_ctx(files, false)).await.unwrap_err();
+        assert!(without.to_string().contains("has no URL"), "{without}");
+        let ctx = vision_ctx(vec![image("a.png", Some("https://x.test/a.png"))], false);
+        assert_eq!(urls(&vision.prepared_image_parts(&ctx).await.unwrap()), ["https://x.test/a.png"]);
+    }
+
+    #[cfg(feature = "vision-preparer")]
+    #[tokio::test]
+    async fn a_refused_image_fails_the_node_and_is_never_sent_as_it_was() {
+        let vision = VisionConfig { enabled: true, ..VisionConfig::default() };
+        // The image has a perfectly usable URL, and the preparer said no.
+        let spoofed = image("evil.png", Some("data:image/png;base64,PHN2Zz4="));
+        let refused = vision.prepared_image_parts(&vision_ctx(vec![spoofed], true)).await.unwrap_err();
+        assert_eq!(refused.kind, "invalid_input");
+        assert!(refused.to_string().contains("image `evil.png` was refused"), "{refused}");
+        assert!(!refused.retryable);
+        // A storage hiccup is retried by the node policy instead.
+        let flaky = vision.prepared_image_parts(&vision_ctx(vec![image("flaky.png", None)], true)).await.unwrap_err();
+        assert!(flaky.retryable, "{flaky:?}");
+        // Vision off: the preparer is not even asked.
+        let off = VisionConfig::default();
+        assert!(off.prepared_image_parts(&vision_ctx(vec![image("evil.png", None)], true)).await.unwrap().is_empty());
+        // Files that are not images never reach it either.
+        let document = File { marker: true, name: "evil.pdf".into(), kind: FileKind::Document, ..File::default() };
+        assert!(vision.prepared_image_parts(&vision_ctx(vec![document], true)).await.unwrap().is_empty());
     }
 
     #[test]

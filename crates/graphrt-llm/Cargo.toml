@@ -13,12 +13,17 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["openai", "anthropic", "typesafe", "mock", "replay", "tool-files"]
+default = ["openai", "anthropic", "typesafe", "mock", "replay", "tool-files", "vision-preparer"]
 # The `files` output of the `agent` node: files that native tools return in their
 # structured result (for example what the `files` tools of graphrt-files wrote).
 # Plugins and MCP servers cannot return file values, so builds that have no native
 # file tools leave this out and keep the agent node exactly as small as it was.
 tool-files = []
+# Model nodes pass their `vision` images through the host's
+# `graphrt_core::file::ImagePreparer` (checked, bounded, stripped of metadata,
+# resized). Hosts without a preparer leave this out: the nodes then send the
+# files' own URLs, with the code they always had.
+vision-preparer = []
 # `mock::MockModel`, a scripted model for tests and offline examples (no dependencies).
 mock = []
 # `kind: replay` providers: record responses to cassette files and replay them

@@ -169,6 +169,9 @@ impl ExtractorNode {
             messages.extend(memory.history(pool)?);
         }
         let mut user = Message::user(query);
+        #[cfg(feature = "vision-preparer")]
+        user.content.extend(cfg.vision.prepared_image_parts(&ctx).await?);
+        #[cfg(not(feature = "vision-preparer"))]
         user.content.extend(cfg.vision.image_parts(pool)?);
         messages.push(user);
 

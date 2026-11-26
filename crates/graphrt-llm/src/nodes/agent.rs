@@ -685,7 +685,13 @@ impl AgentNode {
     /// The conversation a run starts with. Each of `sections` (the skill
     /// catalog, the learned notes) follows the instruction in the system
     /// message. Without an instruction they are the whole system message.
-    fn initial_state(&self, ctx: &NodeContext, sections: &[&str]) -> Result<AgentState, NodeError> {
+    /// `images` are the vision inputs of the user message.
+    fn initial_state(
+        &self,
+        ctx: &NodeContext,
+        sections: &[&str],
+        images: Vec<ContentPart>,
+    ) -> Result<AgentState, NodeError> {
         let cfg = &self.config;
         let pool = &ctx.pool;
         let mut messages = Vec::new();
@@ -703,7 +709,6 @@ impl AgentNode {
             messages.extend(memory.history(pool)?);
         }
         let query = cfg.query.render(pool);
-        let images = cfg.vision.image_parts(pool)?;
         if query.trim().is_empty() && images.is_empty() {
             if messages.iter().all(|m| m.role == Role::System) {
                 return Err(NodeError::invalid_input("agent query is empty"));
@@ -758,7 +763,11 @@ impl AgentNode {
                 let notes = self.lesson_notes(&ctx).await?;
                 #[cfg(not(feature = "learning"))]
                 let notes = String::new();
-                self.initial_state(&ctx, &[&skill_catalog, &notes])?
+                #[cfg(feature = "vision-preparer")]
+                let images = self.config.vision.prepared_image_parts(&ctx).await?;
+                #[cfg(not(feature = "vision-preparer"))]
+                let images = self.config.vision.image_parts(&ctx.pool)?;
+                self.initial_state(&ctx, &[&skill_catalog, &notes], images)?
             }
         };
         let (final_text, stop) = loop {

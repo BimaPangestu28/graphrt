@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "files", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -36,6 +36,10 @@ doc = ["dep:graphrt-doc", "graphrt-files?/doc"]
 # File workspaces for agents (`--workspace`): the `files` tools, sandboxed to one
 # directory with quotas. With `doc`, `files/read` also extracts document text.
 files = ["dep:graphrt-files", "graphrt-core/tool-files", "graphrt-llm?/tool-files"]
+# Images: `vision` inputs are checked, stripped of metadata and downscaled before they
+# reach a model, `--image-tools` adds the `image` tools to a workspace and
+# `--image-model` an image generator (OpenAI images API).
+image = ["files", "dep:graphrt-image", "graphrt-llm?/vision-preparer"]
 # knowledge-retrieval node (`--knowledge`): embeddings, vector stores, hybrid search, rerank.
 rag = ["dep:graphrt-rag"]
 # In-process embeddings for knowledge bases (`type: local` embedders): BERT-family
@@ -139,6 +143,7 @@ graphrt-code = { workspace = true, optional = true, features = ["js", "tokio"] }
 graphrt-mcp = { workspace = true, optional = true, features = ["stdio", "http"] }
 graphrt-doc = { workspace = true, optional = true, features = ["default", "tokio"] }
 graphrt-files = { workspace = true, optional = true, features = ["tokio"] }
+graphrt-image = { workspace = true, optional = true, features = ["tokio", "process", "tools", "generate-openai"] }
 graphrt-rag = { workspace = true, optional = true, features = ["default"] }
 graphrt-plugin = { workspace = true, optional = true }
 graphrt-skill = { workspace = true, optional = true }

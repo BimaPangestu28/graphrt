@@ -274,13 +274,15 @@ the host file system goes.
 | F14 | Forged file references (a model or a plugin returns `{"$file": true, "reference": ...}`) | Untrusted JSON never becomes a file value. `workspace:` references are parsed as workspace paths and checked against the resolver's own view. | `graphrt-core` `tool::collect_files` doc test, `resolver::tests::reads_workspace_references_and_ignores_others` |
 | F15 | A crash that leaves half a file | Writes go to a hidden temporary file that is renamed into place | `dir_store::writes_leave_no_temporary_files_and_hashes_stream`, `concurrent_writers_never_tear_a_file` |
 | F16 | Heavy file work stalling every other run | Disk I/O, hashing and extraction run on the blocking pool | `dir_store::heavy_file_work_does_not_block_the_async_worker` |
-| I1 | Image bomb: a small file that declares a huge canvas | Header probe refuses the pixel count before any decoder runs. Decoder limits are a second line. | lands with `graphrt-image` |
-| I2 | Malformed image aimed at a decoder bug | Pure Rust decoders, no `unsafe` in the workspace, decoding behind a panic boundary on the blocking pool, truncated and corrupt inputs fail cleanly | lands with `graphrt-image` |
-| I3 | Image type spoofing (SVG or HTML sent as `image/png`) | Only PNG, JPEG, GIF and WebP by magic bytes reach a model or a tool | lands with `graphrt-image` |
-| I4 | Location and device data in EXIF sent to a model provider | Metadata is removed before the image leaves the runtime | lands with `graphrt-image` |
-| I5 | SSRF through an image URL | Runtime side fetches go through the egress policy of `graphrt-http`. Tool result image URLs must be `https`. | `graphrt-http` `files::tests::rejects_private_addresses_and_non_http`, plus `graphrt-image` |
-| I6 | Prompt injection through text in an image | Same position as F12: the image is data, tools stay bounded, approvals for what matters | lands with `graphrt-image` |
-| I7 | Output of an image generator trusted as an image | Probed and bounded like an upload before it is stored | lands with `graphrt-image` |
+| I1 | Image bomb: a small file that declares a huge canvas | Header probe refuses the pixel count before any decoder runs (5.5 µs for a 64 megapixel PNG). Decoder limits on width, height and allocation are a second line. | `probe::a_huge_canvas_is_refused_from_the_header_alone`, `tools::bombs_spoofed_files_and_escapes_are_error_results`, `prepare::spoofed_vision_inputs_are_refused` |
+| I2 | Malformed image aimed at a decoder or at our own header parsers | Pure Rust decoders, no `unsafe` in the workspace, checked indexing only, decoding behind a panic boundary on the blocking pool | `probe::truncated_files_fail_cleanly_at_every_length`, `probe::corrupted_files_never_panic_or_exceed_the_limits` |
+| I3 | Image type spoofing (SVG, HTML, HEIC or a program sent as `image/png`) | Only PNG, JPEG, GIF and WebP by magic bytes reach a model or a tool. The media type sent to a provider is the detected one. | `probe::spoofed_and_unsupported_content_is_refused`, `prepare::spoofed_vision_inputs_are_refused`, `nodes::a_spoofed_vision_input_stops_the_node_before_the_model_is_called`, `graphrt-llm` `a_refused_image_fails_the_node_and_is_never_sent_as_it_was`, CLI `image_tools_inspect_and_thumbnail_a_workspace_image` |
+| I4 | Location and device data in EXIF (and XMP, IPTC, text chunks) sent to a model provider or written to a result | Metadata is cut out of the container before an image leaves the runtime, rotated photos are turned upright first, and files the tools write are encoded without any | `metadata::*` (one test per format), `metadata::nothing_prepared_for_a_model_carries_metadata`, `prepare::a_rotated_photo_is_turned_upright_before_its_metadata_goes`, `nodes::a_stored_photo_reaches_the_model_checked_and_without_metadata` |
+| I5 | SSRF through an image URL | URL images are fetched by the model provider, not by the runtime. With inlining on, the fetch goes through the egress policy of `graphrt-http`. A generator answer that holds a URL is refused, not fetched, and redirects of the generator are not followed. | `prepare::remote_images_are_left_to_the_provider_unless_inlined`, `openai::an_answer_with_a_url_is_refused_not_fetched`, `openai::redirects_are_not_followed`, `graphrt-http` `files::tests::rejects_private_addresses_and_non_http` |
+| I6 | Prompt injection through text in an image | Same position as F12: the image is data, `image/view` says so, tools stay bounded, approvals for what matters | `tools::view_shows_a_checked_image_to_the_model` |
+| I7 | Output of an image generator trusted as an image, or its key leaking | Probed, bounded and stripped like an upload before it is stored. The key is scrubbed from errors and never printed. | `tools::generated_images_are_checked_like_uploads`, `openai::errors_are_reported_without_the_key` |
+| I8 | Polyglot files: a valid image with a script, an archive or a page appended | Everything after the end of the image is dropped when metadata is removed | `metadata::*` (each fixture carries a payload after the image) |
+| I9 | Decoding a large image stalling every other run | Probe, decode, resize, encode and base64 run on the blocking pool | `prepare::preparing_a_large_image_does_not_block_the_async_worker` |
 
 ### Residual risks
 
@@ -333,6 +335,30 @@ How the code gets there:
 - The text of the last extracted document is kept, so paging through a PDF
   parses it once.
 
+### Images
+
+Measured with `cargo run --release -p graphrt-image --example bench`, same
+machine, one core.
+
+| What | Input | Result |
+| --- | --- | --- |
+| Read the header (format, size, metadata) | 12 MP JPEG, 2.5 MiB | 103 ns |
+| Refuse an image bomb | 64 MP PNG in 0.3 MiB | 5.5 µs, nothing decoded |
+| Remove metadata, pixels untouched | 12 MP JPEG, 2.5 MiB | 2.8 ms |
+| Prepare for a model, no resize needed | 1024x768 JPEG | 0.11 ms |
+| Prepare for a model: decode, downscale, encode | 12 MP JPEG (4000x3000), 2.5 MiB | 155 ms, sends 0.39 MiB |
+| The same | 24 MP JPEG (6000x4000), 5.1 MiB | 222 ms, sends 0.33 MiB |
+| The same | 2560x1440 PNG, 0.9 MiB | 124 ms, sends 0.22 MiB |
+| Thumbnail, 256 px | 12 MP JPEG | 67 ms |
+
+- The common case, an image that already fits, never reaches a decoder: one
+  pass over the container and a base64 encode.
+- A reduction to half or less averages source pixels in one pass instead of
+  running a bicubic kernel that grows with the reduction. The first version
+  used bicubic throughout and took 228 ms and 459 ms for the two photos.
+- Sending 0.39 MiB instead of 2.5 MiB is the larger gain: less upload, and
+  no tokens spent on pixels the provider would scale away.
+
 ### What it costs a build that does not use it
 
 Nothing, and that took a decision. The first version added the `files`
@@ -358,11 +384,23 @@ against this change, 21 starts each, taken in turns on one machine:
 | `agent-minimal`, main | 4,439,976 B | 4.035 MiB | 3.20 / 3.39 ms |
 | `agent-minimal`, with file workspaces | 4,440,152 B | 4.035 MiB | 3.23 / 3.34 ms |
 
-A build that does enable `files` pays for the code only when `--workspace`
-is given: nothing is opened, registered or allocated at start otherwise.
+Images follow the same rule: the call from the model nodes to the
+`ImagePreparer` is behind `vision-preparer` in `graphrt-llm`, and the
+`--image-*` flags behind `image` in the CLI. With both crates in the tree,
+`agent-slim` measures 6.047 MiB idle against 6.051 MiB for main, and
+`agent-minimal` 4.031 against 4.035.
+
+A build that does enable `files` and `image` pays for the code only when it
+is used: nothing is opened, registered or allocated at start without
+`--workspace`, and the image gate runs only for nodes with `vision` on.
 
 ## Deliberately left for later
 
+- A user interface in Graphrt Desktop: attach files and images to an agent,
+  see and save what it produced. The host side is small (a `Workspace` per
+  agent, `FileTools` and `ImageTools` in the tool registry, a
+  `VisionPreparer` in the services, the `files` output for the results), but
+  it has to follow the runtime version the app builds against.
 - HTTP routes to upload to and download from a workspace on `graphrt serve`.
   Today a host puts files in the directory or uses the crate.
 - Creating PDF and Office files. Agents write text formats.
@@ -371,3 +409,7 @@ is given: nothing is opened, registered or allocated at start otherwise.
 - Native document blocks (sending a PDF to a provider as a document).
 - Audio and video.
 - A second image generator (Gemini) and image editing.
+- HEIC and AVIF input. Phones produce HEIC, and it is refused today with a
+  message that says to convert it. Decoding it in pure Rust is not ready.
+- Animations. GIF and WebP animations pass through when they fit, and are
+  reduced to their first frame when they have to be encoded again.

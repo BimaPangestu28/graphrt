@@ -1,0 +1,53 @@
+[package]
+name = "graphrt-image"
+description = "Image handling for graphrt agents: header probing, metadata stripping, bounded decoding and resizing, vision input preparation, the `image` tools and pluggable image generation."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-image"
+homepage = "https://github.com/Graphrt/graphrt"
+keywords = ["agent", "image", "vision", "exif", "resize"]
+categories = ["multimedia::images", "development-tools"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["tokio", "process", "tools"]
+# Run decoding, resizing and encoding on Tokio's blocking pool when a Tokio runtime is present.
+tokio = ["dep:tokio", "tokio/rt"]
+# Decode, resize and encode images (pure Rust decoders for PNG, JPEG, GIF and WebP).
+# Without it, images are probed and stripped of metadata but never resized: an image
+# that is too large for a model is refused.
+process = ["dep:image"]
+# The `image` tools (info, view, resize, convert, thumbnail, generate) over a graphrt-files workspace.
+tools = ["process", "dep:graphrt-files", "dep:serde", "dep:serde_json"]
+# `OpenAiImages`: an `ImageGenerator` for the OpenAI images API and compatible servers
+# (reqwest + rustls with the ring provider).
+generate-openai = ["dep:reqwest", "dep:rustls", "dep:serde_json", "dep:tokio", "tokio/time"]
+
+[dependencies]
+graphrt-core.workspace = true
+graphrt-files = { workspace = true, optional = true }
+futures.workspace = true
+thiserror.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"], optional = true }
+reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "json"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+
+[dev-dependencies]
+# The real `llm` and `agent` nodes with a scripted model, for the end-to-end tests.
+graphrt-llm = { workspace = true, features = ["mock", "tool-files", "vision-preparer"] }
+futures = { workspace = true, features = ["executor"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util"] }
+serde_json.workspace = true
+
+[[example]]
+name = "bench"
+required-features = ["process"]
+
+[lints]
+workspace = true
