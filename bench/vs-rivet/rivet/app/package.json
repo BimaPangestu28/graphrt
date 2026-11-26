@@ -1,0 +1,18 @@
+{
+	"name": "graphrt-vs-rivet-app",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "tsc -p .",
+		"start": "node dist/server.js"
+	},
+	"dependencies": {
+		"@ai-sdk/openai": "4.0.124",
+		"ai": "7.0.182",
+		"rivetkit": "3.1.1"
+	},
+	"devDependencies": {
+		"@types/node": "24.10.1",
+		"typescript": "5.9.3"
+	}
+}

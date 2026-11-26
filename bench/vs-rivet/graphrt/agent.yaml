@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
+# The graphrt side of the graphrt vs Rivet benchmark: examples/chatbot.yaml
+# pointed at the shared mock model. Functionally equal to
+# bench/vs-rivet/rivet/app/src/server.ts: receive a message (sys.query), call
+# the model with the system prompt + the last 10 turns (20 messages) of history
+# + the message, stream the answer back. graphrt keeps no conversation state of
+# its own: the history comes with the request (sys.history), and the gateway
+# stores every run (request and answer) in its SQLite store.
+version: "1"
+name: chat
+graph:
+  nodes:
+    - id: start
+      type: start
+
+    - id: llm
+      type: llm
+      model:
+        provider: openai
+        name: gpt-4o-mini
+      prompt_template:
+        - { role: system, text: "You are a concise, friendly assistant." }
+      memory:
+        window: { enabled: true, size: 10 }
+        variable_selector: [sys, history]
+      timeout_ms: 60000
+
+    - id: answer
+      type: answer
+      answer: "{{#llm.text#}}"
+
+  edges:
+    - { source: start, target: llm }
+    - { source: llm, target: answer }

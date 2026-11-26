@@ -1,0 +1,21 @@
+{
+ "what": "graphrt serve directly, warm, sequential",
+ "samples": 2000,
+ "errors": 0,
+ "ttft_ms": {
+  "n": 2000,
+  "p50": 0.31,
+  "p95": 0.382,
+  "p99": 0.564,
+  "max": 1.466,
+  "mean": 0.307
+ },
+ "done_ms": {
+  "n": 2000,
+  "p50": 0.614,
+  "p95": 0.769,
+  "p99": 0.958,
+  "max": 1.778,
+  "mean": 0.609
+ }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "mock-openai"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Deterministic OpenAI-compatible chat-completions mock for the graphrt vs Rivet benchmark."
+
+# Standalone: keep this crate out of the main workspace.
+[workspace]
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "signal"] }
+serde_json = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

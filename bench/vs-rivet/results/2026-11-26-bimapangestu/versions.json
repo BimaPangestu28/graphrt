@@ -1,0 +1,18 @@
+{
+  "graphrt": "graphrt 0.6.2 (core, llm, http, code, python, mcp, doc, rag, eval, bundle, plugins, wasm, otel, serve, trust-gateway, scores, online-eval, langfuse, telemetry, gateway, deploy-fly, mimalloc)",
+  "rivet_engine_image": "rivetdev/engine:3.1.1",
+  "rivet_engine_image_id": "sha256:55cdfe9a92c0ee2f7d3ce5f388dab2ef8e0be1bab8e3f1adb7ba972f862e25d4",
+  "rivet_engine_repo_digest": "rivetdev/engine@sha256:55cdfe9a92c0ee2f7d3ce5f388dab2ef8e0be1bab8e3f1adb7ba972f862e25d4",
+  "rivetkit": "3.1.1",
+  "ai_sdk": "7.0.182",
+  "ai_sdk_openai": "4.0.124",
+  "node": "v24.15.0",
+  "docker": "29.9.3",
+  "kernel": "Linux 7.0.0-44-generic",
+  "cpu": "13th Gen Intel(R) Core(TM) i7-13700",
+  "logical_cpus": 24,
+  "memory_gib": 61.6,
+  "disk": "/dev/mapper/ubuntu--vg-ubuntu--lv ext4  913G",
+  "git_commit": "a84acc7",
+  "date": "2026-11-26T04:39:54.640Z"
+}
