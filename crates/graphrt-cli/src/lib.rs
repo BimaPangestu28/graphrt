@@ -41,6 +41,8 @@ pub mod kb;
 pub mod knowledge_api;
 #[cfg(feature = "langfuse")]
 pub mod langfuse;
+#[cfg(feature = "learning")]
+pub mod learn_cmd;
 #[cfg(feature = "serve")]
 pub mod listen;
 #[cfg(feature = "online-eval")]
@@ -148,6 +150,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "skills") {
         features.push("skills");
     }
+    if cfg!(feature = "learning") {
+        features.push("learning");
+    }
     features
 }
 
@@ -161,6 +166,8 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         Command::Plugin(args) => plugin::plugin(args),
         #[cfg(feature = "skills")]
         Command::Skill(args) => skill_cmd::skill(args),
+        #[cfg(feature = "learning")]
+        Command::Learn(args) => block_on_current_thread(learn_cmd::learn(args)),
         Command::Nodes(args) => catalog::nodes(&args),
         #[cfg(feature = "telemetry")]
         Command::Telemetry(args) => telemetry::telemetry(&args),

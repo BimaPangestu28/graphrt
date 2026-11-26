@@ -1542,6 +1542,7 @@ dependencies = [
  "graphrt-eval",
  "graphrt-gateway",
  "graphrt-http",
+ "graphrt-learn",
  "graphrt-llm",
  "graphrt-mcp",
  "graphrt-otel",
@@ -1722,11 +1723,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphrt-learn"
+version = "0.6.2"
+dependencies = [
+ "futures",
+ "graphrt-core",
+ "graphrt-skill",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "graphrt-llm"
 version = "0.6.2"
 dependencies = [
  "futures",
  "graphrt-core",
+ "graphrt-learn",
  "graphrt-skill",
  "indexmap",
  "reqwest",
