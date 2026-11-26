@@ -92,6 +92,12 @@ pub struct AppState {
     /// The gateway this agent trusts (`--trust-gateway`): `/internal/v1`.
     #[cfg(feature = "trust-gateway")]
     pub(super) gateway_agent: Option<Arc<crate::gateway_agent::GatewayAgent>>,
+    /// The skill store behind `/v1/skills` (the default store, opened lazily).
+    #[cfg(feature = "skills")]
+    pub(super) skills: Option<Arc<graphrt_skill::SkillStore>>,
+    /// The lesson store behind `/v1/learning` (the default store, opened lazily).
+    #[cfg(feature = "learning")]
+    pub(super) lessons: Option<Arc<graphrt_learn::LessonStore>>,
 }
 
 impl AppState {
@@ -128,7 +134,57 @@ impl AppState {
             langfuse: None,
             #[cfg(feature = "trust-gateway")]
             gateway_agent: None,
+            #[cfg(feature = "skills")]
+            skills: graphrt_skill::SkillStore::default_root()
+                .map(|root| Arc::new(graphrt_skill::SkillStore::open(root))),
+            #[cfg(feature = "learning")]
+            lessons: graphrt_learn::LessonStore::default_root()
+                .map(|root| Arc::new(graphrt_learn::LessonStore::open(root))),
         }
+    }
+
+    /// Serve `/v1/skills` from `store` instead of the default skill store.
+    #[cfg(feature = "skills")]
+    pub fn with_skill_store(mut self, store: Option<Arc<graphrt_skill::SkillStore>>) -> Self {
+        self.skills = store;
+        self
+    }
+
+    /// The skill store behind `/v1/skills`.
+    #[cfg(feature = "skills")]
+    pub fn skill_store(&self) -> Option<&Arc<graphrt_skill::SkillStore>> {
+        self.skills.as_ref()
+    }
+
+    /// Serve `/v1/learning` from `store` instead of the default lesson store.
+    #[cfg(feature = "learning")]
+    pub fn with_lesson_store(mut self, store: Option<Arc<graphrt_learn::LessonStore>>) -> Self {
+        self.lessons = store;
+        self
+    }
+
+    /// The lesson store behind `/v1/learning`.
+    #[cfg(feature = "learning")]
+    pub fn lesson_store(&self) -> Option<&Arc<graphrt_learn::LessonStore>> {
+        self.lessons.as_ref()
+    }
+
+    /// The agents whose lessons the nodes of workflow `name` read
+    /// (`learning.agent` of its `agent` nodes), without duplicates.
+    #[cfg(feature = "learning")]
+    pub(crate) fn learning_agents(&self, name: &str) -> Vec<String> {
+        let Some(served) = self.workflows.get(name) else { return Vec::new() };
+        let mut agents: Vec<String> = Vec::new();
+        for node in &served.engine.graph().workflow().graph.nodes {
+            let agent = node.config.get("learning").and_then(|learning| learning.get("agent"));
+            if let Some(agent) = agent.and_then(serde_json::Value::as_str)
+                && node.kind == "agent"
+                && !agents.iter().any(|known| known == agent)
+            {
+                agents.push(agent.to_owned());
+            }
+        }
+        agents
     }
 
     /// Upload every stored score to Langfuse (`--langfuse-scores`). Call before

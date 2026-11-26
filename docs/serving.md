@@ -663,6 +663,13 @@ timeouts, `408`, `429` and `5xx` are retried with exponential backoff
 final. Each request times out after `timeout_ms` (default 10000). Callbacks are
 held in memory: a restart drops pending retries.
 
+## Skills and self learning (preview)
+
+Builds with the cargo features `skills` and `learning` add `/v1/skills` and
+`/v1/learning/{agent}/...`, and record feedback posted to
+`POST /v1/runs/{id}/feedback` as a learning signal. All of it needs the API
+key. See [skills.md](skills.md#http-api) and [learning.md](learning.md#http-api).
+
 ## Knowledge base API
 
 When the server is started with `--knowledge <config>`, the knowledge base the
