@@ -31,27 +31,35 @@ fail() { echo "test-pid1: FAIL: $*" >&2; [ -f "$work/serve.log" ] && sed 's/^/  
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 upstream_port="$(free_port)"
 serve_port="$(free_port)"
+while [ "$serve_port" = "$upstream_port" ]; do serve_port="$(free_port)"; done
 
-# A chat-completions endpoint that accepts the request and then hangs.
+# A chat-completions endpoint that accepts the request and then hangs. It
+# writes the ready file once its socket listens: graphrt must not start before
+# that, or the run's model call is refused (a non-retryable `model_network`
+# failure) and the run fails before the drain can be tested.
 cat > "$work/upstream.py" <<'PY'
 import http.server, sys, time
 class Hang(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         self.rfile.read(int(self.headers.get("content-length", 0)))
-        open(sys.argv[2], "a").write("call\n")
+        with open(sys.argv[2], "a") as calls:
+            calls.write("call\n")
         time.sleep(600)
     def log_message(self, *args):
         pass
-http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Hang).serve_forever()
+server = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Hang)
+with open(sys.argv[3], "w") as ready:
+    ready.write("ready\n")
+server.serve_forever()
 PY
-python3 "$work/upstream.py" "$upstream_port" "$work/calls" &
+python3 "$work/upstream.py" "$upstream_port" "$work/calls" "$work/upstream.ready" &
 upstream_pid=$!
-# graphrt starts faster than Python: a run sent before the fake endpoint
-# listens fails with a network error instead of hanging in the model call.
 for _ in $(seq 1 500); do
-  (exec 3<>"/dev/tcp/127.0.0.1/$upstream_port") 2>/dev/null && break
-  sleep 0.01
+  [ -s "$work/upstream.ready" ] && break
+  kill -0 "$upstream_pid" 2>/dev/null || fail "the fake model endpoint exited before listening"
+  sleep 0.02
 done
+[ -s "$work/upstream.ready" ] || fail "the fake model endpoint did not listen on port $upstream_port"
 
 mkdir -p "$work/workflows"
 cat > "$work/workflows/chat.yaml" <<'YAML'
@@ -88,17 +96,19 @@ done
 nspid="$(awk '/^NSpid:/ {print $NF}' "/proc/$graphrt_pid/status")"
 [ "$nspid" = "1" ] || fail "graphrt is PID $nspid in its namespace, expected 1"
 
+healthy=""
 for _ in $(seq 1 500); do
-  curl -fs "http://127.0.0.1:$serve_port/healthz" >/dev/null && break
+  curl -fs "http://127.0.0.1:$serve_port/healthz" >/dev/null && { healthy=1; break; }
   sleep 0.01
 done
+[ -n "$healthy" ] || fail "graphrt serve did not answer /healthz"
 run_id="$(curl -fs -H 'Content-Type: application/json' -d '{"async": true}' \
   "http://127.0.0.1:$serve_port/v1/workflows/chat/runs" | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')"
 for _ in $(seq 1 500); do
   [ -s "$work/calls" ] && break
   sleep 0.01
 done
-[ -s "$work/calls" ] || fail "the run never called the model"
+[ -s "$work/calls" ] || fail "the run never called the model: $(curl -fs "http://127.0.0.1:$serve_port/v1/runs/$run_id" || echo 'run state unavailable')"
 
 started="$(date +%s%N)"
 kill -TERM "$graphrt_pid"
