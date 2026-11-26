@@ -7,6 +7,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 - [Workflow format](workflow-format.md): nodes, variables, templates, edges, conversation history
 - [Model providers](providers.md): OpenAI-compatible, Anthropic, Gemini, Bedrock and more; live provider tests
 - [TypeSafe System One (Jev)](typesafe.md): the fast classification model
+- [Files and images](files-and-images.md): agent workspaces, the `files` tools, limits, one workspace per user
 - [Images in tool results](tool-images.md)
 
 ## Evaluating
@@ -50,4 +51,5 @@ Start with the [project README](../README.md) for install and a first workflow.
 - [Architecture](architecture.md)
 - [Skills and self learning](skills-and-learning.md) (design, preview): research, threats, decisions and the contract for user interfaces
 - [Security guide](security.md)
+- [Files and images: research, design and threat model](files-and-images-design.md)
 - [Benchmarks](benchmarks.md)

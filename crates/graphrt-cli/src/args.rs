@@ -642,6 +642,21 @@ pub struct ServiceArgs {
     /// Directory serving `local_file` references (e.g. uploaded documents).
     #[arg(long, value_name = "DIR")]
     pub files_dir: Option<PathBuf>,
+    /// Give agents a file workspace in this directory (created when missing): the
+    /// `files` tools (`files/list`, `read`, `search`, `write`, `info`, `delete`) work
+    /// inside it and nowhere else. See docs/files-and-images.md.
+    #[cfg(feature = "files")]
+    #[arg(long, value_name = "DIR")]
+    pub workspace: Option<PathBuf>,
+    /// The workspace cannot be changed: no `files/write` and no `files/delete`.
+    #[cfg(feature = "files")]
+    #[arg(long, requires = "workspace")]
+    pub workspace_read_only: bool,
+    /// One private directory per user: agent nodes must send a scope with
+    /// `tool_context: { files: { scope: ... } }`, and calls without one are refused.
+    #[cfg(feature = "files")]
+    #[arg(long, requires = "workspace")]
+    pub workspace_per_user: bool,
     /// Abort a run after this many milliseconds.
     #[arg(long, value_name = "MS")]
     pub timeout_ms: Option<u64>,

@@ -98,6 +98,35 @@ Secrets:
   parser while it loads, before graphrt can measure them. Parser panics are
   caught; CPU time is not bounded, so run extraction under a timeout.
 
+## Agent file workspaces
+
+`--workspace DIR` (crate `graphrt-files`) gives agents the `files` tools.
+They are off without the flag.
+
+- **One directory.** Paths are relative and checked before storage is
+  touched: no `..`, no absolute paths, no backslashes or drive letters, no
+  hidden names, no Windows device names, no control or invisible characters.
+- **No links.** A symbolic link or junction anywhere on a path is refused for
+  reads, writes, deletes and listings. Only regular files are opened
+  (`O_NOFOLLOW`), never FIFOs or devices.
+- **Bounded.** 32 MiB per file, 512 MiB and 5,000 files per workspace, and
+  per-call caps on what `read` and `search` return.
+- **Types from content.** The media type is sniffed from the first bytes. A
+  program or a `#!` script is not stored whatever it is called. HTML and SVG
+  are stored but flagged `inline_safe: false`: do not render them in a
+  webview, and serve them with `Content-Disposition: attachment`.
+- **Per user.** With `--workspace-per-user` every call needs a scope from the
+  agent's `tool_context`, which the model cannot see or change. Each scope is
+  its own directory and quota.
+- **File content is data.** `read` frames content between boundaries that
+  change on every call. That lowers the odds of a prompt injection, it does
+  not remove them: put destructive and outbound tools under
+  `require_approval`.
+
+The threat model, the tests behind each line and the residual risks (races on
+intermediate directories for a local attacker, hard links) are in
+[files-and-images-design.md](files-and-images-design.md#threat-model).
+
 ## Network egress
 
 Every URL that a workflow controls goes through `graphrt_http::HttpClient` and its
@@ -333,6 +362,7 @@ See [learning.md](learning.md).
 | Host allow/deny lists, schemes, redirects, response size, timeouts, proxy | `EgressPolicy` (embedders) | open allow-list, http/https, 5 redirects |
 | Code limits ceiling | register a `CodeLimits` service (embedders) | 10 s / 64 MiB / 1 MiB stack / 4 MiB result |
 | Python subprocess | `--allow-python-subprocess` | off |
+| Agent file workspace | `--workspace`, `--workspace-read-only`, `--workspace-per-user` | off |
 | Concurrent runs | `--max-active-runs` | 256 |
 | End-user JWTs, per-user rate limit | `--verify-jwt`, `--jwt-*`, `--user-rate-limit` | off |
 | Kept runs | `--max-runs`, `--store-ttl-days` | 1,000 in memory / forever on disk |

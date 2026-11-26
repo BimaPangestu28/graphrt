@@ -349,7 +349,8 @@ tool_parameters:
 ignore_tool_errors: false
 ```
 
-Outputs `text`, `json`, `files`.
+Outputs `text`, `json`, `files` (the files a native tool returned in its
+result, for example `files/write`).
 
 ### `llm`
 
@@ -399,10 +400,14 @@ allowed iteration runs without tools). Tools in `require_approval` pause the run
 (kind `tool_approval`); resume with `{"approved": true}` or
 `{"approvals": {"<call id>": true}}`. Tool results can include images, which
 the model sees (see [tool-images.md](tool-images.md)). Outputs `text`,
-`tool_calls`, `ui`, `iterations`, `usage`. `ui` lists the UI blocks (see
+`tool_calls`, `ui`, `files`, `iterations`, `usage`. `ui` lists the UI blocks (see
 "UI blocks") found in the structured data of successful tool results; they are
 never sent to the model, so a tool can return a short text for the model and a
-chart or card for the person.
+chart or card for the person. `files` holds the files the tools returned, for
+example what the agent wrote with the `files` tools (see
+[files-and-images.md](files-and-images.md)); the model never sees them. The
+`files` output exists in builds with native file tools (the `files` feature of
+the CLI, `tool-files` of `graphrt-llm`).
 
 Streams `text` (and `reasoning`) token by token on every turn, including turns
 that may still call tools, so the answer reaches the client while it is

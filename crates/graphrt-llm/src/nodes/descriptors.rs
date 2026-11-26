@@ -218,7 +218,7 @@ pub(crate) fn agent() -> NodeDescriptor {
             nested(json!({ "provider": { "type": "string" }, "name": { "type": "string" } }), &["provider", "name"])
         ]
     });
-    base("agent", "Agent", "bot")
+    let descriptor = base("agent", "Agent", "bot")
         .describe(
             "Tool-calling agent loop: the model calls tools (native, MCP or plugin) until it answers or \
              `max_iterations` is reached. Tool calls can run in parallel and selected tools can require \
@@ -272,7 +272,13 @@ pub(crate) fn agent() -> NodeDescriptor {
         .output(
             OutputDescriptor::new("ui", ValueType::ArrayObject)
                 .describe("UI blocks (cards, charts, tables) the tools returned, for the host to render"),
-        )
+        );
+    #[cfg(feature = "tool-files")]
+    let descriptor = descriptor.output(
+        OutputDescriptor::new("files", ValueType::ArrayFile)
+            .describe("Files returned by the tools the agent called (for example files it wrote)"),
+    );
+    descriptor
         .output(OutputDescriptor::new("iterations", ValueType::Integer))
         .output(
             OutputDescriptor::new("stopped_reason", ValueType::String).describe("completed | max_iterations | length"),
