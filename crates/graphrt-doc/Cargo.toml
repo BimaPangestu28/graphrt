@@ -41,6 +41,7 @@ encoding_rs = "0.8"
 pdf-extract = { version = "0.12", optional = true }
 # The PDF parser's zlib and LZW decoders; used here to pre-check stream sizes.
 flate2 = { version = "1", optional = true }
+# The version lopdf uses: the size check runs lopdf's decoder. Bump it together with lopdf.
 weezl = { version = "0.1.12", optional = true }
 calamine = { version = "0.38", default-features = false, optional = true }
 zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
@@ -49,6 +50,7 @@ mail-parser = { version = "0.11", default-features = false, optional = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Same version as above (lopdf's).
 weezl = "0.1.12"
 futures = { workspace = true, features = ["executor"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
