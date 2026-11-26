@@ -324,7 +324,10 @@ pub async fn drain(
             seen.push(run);
         }
         let now = Instant::now();
-        if state.active_runs() == 0 || now >= deadline {
+        // A run leaves the active list just before it marks itself done:
+        // wait for both, or a run that just finished is reported unfinished.
+        let settled = state.active_runs() == 0 && seen.iter().all(|run| run.is_done());
+        if settled || now >= deadline {
             break;
         }
         if !forced {
