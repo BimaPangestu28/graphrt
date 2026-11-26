@@ -5,6 +5,8 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use graphrt_plugin::catalog_signature::{SIGNATURE_SUFFIX, signature_location};
+
 /// Where a catalog file lives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Location {
@@ -19,6 +21,31 @@ impl Location {
     /// when the index itself is local (a mirror or a test catalog).
     pub fn is_local(&self) -> bool {
         matches!(self, Self::File(_))
+    }
+
+    /// The text that identifies this file across runs: the URL, or the
+    /// absolute path with links resolved (as given when that fails).
+    pub fn identity(&self) -> String {
+        match self {
+            Self::Https(url) => url.clone(),
+            Self::File(path) => {
+                let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+                resolved.display().to_string()
+            }
+        }
+    }
+
+    /// The detached minisign signature of this file: the same location with
+    /// `.minisig` appended.
+    pub fn signature(&self) -> Self {
+        match self {
+            Self::Https(url) => Self::Https(signature_location(url)),
+            Self::File(path) => {
+                let mut signature_path = path.clone().into_os_string();
+                signature_path.push(SIGNATURE_SUFFIX);
+                Self::File(signature_path.into())
+            }
+        }
     }
 }
 
@@ -238,6 +265,14 @@ mod tests {
         assert!(parse_tarball_location(&tarball, &local_index).is_err());
         let hostile = parse_tarball_location("http://x.example/\u{1b}]52;c;x\u{7}", &local_index).unwrap_err();
         assert!(!hostile.chars().any(char::is_control), "{hostile:?}");
+    }
+
+    #[test]
+    fn signatures_sit_next_to_the_file_they_sign() {
+        let remote = Location::Https("https://x.example/index.json".into());
+        assert_eq!(remote.signature(), Location::Https("https://x.example/index.json.minisig".into()));
+        let local = Location::File("catalog/index.json".into());
+        assert_eq!(local.signature(), Location::File("catalog/index.json.minisig".into()));
     }
 
     #[test]

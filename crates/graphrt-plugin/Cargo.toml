@@ -13,7 +13,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["process", "http", "yaml", "git", "mcp-presets"]
+default = ["process", "http", "yaml", "git", "mcp-presets", "catalog-signature"]
 # Plugins running as child processes speaking JSON-RPC over stdio.
 process = ["tokio/process"]
 # Plugins served over HTTP.
@@ -25,6 +25,9 @@ git = []
 # `runtime: mcp` (MCP server presets, no code) and `templates` in manifests: parsed and
 # validated for hosts that connect MCP servers. Without it, both are unknown manifest fields.
 mcp-presets = []
+# `catalog_signature`: check the minisign signature of a plugin catalog index
+# against trusted public keys (verification only, one crate without dependencies).
+catalog-signature = ["dep:minisign-verify"]
 
 [dependencies]
 graphrt-core = { workspace = true, features = ["tokio"] }
@@ -37,8 +40,11 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "io-util", "macros
 sha2 = { version = "0.11", default-features = false }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "json", "stream"] }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+minisign-verify = { version = "0.3", optional = true }
 
 [dev-dependencies]
+# Signs test catalogs with throwaway keys (`catalog_signature` tests).
+minisign = "0.10"
 graphrt-core = { workspace = true, features = ["tokio", "jinja", "yaml"] }
 graphrt-plugin-sdk = { workspace = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "io-util", "net", "process"] }
