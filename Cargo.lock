@@ -1195,11 +1195,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphrt-learn"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "graphrt-core",
+ "graphrt-skill",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror",
+]
+
+[[package]]
 name = "graphrt-llm"
 version = "0.1.0"
 dependencies = [
  "futures",
  "graphrt-core",
+ "graphrt-learn",
  "graphrt-skill",
  "indexmap",
  "reqwest",

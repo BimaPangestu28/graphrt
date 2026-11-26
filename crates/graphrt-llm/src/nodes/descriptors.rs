@@ -241,7 +241,17 @@ pub(crate) fn agent() -> NodeDescriptor {
                     "description": "Installed skills the agent may load on demand. Tools granted to a skill are \
                                     offered after the skill was loaded. Needs a host with a skill store.",
                     "items": { "type": "string" }
-                }
+                },
+                "learning": nested(
+                    json!({
+                        "agent": {
+                            "type": "string",
+                            "description": "The agent whose approved lessons are added to the system prompt"
+                        },
+                        "user": template("The user the run is for; that user's lessons are added too")
+                    }),
+                    &["agent"]
+                )
             }),
             &["model"],
         ))

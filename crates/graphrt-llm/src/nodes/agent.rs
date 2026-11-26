@@ -31,8 +31,14 @@
 //! without `skills` does none of this. The code is behind the cargo feature
 //! `skills`: without it, a node that lists skills is a configuration error.
 //!
+//! `learning` adds the approved lessons of one agent, and of the run's user,
+//! to the system prompt (see [`graphrt_core::learning`]). The node only reads
+//! lessons. Nothing is learned during a run. The code is behind the cargo
+//! feature `learning`: without it, a node with `learning` is a configuration
+//! error.
+//!
 //! Progress events: `agent_step`, `agent_thought`, `tool_call`, `tool_result`,
-//! `tool_denied`, `skill_tool_unavailable`. Outputs: `text`, `tool_calls`
+//! `tool_denied`, `skill_tool_unavailable`, `lessons_applied`. Outputs: `text`, `tool_calls`
 //! (`[{name, provider, tool, arguments, result, is_error}]`), `ui` (the UI blocks of
 //! successful tool results, see [`graphrt_core::ui`]; never sent to the model), `iterations`,
 //! `stopped_reason` (`completed`, `max_iterations` or `length`), `usage`.
@@ -43,6 +49,8 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use graphrt_core::dsl::NodeDoc;
 use graphrt_core::event::Usage;
+#[cfg(feature = "learning")]
+use graphrt_core::learning::{LessonScope, Lessons};
 use graphrt_core::node::{ConfigError, NodeOutcome, NodeResult, PauseRequest, parse_config};
 #[cfg(feature = "skills")]
 use graphrt_core::skill::{LOAD_SKILL_TOOL, SKILL_PROVIDER, SkillToolGrant, Skills};
@@ -137,6 +145,44 @@ pub struct AgentConfig {
     /// cargo feature `skills` and a `graphrt_core::skill::Skills` service.
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Read approved lessons into the system prompt: `{agent, user}` (see the
+    /// module docs). Needs the cargo feature `learning` and a
+    /// `graphrt_core::learning::Lessons` service. Kept as raw JSON so builds
+    /// without the feature carry no code for it.
+    #[serde(default)]
+    pub learning: Option<Json>,
+}
+
+/// `learning` of the `agent` node: whose lessons a run reads.
+#[cfg(feature = "learning")]
+#[derive(Clone, Debug)]
+struct Learning {
+    /// The agent the lessons belong to.
+    agent: String,
+    /// The user the run is for (a template, for example `{{#sys.user_id#}}`).
+    /// Lessons of that user are added to the lessons of the agent as a whole.
+    /// Without it, or when it renders empty, only the agent's lessons are read.
+    user: Option<Template>,
+}
+
+/// Parse `learning`: `{agent: <name>, user?: <template>}`. Any other key is an
+/// error, so a misspelled `user` cannot silently widen what a run reads.
+#[cfg(feature = "learning")]
+fn parse_learning(doc: &NodeDoc, raw: Option<&Json>) -> Result<Option<Learning>, ConfigError> {
+    let Some(raw) = raw.filter(|raw| !raw.is_null()) else { return Ok(None) };
+    let invalid = |why: &str| ConfigError::new(doc, format!("learning: {why}"));
+    let fields = raw.as_object().ok_or_else(|| invalid("expected `{agent, user}`"))?;
+    if let Some(unknown) = fields.keys().find(|key| !matches!(key.as_str(), "agent" | "user")) {
+        return Err(invalid(&format!("unknown field `{unknown}`")));
+    }
+    let agent = fields.get("agent").and_then(Json::as_str).filter(|agent| !agent.is_empty());
+    let agent = agent.ok_or_else(|| invalid("`agent` must be the name of the agent the lessons belong to"))?;
+    let user = match fields.get("user") {
+        None | Some(Json::Null) => None,
+        Some(Json::String(template)) => Some(Template::parse(template)),
+        Some(_) => return Err(invalid("`user` must be a template string")),
+    };
+    Ok(Some(Learning { agent: agent.to_owned(), user }))
 }
 
 /// A tool bound for one run.
@@ -349,6 +395,9 @@ impl StopReason {
 pub struct AgentNode {
     config: AgentConfig,
     refs: Vec<(String, String)>,
+    /// Parsed `learning`.
+    #[cfg(feature = "learning")]
+    learning: Option<Learning>,
 }
 
 impl AgentNode {
@@ -371,7 +420,21 @@ impl AgentNode {
         if !config.skills.is_empty() {
             return Err(ConfigError::new(doc, "`skills` needs a build with skill support (cargo feature `skills`)"));
         }
-        Ok(Self { config, refs })
+        #[cfg(not(feature = "learning"))]
+        if config.learning.is_some() {
+            return Err(ConfigError::new(
+                doc,
+                "`learning` needs a build with self learning support (cargo feature `learning`)",
+            ));
+        }
+        #[cfg(feature = "learning")]
+        let learning = parse_learning(doc, config.learning.as_ref())?;
+        Ok(Self {
+            config,
+            refs,
+            #[cfg(feature = "learning")]
+            learning,
+        })
     }
 
     /// Resolve tool references against the registry and attach the agent's
@@ -455,19 +518,34 @@ impl AgentNode {
         bound_tool(tools, call).is_some_and(|t| self.needs_approval(t))
     }
 
-    /// The conversation a run starts with. `skill_catalog` follows the
-    /// instruction in the system message (it is the whole system message when
-    /// the agent has no instruction).
-    fn initial_state(&self, ctx: &NodeContext, skill_catalog: &str) -> Result<AgentState, NodeError> {
+    /// The approved lessons this run reads, as a section for the system
+    /// prompt (empty without `learning` or without lessons).
+    #[cfg(feature = "learning")]
+    async fn lesson_notes(&self, ctx: &NodeContext) -> Result<String, NodeError> {
+        let Some(learning) = &self.learning else { return Ok(String::new()) };
+        let lessons = ctx.require_service::<Lessons>("lesson source (graphrt_core::learning::Lessons)")?;
+        let user = learning.user.as_ref().map(|user| user.render(&ctx.pool)).filter(|user| !user.trim().is_empty());
+        let scope = LessonScope { agent: learning.agent.clone(), user };
+        let notes = lessons.0.notes(&scope).await.map_err(|e| NodeError::fatal(e.kind, e.to_string()))?;
+        if !notes.is_empty() {
+            ctx.progress("lessons_applied", Value::from_json(json!({"agent": scope.agent, "ids": notes.ids})));
+        }
+        Ok(notes.text)
+    }
+
+    /// The conversation a run starts with. Each of `sections` (the skill
+    /// catalog, the learned notes) follows the instruction in the system
+    /// message. Without an instruction they are the whole system message.
+    fn initial_state(&self, ctx: &NodeContext, sections: &[&str]) -> Result<AgentState, NodeError> {
         let cfg = &self.config;
         let pool = &ctx.pool;
         let mut messages = Vec::new();
         let mut system = cfg.instruction.as_ref().map(|instruction| instruction.render(pool)).unwrap_or_default();
-        if !skill_catalog.is_empty() {
+        for section in sections.iter().filter(|section| !section.is_empty()) {
             if !system.trim().is_empty() {
                 system.push_str("\n\n");
             }
-            system.push_str(skill_catalog);
+            system.push_str(section);
         }
         if !system.trim().is_empty() {
             messages.push(Message::system(system));
@@ -528,7 +606,13 @@ impl AgentNode {
                 }
                 state
             }
-            None => self.initial_state(&ctx, &skill_catalog)?,
+            None => {
+                #[cfg(feature = "learning")]
+                let notes = self.lesson_notes(&ctx).await?;
+                #[cfg(not(feature = "learning"))]
+                let notes = String::new();
+                self.initial_state(&ctx, &[&skill_catalog, &notes])?
+            }
         };
 
         let (final_text, stop) = loop {
@@ -881,6 +965,10 @@ impl Node for AgentNode {
         }
         out.extend(cfg.vision.selectors());
         out.extend(cfg.model.selectors());
+        #[cfg(feature = "learning")]
+        if let Some(user) = self.learning.as_ref().and_then(|learning| learning.user.as_ref()) {
+            out.extend(user.selectors().cloned());
+        }
         out
     }
 }
@@ -1221,6 +1309,15 @@ mod tests {
         let err = agent(json!({"tools": ["nope/x"]})).run(ctx(&s)).await.unwrap_err();
         assert!(!err.retryable);
         assert_eq!(err.kind, "tool_not_found");
+    }
+
+    #[cfg(not(feature = "learning"))]
+    #[test]
+    fn learning_without_learning_support_is_a_configuration_error() {
+        let doc =
+            NodeDoc::new("a", "agent", json!({"model": {"provider": "p", "name": "m"}, "learning": {"agent": "x"}}));
+        let error = AgentNode::from_doc(&doc).unwrap_err().to_string();
+        assert!(error.contains("cargo feature `learning`"), "{error}");
     }
 
     #[cfg(not(feature = "skills"))]

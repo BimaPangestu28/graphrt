@@ -1,0 +1,28 @@
+[package]
+name = "graphrt-learn"
+description = "Self learning for graphrt agents: short lessons with provenance, isolated per agent and user, approved by a person before they are used."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-learn"
+homepage = "https://github.com/Graphrt/graphrt"
+keywords = ["agent", "memory", "learning", "llm", "workflow"]
+categories = ["development-tools"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+graphrt-core = { workspace = true }
+graphrt-skill = { workspace = true }
+futures.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = { version = "0.11", default-features = false }
+
+[dev-dependencies]
+futures = { workspace = true, features = ["executor"] }
+
+[lints]
+workspace = true
