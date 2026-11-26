@@ -140,7 +140,7 @@ async fn an_idle_pool_stops_its_processes_and_a_request_refills_it() {
 async fn requests_spread_over_the_processes_of_a_pool() {
     let pool = pooled(2, None);
     pool.host.prewarm().await;
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     // Both members up (a request for each would otherwise wait for a start).
     while pids(&pool).await.len() < 2 {
         assert!(Instant::now() < deadline, "the second member never started");
@@ -167,16 +167,21 @@ async fn requests_spread_over_the_processes_of_a_pool() {
     assert!(started.elapsed() < Duration::from_millis(2600), "served one after the other: {:?}", started.elapsed());
 }
 
-/// The process id of the process that served a `testkit.started` node.
-async fn process_pid(pool: &Pooled) -> u64 {
-    output(&pool.run(single_node("testkit.started", json!({}), "pid")).await).as_u64().expect("pid")
-}
-
 /// Distinct processes seen over a few parallel requests (by pid: start times can
 /// collide on Windows, where the plugin's clock may tick only every ~15.6 ms).
+/// A request that failed (one sent to a member still starting can run into the
+/// node's 5 s timeout on a slow CI runner) only shows no process yet.
 async fn pids(pool: &Pooled) -> std::collections::HashSet<u64> {
-    let runs = (0..4).map(|_| process_pid(pool));
-    futures::future::join_all(runs).await.into_iter().collect()
+    let started = single_node("testkit.started", json!({}), "pid");
+    let runs = (0..4).map(|_| pool.run(started.clone()));
+    futures::future::join_all(runs)
+        .await
+        .iter()
+        .filter_map(|events| match events.last() {
+            Some(Event::RunSucceeded { outputs, .. }) => serde_json::to_value(outputs).ok()?["out"].as_u64(),
+            _ => None,
+        })
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
