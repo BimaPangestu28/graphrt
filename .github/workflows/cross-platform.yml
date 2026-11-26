@@ -74,7 +74,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.linux && '["ubuntu-latest","macos-latest","windows-latest"]' || '["macos-latest","windows-latest"]') }}
+        # Pull requests test macOS on Intel (macos-15-intel): the arm64 pool is short
+        # of capacity and left PR jobs queued for an hour. main, manual runs and the
+        # release workflow keep arm64 (macos-latest).
+        os: ${{ fromJSON(format('[{0}"{1}","windows-latest"]', inputs.linux && '"ubuntu-latest",' || '', github.event_name == 'pull_request' && 'macos-15-intel' || 'macos-latest')) }}
     steps:
       # Fixtures are hashed (plugin checksums, bundles) and compared byte for
       # byte: keep LF line endings on Windows checkouts.
