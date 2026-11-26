@@ -238,3 +238,39 @@ fn http_request_timeout_is_node_config_not_policy() {
         .unwrap();
     assert_eq!(wf.graph.nodes[0].config.get("timeout"), Some(&serde_json::json!({"read": 5})));
 }
+
+const APPROVAL: &str = r#"version: "1"
+graph:
+  nodes:
+    - id: start
+      type: start
+    - id: ask
+      type: human-input
+      prompt: "Send it?"
+      actions: [{ id: send }, { id: skip }]
+      expire_after_ms: 3600000
+      on_expire: { action: skip }
+    - id: end
+      type: end
+  edges:
+    - { source: start, target: ask }
+    - { source: ask, target: end, handle: send }
+    - { source: ask, target: end, handle: skip }
+"#;
+
+#[test]
+fn human_input_on_expire_is_a_known_field() {
+    let v = validate_text(APPROVAL, &Registry::with_builtins());
+    assert!(v.diagnostics.is_empty(), "{:?}", v.diagnostics);
+    assert!(v.graph.is_some());
+
+    let stop = APPROVAL.replace("on_expire: { action: skip }", "on_expire: stop");
+    assert!(errors(&stop).is_empty(), "{:?}", errors(&stop));
+}
+
+#[test]
+fn human_input_on_expire_must_name_one_of_its_actions() {
+    let text = APPROVAL.replace("on_expire: { action: skip }", "on_expire: { action: publish }");
+    let found = errors(&text);
+    assert!(found.iter().any(|d| d.message.contains("`publish`")), "{found:?}");
+}

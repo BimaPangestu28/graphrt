@@ -47,9 +47,63 @@ pub struct HumanInputConfig {
     /// the per-attempt timeout every node has, so it cannot be used for this.)
     #[serde(default)]
     pub expire_after_ms: Option<u64>,
+    /// What the host should do when the request expires: `stop` (the default)
+    /// or answer with one of `actions`. graphrt does not act on it itself; it is
+    /// reported in the pause data as `on_expire` for the host to carry out.
+    #[serde(default)]
+    pub on_expire: OnExpire,
     /// A UI block shown with the question, or a `{{#..#}}` reference to one.
     #[serde(default)]
     pub card: Option<serde_json::Value>,
+}
+
+/// What happens when a `human-input` request expires (see `expire_after_ms`).
+///
+/// Written `on_expire: stop` or `on_expire: { action: <id> }`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum OnExpire {
+    /// `on_expire: stop`, or no setting: the host stops the run.
+    #[default]
+    Stop,
+    /// The host answers with this action id and the fields' defaults, as a
+    /// person picking that action would.
+    Answer {
+        /// One of the node's `actions` ids (or `submit` when it sets none).
+        action: String,
+    },
+}
+
+impl<'de> Deserialize<'de> for OnExpire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct AnswerForm {
+            action: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Form {
+            Keyword(String),
+            Answer(AnswerForm),
+        }
+        match Form::deserialize(deserializer)? {
+            Form::Keyword(keyword) if keyword == "stop" => Ok(Self::Stop),
+            Form::Answer(AnswerForm { action }) if !action.is_empty() => Ok(Self::Answer { action }),
+            _ => Err(serde::de::Error::custom("`on_expire` must be `stop` or `{ action: <id> }`")),
+        }
+    }
+}
+
+impl OnExpire {
+    /// The pause data form: `{"kind": "stop"}` or `{"kind": "answer", "action": "<id>"}`.
+    fn to_value(&self) -> Value {
+        match self {
+            Self::Stop => Value::object([("kind", Value::from("stop"))]),
+            Self::Answer { action } => {
+                Value::object([("kind", Value::from("answer")), ("action", Value::from(action.as_str()))])
+            }
+        }
+    }
 }
 
 /// Form definition.
@@ -94,6 +148,7 @@ pub struct HumanInputNode {
     fields: Vec<Field>,
     actions: Vec<Action>,
     timeout_ms: Option<u64>,
+    on_expire: OnExpire,
     card: Option<serde_json::Value>,
 }
 
@@ -112,7 +167,22 @@ impl HumanInputNode {
                 return Err(ConfigError::new(doc, format!("action ids must be unique and non-empty (`{}`)", a.id)));
             }
         }
-        Ok(Self { prompt: config.prompt, fields, actions, timeout_ms: config.expire_after_ms, card: config.card })
+        if let OnExpire::Answer { action } = &config.on_expire
+            && !actions.iter().any(|known| known.id == *action)
+        {
+            return Err(ConfigError::new(
+                doc,
+                format!("`on_expire` names `{action}`, which is not one of the actions"),
+            ));
+        }
+        Ok(Self {
+            prompt: config.prompt,
+            fields,
+            actions,
+            timeout_ms: config.expire_after_ms,
+            on_expire: config.on_expire,
+            card: config.card,
+        })
     }
 
     fn pause(&self, ctx: &NodeContext) -> PauseRequest {
@@ -141,6 +211,7 @@ impl HumanInputNode {
             ("fields", Value::array(fields)),
             ("actions", Value::array(actions)),
             ("timeout_ms", self.timeout_ms.and_then(|t| i64::try_from(t).ok()).map(Value::Int).unwrap_or(Value::Null)),
+            ("on_expire", self.on_expire.to_value()),
         ]);
         if let (Some(card), Value::Object(map)) = (&self.card, &mut data) {
             std::sync::Arc::make_mut(map).insert("card".to_owned(), self.resolve_card(card, ctx));
@@ -258,6 +329,49 @@ mod tests {
         assert_eq!(p.data.get_path(&["prompt"]), Some(Value::from("Review: draft")));
         assert_eq!(p.data.get_path(&["fields", "0", "default"]), Some(Value::from("draft")));
         assert_eq!(p.data.get_path(&["actions", "length"]), Some(Value::Int(2)));
+    }
+
+    async fn paused_on_expire(cfg: serde_json::Value) -> Value {
+        let r = node(cfg).run(ctx(None)).await.unwrap();
+        let NodeOutcome::Paused(p) = r else { panic!("{r:?}") };
+        p.data.get_path(&["on_expire"]).unwrap()
+    }
+
+    #[tokio::test]
+    async fn pause_reports_what_happens_on_expiry() {
+        let stop = Value::object([("kind", Value::from("stop"))]);
+        assert_eq!(paused_on_expire(cfg()).await, stop, "stop is the default");
+
+        let mut stop_cfg = cfg();
+        stop_cfg["on_expire"] = json!("stop");
+        assert_eq!(paused_on_expire(stop_cfg).await, stop);
+
+        let mut answer_cfg = cfg();
+        answer_cfg["on_expire"] = json!({"action": "reject"});
+        let answer = Value::object([("kind", Value::from("answer")), ("action", Value::from("reject"))]);
+        assert_eq!(paused_on_expire(answer_cfg).await, answer);
+    }
+
+    #[test]
+    fn on_expire_must_name_an_action_and_have_a_known_form() {
+        let build = |on_expire: serde_json::Value| {
+            let mut config = cfg();
+            config["on_expire"] = on_expire;
+            let doc = NodeDoc::new("h", "human-input", config);
+            doc.parse_config::<HumanInputConfig>()
+                .map_err(|e| e.to_string())
+                .and_then(|config| HumanInputNode::new(&doc, config).map(|_| ()).map_err(|e| e.to_string()))
+        };
+        let unknown = build(json!({"action": "publish"})).unwrap_err();
+        assert!(unknown.contains("`publish`"), "{unknown}");
+        for bad in [json!("approve"), json!({"action": ""}), json!({"action": "approve", "x": 1}), json!(7)] {
+            assert!(build(bad.clone()).is_err(), "{bad} should be refused");
+        }
+        let default_action = {
+            let doc = NodeDoc::new("h", "human-input", json!({"on_expire": {"action": "submit"}}));
+            HumanInputNode::new(&doc, doc.parse_config().unwrap())
+        };
+        assert!(default_action.is_ok(), "`submit` is the action of a node that sets none");
     }
 
     #[tokio::test]
