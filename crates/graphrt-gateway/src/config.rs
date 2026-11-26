@@ -230,6 +230,11 @@ pub struct GatewayConfig {
     /// Grace of local replicas (SIGTERM → SIGKILL).
     #[serde(default = "default_grace")]
     pub local_grace_secs: u64,
+    /// Standby agents the local provider keeps started ahead of demand (one
+    /// process each, assigned to one deployment on its next cold wake); `0`
+    /// starts every agent on demand.
+    #[serde(default = "default_standby_agents")]
+    pub standby_agents: usize,
     /// Days finished runs (and webhook markers) are kept; at least 3 (Stripe retries).
     #[serde(default = "default_ttl_days")]
     pub store_ttl_days: u64,
@@ -262,6 +267,10 @@ fn default_store() -> PathBuf {
 fn default_socket_dir() -> PathBuf {
     std::env::temp_dir().join("graphrt-gateway")
 }
+fn default_standby_agents() -> usize {
+    1
+}
+
 fn default_grace() -> u64 {
     30
 }

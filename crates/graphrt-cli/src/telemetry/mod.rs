@@ -206,6 +206,9 @@ pub fn tracks_usage(command: &Command) -> bool {
         Command::Run(_) => true,
         #[cfg(feature = "serve")]
         Command::Serve(_) => true,
+        // A standby agent becomes a `serve` agent once assigned.
+        #[cfg(all(feature = "serve", feature = "trust-gateway"))]
+        Command::AgentStandby => true,
         _ => false,
     }
 }

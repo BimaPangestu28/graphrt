@@ -3,7 +3,8 @@
 //! socket (a named pipe on Windows) the gateway chose, in its own process group.
 //!
 //! - **wake**: spawns the missing processes and waits until their socket
-//!   accepts connections (no plugin: ~10 ms).
+//!   accepts connections (no plugin: ~10 ms), or assigns a pre-started
+//!   standby agent (see [`LocalProvider::with_standby`]).
 //! - **release**: `SIGTERM` to the process group (the agent drains), `SIGKILL`
 //!   after the grace. Signals go through `/bin/kill` because the workspace
 //!   forbids `unsafe` (no `libc::kill`). On Windows, which has no signal to
@@ -91,6 +92,111 @@ pub struct LocalProvider {
     /// Pids this process released: their pid files stay until they exit, but
     /// they must not be adopted back as live replicas.
     released: Mutex<std::collections::HashSet<u32>>,
+    /// Pre-started standby agents, when enabled.
+    standby: Option<std::sync::Arc<Standbys>>,
+}
+
+/// Agents started ahead of demand (`<program> agent-standby`): a process with
+/// its runtime and model HTTP client up but no deployment, no workflow and no
+/// keys, until a wake assigns it the `serve` arguments and keys of one
+/// deployment over its stdin. Each one serves one deployment once; after an
+/// assignment the gateway starts the next standby in the background.
+#[derive(Debug)]
+struct Standbys {
+    /// The gateway's own binary (canonical path): only versions whose command
+    /// is `serve` of this binary are assigned to a standby.
+    program: PathBuf,
+    /// Standbys kept ready.
+    target: usize,
+    /// The gateway's own secrets (variable names) a standby must not hold.
+    hidden_env: Vec<String>,
+    idle: Mutex<Vec<Child>>,
+    assigned: std::sync::atomic::AtomicU64,
+}
+
+impl Standbys {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Child>> {
+        self.idle.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Starts standbys until `target` are idle (nothing outside a Tokio runtime).
+    fn fill(&self) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let mut idle = self.lock();
+        idle.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+        while idle.len() < self.target {
+            match self.spawn() {
+                Ok(child) => idle.push(child),
+                Err(error) => {
+                    eprintln!("gateway: starting a standby agent ({}): {error}", self.program.display());
+                    break;
+                }
+            }
+        }
+    }
+
+    fn spawn(&self) -> std::io::Result<Child> {
+        let mut command = Command::new(&self.program);
+        command
+            .arg("agent-standby")
+            // Nothing of a deployment before the assignment: the keys come over stdin.
+            .env_remove(KEYS_ENV)
+            .stdin(std::process::Stdio::piped())
+            .kill_on_drop(false);
+        for name in &self.hidden_env {
+            command.env_remove(name);
+        }
+        #[cfg(unix)]
+        command.process_group(0);
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        command.spawn()
+    }
+
+    /// An idle standby that is still running.
+    fn take(&self) -> Option<Child> {
+        let mut idle = self.lock();
+        while let Some(mut child) = idle.pop() {
+            if matches!(child.try_wait(), Ok(None)) {
+                return Some(child);
+            }
+        }
+        None
+    }
+}
+
+/// Starts an agent process: `program argv`, keys in its environment, in its
+/// own process group.
+fn spawn_agent(program: &str, argv: &[String], version: &LocalVersion) -> Result<Child, ProviderError> {
+    let mut command = Command::new(program);
+    command
+        .args(argv)
+        .env(KEYS_ENV, &version.keys)
+        .envs(version.env.iter().map(|(name, value)| (name.as_str(), value.as_str())))
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(false);
+    #[cfg(unix)]
+    command.process_group(0);
+    // Its own group: the console's Ctrl+C reaches the gateway, not the agents.
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    command.spawn().map_err(|error| ProviderError::fatal(format!("spawning the agent: {error}")))
+}
+
+/// `GRAPHRT_GATEWAY_KEYS`: how an agent started by [`spawn_agent`] gets its keys.
+const KEYS_ENV: &str = "GRAPHRT_GATEWAY_KEYS";
+
+/// Hands `argv` and `keys` to `child` (a standby) as its one assignment line,
+/// then closes its stdin.
+async fn assign(child: &mut Child, argv: &[String], keys: &str) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt as _;
+    let mut stdin = child.stdin.take().ok_or_else(|| std::io::Error::other("standby without stdin"))?;
+    let mut line = serde_json::json!({ "argv": argv, "keys": keys }).to_string();
+    line.push('\n');
+    stdin.write_all(line.as_bytes()).await?;
+    stdin.shutdown().await
 }
 
 fn short_hash(text: &str) -> String {
@@ -258,7 +364,78 @@ impl LocalProvider {
             wake_lock: tokio::sync::Mutex::new(()),
             next_socket: std::sync::atomic::AtomicU64::new(0),
             released: Mutex::new(std::collections::HashSet::new()),
+            standby: None,
         })
+    }
+
+    /// Keeps `count` standby agents of `program` (the gateway's own binary)
+    /// ready: a wake of a version whose command is `serve` of that binary,
+    /// with no extra environment, assigns one instead of starting a process.
+    /// `0` turns standbys off. Call [`LocalProvider::fill_standby`] once a
+    /// Tokio runtime runs.
+    /// `hidden_env` names the gateway's own secrets (deployment keys, admin
+    /// token, callback and webhook secrets): they are removed from a
+    /// standby's environment, which holds nothing of a deployment until its
+    /// assignment.
+    #[must_use]
+    pub fn with_standby(mut self, program: &Path, count: usize, hidden_env: Vec<String>) -> Self {
+        self.standby = match (count, std::fs::canonicalize(program)) {
+            (0, _) => None,
+            (_, Ok(program)) => Some(std::sync::Arc::new(Standbys {
+                program,
+                target: count,
+                hidden_env,
+                idle: Mutex::new(Vec::new()),
+                assigned: std::sync::atomic::AtomicU64::new(0),
+            })),
+            (_, Err(error)) => {
+                eprintln!("gateway: no standby agents ({}: {error})", program.display());
+                None
+            }
+        };
+        self
+    }
+
+    /// Starts the standby agents that are missing (none when they are off).
+    /// [`Self::register`] calls it for the first version a standby can take.
+    pub fn fill_standby(&self) {
+        if let Some(standby) = &self.standby {
+            standby.fill();
+        }
+    }
+
+    /// Standby agents started and not assigned yet.
+    pub fn standby_ready(&self) -> usize {
+        self.standby.as_ref().map_or(0, |standby| standby.lock().len())
+    }
+
+    /// Wakes served by a standby agent so far.
+    pub fn standby_assigned(&self) -> u64 {
+        self.standby.as_ref().map_or(0, |standby| standby.assigned.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Whether a standby can start `version`'s agents: `serve` of the
+    /// gateway's own binary, without extra environment.
+    fn standby_takes(&self, version: &LocalVersion) -> bool {
+        let Some(standby) = &self.standby else { return false };
+        let is_serve = version.command.get(1).is_some_and(|argument| argument == "serve");
+        is_serve
+            && version.env.is_empty()
+            && version.command.first().and_then(|program| std::fs::canonicalize(program).ok()).as_ref()
+                == Some(&standby.program)
+    }
+
+    /// A standby for `version`, when it can take it (see [`Self::with_standby`]).
+    fn standby_for(&self, version: &LocalVersion) -> Option<Child> {
+        if !self.standby_takes(version) {
+            return None;
+        }
+        let standby = self.standby.as_ref()?;
+        let child = standby.take();
+        // The next one starts in the background, off this wake's path.
+        let refill = standby.clone();
+        graphrt_core::task::spawn(async move { refill.fill() });
+        child
     }
 
     /// The directory the agents' sockets and pid files are in.
@@ -269,10 +446,14 @@ impl LocalProvider {
 
     /// Registers how to start `deployment`'s agents.
     pub fn register(&self, deployment: &DeploymentRef, version: LocalVersion) {
+        let standby = self.standby_takes(&version);
         self.versions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert((deployment.name.clone(), deployment.version.clone()), version);
+        if standby {
+            self.fill_standby();
+        }
     }
 
     fn ready_count(&self, deployment: &DeploymentRef) -> usize {
@@ -303,24 +484,34 @@ impl LocalProvider {
         } else {
             EndpointAddress::Unix(pid_file.with_extension("sock"))
         };
-        let mut command = Command::new(program);
-        command
-            .args(arguments)
-            .arg("--listen")
-            .arg(listen_argument(&address))
-            .arg("--trust-gateway")
-            .arg("--deployment")
-            .arg(&deployment.name)
-            .env("GRAPHRT_GATEWAY_KEYS", &version.keys)
-            .envs(version.env.iter().map(|(name, value)| (name.as_str(), value.as_str())))
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(false);
-        #[cfg(unix)]
-        command.process_group(0);
-        // Its own group: the console's Ctrl+C reaches the gateway, not the agents.
-        #[cfg(windows)]
-        command.creation_flags(CREATE_NEW_PROCESS_GROUP);
-        let child = command.spawn().map_err(|error| ProviderError::fatal(format!("spawning the agent: {error}")))?;
+        let mut argv: Vec<String> = arguments.to_vec();
+        argv.extend([
+            "--listen".to_owned(),
+            listen_argument(&address),
+            "--trust-gateway".to_owned(),
+            "--deployment".to_owned(),
+            deployment.name.clone(),
+        ]);
+        let mut assigned = None;
+        if let Some(mut standby) = self.standby_for(version) {
+            match assign(&mut standby, &argv, &version.keys).await {
+                Ok(()) => assigned = Some(standby),
+                Err(error) => {
+                    // Never used again: it may have read part of the assignment.
+                    eprintln!("gateway: assigning a standby agent to {}: {error}", deployment.name);
+                    let _killed = standby.start_kill();
+                }
+            }
+        }
+        let child = match assigned {
+            Some(child) => {
+                if let Some(standby) = &self.standby {
+                    standby.assigned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                child
+            }
+            None => spawn_agent(program, &argv, version)?,
+        };
         let pid = child.id().ok_or_else(|| ProviderError::transient("agent exited at once"))?;
         let mut record = format!("{pid}\n{}\n{}\n", deployment.name, deployment.version);
         if let EndpointAddress::Pipe(name) = &address {
@@ -621,6 +812,39 @@ mod tests {
         assert_eq!(found, Some(3), "found by the probe right after the bind");
         assert!(wait_listening(&address, Duration::ZERO), "a listening agent is found by the first probe");
         drop(listener);
+        let _cleanup = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A standby's environment has none of the gateway's own secrets.
+    #[tokio::test]
+    async fn a_standby_holds_none_of_the_gateway_secrets() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("graphrt-standby-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Stands in for the binary: records its environment, then waits for stdin.
+        let program = dir.join("agent");
+        std::fs::write(&program, "#!/bin/sh\nenv > \"$0.env\"\ncat > /dev/null\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // `HOME` stands in for a secret: the test cannot set variables (no `unsafe`).
+        let provider = LocalProvider::new(&dir, Duration::from_secs(1)).unwrap().with_standby(
+            &program,
+            1,
+            vec!["HOME".to_owned()],
+        );
+        provider.fill_standby();
+        assert_eq!(provider.standby_ready(), 1);
+        let recorded = dir.join("agent.env");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let env = loop {
+            match std::fs::read_to_string(&recorded) {
+                Ok(text) if text.contains("PATH=") => break text,
+                _ => assert!(std::time::Instant::now() < deadline, "the standby never started"),
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert!(!env.lines().any(|line| line.starts_with("HOME=")), "{env}");
+        assert!(!env.lines().any(|line| line.starts_with("GRAPHRT_GATEWAY_KEYS=")));
+        drop(provider);
         let _cleanup = std::fs::remove_dir_all(&dir);
     }
 }

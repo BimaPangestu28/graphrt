@@ -58,6 +58,8 @@ pub mod serve;
 pub mod setup;
 #[cfg(feature = "serve")]
 pub mod sse_ids;
+#[cfg(all(feature = "serve", feature = "trust-gateway"))]
+pub mod standby;
 #[cfg(feature = "serve")]
 pub mod store;
 #[cfg(feature = "telemetry")]
@@ -173,14 +175,22 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
         Command::Deploy(args) => deploy_cmd::deploy(*args),
         #[cfg(feature = "serve")]
-        Command::Serve(args) => {
-            let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(runtime_error)?;
-            let result = runtime.block_on(serve::serve(*args));
-            // A node stuck in blocking code must not hold the exit past the drain deadline.
-            runtime.shutdown_timeout(std::time::Duration::from_millis(500));
-            result
-        }
+        Command::Serve(args) => block_on_serve(serve::serve(*args)),
+        #[cfg(all(feature = "serve", feature = "trust-gateway"))]
+        Command::AgentStandby => block_on_serve(standby::standby()),
     }
+}
+
+/// Run `serve` (or a standby agent that becomes one) on a multi-threaded runtime.
+///
+/// @throws CliError - When the runtime cannot start, or the command's own error.
+#[cfg(feature = "serve")]
+fn block_on_serve(command: impl std::future::Future<Output = Result<u8, CliError>>) -> Result<u8, CliError> {
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(runtime_error)?;
+    let result = runtime.block_on(command);
+    // A node stuck in blocking code must not hold the exit past the drain deadline.
+    runtime.shutdown_timeout(std::time::Duration::from_millis(500));
+    result
 }
 
 /// Run a command on a single-threaded runtime: one run or evaluation at a
