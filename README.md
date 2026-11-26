@@ -500,6 +500,7 @@ graphrt-rag     knowledge-retrieval node, stores, embedders, ingestion
 graphrt-plugin  process / HTTP plugin host; graphrt-wasm: sandboxed WebAssembly plugins
 graphrt-bundle  portable .grt bundles; graphrt-otel: OpenTelemetry export
 graphrt-eval    eval harness: test suites, assertions, trajectories, retrieval metrics, CI gate
+graphrt-ui      UI blocks: Adaptive Cards, charts, tables, KPI tiles (kinds, schemas, validation)
 graphrt-ffi     Kotlin / Swift bindings for Android and iOS
 graphrt-gateway always-on front of scale-to-zero agents: run store, auth, limits, wake
 graphrt-provider-api  Provider / DeployDriver traits, shared provider HTTP, conformance
