@@ -60,7 +60,7 @@ curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/install
 # Homebrew (macOS, Linux)
 brew install bimapangestu28/graphrt/graphrt
 
-# with Rust (1.89+)
+# with Rust (1.94+ for the default features; 1.89+ without `local-embed`)
 cargo install graphrt-cli            # installs the `graphrt` binary
 cargo install graphrt-cli --features eval,online-eval   # + `graphrt eval` and `serve --evaluators`
 cargo install graphrt-cli --features gateway-all        # + `graphrt gateway` and `graphrt deploy`
@@ -428,7 +428,8 @@ Measured with `cargo build -p graphrt-cli --profile min-size` (opt-level `z`, LT
 
 In-process embedding models (`local-embed`, on by default since 0.2.0) add
 about 2.1 MiB (measured on macOS arm64: 10.3 MiB → 12.4 MiB);
-models themselves are downloaded on first use, not bundled. A server build for
+models themselves are downloaded on first use, not bundled. `local-embed` needs
+Rust 1.94 or newer (its `candle` dependency); every other feature builds with 1.89. A server build for
 small devices, `--no-default-features --features llm,http,wasm,serve`, is
 6.3 MiB as a static aarch64 musl binary (6.2 MiB for 32-bit ARMv7).
 
