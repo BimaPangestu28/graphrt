@@ -14,6 +14,7 @@
 //! | `chart`         | bar, line, area, pie or donut chart             | [`chart`]           |
 //! | `table`         | columns and rows                                | [`table`]           |
 //! | `stats`         | KPI tiles: a value, a change, a trend           | [`stats`]           |
+//! | `diagram`       | a diagram written as Mermaid text               | [`diagram`]         |
 //!
 //! [`validate`] is the gate every host passes a block through before rendering it: it
 //! checks the envelope, the kind's shape (unknown fields are errors), sizes, and the URL
@@ -24,6 +25,13 @@
 //!
 //! Blocks carry no colours, styles, HTML or scripts: hosts map them to their own theme.
 //!
+//! ## Where a block cannot be drawn
+//! A chat on WhatsApp or SMS shows text, not cards. [`fallback::to_text`] turns any block
+//! into tidy text: a card becomes its text plus numbered choices that
+//! [`fallback::match_choice`] maps back to the card's submit actions, a table becomes
+//! compact lines, a chart a short summary. With the `png` feature,
+//! `png::chart_png` draws a chart as a PNG image for channels that send media.
+//!
 //! ## Adding a kind
 //! Add a module with a `validate` function, a [`UiKind`] variant, its schema in `schemas/`,
 //! and fixtures in `fixtures/`; the fixture tests then check the schema and the validator agree.
@@ -33,6 +41,10 @@ use serde_json::{Map, Value as Json};
 pub mod adaptive_card;
 pub mod chart;
 mod checks;
+pub mod diagram;
+pub mod fallback;
+#[cfg(feature = "png")]
+pub mod png;
 pub mod stats;
 pub mod table;
 
@@ -51,11 +63,12 @@ pub enum UiKind {
     Chart,
     Table,
     Stats,
+    Diagram,
 }
 
 impl UiKind {
     /// Every kind, in documentation order.
-    pub const ALL: [UiKind; 4] = [UiKind::AdaptiveCard, UiKind::Chart, UiKind::Table, UiKind::Stats];
+    pub const ALL: [UiKind; 5] = [UiKind::AdaptiveCard, UiKind::Chart, UiKind::Table, UiKind::Stats, UiKind::Diagram];
 
     /// The `"$ui"` value of this kind.
     pub fn as_str(self) -> &'static str {
@@ -64,6 +77,7 @@ impl UiKind {
             UiKind::Chart => "chart",
             UiKind::Table => "table",
             UiKind::Stats => "stats",
+            UiKind::Diagram => "diagram",
         }
     }
 
@@ -162,6 +176,7 @@ pub fn validate(value: &Json) -> Result<UiBlock, UiError> {
         UiKind::Chart => chart::validate(&body)?,
         UiKind::Table => table::validate(&body)?,
         UiKind::Stats => stats::validate(&body)?,
+        UiKind::Diagram => diagram::validate(&body)?,
     }
     Ok(UiBlock { kind, value: value.clone() })
 }
@@ -178,6 +193,7 @@ pub fn schema(kind: UiKind) -> &'static str {
         UiKind::Chart => include_str!("../schemas/chart.schema.json"),
         UiKind::Table => include_str!("../schemas/table.schema.json"),
         UiKind::Stats => include_str!("../schemas/stats.schema.json"),
+        UiKind::Diagram => include_str!("../schemas/diagram.schema.json"),
     }
 }
 
