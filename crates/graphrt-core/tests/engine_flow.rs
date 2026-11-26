@@ -765,7 +765,7 @@ async fn retries_with_backoff_do_not_block_parallel_nodes() {
     let ids: Vec<&std::sync::Arc<str>> = events
         .iter()
         .filter_map(|e| match e {
-            Event::NodeRetry { exec_id, .. } | Event::NodeSucceeded { exec_id, node_id: _, .. } => Some(exec_id),
+            Event::NodeRetry { exec_id, .. } | Event::NodeSucceeded { exec_id, .. } => Some(exec_id),
             _ => None,
         })
         .collect();

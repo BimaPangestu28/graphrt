@@ -31,6 +31,9 @@ impl WriteLatency {
     /// Record one write that took `elapsed`.
     pub fn record(&self, elapsed: Duration) {
         let sample = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        // `fetch_update` is deprecated in favour of `try_update` on newer toolchains, but
+        // `try_update` is not available on the 1.89 MSRV.
+        #[allow(deprecated)]
         let _updated = self
             .micros
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| Some(sample.max(current - current / 8)));

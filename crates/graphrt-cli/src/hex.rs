@@ -18,7 +18,8 @@ pub fn from_hex(text: &str) -> Option<Vec<u8>> {
         return None;
     }
     let value = |digit: u8| char::from(digit).to_digit(16).and_then(|v| u8::try_from(v).ok());
-    digits.chunks_exact(2).map(|pair| Some(value(*pair.first()?)? << 4 | value(*pair.get(1)?)?)).collect()
+    let (pairs, _) = digits.as_chunks::<2>();
+    pairs.iter().map(|&[high, low]| Some(value(high)? << 4 | value(low)?)).collect()
 }
 
 #[cfg(test)]

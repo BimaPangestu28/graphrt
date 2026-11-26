@@ -264,11 +264,11 @@ fn encode_vector(vector: &[f32]) -> Vec<u8> {
 
 /// `None` when the blob length is not a multiple of 4.
 fn decode_vector(bytes: &[u8]) -> Option<Vec<f32>> {
-    let values = bytes.chunks_exact(4);
-    if !values.remainder().is_empty() {
+    let (values, rest) = bytes.as_chunks::<4>();
+    if !rest.is_empty() {
         return None;
     }
-    values.map(|b| <[u8; 4]>::try_from(b).ok().map(f32::from_le_bytes)).collect()
+    Some(values.iter().copied().map(f32::from_le_bytes).collect())
 }
 
 fn store_error(path: &Path, error: &rusqlite::Error) -> RagError {

@@ -42,7 +42,12 @@ jobs:
         with:
           toolchain: "1.89"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo check --workspace
+      # `local-embed` (default in graphrt-cli) builds candle-core, which needs Rust 1.94+:
+      # every crate is checked on 1.89, graphrt-cli with its default features minus `local-embed`.
+      - run: cargo check --workspace --exclude graphrt-cli
+      - run: >-
+          cargo check -p graphrt-cli --no-default-features --features
+          llm,http,code,python,mcp,doc,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly
 
   minimal-core:
     name: core without default features

@@ -564,10 +564,9 @@ fn top_hits(mut scored: Vec<(f32, &Entry)>, top_k: usize) -> Vec<Hit> {
 /// Dot product written as 8 independent accumulators so the compiler can vectorize it.
 pub fn dot(a: &[f32], b: &[f32]) -> f32 {
     let mut acc = [0.0f32; 8];
-    let chunks_a = a.chunks_exact(8);
-    let chunks_b = b.chunks_exact(8);
-    let (rest_a, rest_b) = (chunks_a.remainder(), chunks_b.remainder());
-    for (x, y) in chunks_a.zip(chunks_b) {
+    let (chunks_a, rest_a) = a.as_chunks::<8>();
+    let (chunks_b, rest_b) = b.as_chunks::<8>();
+    for (x, y) in chunks_a.iter().zip(chunks_b) {
         for ((slot, xi), yi) in acc.iter_mut().zip(x).zip(y) {
             *slot += xi * yi;
         }
