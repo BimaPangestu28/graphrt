@@ -1,0 +1,28 @@
+[package]
+name = "graphrt-skill"
+description = "Agent Skills for graphrt: read SKILL.md packages, pin and scan them at install, and serve them to agents on demand."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-skill"
+homepage = "https://github.com/Graphrt/graphrt"
+keywords = ["skill", "agent", "llm", "workflow", "extension"]
+categories = ["development-tools"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+graphrt-core = { workspace = true, features = ["yaml"] }
+serde-saphyr = { workspace = true }
+futures.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = { version = "0.11", default-features = false }
+
+[dev-dependencies]
+futures = { workspace = true, features = ["executor"] }
+
+[lints]
+workspace = true

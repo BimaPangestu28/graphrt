@@ -235,7 +235,13 @@ pub(crate) fn agent() -> NodeDescriptor {
                 "memory": memory(),
                 "vision": vision(),
                 "require_approval": { "type": "array", "items": { "type": "string" } },
-                "max_tool_output_chars": { "type": "integer", "minimum": 1, "default": 32000 }
+                "max_tool_output_chars": { "type": "integer", "minimum": 1, "default": 32000 },
+                "skills": {
+                    "type": "array",
+                    "description": "Installed skills the agent may load on demand. Tools granted to a skill are \
+                                    offered after the skill was loaded. Needs a host with a skill store.",
+                    "items": { "type": "string" }
+                }
             }),
             &["model"],
         ))

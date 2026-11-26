@@ -1200,6 +1200,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "graphrt-core",
+ "graphrt-skill",
  "indexmap",
  "reqwest",
  "rustls",
@@ -1285,6 +1286,19 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "graphrt-skill"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "graphrt-core",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror",
 ]
 
 [[package]]
