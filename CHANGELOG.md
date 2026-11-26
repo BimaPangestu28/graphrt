@@ -35,6 +35,12 @@ releases may contain breaking changes; they are called out under **Changed**.
   docs/plugin-manifest.md, behind the `mcp-presets` feature of graphrt-plugin
   (default on; the CLI's default features include it, slim agent builds with
   only `plugins` leave it out and keep their size and memory budgets).
+- Plugin manifests can declare `triggers`: events a host starts workflows on.
+  Each names one of the plugin's node kinds as `watch`, which the host
+  long-polls outside runs with `config` and a `cursor`, getting back `events`
+  (one run's inputs each) and the next `cursor`. graphrt-plugin exposes them as
+  `PluginManifest::triggers` / `TriggerDescriptor`; the JSON Schema and
+  docs/plugin-manifest.md describe them. Used by graphrt Desktop.
 
 ### Changed
 

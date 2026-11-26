@@ -95,6 +95,12 @@
       "maxItems": 20,
       "items": { "$ref": "#/$defs/template" },
       "default": []
+    },
+    "triggers": {
+      "description": "Events a host can start workflows on. Each names a `watch` node kind of this plugin that the host long-polls outside runs.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/trigger" },
+      "default": []
     }
   },
   "allOf": [
@@ -320,6 +326,20 @@
       "if": { "properties": { "kind": { "const": "fixed" } } },
       "then": { "required": ["handles"] },
       "default": { "kind": "single" }
+    },
+    "trigger": {
+      "description": "An event source. The host calls the `watch` node kind with `config` plus `cursor` (from the previous call) and gets the outputs `events` (list of objects, each the inputs of one run) and `cursor`. Unknown keys are errors.",
+      "type": "object",
+      "required": ["id", "title", "watch"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "description": "Unique in the manifest; hosts show `<name>.<id>`.", "type": "string", "pattern": "^[a-z0-9_-]{1,64}$" },
+        "title": { "description": "Short label, e.g. `When a meeting is recorded`. Not blank.", "type": "string", "pattern": "\\S" },
+        "description": { "type": "string", "default": "" },
+        "watch": { "description": "A node kind declared in `nodes`.", "type": "string" },
+        "config": { "description": "Configuration passed to every `watch` call.", "type": "object", "default": {} },
+        "outputs": { "description": "Fields of each event.", "type": "array", "items": { "$ref": "#/$defs/output" }, "default": [] }
+      }
     },
     "tool": {
       "description": "A tool. Unknown keys are ignored.",

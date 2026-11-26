@@ -109,6 +109,14 @@ fn with_node(node: Value) -> Value {
     manifest
 }
 
+/// A manifest with node `acme.x` and one trigger (watching a declared kind keeps
+/// the cross-field rule out of the structural comparison).
+fn with_trigger(trigger: Value) -> Value {
+    let mut manifest = with_node(json!({ "kind": "acme.x", "title": "X" }));
+    manifest["triggers"] = json!([trigger]);
+    manifest
+}
+
 #[test]
 fn schema_lists_exactly_the_fields_the_parser_accepts() {
     let schema = manifest_schema();
@@ -129,8 +137,11 @@ fn schema_lists_exactly_the_fields_the_parser_accepts() {
     let mut unknown_template_field = base_manifest();
     unknown_template_field["templates"] =
         json!([{ "id": "a", "title": "T", "description": "D", "prompt": "P", "zz_unknown": 1 }]);
+    let mut unknown_trigger_field = with_node(json!({ "kind": "acme.x", "title": "X" }));
+    unknown_trigger_field["triggers"] = json!([{ "id": "t", "title": "T", "watch": "acme.x", "zz_unknown": 1 }]);
     let cases = [
         ("manifest", &unknown_top_level, &schema),
+        ("trigger", &unknown_trigger_field, &definitions["trigger"]),
         ("permissions", &unknown_permission, &definitions["permissions"]),
         ("limits", &unknown_limit, &definitions["limits"]),
         ("node", &unknown_node_field, &definitions["node"]),
@@ -281,6 +292,21 @@ fn agreement_cases() -> Vec<(&'static str, Value)> {
             "template unknown field",
             edit(|m| m["templates"] = json!([{ "id": "a", "title": "T", "description": "D", "prompt": "P", "z": 1 }])),
         ),
+        ("trigger", with_trigger(json!({ "id": "t", "title": "T", "watch": "acme.x", "config": { "a": 1 } }))),
+        ("trigger without watch", with_trigger(json!({ "id": "t", "title": "T" }))),
+        ("trigger bad id", with_trigger(json!({ "id": "Bad Id", "title": "T", "watch": "acme.x" }))),
+        ("trigger blank title", with_trigger(json!({ "id": "t", "title": " ", "watch": "acme.x" }))),
+        (
+            "trigger config not an object",
+            with_trigger(json!({ "id": "t", "title": "T", "watch": "acme.x", "config": 1 })),
+        ),
+        (
+            "trigger outputs",
+            with_trigger(
+                json!({ "id": "t", "title": "T", "watch": "acme.x", "outputs": [{ "name": "o", "type": "string" }] }),
+            ),
+        ),
+        ("trigger unknown field", with_trigger(json!({ "id": "t", "title": "T", "watch": "acme.x", "wacth": 1 }))),
     ]
 }
 
