@@ -81,8 +81,19 @@ pub async fn learn(args: LearnCmdArgs) -> Result<u8, CliError> {
             };
             print_done(json!({"recorded": recorded}), text, json, &mut out)
         }
-        LearnCommand::Distill { agent } => {
-            let report = Learner::new(Arc::clone(&store)).distill(&agent, None).await.map_err(failed)?;
+        LearnCommand::Distill { agent, model, providers } => {
+            let learner = Learner::new(Arc::clone(&store));
+            let report = match model {
+                Some(model) => {
+                    // The model is called before anything is printed: drop the output lock meanwhile.
+                    drop(out);
+                    let distiller = model_distiller(&model, providers).await?;
+                    let report = learner.distill(&agent, Some(&distiller)).await.map_err(failed)?;
+                    out = std::io::stdout().lock();
+                    report
+                }
+                None => learner.distill(&agent, None).await.map_err(failed)?,
+            };
             if json {
                 let value = json!({
                     "observations": report.observations, "lessons": report.lessons, "skipped": report.skipped,
@@ -127,6 +138,19 @@ pub async fn learn(args: LearnCmdArgs) -> Result<u8, CliError> {
             print_audit(&entries, json, &mut out)
         }
     }
+}
+
+/// A distiller that asks model `provider/name`.
+async fn model_distiller(model: &str, providers: Option<PathBuf>) -> Result<graphrt_learn::ModelDistiller, CliError> {
+    let (provider, name) = crate::setup::parse_model_override(model)?;
+    let options = crate::setup::ServiceOptions { providers, ..Default::default() };
+    let services = crate::setup::services(&options, graphrt_core::tool::ToolRegistry::new()).await?;
+    let registry = services
+        .get::<graphrt_llm::ModelRegistry>()
+        .ok_or_else(|| CliError::failed("no model providers are configured"))?;
+    let chat = registry.get(&provider).map_err(|error| CliError::usage(error.to_string()))?;
+    let text_model = graphrt_llm::text_model::ChatTextModel::new(chat, name);
+    Ok(graphrt_learn::ModelDistiller::new(Arc::new(text_model)))
 }
 
 fn open_store(dir: Option<PathBuf>) -> Result<LessonStore, CliError> {

@@ -509,8 +509,18 @@ pub enum LearnCommand {
         #[arg(long, requires = "user")]
         authenticated: bool,
     },
-    /// Turn recorded feedback into lesson proposals.
-    Distill { agent: String },
+    /// Turn recorded feedback into lesson proposals. With `--model`, a model
+    /// also suggests lessons from the recorded runs. Those always wait for
+    /// approval.
+    Distill {
+        agent: String,
+        /// A model that suggests lessons (`provider/name`).
+        #[arg(long, value_name = "PROVIDER/NAME")]
+        model: Option<String>,
+        /// Model providers file (YAML or JSON) layered over the environment-based providers.
+        #[arg(long, value_name = "FILE", requires = "model")]
+        providers: Option<PathBuf>,
+    },
     /// Show the agent's learning policy, or change automatic approval.
     Policy {
         agent: String,

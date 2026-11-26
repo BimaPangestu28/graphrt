@@ -10,6 +10,7 @@
 //! - [`store`]: lessons on disk, per agent and per user, with an audit log.
 //! - [`learner`]: recording signals cheaply and turning them into proposals
 //!   outside the run.
+//! - [`model_distiller`]: a model that suggests lessons from recorded signals.
 //!
 //! The rules that make this safe are enforced by the store:
 //!
@@ -43,11 +44,13 @@
 pub mod error;
 pub mod learner;
 pub mod lesson;
+pub mod model_distiller;
 pub mod policy;
 pub mod store;
 
 pub use error::Error;
 pub use learner::{Candidate, DistillReport, Distiller, Learner, Observation, ObservationKind};
 pub use lesson::{Lesson, LessonKind, LessonStatus, Origin, Risk, RiskReason, Signal, Trust};
+pub use model_distiller::ModelDistiller;
 pub use policy::LearningPolicy;
 pub use store::{AuditEntry, Decision, Forget, LessonFilter, LessonStore, NewLesson, Proposal, UserFilter};
