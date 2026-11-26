@@ -140,7 +140,9 @@ A deployment that needs the lowest wake latency can opt in to
   ones.
 - **Limit.** At most `max_frozen_agents` (gateway setting, default `16`, so
   ~64 MiB) are frozen at once across all deployments; freezing one more stops
-  the agent frozen longest ago. `0` turns freezing off everywhere.
+  the agent frozen longest ago. `0` turns freezing off everywhere. Size it to
+  the deployments that must wake fast: one whose agent was stopped to make
+  room wakes as with `idle_mode: stop`.
 - **Isolation and security** are those of a running agent: a frozen agent is
   the same process of the same deployment, with the same keys; it is never
   given to another deployment.
