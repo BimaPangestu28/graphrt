@@ -8,7 +8,7 @@
 //! | --- | --- |
 //! | `graphrt-gateway.lease` | JSON [`LeaseRecord`]: token, holder, heartbeat counter. Replaced atomically (write + rename) |
 //! | `graphrt-gateway.lease.lock` | `flock` serialising read-modify-write of the lease (held for one write + fsync + rename: milliseconds) |
-//! | `graphrt-gateway.active.lock` | `flock` held by the active for its whole tenure: the kernel drops it when the process dies |
+//! | `graphrt-gateway.active.lock` | `flock` held by the active for its whole tenure: the kernel drops it when the process dies, and a dropped [`FileLease`] unlocks it |
 //! | `graphrt-gateway.promote` | manual promotion request (`graphrt gateway ha promote`) |
 //!
 //! A passive ([`Candidate`]) takes the lease when:
@@ -611,6 +611,18 @@ impl LeaseMedium for FileLease {
     }
 }
 
+/// Unlocks instead of leaving it to the close of the lock files. A `flock`
+/// belongs to the open file description, and a child process forked by
+/// another thread shares that description until it execs: closing our
+/// descriptors in that window would leave the locks taken, and a passive
+/// polling right then would see a holder that is gone as still running.
+impl Drop for FileLease {
+    fn drop(&mut self) {
+        self.unlock_mutex();
+        self.release_tenure();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -738,6 +750,43 @@ mod tests {
         let taken =
             Candidate::new(identity("b", 2), settings(Takeover::Manual)).step(&mut medium_b, 0).unwrap().unwrap();
         assert_eq!((taken.token, taken.reason, taken.tenure), (10, TakeReason::Released, true));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A process spawned by another thread inherits the lock descriptors
+    /// until it execs. Closing them alone would then leave the locks taken
+    /// for that window, so a dropped lease must unlock them itself.
+    #[cfg(unix)]
+    #[test]
+    fn dropped_lease_frees_its_locks_while_other_threads_spawn_processes() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let spawners: Vec<_> = (0..4)
+            .map(|_| {
+                let stop = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _status = std::process::Command::new("true").status();
+                    }
+                })
+            })
+            .collect();
+        let dir = temp_dir("drop-spawn");
+        let mut still_locked = 0;
+        for _ in 0..300 {
+            // Each round drops the lease of the round before, locks held.
+            let mut lease = FileLease::open(&dir, "a").unwrap();
+            if !(lease.try_tenure().unwrap() && lease.try_lock_mutex().unwrap()) {
+                still_locked += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        for spawner in spawners {
+            spawner.join().unwrap();
+        }
+        assert_eq!(still_locked, 0, "rounds where a dropped lease kept a lock");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
