@@ -54,6 +54,7 @@ data model first, with YAML 1.2 boolean spellings only (`true` / `false`;
 | `tools` | array | `[]` | [Tools](#tools). |
 | `allow_unprefixed_kinds` | boolean | `false` | See [Node kinds](#node-kinds). |
 | `templates` | array | `[]` | [Templates](#templates): starter prompts a host may offer. Any runtime. |
+| `triggers` | array | `[]` | [Triggers](#triggers): events a host can start workflows on. |
 
 ## Runtime fields
 
@@ -237,6 +238,54 @@ Each `tools[]` entry is offered to `tool` and `agent` nodes under provider
 | `description` | string | required | Shown to models. |
 | `parameters` | any JSON | required | JSON Schema of the arguments object. |
 
+## Triggers
+
+A trigger is an event source a host can start workflows on ("a file was added",
+"a meeting was recorded"). It adds no protocol method: `watch` names one of the
+plugin's own node kinds, which the host calls **outside any workflow run**, again
+and again, while at least one workflow uses the trigger.
+
+| Field | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `id` | string | required | `[a-z0-9_-]{1,64}`, unique in the manifest. Hosts show `<name>.<id>`. |
+| `title` | string | required | Not blank, no control characters. E.g. `When a meeting is recorded`. |
+| `description` | string | `""` | |
+| `watch` | string | required | A node kind declared in `nodes`. |
+| `config` | object | `{}` | Passed to every `watch` call. |
+| `outputs` | array | `[]` | [Outputs](#outputs) describing each event's fields. |
+
+Unknown keys are errors.
+
+**The watch contract.** The host runs the `watch` node with `config` plus
+`cursor`: the string the previous call returned, absent on the first call. The
+node waits (long-polls) until something happens or its own time limit passes,
+then completes with two outputs:
+
+- `events`: a list of objects, possibly empty. Each object starts one run of
+  every workflow that chose the trigger, as that run's inputs.
+- `cursor`: a string the next call resumes from, so nothing is lost or repeated
+  between calls (and across host restarts, when the host stores it).
+
+Both may also sit under a `data` output (`data.events`, `data.cursor`), the
+shape of every graphrt-plugins operation; hosts read either.
+
+A failed call is retried by the host with a backoff. Keep each call shorter
+than `limits.timeout_ms`; a few minutes is a good upper bound.
+
+```json
+{
+  "nodes": [{ "kind": "file-watcher.wait_for_change", "title": "Wait for a change",
+              "outputs": [{ "name": "events", "type": "array[object]" }, { "name": "cursor", "type": "string" }] }],
+  "triggers": [{
+    "id": "file_added", "title": "When a file is added", "watch": "file-watcher.wait_for_change",
+    "config": { "path": "~/inbox", "timeout_seconds": 240 },
+    "outputs": [{ "name": "path", "type": "string", "description": "Path of the new file" }]
+  }]
+}
+```
+
+The graphrt CLI does not run triggers itself; hosts such as graphrt Desktop do.
+
 ## Relative paths
 
 `module`, `checksums` keys and `cwd` are paths inside the
@@ -259,12 +308,16 @@ After parsing, a manifest is rejected when:
    the https / `permissions.env` rules for credentials; a wasm `module` is
    blank or not a [relative path](#relative-paths);
 7. a `checksums` key is not a relative path, or a non-empty `checksums` does
-   not pin the entrypoint.
+   not pin the entrypoint;
+8. a trigger `id` is not `[a-z0-9_-]{1,64}` or is a duplicate, its `title` is
+   blank or has control characters, its `watch` is not one of the plugin's node
+   kinds, or its `config` is not an object.
 
 The JSON Schema encodes the per-field rules (types, unknown keys, runtime
 fields, names, limits, paths, enums). Rules that relate several fields (the
 `<name>.` prefix, uniqueness, the pinned entrypoint, https for credentials,
-`bearer_token_env` in `permissions.env`) are only checked by graphrt.
+`bearer_token_env` in `permissions.env`, a trigger's `watch` among the node
+kinds) are only checked by graphrt.
 
 ## Editor setup
 
@@ -333,3 +386,4 @@ becomes a guarantee.
 | --- | --- | --- |
 | 1 | 0.2.0 | First specified version. |
 | 1 | unreleased | `runtime: mcp` (MCP server presets) and `templates` (new optional field and value, not breaking). |
+| 1 | unreleased | Optional `triggers` (not breaking: a new optional field). |
