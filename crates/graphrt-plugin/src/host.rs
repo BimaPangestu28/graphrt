@@ -263,6 +263,7 @@ impl PluginHost {
                 }
                 // An MCP preset has no code: the host that installed it connects the
                 // server through its MCP client, so there is nothing to register here.
+                #[cfg(feature = "mcp-presets")]
                 None if matches!(entry.plugin.manifest.runtime, Runtime::Mcp(_)) => continue,
                 None => {
                     let runtime = entry.plugin.manifest.runtime.name();

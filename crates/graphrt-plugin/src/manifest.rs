@@ -8,6 +8,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::PluginError;
+#[cfg(feature = "mcp-presets")]
 use crate::mcp_preset::{McpServerSpec, PluginTemplate};
 
 /// Protocol version spoken by this host.
@@ -57,6 +58,7 @@ pub struct PluginManifest {
     #[serde(default)]
     pub allow_unprefixed_kinds: bool,
     /// Starter prompts a host may offer while the plugin is installed.
+    #[cfg(feature = "mcp-presets")]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub templates: Vec<PluginTemplate>,
 }
@@ -106,8 +108,10 @@ struct RawManifest {
     #[serde(default)]
     module: Option<String>,
     // mcp
+    #[cfg(feature = "mcp-presets")]
     #[serde(default)]
     mcp: Option<McpServerSpec>,
+    #[cfg(feature = "mcp-presets")]
     #[serde(default)]
     templates: Vec<PluginTemplate>,
     #[serde(default)]
@@ -147,7 +151,10 @@ impl TryFrom<RawManifest> for PluginManifest {
             ("bearer_token_env", raw.bearer_token_env.is_some()),
         ];
         let wasm_fields = [("module", raw.module.is_some())];
+        #[cfg(feature = "mcp-presets")]
         let mcp_fields = [("mcp", raw.mcp.is_some())];
+        #[cfg(not(feature = "mcp-presets"))]
+        let mcp_fields: [(&str, bool); 0] = [];
         let runtime = match raw.runtime.as_str() {
             "process" => {
                 misplaced("process", &http_fields)?;
@@ -177,6 +184,7 @@ impl TryFrom<RawManifest> for PluginManifest {
                 misplaced("wasm", &mcp_fields)?;
                 Runtime::Wasm(WasmRuntime { module: raw.module.ok_or("runtime `wasm` requires `module`")? })
             }
+            #[cfg(feature = "mcp-presets")]
             "mcp" => {
                 misplaced("mcp", &process_fields)?;
                 misplaced("mcp", &http_fields)?;
@@ -200,6 +208,7 @@ impl TryFrom<RawManifest> for PluginManifest {
             nodes: raw.nodes,
             tools: raw.tools,
             allow_unprefixed_kinds: raw.allow_unprefixed_kinds,
+            #[cfg(feature = "mcp-presets")]
             templates: raw.templates,
         })
     }
@@ -218,6 +227,7 @@ pub enum Runtime {
     Wasm(WasmRuntime),
     /// No code: a remote MCP server the host registers as a tool provider
     /// (see [`crate::mcp_preset`]). The plugin host itself loads nothing for it.
+    #[cfg(feature = "mcp-presets")]
     Mcp(McpRuntime),
 }
 
@@ -228,6 +238,7 @@ impl Runtime {
             Runtime::Process(_) => "process",
             Runtime::Http(_) => "http",
             Runtime::Wasm(_) => "wasm",
+            #[cfg(feature = "mcp-presets")]
             Runtime::Mcp(_) => "mcp",
         }
     }
@@ -269,6 +280,7 @@ pub struct WasmRuntime {
 }
 
 /// `runtime: mcp` settings.
+#[cfg(feature = "mcp-presets")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpRuntime {
     /// The server the plugin declares.
@@ -426,13 +438,16 @@ impl PluginManifest {
             Runtime::Wasm(w) if !is_inside(&w.module) => {
                 bad(format!("`module` `{}` must be relative and inside the plugin directory", w.module))
             }
+            #[cfg(feature = "mcp-presets")]
             Runtime::Mcp(_) if !self.nodes.is_empty() || !self.tools.is_empty() => {
                 bad("runtime `mcp` takes its tools from the server: `nodes` and `tools` must be empty".into())
             }
+            #[cfg(feature = "mcp-presets")]
             Runtime::Mcp(m) => m.mcp.validate(&self.permissions.env).or_else(bad),
             _ => Ok(()),
         }?;
-        crate::mcp_preset::validate_templates(&self.templates).or_else(bad)?;
+        #[cfg(feature = "mcp-presets")]
+        let _templates_checked: () = crate::mcp_preset::validate_templates(&self.templates).or_else(bad)?;
         for path in self.checksums.keys() {
             if !is_inside(path) {
                 return bad(format!("checksum path `{path}` must be relative and inside the plugin directory"));

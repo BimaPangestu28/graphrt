@@ -23,7 +23,8 @@ releases may contain breaking changes; they are called out under **Changed**.
   register it when the plugin is installed. `nodes` and `tools` must be empty,
   and the plugin host loads such a plugin without registering anything.
 - graphrt-plugin: `templates` (any runtime): starter prompts a host can offer
-  while the plugin is installed.
+  while the plugin is installed, behind the `mcp-presets` feature of
+  graphrt-plugin (default on, and in the CLI's default features).
 
 ## [0.1.0] - 2026-11-18
 

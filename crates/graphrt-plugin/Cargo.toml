@@ -13,7 +13,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["process", "http", "yaml", "git"]
+default = ["process", "http", "yaml", "git", "mcp-presets"]
 # Plugins running as child processes speaking JSON-RPC over stdio.
 process = ["tokio/process"]
 # Plugins served over HTTP.
@@ -22,6 +22,9 @@ http = ["dep:reqwest", "dep:rustls"]
 yaml = ["dep:serde-saphyr"]
 # `install_from_git` (runs the `git` executable; no extra dependencies).
 git = []
+# `runtime: mcp` (MCP server presets, no code) and `templates` in manifests: parsed and
+# validated for hosts that connect MCP servers. Without it, both are unknown manifest fields.
+mcp-presets = []
 
 [dependencies]
 graphrt-core.workspace = true

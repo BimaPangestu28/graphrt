@@ -1,5 +1,6 @@
 //! `runtime: mcp` manifests (MCP server presets) and plugin templates.
 
+#![cfg(feature = "mcp-presets")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use graphrt_core::Registry;
