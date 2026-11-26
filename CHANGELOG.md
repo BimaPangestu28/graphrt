@@ -84,6 +84,12 @@ releases may contain breaking changes; they are called out under **Changed**.
   `unfinished`: a run leaves the active list just before it marks itself
   done, and the drain stopped in between. The drain now waits for both (still
   bounded by its timeout).
+- graphrt-plugin: a plugin's `limits.timeout_ms` no longer counts its start-up.
+  The first request after a process plugin starts waits for the process and
+  its `initialize` handshake under the handshake's own 15 s bound, then gets
+  its full timeout: a cold Node.js or Python start on a slow machine (seen on
+  Windows CI runners) no longer times out the first request. The node's
+  deadline still covers both.
 - `graphrt gateway` sets `TCP_NODELAY` on its public connections, as
   `graphrt serve` does: small SSE writes no longer wait up to ~40 ms for the
   client's delayed ACK (the end of most streams and the first token of some).

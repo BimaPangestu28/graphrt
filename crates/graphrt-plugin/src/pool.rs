@@ -246,6 +246,20 @@ impl Transport for ProcessPool {
         })
     }
 
+    fn ready_for<'a>(&'a self, id: &'a str, clock: &'a Arc<dyn Clock>) -> BoxFuture<'a, Result<(), CallError>> {
+        Box::pin(async move {
+            // The member the request goes to (its id names it); the others
+            // refill in the background as for `call`.
+            let Some(member) = self.member_of(id).or_else(|| self.pick().map(|(_, member)| member)) else {
+                return Err(no_members());
+            };
+            if self.ready() < self.inner.members.len() {
+                self.warm();
+            }
+            member.transport.ready_for(id, clock).await
+        })
+    }
+
     fn note_timeout_of(&self, id: &str) {
         if let Some(member) = self.member_of(id) {
             member.transport.note_timeout();

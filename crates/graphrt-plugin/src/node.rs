@@ -172,6 +172,16 @@ impl Node for PluginNode {
                 _ => {}
             });
 
+            // A plugin that is not up yet starts first, under its handshake's own
+            // timeout (and the run's deadline): `limits.timeout_ms` is the
+            // request's, and a slow start (a cold Node.js or Python process) is
+            // not counted against it.
+            let started = self.shared.transport.ready_for(&id, &ctx.clock);
+            let started = match ctx.remaining() {
+                Some(left) => with_timeout(&ctx.clock, left, started).await,
+                None => started.await,
+            };
+            started.map_err(|e| e.into_node_error(plugin))?;
             let timeout = match ctx.remaining() {
                 Some(left) => left.min(self.shared.timeout),
                 None => self.shared.timeout,
@@ -294,6 +304,7 @@ impl ToolRuntime for PluginTools {
             }
             let clock = graphrt_core::node::default_clock();
             let id = self.shared.transport.next_id();
+            self.shared.transport.ready_for(&id, &clock).await.map_err(|e| self.error("tool.list", e))?;
             let call = self.shared.transport.call(id, "tool.list", serde_json::json!({}), None, false, &clock);
             match with_timeout(&clock, self.shared.timeout, call).await {
                 Ok(result) => {
@@ -344,6 +355,7 @@ impl ToolRuntime for PluginTools {
                 }
                 params.insert("context".into(), serde_json::json!({"secrets": context.secrets}));
             }
+            self.shared.transport.ready_for(&id, &clock).await.map_err(|e| self.error(name, e))?;
             let call = self.shared.transport.call(
                 id.clone(),
                 "tool.call",
