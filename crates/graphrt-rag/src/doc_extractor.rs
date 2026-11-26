@@ -12,10 +12,15 @@ pub struct DocExtractor {
 
 impl DocExtractor {
     /// Extractor with default limits, emitting Markdown so headings and tables
-    /// survive chunking.
+    /// survive chunking, and PDF page markers so the [`crate::Ingestor`]
+    /// records each chunk's page (it removes the markers from the stored text).
+    /// Use [`crate::strip_page_markers`] before showing extracted text elsewhere.
     pub fn new() -> Self {
-        let options =
-            graphrt_doc::Options { format: graphrt_doc::OutputFormat::Markdown, ..graphrt_doc::Options::default() };
+        let options = graphrt_doc::Options {
+            format: graphrt_doc::OutputFormat::Markdown,
+            page_markers: true,
+            ..graphrt_doc::Options::default()
+        };
         Self { options }
     }
 

@@ -71,6 +71,8 @@ impl DocLimits {
             max_cells: self.max_cells,
             max_zip_entries: self.max_zip_entries,
             max_decompressed_bytes: self.max_decompressed_bytes,
+            // The node gives text to people and models: no indexing markers.
+            page_markers: false,
         }
     }
 }

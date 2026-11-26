@@ -39,6 +39,7 @@ mod ingest;
 mod kb;
 mod memory;
 mod node;
+mod pages;
 mod pipeline;
 #[cfg(feature = "qdrant")]
 mod qdrant;
@@ -63,6 +64,7 @@ pub use ingest::{Document, IngestReport, Ingestor};
 pub use kb::{DatasetConfig, DatasetInfo, EnvLookup, KnowledgeBase, KnowledgeConfig};
 pub use memory::{MemoryStore, cosine, dot, tokenize};
 pub use node::{KIND, KnowledgeRetrievalNode, descriptor, register};
+pub use pages::{PAGE_KEY, PAGE_MARKER_END, PAGE_MARKER_START, PAGES_KEY, strip_page_markers};
 pub use pipeline::{StoreRetriever, finalize, merge_weighted, rerank};
 #[cfg(feature = "qdrant")]
 pub use qdrant::{QdrantConfig, QdrantStore};
