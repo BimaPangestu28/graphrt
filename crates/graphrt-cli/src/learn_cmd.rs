@@ -107,6 +107,28 @@ pub async fn learn(args: LearnCmdArgs) -> Result<u8, CliError> {
             }
             print_lessons(&report.lessons, false, &mut out)
         }
+        LearnCommand::Skill { agent, model, tools, out: out_dir, providers } => {
+            drop(out);
+            let text_model = text_model(&model, providers).await?;
+            let draft =
+                graphrt_learn::draft_skill_from_lessons(&store, &agent, &text_model, &tools).await.map_err(failed)?;
+            let mut out = std::io::stdout().lock();
+            let Some(draft) = draft else {
+                let text = format!(
+                    "agent `{agent}` has fewer than {} approved procedures that apply to every run: nothing to write yet",
+                    graphrt_learn::skill_draft::MIN_PROCEDURES
+                );
+                return print_done(json!({"draft": null}), &text, json, &mut out);
+            };
+            let dir = draft.write_to(&out_dir).map_err(|error| CliError::failed(error.to_string()))?;
+            if json {
+                return print_json(&json!({"dir": dir, "draft": draft}), &mut out);
+            }
+            writeln!(out, "wrote a draft of skill `{}` to {}", draft.name, dir.display()).map_err(io_error)?;
+            writeln!(out, "  {}", draft.description).map_err(io_error)?;
+            writeln!(out, "read and edit it, then run `graphrt skill install {}`", dir.display()).map_err(io_error)?;
+            Ok(EXIT_OK)
+        }
         LearnCommand::Policy { agent, auto_approve } => {
             let mut policy = store.policy(&agent).map_err(failed)?;
             if let Some(auto_approve) = auto_approve {
@@ -140,8 +162,11 @@ pub async fn learn(args: LearnCmdArgs) -> Result<u8, CliError> {
     }
 }
 
-/// A distiller that asks model `provider/name`.
-async fn model_distiller(model: &str, providers: Option<PathBuf>) -> Result<graphrt_learn::ModelDistiller, CliError> {
+/// Model `provider/name` for plain completions.
+async fn text_model(
+    model: &str,
+    providers: Option<PathBuf>,
+) -> Result<graphrt_llm::text_model::ChatTextModel, CliError> {
     let (provider, name) = crate::setup::parse_model_override(model)?;
     let options = crate::setup::ServiceOptions { providers, ..Default::default() };
     let services = crate::setup::services(&options, graphrt_core::tool::ToolRegistry::new()).await?;
@@ -149,8 +174,12 @@ async fn model_distiller(model: &str, providers: Option<PathBuf>) -> Result<grap
         .get::<graphrt_llm::ModelRegistry>()
         .ok_or_else(|| CliError::failed("no model providers are configured"))?;
     let chat = registry.get(&provider).map_err(|error| CliError::usage(error.to_string()))?;
-    let text_model = graphrt_llm::text_model::ChatTextModel::new(chat, name);
-    Ok(graphrt_learn::ModelDistiller::new(Arc::new(text_model)))
+    Ok(graphrt_llm::text_model::ChatTextModel::new(chat, name))
+}
+
+/// A distiller that asks model `provider/name`.
+async fn model_distiller(model: &str, providers: Option<PathBuf>) -> Result<graphrt_learn::ModelDistiller, CliError> {
+    Ok(graphrt_learn::ModelDistiller::new(Arc::new(text_model(model, providers).await?)))
 }
 
 fn open_store(dir: Option<PathBuf>) -> Result<LessonStore, CliError> {

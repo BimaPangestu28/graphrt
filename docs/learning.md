@@ -98,6 +98,23 @@ The risk check is a set of pattern checks and can be evaded by rewording. That
 is why it never decides alone: it can only send a lesson to the owner, and the
 rule about derived content does not depend on it.
 
+## From lessons to a skill
+
+Lessons suit a preference or a fact. When three or more approved lessons
+describe how to do a task (kinds `procedure` and `correction`), a model can
+write them up as one skill the agent loads when that task comes up:
+
+```sh
+graphrt learn skill support-bot --model openai/gpt-4.1 --out drafts
+graphrt skill install drafts/<name>
+```
+
+Only lessons that are approved and apply to every run are used. A proposal is
+not trusted yet, and one user's lesson may hold that user's data, which must
+not end up in a skill every run can load. The draft is a normal skill draft:
+a person reads it, the same scan runs, and installing grants no tool. See
+[skills.md](skills.md#writing-a-skill-from-plain-language).
+
 ## `graphrt learn`
 
 Every subcommand takes `--dir <DIR>` (the lesson store), `--json`, and
@@ -115,6 +132,7 @@ Every subcommand takes `--dir <DIR>` (the lesson store), `--json`, and
 | `graphrt learn forget AGENT --user U` / `--run R` | Delete everything a user taught and everything about them, or everything from one run. |
 | `graphrt learn feedback AGENT --run R --comment "<text>" [--user U [--authenticated]]` | Record feedback. Nothing is learned yet. |
 | `graphrt learn distill AGENT [--model P/N] [--providers FILE]` | Turn recorded feedback into proposals. With `--model`, a model also suggests lessons from the recorded runs. Those are `derived` and always wait for approval. |
+| `graphrt learn skill AGENT --model P/N [--tool T]... [--out DIR]` | Write a skill draft from the procedures the agent learned. Review it, then `graphrt skill install`. |
 | `graphrt learn policy AGENT [--auto-approve BOOL]` | Show or change the policy. |
 | `graphrt learn audit AGENT` | The history of changes. |
 
@@ -159,6 +177,8 @@ store.decide("support-bot", &waiting[0].id, Decision::Approve, "dewi")?;
 | `LessonStore::decide`, `edit`, `promote`, `delete`, `forget` | Approve, correct, widen, remove |
 | `LessonStore::policy`, `set_policy`, `audit` | Settings and history |
 | `Learner::observe`, `pending`, `distill` | Capture and propose |
+| `ModelDistiller::new` | A model that suggests lessons, for `Learner::distill` |
+| `draft_skill_from_lessons`, `procedure_lessons` | A skill draft from learned procedures. Install it with `SkillStore::install_draft` and origin `learned` |
 | `LessonStore::into_service` | The `Lessons` service `agent` nodes look up |
 
 `Lesson`, `AuditEntry` and `LearningPolicy` serialize to JSON with stable field

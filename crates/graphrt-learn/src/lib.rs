@@ -11,6 +11,7 @@
 //! - [`learner`]: recording signals cheaply and turning them into proposals
 //!   outside the run.
 //! - [`model_distiller`]: a model that suggests lessons from recorded signals.
+//! - [`skill_draft`]: a skill draft from the procedures an agent learned.
 //!
 //! The rules that make this safe are enforced by the store:
 //!
@@ -46,6 +47,7 @@ pub mod learner;
 pub mod lesson;
 pub mod model_distiller;
 pub mod policy;
+pub mod skill_draft;
 pub mod store;
 
 pub use error::Error;
@@ -53,4 +55,5 @@ pub use learner::{Candidate, DistillReport, Distiller, Learner, Observation, Obs
 pub use lesson::{Lesson, LessonKind, LessonStatus, Origin, Risk, RiskReason, Signal, Trust};
 pub use model_distiller::ModelDistiller;
 pub use policy::LearningPolicy;
+pub use skill_draft::{draft_skill_from_lessons, procedure_lessons};
 pub use store::{AuditEntry, Decision, Forget, LessonFilter, LessonStore, NewLesson, Proposal, UserFilter};

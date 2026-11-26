@@ -521,6 +521,24 @@ pub enum LearnCommand {
         #[arg(long, value_name = "FILE", requires = "model")]
         providers: Option<PathBuf>,
     },
+    /// Write a skill draft from the procedures the agent learned (approved
+    /// lessons that apply to every run). The folder is then reviewed and
+    /// installed with `graphrt skill install`.
+    Skill {
+        agent: String,
+        /// The model that writes the draft (`provider/name`).
+        #[arg(long, value_name = "PROVIDER/NAME")]
+        model: String,
+        /// A tool the skill may ask for (`provider/tool`). Asking grants nothing.
+        #[arg(long = "tool", value_name = "TOOL")]
+        tools: Vec<String>,
+        /// Directory to write `<name>/SKILL.md` into.
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        out: PathBuf,
+        /// Model providers file (YAML or JSON) layered over the environment-based providers.
+        #[arg(long, value_name = "FILE")]
+        providers: Option<PathBuf>,
+    },
     /// Show the agent's learning policy, or change automatic approval.
     Policy {
         agent: String,
