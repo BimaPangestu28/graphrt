@@ -46,6 +46,12 @@ http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Hang).serve_for
 PY
 python3 "$work/upstream.py" "$upstream_port" "$work/calls" &
 upstream_pid=$!
+# graphrt starts faster than Python: a run sent before the fake endpoint
+# listens fails with a network error instead of hanging in the model call.
+for _ in $(seq 1 500); do
+  (exec 3<>"/dev/tcp/127.0.0.1/$upstream_port") 2>/dev/null && break
+  sleep 0.01
+done
 
 mkdir -p "$work/workflows"
 cat > "$work/workflows/chat.yaml" <<'YAML'
