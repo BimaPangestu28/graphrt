@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://graphrt.dev/schemas/ui/chart.v1.json",
+  "title": "graphrt UI block: chart",
+  "description": "A bar, line, area, pie or donut chart. Every series has one value (or null) per x category; pie and donut take exactly one series of non-negative values. Colours come from the host theme.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$ui", "version", "type", "x", "series"],
+  "properties": {
+    "$ui": { "const": "chart" },
+    "version": { "const": 1 },
+    "title": { "type": "string", "maxLength": 300 },
+    "subtitle": { "type": "string", "maxLength": 300 },
+    "fallback_text": { "type": "string", "maxLength": 10000, "description": "Plain text for hosts that cannot draw charts" },
+    "type": { "enum": ["bar", "line", "area", "pie", "donut"] },
+    "x": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["values"],
+      "properties": {
+        "label": { "type": "string", "maxLength": 300 },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10000,
+          "items": { "type": ["string", "number"], "maxLength": 300 },
+          "description": "Categories (labels on the x axis, or the slices of a pie)"
+        }
+      }
+    },
+    "y": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string", "maxLength": 300 },
+        "format": { "enum": ["number", "compact", "percent", "currency"], "description": "percent: 12.5 means 12.5%" },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$", "description": "ISO 4217 code, e.g. IDR" },
+        "min": { "type": "number" },
+        "max": { "type": "number" }
+      }
+    },
+    "series": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "values"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "values": { "type": "array", "maxItems": 10000, "items": { "type": ["number", "null"] } }
+        }
+      }
+    },
+    "stacked": { "type": "boolean", "description": "Bar and area charts only" },
+    "horizontal": { "type": "boolean", "description": "Bar charts only" }
+  }
+}

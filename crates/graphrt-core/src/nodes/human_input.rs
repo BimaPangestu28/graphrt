@@ -8,6 +8,12 @@
 //! node's resume input. The node validates the action and required fields,
 //! outputs each field value plus `action`, and selects the branch whose handle
 //! equals the action id. Resuming without input pauses again.
+//!
+//! `card` (optional) adds a UI block (see [`crate::ui`]) to the pause data, e.g. an
+//! Adaptive Card the host renders in place of the plain form: either the block itself or a
+//! `{{#node.output#}}` reference to one. The host answers with the card action's id as
+//! `action` and the card's inputs as `values`, so a card's submit actions must use the
+//! node's action ids. Leave `form` empty with a card: every value is then an output.
 
 use futures::future::BoxFuture;
 use serde::Deserialize;
@@ -41,6 +47,9 @@ pub struct HumanInputConfig {
     /// the per-attempt timeout every node has, so it cannot be used for this.)
     #[serde(default)]
     pub expire_after_ms: Option<u64>,
+    /// A UI block shown with the question, or a `{{#..#}}` reference to one.
+    #[serde(default)]
+    pub card: Option<serde_json::Value>,
 }
 
 /// Form definition.
@@ -85,6 +94,7 @@ pub struct HumanInputNode {
     fields: Vec<Field>,
     actions: Vec<Action>,
     timeout_ms: Option<u64>,
+    card: Option<serde_json::Value>,
 }
 
 impl HumanInputNode {
@@ -102,7 +112,7 @@ impl HumanInputNode {
                 return Err(ConfigError::new(doc, format!("action ids must be unique and non-empty (`{}`)", a.id)));
             }
         }
-        Ok(Self { prompt: config.prompt, fields, actions, timeout_ms: config.expire_after_ms })
+        Ok(Self { prompt: config.prompt, fields, actions, timeout_ms: config.expire_after_ms, card: config.card })
     }
 
     fn pause(&self, ctx: &NodeContext) -> PauseRequest {
@@ -126,13 +136,25 @@ impl HumanInputNode {
                 ("title", Value::from(a.title.clone().unwrap_or_else(|| a.id.clone()))),
             ])
         });
-        let data = Value::object([
+        let mut data = Value::object([
             ("prompt", self.prompt.as_ref().map(|t| Value::from(t.render(&ctx.pool))).unwrap_or(Value::Null)),
             ("fields", Value::array(fields)),
             ("actions", Value::array(actions)),
             ("timeout_ms", self.timeout_ms.and_then(|t| i64::try_from(t).ok()).map(Value::Int).unwrap_or(Value::Null)),
         ]);
+        if let (Some(card), Value::Object(map)) = (&self.card, &mut data) {
+            std::sync::Arc::make_mut(map).insert("card".to_owned(), self.resolve_card(card, ctx));
+        }
         PauseRequest { kind: "human_input".to_owned(), data, state: serde_json::Value::Null }
+    }
+
+    /// The configured card, when it is (or refers to) a UI block; `null` otherwise.
+    fn resolve_card(&self, card: &serde_json::Value, ctx: &NodeContext) -> Value {
+        let resolved = match card {
+            serde_json::Value::String(s) => Template::parse(s).resolve(&ctx.pool),
+            other => Value::from_json(other.clone()),
+        };
+        if crate::ui::ui_block_kind(&resolved).is_some() { resolved } else { Value::Null }
     }
 
     fn complete(&self, input: &Value) -> Result<NodeOutput, NodeError> {
@@ -189,6 +211,9 @@ impl Node for HumanInputNode {
                 crate::condition::expected_selectors(default, &mut out);
             }
         }
+        if let Some(card) = &self.card {
+            crate::condition::expected_selectors(card, &mut out);
+        }
         out
     }
 
@@ -233,6 +258,32 @@ mod tests {
         assert_eq!(p.data.get_path(&["prompt"]), Some(Value::from("Review: draft")));
         assert_eq!(p.data.get_path(&["fields", "0", "default"]), Some(Value::from("draft")));
         assert_eq!(p.data.get_path(&["actions", "length"]), Some(Value::Int(2)));
+    }
+
+    #[tokio::test]
+    async fn pause_carries_the_referenced_card_and_card_values_pass_through() {
+        let mut pool = VariablePool::new();
+        pool.insert("cards", "data", Value::from_json(json!({"$ui": "adaptive_card", "version": 1, "card": {}})));
+        pool.insert("llm", "text", Value::from("not a block"));
+        let n = node(json!({"card": "{{#cards.data#}}", "actions": [{"id": "approve"}]}));
+        assert!(n.inputs().iter().any(|s| s.to_string().contains("cards")), "{:?}", n.inputs());
+        let r = n.run(NodeContext::for_test("h", pool.clone())).await.unwrap();
+        let NodeOutcome::Paused(p) = r else { panic!("{r:?}") };
+        assert_eq!(p.data.get_path(&["card", "$ui"]), Some(Value::from("adaptive_card")));
+
+        let not_a_block = node(json!({"card": "{{#llm.text#}}"}));
+        let NodeOutcome::Paused(p) = not_a_block.run(NodeContext::for_test("h", pool)).await.unwrap() else { panic!() };
+        assert_eq!(p.data.get_path(&["card"]), Some(Value::Null));
+
+        let without_card = node(cfg());
+        let NodeOutcome::Paused(p) = without_card.run(ctx(None)).await.unwrap() else { panic!() };
+        assert_eq!(p.data.get_path(&["card"]), None, "no `card` key unless configured");
+
+        let answer = json!({"action": "approve", "values": {"amount": 120, "note": "ok"}});
+        let resumed = n.run(ctx(Some(answer))).await.unwrap();
+        let NodeOutcome::Completed(o) = resumed else { panic!("{resumed:?}") };
+        assert_eq!(o.outputs.get("amount"), Some(&Value::Int(120)));
+        assert_eq!(o.branch.as_deref(), Some("approve"));
     }
 
     #[tokio::test]

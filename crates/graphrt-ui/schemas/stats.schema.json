@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://graphrt.dev/schemas/ui/stats.v1.json",
+  "title": "graphrt UI block: stats",
+  "description": "KPI tiles: a label, a value and an optional change (delta) per tile.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$ui", "version", "items"],
+  "properties": {
+    "$ui": { "const": "stats" },
+    "version": { "const": 1 },
+    "title": { "type": "string", "maxLength": 300 },
+    "subtitle": { "type": "string", "maxLength": 300 },
+    "fallback_text": { "type": "string", "maxLength": 10000 },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "value"],
+        "properties": {
+          "label": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "value": { "type": ["number", "string"], "maxLength": 60 },
+          "format": { "enum": ["number", "compact", "percent", "currency"] },
+          "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+          "delta": { "type": "number", "description": "The change since the previous period" },
+          "delta_format": { "enum": ["number", "percent"] },
+          "trend": { "enum": ["up", "down", "flat"], "description": "Defaults to the sign of delta" },
+          "good": { "enum": ["up", "down"], "description": "Which direction is good news (default up)" },
+          "caption": { "type": "string", "maxLength": 300 }
+        }
+      }
+    }
+  }
+}

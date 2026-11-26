@@ -39,6 +39,7 @@ pub mod task;
 pub mod template;
 pub mod tool;
 pub mod tool_node;
+pub mod ui;
 pub mod urls;
 pub mod validate;
 pub mod value;
