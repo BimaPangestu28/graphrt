@@ -1288,6 +1288,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphrt-ui"
+version = "0.1.0"
+dependencies = [
+ "graphrt-core",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "graphrt-wasm"
 version = "0.1.0"
 dependencies = [

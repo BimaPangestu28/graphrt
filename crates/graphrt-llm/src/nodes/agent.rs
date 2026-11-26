@@ -25,7 +25,8 @@
 //!
 //! Progress events: `agent_step`, `agent_thought`, `tool_call`, `tool_result`,
 //! `tool_denied`. Outputs: `text`, `tool_calls`
-//! (`[{name, provider, tool, arguments, result, is_error}]`), `iterations`,
+//! (`[{name, provider, tool, arguments, result, is_error}]`), `ui` (the UI blocks of
+//! successful tool results, see [`graphrt_core::ui`]; never sent to the model), `iterations`,
 //! `stopped_reason` (`completed`, `max_iterations` or `length`), `usage`.
 
 use std::collections::{HashMap, HashSet};
@@ -146,6 +147,9 @@ struct ToolLogEntry {
     arguments: Json,
     result: String,
     is_error: bool,
+    /// UI blocks in the tool's structured result (see [`graphrt_core::ui`]), for the host.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ui: Vec<Json>,
 }
 
 /// Persistable loop state, used to pause for tool approval.
@@ -433,9 +437,11 @@ impl AgentNode {
                 }))
             })
             .collect();
+        let ui: Vec<Value> = state.log.iter().flat_map(|e| e.ui.iter().cloned().map(Value::from_json)).collect();
         Ok(NodeOutput::new()
             .with("text", final_text)
             .with("tool_calls", Value::from(log))
+            .with("ui", Value::from(ui))
             .with("iterations", i64::from(state.iteration))
             .with("stopped_reason", stop.as_str())
             .with("usage", usage_value(&state.usage))
@@ -476,6 +482,12 @@ impl AgentNode {
         let bound = tools.iter().find(|t| t.exposed == call.name);
         let text = truncate(&output.text, self.config.max_tool_output_chars);
         state.messages.push(Message::tool(call.id.clone(), text.clone()));
+        // A failed tool shows nothing: its data is no answer the person should see.
+        let ui = if output.is_error {
+            Vec::new()
+        } else {
+            graphrt_core::ui::collect_ui_blocks(&output.data).iter().map(Value::to_json).collect()
+        };
         state.log.push(ToolLogEntry {
             id: call.id.clone(),
             name: call.name.clone(),
@@ -484,6 +496,7 @@ impl AgentNode {
             arguments: log_arguments(call),
             result: text,
             is_error: output.is_error,
+            ui,
         });
     }
 
@@ -691,6 +704,27 @@ mod tests {
         }
     }
 
+    /// Tools: `chart {}` (a UI block with its text), `broken_chart {}` (an error with a block).
+    #[derive(Debug, Default)]
+    struct ChartTools;
+
+    impl ToolRuntime for ChartTools {
+        fn list(&self) -> BoxFuture<'_, Result<Vec<ToolSpec>, ToolError>> {
+            let spec = |name: &str| ToolSpec { name: name.into(), description: "d".into(), parameters: json!({}) };
+            Box::pin(async move { Ok(vec![spec("chart"), spec("broken_chart")]) })
+        }
+
+        fn call<'a>(&'a self, name: &'a str, _arguments: Json) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+            Box::pin(async move {
+                let block = Value::from_json(json!({"$ui": "chart", "version": 1, "type": "bar"}));
+                Ok(match name {
+                    "chart" => ToolOutput { text: "Chart shown".into(), data: block, is_error: false },
+                    _ => ToolOutput { text: "bad chart".into(), data: block, is_error: true },
+                })
+            })
+        }
+    }
+
     struct Setup {
         model: Arc<MockModel>,
         tools: Arc<MathTools>,
@@ -708,6 +742,7 @@ mod tests {
     fn ctx(s: &Setup) -> NodeContext {
         let mut tool_registry = ToolRegistry::new();
         tool_registry.add("math", Arc::clone(&s.tools) as Arc<dyn ToolRuntime>);
+        tool_registry.add("charts", Arc::new(ChartTools) as Arc<dyn ToolRuntime>);
         let services = Services::new()
             .with(ModelRegistry::new().with("openai", Arc::clone(&s.model) as Arc<dyn crate::ChatModel>))
             .with(tool_registry);
@@ -736,6 +771,22 @@ mod tests {
             NodeOutcome::Completed(o) => o,
             NodeOutcome::Paused(p) => panic!("unexpected pause: {p:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn ui_blocks_of_tool_results_become_the_ui_output_but_never_reach_the_model() {
+        let s = setup(vec![
+            MockModel::tool_calls(&[("c1", "chart", "{}"), ("c2", "broken_chart", "{}")]),
+            MockModel::text("Here is your chart."),
+        ]);
+        let out = completed(agent(json!({"tools": ["charts/*"]})).run(ctx(&s)).await);
+        let ui = out.outputs["ui"].as_array().unwrap().to_vec();
+        assert_eq!(ui.len(), 1, "only the successful tool's block: {ui:?}");
+        assert_eq!(graphrt_core::ui::ui_block_kind(&ui[0]), Some("chart"));
+        let log = out.outputs["tool_calls"].to_json();
+        assert!(!log.to_string().contains("$ui"), "the log does not repeat the blocks: {log}");
+        let second = &s.model.requests()[1].messages;
+        assert!(!format!("{second:?}").contains("$ui"), "blocks are not sent to the model");
     }
 
     #[tokio::test]

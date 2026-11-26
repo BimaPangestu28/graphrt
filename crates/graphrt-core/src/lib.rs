@@ -29,6 +29,7 @@ pub mod store;
 pub mod template;
 pub mod tool;
 pub mod tool_node;
+pub mod ui;
 pub mod value;
 
 pub use dsl::Workflow;

@@ -244,6 +244,10 @@ pub(crate) fn agent() -> NodeDescriptor {
             OutputDescriptor::new("tool_calls", ValueType::ArrayObject)
                 .describe("[{name, provider, tool, arguments, result, is_error}]"),
         )
+        .output(
+            OutputDescriptor::new("ui", ValueType::ArrayObject)
+                .describe("UI blocks (cards, charts, tables) the tools returned, for the host to render"),
+        )
         .output(OutputDescriptor::new("iterations", ValueType::Integer))
         .output(
             OutputDescriptor::new("stopped_reason", ValueType::String).describe("completed | max_iterations | length"),

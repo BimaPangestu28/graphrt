@@ -223,11 +223,18 @@ form:
 actions:
   - { id: approve, title: Approve }
   - { id: reject, title: Reject }
+card: "{{#review_card.data#}}"   # optional: a UI block (see "UI blocks") shown with the question
 ```
 
 Pauses the run with kind `human_input`. Resume with
 `{"action": "approve", "values": {"note": "..."}}`; the node outputs the values
 and `action`, and follows the edges whose handle is the action id.
+
+With `card`, the pause data also has `card`: the UI block itself (inline or the
+referenced value; `null` when it is not a block). Hosts that render it answer
+with the card action's id as `action` and the card's input values as `values`,
+so the card's submit actions use the node's action ids; leave `form` empty so
+every card input becomes an output.
 
 ### `tool`
 
@@ -281,8 +288,9 @@ memory: { window: { enabled: true, size: 20 } }
 Runs a tool-calling loop until the model answers without tools (the last
 allowed iteration runs without tools). Tools in `require_approval` pause the run
 (kind `tool_approval`); resume with `{"approved": true}` or
-`{"approvals": {"<call id>": true}}`. Outputs `text`, `tool_calls`,
-`iterations`, `usage`.
+`{"approvals": {"<call id>": true}}`. Outputs `text`, `tool_calls`, `ui`,
+`iterations`, `usage`. `ui` lists the UI blocks (see "UI blocks") found in the
+structured data of successful tool results; they are never sent to the model.
 
 ### `question-classifier` (branch)
 
@@ -389,3 +397,23 @@ handles, config JSON Schema). Run `graphrt nodes --kind <kind> --json` or
 Descriptors list the handles a node selects itself; the `fail-branch` handle
 comes from the node policy (`on_error: {strategy: fail-branch}`), is available
 on every node kind and is therefore not listed.
+
+## UI blocks
+
+Any node output or tool result can carry rich visual output for a host to
+render: an object whose `"$ui"` key names its kind.
+
+```json
+{"$ui": "chart", "version": 1, "type": "bar", "title": "Sales by month",
+ "x": {"values": ["Jan", "Feb", "Mar"]},
+ "series": [{"name": "2026", "values": [120, 150, 90]}]}
+```
+
+The engine passes blocks through as ordinary values;
+`graphrt_core::ui::collect_ui_blocks` finds them in an output (the value
+itself, or up to three levels down in arrays and objects). Kinds, JSON Schemas
+and validation (`adaptive_card`, `chart`, `table`, `stats`) are in the
+`graphrt-ui` crate: hosts validate every block there before rendering it and
+show nothing for blocks that fail. Blocks reach the host as node outputs, the
+`agent` node's `ui` output, and the `human-input` node's `card`.
+

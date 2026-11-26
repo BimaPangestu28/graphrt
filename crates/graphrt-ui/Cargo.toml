@@ -1,0 +1,25 @@
+[package]
+name = "graphrt-ui"
+description = "UI blocks for graphrt: the kinds, JSON Schemas and strict validation of rich visual output (Adaptive Cards, charts, tables, stat tiles) that nodes and tools emit for hosts to render."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-ui"
+homepage = "https://github.com/Graphrt/graphrt"
+keywords = ["agent", "adaptive-cards", "chart", "ui", "graphrt"]
+categories = ["data-structures", "gui"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+graphrt-core.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+jsonschema = { version = "0.61", default-features = false }
+
+[lints]
+workspace = true

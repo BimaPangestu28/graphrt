@@ -9,6 +9,16 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ### Added
 
+- UI blocks: rich visual output any node or tool can emit for hosts to
+  render, as objects whose `"$ui"` key names the kind. The new `graphrt-ui`
+  crate holds the kinds (`adaptive_card`, `chart`, `table`, `stats`), their
+  JSON Schemas, shared conformance fixtures and `validate`, the strict check
+  hosts run before rendering (unknown fields, sizes, image and link URL
+  policy). `graphrt_core::ui` finds blocks in outputs. The `agent` node
+  collects the blocks of successful tool results in a new `ui` output (never
+  sent to the model), and `human-input` takes an optional `card` that is
+  passed to the host in the pause data (Adaptive Card actions answer with the
+  node's action ids).
 - graphrt-mcp: dynamic access tokens for Streamable HTTP servers.
   `HttpConfig::token_source` takes a `TokenProvider` (set in code, never
   parsed from a config file) that is asked for the token before every request
