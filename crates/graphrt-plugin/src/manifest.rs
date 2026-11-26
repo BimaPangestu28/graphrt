@@ -55,6 +55,40 @@ pub struct PluginManifest {
     /// Allow node kinds that do not start with `<name>.`.
     #[serde(default)]
     pub allow_unprefixed_kinds: bool,
+    /// Events the plugin can start workflows on (see [`TriggerDescriptor`]).
+    #[serde(default)]
+    pub triggers: Vec<TriggerDescriptor>,
+}
+
+/// An event source a host can start workflows on, such as "a meeting was recorded".
+///
+/// The plugin declares no new protocol for it: `watch` names one of its own node
+/// kinds, which the host calls outside any workflow run, over and over, with
+/// `config` plus `cursor` (the `cursor` the previous call returned; absent on the
+/// first call). The node long-polls and completes with the outputs `events` (a list
+/// of objects, possibly empty) and `cursor` (a string to resume from). Each event
+/// object starts one run of the workflows that chose the trigger, as their inputs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerDescriptor {
+    /// `[a-z0-9_-]{1,64}`, unique in the manifest. Hosts show it as `<plugin>.<id>`.
+    pub id: String,
+    /// Short label, e.g. "When a meeting is recorded".
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    /// The node kind the host calls to wait for events; declared in `nodes`.
+    pub watch: String,
+    /// Configuration passed to every `watch` call (an object).
+    #[serde(default = "empty_object")]
+    pub config: serde_json::Value,
+    /// What each event carries, for hosts to show and for workflows' `start` inputs.
+    #[serde(default)]
+    pub outputs: Vec<graphrt_core::catalog::OutputDescriptor>,
+}
+
+fn empty_object() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
 }
 
 fn default_protocol() -> u32 {
@@ -113,6 +147,8 @@ struct RawManifest {
     tools: Vec<ToolSpec>,
     #[serde(default)]
     allow_unprefixed_kinds: bool,
+    #[serde(default)]
+    triggers: Vec<TriggerDescriptor>,
 }
 
 impl TryFrom<RawManifest> for PluginManifest {
@@ -181,6 +217,7 @@ impl TryFrom<RawManifest> for PluginManifest {
             nodes: raw.nodes,
             tools: raw.tools,
             allow_unprefixed_kinds: raw.allow_unprefixed_kinds,
+            triggers: raw.triggers,
         })
     }
 }
@@ -385,6 +422,34 @@ impl PluginManifest {
                 return bad(format!("invalid or duplicate tool name `{}`", tool.name));
             }
         }
+        let mut trigger_ids = std::collections::HashSet::new();
+        for trigger in &self.triggers {
+            if !is_valid_name(&trigger.id) {
+                return bad(format!(
+                    "trigger id `{}` must be 1-64 characters of lowercase letters, digits, `-` or `_`",
+                    trigger.id.escape_debug()
+                ));
+            }
+            if !trigger_ids.insert(trigger.id.as_str()) {
+                return bad(format!("duplicate trigger id `{}`", trigger.id));
+            }
+            if trigger.title.trim().is_empty() || trigger.title.chars().any(char::is_control) {
+                return bad(format!(
+                    "trigger `{}`: `title` must be non-blank text without control characters",
+                    trigger.id
+                ));
+            }
+            if !self.nodes.iter().any(|node| node.kind == trigger.watch) {
+                return bad(format!(
+                    "trigger `{}`: `watch` `{}` must be one of the plugin's node kinds",
+                    trigger.id,
+                    trigger.watch.escape_debug()
+                ));
+            }
+            if !trigger.config.is_object() {
+                return bad(format!("trigger `{}`: `config` must be an object", trigger.id));
+            }
+        }
         match &self.runtime {
             Runtime::Process(p) if p.command.trim().is_empty() => bad("`command` must not be empty".into()),
             Runtime::Http(h) if !(h.url.starts_with("http://") || h.url.starts_with("https://")) => {
@@ -521,6 +586,54 @@ mod tests {
         assert_eq!(m.runtime.name(), "process");
         assert_eq!(m.limits.max_concurrency, DEFAULT_MAX_CONCURRENCY);
         assert_eq!(m.nodes[0].kind, "acme.x");
+    }
+
+    fn with_trigger(trigger: serde_json::Value) -> Result<PluginManifest, PluginError> {
+        let mut v = base();
+        v["triggers"] = serde_json::json!([trigger]);
+        PluginManifest::from_json(&v.to_string())
+    }
+
+    #[test]
+    fn parses_triggers_watching_a_node_kind() {
+        let m = with_trigger(serde_json::json!({
+            "id": "file_added",
+            "title": "When a file is added",
+            "watch": "acme.x",
+            "config": {"timeout_seconds": 240},
+            "outputs": [{"name": "path", "type": "string"}]
+        }))
+        .unwrap();
+        let trigger = &m.triggers[0];
+        assert_eq!((trigger.id.as_str(), trigger.watch.as_str()), ("file_added", "acme.x"));
+        assert_eq!(trigger.config["timeout_seconds"], 240);
+        assert_eq!(trigger.outputs[0].name, "path");
+        assert_eq!(trigger.description, "");
+
+        let defaults = with_trigger(serde_json::json!({"id": "t", "title": "T", "watch": "acme.x"})).unwrap();
+        assert_eq!(defaults.triggers[0].config, serde_json::json!({}));
+        assert!(PluginManifest::from_json(&base().to_string()).unwrap().triggers.is_empty());
+    }
+
+    #[test]
+    fn rejects_bad_triggers() {
+        let error = |trigger: serde_json::Value| with_trigger(trigger).unwrap_err().to_string();
+        assert!(error(serde_json::json!({"id": "t", "title": "T", "watch": "acme.missing"})).contains("node kinds"));
+        assert!(error(serde_json::json!({"id": "Bad Id", "title": "T", "watch": "acme.x"})).contains("trigger id"));
+        assert!(error(serde_json::json!({"id": "t", "title": " ", "watch": "acme.x"})).contains("title"));
+        assert!(
+            error(serde_json::json!({"id": "t", "title": "T", "watch": "acme.x", "config": [1]})).contains("object")
+        );
+        assert!(
+            error(serde_json::json!({"id": "t", "title": "T", "watch": "acme.x", "wacth": 1}))
+                .contains("unknown field")
+        );
+        assert!(error(serde_json::json!({"id": "t", "title": "T"})).contains("watch"));
+
+        let mut v = base();
+        let trigger = serde_json::json!({"id": "t", "title": "T", "watch": "acme.x"});
+        v["triggers"] = serde_json::json!([trigger.clone(), trigger]);
+        assert!(PluginManifest::from_json(&v.to_string()).unwrap_err().to_string().contains("duplicate trigger"));
     }
 
     #[test]

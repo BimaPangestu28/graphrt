@@ -51,7 +51,7 @@ pub use host::{LoadedPlugin, PluginHost, PluginInfo, PluginLoader};
 pub use http::HttpTransport;
 pub use manifest::{
     HttpRuntime, Limits, LoadedManifest, MANIFEST_FILES, PROTOCOL_VERSION, Permissions, PluginManifest, ProcessRuntime,
-    Runtime, WasmRuntime, is_valid_name, manifest_in,
+    Runtime, TriggerDescriptor, WasmRuntime, is_valid_name, manifest_in,
 };
 #[cfg(feature = "process")]
 pub use process::{DEFAULT_PASS_ENV, MAX_CONSECUTIVE_TIMEOUTS, ProcessTransport};
