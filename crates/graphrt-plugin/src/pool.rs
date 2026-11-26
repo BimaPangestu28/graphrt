@@ -324,7 +324,7 @@ async fn keep(pool: Weak<Inner>, signals: Arc<Signals>) {
                 }
             }
             Event::Idle => {
-                stop_members(&pool, "plugin pool idle");
+                stop_members(&pool, "plugin pool idle").await;
                 drop(started);
                 if let Event::Stop = wait_for_wake(&signals).await {
                     return;
@@ -375,11 +375,10 @@ async fn idle(signals: &Signals, idle_timeout: Option<Duration>, epoch: Instant)
     }
 }
 
-fn stop_members(pool: &Weak<Inner>, reason: &str) {
-    if let Some(inner) = pool.upgrade() {
-        for member in &inner.members {
-            member.transport.kill_current(reason);
-        }
+async fn stop_members(pool: &Weak<Inner>, reason: &str) {
+    let Some(inner) = pool.upgrade() else { return };
+    for member in &inner.members {
+        member.transport.stop(reason).await;
     }
 }
 
