@@ -33,6 +33,9 @@ pub mod nodes;
 pub mod providers;
 pub mod registry;
 pub mod sse;
+/// Plain completions for work outside a run (feature `text-model`).
+#[cfg(feature = "text-model")]
+pub mod text_model;
 pub mod types;
 #[cfg(feature = "typesafe")]
 pub mod typesafe;

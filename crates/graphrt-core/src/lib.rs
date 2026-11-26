@@ -30,6 +30,7 @@ pub mod skill;
 pub mod snapshot;
 pub mod store;
 pub mod template;
+pub mod text_model;
 pub mod tool;
 pub mod tool_node;
 pub mod ui;
