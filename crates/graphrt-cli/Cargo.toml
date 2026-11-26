@@ -58,7 +58,7 @@ replay = ["llm", "graphrt-llm/replay"]
 # Agent skills (preview, opt-in): `graphrt skill` and the `skills` field of `agent`
 # nodes, served from the skill store in `$GRAPHRT_SKILLS_DIR` or `~/.graphrt/skills`.
 # See docs/skills.md.
-skills = ["llm", "dep:graphrt-skill"]
+skills = ["llm", "graphrt-llm/skills", "dep:graphrt-skill"]
 # `graphrt eval`: run a workflow against test cases with assertions and a CI
 # gate (JSON and JUnit reports). Pulls in `replay`. Opt-in (`--features eval`):
 # the release binaries and the GHCR image are built with it.

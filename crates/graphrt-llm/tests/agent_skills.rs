@@ -2,7 +2,7 @@
 //! model: what the model is told, what it may call and when, and that tools
 //! reached through a skill stay under the owner's control.
 
-#![cfg(feature = "mock")]
+#![cfg(all(feature = "mock", feature = "skills"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::path::PathBuf;

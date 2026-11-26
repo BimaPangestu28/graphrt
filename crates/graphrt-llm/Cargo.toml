@@ -29,6 +29,10 @@ gemini = ["http"]
 bedrock = ["http", "dep:sha2"]
 # TypeSafe System One decision API (Jev): typed classification / scoring / yes-no questions.
 typesafe = ["http"]
+# The `skills` field of the `agent` node: installed skills loaded on demand (needs a
+# `graphrt_core::skill::Skills` service, for example from graphrt-skill). Off by default:
+# without it the node refuses a document that lists skills.
+skills = []
 # Shared HTTP transport (reqwest + rustls with the ring crypto provider).
 http = ["dep:reqwest", "dep:rustls", "dep:tokio"]
 

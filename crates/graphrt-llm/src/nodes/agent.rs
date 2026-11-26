@@ -53,7 +53,8 @@
 //! with the `load_skill` tool when a task needs them. Tools the owner granted
 //! to a skill are offered to the model only after that skill was loaded in the
 //! run, and wait for approval unless the grant says otherwise. An agent
-//! without `skills` does none of this.
+//! without `skills` does none of this. The code is behind the cargo feature
+//! `skills`: without it, a node that lists skills is a configuration error.
 //!
 //! Progress events: `agent_step`, `agent_thought`, `tool_call`, `tool_result`,
 //! `tool_denied`, `skill_tool_unavailable`. Outputs: `text`, `tool_calls`
@@ -70,6 +71,7 @@ use graphrt_core::dsl::NodeDoc;
 use graphrt_core::event::Usage;
 use graphrt_core::node::{ConfigError, NodeOutcome, NodeResult, PauseRequest, parse_config};
 use graphrt_core::redact::redact_secrets;
+#[cfg(feature = "skills")]
 use graphrt_core::skill::{LOAD_SKILL_TOOL, SKILL_PROVIDER, SkillToolGrant, Skills};
 use graphrt_core::template::Template;
 use graphrt_core::tool::{ToolCallContext, ToolImage, ToolOutput, ToolRegistry, ToolRuntime, ToolSpec, check_images};
@@ -184,8 +186,8 @@ pub struct AgentConfig {
     /// code is generated for a rarely used field.
     #[serde(default)]
     pub tool_context: serde_json::Map<String, Json>,
-    /// Installed skills this agent may load (see the module docs). Needs a
-    /// [`Skills`] service.
+    /// Installed skills this agent may load (see the module docs). Needs the
+    /// cargo feature `skills` and a `graphrt_core::skill::Skills` service.
     #[serde(default)]
     pub skills: Vec<String>,
 }
@@ -203,11 +205,14 @@ struct BoundTool {
     context: Option<Arc<ToolCallContext>>,
     /// Skills that grant this tool. Empty for the agent's own tools. Otherwise
     /// the tool is offered only once one of these skills was loaded in the run.
+    #[cfg(feature = "skills")]
     gates: Vec<String>,
     /// A skill grant that asks first: every call waits for approval.
+    #[cfg(feature = "skills")]
     ask: bool,
     /// One of the skill tools themselves (never set for a registry provider,
     /// whatever its name), so only they can mark a skill as loaded.
+    #[cfg(feature = "skills")]
     skill_tool: bool,
 }
 
@@ -216,9 +221,45 @@ impl BoundTool {
         self.context.as_deref().unwrap_or(ToolCallContext::empty())
     }
 
+    /// The same tool was selected a second time.
+    ///
+    /// A tool the agent lists itself stays as the agent configured it. A tool
+    /// granted by several skills opens with any of them and asks first if any
+    /// of the grants does.
+    #[cfg_attr(not(feature = "skills"), allow(clippy::unused_self, clippy::needless_pass_by_ref_mut))]
+    fn bound_again(&mut self, origin: Origin<'_>) {
+        #[cfg(feature = "skills")]
+        if let (false, Origin::Grant(grant)) = (self.gates.is_empty(), origin) {
+            self.gates.push(grant.skill.clone());
+            self.ask |= grant.ask;
+        }
+        #[cfg(not(feature = "skills"))]
+        let _ = origin;
+    }
+
     /// Whether the model may see and call this tool given the skills loaded so far.
-    fn offered(&self, loaded_skills: &[String]) -> bool {
-        self.gates.is_empty() || self.gates.iter().any(|gate| loaded_skills.contains(gate))
+    #[cfg(feature = "skills")]
+    fn offered(&self, state: &AgentState) -> bool {
+        self.gates.is_empty() || self.gates.iter().any(|gate| state.loaded_skills.contains(gate))
+    }
+
+    /// Without skill support every bound tool is one of the agent's own.
+    #[cfg(not(feature = "skills"))]
+    #[allow(clippy::unused_self)]
+    fn offered(&self, _state: &AgentState) -> bool {
+        true
+    }
+
+    /// Whether a skill grant makes every call of this tool wait for approval.
+    #[cfg(feature = "skills")]
+    fn asks_first(&self) -> bool {
+        self.ask
+    }
+
+    #[cfg(not(feature = "skills"))]
+    #[allow(clippy::unused_self)]
+    fn asks_first(&self) -> bool {
+        false
     }
 }
 
@@ -228,9 +269,15 @@ enum Origin<'a> {
     /// Listed in the agent's own `tools`.
     Agent,
     /// One of the skill tools (`load_skill`, `read_skill_file`).
+    #[cfg(feature = "skills")]
     SkillTool,
     /// Granted to a skill by the owner.
+    #[cfg(feature = "skills")]
     Grant(&'a SkillToolGrant),
+    /// Keeps the lifetime in use in builds without skills.
+    #[cfg(not(feature = "skills"))]
+    #[allow(dead_code)]
+    Unused(std::marker::PhantomData<&'a ()>),
 }
 
 /// Collects the tools of one run, giving each a unique exposed name.
@@ -270,16 +317,11 @@ impl Binder {
     ) -> Result<(), NodeError> {
         for spec in select_specs(specs, provider, name)? {
             if let Some(existing) = self.bound.iter_mut().find(|b| b.provider == provider && b.name == spec.name) {
-                // A tool the agent lists itself stays as the agent configured it.
-                // A tool granted by several skills opens with any of them and
-                // asks first if any of the grants does.
-                if let (false, Origin::Grant(grant)) = (existing.gates.is_empty(), origin) {
-                    existing.gates.push(grant.skill.clone());
-                    existing.ask |= grant.ask;
-                }
+                existing.bound_again(origin);
                 continue;
             }
             let exposed = unique_name(&spec.name, provider, &mut self.used);
+            #[cfg(feature = "skills")]
             let (gates, ask) = match origin {
                 Origin::Grant(grant) => (vec![grant.skill.clone()], grant.ask),
                 Origin::Agent | Origin::SkillTool => (Vec::new(), false),
@@ -295,8 +337,11 @@ impl Binder {
                     parameters: spec.parameters.clone(),
                 },
                 context: None,
+                #[cfg(feature = "skills")]
                 gates,
+                #[cfg(feature = "skills")]
                 ask,
+                #[cfg(feature = "skills")]
                 skill_tool: matches!(origin, Origin::SkillTool),
             });
         }
@@ -336,6 +381,7 @@ struct AgentState {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     answer: String,
     /// Skills loaded in this run: their granted tools are offered to the model.
+    #[cfg(feature = "skills")]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     loaded_skills: Vec<String>,
 }
@@ -424,6 +470,12 @@ impl AgentNode {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let tool_context = parse_tool_context(doc, &config.tool_context, &refs)?;
+        // Without the feature the field is still read, so that a workflow that
+        // relies on skills fails here instead of running without them.
+        #[cfg(not(feature = "skills"))]
+        if !config.skills.is_empty() {
+            return Err(ConfigError::new(doc, "`skills` needs a build with skill support (cargo feature `skills`)"));
+        }
         Ok(Self { config, refs, tool_context })
     }
 
@@ -445,7 +497,10 @@ impl AgentNode {
                 binder.bind_registered(provider, name, &runtime, Origin::Agent).await?;
             }
         }
+        #[cfg(feature = "skills")]
         let catalog = self.attach_skills(ctx, &mut binder).await?;
+        #[cfg(not(feature = "skills"))]
+        let catalog = String::new();
         let mut bound = binder.bound;
         self.attach_tool_context(ctx, &mut bound)?;
         Ok((bound, catalog))
@@ -457,6 +512,7 @@ impl AgentNode {
     /// A granted tool that is not available in this host (its plugin was
     /// removed, say) is left out and reported as `skill_tool_unavailable`: the
     /// skill still loads, it just cannot use that tool.
+    #[cfg(feature = "skills")]
     async fn attach_skills(&self, ctx: &NodeContext, binder: &mut Binder) -> Result<String, NodeError> {
         if self.config.skills.is_empty() {
             return Ok(String::new());
@@ -529,7 +585,7 @@ impl AgentNode {
     }
 
     fn needs_approval(&self, tool: &BoundTool) -> bool {
-        tool.ask
+        tool.asks_first()
             || self.config.require_approval.iter().any(|r| {
                 r == "*" || *r == tool.exposed || *r == tool.name || *r == format!("{}/{}", tool.provider, tool.name)
             })
@@ -647,7 +703,7 @@ impl AgentNode {
             // Tools stay declared on the final turn: the history may contain tool calls,
             // which providers only accept alongside tool definitions.
             // A tool granted through a skill appears once that skill was loaded.
-            request.tools = tools.iter().filter(|t| t.offered(&state.loaded_skills)).map(|t| t.spec.clone()).collect();
+            request.tools = tools.iter().filter(|t| t.offered(state)).map(|t| t.spec.clone()).collect();
             request.tool_choice = Some(if offer.callable() { ToolChoice::Auto } else { ToolChoice::None });
         }
         ctx.progress(
@@ -727,7 +783,7 @@ impl AgentNode {
         for call in calls {
             // Never offered in this run so far: the model was not shown this
             // tool, so the call did not come from its tool list.
-            if bound_tool(tools, &call).is_some_and(|tool| !tool.offered(&state.loaded_skills)) {
+            if bound_tool(tools, &call).is_some_and(|tool| !tool.offered(state)) {
                 let message = "error: this tool belongs to a skill that is not loaded. Load the skill first.";
                 self.record(state, tools, &call, ToolOutput::error(message));
                 continue;
@@ -861,6 +917,7 @@ struct VisibleResult {
 /// Append a visible tool result to the conversation and the log.
 fn push_result(state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, result: VisibleResult) {
     let bound = bound_tool(tools, call);
+    #[cfg(feature = "skills")]
     if !result.is_error
         && let Some(skill) = loaded_skill(bound, call)
         && !state.loaded_skills.contains(&skill)
@@ -888,6 +945,7 @@ fn push_result(state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, res
 /// The skill a call loads: the `name` argument of the skill tool `load_skill`.
 /// Only the skill tools bound by [`AgentNode::attach_skills`] count, never a
 /// registry provider that happens to use the same names.
+#[cfg(feature = "skills")]
 fn loaded_skill(bound: Option<&BoundTool>, call: &ToolCall) -> Option<String> {
     bound.filter(|tool| tool.skill_tool && tool.name == LOAD_SKILL_TOOL)?;
     let arguments = call.arguments_json().ok()?;
@@ -1934,6 +1992,16 @@ mod tests {
         let err = agent(json!({"tools": ["nope/x"]})).run(ctx(&s)).await.unwrap_err();
         assert!(!err.retryable);
         assert_eq!(err.kind, "tool_not_found");
+    }
+
+    #[cfg(not(feature = "skills"))]
+    #[test]
+    fn listing_skills_without_skill_support_is_a_configuration_error() {
+        let doc = NodeDoc::new("a", "agent", json!({"model": {"provider": "p", "name": "m"}, "skills": ["report"]}));
+        let error = AgentNode::from_doc(&doc).unwrap_err().to_string();
+        assert!(error.contains("cargo feature `skills`"), "{error}");
+        let empty = NodeDoc::new("a", "agent", json!({"model": {"provider": "p", "name": "m"}, "skills": []}));
+        assert!(AgentNode::from_doc(&empty).is_ok());
     }
 
     #[test]

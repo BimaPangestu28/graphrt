@@ -1,8 +1,10 @@
 # Skills
 
 **Preview.** Skills are opt in: the `graphrt` binary needs the `skills` cargo
-feature (`cargo install graphrt-cli --features skills`), and Rust hosts add the
-`graphrt-skill` crate. Default builds are unchanged. The format of the skill
+feature (`cargo install graphrt-cli --features skills`). Rust hosts add the
+`graphrt-skill` crate and turn on the `skills` feature of `graphrt-llm`.
+Default builds are unchanged: an agent that lists skills is refused there with
+a configuration error, so it never runs without them. The format of the skill
 store may still change before this leaves preview.
 
 A skill gives an agent a new ability without rewriting the agent. It is a
@@ -168,7 +170,7 @@ let review = store.inspect_dir(&downloaded_dir)?;                      // entry,
 let options = InstallOptions { grants: vec![Grant::ask("orders/lookup")], ..InstallOptions::default() };
 store.install(&downloaded_dir, options)?;
 
-// Make the skills available to `agent` nodes.
+// Make the skills available to `agent` nodes (graphrt-llm with feature `skills`).
 services.insert(SkillSet::new(Arc::clone(&store)).into_service());
 ```
 
