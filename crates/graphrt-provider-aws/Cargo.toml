@@ -2,7 +2,7 @@
 name = "graphrt-provider-aws"
 description = "AWS providers for the graphrt gateway: ECS Fargate (gateway-scheduled tasks) and Lambda (short synchronous runs), with a hand-rolled SigV4 + credential chain (no AWS SDK)."
 readme = "README.md"
-homepage = "https://github.com/BimaPangestu28/graphrt"
+homepage = "https://github.com/Graphrt/graphrt"
 documentation = "https://docs.rs/graphrt-provider-aws"
 keywords = ["aws", "ecs", "lambda", "sigv4", "gateway"]
 categories = ["api-bindings", "asynchronous"]

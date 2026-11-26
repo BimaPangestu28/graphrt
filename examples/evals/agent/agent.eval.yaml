@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/eval-v1.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/eval-v1.schema.json
 # An agent evaluated on its answers and its tool trajectory, offline: model
 # responses come from replay cassettes, tools from a local plugin (needs python3).
 #   graphrt eval examples/evals/agent/agent.eval.yaml

@@ -321,7 +321,7 @@ fn spec() -> DeploymentSpec {
     DeploymentSpec {
         name: "helpdesk".into(),
         version: "v1".into(),
-        image: Some("ghcr.io/bimapangestu28/graphrt:0.5.0".into()),
+        image: Some("ghcr.io/graphrt/graphrt:0.5.0".into()),
         command: vec!["graphrt".into(), "serve".into(), "--trust-gateway".into(), "/app/workflow.yaml".into()],
         env: [("RUST_LOG".to_owned(), "info".to_owned())].into(),
         secrets: vec![SecretRef { env: "OPENAI_API_KEY".into(), reference: "helpdesk-llm".into() }],

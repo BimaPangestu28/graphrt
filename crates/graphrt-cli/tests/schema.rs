@@ -9,7 +9,7 @@ use std::process::Command;
 use graphrt_cli::catalog::builtin_schema;
 use graphrt_cli::setup;
 
-const SCHEMA_URL: &str = "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json";
+const SCHEMA_URL: &str = "https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json";
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")

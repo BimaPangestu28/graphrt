@@ -16,7 +16,7 @@ Until 1.0, the two most recent minor releases receive security fixes.
 ## Reporting a vulnerability
 
 **Do not open a public issue, pull request or discussion.** Report privately
-through [GitHub Security Advisories](https://github.com/BimaPangestu28/graphrt/security/advisories/new).
+through [GitHub Security Advisories](https://github.com/Graphrt/graphrt/security/advisories/new).
 
 Please include:
 

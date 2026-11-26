@@ -40,7 +40,7 @@ RUN apk add --no-cache git
 # graphrt-plugins main with the `user_rpc` mode (PR #60). Pin a reviewed commit.
 ARG PLUGINS_REV=01cc745c905d10d33003d875d5d90b584a2f0045
 RUN git init -q /src \
-    && git -C /src fetch -q --depth 1 https://github.com/BimaPangestu28/graphrt-plugins "$PLUGINS_REV" \
+    && git -C /src fetch -q --depth 1 https://github.com/Graphrt/graphrt-plugins "$PLUGINS_REV" \
     && git -C /src checkout -q FETCH_HEAD \
     && mkdir -p /out/plugins \
     && cp -r /src/supabase /out/plugins/supabase \

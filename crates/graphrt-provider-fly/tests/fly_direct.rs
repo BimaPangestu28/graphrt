@@ -42,7 +42,7 @@ fn request(version: &str, now_ms: u64) -> DeployRequest {
         region: "ams".into(),
         mode: ServiceMode::ScaleToZero,
         org_slug: "personal".into(),
-        image: "ghcr.io/bimapangestu28/graphrt:0.5.0".into(),
+        image: "ghcr.io/graphrt/graphrt:0.5.0".into(),
         secrets: BTreeMap::from([("OPENAI_API_KEY".into(), OPENAI_VALUE.into())]),
         api_key_candidate: API_KEY.into(),
         rotate_api_key: false,
@@ -94,7 +94,7 @@ async fn first_deploy_creates_app_ips_secrets_and_a_healthy_current_machine() {
     assert_eq!(machine.metadata("graphrt_role"), Some("current"));
     assert_eq!(machine.config["services"][0]["autostop"], "stop");
     assert_eq!(machine.config["files"][0]["guest_path"], "/workflows/support.yaml");
-    assert_eq!(machine.config["image"], "ghcr.io/bimapangestu28/graphrt:0.5.0");
+    assert_eq!(machine.config["image"], "ghcr.io/graphrt/graphrt:0.5.0");
 }
 
 #[tokio::test]

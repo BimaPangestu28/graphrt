@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
 # Judge: does the answer address the question that was asked?
 #   - { type: judge, workflow: judges/answer-relevance.yaml, metric: relevance,
 #       inputs: { question: "{{question}}" } }

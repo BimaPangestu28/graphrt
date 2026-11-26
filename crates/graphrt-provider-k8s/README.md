@@ -6,7 +6,7 @@ picks which replica goes away on scale-in and reports ready replicas. Works with
 any conformant cluster (self-hosted, kind, k3d/k3s, GKE, EKS, AKS). Its API
 follows `graphrt-provider-api` and may change between minor releases.
 
-Part of [graphrt](https://github.com/BimaPangestu28/graphrt) — **run your agent everywhere**: one small runtime for
+Part of [graphrt](https://github.com/Graphrt/graphrt) — **run your agent everywhere**: one small runtime for
 agentic AI workflows on servers, containers, the edge and phones.
 
 | Feature | Adds |
@@ -18,7 +18,7 @@ agentic AI workflows on servers, containers, the edge and phones.
 A gateway running in the cluster only needs its service account:
 `--no-default-features` leaves out kubeconfig support and the deploy driver.
 
-- Guide: [Kubernetes provider](https://github.com/BimaPangestu28/graphrt/blob/main/docs/kubernetes-provider.md)
-- Project README: <https://github.com/BimaPangestu28/graphrt#readme>
+- Guide: [Kubernetes provider](https://github.com/Graphrt/graphrt/blob/main/docs/kubernetes-provider.md)
+- Project README: <https://github.com/Graphrt/graphrt#readme>
 
 Licensed under the Apache License, Version 2.0.

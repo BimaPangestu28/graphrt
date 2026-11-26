@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
 # Judge: is every claim in the answer supported by the retrieved context?
 # Binary, one criterion, with an `unknown` way out. Use it from an eval file:
 #   - { type: judge, workflow: judges/faithfulness.yaml, metric: faithfulness,

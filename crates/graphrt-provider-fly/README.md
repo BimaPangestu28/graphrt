@@ -38,7 +38,7 @@ This runs the C1–C13 conformance harness and the Fly-specific tests against a 
 
 ## Documentation
 
-Behaviour, setup, drain guidance, size and the real-Fly verification list: [docs/gateway-fly.md](https://github.com/BimaPangestu28/graphrt/blob/main/docs/gateway-fly.md).
+Behaviour, setup, drain guidance, size and the real-Fly verification list: [docs/gateway-fly.md](https://github.com/Graphrt/graphrt/blob/main/docs/gateway-fly.md).
 
 ## License
 

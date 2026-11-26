@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/eval-v1.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/eval-v1.schema.json
 # Fully offline: the ticket router of examples/branching.yaml against a JSONL dataset.
 #   graphrt eval examples/evals/branching.eval.yaml --junit junit.xml
 description: Every priority band routes to the right queue.

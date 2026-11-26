@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
 # The refusal judge on TypeSafe System One (Jev) instead of a chat model: one
 # calibrated choice question. Its probability of `pass` is reported as the
 # score, and an answer below `min_confidence` takes the `low_confidence` edge

@@ -23,7 +23,7 @@ use crate::deploy_cmd::{DeployAction, DeployRunArgs, DirectMode, DirectTargetArg
 use crate::error::{CliError, EXIT_FAILED, EXIT_INVALID, EXIT_OK};
 
 /// Image repository of the published graphrt image (agent flavour).
-const IMAGE_REPOSITORY: &str = "ghcr.io/bimapangestu28/graphrt";
+const IMAGE_REPOSITORY: &str = "ghcr.io/graphrt/graphrt";
 /// Overrides the Machines API URL (tests, or the internal `http://_api.internal:4280`).
 const API_URL_ENV: &str = "GRAPHRT_FLY_API_URL";
 /// Organization a missing app is created in without `--org`.
@@ -433,6 +433,6 @@ mod tests {
 
     #[test]
     fn default_image_is_the_published_one_of_this_version() {
-        assert_eq!(default_image(), format!("ghcr.io/bimapangestu28/graphrt:{}", env!("CARGO_PKG_VERSION")));
+        assert_eq!(default_image(), format!("ghcr.io/graphrt/graphrt:{}", env!("CARGO_PKG_VERSION")));
     }
 }

@@ -6,8 +6,7 @@
 use serde_json::{Value as Json, json};
 
 /// Where the schema is published.
-pub const EVAL_SCHEMA_URL: &str =
-    "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/eval-v1.schema.json";
+pub const EVAL_SCHEMA_URL: &str = "https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/eval-v1.schema.json";
 
 /// Assertion types built into graphrt-eval, with a one-line description each.
 pub const BUILTIN_ASSERTIONS: &[(&str, &str)] = &[

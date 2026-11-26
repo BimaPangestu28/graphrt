@@ -225,17 +225,17 @@ map it in the editor. VS Code `settings.json`:
   "json.schemas": [
     {
       "fileMatch": ["graphrt-plugin.json"],
-      "url": "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/docs/schemas/plugin-manifest.schema.json"
+      "url": "https://raw.githubusercontent.com/Graphrt/graphrt/main/docs/schemas/plugin-manifest.schema.json"
     }
   ],
   "yaml.schemas": {
-    "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/docs/schemas/plugin-manifest.schema.json": ["graphrt-plugin.yaml", "graphrt-plugin.yml"]
+    "https://raw.githubusercontent.com/Graphrt/graphrt/main/docs/schemas/plugin-manifest.schema.json": ["graphrt-plugin.yaml", "graphrt-plugin.yml"]
   }
 }
 ```
 
 YAML manifests can instead start with a comment, which the parser ignores:
-`# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/docs/schemas/plugin-manifest.schema.json`.
+`# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/docs/schemas/plugin-manifest.schema.json`.
 
 ## Compatibility policy
 

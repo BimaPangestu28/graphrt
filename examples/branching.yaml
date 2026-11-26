@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
 # Fully offline: route a support ticket by priority, then merge the branches.
 #   graphrt run examples/branching.yaml --input priority:=9 --input subject="Server down"
 version: "1"

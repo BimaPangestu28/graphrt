@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/eval-v1.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/eval-v1.schema.json
 # Retrieval quality against labelled documents, fully offline (hash embeddings,
 # committed store). Run from the repository root (the store path in
 # knowledge.yaml is relative to the working directory):

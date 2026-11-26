@@ -11,7 +11,7 @@ through a few allowlisted Postgres functions, called **as that user** (their
 JWT), so row level security decides what it can see.
 
 This folder is the backend only. The Flutter and React Native clients live in
-[graphrt-examples](https://github.com/BimaPangestu28/graphrt-examples)
+[graphrt-examples](https://github.com/Graphrt/graphrt-examples)
 (`supabase-chatbot/flutter`, `supabase-chatbot/react-native`) and follow the
 [client contract](#client-contract) below.
 
@@ -61,7 +61,7 @@ This folder is the backend only. The Flutter and React Native clients live in
 
 - graphrt with the `llm`, `serve`, `jwt` and `plugins` features (the default
   build has them), or Docker for the [image](#container)
-- Node.js 20+ for the [supabase plugin](https://github.com/BimaPangestu28/graphrt-plugins/tree/main/supabase)
+- Node.js 20+ for the [supabase plugin](https://github.com/Graphrt/graphrt-plugins/tree/main/supabase)
   (version with `SUPABASE_TOOL_MODE=user_rpc`)
 - A Supabase project (or `supabase start` locally) and an OpenAI API key
 
@@ -81,7 +81,7 @@ This folder is the backend only. The Flutter and React Native clients live in
 2. Install the plugin:
 
    ```sh
-   graphrt plugin install https://github.com/BimaPangestu28/graphrt-plugins --rev main --subdir supabase
+   graphrt plugin install https://github.com/Graphrt/graphrt-plugins --rev main --subdir supabase
    ```
 
 3. Copy [`.env.example`](.env.example) to `.env` and fill it in.

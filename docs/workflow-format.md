@@ -541,7 +541,7 @@ and config field.
 (Red Hat): put this line at the top of a workflow file:
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
 ```
 
 or map files to the schema in `.vscode/settings.json`:
@@ -549,10 +549,10 @@ or map files to the schema in `.vscode/settings.json`:
 ```json
 {
   "yaml.schemas": {
-    "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json": ["workflows/**/*.yaml"]
+    "https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json": ["workflows/**/*.yaml"]
   },
   "json.schemas": [
-    { "fileMatch": ["workflows/**/*.json"], "url": "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json" }
+    { "fileMatch": ["workflows/**/*.json"], "url": "https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json" }
   ]
 }
 ```

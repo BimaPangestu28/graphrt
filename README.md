@@ -1,6 +1,6 @@
 # graphrt
 
-[![CI](https://github.com/BimaPangestu28/graphrt/actions/workflows/ci.yml/badge.svg)](https://github.com/BimaPangestu28/graphrt/actions/workflows/ci.yml)
+[![CI](https://github.com/Graphrt/graphrt/actions/workflows/ci.yml/badge.svg)](https://github.com/Graphrt/graphrt/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/graphrt-core.svg)](https://crates.io/crates/graphrt-core)
 [![docs.rs](https://img.shields.io/docsrs/graphrt-core)](https://docs.rs/graphrt-core)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -53,12 +53,12 @@ start ──▶ if-else ──▶ agent (MCP tools) ──▶ answer
 
 ```sh
 # Linux / macOS: prebuilt static binary (verifies SHA256SUMS)
-curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Graphrt/graphrt/main/install.sh | sh
 # the gateway build: the same CLI plus `graphrt gateway` / `graphrt deploy`, every provider
-curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/install.sh | sh -s -- --gateway
+curl -fsSL https://raw.githubusercontent.com/Graphrt/graphrt/main/install.sh | sh -s -- --gateway
 
 # Homebrew (macOS, Linux)
-brew install bimapangestu28/graphrt/graphrt
+brew install graphrt/graphrt/graphrt
 
 # with Rust (1.94+ for the default features; 1.89+ without `local-embed`)
 cargo install graphrt-cli            # installs the `graphrt` binary
@@ -66,13 +66,13 @@ cargo install graphrt-cli --features eval,online-eval   # + `graphrt eval` and `
 cargo install graphrt-cli --features gateway-all        # + `graphrt gateway` and `graphrt deploy`
 
 # container (linux/amd64, linux/arm64)
-docker run --rm -p 8080:8080 -v "$PWD/flows:/workflows" ghcr.io/bimapangestu28/graphrt
-docker run --rm ghcr.io/bimapangestu28/graphrt:gateway gateway --help   # gateway build
+docker run --rm -p 8080:8080 -v "$PWD/flows:/workflows" ghcr.io/graphrt/graphrt
+docker run --rm ghcr.io/graphrt/graphrt:gateway gateway --help   # gateway build
 ```
 
 Linux (x86_64, aarch64; static musl), macOS (x86_64, aarch64) and Windows (x86_64,
 `.zip`, no Visual C++ runtime needed) archives with `SHA256SUMS` are on the
-[releases page](https://github.com/BimaPangestu28/graphrt/releases). Two builds per
+[releases page](https://github.com/Graphrt/graphrt/releases). Two builds per
 platform: `graphrt-<target>` (the agent: run, serve, eval) and
 `graphrt-gateway-<target>` (the same CLI plus the gateway and `graphrt deploy` with every
 provider; it links mimalloc, which agents leave out). On Windows the gateway's local agents
@@ -148,7 +148,7 @@ HS256, `exp`, `iss`, `aud`), so the app needs no API key, and
 `--user-rate-limit` caps runs per user. A full Supabase chatbot backend (schema
 with RLS, agent, container, deploy notes, end-to-end security tests) is in
 [examples/supabase-chatbot](examples/supabase-chatbot/), with Flutter and React
-Native clients in [graphrt-examples](https://github.com/BimaPangestu28/graphrt-examples);
+Native clients in [graphrt-examples](https://github.com/Graphrt/graphrt-examples);
 the guide is [docs/chatbot-supabase.md](docs/chatbot-supabase.md).
 
 See [docs/serving.md](docs/serving.md#per-user-credentials-from-headers) and
