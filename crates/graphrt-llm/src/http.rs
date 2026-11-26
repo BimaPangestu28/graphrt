@@ -7,7 +7,7 @@
 )]
 
 use std::collections::VecDeque;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -34,20 +34,42 @@ pub(crate) fn build_client(connect_timeout: Duration) -> Result<reqwest::Client,
         .map_err(|e| LlmError::Config(format!("cannot build HTTP client: {e}")))
 }
 
+/// Connect timeout of every built-in provider unless configured otherwise.
+pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+type ClientCell = Arc<OnceLock<Result<reqwest::Client, String>>>;
+
+/// The client cell of `connect_timeout`, shared by every provider of the
+/// process: a client loads the system trust store (hundreds of certificate
+/// files on Linux) when it is built, once per process instead of once per
+/// provider. A `reqwest::Client` is made to be shared; its connection pool is
+/// keyed by origin and carries no request headers or credentials.
+fn shared_cell(connect_timeout: Duration) -> ClientCell {
+    static CELLS: Mutex<Vec<(Duration, ClientCell)>> = Mutex::new(Vec::new());
+    let mut cells = CELLS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, cell)) = cells.iter().find(|(timeout, _)| *timeout == connect_timeout) {
+        return cell.clone();
+    }
+    let cell = ClientCell::default();
+    cells.push((connect_timeout, cell.clone()));
+    cell
+}
+
 /// An HTTP client built on first use.
 ///
 /// Building a client loads the system trust store (hundreds of certificate
 /// files on Linux, Security.framework on macOS), so providers that a run never
-/// calls should not pay for it at startup. Clones share the same client.
+/// calls should not pay for it at startup. Clones, and every other client of
+/// the process with the same connect timeout, share the same client.
 #[derive(Clone, Debug)]
 pub(crate) struct LazyClient {
     connect_timeout: Duration,
-    cell: Arc<OnceLock<Result<reqwest::Client, String>>>,
+    cell: ClientCell,
 }
 
 impl LazyClient {
     pub(crate) fn new(connect_timeout: Duration) -> Self {
-        Self { connect_timeout, cell: Arc::new(OnceLock::new()) }
+        Self { connect_timeout, cell: shared_cell(connect_timeout) }
     }
 
     /// The client, built on the first call.
@@ -58,6 +80,36 @@ impl LazyClient {
             .get_or_init(|| build_client(self.connect_timeout).map_err(|e| e.to_string()))
             .as_ref()
             .map_err(|message| LlmError::Config(message.clone()))
+    }
+}
+
+/// Builds the providers' shared HTTP client (default connect timeout) now, on
+/// a background thread, instead of in the first model call: for a process
+/// started because a run is on its way (an agent woken by a gateway), the
+/// trust store loads alongside its start-up instead of before the first token.
+/// A build error is kept and reported by the first call, as without it.
+pub fn prewarm_http_client() {
+    let client = LazyClient::new(DEFAULT_CONNECT_TIMEOUT);
+    let spawned = std::thread::Builder::new().name("graphrt-llm-prewarm".into()).spawn(move || {
+        let _built_or_reported_later = client.get();
+    });
+    if let Err(error) = spawned {
+        eprintln!("warning: could not prewarm the model HTTP client: {error}");
+    }
+}
+
+#[cfg(test)]
+mod shared_client_tests {
+    use super::*;
+
+    #[test]
+    fn providers_with_the_same_timeout_share_one_client() {
+        let (first, second) = (LazyClient::new(Duration::from_secs(7)), LazyClient::new(Duration::from_secs(7)));
+        assert!(Arc::ptr_eq(&first.cell, &second.cell));
+        assert!(!Arc::ptr_eq(&first.cell, &LazyClient::new(Duration::from_secs(8)).cell));
+        prewarm_http_client();
+        let default = LazyClient::new(DEFAULT_CONNECT_TIMEOUT);
+        assert!(default.get().is_ok());
     }
 }
 

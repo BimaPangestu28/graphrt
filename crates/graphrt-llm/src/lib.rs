@@ -42,6 +42,8 @@ pub mod typesafe;
 
 #[cfg(feature = "http")]
 mod http;
+#[cfg(feature = "http")]
+pub use http::prewarm_http_client;
 
 #[cfg(feature = "anthropic")]
 pub mod anthropic;

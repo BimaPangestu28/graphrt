@@ -201,6 +201,25 @@ fn is_listening(address: &EndpointAddress) -> bool {
     }
 }
 
+/// How long a starting agent is probed at [`FAST_PROBE_INTERVAL`].
+const FAST_PROBE_WINDOW: Duration = Duration::from_millis(50);
+const FAST_PROBE_INTERVAL: Duration = Duration::from_micros(200);
+
+/// Waits up to `window` for an agent to listen at `address`, probing every
+/// [`FAST_PROBE_INTERVAL`] (blocking). Returns whether it does.
+fn wait_listening(address: &EndpointAddress, window: Duration) -> bool {
+    let deadline = std::time::Instant::now() + window;
+    loop {
+        if is_listening(address) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(FAST_PROBE_INTERVAL);
+    }
+}
+
 /// `ERROR_PIPE_BUSY` (Windows).
 const ERROR_PIPE_BUSY: i32 = 231;
 
@@ -313,8 +332,16 @@ impl LocalProvider {
             },
         );
         let deadline = tokio::time::Instant::now() + self.ready_timeout;
+        // Probed every 200 us on a blocking thread while an agent usually comes
+        // up (a few ms): the reactor's timer sleeps whole milliseconds, and a
+        // 2 ms poll found a ready agent 1-2 ms late on every wake. Exits and the
+        // ready timeout are checked by the slower loop below.
+        let probed = address.clone();
+        let mut ready = graphrt_core::task::spawn_blocking(move || wait_listening(&probed, FAST_PROBE_WINDOW))
+            .await
+            .unwrap_or(false);
         loop {
-            if accepts(&address).await {
+            if std::mem::take(&mut ready) || accepts(&address).await {
                 if let Some(state) =
                     self.replicas.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(&replica)
                 {
@@ -524,5 +551,32 @@ impl Provider for LocalProvider {
                 })
                 .collect())
         })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn a_starting_agent_is_found_within_a_fraction_of_a_millisecond() {
+        let dir = std::env::temp_dir().join(format!("graphrt-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("a.sock");
+        let _stale = std::fs::remove_file(&socket);
+        let address = EndpointAddress::Unix(socket.clone());
+        assert!(!wait_listening(&address, Duration::from_millis(5)), "nothing listens yet");
+        let bound = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(3));
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            (std::time::Instant::now(), listener)
+        });
+        assert!(wait_listening(&address, Duration::from_secs(5)));
+        let found = std::time::Instant::now();
+        let (listening, _listener) = bound.join().unwrap();
+        assert!(found.duration_since(listening) < Duration::from_millis(1), "{:?}", found.duration_since(listening));
+        let _cleanup = std::fs::remove_dir_all(&dir);
     }
 }
