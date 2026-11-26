@@ -1,6 +1,10 @@
 //! Library side of the `graphrt` binary: command implementations shared by the
 //! binary and its tests.
 
+// HTTP handlers return a ready `axum` `Response` as their error: boxing it to satisfy the
+// size lint would only add an allocation on the refusal path.
+#![allow(clippy::result_large_err)]
+
 pub mod args;
 #[cfg(feature = "serve")]
 pub mod body_drain;

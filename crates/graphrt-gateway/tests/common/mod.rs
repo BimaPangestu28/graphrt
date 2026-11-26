@@ -119,7 +119,10 @@ async fn start_run(State(state): State<Arc<AgentState>>, headers: HeaderMap, bod
     if let Err(refused) = verify(&state, "POST", "/internal/v1/runs", &headers, &body) {
         return refused;
     }
-    if state.world.epoch_conflicts.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+    // `try_update` would replace the deprecated `fetch_update`, but it is not on the 1.89 MSRV.
+    #[allow(deprecated)]
+    let conflict = state.world.epoch_conflicts.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+    if conflict.is_ok() {
         let body = json!({ "error": "the run is executing at another epoch", "error_type": "epoch_conflict" });
         return (StatusCode::CONFLICT, axum::Json(body)).into_response();
     }
