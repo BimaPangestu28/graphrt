@@ -26,6 +26,8 @@ final class HelloWorkflowModel: ObservableObject {
             }.value
             workflow = loaded
             status = "graphrt \(graphrtVersion()) loaded workflow '\(loaded.name() ?? "?")'"
+            // The smoke test waits for this line: the app is up and the runtime works.
+            print("[GraphrtSample] loaded: \(status)")
         } catch {
             report(action: "loading hello.yaml", error: error)
         }
