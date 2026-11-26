@@ -371,13 +371,17 @@ features: lessons are the short notes and skills are the longer procedures.
 | `graphrt-skill` | new crate | Parsing, validation, scan, store, index, the `skills` tool provider, drafts. |
 | `graphrt-learn` | new crate | Lessons, scopes, file store, policy, capture and distillation. |
 | `agent` node | `graphrt-llm` | Optional `skills` and `learning` fields. |
-| CLI and HTTP | `graphrt-cli` | Cargo features `skills` and `learning`, **off by default until the work is complete**, so default builds do not change. |
+| CLI and HTTP | `graphrt-cli` | Cargo features `skills` and `learning`, **off by default until the work is complete**, so default builds do not change. The `agent` node code sits behind `graphrt-llm` features of the same names for the same reason. |
 
 ## 5. Contract for user interfaces
 
 The same operations exist as a Rust API (for the desktop app, which links the
 crates) and as HTTP routes of `graphrt serve` (for web builders). Field names
 are stable across both. Every text a business user sees is plain language.
+
+The Rust API comes first, with the `graphrt skill` and `graphrt learn` commands
+printing the same JSON shapes. The HTTP routes and the draft operations come
+with the last delivery step.
 
 ### 5.1 Skills
 
