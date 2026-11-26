@@ -90,6 +90,12 @@ releases may contain breaking changes; they are called out under **Changed**.
   its full timeout: a cold Node.js or Python start on a slow machine (seen on
   Windows CI runners) no longer times out the first request. The node's
   deadline still covers both.
+- `graphrt gateway` keeps the replay ring of at most 256 finished runs in
+  memory for their 30 s linger at once; beyond that the oldest finished run's
+  linger ends early (a late reconnect replays from the store, as after any
+  linger). A burst of 10,000 short runs used to hold every ring and leave
+  ~11 KiB of gateway RSS per sleeping agent behind; now ~3 KiB over the idle
+  baseline.
 - `graphrt gateway` sets `TCP_NODELAY` on its public connections, as
   `graphrt serve` does: small SSE writes no longer wait up to ~40 ms for the
   client's delayed ACK (the end of most streams and the first token of some).
