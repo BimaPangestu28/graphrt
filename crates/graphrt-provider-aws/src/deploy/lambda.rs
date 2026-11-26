@@ -485,6 +485,6 @@ mod tests {
     #[test]
     fn ecr_images_only() {
         assert!(is_ecr_image("123456789012.dkr.ecr.eu-west-1.amazonaws.com/graphrt:0.5"));
-        assert!(!is_ecr_image("ghcr.io/bimapangestu28/graphrt:0.5"));
+        assert!(!is_ecr_image("ghcr.io/graphrt/graphrt:0.5"));
     }
 }

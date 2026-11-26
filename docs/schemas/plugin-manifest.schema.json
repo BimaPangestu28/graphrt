@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/docs/schemas/plugin-manifest.schema.json",
+  "$id": "https://raw.githubusercontent.com/Graphrt/graphrt/main/docs/schemas/plugin-manifest.schema.json",
   "title": "graphrt plugin manifest (protocol_version 1)",
   "description": "A graphrt-plugin.json / graphrt-plugin.yaml manifest. Specified in docs/plugin-manifest.md. Rules that depend on several fields (node kinds prefixed with `<name>.`, unique kinds and tool names, the pinned entrypoint, https for credentials, `bearer_token_env` listed in `permissions.env`) are checked by graphrt when the manifest is loaded, not by this schema.",
   "type": "object",

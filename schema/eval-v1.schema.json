@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/eval-v1.schema.json",
+  "$id": "https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/eval-v1.schema.json",
   "title": "graphrt eval file",
   "description": "Test cases and assertions for `graphrt eval`. The `tests` / `assert` / `defaultTest` shape follows Promptfoo.",
   "type": "object",

@@ -17,8 +17,7 @@ use crate::catalog::NodeDescriptor;
 use crate::catalog::schema::{DRAFT, selector, value_type};
 
 /// Canonical location of the published schema.
-pub const SCHEMA_ID: &str =
-    "https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json";
+pub const SCHEMA_ID: &str = "https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json";
 
 /// The document schema for these node kinds (usually `Registry::descriptors()`).
 pub fn workflow_schema(descriptors: &[NodeDescriptor]) -> Value {

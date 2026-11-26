@@ -2,7 +2,7 @@
 name = "graphrt-provider-api"
 description = "Provider abstraction of the graphrt gateway: the Provider / DeployDriver traits, shared provider HTTP layer and the C1-C13 conformance harness."
 readme = "README.md"
-homepage = "https://github.com/BimaPangestu28/graphrt"
+homepage = "https://github.com/Graphrt/graphrt"
 documentation = "https://docs.rs/graphrt-provider-api"
 keywords = ["workflow", "agent", "gateway", "scale-to-zero", "deploy"]
 categories = ["development-tools"]

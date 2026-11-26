@@ -6,7 +6,7 @@ calibration against human labels), trials with pass@k / pass^k, baseline compari
 a CI gate, and JSON / JUnit reports.
 It powers `graphrt eval` and works from `cargo test` in Rust applications that embed graphrt.
 
-Part of [graphrt](https://github.com/BimaPangestu28/graphrt) — **run your agent everywhere**: one small runtime for
+Part of [graphrt](https://github.com/Graphrt/graphrt) — **run your agent everywhere**: one small runtime for
 agentic AI workflows on servers, containers, the edge and phones.
 
 ```toml
@@ -22,7 +22,7 @@ assert!(report.gate_passed(), "{}", graphrt_eval::report::format_summary(&report
 ```
 
 - Documentation: <https://docs.rs/graphrt-eval>
-- Guide: [Evaluating workflows](https://github.com/BimaPangestu28/graphrt/blob/main/docs/evals.md)
-- Project README: <https://github.com/BimaPangestu28/graphrt#readme>
+- Guide: [Evaluating workflows](https://github.com/Graphrt/graphrt/blob/main/docs/evals.md)
+- Project README: <https://github.com/Graphrt/graphrt#readme>
 
 Licensed under the Apache License, Version 2.0.

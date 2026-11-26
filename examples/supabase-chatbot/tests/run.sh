@@ -32,7 +32,7 @@ if [ -z "$PLUGIN_DIR" ]; then
   plugins_rev=$(sed -n 's/^ARG PLUGINS_REV=//p' "$HERE/../Dockerfile")
   FETCHED=$(mktemp -d)
   git -C "$FETCHED" init -q
-  git -C "$FETCHED" fetch -q --depth 1 https://github.com/BimaPangestu28/graphrt-plugins "$plugins_rev"
+  git -C "$FETCHED" fetch -q --depth 1 https://github.com/Graphrt/graphrt-plugins "$plugins_rev"
   git -C "$FETCHED" checkout -q FETCH_HEAD
   PLUGIN_DIR="$FETCHED/supabase"
 fi

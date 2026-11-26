@@ -35,7 +35,7 @@ in both release builds (`graphrt-<target>` and `graphrt-gateway-<target>`).
 ## Getting the CLI
 
 Prebuilt binaries are attached to each GitHub release
-(`https://github.com/BimaPangestu28/graphrt/releases/download/v<version>/<asset>`).
+(`https://github.com/Graphrt/graphrt/releases/download/v<version>/<asset>`).
 Asset names carry the target but **not** the version:
 
 | Platform | Agent build (has `deploy --direct`) | Gateway build |
@@ -77,7 +77,7 @@ graphrt deploy remove         --target fly --direct --deployment <name> [--org <
 | `--secret NAME` | – | Repeatable. Stores the value of the environment variable `NAME` as the Fly secret `NAME`; `graphrt serve` sees it as `$NAME`. Values are never printed or logged. `GRAPHRT_API_KEY` is reserved. |
 | `--org` | `personal` | Fly organization slug, used only when the app has to be created. Management subcommands accept it and ignore it (apps are addressed by name). |
 | `--app` | from `--deployment` | Use this Fly app name instead (e.g. when the derived name is taken). Pass it to every later command too. |
-| `--image` | `ghcr.io/bimapangestu28/graphrt:<this CLI's version>` | Image running `graphrt serve`. |
+| `--image` | `ghcr.io/graphrt/graphrt:<this CLI's version>` | Image running `graphrt serve`. |
 | `--rotate-api-key` | off | Replace the deployment's API key; the new one is printed once. |
 | `--json` | off | JSON Lines on stdout (below). Without it, progress goes to stderr and a summary to stdout. |
 
@@ -283,7 +283,7 @@ The Machine config of a version:
 
 | Field | Value |
 | --- | --- |
-| `image` | `ghcr.io/bimapangestu28/graphrt:<version>` (or `--image`) |
+| `image` | `ghcr.io/graphrt/graphrt:<version>` (or `--image`) |
 | `init.cmd` | `serve /workflows --addr 0.0.0.0:8080 --drain-timeout 25s` |
 | `files` | `[{guest_path: /workflows/<workflow>.<ext>, raw_value: <base64 of the agent>, mode: 0444}]` |
 | `services` | TCP 8080 ← 80 (`http`, `force_https`) and 443 (`tls`,`http`); `autostart: true`; always-on `autostop: off`, `min_machines_running: 1`; scale-to-zero `autostop: stop`, `min_machines_running: 0`; concurrency 20/25 requests |

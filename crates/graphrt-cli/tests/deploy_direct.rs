@@ -144,10 +144,7 @@ async fn deploy_prints_schema_valid_json_lines_and_the_key_once() {
     let state = fake.state();
     assert_eq!(state.secrets.get("GRAPHRT_API_KEY"), Some(&api_key));
     assert_eq!(state.secrets.get("OPENAI_API_KEY").map(String::as_str), Some(OPENAI_VALUE));
-    assert_eq!(
-        state.machines[0].config["image"],
-        format!("ghcr.io/bimapangestu28/graphrt:{}", env!("CARGO_PKG_VERSION"))
-    );
+    assert_eq!(state.machines[0].config["image"], format!("ghcr.io/graphrt/graphrt:{}", env!("CARGO_PKG_VERSION")));
 }
 
 #[tokio::test]

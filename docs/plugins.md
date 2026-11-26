@@ -517,10 +517,10 @@ security model).
 
 `--subdir <path>` installs the plugin in a subdirectory of a git repository,
 for collections with one plugin per directory (such as
-[graphrt-plugins](https://github.com/BimaPangestu28/graphrt-plugins)):
+[graphrt-plugins](https://github.com/Graphrt/graphrt-plugins)):
 
 ```sh
-graphrt plugin install https://github.com/BimaPangestu28/graphrt-plugins --rev main --subdir whatsapp-api
+graphrt plugin install https://github.com/Graphrt/graphrt-plugins --rev main --subdir whatsapp-api
 ```
 
 The path must be relative to the repository root; absolute paths, `..`
@@ -530,7 +530,7 @@ checks. From Rust, the same is `graphrt_plugin::install_from_git_subdir`.
 
 ### Installing from the plugin catalog
 
-[graphrt-plugins](https://github.com/BimaPangestu28/graphrt-plugins) publishes
+[graphrt-plugins](https://github.com/Graphrt/graphrt-plugins) publishes
 a catalog: its `catalog` release carries `index.json` (every published plugin
 with its version, tarball URL, sha256, size, status and ToS risk) and
 `SHA256SUMS`, and each plugin is released as `<name>-<version>.tar.gz`.
@@ -561,7 +561,7 @@ How a name is resolved and installed:
    `[a-z0-9_-]{1,64}`). A directory of the same name in the current directory
    wins; write `./name` to make a local install explicit.
 2. The index is read from `--index <url|path>`, else `$GRAPHRT_PLUGIN_INDEX`,
-   else `https://github.com/BimaPangestu28/graphrt-plugins/releases/download/catalog/index.json`.
+   else `https://github.com/Graphrt/graphrt-plugins/releases/download/catalog/index.json`.
    It may be an `https://` URL, a `file://` URL (`file:///C:/catalog/index.json`
    on Windows) or a local path; plain
    `http://` is refused because the index carries the checksums. Catalogs with

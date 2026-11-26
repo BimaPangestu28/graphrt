@@ -137,7 +137,7 @@ pub fn install_from_git(url: &str, rev: Option<&str>, dest_root: &Path) -> Resul
 /// # fn demo() -> Result<(), graphrt_plugin::PluginError> {
 /// let dest = graphrt_plugin::default_install_dir().unwrap_or_default();
 /// graphrt_plugin::install_from_git_subdir(
-///     "https://github.com/BimaPangestu28/graphrt-plugins",
+///     "https://github.com/Graphrt/graphrt-plugins",
 ///     Some("main"),
 ///     "whatsapp-api",
 ///     &dest,

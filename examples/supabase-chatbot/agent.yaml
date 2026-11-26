@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
 # A multi-user chatbot: a mobile app signs users in with Supabase Auth and chats
 # with this agent on `graphrt serve`. The agent reads the user's data only through
 # allowlisted Postgres functions, called with the user's own JWT, so row level

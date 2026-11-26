@@ -2,7 +2,7 @@
 name = "graphrt-gateway"
 description = "The graphrt gateway: always-on front of scale-to-zero agents, sole writer of the run store (SQLite), auth, limits, webhooks, cron and the local-process provider."
 readme = "README.md"
-homepage = "https://github.com/BimaPangestu28/graphrt"
+homepage = "https://github.com/Graphrt/graphrt"
 documentation = "https://docs.rs/graphrt-gateway"
 keywords = ["workflow", "agent", "gateway", "scale-to-zero", "sse"]
 categories = ["web-programming::http-server"]

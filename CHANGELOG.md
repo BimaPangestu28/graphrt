@@ -1749,15 +1749,15 @@ laptop, a server, a container, the edge or a phone.
   credentials, plugins, WebAssembly runtime, document extraction and retrieval,
   with regression tests for every finding.
 
-[Unreleased]: https://github.com/BimaPangestu28/graphrt/compare/v0.6.2...HEAD
-[0.6.2]: https://github.com/BimaPangestu28/graphrt/compare/v0.6.1...v0.6.2
-[0.6.1]: https://github.com/BimaPangestu28/graphrt/compare/v0.6.0...v0.6.1
-[0.6.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.2...v0.4.0
-[0.3.2]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/BimaPangestu28/graphrt/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.2.1...v0.3.0
-[0.2.1]: https://github.com/BimaPangestu28/graphrt/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/BimaPangestu28/graphrt/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/BimaPangestu28/graphrt/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Graphrt/graphrt/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/Graphrt/graphrt/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/Graphrt/graphrt/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/Graphrt/graphrt/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/Graphrt/graphrt/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/Graphrt/graphrt/compare/v0.3.2...v0.4.0
+[0.3.2]: https://github.com/Graphrt/graphrt/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/Graphrt/graphrt/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/Graphrt/graphrt/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/Graphrt/graphrt/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/Graphrt/graphrt/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/Graphrt/graphrt/releases/tag/v0.1.0

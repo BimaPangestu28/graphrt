@@ -276,7 +276,7 @@ mod tests {
         DeploymentSpec {
             name: "support-bot".into(),
             version: "v3".into(),
-            image: Some("ghcr.io/bimapangestu28/graphrt:0.5.0".into()),
+            image: Some("ghcr.io/graphrt/graphrt:0.5.0".into()),
             command: vec!["graphrt".into(), "serve".into(), "--trust-gateway".into(), "/app/workflow.yaml".into()],
             env: [("RUST_LOG".to_owned(), "info".to_owned())].into(),
             secrets: vec![

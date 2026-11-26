@@ -272,7 +272,7 @@ mod tests {
             region: String::new(),
             mode,
             org_slug: "personal".into(),
-            image: "ghcr.io/bimapangestu28/graphrt:0.5.0".into(),
+            image: "ghcr.io/graphrt/graphrt:0.5.0".into(),
             secrets: BTreeMap::from([("OPENAI_API_KEY".into(), "sk-secret".into())]),
             api_key_candidate: "grk_x".into(),
             rotate_api_key: false,

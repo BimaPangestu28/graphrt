@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
 # Retrieval-augmented answers over the policy documents of examples/evals/retrieval.
 # Evaluated offline with LLM judges in judged.eval.yaml.
 #   graphrt run examples/evals/judged/rag-answer.yaml \

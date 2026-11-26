@@ -301,7 +301,7 @@ pointing at `graphrt plugin install` and `--plugins`.
 ### The plugin catalog
 
 `graphrt plugin install <name>` and `graphrt plugin search` read the
-[graphrt-plugins](https://github.com/BimaPangestu28/graphrt-plugins) catalog
+[graphrt-plugins](https://github.com/Graphrt/graphrt-plugins) catalog
 (`index.json` of its `catalog` release). A source that is not an existing
 directory and looks like `name` or `name@1.2.3` is a catalog name.
 

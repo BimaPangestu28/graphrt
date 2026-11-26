@@ -1,7 +1,7 @@
 //! The graphrt-plugins catalog: `graphrt plugin install <name>[@version]` and
 //! `graphrt plugin search`.
 //!
-//! The catalog is the `catalog` release of github.com/BimaPangestu28/graphrt-plugins:
+//! The catalog is the `catalog` release of github.com/Graphrt/graphrt-plugins:
 //! an `index.json` (see [`index`]) listing every published plugin with its
 //! tarball URL, sha256 and status labels. Installing by name:
 //!
@@ -25,8 +25,7 @@ pub mod index;
 pub use installer::{CatalogInstall, install_from_catalog, search_catalog};
 
 /// The published catalog index.
-pub const DEFAULT_INDEX_URL: &str =
-    "https://github.com/BimaPangestu28/graphrt-plugins/releases/download/catalog/index.json";
+pub const DEFAULT_INDEX_URL: &str = "https://github.com/Graphrt/graphrt-plugins/releases/download/catalog/index.json";
 
 /// Environment variable overriding [`DEFAULT_INDEX_URL`] (`--index` wins over it).
 pub const INDEX_ENV: &str = "GRAPHRT_PLUGIN_INDEX";

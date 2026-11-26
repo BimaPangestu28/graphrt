@@ -12,7 +12,7 @@ AWS targets of the graphrt gateway, without the AWS SDK. Its API follows
 
 Both providers implement `graphrt_provider_api::Provider`. Setup, IAM
 policies, limits and the conformance status are in
-[docs/gateway-aws.md](https://github.com/BimaPangestu28/graphrt/blob/main/docs/gateway-aws.md).
+[docs/gateway-aws.md](https://github.com/Graphrt/graphrt/blob/main/docs/gateway-aws.md).
 
 ```sh
 cargo test -p graphrt-provider-aws --features deploy

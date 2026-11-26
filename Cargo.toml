@@ -30,7 +30,7 @@ version = "0.6.2"
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0"
-repository = "https://github.com/BimaPangestu28/graphrt"
+repository = "https://github.com/Graphrt/graphrt"
 keywords = ["workflow", "agent", "llm", "runtime", "graph"]
 categories = ["asynchronous", "development-tools"]
 

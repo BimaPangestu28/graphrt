@@ -10,7 +10,7 @@ Azure provider family of the graphrt gateway, without an Azure SDK.
 
 It implements the traits of `graphrt-provider-api` and passes its shared
 conformance harness. Configuration, RBAC roles, ingress timeouts, measured
-sizes and what still needs a real subscription: [docs/deploy-azure.md](https://github.com/BimaPangestu28/graphrt/blob/main/docs/deploy-azure.md).
+sizes and what still needs a real subscription: [docs/deploy-azure.md](https://github.com/Graphrt/graphrt/blob/main/docs/deploy-azure.md).
 
 ```sh
 cargo test -p graphrt-provider-azure --features deploy-aca

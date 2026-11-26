@@ -22,7 +22,7 @@ clients / webhooks / cron ──▶ graphrt gateway (SQLite store, auth, limits,
 
 ```sh
 # Prebuilt (0.5.0+): the gateway build of the release, every provider included.
-curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/install.sh | sh -s -- --gateway
+curl -fsSL https://raw.githubusercontent.com/Graphrt/graphrt/main/install.sh | sh -s -- --gateway
 # or with Rust: cargo install graphrt-cli --features gateway   (gateway-all: every provider)
 graphrt gateway --dev examples/hello.yaml
 curl -s localhost:8700/v1/deployments/dev/runs -d '{"inputs":{"name":"Ada"}}'

@@ -49,7 +49,7 @@ two tools. JSON Schema:
 [`schema/eval-v1.schema.json`](../schema/eval-v1.schema.json).
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/eval-v1.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/eval-v1.schema.json
 description: Support agent regression suite
 workflow: ../workflows/support.yaml       # paths are relative to this file
 providers: providers.replay.yaml          # optional: model providers (e.g. replay)
@@ -559,7 +559,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install graphrt
-        run: curl -fsSL https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/install.sh | sh
+        run: curl -fsSL https://raw.githubusercontent.com/Graphrt/graphrt/main/install.sh | sh
       - name: Evaluate
         env:
           GRAPHRT_REPLAY_MODE: replay       # cassettes only: no keys, no network, no cost

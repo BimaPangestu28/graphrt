@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
 # Fully offline: process every item of a list in parallel with a JavaScript code node,
 # then summarize with a template.
 #   graphrt run examples/iteration.yaml --input 'orders=[{"sku":"A","qty":2,"price":3.5},{"sku":"B","qty":1,"price":10}]'

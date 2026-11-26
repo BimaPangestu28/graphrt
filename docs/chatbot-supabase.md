@@ -8,9 +8,9 @@ only, streaming tokens as they are generated.
 | Part | Where |
 | --- | --- |
 | Backend: workflow, Postgres schema with RLS, container, deploy config, tests | [`examples/supabase-chatbot`](../examples/supabase-chatbot/) |
-| Flutter client | [graphrt-examples/supabase-chatbot/flutter](https://github.com/BimaPangestu28/graphrt-examples/tree/main/supabase-chatbot/flutter) |
-| React Native (Expo) client | [graphrt-examples/supabase-chatbot/react-native](https://github.com/BimaPangestu28/graphrt-examples/tree/main/supabase-chatbot/react-native) |
-| Supabase plugin (`user_rpc` mode) | [graphrt-plugins/supabase](https://github.com/BimaPangestu28/graphrt-plugins/tree/main/supabase) |
+| Flutter client | [graphrt-examples/supabase-chatbot/flutter](https://github.com/Graphrt/graphrt-examples/tree/main/supabase-chatbot/flutter) |
+| React Native (Expo) client | [graphrt-examples/supabase-chatbot/react-native](https://github.com/Graphrt/graphrt-examples/tree/main/supabase-chatbot/react-native) |
+| Supabase plugin (`user_rpc` mode) | [graphrt-plugins/supabase](https://github.com/Graphrt/graphrt-plugins/tree/main/supabase) |
 
 ## Architecture
 
@@ -90,7 +90,7 @@ leak, so the test is known to catch a leak.
    [`supabase/migrations`](../examples/supabase-chatbot/supabase/migrations/)
    (`supabase db push`, or paste into the SQL editor) and check it with
    `supabase/tests/isolation.sql` (prints `isolation: ok`).
-2. **Plugin.** `graphrt plugin install https://github.com/BimaPangestu28/graphrt-plugins --rev main --subdir supabase`
+2. **Plugin.** `graphrt plugin install https://github.com/Graphrt/graphrt-plugins --rev main --subdir supabase`
 3. **Server config.** Copy
    [`.env.example`](../examples/supabase-chatbot/.env.example) to `.env`: the
    model key, `GRAPHRT_API_KEY`, the Supabase URL and **publishable** key,
@@ -105,7 +105,7 @@ leak, so the test is known to catch a leak.
      --verify-jwt user_jwt --user-rate-limit 20 --max-body-bytes 65536
    ```
 
-5. **Client.** In [graphrt-examples](https://github.com/BimaPangestu28/graphrt-examples),
+5. **Client.** In [graphrt-examples](https://github.com/Graphrt/graphrt-examples),
    configure `SUPABASE_URL`, the publishable (anon) key and `SERVE_URL`
    (Flutter: `config.json` + `--dart-define-from-file`; React Native:
    `.env.local`). Both clients refuse to start with a secret or service role key.

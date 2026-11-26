@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/BimaPangestu28/graphrt/main/schema/workflow-v1.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
 # Judge: did the assistant decline the request? Pass means it refused, so use
 # it as-is where a refusal is wanted (out-of-scope or unsafe requests) and as
 # `not-judge` where it is not (over-refusal checks).
