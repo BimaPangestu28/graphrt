@@ -169,6 +169,12 @@ A skill that an agent lists but that is not installed fails the node
 (`skill_not_found`), so a typo never runs an agent without the skill its author
 expected. A disabled skill is left out silently.
 
+## Bundles
+
+`graphrt bundle build` packs the skills a workflow's agents list into the
+`.grt` file, with their grants, and `graphrt run` uses them from there. See
+[bundles.md](bundles.md#skills-in-a-bundle-preview).
+
 ## HTTP API
 
 `graphrt serve` in a build with the `skills` feature serves the default skill
@@ -230,6 +236,7 @@ services.insert(SkillSet::new(Arc::clone(&store)).into_service());
 | `draft_skill(&model, &DraftRequest)` | A `SkillDraft` (name, description, body, requested tools, findings) from a description or a conversation. `model` is any `graphrt_core::text_model::TextModel`, for example `graphrt_llm::text_model::ChatTextModel` (feature `text-model`) |
 | `SkillDraft::new` | Rebuild a draft after the user edited it. Same validation and scan |
 | `SkillStore::install_draft` | Install a draft with origin `authored`. `SkillDraft::write_to` writes it as a folder instead |
+| `SkillStore::export` | Every file of an installed skill, checked against its pins, for packaging |
 | `SkillSet::into_service` | The `Skills` service `agent` nodes look up |
 
 `SkillEntry`, `SkillDetails`, `Finding` and `SkillChanges` serialize to JSON
