@@ -46,7 +46,7 @@ candle-core = { version = "0.11", optional = true, default-features = false }
 candle-nn = { version = "0.11", optional = true, default-features = false }
 candle-transformers = { version = "0.11", optional = true, default-features = false }
 tokenizers = { version = "0.23", optional = true, default-features = false, features = ["fancy-regex"] }
-rusqlite = { version = "0.41", optional = true, features = ["bundled"] }
+rusqlite = { version = "0.43", optional = true, features = ["bundled"] }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 
 [dev-dependencies]
