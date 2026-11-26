@@ -58,7 +58,8 @@ pub mod serve;
 pub mod setup;
 #[cfg(feature = "serve")]
 pub mod sse_ids;
-#[cfg(all(feature = "serve", feature = "trust-gateway"))]
+// Only the gateway starts standby agents, and only of its own binary.
+#[cfg(feature = "gateway")]
 pub mod standby;
 #[cfg(feature = "serve")]
 pub mod store;
@@ -175,10 +176,30 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
         Command::Deploy(args) => deploy_cmd::deploy(*args),
         #[cfg(feature = "serve")]
-        Command::Serve(args) => block_on_serve(serve::serve(*args)),
-        #[cfg(all(feature = "serve", feature = "trust-gateway"))]
-        Command::AgentStandby => block_on_serve(standby::standby()),
+        Command::Serve(args) => block_on_serve(serve_from(Some(args))),
+        #[cfg(feature = "gateway")]
+        Command::AgentStandby => block_on_serve(serve_from(None)),
     }
+}
+
+/// `serve` with `args`, or (`None`) with the assignment of a standby agent.
+/// One future type for both, so the binary has one copy of the runtime's
+/// `block_on` for `serve`.
+///
+/// @throws CliError - A bad assignment, or `serve`'s own error.
+#[cfg(feature = "serve")]
+async fn serve_from(args: Option<Box<args::ServeArgs>>) -> Result<u8, CliError> {
+    let args = match args {
+        Some(args) => args,
+        #[cfg(feature = "gateway")]
+        None => match standby::assignment().await? {
+            Some(args) => args,
+            None => return Ok(EXIT_OK),
+        },
+        #[cfg(not(feature = "gateway"))]
+        None => return Ok(EXIT_OK),
+    };
+    serve::serve(*args).await
 }
 
 /// Run `serve` (or a standby agent that becomes one) on a multi-threaded runtime.

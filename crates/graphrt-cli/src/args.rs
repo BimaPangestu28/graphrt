@@ -60,7 +60,7 @@ pub enum Command {
     Version,
     /// Internal: an agent a gateway starts ahead of demand; it waits for one
     /// assignment (`serve` arguments and gateway keys) on stdin.
-    #[cfg(all(feature = "serve", feature = "trust-gateway"))]
+    #[cfg(feature = "gateway")]
     #[command(name = "agent-standby", hide = true)]
     AgentStandby,
 }
@@ -658,11 +658,11 @@ pub struct ServeArgs {
 /// Running behind a graphrt gateway (`graphrt serve --trust-gateway`, see
 /// docs/gateway-protocol.md).
 /// Gateway keys a standby agent received on stdin; never shown by `Debug`.
-#[cfg(feature = "trust-gateway")]
+#[cfg(feature = "gateway")]
 #[derive(Clone, Default)]
 pub struct AssignedKeys(String);
 
-#[cfg(feature = "trust-gateway")]
+#[cfg(feature = "gateway")]
 impl AssignedKeys {
     /// Wraps the keys text (`kid:hex,...`).
     pub fn new(keys: String) -> Self {
@@ -675,7 +675,7 @@ impl AssignedKeys {
     }
 }
 
-#[cfg(feature = "trust-gateway")]
+#[cfg(feature = "gateway")]
 impl std::fmt::Debug for AssignedKeys {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("AssignedKeys(<redacted>)")
@@ -695,7 +695,8 @@ pub struct GatewayTrustArgs {
     #[arg(long, value_name = "VAR", default_value = crate::gateway_agent::KEYS_ENV)]
     pub gateway_keys_env: String,
     /// Gateway keys handed over by a gateway's assignment of a standby agent
-    /// (`graphrt agent-standby`), instead of from the environment.
+    /// (`graphrt agent-standby`, gateway builds only), instead of from the environment.
+    #[cfg(feature = "gateway")]
     #[arg(skip)]
     pub assigned_keys: Option<AssignedKeys>,
     /// How long the outcome of a run whose gateway stream broke is kept for the gateway

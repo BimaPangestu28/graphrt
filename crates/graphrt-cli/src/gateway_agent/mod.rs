@@ -149,7 +149,10 @@ impl GatewayAgentConfig {
         }
         let deployment = deployment
             .ok_or_else(|| CliError::usage("--trust-gateway needs --deployment NAME (or $GRAPHRT_DEPLOYMENT)"))?;
+        #[cfg(feature = "gateway")]
         let assigned = args.assigned_keys.as_ref().map(|keys| keys.expose().to_owned());
+        #[cfg(not(feature = "gateway"))]
+        let assigned: Option<String> = None;
         let keys_text =
             assigned.or_else(|| lookup_env(&args.gateway_keys_env)).filter(|k| !k.is_empty()).ok_or_else(|| {
                 CliError::usage(format!("--trust-gateway needs the gateway keys in ${}", args.gateway_keys_env))

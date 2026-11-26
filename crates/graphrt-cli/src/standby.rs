@@ -14,22 +14,12 @@
 use std::io::{BufRead as _, Read as _};
 
 use clap::Parser as _;
-use serde::Deserialize;
 
 use crate::args::{AssignedKeys, Cli, Command};
 use crate::error::CliError;
 
 /// Largest assignment line read from stdin.
 const MAX_ASSIGNMENT_BYTES: u64 = 1024 * 1024;
-
-/// What the gateway sends a standby (one JSON line).
-#[derive(Deserialize)]
-struct Assignment {
-    /// The arguments after the program name, starting with `serve`.
-    argv: Vec<String>,
-    /// The deployment's gateway keys (`kid:hex,...`).
-    keys: String,
-}
 
 /// Reads one line from stdin (blocking); `None` at end of input.
 fn read_line() -> Result<Option<String>, CliError> {
@@ -46,9 +36,18 @@ fn read_line() -> Result<Option<String>, CliError> {
 ///
 /// @throws CliError - Usage error for anything but `serve --trust-gateway`.
 fn serve_args(line: &str) -> Result<Box<crate::args::ServeArgs>, CliError> {
-    let assignment: Assignment =
-        serde_json::from_str(line).map_err(|e| CliError::usage(format!("agent-standby: bad assignment: {e}")))?;
-    let argv = std::iter::once("graphrt".to_owned()).chain(assignment.argv);
+    // `{"argv": [...], "keys": "..."}`: the `serve` arguments after the program
+    // name and the deployment's gateway keys (`kid:hex,...`). Read as a `Value`
+    // (already in the binary) rather than a derived type.
+    let bad = |what: &str| CliError::usage(format!("agent-standby: bad assignment: {what}"));
+    let assignment: serde_json::Value = serde_json::from_str(line).map_err(|e| bad(&e.to_string()))?;
+    let keys = assignment.get("keys").and_then(serde_json::Value::as_str).ok_or_else(|| bad("no `keys`"))?;
+    let argv = assignment.get("argv").and_then(serde_json::Value::as_array).ok_or_else(|| bad("no `argv`"))?;
+    let argv: Vec<String> = argv
+        .iter()
+        .map(|argument| argument.as_str().map(str::to_owned).ok_or_else(|| bad("`argv` holds a non-string")))
+        .collect::<Result<_, _>>()?;
+    let argv = std::iter::once("graphrt".to_owned()).chain(argv);
     let cli = Cli::try_parse_from(argv).map_err(|e| CliError::usage(format!("agent-standby: {e}")))?;
     let Command::Serve(mut args) = cli.command else {
         return Err(CliError::usage("agent-standby: an assignment can only run `serve`"));
@@ -56,20 +55,20 @@ fn serve_args(line: &str) -> Result<Box<crate::args::ServeArgs>, CliError> {
     if !args.gateway.trust_gateway {
         return Err(CliError::usage("agent-standby: an assignment needs `serve --trust-gateway`"));
     }
-    args.gateway.assigned_keys = Some(AssignedKeys::new(assignment.keys));
+    args.gateway.assigned_keys = Some(AssignedKeys::new(keys.to_owned()));
     Ok(args)
 }
 
-/// Waits for the assignment, then serves it.
+/// Waits for the assignment: the `serve` arguments to run, or `None` when
+/// stdin closed without one (the gateway stopped).
 ///
-/// @throws CliError - A bad assignment, or `serve`'s own error.
-pub async fn standby() -> Result<u8, CliError> {
+/// @throws CliError - A bad assignment.
+pub async fn assignment() -> Result<Option<Box<crate::args::ServeArgs>>, CliError> {
     #[cfg(feature = "llm")]
     graphrt_llm::prewarm_http_client();
     let line =
         tokio::task::spawn_blocking(read_line).await.map_err(|e| CliError::failed(format!("agent-standby: {e}")))??;
-    let Some(line) = line else { return Ok(crate::error::EXIT_OK) };
-    crate::serve::serve(*serve_args(&line)?).await
+    line.as_deref().map(serve_args).transpose()
 }
 
 #[cfg(test)]

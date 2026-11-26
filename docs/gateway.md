@@ -91,7 +91,8 @@ A cold wake of a local agent used to start a process: binary, runtime, model
 HTTP client, then the flow and the listener, about 4–5 ms before the first
 run could start. With `standby_agents: N` (default `1`, `0` turns it off) the
 gateway keeps N agent processes of its own binary started ahead of demand
-(`graphrt agent-standby`), and a wake hands one of them the deployment instead
+(`graphrt agent-standby`, only in builds with the `gateway` feature: agent-only
+builds stay their size), and a wake hands one of them the deployment instead
 of starting a process. The gateway then starts the next standby in the
 background.
 
