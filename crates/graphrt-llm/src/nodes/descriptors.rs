@@ -244,6 +244,12 @@ pub(crate) fn agent() -> NodeDescriptor {
                     "description": "Per provider, named values (templates) sent to its tools beside the arguments; \
                                     never shown to the model or recorded. The provider must accept secrets.",
                     "additionalProperties": { "type": "object", "additionalProperties": { "type": "string" } }
+                },
+                "skills": {
+                    "type": "array",
+                    "description": "Installed skills the agent may load on demand. Tools granted to a skill are \
+                                    offered after the skill was loaded. Needs a host with a skill store.",
+                    "items": { "type": "string" }
                 }
             }),
             &["model"],

@@ -29,6 +29,7 @@ pub mod pool;
 pub mod private_fs;
 pub mod redact;
 pub mod response;
+pub mod skill;
 pub mod snapshot;
 pub mod source_map;
 pub mod store;

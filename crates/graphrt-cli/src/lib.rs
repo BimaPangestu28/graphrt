@@ -56,6 +56,8 @@ pub mod scores;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod setup;
+#[cfg(feature = "skills")]
+pub mod skill_cmd;
 #[cfg(feature = "serve")]
 pub mod sse_ids;
 // Only the gateway starts standby agents, and only of its own binary.
@@ -143,6 +145,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "mimalloc") {
         features.push("mimalloc");
     }
+    if cfg!(feature = "skills") {
+        features.push("skills");
+    }
     features
 }
 
@@ -154,6 +159,8 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         Command::Inspect(arg) => inspect::inspect(&arg.workflow, &arg.plugins.options()),
         #[cfg(any(feature = "plugins", feature = "wasm"))]
         Command::Plugin(args) => plugin::plugin(args),
+        #[cfg(feature = "skills")]
+        Command::Skill(args) => skill_cmd::skill(args),
         Command::Nodes(args) => catalog::nodes(&args),
         #[cfg(feature = "telemetry")]
         Command::Telemetry(args) => telemetry::telemetry(&args),

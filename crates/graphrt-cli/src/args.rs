@@ -38,6 +38,9 @@ pub enum Command {
     /// Manage plugins: list, install, remove, inspect, scaffold.
     #[cfg(any(feature = "plugins", feature = "wasm"))]
     Plugin(PluginCmdArgs),
+    /// Manage agent skills: list, inspect, install, grant tools, remove (preview).
+    #[cfg(feature = "skills")]
+    Skill(SkillCmdArgs),
     /// Build, inspect, verify and sign portable bundles (`.grt`).
     #[cfg(feature = "bundle")]
     Bundle(BundleArgs),
@@ -286,6 +289,91 @@ pub struct NodesArgs {
     pub kind: Option<String>,
     #[command(flatten)]
     pub plugins: PluginArgs,
+}
+
+/// Options of `graphrt skill`.
+#[cfg(feature = "skills")]
+#[derive(Debug, Args)]
+pub struct SkillCmdArgs {
+    #[command(subcommand)]
+    pub command: SkillCommand,
+    /// Skill store directory [default: $GRAPHRT_SKILLS_DIR, else ~/.graphrt/skills].
+    #[arg(long, global = true, value_name = "DIR")]
+    pub dir: Option<PathBuf>,
+    /// Print as JSON.
+    #[arg(long, global = true)]
+    pub json: bool,
+}
+
+/// Tools to grant to a skill.
+#[cfg(feature = "skills")]
+#[derive(Debug, Args)]
+pub struct SkillGrantArgs {
+    /// Grant a tool the skill asks for (`provider/tool`). Every call waits for approval.
+    #[arg(long = "grant", value_name = "TOOL")]
+    pub ask: Vec<String>,
+    /// Grant a tool the skill asks for and let its calls run without asking.
+    #[arg(long = "allow", value_name = "TOOL")]
+    pub allow: Vec<String>,
+}
+
+/// `graphrt skill` subcommands.
+#[cfg(feature = "skills")]
+#[derive(Debug, Subcommand)]
+pub enum SkillCommand {
+    /// List installed skills.
+    List,
+    /// Show a skill before or after installing: what it does, the tools it
+    /// asks for, its files and what the scan found.
+    Inspect {
+        /// An installed skill's name, or a directory with a `SKILL.md` (or an
+        /// Agent Plugins package with `plugin.json` and `skills/`).
+        skill: String,
+    },
+    /// Install a skill from a directory.
+    ///
+    /// A skill gets no tool unless you grant it here or later with `graphrt skill grant`.
+    ///
+    /// Examples:
+    ///   graphrt skill inspect ./refund-policy
+    ///   graphrt skill install ./refund-policy
+    ///   graphrt skill install ./weekly-report --grant mail/send
+    ///   graphrt skill install ./weekly-report --replace
+    #[command(verbatim_doc_comment)]
+    Install {
+        /// Directory with a `SKILL.md`, or an Agent Plugins package.
+        path: PathBuf,
+        #[command(flatten)]
+        grants: SkillGrantArgs,
+        /// Install although the scan found something that needs a decision.
+        #[arg(long)]
+        accept_findings: bool,
+        /// Replace an installed skill of the same name. Its earlier grants are not kept.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// Replace the tools granted to an installed skill (no flags: grant nothing).
+    Grant {
+        /// Skill name.
+        name: String,
+        #[command(flatten)]
+        grants: SkillGrantArgs,
+    },
+    /// Let agents use an installed skill again.
+    Enable {
+        /// Skill name.
+        name: String,
+    },
+    /// Stop agents from using an installed skill, without removing it.
+    Disable {
+        /// Skill name.
+        name: String,
+    },
+    /// Remove an installed skill.
+    Remove {
+        /// Skill name.
+        name: String,
+    },
 }
 
 /// Options of `graphrt plugin`.

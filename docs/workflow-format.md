@@ -388,6 +388,7 @@ keep_tool_images: 3   # optional (default 3): images of only the last 3 image-be
 stream_tool_turns: true   # optional (default true): stream every turn's text per token; false buffers turns that may call tools
 tool_context:         # optional: per-run values sent to a provider's tools outside the arguments
   crm: { user_jwt: "{{#start.user_jwt#}}" }
+skills: [refund-policy]   # optional (preview): installed skills the agent loads on demand
 ```
 
 Runs a tool-calling loop until the model answers without tools (the last
@@ -423,6 +424,12 @@ rendered with secrets in plaintext. Only plugins that request
 `permissions.secrets` and are trusted (`--trust-plugin`) may receive it; any
 other provider fails the node with `tool_context_denied`. See
 [plugins.md](plugins.md#tool-call-context).
+
+`skills` (preview) lists installed skills. The system prompt gets one line per
+skill, the model loads a skill's instructions with the `load_skill` tool when a
+task needs them, and tools the owner granted to a skill are offered only after
+that skill was loaded. It needs a host with a skill store (the `skills` cargo
+feature of the CLI). See [skills.md](skills.md).
 
 ### `question-classifier` (branch)
 

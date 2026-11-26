@@ -208,6 +208,13 @@ pub async fn services(
             return Err(CliError::usage("`--allow-python-subprocess` requires a build with the `python` feature"));
         }
     }
+    // Agent skills: the store is opened lazily, so this costs nothing until an
+    // `agent` node lists `skills`.
+    #[cfg(feature = "skills")]
+    if let Some(root) = graphrt_skill::SkillStore::default_root() {
+        let store = Arc::new(graphrt_skill::SkillStore::open(root));
+        services.insert(graphrt_skill::SkillSet::new(store).into_service());
+    }
     // File access: inline data URLs, then `--files-dir`, then policy-checked HTTP URLs.
     #[allow(unused_mut)]
     let mut files = graphrt_core::file::ChainResolver::with_data_urls();

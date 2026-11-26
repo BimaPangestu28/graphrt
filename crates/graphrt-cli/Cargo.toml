@@ -55,6 +55,10 @@ mcp = ["dep:graphrt-mcp"]
 # `kind: replay` model providers in providers files: record responses to
 # cassette files and replay them offline (deterministic runs, evals, CI).
 replay = ["llm", "graphrt-llm/replay"]
+# Agent skills (preview, opt-in): `graphrt skill` and the `skills` field of `agent`
+# nodes, served from the skill store in `$GRAPHRT_SKILLS_DIR` or `~/.graphrt/skills`.
+# See docs/skills.md.
+skills = ["llm", "graphrt-llm/skills", "dep:graphrt-skill"]
 # `graphrt eval`: run a workflow against test cases with assertions and a CI
 # gate (JSON and JUnit reports). Pulls in `replay`. Opt-in (`--features eval`):
 # the release binaries and the GHCR image are built with it.
@@ -129,6 +133,7 @@ graphrt-mcp = { workspace = true, optional = true, features = ["stdio", "http"] 
 graphrt-doc = { workspace = true, optional = true, features = ["default", "tokio"] }
 graphrt-rag = { workspace = true, optional = true, features = ["default"] }
 graphrt-plugin = { workspace = true, optional = true }
+graphrt-skill = { workspace = true, optional = true }
 graphrt-wasm = { workspace = true, optional = true }
 graphrt-otel = { workspace = true, optional = true, features = ["http"] }
 graphrt-bundle = { workspace = true, optional = true }

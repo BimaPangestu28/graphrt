@@ -1549,6 +1549,7 @@ dependencies = [
  "graphrt-provider-api",
  "graphrt-provider-fly",
  "graphrt-rag",
+ "graphrt-skill",
  "graphrt-wasm",
  "http-body",
  "http-body-util",
@@ -1725,6 +1726,7 @@ version = "0.6.2"
 dependencies = [
  "futures",
  "graphrt-core",
+ "graphrt-skill",
  "indexmap",
  "reqwest",
  "rustls",
@@ -1892,6 +1894,18 @@ dependencies = [
  "thiserror 2.0.21",
  "tokenizers",
  "tokio",
+]
+
+[[package]]
+name = "graphrt-skill"
+version = "0.6.2"
+dependencies = [
+ "futures",
+ "graphrt-core",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

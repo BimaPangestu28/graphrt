@@ -271,6 +271,32 @@ They honour standard proxy environment variables, except the OTel exporter and
     case are refused before anything is written. Configs are extracted into a
     fresh owner-only directory.
 
+## Skills (preview)
+
+A skill is treated as untrusted content that the owner chose to install.
+
+- **No code.** graphrt never executes a skill's files. `scripts/` is text.
+- **Tools.** A skill lists the tools it wants. Only grants stored in the skill
+  store's index count, and a grant must name a tool the skill asked for. A
+  granted tool is offered to the model after the skill was loaded in that run
+  and asks for approval before each call unless it was granted with `--allow`.
+- **Pinned content.** Every file is recorded with its SHA-256 at install and
+  checked on each read. Changed, added or linked files are not served. An
+  update is a new install with no grant carried over.
+- **Reads stay inside the skill.** File reads are looked up in the index by
+  exact path. Nothing a model sends is joined to a directory.
+- **Prompt text.** Names and descriptions go into the system prompt, so
+  invisible characters and markup tags in them are refused. Instructions reach
+  the model as a tool result inside a labelled wrapper that the text cannot
+  close.
+- **The scan is advisory.** It reports common hostile patterns before an
+  install and can be evaded by rewording. The points above do not rely on it.
+- **Not covered.** A skill's instructions can still mislead a model within the
+  tools the agent already has. Give agents that read untrusted skills only the
+  tools they need, and keep approval on for tools that send or change things.
+
+See [skills.md](skills.md).
+
 ## Hardening checklist for deployers
 
 | Knob | Where | Default |

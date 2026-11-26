@@ -327,3 +327,19 @@ the catalog's sha256, and extraction refuses absolute paths, `..`, links and
 device files. See [Installing from the plugin catalog](plugins.md#installing-from-the-plugin-catalog).
 Unknown names and versions are usage errors (exit code 2); download, checksum
 and extraction failures exit with 1.
+
+## `graphrt skill`
+
+Preview, in builds with the `skills` cargo feature. Skills are `SKILL.md`
+packages an `agent` node loads on demand (`skills: [name]`).
+
+| Command | Description |
+| --- | --- |
+| `graphrt skill list` | Installed skills. |
+| `graphrt skill inspect <name\|dir>` | A skill before or after installing: tool requests, files, findings. |
+| `graphrt skill install <dir> [--grant T]... [--allow T]... [--accept-findings] [--replace]` | Install a skill directory or the skills of an Agent Plugins package. |
+| `graphrt skill grant <name> [--grant T]... [--allow T]...` | Replace the tools granted to a skill. |
+| `graphrt skill enable\|disable\|remove <name>` | Manage an installed skill. |
+
+All take `--dir <DIR>` (default `$GRAPHRT_SKILLS_DIR`, else `~/.graphrt/skills`)
+and `--json`. See [skills.md](skills.md).
