@@ -15,7 +15,9 @@ STARTED_NS = time.time_ns()
 
 @plugin.node("testkit.started")
 async def started(ctx, req):
-    return {"outputs": {"started_ns": STARTED_NS}}
+    # `pid` tells processes apart: on Windows `time_ns()` can tick only every ~15.6 ms,
+    # so two processes started together may report the same STARTED_NS.
+    return {"outputs": {"started_ns": STARTED_NS, "pid": os.getpid()}}
 
 
 @plugin.node("testkit.echo")
