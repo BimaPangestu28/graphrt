@@ -2,9 +2,10 @@
 # (dorny/paths-filter with `predicate-quantifier: some-with-excludes`): a changed file
 # belongs to a filter when it matches one of its patterns and none of its `!` patterns.
 #
-# Only pull requests are filtered. Pushes to main, tags and the release workflow run
-# every job. Keep the `!` patterns to files no build or test reads: tests read
-# docs/schemas/*.json, examples/**/*.md and plugins/**, so those stay in.
+# Only pull requests are filtered, also in the merge queue. Pushes to main, tags and
+# the release workflow run every job. Keep the `!` patterns to files no build or
+# test reads: tests read docs/schemas/*.json, examples/**/*.md and plugins/**, so
+# those stay in.
 
 # Anything but prose, images and GitHub templates.
 code:

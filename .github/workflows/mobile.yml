@@ -21,13 +21,15 @@ on:
   # jobs of a pull request that does not touch what they build, and they report
   # as skipped (`mobile` in .github/path-filters.yml).
   pull_request:
+  # The merge queue runs what the pull request ran (`merge_group` takes no path filter).
+  merge_group:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 # A new push to a pull request cancels the run of its previous push. Every other run
-# (main, manual) gets a group of its own, so it is never cancelled or replaced.
+# (main, merge queue, manual) gets a group of its own, so it is never cancelled or replaced.
 concurrency:
   group: mobile-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -42,14 +44,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      mobile: ${{ github.event_name != 'pull_request' || steps.filter.outputs.mobile == 'true' }}
+      mobile: ${{ !(github.event_name == 'pull_request' || github.event_name == 'merge_group') || steps.filter.outputs.mobile == 'true' }}
     steps:
-      - if: github.event_name == 'pull_request'
+      - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: .github
-      - if: github.event_name == 'pull_request'
+      - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         id: filter
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
@@ -131,18 +133,18 @@ jobs:
     name: iOS (device + simulator, simulator smoke test)
     needs: changes
     if: needs.changes.outputs.mobile == 'true'
-    # Pull requests run on Intel (macos-15-intel): the arm64 pool is short of
-    # capacity and left PR jobs queued for an hour. The simulator then runs
-    # x86_64, so the xcframework gets an x86_64 simulator slice and the app is
-    # built for x86_64. main and manual runs keep arm64 (macos-15).
-    runs-on: ${{ github.event_name == 'pull_request' && 'macos-15-intel' || 'macos-15' }}
+    # Pull requests and the merge queue run on Intel (macos-15-intel): the
+    # arm64 pool is short of capacity and left PR jobs queued for an hour. The
+    # simulator then runs x86_64, so the xcframework gets an x86_64 simulator slice
+    # and the app is built for x86_64. main and manual runs keep arm64 (macos-15).
+    runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'macos-15-intel' || 'macos-15' }}
     timeout-minutes: 45
     env:
       IPHONEOS_DEPLOYMENT_TARGET: "16.0"
       # Simulator architecture of the runner, its Rust target, and the other simulator target (checked only).
-      SIMULATOR_ARCH: ${{ github.event_name == 'pull_request' && 'x86_64' || 'arm64' }}
-      SIMULATOR_TARGET: ${{ github.event_name == 'pull_request' && 'x86_64-apple-ios' || 'aarch64-apple-ios-sim' }}
-      OTHER_SIMULATOR_TARGET: ${{ github.event_name == 'pull_request' && 'aarch64-apple-ios-sim' || 'x86_64-apple-ios' }}
+      SIMULATOR_ARCH: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'x86_64' || 'arm64' }}
+      SIMULATOR_TARGET: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'x86_64-apple-ios' || 'aarch64-apple-ios-sim' }}
+      OTHER_SIMULATOR_TARGET: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'aarch64-apple-ios-sim' || 'x86_64-apple-ios' }}
       # Pinned so the app builds with the SDK of the runtime it runs on. Picking the
       # newest installed runtime ran iOS 26 under the default Xcode 16.4, whose
       # first boot left SpringBoard unable to launch apps for minutes.
@@ -186,3 +188,21 @@ jobs:
           path: ${{ env.DIAGNOSTICS_DIR }}
           if-no-files-found: ignore
           retention-days: 14
+
+  # The one check a ruleset requires for this workflow: its name never changes when
+  # a job or a matrix entry is added, renamed or removed. It passes when every job
+  # it needs succeeded or was skipped (by the `changes` job), and fails when one
+  # failed or was cancelled.
+  mobile-ok:
+    name: mobile-ok
+    if: always()
+    needs: [changes, android, ios]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every needed job succeeded or was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null
