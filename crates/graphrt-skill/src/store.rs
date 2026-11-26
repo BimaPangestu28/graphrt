@@ -491,6 +491,18 @@ impl SkillStore {
         self.read_pinned_text(&entry, path)
     }
 
+    /// Every file of installed skill `name` with its content, each checked
+    /// against its pinned hash, for packaging the skill elsewhere (a bundle).
+    /// Works for a skill that is turned off too.
+    ///
+    /// # Errors
+    /// [`Error::NotFound`], or [`Error::Tampered`] when a file changed since
+    /// the install.
+    pub fn export(&self, name: &str) -> Result<Vec<(String, Vec<u8>)>, Error> {
+        let entry = self.get(name)?;
+        entry.files.iter().map(|file| Ok((file.path.clone(), self.read_pinned(&entry, &file.path)?))).collect()
+    }
+
     /// The current index, from memory when the file did not change.
     pub(crate) fn index(&self) -> Result<Arc<SkillIndex>, Error> {
         let path = self.index_path();
@@ -621,8 +633,14 @@ impl SkillStore {
         Ok(())
     }
 
-    /// Read `path` of an installed skill and check it against its pinned hash.
+    /// Read `path` of an installed skill as text, checked against its pinned hash.
     fn read_pinned_text(&self, entry: &SkillEntry, path: &str) -> Result<String, Error> {
+        let bytes = self.read_pinned(entry, path)?;
+        String::from_utf8(bytes).map_err(|_| Error::NotText { skill: entry.name.clone(), file: path.to_owned() })
+    }
+
+    /// Read `path` of an installed skill and check it against its pinned hash.
+    fn read_pinned(&self, entry: &SkillEntry, path: &str) -> Result<Vec<u8>, Error> {
         let pinned = entry
             .files
             .iter()
@@ -644,7 +662,7 @@ impl SkillStore {
         if sha256_hex(&bytes) != pinned.sha256 {
             return Err(tampered());
         }
-        String::from_utf8(bytes).map_err(|_| Error::NotText { skill: entry.name.clone(), file: pinned.path.clone() })
+        Ok(bytes)
     }
 }
 

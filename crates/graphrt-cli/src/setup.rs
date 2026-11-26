@@ -38,6 +38,9 @@ pub struct ServiceOptions {
     /// Ask nodes to report content (rendered messages, tool results...) because
     /// OpenTelemetry content capture is on.
     pub capture_content: bool,
+    /// Skill store for `agent` nodes that list skills, instead of the default
+    /// one (set when a bundle brings its own skills). Builds with `skills`.
+    pub skills_dir: Option<std::path::PathBuf>,
 }
 
 /// `--workspace` and its modifiers.
@@ -232,7 +235,7 @@ pub async fn services(
     // Agent skills: the store is opened lazily, so this costs nothing until an
     // `agent` node lists `skills`.
     #[cfg(feature = "skills")]
-    if let Some(root) = graphrt_skill::SkillStore::default_root() {
+    if let Some(root) = options.skills_dir.clone().or_else(graphrt_skill::SkillStore::default_root) {
         let store = Arc::new(graphrt_skill::SkillStore::open(root));
         services.insert(graphrt_skill::SkillSet::new(store).into_service());
     }

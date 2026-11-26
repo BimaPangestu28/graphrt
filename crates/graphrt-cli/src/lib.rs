@@ -9,6 +9,8 @@ pub mod args;
 #[cfg(feature = "serve")]
 pub mod body_drain;
 pub mod bundle_cmd;
+#[cfg(all(feature = "skills", feature = "bundle"))]
+pub mod bundle_skills;
 pub mod catalog;
 #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
 pub mod deploy_cmd;

@@ -1,6 +1,6 @@
 //! The skill store end to end, including the attacks it has to stop.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -248,6 +248,28 @@ fn copy_dir(from: &Path, to: &Path) {
             std::fs::copy(entry.path(), target).unwrap();
         }
     }
+}
+
+#[test]
+fn export_returns_every_pinned_file_and_refuses_changed_ones() {
+    let scratch = Scratch::new();
+    let dir = scratch.skill("notes", "", "Instructions.");
+    // Not valid UTF-8, like an image: carried as it is and never read as text.
+    let binary: &[u8] = &[0xFF, 0xFE, 0x00, 0x01, 0x89];
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("assets/logo.bin"), binary).unwrap();
+    let store = scratch.store();
+    install(&store, &dir);
+    store.set_enabled("notes", false).unwrap();
+
+    let files = store.export("notes").unwrap();
+    let paths: Vec<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
+    assert_eq!(paths, ["SKILL.md", "assets/logo.bin"]);
+    assert_eq!(files[1].1, binary);
+
+    std::fs::write(scratch.path("store/skills/notes/assets/logo.bin"), "changed").unwrap();
+    assert!(matches!(store.export("notes"), Err(Error::Tampered { file, .. }) if file == "assets/logo.bin"));
+    assert!(matches!(store.export("nope"), Err(Error::NotFound(_))));
 }
 
 #[test]
