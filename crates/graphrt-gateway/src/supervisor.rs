@@ -319,7 +319,20 @@ pub struct Gateway {
     pub metrics: Metrics,
     deployments: RwLock<HashMap<String, Arc<Deployment>>>,
     live: Mutex<HashMap<String, Arc<LiveRun>>>,
+    /// Finished runs still in [`Self::live`] for their linger, oldest first
+    /// (at most [`MAX_LINGERING_RUNS`]).
+    lingering: Mutex<VecDeque<std::sync::Weak<LiveRun>>>,
 }
+
+/// Finished runs whose replay ring stays in memory for the linger at once. A
+/// burst of short runs would otherwise hold every ring for 30 s (10,000 runs:
+/// ~170 MiB, which the allocator then keeps); beyond this many, the oldest
+/// finished run's linger ends early and a late reconnect replays from the
+/// store, as after any linger.
+pub const MAX_LINGERING_RUNS: usize = 256;
+
+/// How long a finished run stays in memory for late reconnects.
+const LINGER: Duration = Duration::from_secs(30);
 
 impl std::fmt::Debug for Gateway {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -408,6 +421,7 @@ impl Gateway {
             metrics: Metrics::default(),
             deployments: RwLock::new(HashMap::new()),
             live: Mutex::new(HashMap::new()),
+            lingering: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -444,7 +458,9 @@ impl Gateway {
     }
 
     /// Settles a run and drops it from memory after a linger (late `Last-Event-ID`
-    /// reconnects replay from the ring meanwhile, then from the store).
+    /// reconnects replay from the ring meanwhile, then from the store). At most
+    /// [`MAX_LINGERING_RUNS`] finished runs linger at once; paused runs keep
+    /// their inputs (credentials) until they expire.
     fn settle(self: &Arc<Self>, run: &Arc<LiveRun>, record: RunRecord) {
         let keep_input = record.status == RunStatus::Paused;
         if !keep_input {
@@ -452,24 +468,49 @@ impl Gateway {
         }
         run.settled.send_replace(Settled::Done(Box::new(record)));
         let gateway = Arc::clone(self);
-        let run = Arc::clone(run);
-        graphrt_core::task::spawn(async move {
-            if keep_input {
+        if keep_input {
+            let run = Arc::clone(run);
+            graphrt_core::task::spawn(async move {
                 // A paused run keeps its inputs (credentials) in memory until they expire.
                 let expires_at = run.input().and_then(|input| input.expires_at).unwrap_or(0);
                 let wait = expires_at.saturating_sub(now_ms() / 1000).min(7 * 24 * 3600);
                 tokio::time::sleep(Duration::from_secs(wait.max(30))).await;
                 run.set_input(None);
+                gateway.forget_settled(&run);
+            });
+            return;
+        }
+        // The timer holds the run weakly: a linger that ended early frees it.
+        let evicted = {
+            let mut lingering = self.lingering.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            lingering.retain(|entry| entry.strong_count() > 0);
+            lingering.push_back(Arc::downgrade(run));
+            if lingering.len() > MAX_LINGERING_RUNS {
+                lingering.pop_front().and_then(|oldest| oldest.upgrade())
             } else {
-                tokio::time::sleep(Duration::from_secs(30)).await;
+                None
             }
-            let mut live = gateway.live.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if live.get(&run.run_id).is_some_and(|current| Arc::ptr_eq(current, &run))
-                && !matches!(*run.settled.borrow(), Settled::Running)
-            {
-                live.remove(&run.run_id);
+        };
+        if let Some(oldest) = evicted {
+            self.forget_settled(&oldest);
+        }
+        let run = Arc::downgrade(run);
+        graphrt_core::task::spawn(async move {
+            tokio::time::sleep(LINGER).await;
+            if let Some(run) = run.upgrade() {
+                gateway.forget_settled(&run);
             }
         });
+    }
+
+    /// Drops a settled `run` from memory (its linger ended).
+    fn forget_settled(&self, run: &Arc<LiveRun>) {
+        let mut live = self.live.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if live.get(&run.run_id).is_some_and(|current| Arc::ptr_eq(current, run))
+            && !matches!(*run.settled.borrow(), Settled::Running)
+        {
+            live.remove(&run.run_id);
+        }
     }
 
     /// Starts a run of the current version of `deployment`.
