@@ -1612,7 +1612,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
- "weezl",
+ "weezl 0.2.1",
  "zip",
 ]
 
@@ -2511,7 +2511,7 @@ dependencies = [
  "stringprep",
  "thiserror 2.0.21",
  "ttf-parser",
- "weezl",
+ "weezl 0.1.12",
 ]
 
 [[package]]
@@ -4821,6 +4821,12 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
+name = "weezl"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4ca08e5ef825b65b056d9efbd95c8750683f0a6d0466d02e96dc2e4e360f3d2"
 
 [[package]]
 name = "winapi-util"
