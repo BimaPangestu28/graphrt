@@ -105,6 +105,10 @@ jobs:
       - name: Install zig + cargo-zigbuild (static musl builds, C deps such as QuickJS)
         if: matrix.zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        # Pinned: without a version setup-zig resolves `latest` with one unretried
+        # fetch of ziglang.org's index.json, a single point of failure.
+        with:
+          version: 0.17.1
       - if: matrix.zig
         # Pinned: it runs in the job that produces the release binaries.
         run: cargo install cargo-zigbuild --version 0.24.1 --locked
