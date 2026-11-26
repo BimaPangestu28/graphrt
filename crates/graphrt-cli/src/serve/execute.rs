@@ -126,14 +126,19 @@ pub(super) fn launch(
     };
     let assembler = new_assembler(engine, &input);
     let run = engine.run(input);
+    // Tracked before the driver starts: a run that ends at once must not be
+    // untracked first and then left in the active set for good.
+    let tracked = Arc::clone(state);
     let weak = Arc::downgrade(state);
-    let on_finish: live::OnFinish = Box::new(move |id| {
-        if let Some(state) = weak.upgrade() {
-            state.untrack(id);
-        }
-    });
-    let active = live::spawn(run, assembler, record, Arc::clone(&state.store), on_finish, tracer, capture);
-    state.track(Arc::clone(&active));
+    let tracking = live::Tracking {
+        on_start: Box::new(move |active| tracked.track(Arc::clone(active))),
+        on_finish: Box::new(move |id| {
+            if let Some(state) = weak.upgrade() {
+                state.untrack(id);
+            }
+        }),
+    };
+    let active = live::spawn(run, assembler, record, Arc::clone(&state.store), tracking, tracer, capture);
     #[cfg(feature = "telemetry")]
     crate::telemetry::count_run();
     active
