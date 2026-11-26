@@ -36,6 +36,14 @@ releases may contain breaking changes; they are called out under **Changed**.
   the owner granted, and every file is pinned by SHA-256 at install.
   `graphrt skill` (cargo feature `skills`, off by default) lists, inspects,
   installs, grants and removes skills. See `docs/skills.md`.
+- Self learning (preview, opt in): the new `graphrt-learn` crate keeps
+  lessons, short statements with their source, per agent and per user. `agent`
+  nodes take `learning: {agent, user}` and read the approved lessons into the
+  system prompt. Feedback is recorded cheaply and turned into proposals
+  outside the run. A lesson derived from run content never approves itself,
+  one user's lesson never reaches another user, and lessons can be edited,
+  retired, deleted or forgotten by user or run. `graphrt learn` (cargo feature
+  `learning`, off by default) reviews them. See `docs/learning.md`.
 - `graphrt gateway` on Windows, local agents included: they listen on named
   pipes (`graphrt serve --listen pipe:\\.\pipe\name`), are started in their
   own process group and stop on the new signed `POST /internal/v1/stop`

@@ -343,3 +343,22 @@ packages an `agent` node loads on demand (`skills: [name]`).
 
 All take `--dir <DIR>` (default `$GRAPHRT_SKILLS_DIR`, else `~/.graphrt/skills`)
 and `--json`. See [skills.md](skills.md).
+
+## `graphrt learn`
+
+Preview, in builds with the `learning` cargo feature. Lessons are short
+statements an `agent` node with `learning` reads from earlier feedback.
+
+| Command | Description |
+| --- | --- |
+| `graphrt learn list AGENT [--user U \| --shared] [--status S]` | What an agent learned and where each lesson came from. |
+| `graphrt learn add AGENT "<text>" [--user U]` | Add a lesson yourself. |
+| `graphrt learn approve\|reject\|retire\|promote\|delete AGENT ID` | Decide about, widen or remove a lesson. |
+| `graphrt learn edit AGENT ID "<text>"` | Correct a lesson. |
+| `graphrt learn forget AGENT --user U` / `--run R` | Remove everything from a user or a run. |
+| `graphrt learn feedback AGENT --run R --comment "<text>"` then `distill AGENT` | Record feedback, then turn it into proposals. |
+| `graphrt learn policy AGENT [--auto-approve BOOL]`, `audit AGENT` | Settings and history. |
+
+All take `--dir <DIR>` (default `$GRAPHRT_LEARNING_DIR`, else
+`~/.graphrt/learning`), `--json` and `--actor <NAME>`. See
+[learning.md](learning.md).

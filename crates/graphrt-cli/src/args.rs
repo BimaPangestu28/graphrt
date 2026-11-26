@@ -41,6 +41,9 @@ pub enum Command {
     /// Manage agent skills: list, inspect, install, grant tools, remove (preview).
     #[cfg(feature = "skills")]
     Skill(SkillCmdArgs),
+    /// Review what agents learned: list, approve, edit, forget (preview).
+    #[cfg(feature = "learning")]
+    Learn(LearnCmdArgs),
     /// Build, inspect, verify and sign portable bundles (`.grt`).
     #[cfg(feature = "bundle")]
     Bundle(BundleArgs),
@@ -374,6 +377,122 @@ pub enum SkillCommand {
         /// Skill name.
         name: String,
     },
+}
+
+/// Options of `graphrt learn`.
+#[cfg(feature = "learning")]
+#[derive(Debug, Args)]
+pub struct LearnCmdArgs {
+    #[command(subcommand)]
+    pub command: LearnCommand,
+    /// Lesson store directory [default: $GRAPHRT_LEARNING_DIR, else ~/.graphrt/learning].
+    #[arg(long, global = true, value_name = "DIR")]
+    pub dir: Option<PathBuf>,
+    /// Print as JSON.
+    #[arg(long, global = true)]
+    pub json: bool,
+    /// Who is making the change, for the audit log.
+    #[arg(long, global = true, value_name = "NAME", default_value = "owner")]
+    pub actor: String,
+}
+
+/// Lesson states accepted by `graphrt learn list --status`.
+#[cfg(feature = "learning")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum LessonStatusArg {
+    Proposed,
+    Approved,
+    Rejected,
+    Retired,
+}
+
+/// Lesson kinds accepted by `graphrt learn add --kind`.
+#[cfg(feature = "learning")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum LessonKindArg {
+    Preference,
+    Fact,
+    Procedure,
+    Correction,
+}
+
+/// `graphrt learn` subcommands. `AGENT` is the name an `agent` node gives in `learning.agent`.
+#[cfg(feature = "learning")]
+#[derive(Debug, Subcommand)]
+pub enum LearnCommand {
+    /// List what an agent learned, with where each lesson came from.
+    List {
+        agent: String,
+        /// Only the lessons of this user.
+        #[arg(long, value_name = "USER", conflicts_with = "shared")]
+        user: Option<String>,
+        /// Only the lessons that apply to every run of the agent.
+        #[arg(long)]
+        shared: bool,
+        /// Only lessons in this state.
+        #[arg(long, value_enum)]
+        status: Option<LessonStatusArg>,
+    },
+    /// Add a lesson yourself. It is used from the next run on.
+    Add {
+        agent: String,
+        /// The lesson, as one short statement.
+        text: String,
+        /// Apply it to this user only.
+        #[arg(long, value_name = "USER")]
+        user: Option<String>,
+        #[arg(long, value_enum, default_value = "preference")]
+        kind: LessonKindArg,
+    },
+    /// Approve a proposed lesson: it is used from the next run on.
+    Approve { agent: String, id: String },
+    /// Reject a proposed lesson. The same text is not proposed again.
+    Reject { agent: String, id: String },
+    /// Stop using an approved lesson, keeping it on record.
+    Retire { agent: String, id: String },
+    /// Change the text of a lesson.
+    Edit { agent: String, id: String, text: String },
+    /// Make a lesson of one user apply to every run of the agent.
+    Promote { agent: String, id: String },
+    /// Delete a lesson for good.
+    Delete { agent: String, id: String },
+    /// Delete every lesson of a user, or every lesson that came from a run.
+    Forget {
+        agent: String,
+        #[arg(long, value_name = "USER", required_unless_present = "run", conflicts_with = "run")]
+        user: Option<String>,
+        #[arg(long, value_name = "RUN_ID")]
+        run: Option<String>,
+    },
+    /// Record feedback on a run. Nothing is learned until `graphrt learn distill`.
+    Feedback {
+        agent: String,
+        /// The run the feedback is about.
+        #[arg(long, value_name = "RUN_ID")]
+        run: String,
+        /// What the person said should be different.
+        #[arg(long)]
+        comment: String,
+        /// The user the run was for, and the author of the feedback.
+        #[arg(long, value_name = "USER")]
+        user: Option<String>,
+        /// The user's identity was verified (a signed in user). Without it the
+        /// feedback is treated like any other unverified content.
+        #[arg(long, requires = "user")]
+        authenticated: bool,
+    },
+    /// Turn recorded feedback into lesson proposals.
+    Distill { agent: String },
+    /// Show the agent's learning policy, or change automatic approval.
+    Policy {
+        agent: String,
+        /// Approve low risk feedback of an authenticated user for that user's
+        /// own runs without waiting for the owner.
+        #[arg(long, value_name = "BOOL")]
+        auto_approve: Option<bool>,
+    },
+    /// Show the history of changes to an agent's lessons.
+    Audit { agent: String },
 }
 
 /// Options of `graphrt plugin`.

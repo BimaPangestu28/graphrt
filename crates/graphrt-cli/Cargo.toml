@@ -59,6 +59,10 @@ replay = ["llm", "graphrt-llm/replay"]
 # nodes, served from the skill store in `$GRAPHRT_SKILLS_DIR` or `~/.graphrt/skills`.
 # See docs/skills.md.
 skills = ["llm", "graphrt-llm/skills", "dep:graphrt-skill"]
+# Self learning (preview, opt-in): `graphrt learn` and the `learning` field of
+# `agent` nodes, served from the lesson store in `$GRAPHRT_LEARNING_DIR` or
+# `~/.graphrt/learning`. See docs/learning.md.
+learning = ["llm", "graphrt-llm/learning", "dep:graphrt-learn"]
 # `graphrt eval`: run a workflow against test cases with assertions and a CI
 # gate (JSON and JUnit reports). Pulls in `replay`. Opt-in (`--features eval`):
 # the release binaries and the GHCR image are built with it.
@@ -134,6 +138,7 @@ graphrt-doc = { workspace = true, optional = true, features = ["default", "tokio
 graphrt-rag = { workspace = true, optional = true, features = ["default"] }
 graphrt-plugin = { workspace = true, optional = true }
 graphrt-skill = { workspace = true, optional = true }
+graphrt-learn = { workspace = true, optional = true }
 graphrt-wasm = { workspace = true, optional = true }
 graphrt-otel = { workspace = true, optional = true, features = ["http"] }
 graphrt-bundle = { workspace = true, optional = true }
