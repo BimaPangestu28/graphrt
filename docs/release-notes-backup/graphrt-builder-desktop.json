@@ -1,0 +1,102 @@
+[
+  {
+    "id": 458803937,
+    "tag_name": "whisper-cpp-v1.9.6",
+    "name": "whisper.cpp v1.9.6 (meeting notes download)",
+    "body": "Prebuilt `whisper-cli` from [whisper.cpp](https://github.com/ggml-org/whisper.cpp) **v1.9.6** for graphrt Desktop's meeting notetaker, downloaded on first use (not part of the app release; the app pins the SHA-256 below).\n\n- `whisper-cli-v1.9.6-linux-x86_64`: Linux x86_64, static ggml (no OpenMP), x86-64-v3 (AVX2/FMA/F16C), libstdc++/libgcc linked statically; needs glibc ≥ 2.35. Built in the graphrt Linux builder (ubuntu 22.04) with `-DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_OPENMP=OFF`.\n- SHA-256 `8cb010a7c5776bd664237037e438dacbb13898bda1fb5874a516505bf2286261`\n\nwhisper.cpp is © The ggml authors, MIT License (see `whisper.cpp-LICENSE.txt`).\n",
+    "prerelease": true,
+    "draft": false,
+    "published_at": "2026-11-26T00:37:26Z",
+    "html_url": "https://github.com/Graphrt/graphrt-builder-desktop/releases/tag/whisper-cpp-v1.9.6"
+  },
+  {
+    "id": 456320002,
+    "tag_name": "v0.1.8",
+    "name": "graphrt Desktop v0.1.8",
+    "body": "graphrt Desktop 0.1.8.\n\n**New in 0.1.8: put agents online (Beta)**\n- **Put it online**: run an agent on Fly.io so it keeps working when your computer is off. Three simple steps (Where → Provider → Review), a compatibility check with one-click fixes, and clear progress. Your keys are copied to Fly.io's secret store, never shown in plain text; Fly.io bills your own account.\n- The first time, graphrt downloads its deploy tools (about 8 MB, checksum-verified) after you approve.\n- **Online accounts** in Connections: connect Fly.io (organization token), and save Google Cloud, AWS, Azure or Kubernetes credentials (deploying there is coming soon). Every key file supports drag and drop.\n- Online agents show \"Online · working\", with Update, Pause, Take offline and History; Runs shows online runs with an \"Online\" badge.\n- My own server (for IT teams): download the agent file with Docker instructions, or connect a running graphrt server.\n- Drag and drop for every upload (knowledge, plugin install, file inputs in tests).\n\nInstalled apps are offered this update automatically.\n\n<!-- linux:start -->\n**Linux (x86_64)**: AppImage (updates itself), .deb and .rpm.\n\nSHA-256\n- graphrt_0.1.8_amd64.AppImage: 02ac18e667ce62a83089f5623f065a531977982764ee99265ce61e0d4004c2cc\n- graphrt_0.1.8_amd64.deb: 3f6a082e6dce67ebe567586e35a8c4ee4b9003dda80473240b2b955183d5dcf9\n- graphrt-0.1.8-1.x86_64.rpm: b9c33acb739b5e764d2ae7fc69769a235275ce30d5bb4236b7869719a6d0f838\n<!-- linux:end -->\n\n<!-- macos:start -->\n**Apple silicon Macs**: signed with Developer ID and notarized by Apple.\n\nSHA-256\n- graphrt_0.1.8_aarch64.dmg: ad6e320f5580e16f43496a56002f5965113195a967544df9495bbe7ee04a39f0\n- graphrt_0.1.8_aarch64.app.tar.gz: 0c0796dc36bb26b1513a541413d4c72c4b4dac4225bfb414fee790326f06c9fa\n<!-- macos:end -->\n",
+    "prerelease": false,
+    "draft": false,
+    "published_at": "2026-11-24T04:50:09Z",
+    "html_url": "https://github.com/Graphrt/graphrt-builder-desktop/releases/tag/v0.1.8"
+  },
+  {
+    "id": 456254709,
+    "tag_name": "v0.1.7",
+    "name": "graphrt Desktop v0.1.7",
+    "body": "graphrt Desktop 0.1.7.\n\n**New in 0.1.7: put agents online, and an easier first-run setup**\n- **Put it online (Beta)**: run an agent on Fly.io instead of only on this computer. A checklist says in plain words what must change first (with one-click fixes), you review the cost and location, and graphrt does the rest. Keys are copied safely and kept in your system keychain.\n- See whether an online agent is working, update it with your latest changes, pause it, take it offline or go back to an earlier version. Runs shows runs from this computer and from online agents side by side.\n- IT teams can download an agent file to run on their own server, or connect a server that is already running.\n- **First-run setup is now a step-by-step wizard**: pick how your agents should think (an AI account you already have, your company's API key, free private AI on this computer, or decide later) and connect only that.\n- **Drag and drop for every upload** (knowledge, plugins, test files), and File inputs can now be tested.\n- **Linux**: the AppImage now starts on Wayland, and the tools graphrt starts (such as Codex) no longer break on newer Linux versions.\n\nInstalled apps are offered this update automatically.\n\n<!-- linux:start -->\n**Linux (x86_64)**: AppImage (updates itself), .deb and .rpm.\n\nSHA-256\n- graphrt_0.1.7_amd64.AppImage: d58719dfd8e4fca5fdf0f4e8190594edaef274ddcb6676ee6f306896683502e5\n- graphrt_0.1.7_amd64.deb: b2b175b7e0011fc5534a72edcc347d9e9b855d590e338664d3a074639aa52e47\n- graphrt-0.1.7-1.x86_64.rpm: 4ce9fadcc170f45a6250b24aaf7a9412b7a89f807bc8bc2e21c419ffc1b7e91d\n<!-- linux:end -->\n\n<!-- macos:start -->\n**Apple silicon Macs**: the signed and notarized build follows shortly; Macs on 0.1.6 are offered the update once it is here.\n<!-- macos:end -->\n",
+    "prerelease": false,
+    "draft": false,
+    "published_at": "2026-11-24T03:02:19Z",
+    "html_url": "https://github.com/Graphrt/graphrt-builder-desktop/releases/tag/v0.1.7"
+  },
+  {
+    "id": 454953468,
+    "tag_name": "v0.1.6",
+    "name": "graphrt Desktop v0.1.6",
+    "body": "graphrt Desktop 0.1.6 for **Apple silicon Macs**, signed with Developer ID and notarized by Apple.\n\n**New in 0.1.6: trusted hosts for read-only lookups**\n- Each agent has a list of trusted hosts. Read-only requests (GET/HEAD, no body) to those hosts run without asking, even when they carry inputs or an API key — so chatbots can do lookups again.\n- Anything that changes data (POST, PUT, PATCH, DELETE…) still asks you first, even on a trusted host. Requests to other hosts still ask.\n- You decide which hosts are trusted: the builder can only propose \"Trust host for lookups\" as a button you click; hosts are stored in the app, never in the workflow. Lookups to trusted hosts don't follow redirects.\n- Manage the list in the builder, the HTTP request inspector and chatbot setup; the problems panel offers a one-click Trust.\n\nInstalled apps are offered this update automatically.\n\nSHA-256\n- graphrt_0.1.6_aarch64.dmg: b960bd338c65f2a1437f5f20c8ea6cef7add04d0aff60e6b8b71783ae9823ae4\n- graphrt_0.1.6_aarch64.app.tar.gz: 424c8a988cb751a4e2afe6a50a6b65b881b2fa4043be9e1853a4d95e72d0f062\n",
+    "prerelease": false,
+    "draft": false,
+    "published_at": "2026-11-23T03:27:51Z",
+    "html_url": "https://github.com/Graphrt/graphrt-builder-desktop/releases/tag/v0.1.6"
+  },
+  {
+    "id": 454483474,
+    "tag_name": "v0.1.5",
+    "name": "graphrt Desktop v0.1.5",
+    "body": "graphrt Desktop 0.1.5 for **Apple silicon Macs**, signed with Developer ID and notarized by Apple.\n\n**New in 0.1.5: a much smaller, faster-starting app**\n- **About 16 MB instead of 114 MB** (updates about 9 MB). Node.js, which only plugins need, is no longer bundled: graphrt downloads the pinned, checksum-verified Node.js (about 30 MB) the first time you install or run a plugin that needs it, and only after you approve. Manage it in Settings › Runner › Plugin runtime.\n- **Already have plugins?** After updating you'll see \"Your plugins need a one-time download\" — choose Download now or Later.\n- Size-optimized build with the engine kept at full speed; the auto-layout engine ships once; the Geist font is bundled (no Google Fonts request, faster first paint, works offline); common screens are prefetched when the app is idle.\n\nInstalled apps are offered this update automatically.\n\nSHA-256\n- graphrt_0.1.5_aarch64.dmg: 2c2a5a71a1abcc5187d2018be9c521151052b7e29494d075f1f6a4155e7056cc\n- graphrt_0.1.5_aarch64.app.tar.gz: 951f661f7ade8fbc98ec1c3b690c4aa52be19320e5d35c88bfb874d734f09281\n",
+    "prerelease": false,
+    "draft": false,
+    "published_at": "2026-11-22T13:54:26Z",
+    "html_url": "https://github.com/Graphrt/graphrt-builder-desktop/releases/tag/v0.1.5"
+  },
+  {
+    "id": 454237690,
+    "tag_name": "v0.1.4",
+    "name": "graphrt Desktop v0.1.4",
+    "body": "graphrt Desktop 0.1.4 for **Apple silicon Macs**, signed with Developer ID and notarized by Apple.\n\n**New in 0.1.4**\n- **More AI tools on this computer** (Experimental): Gemini CLI, Cursor CLI, GitHub Copilot CLI, OpenCode and Qwen Code join Claude Code and Codex. They run without tools; Codex now runs no commands.\n- **Security**: \"ask before sending\" can no longer be bypassed (HTTP method tricks, GET requests carrying data, tool and agent steps, approvals that answer themselves on timeout, Codex output); keychain values are always masked; safer Chromium install, MCP tokens only over HTTPS, plugin downloads only from public addresses, signed plugin catalog; dependency updates.\n- **Lighter and faster**: the app is about 20 MB smaller, the first screen loads ~80% less JavaScript, idle background work is cut, the database uses WAL, auto-layout runs off the main thread.\n- Note: HTTP lookups that send inputs or keys now need an \"Ask me before continuing\" step.\n\nInstalled apps are offered this update automatically.\n\nSHA-256\n- graphrt_0.1.4_aarch64.dmg: 828fa8fdc6f6aaa51cbe27e552057cdc9b264aa9da638e73026f74ff4201c8c0\n- graphrt_0.1.4_aarch64.app.tar.gz: affd47ae5901ca785d78cbe202e56b5513a7756562abccf35f1ede66f7f5f2ce\n",
+    "prerelease": false,
+    "draft": false,
+    "published_at": "2026-11-22T05:58:41Z",
+    "html_url": "https://github.com/Graphrt/graphrt-builder-desktop/releases/tag/v0.1.4"
+  },
+  {
+    "id": 454087071,
+    "tag_name": "v0.1.3",
+    "name": "graphrt Desktop v0.1.3",
+    "body": "graphrt Desktop 0.1.3 for **Apple silicon Macs** — signed with Developer ID and notarized by Apple.\n\n**New in 0.1.3**\n- **Use Claude Code or Codex already signed in on this computer** (Experimental): graphrt runs the official CLI you already use — no API key needed. Usage counts against your Claude or ChatGPT plan; for agents you share with others, use an API key. Plain text, streaming and JSON work; \"Run an agent\" with tools and image input still need an API model.\n- **New first launch, \"How should graphrt think?\"**: pick Claude Code, Codex, Ollama, an API key — or skip and explore first. No key is needed to start.\n- Connections → AI models shows the two CLIs with Check connection, Use by default and model choice.\n\nInstalled apps are offered this update automatically.\n\nSHA-256\n- graphrt_0.1.3_aarch64.dmg: 8b17dfdc58017ced04f57dfc413ef3fe126ca6358b9925a40453901e8bf2a1e2\n- graphrt_0.1.3_aarch64.app.tar.gz: 44efc335cd38803f2a99ec6b659496fcb2c807246013e1b1c71abad1c3c23d22\n",
+    "prerelease": false,
+    "draft": false,
+    "published_at": "2026-11-22T00:32:05Z",
+    "html_url": "https://github.com/Graphrt/graphrt-builder-desktop/releases/tag/v0.1.3"
+  },
+  {
+    "id": 453616527,
+    "tag_name": "v0.1.2",
+    "name": "graphrt Desktop v0.1.2",
+    "body": "graphrt Desktop 0.1.2 for **Apple silicon Macs** — signed with Developer ID and notarized by Apple.\n\n**New in 0.1.2**\n- Update popup in the bottom-right corner: it now also appears when a new version is available (Update / Later) and while it downloads (progress, Hide), not only when it is ready. \"Later\" is remembered per version.\n\nInstalled apps are offered this update automatically.\n\nSHA-256\n- graphrt_0.1.2_aarch64.dmg: 271020af787e39fb61b5053e8defa49d0d510ed35d2f4811dc7199b39c037911\n- graphrt_0.1.2_aarch64.app.tar.gz: cebe0c323616047e94044cfee15e27fd9e788a494ca5d25914f837e71614fe43\n",
+    "prerelease": false,
+    "draft": false,
+    "published_at": "2026-11-21T10:40:56Z",
+    "html_url": "https://github.com/Graphrt/graphrt-builder-desktop/releases/tag/v0.1.2"
+  },
+  {
+    "id": 453390343,
+    "tag_name": "v0.1.1",
+    "name": "graphrt Desktop v0.1.1",
+    "body": "graphrt Desktop 0.1.1 for **Apple silicon Macs** — signed with Developer ID and notarized by Apple.\n\n**New since 0.1.0**\n- **Visual node builder**: a Nodes view next to Steps — edit the workflow as a graph (ports, branches, error paths, loops), a step inspector for every step kind (retries, error path, fallback values, value picker), an Add node palette with plugin actions and install-on-approval, live run states on the nodes, validation with \"Fix with builder\", sync with the builder chat (each save is a version with Undo), canvas notes, and a Start inputs editor.\n- **Approvals**: approve or decline an agent's tool calls; approval time limits now expire; run limits are editable in Settings › Runner.\n- **Plugins** get their own page with detail pages, display names, icons and automatic updates (new permissions wait for your approval).\n- **Home** is a desktop dashboard with an Updates notice; **Connections** is split into AI models, Secrets and MCP servers tabs; add your own secrets.\n- Builder chat history is saved, model picker in the chat header, Stop the builder.\n- Smoother live browser view, WhatsApp Web QR linking, Maps → WhatsApp template, onboarding tour, local crash reports (no telemetry), app auto-update.\n\nInstalled 0.1.0 apps are offered this update automatically.\n\nSHA-256\n- graphrt_0.1.1_aarch64.dmg: f63f6794be3be90fe1f82e2f1fd626bc0ab139eac2e5a178e799eb6b5d25dae5\n- graphrt_0.1.1_aarch64.app.tar.gz: 9c6bd7712ed7a45974f134458af4c9b360e900c57ac0df35567cea39d212af4f\n",
+    "prerelease": false,
+    "draft": false,
+    "published_at": "2026-11-21T10:21:25Z",
+    "html_url": "https://github.com/Graphrt/graphrt-builder-desktop/releases/tag/v0.1.1"
+  },
+  {
+    "id": 451120901,
+    "tag_name": "v0.1.0",
+    "name": "graphrt Desktop v0.1.0",
+    "body": "First build of graphrt Desktop for **Apple silicon Macs** (M1 and newer).\n\n- Signed with Developer ID and notarized by Apple: it opens without Gatekeeper warnings.\n- Intel Macs, Windows and Linux builds will follow from CI.\n- Updates are signed; installed apps check `latest.json` on this release.\n\nSHA-256\n- graphrt_0.1.0_aarch64.dmg: 4f653c6eabd149200e020f9eee7f9c71836dd7e9ff751c07d057eb7436267caa\n- graphrt_0.1.0_aarch64.app.tar.gz: 8ac13829a78be4a929854a97e5f6ae07e9b4cd6fcd1ee15c47bfdd315e06aeaa\n",
+    "prerelease": false,
+    "draft": false,
+    "published_at": "2026-11-20T22:12:34Z",
+    "html_url": "https://github.com/Graphrt/graphrt-builder-desktop/releases/tag/v0.1.0"
+  }
+]
