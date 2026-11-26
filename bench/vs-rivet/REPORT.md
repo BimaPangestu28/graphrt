@@ -99,10 +99,14 @@ client graphrt is driven by.
 - **Tail latency.** The same effect shows up in the first token from time to
   time: warm p99 24.6 ms against 7.8–13.7 ms for Rivet, cold p99 47.7 ms
   against 32.1–37.1 ms. graphrt wins p50 and p95 everywhere, Rivet wins p99 in
-  cold and warm.
-- **A silent failure.** In one warm run (1 of 6,000 sequential turns) the
-  gateway answered `200` with an empty SSE body: no event, no error. Rivet had
-  no such response in this scenario.
+  cold and warm. Every slow graphrt cold sample is this same 40 ms step (see
+  [Anatomy of graphrt's cold start](#anatomy-of-graphrts-cold-start)).
+- **Silent failures.** In one warm run (1 of 6,000 sequential turns) the
+  gateway answered `200` with an empty SSE body: no event, no error; in one
+  cold run (1 of 6,000 turns) a stream stopped after 4 of 20 tokens without
+  `run_succeeded` or an error event (details in the anatomy section). Rivet
+  had no such response in these scenarios; its failures (only under the
+  1,000-stream burst) are explicit `5xx` answers.
 - **Pool/agent limit mismatch fails silently.** The first concurrency run used
   a pool `max_active_runs` of 1,000 for one replica, above the agent's own
   `serve --max-active-runs` default of 256: 743 of 1,000 streams came back as
@@ -119,6 +123,133 @@ client graphrt is driven by.
 - **Gateway memory grows with stored runs.** 12.7 KiB of gateway RSS per stored
   session after the idle period (10,000 one-turn sessions: 15 → 139 MiB) that
   is not released while the runs are in the store.
+
+## Anatomy of graphrt's cold start
+
+### Where the time goes (p50)
+
+Measured separately with `harness/cold-phases.mjs` (300 samples each, load
+average 4.1; [`side-cold-phases.json`](results/2026-11-26-bimapangestu/side-cold-phases.json)):
+
+| Phase | p50 | p95 | p99 |
+| --- | ---: | ---: | ---: |
+| `graphrt version`, exec to exit (process start, binary load, runtime init) | 1.53 ms | 1.82 ms | 1.95 ms |
+| `graphrt validate agent.yaml`, exec to exit (+ read and build the flow: +0.8 ms) | 2.33 ms | 2.77 ms | 3.02 ms |
+| `graphrt serve agent.yaml`, exec to the first accepted connection (+ node registry, HTTP server, bind: +1.2 ms) | 3.56 ms | 4.14 ms | 4.59 ms |
+| Cold wake through the gateway, at the client: response headers | 4.03 ms | 7.32 ms | 17.2 ms |
+| … `run_started` (headers → `run_started`: 3.36 ms, ≈ the agent's start) | 7.44 ms | 10.7 ms | 28.0 ms |
+| … `node_started` of the LLM node (+0.00 ms) | 7.48 ms | 10.8 ms | 28.0 ms |
+| … first model token (+0.03 ms: the mock answers at once) | 7.50 ms | 10.8 ms | 28.1 ms |
+
+So a 7.5 ms cold wake is roughly **4.0 ms in the gateway before the response
+headers** (authentication, the run's store transaction, scheduling the wake),
+**3.4 ms of agent start** (of which 1.5 ms is the bare process start of a
+12 MiB static binary, 0.8 ms building the flow and 1.2 ms the server), and
+**under 0.1 ms** for the run itself up to the first token. The gateway part is
+the largest single block and looks serial with the agent start (headers first,
+then the agent comes up).
+
+### Where the p99 comes from (26–48 ms against a 7.8 ms p50)
+
+Not from process start, page cache or the scheduler: every slow sample of the
+three runs (16–59 of 1,000 per run and kind) has its response headers on time
+and then waits **≈40 ms between the headers and the first event** (median
+headers → first token of the samples over 20 ms: 40.1–40.6 ms in all six
+wake/create sets). 40 ms is Linux's minimum delayed-ACK timeout, and the same
+40 ms appears at the end of almost every graphrt stream (see "Stream
+completion through the gateway" above): the gateway's client socket without
+`TCP_NODELAY` holds a small write until the client's delayed ACK. The cold
+p99 is therefore the stream-completion problem showing up early, and it
+should go away with one socket option on the gateway's listener.
+
+A second, rarer pattern (4 of 300 samples in the phase measurement): the
+headers themselves are late (17–25 ms), so the gateway was slow before it
+answered; the run's store transaction or a busy machine (load 4–7 from other
+workloads during every run, see below) are the likely causes, not yet
+separated.
+
+Rivet's slow samples look different: spread over 20–120 ms with no fixed
+step, and its worst run (p99 123 ms) is the one where another workload drove
+the load average from 6 to 38 during the measurement.
+
+### The one error in the cold "create" set (run 2)
+
+Agent `a380`, its first turn: status `200`, response headers after 4.6 ms,
+four tokens (`tok0`–`tok3`) by 7.0 ms, then the stream **ended at 7.9 ms
+without `run_succeeded` and without an error event**. The same agent's next
+turn (after its agent process had been stopped) succeeded normally. The
+gateway logs of that run were not kept, so the cause is not confirmed; this
+deployment uses `idle_timeout_secs: 0`, and a race between the 5 s idle
+release and a run that has just started on a fresh replica would produce
+exactly this. It belongs with the other silent failures above: a client
+cannot tell a cut-off answer from a short one.
+
+### What a 10× lead over Rivet would take
+
+Against this report's Rivet numbers (sleeping actor → first token p50 19.6 ms,
+p99 32.1 ms, best transport):
+
+- **p50 ≤ 2 ms**: not reachable by starting a process per wake. The bare exec
+  of the binary is already 1.5 ms; the agent start is 3.4 ms; the gateway's
+  pre-header work 4.0 ms. It needs a wake that does not start a process (a
+  pre-started idle agent per pool, or running the flow in an already-running
+  process) plus a gateway path well under 1 ms. Today: 2.5×.
+- **p99 ≤ 3.2 ms**: `TCP_NODELAY` on the gateway's listener first (removes the
+  40 ms step), then the late-headers cases. Today graphrt loses the cold p99
+  (47.7 vs 32.1 ms).
+- **Memory**: already past 10×: 14.2 KiB against 406 KiB per sleeping agent
+  (28×), 139 MiB against 3,965 MiB for 10,000 agents in total.
+
+## Final numbers: memory and 1,000 concurrent streams
+
+Median of 3 runs (min–max); all from `summary.md`.
+
+| 10,000 agents, each with one turn | graphrt | Rivet |
+| --- | ---: | ---: |
+| RSS before (idle system) | 14.9 MiB | 176 MiB (175–180) |
+| RSS right after the turns (all awake) | 241 MiB (239–243) | 7,084 MiB (6,651–7,145) |
+| RSS after the idle period (all asleep) | 139 MiB (137–143) | 3,965 MiB (3,915–4,108) |
+| … of which | gateway 137–143 MiB (no agent process left) | engine 2,778–2,870 MiB, node 1,137–1,238 MiB |
+| per sleeping agent, total / N | **14.2 KiB** (14.0–14.6) | 406 KiB (401–421) |
+| per sleeping agent, over the baseline | **12.7 KiB** (12.5–13.1) | 388 KiB (383–403) |
+| per awake agent, over the baseline | **23.1 KiB** (22.9–23.4) | 707 KiB (663–714) |
+| disk per agent | 7.9 KB | 77.6 KB |
+| history intact after sleeping | 10,001 runs stored | 2 messages in every checked actor |
+
+| 1,000 concurrent streams (20 tokens, 50 ms apart) | graphrt ×1 | graphrt ×4 | Rivet ×1 | Rivet ×4 |
+| --- | ---: | ---: | ---: | ---: |
+| RSS before the burst | 98 MiB | 150 MiB | 1,366 MiB | 1,917 MiB |
+| peak RSS | **322 MiB** | 377 MiB | 1,979 MiB | 2,693 MiB |
+| CPU time / average cores | **2.9 s / 1.6** | 3.0 s / 2.0 | 10.9 s / 3.0 | 16.5 s / 6.1 |
+| failed streams (all runs) | 0, 0, 0 | 0, 0, 0 | 0, 0, 27 | 0, 0, 3 |
+| stalled streams (gap > 1 s) | 0 | 0 | 0 | 0 |
+| first token p50 / p99 | 166 / 319 ms | **153 / 261 ms** | 801 / 2,448 ms | 407 / 1,680 ms |
+| token gap p50 / p99 | 51 / 273 ms | **51 / 132 ms** | 38 / 517 ms | 50 / 190 ms |
+| stream end p99 | 1,843 ms | **1,534 ms** | 3,402 ms | 2,658 ms |
+
+The graphrt ×1 numbers are from the corrected configuration (agent
+`--max-active-runs` equal to the pool limit) in all three runs.
+
+## Machine load during the runs
+
+The host ran other workloads (Rust builds of other worktrees) throughout. The
+harness waited until the 1-minute load average was at most 6 before each
+measurement; the load at the start and end of every run is in each JSON's
+`meta` and summarised here (1-minute load average, 24 threads):
+
+| Scenario | graphrt start → end | Rivet start → end | Rivet WS start → end |
+| --- | --- | --- | --- |
+| cold run 1 / 2 / 3 | 6.0→6.0 / 5.8→6.8 / 6.0→5.1 | 6.0→**38.0** / 5.9→6.9 / 5.1→6.6 | 5.9→16.6 / 5.9→6.4 / 6.0→5.0 |
+| warm run 1 / 2 / 3 | 5.9→5.9 / 6.0→5.3 / 5.0→5.8 | 5.9→6.1 / 6.0→6.1 / 5.8→5.7 | 5.9→7.6 / 6.0→6.3 / 5.7→6.4 |
+| memory run 1 / 2 / 3 | 4.3→5.2 / 5.9→6.8 / 5.9→6.1 | 5.2→7.8 / 6.0→7.1 / 5.9→7.0 | – |
+| concurrent ×1 run 1 / 2 / 3 | 6.0→5.2 / 5.9→5.3 / 5.9→5.9 | 6.0→5.5 / 5.8→5.5 / 5.9→5.1 | – |
+| concurrent ×4 run 1 / 2 / 3 | 5.5→4.5 / 5.3→5.4 / 5.1→4.9 | 4.5→4.7 / 5.5→6.6 / 4.9→7.1 | – |
+| recovery run 1 / 2 / 3 | 4.7→4.7 / 6.0→6.0 / 5.8→5.8 | 4.7→7.7 / 5.4→6.2 / 5.8→5.0 | – |
+
+Two runs saw a load spike from outside during the measurement: Rivet cold
+run 1 (to 38) and Rivet WS cold run 1 (to 16.6); they are the runs with the
+highest Rivet p95/p99 (59 / 123 ms and 39.6 / 51.1 ms), which is why the
+report uses medians across runs. No graphrt run saw such a spike.
 
 ## Observations about Rivet worth knowing
 

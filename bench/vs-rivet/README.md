@@ -169,4 +169,5 @@ rank, no trimming, no retries (the method of Rivet's published benchmark).
 | `harness/procs.mjs` | RSS and CPU time from `/proc` |
 | `harness/report.mjs` | medians across runs |
 | `harness/serve-direct.mjs` | side measurement: the warm turn against `graphrt serve` without the gateway |
+| `harness/cold-phases.mjs` | side measurement: graphrt's cold start split into phases |
 | `results/` | raw results of the published runs |
