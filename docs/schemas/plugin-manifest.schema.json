@@ -27,8 +27,8 @@
       "default": 1
     },
     "runtime": {
-      "description": "How the plugin runs: a child process (JSON-RPC over stdio), an HTTP service (JSON-RPC over POST) or a WebAssembly module.",
-      "enum": ["process", "http", "wasm"]
+      "description": "How the plugin runs: a child process (JSON-RPC over stdio), an HTTP service (JSON-RPC over POST), a WebAssembly module, or `mcp`: no code, a remote MCP server the host connects (an MCP server preset).",
+      "enum": ["process", "http", "wasm", "mcp"]
     },
     "command": {
       "description": "runtime process: program to run. A relative path with a separator (`./bin/plugin`) is resolved against the plugin directory; a bare name (`python3`) is looked up in PATH.",
@@ -64,6 +64,10 @@
       "default": null
     },
     "module": { "description": "runtime wasm: module path, relative to the plugin directory.", "type": ["string", "null"] },
+    "mcp": {
+      "description": "runtime mcp: the remote MCP server the plugin declares.",
+      "oneOf": [{ "$ref": "#/$defs/mcp_server" }, { "type": "null" }]
+    },
     "permissions": { "$ref": "#/$defs/permissions" },
     "limits": { "$ref": "#/$defs/limits" },
     "checksums": {
@@ -84,6 +88,13 @@
       "description": "Also allow plain node kinds without `.` (e.g. `slugify`). Another plugin's `<other>.` namespace is never allowed.",
       "type": "boolean",
       "default": false
+    },
+    "templates": {
+      "description": "Starter prompts a host may offer (e.g. on its new-agent screen) while the plugin is installed. Any runtime.",
+      "type": "array",
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/template" },
+      "default": []
     }
   },
   "allOf": [
@@ -96,7 +107,8 @@
           "url": { "type": "null" },
           "headers": { "maxProperties": 0 },
           "bearer_token_env": { "type": "null" },
-          "module": { "type": "null" }
+          "module": { "type": "null" },
+          "mcp": { "type": "null" }
         }
       }
     },
@@ -111,7 +123,8 @@
           "env": { "maxProperties": 0 },
           "inherit_env": { "const": false },
           "cwd": { "type": "null" },
-          "module": { "type": "null" }
+          "module": { "type": "null" },
+          "mcp": { "type": "null" }
         }
       }
     },
@@ -128,12 +141,84 @@
           "cwd": { "type": "null" },
           "url": { "type": "null" },
           "headers": { "maxProperties": 0 },
-          "bearer_token_env": { "type": "null" }
+          "bearer_token_env": { "type": "null" },
+          "mcp": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "runtime": { "const": "mcp" } }, "required": ["runtime"] },
+      "then": {
+        "required": ["mcp"],
+        "properties": {
+          "mcp": { "$ref": "#/$defs/mcp_server" },
+          "command": { "type": "null" },
+          "args": { "maxItems": 0 },
+          "env": { "maxProperties": 0 },
+          "inherit_env": { "const": false },
+          "cwd": { "type": "null" },
+          "url": { "type": "null" },
+          "headers": { "maxProperties": 0 },
+          "bearer_token_env": { "type": "null" },
+          "module": { "type": "null" },
+          "nodes": { "maxItems": 0 },
+          "tools": { "maxItems": 0 }
         }
       }
     }
   ],
   "$defs": {
+    "mcp_server": {
+      "description": "A remote MCP server (runtime mcp). Its tools come from the server, so the manifest has no `nodes` or `tools`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": { "description": "Streamable HTTP endpoint: https:// (http:// only to a loopback address).", "type": "string", "pattern": "^https?://\\S+$" },
+        "transport": { "enum": ["streamable-http"], "default": "streamable-http" },
+        "auth": {
+          "description": "`oauth`: the host signs the user in (MCP authorization spec); `bearer`: a token from `bearer_token_env`; `none`.",
+          "enum": ["none", "bearer", "oauth"],
+          "default": "none"
+        },
+        "bearer_token_env": {
+          "description": "With auth bearer: the variable or secret holding the token; must be listed in `permissions.env`.",
+          "type": ["string", "null"],
+          "default": null
+        },
+        "approval": { "$ref": "#/$defs/mcp_approval" },
+        "guide": {
+          "description": "Markdown guidance for an agent builder, a relative `.md` path; `{server}` stands for the server name the host uses.",
+          "type": ["string", "null"],
+          "pattern": "\\.md$",
+          "default": null
+        }
+      }
+    },
+    "mcp_approval": {
+      "description": "Which tools a host runs without asking first.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default": { "description": "Tools no pattern matches: `ask` first (default) or decided `by_name` by the host.", "enum": ["ask", "by_name"], "default": "ask" },
+        "read_only": { "description": "Tools that only read: names or `prefix*` patterns.", "type": "array", "items": { "$ref": "#/$defs/tool_pattern" }, "default": [] },
+        "ask_first": { "description": "Tools that always ask first; wins over `read_only`.", "type": "array", "items": { "$ref": "#/$defs/tool_pattern" }, "default": [] }
+      },
+      "default": {}
+    },
+    "tool_pattern": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+\\*?$", "maxLength": 128 },
+    "template": {
+      "description": "A starter prompt.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "description", "prompt"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 400 },
+        "prompt": { "type": "string", "minLength": 1, "maxLength": 4000 }
+      }
+    },
     "relative_path": {
       "description": "A path inside the plugin directory: not blank, not absolute, no `..` segment.",
       "type": "string",
