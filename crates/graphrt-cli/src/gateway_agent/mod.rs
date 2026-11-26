@@ -14,6 +14,7 @@
 //! | GET | `/internal/v1/runs/{id}/stream?from=N` | reattach to an execution after a lost connection |
 //! | POST | `/internal/v1/runs/{id}/abort` | abort the execution at `Graphrt-Epoch` |
 //! | POST | `/internal/v1/drain` | stop accepting runs and pause the active ones |
+//! | POST | `/internal/v1/stop` | drain and exit, as on `SIGTERM` (the local-process provider on Windows) |
 //! | GET | `/internal/v1/orphans` | paused executions whose gateway stream was lost (reclaim) |
 //! | DELETE | `/internal/v1/orphans/{id}` | the gateway took over an orphan |
 //!

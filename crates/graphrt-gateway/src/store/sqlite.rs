@@ -1000,7 +1000,8 @@ mod tests {
         fence_c.release();
         assert!(matches!(c.delete("r1").await, Err(StoreError::Io(_))), "a released lease writes nothing");
         assert_eq!(unfenced.owner_token().await.unwrap(), 3);
-        std::fs::remove_dir_all(&dir).unwrap();
+        // Best effort: Windows keeps files of open stores (the handles above) undeletable.
+        let _cleanup = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1017,6 +1018,7 @@ mod tests {
         assert_eq!(reopened.get("r1").await.unwrap().unwrap().status, RunStatus::Queued);
         let backup = SqliteStore::open(&dir.join("backup.db")).unwrap();
         assert!(backup.get("r1").await.unwrap().is_some());
-        std::fs::remove_dir_all(&dir).unwrap();
+        drop((reopened, backup));
+        let _cleanup = std::fs::remove_dir_all(&dir);
     }
 }

@@ -72,7 +72,7 @@ fn provider(fake: &FakeApiServer) -> K8sProvider {
 fn port_of(address: &EndpointAddress) -> u16 {
     match address {
         EndpointAddress::Http(url) => url.rsplit(':').next().unwrap().parse().unwrap(),
-        EndpointAddress::Unix(path) => panic!("unexpected unix endpoint {path:?}"),
+        other => panic!("unexpected endpoint {other:?}"),
     }
 }
 

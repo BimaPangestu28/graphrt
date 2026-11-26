@@ -122,7 +122,14 @@ impl Drop for LockGuard {
 
 impl Inner {
     fn lock(&self) -> StoreResult<LockGuard> {
-        let file = private_fs::append_file(&self.root.join(".lock")).map_err(|e| io("cannot open store lock", &e))?;
+        let path = self.root.join(".lock");
+        // `LockFileEx` needs read or write access: an append-only handle is
+        // refused on Windows ("Access is denied").
+        #[cfg(windows)]
+        let opened = private_fs::create_file(&path);
+        #[cfg(not(windows))]
+        let opened = private_fs::append_file(&path);
+        let file = opened.map_err(|e| io("cannot open store lock", &e))?;
         file.lock().map_err(|e| io("cannot lock store", &e))?;
         Ok(LockGuard(file))
     }

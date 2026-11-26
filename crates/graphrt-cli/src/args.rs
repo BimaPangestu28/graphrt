@@ -546,8 +546,9 @@ pub struct EvalArgs {
 pub struct ServeArgs {
     /// A workflow file, or a directory of workflow files (each served under its file stem).
     pub path: PathBuf,
-    /// Listen address: `host:port`, or `unix:/path/to.sock` for a Unix socket
-    /// (created mode 0600, e.g. for a gateway on the same host).
+    /// Listen address: `host:port`, `unix:/path/to.sock` for a Unix socket
+    /// (created mode 0600, e.g. for a gateway on the same host), or on Windows
+    /// `pipe:\\.\pipe\name` for a named pipe (local clients only).
     #[arg(long, visible_alias = "listen", value_name = "ADDR", default_value = "127.0.0.1:8080")]
     pub addr: String,
     /// Name of the environment variable holding the API key. When set, requests must send

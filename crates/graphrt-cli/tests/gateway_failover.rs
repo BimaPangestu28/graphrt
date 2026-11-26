@@ -14,6 +14,9 @@
 //!    `stale_after`, kills the frozen holder and serves (measured).
 //! 5. A new passive `gw-c` and `SIGTERM gw-a`: graceful handover (measured).
 //!
+//! Steps 4 and 5 need `SIGSTOP` and `SIGTERM` to another process, which
+//! Windows has no command for: there the test stops after step 3.
+//!
 //! Timings print with `--nocapture`.
 
 #![cfg(feature = "gateway")]
@@ -55,9 +58,17 @@ impl Drop for World {
                     && let Some(pid) =
                         std::fs::read_to_string(&path).ok().and_then(|text| text.lines().next().map(str::to_owned))
                 {
-                    let _killed =
-                        Command::new("kill").arg("-KILL").arg(format!("-{pid}")).stderr(Stdio::null()).status();
-                    let _killed = Command::new("kill").arg("-KILL").arg(pid).stderr(Stdio::null()).status();
+                    if cfg!(windows) {
+                        let _killed = Command::new("taskkill")
+                            .args(["/F", "/T", "/PID", &pid])
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status();
+                    } else {
+                        let _killed =
+                            Command::new("kill").arg("-KILL").arg(format!("-{pid}")).stderr(Stdio::null()).status();
+                        let _killed = Command::new("kill").arg("-KILL").arg(pid).stderr(Stdio::null()).status();
+                    }
                 }
             }
         }
@@ -243,17 +254,33 @@ deployments:
     }
 }
 
+/// Resident set size (0 on Windows, where it is not measured).
 fn rss_kib(pid: u32) -> u64 {
+    if cfg!(windows) {
+        return 0;
+    }
     let output = Command::new("ps").args(["-o", "rss=", "-p", &pid.to_string()]).output().unwrap();
     String::from_utf8_lossy(&output.stdout).trim().parse().unwrap_or(0)
 }
 
+#[cfg(unix)]
 fn alive(pid: u32) -> bool {
     Command::new("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null()).status().unwrap().success()
 }
 
+#[cfg(unix)]
 fn signal(pid: u32, name: &str) {
     assert!(Command::new("kill").arg(format!("-{name}")).arg(pid.to_string()).status().unwrap().success());
+}
+
+/// `kill -9` (`taskkill /F` on Windows).
+fn kill_now(pid: u32) {
+    let status = if cfg!(windows) {
+        Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).stdout(Stdio::null()).status()
+    } else {
+        Command::new("kill").args(["-KILL", &pid.to_string()]).status()
+    };
+    assert!(status.unwrap().success());
 }
 
 fn wait_for(limit: Duration, mut condition: impl FnMut() -> bool) -> bool {
@@ -269,6 +296,7 @@ fn wait_for(limit: Duration, mut condition: impl FnMut() -> bool) -> bool {
 
 /// Takes the lease read-modify-write lock (`flock`), as a gateway frozen
 /// between its heartbeat's lock and unlock would keep it.
+#[cfg(unix)]
 fn hold_lease_lock(world: &World) -> std::fs::File {
     let path = world.dir.join("data/graphrt-gateway.lease.lock");
     let file = std::fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
@@ -313,7 +341,7 @@ fn passive_takes_over_after_kill_freeze_and_handover() {
     let in_flight = in_flight["run_id"].as_str().unwrap().to_owned();
     assert!(wait_for(Duration::from_secs(30), || world.run_status(&in_flight).as_deref() == Some("running")));
     std::thread::sleep(Duration::from_millis(200));
-    signal(first, "KILL");
+    kill_now(first);
     let killed_at = Instant::now();
     world.wait_healthy(Duration::from_secs(30));
     let kill_takeover = killed_at.elapsed().as_millis();
@@ -339,13 +367,29 @@ fn passive_takes_over_after_kill_freeze_and_handover() {
     let (status, record) = world.run(&json!({ "inputs": {} }));
     assert_eq!((status, record["status"].as_str()), (200, Some("succeeded")), "the new active runs agents: {record}");
 
+    #[cfg(unix)]
+    let (freeze_takeover, handover) = freeze_and_handover(&mut world, second);
+    #[cfg(not(unix))]
+    let (freeze_takeover, handover) = (0, 0);
+
+    println!(
+        "gateway failover: passive RSS {passive_rss} KiB, active RSS {active_rss} KiB, takeover after kill -9 {kill_takeover} ms (in-flight run finished {reclaim} ms after the kill), after SIGSTOP (stale_after 1500 ms) {freeze_takeover} ms, graceful handover {handover} ms"
+    );
+    assert!(kill_takeover < 30_000 && freeze_takeover < 30_000 && handover < 30_000);
+}
+
+/// Steps 4 and 5: freeze the active `second` (the old node, back as a
+/// passive, steals the lease and kills it), then a graceful handover.
+/// Returns both takeover times in ms.
+#[cfg(unix)]
+fn freeze_and_handover(world: &mut World, second: u32) -> (u128, u128) {
     // 2. The old node comes back as a passive; freeze the active.
     let third = world.gateway("gw-a");
     assert!(wait_for(Duration::from_secs(30), || world.log("gw-a").contains("passive")));
     assert!(alive(third));
     // Worst case, made deterministic: the freeze lands inside a heartbeat, so
     // the lease lock stays taken for the whole freeze (the test holds it).
-    let lease_lock = hold_lease_lock(&world);
+    let lease_lock = hold_lease_lock(world);
     signal(second, "STOP");
     let frozen_at = Instant::now();
     assert!(wait_for(Duration::from_secs(30), || world.lease()["lease"]["node"] == "gw-a"), "no steal");
@@ -375,9 +419,5 @@ fn passive_takes_over_after_kill_freeze_and_handover() {
     assert!(alive(fourth));
     let token = world.lease()["lease"]["token"].as_u64().unwrap();
     assert!(token >= 4, "every take bumps the token: {token}");
-
-    println!(
-        "gateway failover: passive RSS {passive_rss} KiB, active RSS {active_rss} KiB, takeover after kill -9 {kill_takeover} ms (in-flight run finished {reclaim} ms after the kill), after SIGSTOP (stale_after 1500 ms) {freeze_takeover} ms, graceful handover {handover} ms"
-    );
-    assert!(kill_takeover < 30_000 && freeze_takeover < 30_000 && handover < 30_000);
+    (freeze_takeover, handover)
 }

@@ -1,6 +1,6 @@
 //! Lean HTTP/1.1 client of the long-lived gateway → agent run streams
 //! (`POST /internal/v1/runs`, `GET /internal/v1/runs/{id}/stream`) over a Unix
-//! socket or plain `http://`.
+//! socket, a Windows named pipe or plain `http://`.
 //!
 //! The gateway holds one agent connection per streaming run, for the whole run.
 //! Through reqwest each of them kept ~34 KiB alive: hyper's 8 KiB read and
@@ -32,7 +32,11 @@ use std::time::{Duration, Instant};
 
 use graphrt_provider_api::EndpointAddress;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
-use tokio::net::{TcpStream, UnixStream};
+use tokio::net::TcpStream;
+#[cfg(unix)]
+use tokio::net::UnixStream;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::NamedPipeClient;
 
 /// Read buffer of a stream at rest.
 pub const INITIAL_READ_BUFFER: usize = 2 * 1024;
@@ -62,6 +66,8 @@ pub struct Target {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum SocketTarget {
     Unix(PathBuf),
+    /// Windows named pipe name (`\\.\pipe\…`).
+    Pipe(String),
     /// `host:port`.
     Tcp(String),
 }
@@ -73,6 +79,9 @@ impl Target {
         match address {
             EndpointAddress::Unix(path) => {
                 Some(Self { socket: SocketTarget::Unix(path.clone()), host: "agent".to_owned(), prefix: String::new() })
+            }
+            EndpointAddress::Pipe(name) => {
+                Some(Self { socket: SocketTarget::Pipe(name.clone()), host: "agent".to_owned(), prefix: String::new() })
             }
             EndpointAddress::Http(base) => {
                 let rest = base.strip_prefix("http://")?;
@@ -100,22 +109,59 @@ impl Target {
                     prefix: if prefix.is_empty() { String::new() } else { format!("/{prefix}") },
                 })
             }
+            _ => None,
         }
     }
 }
 
-/// A connected socket: Unix or TCP.
+/// A connected socket: Unix, named pipe or TCP.
 #[derive(Debug)]
 enum Socket {
+    #[cfg(unix)]
     Unix(UnixStream),
+    #[cfg(windows)]
+    Pipe(NamedPipeClient),
     Tcp(TcpStream),
+}
+
+/// `ERROR_PIPE_BUSY`: every instance of the pipe is connected right now; the
+/// agent creates the next one as soon as it accepted the last.
+#[cfg(windows)]
+const ERROR_PIPE_BUSY: i32 = 231;
+
+/// Opens a client end of the named pipe `name`, waiting while every instance is busy.
+///
+/// # Errors
+/// When the pipe does not exist or cannot be opened (the caller bounds the wait).
+#[cfg(windows)]
+pub async fn connect_pipe(name: &str) -> io::Result<NamedPipeClient> {
+    loop {
+        match tokio::net::windows::named_pipe::ClientOptions::new().open(name) {
+            Ok(client) => return Ok(client),
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn unsupported(kind: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, format!("{kind} endpoints are not supported on this platform"))
 }
 
 impl Socket {
     async fn connect(target: &SocketTarget) -> io::Result<Self> {
         let connect = async {
             match target {
+                #[cfg(unix)]
                 SocketTarget::Unix(path) => UnixStream::connect(path).await.map(Self::Unix),
+                #[cfg(not(unix))]
+                SocketTarget::Unix(_) => Err(unsupported("Unix socket")),
+                #[cfg(windows)]
+                SocketTarget::Pipe(name) => connect_pipe(name).await.map(Self::Pipe),
+                #[cfg(not(windows))]
+                SocketTarget::Pipe(_) => Err(unsupported("named pipe")),
                 SocketTarget::Tcp(authority) => {
                     let stream = TcpStream::connect(authority.as_str()).await?;
                     // Frames are small and latency-bound: never wait for Nagle.
@@ -134,7 +180,10 @@ impl Socket {
     fn is_reusable(&self) -> bool {
         let mut probe = [0u8; 1];
         let result = match self {
+            #[cfg(unix)]
             Self::Unix(stream) => stream.try_read(&mut probe),
+            #[cfg(windows)]
+            Self::Pipe(stream) => stream.try_read(&mut probe),
             Self::Tcp(stream) => stream.try_read(&mut probe),
         };
         matches!(result, Err(error) if error.kind() == io::ErrorKind::WouldBlock)
@@ -144,7 +193,10 @@ impl Socket {
 impl AsyncRead for Socket {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
+            #[cfg(unix)]
             Self::Unix(stream) => Pin::new(stream).poll_read(cx, buf),
+            #[cfg(windows)]
+            Self::Pipe(stream) => Pin::new(stream).poll_read(cx, buf),
             Self::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
         }
     }
@@ -153,21 +205,30 @@ impl AsyncRead for Socket {
 impl AsyncWrite for Socket {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         match self.get_mut() {
+            #[cfg(unix)]
             Self::Unix(stream) => Pin::new(stream).poll_write(cx, buf),
+            #[cfg(windows)]
+            Self::Pipe(stream) => Pin::new(stream).poll_write(cx, buf),
             Self::Tcp(stream) => Pin::new(stream).poll_write(cx, buf),
         }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
+            #[cfg(unix)]
             Self::Unix(stream) => Pin::new(stream).poll_flush(cx),
+            #[cfg(windows)]
+            Self::Pipe(stream) => Pin::new(stream).poll_flush(cx),
             Self::Tcp(stream) => Pin::new(stream).poll_flush(cx),
         }
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.get_mut() {
+            #[cfg(unix)]
             Self::Unix(stream) => Pin::new(stream).poll_shutdown(cx),
+            #[cfg(windows)]
+            Self::Pipe(stream) => Pin::new(stream).poll_shutdown(cx),
             Self::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
         }
     }
@@ -754,7 +815,37 @@ mod tests {
         assert_eq!(pool.idle_count(), 1);
     }
 
+    /// The local provider's agents listen on named pipes on Windows.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn named_pipe_stream() {
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let name = format!(r"\\.\pipe\graphrt-stream-conn-{}", std::process::id());
+        let server = ServerOptions::new().first_pipe_instance(true).create(&name).unwrap();
+        tokio::spawn(async move {
+            let mut server = server;
+            server.connect().await.unwrap();
+            let mut buffer = vec![0u8; 4096];
+            let read = server.read(&mut buffer).await.unwrap();
+            let request = String::from_utf8_lossy(&buffer[..read]).into_owned();
+            assert!(request.starts_with("GET /internal/v1/hello HTTP/1.1\r\nhost: agent\r\n"), "{request}");
+            server.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok").await.unwrap();
+            // Keep the pipe open until the client is done with it.
+            let _ = server.read(&mut buffer).await;
+        });
+        let target = Target::of(&EndpointAddress::Pipe(name.clone())).unwrap();
+        let pool = Arc::new(IdlePool::default());
+        let request = Request { method: "GET", path: "/internal/v1/hello", headers: &[], body: b"" };
+        let mut body = open(&pool, &target, request).await.unwrap();
+        assert_eq!(body.status(), 200);
+        assert_eq!(collect(&mut body).await.unwrap(), b"ok");
+        let gone = Target::of(&EndpointAddress::Pipe(format!("{name}-gone"))).unwrap();
+        let request = Request { method: "GET", path: "/internal/v1/hello", headers: &[], body: b"" };
+        assert!(matches!(open(&pool, &gone, request).await, Err(OpenError::Unreachable(_))));
+    }
+
     /// The local provider's agents listen on Unix sockets.
+    #[cfg(unix)]
     #[tokio::test]
     async fn unix_socket_stream() {
         let path = std::env::temp_dir().join(format!("graphrt-stream-conn-{}.sock", std::process::id()));

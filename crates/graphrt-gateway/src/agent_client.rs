@@ -1,11 +1,13 @@
 //! Gateway → agent calls of protocol 1 (`/internal/v1/*`, plan §3.1), over
-//! HTTP/1.1 keep-alive on a Unix socket or a private network, every request
-//! signed with the deployment's key. Agent addresses come only from the
-//! provider (never from the agent itself, plan §3.2).
+//! HTTP/1.1 keep-alive on a Unix socket, a Windows named pipe or a private
+//! network, every request signed with the deployment's key. Agent addresses
+//! come only from the provider (never from the agent itself, plan §3.2).
 //!
-//! Run streams (start and reattach) to a Unix socket or `http://` agent go
-//! through the lean client of [`crate::stream_conn`] (one small buffer per
-//! stream); `https://` agents and the short control calls through reqwest.
+//! Run streams (start and reattach) to a Unix socket, named pipe or `http://`
+//! agent go through the lean client of [`crate::stream_conn`] (one small
+//! buffer per stream); `https://` agents and the short control calls through
+//! reqwest, except on named pipes (reqwest has no pipe transport), where the
+//! control calls take the lean client too.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -224,8 +226,9 @@ fn signed_headers(
 fn base_url(address: &EndpointAddress) -> String {
     match address {
         // The host is ignored on a Unix socket; any valid one will do.
-        EndpointAddress::Unix(_) => "http://agent".to_owned(),
+        EndpointAddress::Unix(_) | EndpointAddress::Pipe(_) => "http://agent".to_owned(),
         EndpointAddress::Http(base) => base.trim_end_matches('/').to_owned(),
+        _ => "http://agent".to_owned(),
     }
 }
 
@@ -235,13 +238,15 @@ impl AgentClient {
         if let Some(client) = clients.get(address) {
             return Ok(client.clone());
         }
-        let mut builder = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .pool_idle_timeout(Duration::from_secs(90))
             .http1_only();
-        if let EndpointAddress::Unix(path) = address {
-            builder = builder.unix_socket(path.as_path());
-        }
+        #[cfg(unix)]
+        let builder = match address {
+            EndpointAddress::Unix(path) => builder.unix_socket(path.as_path()),
+            _ => builder,
+        };
         let client = builder.build().map_err(|error| AgentError::Unreachable(error.to_string()))?;
         if clients.len() > 4096 {
             clients.clear();
@@ -275,7 +280,7 @@ impl AgentClient {
         body: Vec<u8>,
     ) -> Result<AgentStream, AgentError> {
         let Some(target) = Target::of(address) else {
-            let response = self.send(address, key, deployment, method, path, scope, body).await?;
+            let response = self.send_http(address, key, deployment, method, path, scope, body).await?;
             return Ok(AgentStream::new(StreamSource::Http(response)));
         };
         let headers = signed_headers(key, deployment, method.as_str(), path, scope, &body);
@@ -288,9 +293,37 @@ impl AgentClient {
         }
     }
 
+    /// A control call: through reqwest, or the lean client on a named pipe.
     // One private call site per protocol operation; a parameter struct would only rename them.
     #[allow(clippy::too_many_arguments)]
     async fn send(
+        &self,
+        address: &EndpointAddress,
+        key: &GatewayKey,
+        deployment: &str,
+        method: reqwest::Method,
+        path: &str,
+        scope: RunScope<'_>,
+        body: Vec<u8>,
+    ) -> Result<Reply, AgentError> {
+        if let EndpointAddress::Pipe(_) = address
+            && let Some(target) = Target::of(address)
+        {
+            let headers = signed_headers(key, deployment, method.as_str(), path, scope, &body);
+            let headers: Vec<(&str, &str)> = headers.iter().map(|(name, value)| (*name, value.as_str())).collect();
+            let request = stream_conn::Request { method: method.as_str(), path, headers: &headers, body: &body };
+            return match stream_conn::open(&self.streams, &target, request).await {
+                Ok(response) => Ok(Reply::Lean(response)),
+                Err(OpenError::Unreachable(error)) => Err(AgentError::Unreachable(error)),
+                Err(OpenError::Refused { status, body }) => Err(AgentError::Refused { status, body }),
+            };
+        }
+        self.send_http(address, key, deployment, method, path, scope, body).await.map(Reply::Http)
+    }
+
+    // One private call site per protocol operation; a parameter struct would only rename them.
+    #[allow(clippy::too_many_arguments)]
+    async fn send_http(
         &self,
         address: &EndpointAddress,
         key: &GatewayKey,
@@ -414,7 +447,7 @@ impl AgentClient {
         let response = self
             .send(address, key, deployment, reqwest::Method::GET, "/internal/v1/hello", RunScope::default(), Vec::new())
             .await?;
-        let bytes = response.bytes().await.map_err(|error| AgentError::Stream(error.to_string()))?;
+        let bytes = response.bytes().await?;
         serde_json::from_slice(&bytes).map_err(|error| AgentError::Stream(error.to_string()))
     }
 
@@ -445,6 +478,17 @@ impl AgentClient {
             .map(|_| ())
     }
 
+    /// `POST /internal/v1/stop`: the agent drains and exits, as on `SIGTERM`
+    /// (how the local-process provider stops agents on Windows).
+    ///
+    /// # Errors
+    /// See [`AgentError`].
+    pub async fn stop(&self, address: &EndpointAddress, key: &GatewayKey, deployment: &str) -> Result<(), AgentError> {
+        self.send(address, key, deployment, reqwest::Method::POST, "/internal/v1/stop", RunScope::default(), Vec::new())
+            .await
+            .map(|_| ())
+    }
+
     /// `GET /internal/v1/orphans`: executions whose gateway stream was lost.
     ///
     /// # Errors
@@ -466,7 +510,7 @@ impl AgentClient {
                 Vec::new(),
             )
             .await?;
-        let bytes = response.bytes().await.map_err(|error| AgentError::Stream(error.to_string()))?;
+        let bytes = response.bytes().await?;
         let value: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|error| AgentError::Stream(error.to_string()))?;
         Ok(value.get("orphans").and_then(serde_json::Value::as_array).cloned().unwrap_or_default())
@@ -485,6 +529,32 @@ impl AgentClient {
     ) -> Result<(), AgentError> {
         let path = format!("/internal/v1/orphans/{}", scope.run_id);
         self.send(address, key, deployment, reqwest::Method::DELETE, &path, scope, Vec::new()).await.map(|_| ())
+    }
+}
+
+/// The answer to a control call.
+enum Reply {
+    Http(reqwest::Response),
+    Lean(ResponseBody),
+}
+
+impl Reply {
+    /// The whole body.
+    async fn bytes(self) -> Result<Vec<u8>, AgentError> {
+        match self {
+            Self::Http(response) => response
+                .bytes()
+                .await
+                .map(|bytes| bytes.to_vec())
+                .map_err(|error| AgentError::Stream(error.to_string())),
+            Self::Lean(mut body) => {
+                let mut bytes = Vec::new();
+                while let Some(data) = body.next_data().await.map_err(|error| AgentError::Stream(error.to_string()))? {
+                    bytes.extend_from_slice(data);
+                }
+                Ok(bytes)
+            }
+        }
     }
 }
 

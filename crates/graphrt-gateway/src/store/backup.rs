@@ -190,6 +190,8 @@ mod tests {
         assert!(matches!(prepare_store(&store_path, Some(&backups), true).unwrap(), Prepared::Restored(_)));
         let restored = SqliteStore::open(&store_path).unwrap();
         assert!(restored.get("r1").await.unwrap().is_some());
+        // Closed first: Windows does not delete a file that is open.
+        drop(restored);
         std::fs::remove_file(&store_path).unwrap();
         assert!(matches!(prepare_store(&store_path, Some(&backups), true).unwrap(), Prepared::Restored(_)));
         assert!(prepare_store(&dir.join("other.db"), None, false).unwrap() == Prepared::Unchecked);

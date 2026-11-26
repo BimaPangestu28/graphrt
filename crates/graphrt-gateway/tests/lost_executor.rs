@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use common::{AgentWorld, DEPLOYMENT, Options, crash_mid_stream, start_gateway};
+use common::{AgentWorld, DEPLOYMENT, Options, crash_mid_execution, crash_mid_stream, start_gateway};
 use graphrt_core::store::{RunStatus, RunStore};
 use graphrt_gateway::store::SqliteStore;
 use graphrt_gateway::supervisor::{RunInput, StartOptions, Started};
@@ -120,7 +120,8 @@ async fn after_a_gateway_crash_a_url_run_resumes_from_its_stored_snapshot() {
     let world = Arc::new(AgentWorld::default());
     // Preempted once (snapshot stored), then crashed during the resumed execution.
     let body = json!({ "async": true, "inputs": { "mode": "preempt_once", "events": 40, "delay_ms": 20 } });
-    let (run_id, at_crash) = crash_mid_stream(&path, &world, body, Duration::from_millis(1200), true);
+    // Crash in the resumed (second) execution.
+    let (run_id, at_crash) = crash_mid_execution(&path, &world, body, Duration::from_millis(100), true, 2);
     assert_eq!(at_crash, RunStatus::Running, "crashed while it executed");
     let second = start_gateway(Options {
         store: SqliteStore::open(&path).unwrap(),

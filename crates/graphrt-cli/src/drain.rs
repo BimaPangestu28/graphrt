@@ -141,7 +141,9 @@ pub fn needs_caller_secrets(snapshot: &Snapshot) -> bool {
     snapshot.to_json().map_or(true, |json| json.contains(&format!("\"{}\"", graphrt_core::value::SECRET_MARKER_KEY)))
 }
 
-/// SIGTERM and SIGINT (Ctrl-C), received for the lifetime of the server.
+/// SIGTERM and SIGINT (Ctrl-C), received for the lifetime of the server; on
+/// Windows Ctrl+C, Ctrl+Break, closing the console and a system shutdown.
+/// Plus the gateway's stop requests ([`ShutdownSignals::with_stop_requests`]).
 ///
 /// Created before the server listens: from then on the signals are handled
 /// (rather than ignored when PID 1, or fatal otherwise).
@@ -151,6 +153,19 @@ pub struct ShutdownSignals {
     terminate: tokio::signal::unix::Signal,
     #[cfg(unix)]
     interrupt: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    windows: WindowsSignals,
+    stop: Option<std::sync::Arc<tokio::sync::Notify>>,
+}
+
+/// The console events Windows delivers instead of signals.
+#[cfg(windows)]
+#[derive(Debug)]
+struct WindowsSignals {
+    interrupt: tokio::signal::windows::CtrlC,
+    brk: tokio::signal::windows::CtrlBreak,
+    close: tokio::signal::windows::CtrlClose,
+    shutdown: tokio::signal::windows::CtrlShutdown,
 }
 
 impl ShutdownSignals {
@@ -167,14 +182,51 @@ impl ShutdownSignals {
             Ok(Self {
                 terminate: install(SignalKind::terminate(), "SIGTERM")?,
                 interrupt: install(SignalKind::interrupt(), "SIGINT")?,
+                stop: None,
             })
         }
-        #[cfg(not(unix))]
-        Ok(Self {})
+        #[cfg(windows)]
+        {
+            use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_shutdown};
+            let failed = |name: &str, e: std::io::Error| CliError::failed(format!("cannot handle {name}: {e}"));
+            Ok(Self {
+                windows: WindowsSignals {
+                    interrupt: ctrl_c().map_err(|e| failed("Ctrl-C", e))?,
+                    brk: ctrl_break().map_err(|e| failed("Ctrl-Break", e))?,
+                    close: ctrl_close().map_err(|e| failed("console close", e))?,
+                    shutdown: ctrl_shutdown().map_err(|e| failed("system shutdown", e))?,
+                },
+                stop: None,
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
+        Ok(Self { stop: None })
+    }
+
+    /// Also stop on `stop`'s notifications (the gateway's `POST /internal/v1/stop`).
+    #[must_use]
+    pub fn with_stop_requests(mut self, stop: std::sync::Arc<tokio::sync::Notify>) -> Self {
+        self.stop = Some(stop);
+        self
     }
 
     /// Wait for the next signal and return its name.
     pub async fn recv(&mut self) -> &'static str {
+        let stop = self.stop.clone();
+        let requested = async move {
+            match stop {
+                Some(stop) => stop.notified().await,
+                None => std::future::pending().await,
+            }
+        };
+        let signal = std::pin::pin!(self.next_signal());
+        match futures::future::select(signal, std::pin::pin!(requested)).await {
+            Either::Left((name, _)) => name,
+            Either::Right(((), _)) => "gateway stop",
+        }
+    }
+
+    async fn next_signal(&mut self) -> &'static str {
         #[cfg(unix)]
         {
             let terminate = std::pin::pin!(self.terminate.recv());
@@ -184,7 +236,17 @@ impl ShutdownSignals {
                 Either::Right(_) => "SIGINT",
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let signals = &mut self.windows;
+            tokio::select! {
+                _ = signals.interrupt.recv() => "Ctrl-C",
+                _ = signals.brk.recv() => "Ctrl-Break",
+                _ = signals.close.recv() => "console close",
+                _ = signals.shutdown.recv() => "system shutdown",
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = tokio::signal::ctrl_c().await;
             "Ctrl-C"

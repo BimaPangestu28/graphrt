@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn repo() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+    // No `canonicalize`: on Windows it returns a `\\?\` path, which takes no `/` separators.
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap().to_path_buf()
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -244,7 +245,7 @@ fn judges_and_trials_replay_offline() {
     let faithfulness = &report["summary"]["metrics"]["faithfulness"];
     assert_eq!((faithfulness["count"].as_u64(), faithfulness["excluded"].as_u64()), (Some(9), Some(3)));
     let judge = &report["tests"][0]["assertions"][2]["judge"];
-    assert_eq!(judge["workflow"], "examples/evals/judges/faithfulness.yaml");
+    assert_eq!(judge["workflow"].as_str().unwrap().replace('\\', "/"), "examples/evals/judges/faithfulness.yaml");
     assert_eq!(judge["verdict"], "pass");
     assert_eq!(judge["fingerprint"].as_str().unwrap().len(), 16);
 

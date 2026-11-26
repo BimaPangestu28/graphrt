@@ -377,13 +377,10 @@ pub fn register_versions(built: &Built, versions: Vec<(String, VersionInfo)>) {
     }
 }
 
-/// Resolves on SIGTERM or SIGINT.
+/// Resolves on SIGTERM or SIGINT (Ctrl+C, Ctrl+Break, console close or
+/// system shutdown on Windows).
 pub async fn shutdown_signal() {
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        () = async { match terminate.as_mut() { Some(signal) => { signal.recv().await; } None => std::future::pending().await } } => {}
-    }
+    crate::os::shutdown_signal().await;
 }
 
 #[cfg(test)]

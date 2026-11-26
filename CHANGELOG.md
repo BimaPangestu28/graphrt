@@ -7,6 +7,22 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 ## [Unreleased]
 
+### Added
+
+- `graphrt gateway` on Windows, local agents included: they listen on named
+  pipes (`graphrt serve --listen pipe:\\.\pipe\name`), are started in their
+  own process group and stop on the new signed `POST /internal/v1/stop`
+  (drain and exit as on `SIGTERM`), then `taskkill /F /T` after the grace.
+  `graphrt serve` and `graphrt gateway` drain on Ctrl+Break, console close and
+  system shutdown as well as Ctrl+C. Releases ship a
+  `graphrt-gateway-x86_64-pc-windows-msvc` archive. See
+  `docs/windows-gateway.md`.
+
+### Changed
+
+- `graphrt_provider_api::EndpointAddress` has a `Pipe` variant and is
+  `#[non_exhaustive]`: matches outside the crate need a wildcard arm.
+
 ## [0.6.2] - 2026-11-24
 
 Binary HTTP bodies for WebAssembly plugins (`body_base64`, `"response_encoding":

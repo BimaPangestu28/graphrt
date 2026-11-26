@@ -220,6 +220,10 @@ They honour standard proxy environment variables, except the OTel exporter and
   so an agent needs no gateway address and no outbound access. `--trust-gateway` and
   `--verify-jwt` are exclusive. See [gateway-protocol.md](gateway-protocol.md#signatures).
 - **Unix sockets.** `--listen unix:/path` creates the socket mode `0600`.
+- **Named pipes (Windows).** `--listen pipe:\\.\pipe\name` refuses remote
+  clients and a name that exists already (first instance only); the default
+  pipe DACL lets only the owner, SYSTEM and administrators write. The gateway
+  names its agents' pipes with 128 random bits.
 - **Resume with a client snapshot.** `POST /v1/runs/{id}/resume` accepts a
   client-supplied snapshot. Snapshots are not signed, so a caller holding the
   API key can forge node state, for example to skip a human-approval step. Every

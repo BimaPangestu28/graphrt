@@ -451,7 +451,8 @@ users: [{name: u, user: {tokenFile: token, exec: null}}]
 contexts: [{name: c, context: {cluster: k, user: u}}]
 "#;
         let error = kubeconfig_from_str(text, Path::new("/nonexistent/kube"), None).unwrap_err();
-        assert!(error.to_string().contains("/nonexistent/kube/ca.crt"), "{error}");
+        let expected = Path::new("/nonexistent/kube").join("ca.crt");
+        assert!(error.to_string().contains(&expected.display().to_string()), "{error}");
     }
 
     #[test]

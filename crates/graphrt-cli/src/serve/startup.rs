@@ -87,7 +87,7 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let app = router_with_uploads(Arc::clone(&state), args.max_body_bytes, args.max_upload_bytes);
     // Before listening: from here on SIGTERM / SIGINT start a drain (as PID 1 of a
     // container, an unhandled SIGTERM would be ignored until the SIGKILL).
-    let signals = ShutdownSignals::install()?;
+    let signals = ShutdownSignals::install()?.with_stop_requests(state.stop_requests());
     let listener = Listener::bind(&args.addr).await?;
     let loopback = listener.is_local();
     let app = guard_keyless_loopback(app, api_key.is_none() && loopback && listener.is_browser_reachable());

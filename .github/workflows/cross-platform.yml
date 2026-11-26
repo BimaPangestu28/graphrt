@@ -81,4 +81,5 @@ jobs:
           }
           python3 --version
           node --version
-      - run: cargo test --workspace --all-features --locked
+      # Every failing test binary is reported, not only the first one.
+      - run: cargo test --workspace --all-features --locked --no-fail-fast

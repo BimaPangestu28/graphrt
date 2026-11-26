@@ -110,11 +110,14 @@ pub struct ReplicaRef {
 /// path the gateway chose, never from a claim made by the agent (plan §3.2).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum EndpointAddress {
-    /// Unix domain socket (local-process).
+    /// Unix domain socket (local-process on Unix).
     Unix(PathBuf),
     /// Base URL without trailing slash, e.g. `http://10.0.3.7:8080`.
     Http(String),
+    /// Windows named pipe, e.g. `\\.\pipe\graphrt-…` (local-process on Windows).
+    Pipe(String),
 }
 
 /// A reachable replica returned by `wake`.

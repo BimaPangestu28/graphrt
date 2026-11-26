@@ -78,6 +78,12 @@ checked to belong to the gateway's user; the same directory after a restart,
 so agents are still adopted) and logs it at start-up. Set a short
 `socket_dir` to keep them where you chose.
 
+On Windows the local agents listen on named pipes (`\\.\pipe\graphrt-…`
+with 128 random bits) instead, `socket_dir` holds only their pid files, and
+the gateway stops them with a signed `POST /internal/v1/stop` (then
+`taskkill /F /T` after the grace) where Unix sends `SIGTERM`; see
+[windows-gateway.md](windows-gateway.md).
+
 Keys: `graphrt gateway key new` prints a client API key and its digest;
 `graphrt gateway key hmac` prints an agent key (`k1:<64 hex>`). Two agent keys
 can be active at once for rotation (the first signs).

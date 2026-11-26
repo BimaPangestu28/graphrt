@@ -34,6 +34,7 @@ pub mod deployment;
 #[cfg(feature = "gw-local")]
 pub mod local;
 pub mod metrics;
+pub mod os;
 pub mod outbox;
 pub mod scheduler;
 pub mod server;

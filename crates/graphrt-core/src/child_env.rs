@@ -338,6 +338,8 @@ mod tests {
         assert_eq!(appimage_env_fixes(env, Path::new(APPDIR)), [set("LD_PRELOAD", "/usr/lib/libgamemodeauto.so.0")]);
     }
 
+    // AppImage paths are Unix paths: not absolute on Windows.
+    #[cfg(unix)]
     #[test]
     fn appdir_counts_only_when_the_binary_runs_from_it() {
         let exe_inside = Some(PathBuf::from("/tmp/.mount_graphremPBnj/usr/bin/graphrt"));
