@@ -577,6 +577,15 @@ pub enum PluginCommand {
         /// path [default: $GRAPHRT_PLUGIN_INDEX, else the graphrt-plugins catalog release].
         #[arg(long, value_name = "URL|PATH")]
         index: Option<String>,
+        /// Minisign public key the catalog index must be signed with, instead
+        /// of the built-in graphrt-plugins catalog key: the base64 key or the
+        /// path of a .pub file [default: $GRAPHRT_PLUGIN_INDEX_KEY].
+        #[arg(long, value_name = "KEY|PATH")]
+        index_key: Option<String>,
+        /// Use a local index file that has no signature (catalog development).
+        /// Refused for https:// indexes.
+        #[arg(long, conflicts_with = "index_key")]
+        allow_unsigned_index: bool,
         /// Install a catalog plugin that is not labelled stable/beta with a
         /// none/low/medium ToS risk: experimental, high-risk, unrecognised or
         /// unlabelled (graphrt has no interactive prompt).
@@ -596,6 +605,15 @@ pub enum PluginCommand {
         /// [default: $GRAPHRT_PLUGIN_INDEX, else the graphrt-plugins catalog release].
         #[arg(long, value_name = "URL|PATH")]
         index: Option<String>,
+        /// Minisign public key the catalog index must be signed with, instead
+        /// of the built-in graphrt-plugins catalog key: the base64 key or the
+        /// path of a .pub file [default: $GRAPHRT_PLUGIN_INDEX_KEY].
+        #[arg(long, value_name = "KEY|PATH")]
+        index_key: Option<String>,
+        /// Use a local index file that has no signature (catalog development).
+        /// Refused for https:// indexes.
+        #[arg(long, conflicts_with = "index_key")]
+        allow_unsigned_index: bool,
     },
     /// Remove an installed plugin.
     Remove {

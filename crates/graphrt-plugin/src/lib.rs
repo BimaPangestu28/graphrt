@@ -25,6 +25,8 @@
 //!
 //! The protocol and manifest format are specified in `docs/plugins.md`.
 
+#[cfg(feature = "catalog-signature")]
+pub mod catalog_signature;
 mod conn;
 mod discover;
 mod error;

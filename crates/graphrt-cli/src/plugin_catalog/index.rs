@@ -29,6 +29,10 @@ pub const SUPPORTED_SCHEMA: u64 = 1;
 pub struct CatalogIndex {
     /// Format version; see [`SUPPORTED_SCHEMA`].
     pub schema: u64,
+    /// When the index was built (`2026-11-19T08:14:13Z`), if it says so. Any
+    /// JSON value parses, so an index with an odd one stays readable.
+    #[serde(default)]
+    pub generated_at: Option<serde_json::Value>,
     /// Every published plugin release.
     pub plugins: Vec<CatalogEntry>,
 }
@@ -350,7 +354,7 @@ mod tests {
     }
 
     fn index_of(entries: Vec<CatalogEntry>) -> CatalogIndex {
-        CatalogIndex { schema: 1, plugins: entries }
+        CatalogIndex { schema: 1, generated_at: None, plugins: entries }
     }
 
     #[test]

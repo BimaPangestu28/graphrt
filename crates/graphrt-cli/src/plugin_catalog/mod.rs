@@ -5,12 +5,16 @@
 //! an `index.json` (see [`index`]) listing every published plugin with its
 //! tarball URL, sha256 and status labels. Installing by name:
 //!
-//! 1. reads the index (`--index`, `$GRAPHRT_PLUGIN_INDEX` or [`DEFAULT_INDEX_URL`]);
+//! 1. reads the index (`--index`, `$GRAPHRT_PLUGIN_INDEX` or [`DEFAULT_INDEX_URL`])
+//!    and its minisign signature (`<index>.minisig`), checks the signature
+//!    against the trusted catalog key before the index is parsed (see `trust`),
+//!    and refuses an index older than one already used (see `freshness`);
 //! 2. picks the latest version, or the exact one asked for;
 //! 3. prints the status and ToS risk, and stops unless `--yes` was given when
 //!    the plugin is experimental or its ToS risk is high;
 //! 4. downloads the tarball over https (or from a local file when the index is
-//!    local), capped in size and time, and checks its sha256 against the index;
+//!    local), capped in size and time, and checks its sha256 against the
+//!    verified index;
 //! 5. extracts it into a scratch directory, refusing unsafe entries;
 //! 6. installs the extracted `<name>/` directory exactly like a local directory
 //!    install (manifest validation, checksums, staged copy, remove-then-rename).
@@ -19,10 +23,20 @@
 mod archive;
 #[cfg(feature = "plugins")]
 mod fetch;
+#[cfg(feature = "plugins")]
+mod freshness;
 pub mod index;
+#[cfg(feature = "plugins")]
+mod trust;
 
 #[cfg(feature = "plugins")]
 pub use installer::{CatalogInstall, install_from_catalog, search_catalog};
+#[cfg(feature = "plugins")]
+pub use trust::{INDEX_KEY_ENV, TrustOptions};
+
+/// How long reading a signature or a public key file may take.
+#[cfg(feature = "plugins")]
+const SIGNATURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The published catalog index.
 pub const DEFAULT_INDEX_URL: &str = "https://github.com/Graphrt/graphrt-plugins/releases/download/catalog/index.json";
@@ -51,7 +65,9 @@ mod installer {
 
     use super::archive::{ExtractLimits, extract_tar_gz};
     use super::fetch::{FetchLimits, Location, fetch_bytes, parse_index_location, parse_tarball_location};
+    use super::freshness::SignedIndex;
     use super::index::{CatalogEntry, CatalogIndex, PluginSpec, parse_index, printable, search_entries, select_entry};
+    use super::trust::{IndexTrust, TrustOptions};
     use crate::error::CliError;
 
     /// The index lists every plugin with its node schemas: a few MiB at most.
@@ -68,6 +84,8 @@ mod installer {
         pub spec: PluginSpec,
         /// `--index`, if given.
         pub index: Option<&'a str>,
+        /// `--index-key` and `--allow-unsigned-index`.
+        pub trust: TrustOptions<'a>,
         /// `--yes`: install experimental and high-ToS-risk plugins without stopping.
         pub assume_yes: bool,
     }
@@ -84,7 +102,7 @@ mod installer {
         out: &mut impl Write,
     ) -> Result<graphrt_plugin::LoadedManifest, CliError> {
         let index_location = resolve_index_location(request.index)?;
-        let catalog = load_index(&index_location)?;
+        let catalog = load_index(&index_location, request.trust)?;
         let entry = select_entry(&catalog, &request.spec).map_err(|error| CliError::usage(error.to_string()))?;
         print_labels(entry, out)?;
         require_confirmation(entry, request.assume_yes)?;
@@ -108,8 +126,13 @@ mod installer {
     ///
     /// # Errors
     /// As for [`install_from_catalog`]'s index handling, plus output errors.
-    pub fn search_catalog(query: Option<&str>, index_flag: Option<&str>, out: &mut impl Write) -> Result<(), CliError> {
-        let catalog = load_index(&resolve_index_location(index_flag)?)?;
+    pub fn search_catalog(
+        query: Option<&str>,
+        index_flag: Option<&str>,
+        trust: TrustOptions<'_>,
+        out: &mut impl Write,
+    ) -> Result<(), CliError> {
+        let catalog = load_index(&resolve_index_location(index_flag)?, trust)?;
         let matches = search_entries(&catalog, query);
         let write_error = |error: std::io::Error| CliError::failed(error.to_string());
         if matches.is_empty() {
@@ -132,9 +155,20 @@ mod installer {
         parse_index_location(&super::index_location_text(index_flag)).map_err(CliError::usage)
     }
 
-    fn load_index(location: &Location) -> Result<CatalogIndex, CliError> {
+    /// Read the index, check its signature, and only then parse it. A signed
+    /// index must also not be older than the newest one already accepted.
+    fn load_index(location: &Location, trust: TrustOptions<'_>) -> Result<CatalogIndex, CliError> {
+        let trust = IndexTrust::resolve(trust, location)?;
         let index_bytes = fetch_bytes(location, INDEX_LIMITS).map_err(CliError::failed)?;
-        parse_index(&index_bytes).map_err(|error| CliError::failed(format!("{location}: {error}")))
+        let verified = trust.check(location, &index_bytes)?;
+        let catalog = parse_index(&index_bytes).map_err(|error| CliError::failed(format!("{location}: {error}")))?;
+        if let (Some(verified), Some(state_path)) = (verified, super::freshness::default_state_path()) {
+            let generated_at = catalog.generated_at.as_ref().and_then(serde_json::Value::as_str);
+            let signed = SignedIndex { location: &location.identity(), public_key: &verified.public_key };
+            super::freshness::check_and_record(&state_path, signed, generated_at)
+                .map_err(|error| CliError::failed(printable(&format!("{location}: {error}"))))?;
+        }
+        Ok(catalog)
     }
 
     fn print_labels(entry: &CatalogEntry, out: &mut impl Write) -> Result<(), CliError> {

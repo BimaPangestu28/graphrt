@@ -49,6 +49,7 @@ local-embed = ["rag", "graphrt-rag/local-embed"]
 # installed from a directory, a git URL or the plugin catalog (`graphrt plugin install <name>`).
 plugins = [
     "dep:graphrt-plugin", "graphrt-plugin/process", "graphrt-plugin/http", "graphrt-plugin/yaml", "graphrt-plugin/git",
+    "graphrt-plugin/catalog-signature",
     "dep:reqwest", "dep:rustls", "dep:flate2", "dep:sha2",
 ]
 # Sandboxed WebAssembly plugins (manifests with `runtime: wasm`, or bare `.wasm` files).
@@ -181,6 +182,8 @@ http-body = { version = "1", optional = true }
 graphrt-provider-fly = { workspace = true, features = ["fake"] }
 # The abstract store conformance suite runs against the memory and directory stores.
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio", "store-conformance"] }
+# Signs the test plugin catalogs with throwaway keys (tests/plugin_catalog.rs).
+minisign = "0.10"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 http-body-util = "0.1"
 jsonschema = { version = "0.63", default-features = false }
