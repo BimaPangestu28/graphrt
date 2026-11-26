@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
+# Fully offline: writes a note into the workspace, then finds and reads it back.
+#   graphrt run examples/files.yaml --workspace ./workspace --input title=Stock --input body="pear,7"
+# The file is then in ./workspace/notes/Stock.md. See docs/files-and-images.md.
+version: "1"
+name: files
+description: Writes, searches and reads a file in the agent workspace with the files tools.
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: title, type: text-input, required: true, max_length: 64 }
+        - { variable: body, type: paragraph, required: true, max_length: 4000 }
+
+    - id: write
+      type: tool
+      provider_id: files
+      tool_name: write
+      tool_parameters:
+        path: { type: mixed, value: "notes/{{#start.title#}}.md" }
+        content: { type: mixed, value: "# {{#start.title#}}\n\n{{#start.body#}}\n" }
+        overwrite: { type: constant, value: true }
+
+    - id: search
+      type: tool
+      provider_id: files
+      tool_name: search
+      tool_parameters:
+        query: { type: variable, value: [start, title] }
+        path: { type: constant, value: notes }
+
+    - id: read
+      type: tool
+      provider_id: files
+      tool_name: read
+      tool_parameters:
+        path: { type: mixed, value: "notes/{{#start.title#}}.md" }
+
+    - id: end
+      type: end
+      outputs:
+        - { variable: written, value_selector: [write, text] }
+        - { variable: files, value_selector: [write, files] }
+        - { variable: found, value_selector: [search, text] }
+        - { variable: content, value_selector: [read, text] }
+
+  edges:
+    - { source: start, target: write }
+    - { source: write, target: search }
+    - { source: search, target: read }
+    - { source: read, target: end }

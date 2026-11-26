@@ -206,6 +206,12 @@ impl ToolNode {
         if output.is_error && !self.ignore_tool_errors {
             return Err(NodeError::fatal("tool_error", output.text));
         }
+        // Files a native tool returned in its structured result (plugins and MCP servers
+        // cannot create file values).
+        #[cfg(feature = "tool-files")]
+        let files: Vec<Value> = crate::tool::collect_files(&output.data).into_iter().map(Value::File).collect();
+        #[cfg(not(feature = "tool-files"))]
+        let files: Vec<Value> = Vec::new();
         let (json, json_error) =
             if output.data.is_null() { parse_json_text(&output.text) } else { (output.data, None) };
         // With `ignore_tool_errors`, the failure stays visible to the graph through the
@@ -214,7 +220,7 @@ impl ToolNode {
         let mut result = NodeOutput::new()
             .with("text", output.text)
             .with("json", json)
-            .with("files", Value::array([]))
+            .with("files", Value::array(files))
             .with("is_error", output.is_error)
             .with("error", error)
             .meta("provider", self.provider.as_str())

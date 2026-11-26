@@ -1,0 +1,48 @@
+[package]
+name = "graphrt-files"
+description = "File workspaces for graphrt agents: a sandboxed store with quotas, content sniffing and the `files` tools (list, read, search, write)."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-files"
+homepage = "https://github.com/Graphrt/graphrt"
+keywords = ["agent", "files", "sandbox", "workspace", "tools"]
+categories = ["filesystem", "development-tools"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["tokio", "doc"]
+# Run file I/O, hashing and extraction on Tokio's blocking pool when a Tokio runtime is present.
+tokio = ["dep:tokio", "tokio/rt"]
+# `files/read` extracts the text of PDF, Office, spreadsheet, EPUB and e-mail files with graphrt-doc.
+doc = ["dep:graphrt-doc"]
+
+[dependencies]
+# `tool-files`: the files the tools return reach the `files` output of `tool` nodes.
+graphrt-core = { workspace = true, features = ["tool-files"] }
+graphrt-doc = { workspace = true, optional = true, features = ["default"] }
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2 = { version = "0.11", default-features = false }
+tokio = { workspace = true, optional = true }
+
+# `O_NOFOLLOW` for opening workspace files (already linked through std and tokio).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+# The real `agent` node with a scripted model, for the end-to-end test.
+graphrt-llm = { workspace = true, features = ["mock", "tool-files"] }
+futures = { workspace = true, features = ["executor"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+
+[[example]]
+name = "bench"
+required-features = ["tokio"]
+
+[lints]
+workspace = true

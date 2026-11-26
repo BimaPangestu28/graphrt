@@ -1540,6 +1540,7 @@ dependencies = [
  "graphrt-core",
  "graphrt-doc",
  "graphrt-eval",
+ "graphrt-files",
  "graphrt-gateway",
  "graphrt-http",
  "graphrt-learn",
@@ -1655,6 +1656,22 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "uniffi",
+]
+
+[[package]]
+name = "graphrt-files"
+version = "0.6.2"
+dependencies = [
+ "futures",
+ "graphrt-core",
+ "graphrt-doc",
+ "graphrt-llm",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

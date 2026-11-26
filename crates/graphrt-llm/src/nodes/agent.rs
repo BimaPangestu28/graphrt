@@ -65,7 +65,9 @@
 //! Progress events: `agent_step`, `agent_thought`, `tool_call`, `tool_result`,
 //! `tool_denied`, `skill_tool_unavailable`, `lessons_applied`. Outputs: `text`, `tool_calls`
 //! (`[{name, provider, tool, arguments, result, is_error, images}]`), `ui` (the UI blocks of
-//! successful tool results, see [`graphrt_core::ui`]; never sent to the model), `iterations`,
+//! successful tool results, see [`graphrt_core::ui`]; never sent to the model), `files` (feature
+//! `tool-files`: the files successful tool results returned, see
+//! `graphrt_core::tool::collect_files`; never sent to the model), `iterations`,
 //! `stopped_reason` (`completed`, `max_iterations` or `length`), `usage`.
 
 use std::borrow::Cow;
@@ -82,6 +84,8 @@ use graphrt_core::redact::redact_secrets;
 #[cfg(feature = "skills")]
 use graphrt_core::skill::{LOAD_SKILL_TOOL, SKILL_PROVIDER, SkillToolGrant, Skills};
 use graphrt_core::template::Template;
+#[cfg(feature = "tool-files")]
+use graphrt_core::tool::collect_files;
 use graphrt_core::tool::{ToolCallContext, ToolImage, ToolOutput, ToolRegistry, ToolRuntime, ToolSpec, check_images};
 use graphrt_core::value::Value;
 use graphrt_core::{Node, NodeContext, NodeError, NodeOutput, Selector};
@@ -412,6 +416,10 @@ struct ToolLogEntry {
     /// UI blocks in the tool's structured result (see [`graphrt_core::ui`]), for the host.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     ui: Vec<Json>,
+    /// Files in the tool's structured result (see [`collect_files`]), for the host.
+    #[cfg(feature = "tool-files")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    files: Vec<Json>,
 }
 
 /// Persistable loop state, used to pause for tool approval.
@@ -942,7 +950,14 @@ impl AgentNode {
         } else {
             graphrt_core::ui::collect_ui_blocks(&output.data).iter().map(Value::to_json).collect()
         };
-        VisibleResult { text, images, ui, is_error: output.is_error }
+        VisibleResult {
+            text,
+            images,
+            ui,
+            #[cfg(feature = "tool-files")]
+            files: returned_files(&output.data, output.is_error),
+            is_error: output.is_error,
+        }
     }
 
     /// Append a tool result to the conversation and the log.
@@ -996,6 +1011,9 @@ struct VisibleResult {
     images: Vec<ToolImage>,
     /// UI blocks the tool returned in its data; never sent to the model.
     ui: Vec<Json>,
+    /// Files the tool returned in its data; never sent to the model.
+    #[cfg(feature = "tool-files")]
+    files: Vec<Json>,
     is_error: bool,
 }
 
@@ -1024,6 +1042,8 @@ fn push_result(state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, res
         is_error: result.is_error,
         images: result.images.len(),
         ui: result.ui,
+        #[cfg(feature = "tool-files")]
+        files: result.files,
     });
 }
 
@@ -1086,15 +1106,43 @@ fn agent_outputs(state: AgentState, final_text: String, stop: &StopReason) -> No
         })
         .collect();
     let ui: Vec<Value> = state.log.iter().flat_map(|e| e.ui.iter().cloned().map(Value::from_json)).collect();
-    NodeOutput::new()
-        .with("text", final_text)
-        .with("tool_calls", Value::from(log))
-        .with("ui", Value::from(ui))
+    let output =
+        NodeOutput::new().with("text", final_text).with("tool_calls", Value::from(log)).with("ui", Value::from(ui));
+    #[cfg(feature = "tool-files")]
+    let output = output.with("files", Value::array(produced_files(&state.log)));
+    output
         .with("iterations", i64::from(state.iteration))
         .with("stopped_reason", stop.as_str())
         .with("usage", usage_value(&state.usage))
         .usage(state.usage)
         .into()
+}
+
+/// The files in a tool's structured result, as JSON for the saved loop state.
+/// A failed tool produced nothing the person should be handed.
+#[cfg(feature = "tool-files")]
+fn returned_files(data: &Value, is_error: bool) -> Vec<Json> {
+    if is_error {
+        return Vec::new();
+    }
+    collect_files(data).into_iter().map(|file| Value::File(file).to_json()).collect()
+}
+
+/// The files of every tool result, in call order. A file returned more than once
+/// (written, then overwritten) appears once, where it was returned last.
+#[cfg(feature = "tool-files")]
+fn produced_files(log: &[ToolLogEntry]) -> Vec<Value> {
+    // The log is this node's own state (never model or tool JSON), so its file objects are trusted.
+    let files: Vec<Value> =
+        log.iter().flat_map(|entry| entry.files.iter().cloned().map(Value::from_json_trusted)).collect();
+    let identity =
+        |value: &Value| value.as_file().map(|file| (file.reference.clone(), file.url.clone(), file.name.clone()));
+    let mut unique: Vec<Value> = Vec::with_capacity(files.len());
+    for file in files {
+        unique.retain(|earlier| identity(earlier) != identity(&file));
+        unique.push(file);
+    }
+    unique
 }
 
 /// The tools a `provider/name` reference selects from the provider's listing:
@@ -2113,5 +2161,108 @@ mod tests {
         assert_eq!(unique_name("search", "docs", &mut used), "docs_search");
         assert_eq!(unique_name("search", "docs", &mut used), "docs_search_2");
         assert_eq!(unique_name("a.b/c", "p", &mut used), "a_b_c");
+    }
+
+    /// Tools: `export {name}` (returns a file), `export_failed {}` (an error that carries one).
+    #[cfg(feature = "tool-files")]
+    #[derive(Debug, Default)]
+    struct ExportTools;
+
+    #[cfg(feature = "tool-files")]
+    fn exported(name: &str) -> Value {
+        Value::from(graphrt_core::value::File {
+            marker: true,
+            name: name.to_owned(),
+            transfer: graphrt_core::value::FileTransfer::ToolFile,
+            reference: Some(format!("workspace:outputs/{name}")),
+            ..Default::default()
+        })
+    }
+
+    #[cfg(feature = "tool-files")]
+    impl ToolRuntime for ExportTools {
+        fn list(&self) -> BoxFuture<'_, Result<Vec<ToolSpec>, ToolError>> {
+            let spec = |name: &str| ToolSpec { name: name.into(), description: "d".into(), parameters: json!({}) };
+            Box::pin(async move { Ok(vec![spec("export"), spec("export_failed")]) })
+        }
+
+        fn call<'a>(
+            &'a self,
+            name: &'a str,
+            arguments: Json,
+            _context: &'a ToolCallContext,
+        ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+            Box::pin(async move {
+                let file = exported(arguments["name"].as_str().unwrap_or("out.csv"));
+                let data = Value::object([("file", file)]);
+                Ok(match name {
+                    "export" => ToolOutput { text: "written".into(), data, ..ToolOutput::default() },
+                    _ => ToolOutput { text: "disk full".into(), data, is_error: true, ..ToolOutput::default() },
+                })
+            })
+        }
+    }
+
+    #[cfg(feature = "tool-files")]
+    fn export_ctx(s: &Setup) -> NodeContext {
+        let mut registry = ToolRegistry::new();
+        registry.add("export", Arc::new(ExportTools) as Arc<dyn ToolRuntime>);
+        let services = Services::new()
+            .with(ModelRegistry::new().with("openai", Arc::clone(&s.model) as Arc<dyn crate::ChatModel>))
+            .with(registry);
+        let mut pool = VariablePool::new();
+        pool.insert("sys", "query", Value::from("export the report"));
+        NodeContext::for_test("agent", pool).with_services(Arc::new(services))
+    }
+
+    #[cfg(feature = "tool-files")]
+    #[tokio::test]
+    async fn files_returned_by_tools_become_the_files_output() {
+        let s = setup(vec![
+            MockModel::tool_calls(&[
+                ("c1", "export", r#"{"name":"a.csv"}"#),
+                ("c2", "export", r#"{"name":"b.md"}"#),
+                ("c3", "export_failed", r#"{"name":"lost.txt"}"#),
+            ]),
+            // The same file again: it is listed once, in its last position.
+            MockModel::tool_calls(&[("c4", "export", r#"{"name":"a.csv"}"#)]),
+            MockModel::text("done"),
+        ]);
+        let out = completed(agent(json!({"tools": ["export/*"]})).run(export_ctx(&s)).await);
+        let files = out.outputs["files"].as_array().unwrap().to_vec();
+        let names: Vec<&str> = files.iter().map(|f| f.as_file().unwrap().name.as_str()).collect();
+        assert_eq!(names, ["b.md", "a.csv"]);
+        assert_eq!(files[0].as_file().unwrap().reference.as_deref(), Some("workspace:outputs/b.md"));
+        // The model saw the tool's text only: no file object, no reference.
+        let seen = serde_json::to_string(&s.model.requests()[1].messages).unwrap();
+        assert!(seen.contains("written") && !seen.contains("workspace:"), "{seen}");
+    }
+
+    #[cfg(feature = "tool-files")]
+    #[tokio::test]
+    async fn an_agent_without_file_tools_has_an_empty_files_output() {
+        let s = setup(vec![MockModel::tool_calls(&[("c1", "add", r#"{"a":2,"b":3}"#)]), MockModel::text("5")]);
+        let out = completed(agent(json!({})).run(ctx(&s)).await);
+        assert_eq!(out.outputs["files"], Value::array([]));
+    }
+
+    #[cfg(feature = "tool-files")]
+    #[tokio::test]
+    async fn files_survive_a_pause_for_approval() {
+        let s = setup(vec![
+            MockModel::tool_calls(&[("c1", "export", r#"{"name":"a.csv"}"#)]),
+            MockModel::tool_calls(&[("c2", "export_failed", "{}")]),
+            MockModel::text("done"),
+        ]);
+        let node = agent(json!({"tools": ["export/*"], "require_approval": ["export/export_failed"]}));
+        let NodeOutcome::Paused(pause) = node.run(export_ctx(&s)).await.unwrap() else { panic!("expected a pause") };
+        // The saved state is JSON: the file must come back as a file after resuming.
+        let state = serde_json::from_str::<Json>(&serde_json::to_string(&pause.state).unwrap()).unwrap();
+        let input = Some(Value::from_json(json!({"approved": true})));
+        let resumed = export_ctx(&s).with_resume(Some(Resume { state, input }));
+        let out = completed(node.run(resumed).await);
+        let files = out.outputs["files"].as_array().unwrap().to_vec();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].as_file().unwrap().name, "a.csv");
     }
 }

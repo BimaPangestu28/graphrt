@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "files", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -32,7 +32,10 @@ code = ["dep:graphrt-code"]
 # Python code nodes via a local subprocess, enabled per run with `--allow-python-subprocess`.
 python = ["code", "graphrt-code/python"]
 # document-extractor node (PDF, Office, spreadsheets, HTML, EPUB, email...).
-doc = ["dep:graphrt-doc"]
+doc = ["dep:graphrt-doc", "graphrt-files?/doc"]
+# File workspaces for agents (`--workspace`): the `files` tools, sandboxed to one
+# directory with quotas. With `doc`, `files/read` also extracts document text.
+files = ["dep:graphrt-files", "graphrt-core/tool-files", "graphrt-llm?/tool-files"]
 # knowledge-retrieval node (`--knowledge`): embeddings, vector stores, hybrid search, rerank.
 rag = ["dep:graphrt-rag"]
 # In-process embeddings for knowledge bases (`type: local` embedders): BERT-family
@@ -135,6 +138,7 @@ graphrt-http = { workspace = true, optional = true }
 graphrt-code = { workspace = true, optional = true, features = ["js", "tokio"] }
 graphrt-mcp = { workspace = true, optional = true, features = ["stdio", "http"] }
 graphrt-doc = { workspace = true, optional = true, features = ["default", "tokio"] }
+graphrt-files = { workspace = true, optional = true, features = ["tokio"] }
 graphrt-rag = { workspace = true, optional = true, features = ["default"] }
 graphrt-plugin = { workspace = true, optional = true }
 graphrt-skill = { workspace = true, optional = true }

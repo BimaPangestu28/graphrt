@@ -13,7 +13,11 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["yaml", "jinja", "tokio"]
+default = ["yaml", "jinja", "tokio", "tool-files"]
+# The `tool` node's `files` output lists the files a native tool returned in its
+# structured result (`tool::collect_files`). Builds without native file tools leave
+# it out: plugins and MCP servers cannot return file values, so the output stays empty.
+tool-files = []
 # Load workflow documents from YAML (pure Rust, wasm-friendly).
 yaml = ["dep:serde-saphyr"]
 # Jinja2-compatible template-transform node (sandboxed minijinja with fuel limits).

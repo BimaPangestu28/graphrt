@@ -46,6 +46,12 @@ pub fn service_options(args: &ServiceArgs) -> Result<ServiceOptions, CliError> {
         model_override: args.model.clone(),
         knowledge: args.knowledge.clone(),
         files_dir: args.files_dir.clone(),
+        #[cfg(feature = "files")]
+        workspace: args.workspace.clone().map(|dir| setup::WorkspaceOptions {
+            dir,
+            read_only: args.workspace_read_only,
+            per_user: args.workspace_per_user,
+        }),
         plugins: crate::extensions::PluginOptions {
             allow_private_network: args.allow_private_network,
             ..args.plugins.options()

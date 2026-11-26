@@ -28,6 +28,9 @@ pub struct ServiceOptions {
     pub knowledge: Option<std::path::PathBuf>,
     /// Root directory for `local_file` references.
     pub files_dir: Option<std::path::PathBuf>,
+    /// File workspace of the agents (`--workspace`).
+    #[cfg(feature = "files")]
+    pub workspace: Option<WorkspaceOptions>,
     /// Plugin search paths.
     pub plugins: crate::extensions::PluginOptions,
     /// Public keys (hex) whose bundle signatures are trusted (`--trust-key`).
@@ -35,6 +38,18 @@ pub struct ServiceOptions {
     /// Ask nodes to report content (rendered messages, tool results...) because
     /// OpenTelemetry content capture is on.
     pub capture_content: bool,
+}
+
+/// `--workspace` and its modifiers.
+#[cfg(feature = "files")]
+#[derive(Clone, Debug, Default)]
+pub struct WorkspaceOptions {
+    /// Directory the agents' files live in.
+    pub dir: std::path::PathBuf,
+    /// `--workspace-read-only`.
+    pub read_only: bool,
+    /// `--workspace-per-user`.
+    pub per_user: bool,
 }
 
 /// Environment variable naming a default providers file.
@@ -221,9 +236,17 @@ pub async fn services(
     if let Some(root) = graphrt_learn::LessonStore::default_root() {
         services.insert(Arc::new(graphrt_learn::LessonStore::open(root)).into_service());
     }
-    // File access: inline data URLs, then `--files-dir`, then policy-checked HTTP URLs.
+    #[allow(unused_mut)]
+    let mut plugin_tools = plugin_tools;
+    // File access: inline data URLs, the agents' workspace, `--files-dir`, then
+    // policy-checked HTTP URLs.
     #[allow(unused_mut)]
     let mut files = graphrt_core::file::ChainResolver::with_data_urls();
+    #[cfg(feature = "files")]
+    if let Some(workspace) = &options.workspace {
+        // Before `--files-dir`, which would look for a `workspace:` reference on disk.
+        files = files.then(install_workspace(workspace, &mut plugin_tools)?);
+    }
     if let Some(dir) = &options.files_dir {
         if !dir.is_dir() {
             return Err(CliError::usage(format!("`--files-dir {}` is not a directory", dir.display())));
@@ -279,6 +302,32 @@ pub async fn services(
         services.insert(graphrt_core::node::CaptureContent);
     }
     Ok(services)
+}
+
+/// Open the `--workspace` directory, register the `files` tool provider and
+/// return the resolver for the files agents store there.
+#[cfg(feature = "files")]
+fn install_workspace(
+    options: &WorkspaceOptions,
+    tools: &mut graphrt_core::tool::ToolRegistry,
+) -> Result<Arc<dyn graphrt_core::file::FileResolver>, CliError> {
+    use graphrt_files::{FileTools, PROVIDER, Workspace, WorkspaceLimits, WorkspaceResolver};
+    let limits = WorkspaceLimits { read_only: options.read_only, ..WorkspaceLimits::default() };
+    let workspace = Workspace::dir(&options.dir, limits)
+        .map_err(|e| CliError::usage(format!("`--workspace {}`: {e}", options.dir.display())))?;
+    if tools.get(PROVIDER).is_some() {
+        return Err(CliError::usage(format!(
+            "tool provider `{PROVIDER}` is defined by a plugin and by `--workspace`; rename the plugin's provider"
+        )));
+    }
+    let file_tools = FileTools::new(workspace.clone());
+    let (file_tools, resolver) = if options.per_user {
+        (file_tools.scoped_by_context(), WorkspaceResolver::across_scopes(workspace))
+    } else {
+        (file_tools, WorkspaceResolver::new(workspace))
+    };
+    tools.add(PROVIDER, Arc::new(file_tools));
+    Ok(Arc::new(resolver))
 }
 
 /// Add every provider of `extra` to `base`; a provider name used by both is an error.

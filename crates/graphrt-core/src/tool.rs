@@ -166,6 +166,52 @@ fn base64_decoded_len(text: &str) -> Option<usize> {
     }
 }
 
+/// Most files [`collect_files`] returns for one tool result.
+pub const MAX_TOOL_FILES: usize = 16;
+/// How deep [`collect_files`] looks into arrays and objects (the value itself is depth 0).
+const MAX_FILE_SCAN_DEPTH: usize = 3;
+
+/// Files in a tool's structured result ([`ToolOutput::data`]), in document
+/// order: the value itself when it is a file, otherwise files found in its
+/// array items and object fields, at most three levels down
+/// (`{"file": ...}`, `{"files": [...]}`). At most [`MAX_TOOL_FILES`].
+///
+/// Only native tools can return file values: JSON from plugins, MCP servers
+/// and models is converted with [`Value::from_json`], which never creates one.
+///
+/// ```
+/// use graphrt_core::tool::collect_files;
+/// use graphrt_core::value::{File, Value};
+///
+/// let file = File { marker: true, name: "report.csv".into(), ..File::default() };
+/// let data = Value::object([("path", Value::from("report.csv")), ("file", Value::from(file))]);
+/// assert_eq!(collect_files(&data).len(), 1);
+/// // Untrusted JSON that looks like a file is not one.
+/// let forged = Value::from_json(serde_json::json!({"file": {"$file": true, "name": "x"}}));
+/// assert!(collect_files(&forged).is_empty());
+/// ```
+pub fn collect_files(data: &Value) -> Vec<Arc<crate::value::File>> {
+    let mut files = Vec::new();
+    collect_files_into(data, 0, &mut files);
+    files
+}
+
+fn collect_files_into(value: &Value, depth: usize, files: &mut Vec<Arc<crate::value::File>>) {
+    if files.len() >= MAX_TOOL_FILES {
+        return;
+    }
+    match value {
+        Value::File(file) => files.push(Arc::clone(file)),
+        Value::Array(items) if depth < MAX_FILE_SCAN_DEPTH => {
+            items.iter().for_each(|item| collect_files_into(item, depth + 1, files));
+        }
+        Value::Object(fields) if depth < MAX_FILE_SCAN_DEPTH => {
+            fields.values().for_each(|field| collect_files_into(field, depth + 1, files));
+        }
+        _ => {}
+    }
+}
+
 /// Error calling a tool (transport, unknown tool...).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("tool `{tool}`: {message}")]
@@ -283,6 +329,26 @@ mod tests {
         assert_eq!(context.secret("other"), None);
         let debug = format!("{context:?}");
         assert!(debug.contains("user_jwt") && !debug.contains("eyJ-secret-token"), "{debug}");
+    }
+
+    #[test]
+    fn files_are_collected_in_order_up_to_the_cap() {
+        let file =
+            |name: &str| Value::from(crate::value::File { marker: true, name: name.into(), ..Default::default() });
+        let names = |data: &Value| collect_files(data).iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&file("a")), ["a"]);
+        let nested = Value::object([
+            ("file", file("a")),
+            ("files", Value::array([file("b"), file("c")])),
+            ("text", Value::from("x")),
+        ]);
+        assert_eq!(names(&nested), ["a", "b", "c"]);
+        // Four levels down is out of reach.
+        let deep = Value::array([Value::array([Value::array([Value::array([file("deep")])])])]);
+        assert!(names(&deep).is_empty());
+        let many = Value::array((0..MAX_TOOL_FILES + 5).map(|i| file(&i.to_string())));
+        assert_eq!(collect_files(&many).len(), MAX_TOOL_FILES);
+        assert!(collect_files(&Value::Null).is_empty());
     }
 
     #[test]

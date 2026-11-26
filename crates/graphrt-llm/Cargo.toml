@@ -13,7 +13,12 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["openai", "anthropic", "typesafe", "mock", "replay"]
+default = ["openai", "anthropic", "typesafe", "mock", "replay", "tool-files"]
+# The `files` output of the `agent` node: files that native tools return in their
+# structured result (for example what the `files` tools of graphrt-files wrote).
+# Plugins and MCP servers cannot return file values, so builds that have no native
+# file tools leave this out and keep the agent node exactly as small as it was.
+tool-files = []
 # `mock::MockModel`, a scripted model for tests and offline examples (no dependencies).
 mock = []
 # `kind: replay` providers: record responses to cassette files and replay them
