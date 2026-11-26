@@ -46,5 +46,6 @@ Start with the [project README](../README.md) for install and a first workflow.
 ## Internals and security
 
 - [Architecture](architecture.md)
+- [Skills and self learning](skills-and-learning.md) (design, preview): research, threats, decisions and the contract for user interfaces
 - [Security guide](security.md)
 - [Benchmarks](benchmarks.md)
