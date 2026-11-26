@@ -48,6 +48,6 @@ pub mod store;
 
 pub use error::Error;
 pub use learner::{Candidate, DistillReport, Distiller, Learner, Observation, ObservationKind};
-pub use lesson::{Lesson, LessonKind, LessonStatus, Origin, Risk, Signal, Trust};
+pub use lesson::{Lesson, LessonKind, LessonStatus, Origin, Risk, RiskReason, Signal, Trust};
 pub use policy::LearningPolicy;
 pub use store::{AuditEntry, Decision, Forget, LessonFilter, LessonStore, NewLesson, Proposal, UserFilter};

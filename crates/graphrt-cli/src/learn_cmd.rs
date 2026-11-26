@@ -235,7 +235,8 @@ fn write_lesson(lesson: &Lesson, out: &mut impl Write) -> Result<(), CliError> {
         writeln!(out, "    evidence: {evidence}").map_err(io_error)?;
     }
     if lesson.risk == Risk::High {
-        writeln!(out, "    needs a careful look: {}", lesson.risk_reasons.join(" ")).map_err(io_error)?;
+        let reasons: Vec<&str> = lesson.risk_reasons.iter().map(|reason| reason.message.as_str()).collect();
+        writeln!(out, "    needs a careful look: {}", reasons.join(" ")).map_err(io_error)?;
     }
     Ok(())
 }

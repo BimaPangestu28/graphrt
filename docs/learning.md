@@ -80,6 +80,14 @@ contains a web address, an email address or a long number, or when the skill
 scan flags it. The check knows English and Indonesian words. It errs towards
 `high`, which only means that a person decides.
 
+Each reason is a `{code, message}` pair in `risk_reasons`. The message is plain
+English. The code is stable, for hosts that show it in another language:
+`sending`, `money`, `approval`, `changes_records`, `credentials`,
+`tools_or_instructions`, `web_address`, `email_address`, `long_number`, or the
+code of a skill scan finding (`overrides_instructions`, `hides_from_user`,
+`skips_approval`, `touches_credentials`, `hidden_characters`,
+`download_and_run`).
+
 **Automatic approval** is off by default. When the owner turns it on for an
 agent (`graphrt learn policy <agent> --auto-approve true`), a lesson is
 approved without a person only if all of these hold: trust is `user`, risk is
