@@ -135,6 +135,13 @@ jobs:
     timeout-minutes: 45
     env:
       IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+      # Pinned so the app builds with the SDK of the runtime it runs on. Picking the
+      # newest installed runtime ran iOS 26 under the default Xcode 16.4, whose
+      # first boot left SpringBoard unable to launch apps for minutes.
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      SIMULATOR_RUNTIME: com.apple.CoreSimulator.SimRuntime.iOS-18-5
+      SIMULATOR_DEVICE_TYPE: com.apple.CoreSimulator.SimDeviceType.iPhone-16
+      DIAGNOSTICS_DIR: ${{ github.workspace }}/simulator-diagnostics
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
@@ -157,15 +164,16 @@ jobs:
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -configuration Debug -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO -quiet build
-      - name: Boot a simulator (newest iOS runtime, first iPhone it supports)
-        run: |
-          read -r runtime device_type < <(xcrun simctl list runtimes available -j | jq -r \
-            '[.runtimes[] | select(.platform == "iOS")] | last
-             | [.identifier, ([.supportedDeviceTypes[] | select(.productFamily == "iPhone")] | first | .identifier)]
-             | @tsv')
-          udid="$(xcrun simctl create graphrt-smoke "$device_type" "$runtime")"
-          echo "simulator: $device_type on $runtime ($udid)"
-          xcrun simctl bootstatus "$udid" -b
-          echo "SIMULATOR_DEVICE=$udid" >> "$GITHUB_ENV"
+      - name: Boot a simulator (iOS 18.5, iPhone 16) and wait until it launches apps
+        # Retries a stalled boot on a fresh device. The smoke test is never retried.
+        run: examples/mobile/ios/scripts/boot-simulator.sh
       - name: Smoke test in the simulator
         run: examples/mobile/ios/scripts/smoke-test.sh
+      - name: Upload the simulator diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-simulator-diagnostics
+          path: ${{ env.DIAGNOSTICS_DIR }}
+          if-no-files-found: ignore
+          retention-days: 14

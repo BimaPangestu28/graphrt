@@ -327,7 +327,7 @@ pull requests that touch the crates, the Kotlin / Swift bindings or
 | Job | Runner | Builds | Runs |
 | --- | --- | --- | --- |
 | `android` | `ubuntu-24.04` | `aarch64-linux-android` + `x86_64-linux-android` with `cargo-ndk` (runner NDK), then the debug APK with Gradle | the APK in an API 34 x86_64 emulator (KVM, cached AVD snapshot) via `android-emulator-runner` |
-| `ios` | `macos-15` | XCFramework for `aarch64-apple-ios` + `aarch64-apple-ios-sim`, `cargo check` for `x86_64-apple-ios`, the sample app for the simulator | the app in a fresh simulator (newest iOS runtime) via `xcrun simctl` |
+| `ios` | `macos-15` | XCFramework for `aarch64-apple-ios` + `aarch64-apple-ios-sim`, `cargo check` for `x86_64-apple-ios`, the sample app for the simulator | the app in a fresh iOS 18.5 iPhone 16 simulator (Xcode 16.4, both pinned) via `xcrun simctl`, booted by `boot-simulator.sh`, which waits until the simulator launches apps and retries a stalled boot on a fresh device |
 
 Both jobs build with `--no-default-features`, the `min-size` profile and
 `-D warnings`, cache Rust builds with `rust-cache` (Gradle with

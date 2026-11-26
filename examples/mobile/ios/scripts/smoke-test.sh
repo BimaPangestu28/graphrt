@@ -13,6 +13,8 @@
 #                          counted against the run.
 #   SMOKE_TIMEOUT_SECONDS  how long to wait for the runs once the workflow loaded
 #                          (default: 60)
+#   DIAGNOSTICS_DIR        where the console output and the simulator logs go when
+#                          the test fails (default: not saved, only printed)
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -98,6 +100,20 @@ grep -q "finish: .*\"greeting\":\"$expected_greeting\"" "$log_file" || failures+
 
 if ((${#failures[@]} > 0)); then
   printf 'smoke test FAILED: %s\n' "${failures[@]}" >&2
+  # Tell an app that never started apart from one that started and went silent.
+  if xcrun simctl spawn "$device" launchctl list 2>/dev/null | grep -q "UIKitApplication:$bundle_id"; then
+    echo "the app process is running" >&2
+  else
+    echo "the app process is not running (it never started, or it exited)" >&2
+  fi
+  if [[ -n "${DIAGNOSTICS_DIR:-}" ]]; then
+    mkdir -p "$DIAGNOSTICS_DIR/smoke-test"
+    tr -d '\r' <"$log_file" >"$DIAGNOSTICS_DIR/smoke-test/console.txt"
+    xcrun simctl spawn "$device" launchctl print system >"$DIAGNOSTICS_DIR/smoke-test/launchctl-print-system.txt" 2>&1 || true
+    xcrun simctl spawn "$device" log show --last 15m --style compact \
+      >"$DIAGNOSTICS_DIR/smoke-test/simulator.log" 2>&1 || true
+    echo "diagnostics saved to $DIAGNOSTICS_DIR/smoke-test" >&2
+  fi
   # What the simulator logged about the app, for the diagnosis.
   echo "--- simulator log of GraphrtSample (last 10 minutes) ---" >&2
   xcrun simctl spawn "$device" log show --last 10m --style compact \

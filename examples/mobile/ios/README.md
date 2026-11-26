@@ -74,6 +74,15 @@ console shows the expected greeting:
 examples/mobile/ios/scripts/smoke-test.sh       # from the repository root
 ```
 
+CI first runs `scripts/boot-simulator.sh`, which creates a pinned simulator
+(iOS 18.5, iPhone 16), boots it and waits until it can launch a system app,
+retrying a stalled boot on a fresh device. It prints the UDID to pass on:
+
+```sh
+SIMULATOR_DEVICE="$(examples/mobile/ios/scripts/boot-simulator.sh)" \
+  examples/mobile/ios/scripts/smoke-test.sh
+```
+
 ## Run on an iPhone
 
 With the device connected and unlocked (Developer Mode on), build the device
