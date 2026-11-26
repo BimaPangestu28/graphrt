@@ -8,7 +8,7 @@ keywords = ["rag", "embeddings", "vector-search", "bm25", "retrieval"]
 categories = ["text-processing", "database"]
 version.workspace = true
 edition.workspace = true
-# The bundled SQLite (rusqlite 0.41, SQLite 3.54) needs Rust 1.89.
+# The bundled SQLite (rusqlite 0.43, SQLite 3.54.1) needs Rust 1.89.
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
