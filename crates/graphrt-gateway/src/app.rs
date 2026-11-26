@@ -214,7 +214,11 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
         let Some(keys) = keys_by_deployment.get(&deployment.name).cloned() else { return };
         local.register(
             &info.reference(&deployment.name),
-            LocalVersion { command: info.command.clone(), keys, env: Vec::new() },
+            LocalVersion {
+                command: agent_command(&info.command, deployment.pool_config.max_active_runs),
+                keys,
+                env: Vec::new(),
+            },
         );
     });
     load_versions(&gateway, Some(&hook)).await.map_err(|error| error.to_string())?;
@@ -231,6 +235,20 @@ pub async fn build_on(config: &GatewayConfig, store: SqliteStore) -> Result<Buil
         backup,
         ttl: Duration::from_secs(config.store_ttl_days * 86_400),
     })
+}
+
+/// The command of a local agent: `command` with `--max-active-runs` set to the
+/// pool's limit when it does not set one itself. Otherwise an agent below the
+/// pool's limit refuses the runs above its own (`429`) that the pool hands it.
+pub fn agent_command(command: &[String], max_active_runs: u32) -> Vec<String> {
+    let mut command = command.to_vec();
+    let sets_limit =
+        command.iter().any(|argument| argument == "--max-active-runs" || argument.starts_with("--max-active-runs="));
+    if !sets_limit && !command.is_empty() {
+        command.push("--max-active-runs".to_owned());
+        command.push(max_active_runs.max(1).to_string());
+    }
+    command
 }
 
 /// Retires versions whose 7-day pool expired: closes their pool (replicas
@@ -360,7 +378,29 @@ pub async fn serve_with(config: GatewayConfig, versions: Vec<(String, VersionInf
         started.elapsed().as_millis()
     );
     let service = router(built.app.clone()).into_make_service_with_connect_info::<SocketAddr>();
-    axum::serve(listener, service).with_graceful_shutdown(shutdown_signal()).await.map_err(|error| error.to_string())
+    axum::serve(public_listener(listener), service)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// The gateway's public listener with `TCP_NODELAY` on every accepted
+/// connection. Without it, the second and later small writes of a streamed
+/// (SSE) response wait for the client's delayed ACK: about 40 ms at the end of
+/// every stream and in the first token of some, on Linux (`graphrt serve`
+/// does the same on its listener).
+pub fn public_listener(listener: tokio::net::TcpListener) -> PublicListener {
+    use axum::serve::ListenerExt as _;
+    listener.tap_io(set_nodelay)
+}
+
+/// See [`public_listener`].
+pub type PublicListener = axum::serve::TapIo<tokio::net::TcpListener, fn(&mut tokio::net::TcpStream)>;
+
+fn set_nodelay(stream: &mut tokio::net::TcpStream) {
+    if let Err(error) = stream.set_nodelay(true) {
+        eprintln!("gateway: TCP_NODELAY on a client connection: {error}");
+    }
 }
 
 /// Registers `versions` (deployment, version) that are new (`--dev`).
@@ -389,6 +429,31 @@ mod tests {
 
     use super::*;
     use crate::warm::ArrivalModel;
+
+    #[test]
+    fn local_agents_get_the_pool_limit_unless_their_command_sets_one() {
+        let command = |items: &[&str]| items.iter().map(|item| (*item).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            agent_command(&command(&["graphrt", "serve", "a.yaml"]), 1000),
+            command(&["graphrt", "serve", "a.yaml", "--max-active-runs", "1000"])
+        );
+        let own = command(&["graphrt", "serve", "a.yaml", "--max-active-runs", "4"]);
+        assert_eq!(agent_command(&own, 1000), own);
+        let own = command(&["graphrt", "serve", "--max-active-runs=4", "a.yaml"]);
+        assert_eq!(agent_command(&own, 1000), own);
+        assert!(agent_command(&[], 8).is_empty());
+    }
+
+    #[tokio::test]
+    async fn public_connections_have_tcp_nodelay() {
+        use axum::serve::Listener as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut listener = public_listener(listener);
+        let _client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let (accepted, _) = listener.accept().await;
+        assert!(accepted.nodelay().unwrap(), "small SSE writes must not wait for the client's delayed ACK");
+    }
 
     #[tokio::test(start_paused = true)]
     async fn learned_traffic_is_prewarmed_once_per_slot() {

@@ -192,3 +192,101 @@ async fn thousand_concurrent_streams() {
     assert!(agents.idle_stream_connections() <= 4 * graphrt_gateway::stream_conn::MAX_IDLE_PER_AGENT);
     wait_for("finished streams to give their agent connections back", || agents.idle_stream_connections() > 0).await;
 }
+
+/// Decodes an HTTP/1.1 response with a chunked body: (head, body).
+fn dechunk(raw: &[u8]) -> (String, Vec<u8>) {
+    let split = raw.windows(4).position(|window| window == b"\r\n\r\n").expect("response head");
+    let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+    let mut rest = &raw[split + 4..];
+    let mut body = Vec::new();
+    loop {
+        let line_end = rest.windows(2).position(|window| window == b"\r\n").expect("chunk size line");
+        let size = usize::from_str_radix(std::str::from_utf8(&rest[..line_end]).unwrap().trim(), 16).unwrap();
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            return (head, body);
+        }
+        body.extend_from_slice(&rest[..size]);
+        rest = &rest[size + 2..];
+    }
+}
+
+/// A client that reads slowly falls behind the live broadcast while the run
+/// finishes: once it reads again it still gets every event up to the terminal
+/// one (from the replay ring), never a stream that just stops (a cut-off answer
+/// a client cannot tell from a short one).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lagging_client_of_a_finished_run_gets_the_whole_stream() {
+    let gateway = start_gateway(Options::default()).await;
+    // 200 x 64 KiB chunks (402 frames, within the 512-frame ring): far more than
+    // the socket buffers and the client's 64-frame buffer hold.
+    let events = 200u64;
+    let inputs = json!({ "events": events, "delay_ms": 0, "pad_bytes": 64 * 1024 });
+    let address: std::net::SocketAddr = gateway.url.trim_start_matches("http://").parse().unwrap();
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let mut socket = socket.connect(address).await.unwrap();
+    let body = json!({ "stream": true, "inputs": inputs }).to_string();
+    let request = format!(
+        "POST {} HTTP/1.1\r\nhost: {address}\r\nx-api-key: {API_KEY}\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        runs(),
+        body.len()
+    );
+    socket.write_all(request.as_bytes()).await.unwrap();
+    // Read nothing until the run is over: the client stream lags behind the broadcast.
+    let metrics = &gateway.gateway.metrics;
+    wait_for("the run to finish", || metrics.runs_finished.load(Ordering::Relaxed) == 1).await;
+    let mut raw = Vec::new();
+    tokio::time::timeout(Duration::from_secs(30), socket.read_to_end(&mut raw)).await.unwrap().unwrap();
+    let (head, body) = dechunk(&raw);
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    let frames = graphrt_gateway::sse::Parser::default().feed(&body).unwrap();
+    let ids: Vec<u64> = frames.iter().filter_map(|frame| frame.event_index()).collect();
+    assert_eq!(ids, (0..events + 2).collect::<Vec<_>>(), "gapless, in order, up to the terminal event");
+    assert_eq!(frames.iter().filter(|frame| frame.event == "response").count() as u64, events);
+    assert_eq!(frames.last().unwrap().event, "run_succeeded");
+}
+
+/// A run the gateway fails itself (here: its executor vanished without a
+/// terminal event) still ends every client stream with `run_failed`, live and
+/// on a reconnect, instead of a stream that just stops.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_run_the_gateway_fails_ends_its_streams_with_run_failed() {
+    let gateway = start_gateway(Options { reclaim_grace: Duration::from_millis(300), ..Options::default() }).await;
+    let body = json!({ "stream": true, "inputs": { "mode": "vanish", "events": 3 } });
+    let live = gateway.sse(&runs(), Some(body), None).await;
+    let (id, event, data) = live.last().unwrap();
+    assert_eq!((id.as_deref(), event.as_str()), (None, "run_failed"), "{live:?}");
+    assert_eq!(data["error_type"], "owner_lost");
+    let ids = engine_ids(&live);
+    assert_eq!(ids, (0..ids.len() as u64).collect::<Vec<_>>(), "the agents' events first, gapless");
+    let run_id =
+        live.iter().find(|(_, event, _)| event == "run_started").unwrap().2["run_id"].as_str().unwrap().to_owned();
+    let last = ids.last().unwrap().to_string();
+    for last_event_id in [None, Some(last.as_str())] {
+        let replayed = gateway.sse(&format!("{}/{run_id}/events", runs()), None, last_event_id).await;
+        assert_eq!(replayed.last().unwrap().1, "run_failed", "{last_event_id:?}: {replayed:?}");
+    }
+    // A finished run that has its own terminal event gets nothing made up.
+    let ok = gateway.sse(&runs(), Some(json!({ "stream": true, "inputs": { "events": 1 } })), None).await;
+    assert_eq!(ok.iter().filter(|(_, event, _)| event.starts_with("run_s")).count(), 2, "{ok:?}");
+}
+
+/// An agent that is momentarily full (`429`) gets the run again after a short
+/// wait instead of the run failing at once; one that stays full fails it with
+/// an explicit `run_failed` (`dispatch_failed`), never an empty `200`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_busy_agent_is_retried_and_a_full_one_fails_the_run_explicitly() {
+    let gateway = start_gateway(Options::default()).await;
+    let world = &gateway.provider.world;
+    world.busy_refusals.store(2, Ordering::SeqCst);
+    let body = json!({ "stream": true, "inputs": { "events": 1 } });
+    let retried = gateway.sse(&runs(), Some(body.clone()), None).await;
+    assert_eq!(retried.last().unwrap().1, "run_succeeded", "{retried:?}");
+    world.busy_refusals.store(100, Ordering::SeqCst);
+    let refused = gateway.sse(&runs(), Some(body), None).await;
+    let (id, event, data) = refused.last().unwrap();
+    assert_eq!((id.as_deref(), event.as_str()), (None, "run_failed"), "{refused:?}");
+    assert_eq!(data["error_type"], "dispatch_failed");
+    assert!(data["error"].as_str().unwrap().contains("429"), "{data}");
+}

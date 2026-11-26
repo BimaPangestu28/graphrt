@@ -108,7 +108,12 @@ version retired more than 7 days ago is `410 version_retired`.
 
 SSE ids: engine events are `id: N` (their index in the run's log, stable across
 executions); response text chunks are `id: N.k`. A reconnect with
-`Last-Event-ID` continues without gaps or duplicates.
+`Last-Event-ID` continues without gaps or duplicates. The stream of a finished
+run always ends with its terminal event. When the gateway ends a run itself
+(no replica took it, the run timeout, an executor lost for good), there is no
+terminal event from an agent, and the gateway sends `run_failed` (or
+`run_aborted`) built from the run record, without an id, so a reconnect gets
+it again. A stream that ends without one was cut off, not finished.
 
 ## How runs survive
 
@@ -392,7 +397,7 @@ short control calls (`hello`, `orphans`, `drain`, `abort`) use reqwest.
 
 Per-stream memory is bounded under slow clients: a client stream buffers at
 most 64 frames; one that falls behind the 32-frame live broadcast catches up
-from the run's replay ring or is disconnected and resumes from the store with
-`Last-Event-ID`. The agent is never slowed down by a client: its frames are
+from the run's replay ring (from the store when the run is over) or is
+disconnected and resumes from the store with `Last-Event-ID`. The agent is never slowed down by a client: its frames are
 read, stored and broadcast at its own pace. One event from an agent may not
 exceed 4 MiB.

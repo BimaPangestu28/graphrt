@@ -46,6 +46,21 @@ releases may contain breaking changes; they are called out under **Changed**.
 
 - `graphrt_provider_api::EndpointAddress` has a `Pipe` variant and is
   `#[non_exhaustive]`: matches outside the crate need a wildcard arm.
+- `graphrt gateway` starts local agents with `--max-active-runs` equal to the
+  deployment's `pool.max_active_runs` unless the version's command sets it,
+  and offers a run an agent refused as busy (`429`) or draining (`503`) again
+  after a short backoff instead of failing it at once.
+
+### Fixed
+
+- `graphrt gateway` sets `TCP_NODELAY` on its public connections, as
+  `graphrt serve` does: small SSE writes no longer wait up to ~40 ms for the
+  client's delayed ACK (the end of most streams and the first token of some).
+- A client stream of the gateway that fell behind while its run finished
+  stopped without the terminal event; it now sends the rest from the replay
+  ring or the store. A run the gateway ends itself (no replica took it, run
+  timeout, lost executor) now ends its streams with `run_failed` instead of a
+  stream without a terminal event (an empty `200` when nothing was dispatched).
 
 ## [0.6.2] - 2026-11-24
 
