@@ -30,8 +30,7 @@ updates:
   - package-ecosystem: npm
     directory: /sdk/typescript
     schedule:
-      # The SDKs change rarely: monthly is enough.
-      interval: monthly
+      interval: weekly
     open-pull-requests-limit: 3
     groups:
       minor-and-patch:
@@ -39,8 +38,7 @@ updates:
   - package-ecosystem: pip
     directory: /sdk/python
     schedule:
-      # The SDKs change rarely: monthly is enough.
-      interval: monthly
+      interval: weekly
     open-pull-requests-limit: 3
     groups:
       minor-and-patch:
