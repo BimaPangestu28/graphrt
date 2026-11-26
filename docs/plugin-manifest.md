@@ -266,6 +266,9 @@ then completes with two outputs:
 - `cursor`: a string the next call resumes from, so nothing is lost or repeated
   between calls (and across host restarts, when the host stores it).
 
+Both may also sit under a `data` output (`data.events`, `data.cursor`), the
+shape of every graphrt-plugins operation; hosts read either.
+
 A failed call is retried by the host with a backoff. Keep each call shorter
 than `limits.timeout_ms`; a few minutes is a good upper bound.
 
