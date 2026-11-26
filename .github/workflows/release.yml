@@ -181,10 +181,21 @@ jobs:
           sha256sum -- * > SHA256SUMS
           sha256sum -c SHA256SUMS
           cat SHA256SUMS
+      # Title "Graphrt X.Y.Z", body from CHANGELOG.md plus .github/release-notes/install.md.
+      - name: Release notes
+        id: notes
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+          RELEASE_REPO: ${{ github.repository }}
+        run: |
+          scripts/release-notes.sh "$TAG" > release-notes.md
+          cat release-notes.md
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ needs.tag.outputs.tag }}
-          generate_release_notes: true
+          name: Graphrt ${{ steps.notes.outputs.version }}
+          body_path: release-notes.md
           files: |
             dist/*
             install.sh

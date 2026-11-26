@@ -31,6 +31,15 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features
       - run: cargo test --workspace --all-features
 
+  release-notes:
+    name: release notes script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/test-release-notes.sh
+
   msrv:
     name: MSRV (1.89, every crate)
     runs-on: ubuntu-latest

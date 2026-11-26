@@ -167,9 +167,15 @@ async fn requests_spread_over_the_processes_of_a_pool() {
     assert!(started.elapsed() < Duration::from_millis(2600), "served one after the other: {:?}", started.elapsed());
 }
 
-/// Distinct process start times seen over a few parallel requests.
-async fn pids(pool: &Pooled) -> std::collections::HashSet<u128> {
-    let runs = (0..4).map(|_| process_started_ns(pool));
+/// The process id of the process that served a `testkit.started` node.
+async fn process_pid(pool: &Pooled) -> u64 {
+    output(&pool.run(single_node("testkit.started", json!({}), "pid")).await).as_u64().expect("pid")
+}
+
+/// Distinct processes seen over a few parallel requests (by pid: start times can
+/// collide on Windows, where the plugin's clock may tick only every ~15.6 ms).
+async fn pids(pool: &Pooled) -> std::collections::HashSet<u64> {
+    let runs = (0..4).map(|_| process_pid(pool));
     futures::future::join_all(runs).await.into_iter().collect()
 }
 
