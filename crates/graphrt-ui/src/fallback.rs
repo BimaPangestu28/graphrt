@@ -80,6 +80,9 @@ pub struct TextOptions {
     pub decimal: char,
     /// The line above numbered choices.
     pub choice_prompt: String,
+    /// The number of the first choice (1 unless an earlier card in the same message
+    /// already used some numbers).
+    pub first_choice: usize,
 }
 
 impl Default for TextOptions {
@@ -92,6 +95,7 @@ impl Default for TextOptions {
             thousands: ',',
             decimal: '.',
             choice_prompt: "Reply with a number:".to_owned(),
+            first_choice: 1,
         }
     }
 }
@@ -111,6 +115,13 @@ impl TextOptions {
     pub fn with_separators(mut self, thousands: char, decimal: char) -> Self {
         self.thousands = thousands;
         self.decimal = decimal;
+        self
+    }
+
+    /// Starts numbering choices at `number`, for a message with several cards: pass the
+    /// previous cards' choice count plus one, so every number in the message is unique.
+    pub fn with_first_choice(mut self, number: usize) -> Self {
+        self.first_choice = number.max(1);
         self
     }
 
@@ -172,6 +183,9 @@ pub fn to_text(block: &UiBlock, options: &TextOptions) -> TextFallback {
                 }
             }
             choices = reader.into_choices();
+            for choice in &mut choices {
+                choice.number += options.first_choice.saturating_sub(1);
+            }
         }
         _ if author_text.is_some() => lines.extend(author_text.map(str::to_owned)),
         UiKind::Table => table_lines(value, options, &mut lines),
@@ -818,6 +832,17 @@ mod tests {
         let large = match_choice(&fallback.choices, "large").unwrap();
         assert_eq!(large.action.as_deref(), Some("order"));
         assert_eq!(Json::Object(large.values.clone()), json!({"source": "card", "size": "l"}));
+    }
+
+    #[test]
+    fn a_second_card_continues_the_numbering() {
+        let card = json!({"$ui": "adaptive_card", "version": 1,
+            "card": {"type": "AdaptiveCard", "version": "1.5", "body": [{"type": "TextBlock", "text": "Deliver today?"}],
+                "actions": [{"type": "Action.Submit", "id": "yes", "title": "Yes"}, {"type": "Action.Submit", "id": "no", "title": "No"}]}});
+        let fallback = text(card, &TextOptions::default().with_first_choice(3));
+        assert_eq!(fallback.text, "Deliver today?\n\nReply with a number:\n3. Yes\n4. No");
+        assert_eq!(match_choice(&fallback.choices, "4").and_then(|choice| choice.action.as_deref()), Some("no"));
+        assert!(match_choice(&fallback.choices, "1").is_none());
     }
 
     #[test]
