@@ -271,7 +271,8 @@ async fn gateway_restart_reclaims_running_runs() {
     assert!(second.gateway.accept_orphan(&run_id, json!({ "run_id": run_id, "epoch": epoch, "terminal": terminal })));
     let done = second.wait_settled(&run_id).await;
     assert_eq!(done["status"], "succeeded", "{done}");
-    std::fs::remove_dir_all(&dir).unwrap();
+    // Best effort: on Windows the open store of the running gateway cannot be deleted.
+    let _cleanup = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

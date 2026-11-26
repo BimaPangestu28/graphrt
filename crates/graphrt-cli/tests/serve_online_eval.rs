@@ -18,7 +18,8 @@ use serde_json::{Value as Json, json};
 use tower::ServiceExt;
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+    // No `canonicalize`: on Windows it returns a `\\?\` path, which takes no `/` separators.
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap().to_path_buf()
 }
 
 fn options() -> ServiceOptions {
@@ -229,5 +230,5 @@ async fn the_online_example_replays_offline() {
         assert_eq!(by_name(&scored, name)["label"], "pass", "{name}: {scored:?}");
     }
     let judge = by_name(&scored, "faithfulness")["judge"]["workflow"].as_str().unwrap();
-    assert!(judge.ends_with("examples/evals/judges/faithfulness.yaml"), "{judge}");
+    assert!(judge.replace('\\', "/").ends_with("examples/evals/judges/faithfulness.yaml"), "{judge}");
 }

@@ -35,10 +35,10 @@ while True:
 const AGENT: &str = r#"
 import _winapi, sys
 name = next(a[5:] for a in sys.argv if a.startswith("pipe:"))
+# PIPE_ACCESS_DUPLEX, FILE_FLAG_FIRST_PIPE_INSTANCE; byte mode, blocking, PIPE_REJECT_REMOTE_CLIENTS
 def instance(first):
-    flags = _winapi.PIPE_ACCESS_DUPLEX | (_winapi.FILE_FLAG_FIRST_PIPE_INSTANCE if first else 0)
-    mode = _winapi.PIPE_TYPE_BYTE | _winapi.PIPE_READMODE_BYTE | _winapi.PIPE_WAIT | 0x8  # PIPE_REJECT_REMOTE_CLIENTS
-    return _winapi.CreateNamedPipe(name, flags, mode, _winapi.PIPE_UNLIMITED_INSTANCES, 65536, 65536, 0, _winapi.NULL)
+    flags = 0x3 | (0x80000 if first else 0)
+    return _winapi.CreateNamedPipe(name, flags, 0x8, 255, 65536, 65536, 0, 0)
 pipe = instance(True)
 while True:
     try:

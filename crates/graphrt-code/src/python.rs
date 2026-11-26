@@ -382,9 +382,10 @@ mod tests {
 
     #[test]
     fn missing_limits_are_reported() {
-        assert!(limit_notes(Some(&serde_json::json!({"cpu": 10, "memory": 1024}))).is_empty());
+        // Windows applies no limits at all, and says so for every run.
+        assert_eq!(limit_notes(Some(&serde_json::json!({"cpu": 10, "memory": 1024}))).is_empty(), cfg!(unix));
         let notes = limit_notes(Some(&serde_json::json!({"cpu": 10, "memory": -1})));
-        assert!(notes.iter().any(|n| n.contains("memory")), "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains(if cfg!(unix) { "memory" } else { "not applied" })), "{notes:?}");
         assert!(!limit_notes(None).is_empty());
     }
 
@@ -439,10 +440,18 @@ mod tests {
         // `__CF_USER_TEXT_ENCODING` is added by macOS CoreFoundation inside the
         // Python process itself (it appears even under `env -i`); it holds only
         // the uid and text encoding, nothing taken from the host environment.
+        // `SYSTEMROOT` is passed on Windows, where Python cannot start without it.
         assert!(
             keys.iter().all(|k| matches!(
                 k.as_str(),
-                "PATH" | "PYTHONIOENCODING" | "LC_CTYPE" | "PWD" | "SHLVL" | "_" | "__CF_USER_TEXT_ENCODING"
+                "PATH"
+                    | "PYTHONIOENCODING"
+                    | "LC_CTYPE"
+                    | "PWD"
+                    | "SHLVL"
+                    | "_"
+                    | "__CF_USER_TEXT_ENCODING"
+                    | "SYSTEMROOT"
             )),
             "{keys:?}"
         );
