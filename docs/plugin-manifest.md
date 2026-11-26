@@ -101,7 +101,9 @@ No code: the plugin declares a remote [MCP](https://modelcontextprotocol.io) ser
 with an MCP client registers it as a tool provider named after the plugin when the
 plugin is installed, and removes it (signing out) when the plugin is removed. The
 tools come from the server, so `nodes` and `tools` must be empty. The graphrt
-plugin host loads such a plugin but registers nothing for it.
+plugin host loads such a plugin but registers nothing for it. `runtime: mcp` and
+[`templates`](#templates) need graphrt-plugin's `mcp-presets` feature (on by
+default and in the CLI's default build); without it they are unknown fields.
 
 | Field | Type | Default | Constraints |
 | --- | --- | --- | --- |

@@ -32,7 +32,9 @@ releases may contain breaking changes; they are called out under **Changed**.
   and the plugin host loads such a plugin without registering anything.
 - graphrt-plugin: `templates` (any runtime): starter prompts a host can offer
   while the plugin is installed. Both are in the manifest schema and
-  docs/plugin-manifest.md.
+  docs/plugin-manifest.md, behind the `mcp-presets` feature of graphrt-plugin
+  (default on; the CLI's default features include it, slim agent builds with
+  only `plugins` leave it out and keep their size and memory budgets).
 
 ### Changed
 

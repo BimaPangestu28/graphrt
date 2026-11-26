@@ -32,6 +32,7 @@ mod host;
 #[cfg(feature = "http")]
 mod http;
 mod manifest;
+#[cfg(feature = "mcp-presets")]
 pub mod mcp_preset;
 mod node;
 #[cfg(feature = "process")]
@@ -53,10 +54,13 @@ pub use error::{CallError, PluginError};
 pub use host::{LoadedPlugin, PluginHost, PluginInfo, PluginLoader};
 #[cfg(feature = "http")]
 pub use http::HttpTransport;
+#[cfg(feature = "mcp-presets")]
+pub use manifest::McpRuntime;
 pub use manifest::{
-    HttpRuntime, Limits, LoadedManifest, MANIFEST_FILES, McpRuntime, PROTOCOL_VERSION, Permissions, PluginManifest,
-    ProcessRuntime, Runtime, WasmRuntime, is_valid_name, manifest_in,
+    HttpRuntime, Limits, LoadedManifest, MANIFEST_FILES, PROTOCOL_VERSION, Permissions, PluginManifest, ProcessRuntime,
+    Runtime, WasmRuntime, is_valid_name, manifest_in,
 };
+#[cfg(feature = "mcp-presets")]
 pub use mcp_preset::{McpApproval, McpApprovalDefault, McpAuth, McpServerSpec, McpTransportKind, PluginTemplate};
 #[cfg(feature = "process")]
 pub use pool::{MAX_POOL_SIZE, PoolConfig, ProcessPool};
