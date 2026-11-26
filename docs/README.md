@@ -42,6 +42,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 
 - [Plugins](plugins.md) and the [plugin manifest specification](plugin-manifest.md) ([JSON schema](schemas/plugin-manifest.schema.json))
 - [WebAssembly plugins](wasm-plugins.md)
+- [Skills](skills.md) (preview): `SKILL.md` packages loaded on demand, tool grants, pinned content, `graphrt skill`
 
 ## Internals and security
 

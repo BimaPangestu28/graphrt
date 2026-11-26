@@ -28,6 +28,14 @@ releases may contain breaking changes; they are called out under **Changed**.
   standby serves one deployment once; versions with another command or their
   own environment start a process as before. About 13 MiB of RSS per standby.
   See `docs/gateway.md#standby-agents`.
+- Agent skills (preview, opt in): the new `graphrt-skill` crate reads
+  `SKILL.md` packages in the Agent Skills format, and `agent` nodes take
+  `skills: [name]`. The system prompt lists each skill in one line, the model
+  loads instructions and files on demand, and tools granted to a skill are
+  offered only after it was loaded. Skills never run code, get only the tools
+  the owner granted, and every file is pinned by SHA-256 at install.
+  `graphrt skill` (cargo feature `skills`, off by default) lists, inspects,
+  installs, grants and removes skills. See `docs/skills.md`.
 - `graphrt gateway` on Windows, local agents included: they listen on named
   pipes (`graphrt serve --listen pipe:\\.\pipe\name`), are started in their
   own process group and stop on the new signed `POST /internal/v1/stop`
