@@ -213,13 +213,30 @@ pub struct Capture {
 /// Called when an execution ends (to drop it from the active set).
 pub type OnFinish = Box<dyn FnOnce(&str) + Send>;
 
+/// Called with the new execution before its driver starts (to add it to the active set).
+pub type OnStart = Box<dyn FnOnce(&Arc<ActiveRun>)>;
+
+/// How the caller follows an execution. `on_start` runs before the driver is
+/// spawned, so whatever it registers is in place before `on_finish` can run,
+/// even when the run ends at once on another worker thread.
+pub struct Tracking {
+    pub on_start: OnStart,
+    pub on_finish: OnFinish,
+}
+
+impl std::fmt::Debug for Tracking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tracking").finish_non_exhaustive()
+    }
+}
+
 /// Start driving `run` on the tokio runtime. `record` must already exist in `store`.
 pub fn spawn(
     run: RunStream,
     assembler: ResponseAssembler,
     record: RunRecord,
     store: Arc<dyn RunStore>,
-    on_finish: OnFinish,
+    tracking: Tracking,
     tracer: crate::otel::RunTracer,
     capture: Capture,
 ) -> Arc<ActiveRun> {
@@ -240,6 +257,8 @@ pub fn spawn(
         detached: AtomicBool::new(false),
     });
     let recorder = Recorder { tracer, capture, ids_pending: true };
+    let Tracking { on_start, on_finish } = tracking;
+    on_start(&active);
     graphrt_core::task::spawn(drive(run, assembler, record, store, Arc::clone(&active), on_finish, recorder));
     active
 }

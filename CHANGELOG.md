@@ -50,6 +50,8 @@ releases may contain breaking changes; they are called out under **Changed**.
   deployment's `pool.max_active_runs` unless the version's command sets it,
   and offers a run an agent refused as busy (`429`) or draining (`503`) again
   after a short backoff instead of failing it at once.
+- `graphrt_cli::store::live::spawn` takes a `Tracking` (`on_start` and
+  `on_finish`) in place of the `OnFinish` callback.
 
 ### Fixed
 
@@ -61,6 +63,10 @@ releases may contain breaking changes; they are called out under **Changed**.
   ring or the store. A run the gateway ends itself (no replica took it, run
   timeout, lost executor) now ends its streams with `run_failed` instead of a
   stream without a terminal event (an empty `200` when nothing was dispatched).
+- `graphrt serve`: a run that finished right after it started could stay in
+  the active set for good. `GET /v1/runs/{id}` then kept reporting
+  `active: true` and the run kept counting against `--max-active-runs`. Runs
+  are now tracked before their driver starts.
 
 ## [0.6.2] - 2026-11-24
 

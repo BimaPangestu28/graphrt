@@ -518,6 +518,29 @@ mod callbacks {
     }
 }
 
+/// A run that finishes before `launch` returns must still leave the active set.
+/// With several worker threads the driver can end on another one right away, so
+/// the run has to be tracked before its driver starts or it stays active forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn runs_that_finish_immediately_leave_the_active_set() {
+    let dir = TempDir::new("active-set");
+    let flows = workflows(&dir);
+    let state = state_with(&flows, hooks_config(), Arc::new(MemoryStore::new()), None, false).await;
+    let app = router(Arc::clone(&state), 1 << 20);
+    let body = r#"{"action":"x","sender":{"login":"y"}}"#;
+    let mut run_ids = Vec::new();
+    for _ in 0..200 {
+        let (status, accepted) = send(&app, delivery("/v1/hooks/echo", body, &[])).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+        run_ids.push(accepted["run_id"].as_str().unwrap().to_owned());
+    }
+    for run_id in &run_ids {
+        let run = settled(&app, run_id).await;
+        assert_eq!(run["status"], "succeeded", "{run}");
+    }
+    assert_eq!(state.active_runs(), 0, "every finished run left the active set");
+}
+
 /// With `--deployment`, idempotent run ids are the gateway's, namespaced by the
 /// deployment (`hook-<sha256("hook|<deployment>|<hook>|<key>")[..32]>`).
 #[tokio::test]
