@@ -79,6 +79,8 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     };
     #[cfg(not(feature = "jwt"))]
     let user_auth_line = None;
+    #[cfg(feature = "files")]
+    let state = state.with_workspace_api(args.workspace_api, args.max_upload_bytes)?;
     let state = Arc::new(state);
     // An agent behind a gateway is started because a run is on its way: its
     // plugin processes (a Node.js host takes tens of ms) start alongside the
@@ -98,6 +100,8 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let signals = ShutdownSignals::install()?.with_stop_requests(state.stop_requests());
     let listener = Listener::bind(&args.addr).await?;
     let loopback = listener.is_local();
+    #[cfg(feature = "files")]
+    refuse_open_workspace_api(&state, api_key.is_some(), loopback, &args.api_key_env)?;
     let app = guard_keyless_loopback(app, api_key.is_none() && loopback && listener.is_browser_reachable());
     let report = StartupReport { args: &args, has_api_key: api_key.is_some(), loopback, user_auth: user_auth_line };
     print_startup(&state, &report);
@@ -108,6 +112,25 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         telemetry.shutdown().await;
     }
     Ok(EXIT_OK)
+}
+
+/// Refuse to serve the workspace routes to a network without an API key:
+/// anyone who reaches the port could read and replace the agents' files.
+///
+/// @throws CliError (usage) - `--workspace-api` without a key on an address other hosts can reach.
+#[cfg(feature = "files")]
+fn refuse_open_workspace_api(
+    state: &AppState,
+    has_api_key: bool,
+    loopback: bool,
+    api_key_env: &str,
+) -> Result<(), CliError> {
+    if state.file_api_line().is_none() || has_api_key || loopback {
+        return Ok(());
+    }
+    Err(CliError::usage(format!(
+        "`--workspace-api` on an address other hosts can reach needs an API key: set ${api_key_env}"
+    )))
 }
 
 /// `--plugin-pool` and `--plugin-idle`.
@@ -300,6 +323,10 @@ fn print_startup(state: &AppState, report: &StartupReport<'_>) {
         if !hook.is_signed() && !report.has_api_key {
             eprintln!("warning: webhook `{}` has no `signature` and no API key is set; anyone can trigger it", hook.id);
         }
+    }
+    #[cfg(feature = "files")]
+    if let Some(line) = state.file_api_line() {
+        eprintln!("  {line}");
     }
     #[cfg(feature = "rag")]
     if state.knowledge().is_some() {

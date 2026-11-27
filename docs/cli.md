@@ -43,6 +43,7 @@ Workflows can be YAML (`.yaml`, `.yml`) or JSON.
 | `--workspace DIR` | Give agents a file workspace in `DIR` (created when missing): registers the `files` tools (`files/list`, `read`, `search`, `write`, `info`, `delete`), which work inside it and nowhere else. See [files and images](files-and-images.md). |
 | `--workspace-read-only` | No `files/write` and no `files/delete`. Needs `--workspace`. |
 | `--workspace-per-user` | One private directory and quota per user: agent nodes must send `tool_context: { files: { scope: ... } }`, and calls without a scope are refused. Needs `--workspace`. |
+| `--workspace-api key\|users` | `serve` only. Serve the workspace under `/v1/files` (list, upload, download, delete). `key`: for the API key. `users`: also for verified end users (`--verify-jwt`), each inside their own directory, which needs `--workspace-per-user`. Off unless given. See [the workspace over HTTP](files-and-images.md#the-workspace-over-http). |
 | `--image-tools` | Add the `image` tools to the workspace: `image/info`, `view` (the model sees the image), `resize`, `convert`, `thumbnail`. Needs `--workspace`. See [images](files-and-images.md#images). |
 | `--image-model NAME` | Add `image/generate`, backed by this model of the OpenAI images API (for example `gpt-image-2`). Key from `$OPENAI_API_KEY`, endpoint from `$OPENAI_BASE_URL`. Needs `--image-tools`. |
 | `--timeout-ms MS` | Abort the run after this long. |

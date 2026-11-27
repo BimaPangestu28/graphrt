@@ -28,7 +28,8 @@ graphrt run examples/files-agent.yaml --workspace ./workspace \
 ls workspace          # invoice.pdf  summary.md
 ```
 
-`graphrt serve` and `graphrt eval` take the same flags.
+`graphrt serve` and `graphrt eval` take the same flags. `serve` can also put
+the workspace [behind HTTP routes](#the-workspace-over-http).
 
 | Flag | Meaning |
 | --- | --- |
@@ -111,6 +112,119 @@ directory.
 The model never sees file values or references. It sees the text the tool
 returned.
 
+## The workspace over HTTP
+
+`graphrt serve --workspace DIR --workspace-api key` serves the workspace under
+`/v1/files`, so a chat client can hand files to an agent and fetch what it
+wrote. The routes do not exist without the flag.
+
+```sh
+export GRAPHRT_API_KEY=change-me
+graphrt serve examples/files.yaml --workspace ./workspace --workspace-api key
+
+# upload: the request body is the file
+curl -X PUT -H "Authorization: Bearer $GRAPHRT_API_KEY" --data-binary @stock.csv \
+  "http://127.0.0.1:8080/v1/files/content?path=uploads/stock.csv"
+# run the workflow, which writes notes/Stock.md
+curl -H "Authorization: Bearer $GRAPHRT_API_KEY" -H "Content-Type: application/json" \
+  -d '{"inputs":{"title":"Stock","body":"pear,7"}}' http://127.0.0.1:8080/v1/workflows/files/runs
+# list, then download by path or by the reference of a file value
+curl -H "Authorization: Bearer $GRAPHRT_API_KEY" http://127.0.0.1:8080/v1/files
+curl -OJ -H "Authorization: Bearer $GRAPHRT_API_KEY" \
+  "http://127.0.0.1:8080/v1/files/content?ref=workspace:notes/Stock.md"
+```
+
+| Route | Does |
+| --- | --- |
+| `GET /v1/files?dir=` | Lists files (at most 1,000) with the usage and the limits of the workspace |
+| `GET /v1/files/info?path=` | Size, detected type, `inline_safe`, SHA-256 and the file value |
+| `GET /v1/files/content?path=` | Downloads the file. `inline=true` asks to show it instead. |
+| `PUT /v1/files/content?path=` | Uploads the request body. `overwrite=true` replaces an existing file. |
+| `DELETE /v1/files/content?path=` | Deletes one file |
+
+Every route that takes `path` also takes `ref` instead: the `reference` of a
+file value (`workspace:...`), as found in the `files` output of a run. A
+client that shows results needs nothing else to offer them as downloads.
+
+The routes use the workspace the `files` tools use. Paths are checked the
+same way, the quota is shared, types come from content, programs are refused
+and `--workspace-read-only` refuses uploads and deletes.
+
+### Who may call it
+
+| `--workspace-api` | Caller | Reaches |
+| --- | --- | --- |
+| `key` | the API key | the workspace. With `--workspace-per-user`, the directory named by `scope=` (required). |
+| `users` | the API key | as above |
+| `users` | a verified end user ([`--verify-jwt`](serving.md#verifying-end-user-jwts)) | the directory of the token's `sub`, nothing else |
+
+`users` needs `--workspace-per-user` and `--verify-jwt`. The directory of a
+user is the one an agent reaches with
+`tool_context: { files: { scope: "{{#sys.user_id#}}" } }`, because
+`sys.user_id` of a run started with a user token is the same `sub`. A user
+token cannot send `scope`, and the reference of another user's file answers
+`404` like a file that does not exist. These requests do not count against
+`--user-rate-limit`, which limits runs.
+
+Without an API key the routes are served on a loopback address only. On any
+other address the server refuses to start.
+
+### Attaching uploads to a run
+
+The answer to an upload holds the file value. Send its `reference` in the run
+request and the files arrive as `sys.files`, which `vision` and
+`document-extractor` take:
+
+```sh
+curl -H "Authorization: Bearer $GRAPHRT_API_KEY" -H "Content-Type: application/json" \
+  -d '{"sys":{"query":"What is on the photo?"},"files":["workspace:uploads/photo.jpg"]}' \
+  http://127.0.0.1:8080/v1/workflows/vision-agent/runs
+```
+
+At most 16 files per run. Each reference is looked up in what the caller may
+reach, so a user cannot attach a file of another user. JSON that only looks
+like a file value (`{"$file": true, ...}` in `inputs` or `sys`) is still plain
+data.
+
+### What a download looks like
+
+| Content | `Content-Type` | `Content-Disposition` |
+| --- | --- | --- |
+| PNG, JPEG, GIF, WebP, BMP, TIFF | the detected type | `attachment`, or `inline` with `inline=true` |
+| Text (plain, Markdown, CSV, JSON, YAML, XML) | the detected type, or `text/plain` with `inline=true` | `attachment`, or `inline` with `inline=true` |
+| HTML, SVG, programs, scripts | `application/octet-stream` | always `attachment` |
+| PDF, Office files, archives, anything else | the detected type | always `attachment` |
+
+Every download also carries `X-Content-Type-Options: nosniff`,
+`Content-Security-Policy: sandbox; default-src 'none'`,
+`Cross-Origin-Resource-Policy: same-origin` and `Cache-Control: private,
+no-store`. The file name is sent as an ASCII fallback and as
+`filename*=UTF-8''...`, with nothing of the name copied unescaped.
+
+A PDF is never shown inline because it can carry scripts and forms. A client
+that wants a preview fetches the bytes and renders them itself.
+
+### Upload limits
+
+An upload is at most `--max-upload-bytes` (16 MiB by default) and never more
+than the 32 MiB a workspace file may have. A larger body is refused from its
+`Content-Length`, or while it arrives when it has none, and nothing above the
+limit is buffered. The server holds four uploads in memory at once and others
+wait. An upload that sends nothing for 30 seconds or takes more than 10
+minutes is dropped. Downloads are streamed in steps of 256 KiB.
+
+| Answer | Meaning |
+| --- | --- |
+| `400` | Invalid path, empty body, a missing or misplaced `scope` |
+| `401` | Missing or invalid key or token |
+| `403` | Read only workspace, or a link on the path |
+| `404` | No such file, or a reference outside the caller's reach |
+| `408` | The upload stalled |
+| `409` | The file exists and `overwrite` is not `true` |
+| `413` | Larger than the upload limit or the file limit |
+| `422` | The content is a program or a script |
+| `507` | The workspace is full |
+
 ## Limits
 
 | Limit | Default | Where |
@@ -149,7 +263,7 @@ are reported as `text/html` or `image/svg+xml` with `inline_safe: false`,
 whatever the extension. A user interface must not render such a file in a
 webview or an `<img>`. Offer it as a download, and when you serve it over
 HTTP send `Content-Disposition: attachment` and
-`X-Content-Type-Options: nosniff`.
+`X-Content-Type-Options: nosniff`. The `/v1/files` routes do this.
 
 ## File content is untrusted
 

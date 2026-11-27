@@ -157,6 +157,7 @@ response carries `Connection: close` and the client opens a new connection.
 | `metadata` | Optional string map (at most 64 entries, keys up to 256 bytes, values up to 2 KB) |
 | `session_id`, `user_id` | Optional ids (1-256 bytes) |
 | `tags` | Optional list of strings (at most 32, each 1-256 bytes) |
+| `files` | Optional list of workspace file references (`workspace:...`, at most 16) that become `sys.files`. Needs `--workspace-api`, see [Workspace files API](#workspace-files-api) |
 
 For synchronous calls (blocking or streaming), the run is aborted when the
 client disconnects before it finishes. Async runs are never tied to a
@@ -282,6 +283,7 @@ links here.
 | --- | --- |
 | `POST /v1/workflows/{name}/runs` | Allowed for workflows whose start node declares the verified input. Others answer `403`, so internal workflows served next to the chat stay key-only |
 | `POST /v1/runs/{id}/feedback` | Allowed only on the user's **own** runs: those started with a token of the same `sub` (the record has `user_verified: true`). Other runs answer `403`, including runs started with the API key whose body set `user_id`: that is a label, not proof of who the user is. The score's `user` is the token's `sub`, whatever the body says |
+| `/v1/files` (with `--workspace-api users`) | Allowed inside the directory of the token's `sub` only. `scope` cannot be sent, and files of other users answer `404`. See [the workspace over HTTP](files-and-images.md#who-may-call-it) |
 | Every other endpoint | API key only: run lists, run records, events, scores, resume, abort, delete, nodes, validate, hooks and knowledge. Webhook deliveries take their signature or the API key |
 
 - **An API key is required.** The server refuses to start with `--verify-jwt`
@@ -716,6 +718,25 @@ the request workers. Errors are JSON `{error}` with a matching status (400
 invalid input, 404 unknown dataset or document, 409 operation not supported by
 the dataset, 413 upload too large, 502 provider failure) and an
 `x-graphrt-error-kind` header.
+
+## Workspace files API
+
+With `--workspace DIR --workspace-api key` (or `users`) the workspace of the
+agents is served under `/v1/files`: a client uploads what a person attached,
+lists what the agent wrote and downloads it. The routes, the rules for end
+users and the response headers are described in
+[files and images](files-and-images.md#the-workspace-over-http).
+
+| Route | Result |
+| --- | --- |
+| `GET /v1/files?dir=` | `{files: [{path, size, modified_ms}], truncated, usage, limits}` |
+| `GET /v1/files/info?path=` | `{path, size, modified_ms, mime_type, inline_safe, sha256, file}` |
+| `GET /v1/files/content?path=&inline=` | The bytes. `ref=` takes the `reference` of a file value instead of `path`. |
+| `PUT /v1/files/content?path=&overwrite=` | Store the raw request body (201). Limited by `--max-upload-bytes`. |
+| `DELETE /v1/files/content?path=` | Remove one file (204). |
+
+A run request can attach uploaded files: `"files": ["workspace:..."]` with the
+`reference` values the upload returned. They become `sys.files` of the run.
 
 ## Tenancy
 
