@@ -192,9 +192,47 @@ deployments:
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
+    /// [`World::try_request`], for polling (`None` on any failure).
     fn request(&self, method: &str, path: &str, headers: &[(&str, &str)], body: Option<&Json>) -> Option<(u16, Json)> {
-        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).ok()?;
-        stream.set_read_timeout(Some(Duration::from_secs(20))).ok()?;
+        self.try_request(method, path, headers, body).ok()
+    }
+
+    /// [`World::try_request`] that must succeed: on failure the panic carries the IO
+    /// error, the lease and both gateways' logs, so a failure on CI can be diagnosed.
+    fn send(&self, method: &str, path: &str, headers: &[(&str, &str)], body: Option<&Json>) -> (u16, Json) {
+        self.try_request(method, path, headers, body).unwrap_or_else(|error| {
+            panic!(
+                "{method} {path} failed: {error}\nlease: {}\n--- gw-a.log ---\n{}\n--- gw-b.log ---\n{}",
+                self.lease_text(),
+                self.log("gw-a"),
+                self.log("gw-b")
+            )
+        })
+    }
+
+    /// The lease as `gateway ha status` prints it, or why it could not be read.
+    fn lease_text(&self) -> String {
+        Command::new(BIN)
+            .args(["gateway", "ha", "status", "--config"])
+            .arg(self.dir.join("gateway.yaml"))
+            .output()
+            .map_or_else(|error| format!("<{error}>"), |output| String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// One HTTP/1.1 request on a fresh connection; the error says which step failed.
+    fn try_request(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<&Json>,
+    ) -> Result<(u16, Json), String> {
+        let started = Instant::now();
+        let at = |step: &str, error: std::io::Error| {
+            format!("{step} after {:?}: {error} ({:?})", started.elapsed(), error.kind())
+        };
+        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).map_err(|error| at("connect", error))?;
+        stream.set_read_timeout(Some(Duration::from_secs(20))).map_err(|error| at("set read timeout", error))?;
         let body = body.map(Json::to_string).unwrap_or_default();
         let mut request = format!(
             "{method} {path} HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {}\r\n",
@@ -205,16 +243,20 @@ deployments:
         }
         request.push_str("\r\n");
         request.push_str(&body);
-        stream.write_all(request.as_bytes()).ok()?;
+        stream.write_all(request.as_bytes()).map_err(|error| at("write", error))?;
         let mut response = String::new();
-        stream.read_to_string(&mut response).ok()?;
-        let status = response.split_whitespace().nth(1)?.parse().ok()?;
+        stream.read_to_string(&mut response).map_err(|error| at("read", error))?;
+        let status = response
+            .split_whitespace()
+            .nth(1)
+            .and_then(|status| status.parse().ok())
+            .ok_or_else(|| format!("no status line after {:?} in {:?}", started.elapsed(), response))?;
         let payload = response.split_once("\r\n\r\n").map(|(_, payload)| payload).unwrap_or_default();
         // Tolerate chunked encoding: parse the first JSON value found.
         let start = payload.find(['{', '[']).unwrap_or(payload.len());
         let end = payload.rfind(['}', ']']).map_or(payload.len(), |end| end + 1);
         let json = serde_json::from_str(payload.get(start..end).unwrap_or_default()).unwrap_or(Json::Null);
-        Some((status, json))
+        Ok((status, json))
     }
 
     fn healthy(&self) -> bool {
@@ -233,7 +275,7 @@ deployments:
 
     fn run(&self, body: &Json) -> (u16, Json) {
         let auth = format!("Bearer {API_KEY}");
-        self.request("POST", "/v1/deployments/shop/runs", &[("authorization", &auth)], Some(body)).unwrap()
+        self.send("POST", "/v1/deployments/shop/runs", &[("authorization", &auth)], Some(body))
     }
 
     fn run_status(&self, run_id: &str) -> Option<String> {
@@ -244,13 +286,12 @@ deployments:
     }
 
     fn webhook(&self, delivery: &str) -> (u16, Json) {
-        self.request(
+        self.send(
             "POST",
             "/v1/deployments/shop/hooks/orders",
             &[("x-delivery", delivery)],
             Some(&json!({ "order": 7 })),
         )
-        .unwrap()
     }
 }
 
@@ -347,9 +388,8 @@ fn passive_takes_over_after_kill_freeze_and_handover() {
     let kill_takeover = killed_at.elapsed().as_millis();
     assert_eq!(world.lease()["lease"]["node"], "gw-b");
     let auth = format!("Bearer {API_KEY}");
-    let (status, stored) = world
-        .request("GET", &format!("/v1/deployments/shop/runs/{hook_run}"), &[("authorization", &auth)], None)
-        .unwrap();
+    let (status, stored) =
+        world.send("GET", &format!("/v1/deployments/shop/runs/{hook_run}"), &[("authorization", &auth)], None);
     assert_eq!(status, 200, "the run stored by the old active is served by the new one: {stored}");
     let (status, duplicate) = world.webhook("delivery-1");
     assert_eq!((status, duplicate["duplicate"].as_bool()), (200, Some(true)), "{duplicate}");
