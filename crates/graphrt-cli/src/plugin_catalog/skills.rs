@@ -23,6 +23,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use graphrt_skill::{OriginKind, SkillOrigin};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -90,6 +91,52 @@ pub struct SkillCatalogSource<'a> {
     pub index: Option<&'a str>,
     /// `--index-key`, if given.
     pub index_key: Option<&'a str>,
+    /// Where the newest accepted index is remembered, instead of
+    /// `~/.graphrt/plugin-catalog-state.json`.
+    pub state_file: Option<&'a Path>,
+}
+
+/// The catalog a long running host installs skills from. It is fixed when the
+/// host starts: a request never names an index or a key, so whoever may ask
+/// for an install cannot choose who is trusted or which address is fetched.
+#[derive(Clone, Debug, Default)]
+pub struct SkillCatalogConfig {
+    /// The index location, instead of `$GRAPHRT_PLUGIN_INDEX` and the default.
+    pub index: Option<String>,
+    /// The key the index must be signed with, instead of
+    /// `$GRAPHRT_PLUGIN_INDEX_KEY` and the built-in catalog key.
+    pub index_key: Option<String>,
+    /// See [`SkillCatalogSource::state_file`].
+    pub state_file: Option<PathBuf>,
+}
+
+impl SkillCatalogConfig {
+    /// This configuration as the source of one fetch.
+    pub fn source(&self) -> SkillCatalogSource<'_> {
+        SkillCatalogSource {
+            index: self.index.as_deref(),
+            index_key: self.index_key.as_deref(),
+            state_file: self.state_file.as_deref(),
+        }
+    }
+}
+
+/// Why a catalog skill was not fetched.
+#[derive(Debug)]
+pub enum CatalogSkillError {
+    /// The verified catalog lists no such skill, or not in that version.
+    NotListed(CliError),
+    /// Anything else: the index location or key, a missing or wrong
+    /// signature, a stale index, the download, the checksum, the archive.
+    Refused(CliError),
+}
+
+impl From<CatalogSkillError> for CliError {
+    fn from(error: CatalogSkillError) -> Self {
+        match error {
+            CatalogSkillError::NotListed(error) | CatalogSkillError::Refused(error) => error,
+        }
+    }
 }
 
 /// A catalog skill, downloaded, checked against the signed index and unpacked.
@@ -116,13 +163,48 @@ impl Drop for FetchedSkill {
 /// Usage errors (exit 2) for a bad index location and an unknown name or
 /// version. Failures (exit 1) for a missing or wrong signature, a stale index,
 /// and download, checksum and unpacking problems.
-pub fn fetch_catalog_skill(spec: &PluginSpec, source: SkillCatalogSource<'_>) -> Result<FetchedSkill, CliError> {
-    let location = skill_index_location(source.index)?;
-    let index = load_verified_index(&location, source.index_key)?;
-    let entry = select(&index, spec)?.clone();
+pub fn fetch_catalog_skill(
+    spec: &PluginSpec,
+    source: SkillCatalogSource<'_>,
+) -> Result<FetchedSkill, CatalogSkillError> {
+    let location = skill_index_location(source.index).map_err(CatalogSkillError::Refused)?;
+    let index = load_verified_index(&location, source).map_err(CatalogSkillError::Refused)?;
+    let entry = select(&index, spec).map_err(CatalogSkillError::NotListed)?.clone();
+    fetch_listed(entry, &location).map_err(CatalogSkillError::Refused)
+}
+
+/// The origin an installed catalog skill records, after checking that the
+/// unpacked archive holds the skill and version the signed index describes.
+///
+/// # Errors
+/// A failure when the archive holds another skill or version, or cannot be
+/// read as a skill.
+pub fn checked_origin(store: &graphrt_skill::SkillStore, fetched: &FetchedSkill) -> Result<SkillOrigin, CliError> {
+    let review = store.inspect_dir(&fetched.dir).map_err(|error| CliError::failed(error.to_string()))?;
+    let entry = &fetched.entry;
+    if review.entry.name != entry.name || review.entry.version.as_deref() != Some(entry.version.as_str()) {
+        return Err(CliError::failed(format!(
+            "skill {} {}: the archive holds `{}` {} instead",
+            entry.name,
+            entry.version,
+            review.entry.name,
+            review.entry.version.as_deref().unwrap_or("without a version")
+        )));
+    }
+    Ok(SkillOrigin {
+        kind: OriginKind::Catalog,
+        detail: Some(entry.tarball_url.clone()),
+        publisher: entry.publisher.clone(),
+        verified: true,
+        version: Some(entry.version.clone()),
+    })
+}
+
+/// Download, check and unpack the archive of `entry`, an entry of the verified index at `location`.
+fn fetch_listed(entry: SkillCatalogEntry, location: &Location) -> Result<FetchedSkill, CliError> {
     let label = format!("skill {} {}", entry.name, entry.version);
     let failed = |error: String| CliError::failed(printable(&format!("{label}: {error}")));
-    let archive_location = parse_tarball_location(&entry.tarball_url, &location).map_err(failed)?;
+    let archive_location = parse_tarball_location(&entry.tarball_url, location).map_err(failed)?;
     let max_bytes = match entry.size_bytes {
         Some(declared) if declared > MAX_ARCHIVE_BYTES => {
             return Err(failed(format!(
@@ -166,7 +248,7 @@ pub fn search_catalog_skills(
     out: &mut impl Write,
 ) -> Result<(), CliError> {
     let location = skill_index_location(source.index)?;
-    let index = load_verified_index(&location, source.index_key)?;
+    let index = load_verified_index(&location, source)?;
     let needle = query.map(str::to_lowercase);
     let mut latest: Vec<&SkillCatalogEntry> = Vec::new();
     for entry in index.skills.iter().filter(|entry| entry.is_well_formed()) {
@@ -213,9 +295,9 @@ fn skill_index_location(index_flag: Option<&str>) -> Result<Location, CliError> 
 }
 
 /// Read the index, verify its signature, and only then parse it.
-fn load_verified_index(location: &Location, index_key: Option<&str>) -> Result<SkillIndex, CliError> {
+fn load_verified_index(location: &Location, source: SkillCatalogSource<'_>) -> Result<SkillIndex, CliError> {
     // No unsigned mode: `allow_unsigned` is never set for skills.
-    let trust = IndexTrust::resolve(TrustOptions { index_key, allow_unsigned: false }, location)?;
+    let trust = IndexTrust::resolve(TrustOptions { index_key: source.index_key, allow_unsigned: false }, location)?;
     let bytes = fetch_bytes(location, INDEX_LIMITS).map_err(CliError::failed)?;
     let Some(verified) = trust.check(location, &bytes)? else {
         return Err(CliError::failed(format!("{location}: a skill catalog must be signed")));
@@ -229,7 +311,8 @@ fn load_verified_index(location: &Location, index_key: Option<&str>) -> Result<S
             index.schema
         )));
     }
-    if let Some(state_path) = super::freshness::default_state_path() {
+    let state_path = source.state_file.map(Path::to_path_buf).or_else(super::freshness::default_state_path);
+    if let Some(state_path) = state_path {
         let generated_at = index.generated_at.as_ref().and_then(serde_json::Value::as_str);
         let signed = SignedIndex { location: &location.identity(), public_key: &verified.public_key };
         super::freshness::check_and_record(&state_path, signed, generated_at).map_err(failed)?;

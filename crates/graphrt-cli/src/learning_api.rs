@@ -301,6 +301,7 @@ pub async fn audit(State(state): State<Arc<AppState>>, UrlPath(agent): UrlPath<S
 }
 
 /// Feedback on a run, as the learner records it.
+#[cfg_attr(not(feature = "scores"), allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct FeedbackSignal<'a> {
     /// The workflow the run belongs to.
@@ -321,6 +322,7 @@ pub(crate) struct FeedbackSignal<'a> {
 ///
 /// A failure is logged and never fails the feedback request: the score was
 /// stored, and learning is a side effect of it.
+#[cfg_attr(not(feature = "scores"), allow(dead_code))]
 pub(crate) fn capture_feedback(state: &AppState, signal: &FeedbackSignal<'_>) {
     let Some(store) = state.lesson_store() else { return };
     let agents = state.learning_agents(signal.workflow);

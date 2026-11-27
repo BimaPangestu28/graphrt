@@ -27,8 +27,8 @@ pub fn router(state: Arc<AppState>, max_body_bytes: usize) -> Router {
 
 /// The HTTP router, with a separate body limit for knowledge base file uploads.
 pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_upload_bytes: usize) -> Router {
-    let key_only =
-        key_only_routes(max_upload_bytes).layer(middleware::from_fn_with_state(Arc::clone(&state), require_auth));
+    let key_only = key_only_routes(&state, max_upload_bytes)
+        .layer(middleware::from_fn_with_state(Arc::clone(&state), require_auth));
     let counted = key_only.merge(self_authenticating_routes(&state));
     // Opt-in usage telemetry counts API requests (in memory); health checks are not counted.
     #[cfg(feature = "telemetry")]
@@ -60,7 +60,7 @@ async fn readiness(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// Routes that take the API key only; the caller adds the `require_auth` layer.
-fn key_only_routes(max_upload_bytes: usize) -> Router<Arc<AppState>> {
+fn key_only_routes(state: &Arc<AppState>, max_upload_bytes: usize) -> Router<Arc<AppState>> {
     let api = Router::new()
         .route("/v1/workflows", get(list_workflows))
         .route("/v1/runs/{run_id}", delete(delete_run))
@@ -75,11 +75,25 @@ fn key_only_routes(max_upload_bytes: usize) -> Router<Arc<AppState>> {
     let _ = max_upload_bytes;
     #[cfg(feature = "scores")]
     let api = api.route("/v1/runs/{run_id}/scores", get(crate::scores::get_scores));
-    #[cfg(feature = "skills")]
-    let api = with_skill_routes(api);
-    #[cfg(feature = "learning")]
-    let api = with_learning_routes(api);
+    #[cfg(any(feature = "skills", feature = "learning"))]
+    let api = api.merge(owner_routes(state));
+    #[cfg(not(any(feature = "skills", feature = "learning")))]
+    let _ = state;
     api.route("/v1/hooks", get(crate::webhooks::list_hooks))
+}
+
+/// The routes that change what agents are able to do or what they were taught
+/// (`/v1/skills`, `/v1/learning`). They take the API key like the routes
+/// around them, and are refused altogether by a server that has no key and
+/// listens beyond loopback.
+#[cfg(any(feature = "skills", feature = "learning"))]
+fn owner_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    let owner = Router::new();
+    #[cfg(feature = "skills")]
+    let owner = with_skill_routes(owner);
+    #[cfg(feature = "learning")]
+    let owner = with_learning_routes(owner);
+    owner.layer(middleware::from_fn_with_state(Arc::clone(state), super::auth::refuse_closed_owner_api))
 }
 
 /// The knowledge base API under `/v1/knowledge`; file uploads get their own
@@ -105,13 +119,27 @@ fn with_knowledge_routes(api: Router<Arc<AppState>>, max_upload_bytes: usize) ->
 /// The skill store API under `/v1/skills` (owner actions: API key only).
 #[cfg(feature = "skills")]
 fn with_skill_routes(api: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
+    use axum::extract::Path as UrlPath;
+
     use crate::skills_api as s;
-    api.route("/v1/skills", get(s::list_skills).post(s::install_skill))
-        .route("/v1/skills/drafts", post(s::check_draft))
+    const DRAFTS: &str = "drafts";
+    let api = api
+        .route("/v1/skills", get(s::list_skills).post(s::install_skill))
+        // `drafts` is also a valid skill name: the other methods reach that skill.
         .route(
-            "/v1/skills/{name}",
-            get(s::get_skill).merge(axum::routing::patch(s::patch_skill)).merge(delete(s::delete_skill)),
+            "/v1/skills/drafts",
+            post(s::check_draft)
+                .get(|state| s::get_skill(state, UrlPath(DRAFTS.to_owned())))
+                .patch(|state, patch| s::patch_skill(state, UrlPath(DRAFTS.to_owned()), patch))
+                .delete(|state| s::delete_skill(state, UrlPath(DRAFTS.to_owned()))),
         )
+        .route("/v1/skills/drafts/model", post(s::draft_with_model));
+    #[cfg(feature = "plugins")]
+    let api = api.route("/v1/skills/catalog/install", post(s::install_from_catalog));
+    api.route(
+        "/v1/skills/{name}",
+        get(s::get_skill).merge(axum::routing::patch(s::patch_skill)).merge(delete(s::delete_skill)),
+    )
 }
 
 /// The lesson store API under `/v1/learning` (owner actions: API key only).

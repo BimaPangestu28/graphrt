@@ -133,6 +133,11 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let loopback = listener.is_local();
     #[cfg(feature = "files")]
     refuse_open_workspace_api(&state, api_key.is_some(), loopback, &args.api_key_env)?;
+    // Granting tools to skills and approving lessons outlive a run: not for anyone who reaches the port.
+    #[cfg(any(feature = "skills", feature = "learning"))]
+    if api_key.is_none() && !loopback {
+        state.close_owner_api();
+    }
     let app = guard_keyless_loopback(app, api_key.is_none() && loopback && listener.is_browser_reachable());
     // Outermost: a refusal of any layer below still carries the CORS headers,
     // so a page can read why it was refused.
@@ -519,6 +524,10 @@ fn print_startup(state: &AppState, report: &StartupReport<'_>) {
     #[cfg(feature = "rag")]
     if state.knowledge().is_some() {
         eprintln!("  knowledge base API under /v1/knowledge (uploads up to {} bytes)", report.args.max_upload_bytes);
+    }
+    #[cfg(any(feature = "skills", feature = "learning"))]
+    if !report.has_api_key && !report.loopback {
+        eprintln!("  /v1/skills and /v1/learning are refused: they need an API key on a network address");
     }
     if !report.has_api_key {
         print_keyless_warnings(report);

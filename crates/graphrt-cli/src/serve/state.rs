@@ -36,6 +36,11 @@ pub const DEFAULT_MAX_ACTIVE_RUNS: usize = 256;
 /// load balancer to route the retry to another replica, or for a restart.
 const DRAIN_RETRY_AFTER: &str = "5";
 
+/// How long a model may take to answer a route that asks one (a skill draft, a
+/// distilling pass).
+#[cfg(any(feature = "skills", feature = "learning"))]
+pub(crate) const MODEL_ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// One served workflow.
 #[derive(Debug)]
 pub struct ServedWorkflow {
@@ -107,8 +112,10 @@ pub struct AppState {
     /// The monitoring page (`--monitor`).
     #[cfg(feature = "web-monitor")]
     pub(super) monitor: Option<Arc<super::monitor::Monitor>>,
-    /// Host services of the served workflows, for judge workflows of online evaluators.
-    #[cfg(feature = "online-eval")]
+    /// Host services of the served workflows: judge workflows of online
+    /// evaluators run on them, and the routes that ask a model (skill drafts,
+    /// distilling lessons) find its provider there.
+    #[cfg(any(feature = "online-eval", feature = "skills", feature = "learning"))]
     pub(super) services: Option<Arc<graphrt_core::Services>>,
     /// Online evaluation pool (`--evaluators`).
     #[cfg(feature = "online-eval")]
@@ -128,9 +135,16 @@ pub struct AppState {
     /// The skill store behind `/v1/skills` (the default store, opened lazily).
     #[cfg(feature = "skills")]
     pub(super) skills: Option<Arc<graphrt_skill::SkillStore>>,
+    /// The catalog `/v1/skills/catalog/install` reads. Never set by a request.
+    #[cfg(all(feature = "skills", feature = "plugins"))]
+    pub(super) skill_catalog: crate::plugin_catalog::skills::SkillCatalogConfig,
     /// The lesson store behind `/v1/learning` (the default store, opened lazily).
     #[cfg(feature = "learning")]
     pub(super) lessons: Option<Arc<graphrt_learn::LessonStore>>,
+    /// Set when the server listens beyond loopback without an API key: the
+    /// owner routes (`/v1/skills`, `/v1/learning`) are refused then.
+    #[cfg(any(feature = "skills", feature = "learning"))]
+    pub(super) owner_api_closed: AtomicBool,
 }
 
 impl AppState {
@@ -177,7 +191,7 @@ impl AppState {
             push: None,
             #[cfg(feature = "web-monitor")]
             monitor: None,
-            #[cfg(feature = "online-eval")]
+            #[cfg(any(feature = "online-eval", feature = "skills", feature = "learning"))]
             services: None,
             #[cfg(feature = "online-eval")]
             online: None,
@@ -192,6 +206,10 @@ impl AppState {
             #[cfg(feature = "skills")]
             skills: graphrt_skill::SkillStore::default_root()
                 .map(|root| Arc::new(graphrt_skill::SkillStore::open(root))),
+            #[cfg(all(feature = "skills", feature = "plugins"))]
+            skill_catalog: crate::plugin_catalog::skills::SkillCatalogConfig::default(),
+            #[cfg(any(feature = "skills", feature = "learning"))]
+            owner_api_closed: AtomicBool::new(false),
             #[cfg(feature = "learning")]
             lessons: graphrt_learn::LessonStore::default_root()
                 .map(|root| Arc::new(graphrt_learn::LessonStore::open(root))),
@@ -236,6 +254,9 @@ impl AppState {
     }
 
     /// Serve `/v1/skills` from `store` instead of the default skill store.
+    /// The served agents read the store of `ServiceOptions::skills_dir`:
+    /// set that instead and [`build_state`](super::build_state) keeps the two
+    /// the same. Use this only to turn the routes off (`None`).
     #[cfg(feature = "skills")]
     pub fn with_skill_store(mut self, store: Option<Arc<graphrt_skill::SkillStore>>) -> Self {
         self.skills = store;
@@ -246,6 +267,55 @@ impl AppState {
     #[cfg(feature = "skills")]
     pub fn skill_store(&self) -> Option<&Arc<graphrt_skill::SkillStore>> {
         self.skills.as_ref()
+    }
+
+    /// Install catalog skills from `catalog` instead of the catalog the
+    /// environment names (`$GRAPHRT_PLUGIN_INDEX`, `$GRAPHRT_PLUGIN_INDEX_KEY`).
+    #[cfg(all(feature = "skills", feature = "plugins"))]
+    pub fn with_skill_catalog(mut self, catalog: crate::plugin_catalog::skills::SkillCatalogConfig) -> Self {
+        self.skill_catalog = catalog;
+        self
+    }
+
+    /// The catalog `/v1/skills/catalog/install` reads.
+    #[cfg(all(feature = "skills", feature = "plugins"))]
+    pub(crate) fn skill_catalog(&self) -> &crate::plugin_catalog::skills::SkillCatalogConfig {
+        &self.skill_catalog
+    }
+
+    /// The model `provider/name` of this server's providers, for one plain
+    /// completion (a skill draft, a distilling pass). A request names a model
+    /// the operator configured and never an endpoint or a key.
+    ///
+    /// @throws Response - `400` for a spec that is not `provider/name` or names an unknown provider, `409` when the server has no providers.
+    #[cfg(any(feature = "skills", feature = "learning"))]
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn text_model(&self, spec: &str) -> Result<graphrt_llm::text_model::ChatTextModel, Response> {
+        let bad_request = |message: String| error_response(StatusCode::BAD_REQUEST, &message);
+        let (provider, name) = crate::setup::parse_model_override(spec)
+            .map_err(|_| bad_request(format!("`model` must be `provider/name`, got `{spec}`")))?;
+        let registry = self
+            .services
+            .as_ref()
+            .and_then(|services| services.get::<graphrt_llm::ModelRegistry>())
+            .ok_or_else(|| error_response(StatusCode::CONFLICT, "this server has no model providers configured"))?;
+        let chat = registry.get(&provider).map_err(|error| bad_request(error.to_string()))?;
+        Ok(graphrt_llm::text_model::ChatTextModel::new(chat, name))
+    }
+
+    /// Refuse the owner routes (`/v1/skills`, `/v1/learning`) from now on.
+    /// `graphrt serve` calls this when it listens beyond loopback without an
+    /// API key: anyone who reaches the port could otherwise grant tools to
+    /// skills or approve lessons, which outlives the run and the server.
+    #[cfg(any(feature = "skills", feature = "learning"))]
+    pub fn close_owner_api(&self) {
+        self.owner_api_closed.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether [`AppState::close_owner_api`] was called.
+    #[cfg(any(feature = "skills", feature = "learning"))]
+    pub(super) fn owner_api_is_closed(&self) -> bool {
+        self.owner_api_closed.load(Ordering::Relaxed)
     }
 
     /// Serve `/v1/learning` from `store` instead of the default lesson store.
@@ -264,6 +334,7 @@ impl AppState {
     /// The agents whose lessons the nodes of workflow `name` read
     /// (`learning.agent` of its `agent` nodes), without duplicates.
     #[cfg(feature = "learning")]
+    #[cfg_attr(not(feature = "scores"), allow(dead_code))]
     pub(crate) fn learning_agents(&self, name: &str) -> Vec<String> {
         let Some(served) = self.workflows.get(name) else { return Vec::new() };
         let mut agents: Vec<String> = Vec::new();

@@ -70,10 +70,16 @@ pub async fn build_state(
     }
     #[allow(unused_mut)]
     let mut state = AppState::new(workflows, api_key).with_extensions(extensions);
-    #[cfg(feature = "online-eval")]
+    #[cfg(any(feature = "online-eval", feature = "skills", feature = "learning"))]
     {
         state.services = Some(Arc::clone(&services));
     }
+    // `/v1/skills` manages the store the served agents read.
+    #[cfg(feature = "skills")]
+    let state = match &options.skills_dir {
+        Some(dir) => state.with_skill_store(Some(Arc::new(graphrt_skill::SkillStore::open(dir)))),
+        None => state,
+    };
     // The same workspace the `files` tools use, so `/v1/files` shares its quota.
     #[cfg(feature = "files")]
     let state = state.with_workspace(services.get::<setup::ServedWorkspace>().cloned());
