@@ -342,7 +342,32 @@ referenced secrets, and `kms:Encrypt` / `kms:CreateGrant` on `kms_key_arn`.
 The ECS execution role (not the deployer) needs `secretsmanager:GetSecretValue`
 / `ssm:GetParameters` on the referenced secrets.
 
-## Not yet verified on real AWS
+## Verified on real AWS (2026-11-27)
+
+A gateway on an EC2 instance (`t3.micro`, `ap-southeast-1`, IMDSv2 with an
+instance profile) in the default VPC, and `graphrt deploy --target ecs` on the
+same instance:
+
+- The gateway policy above (`RunTask`, `StopTask`, `DescribeTasks`,
+  `ListTasks`, `TagResource`, `PassRole` on the execution role) and a deploy
+  policy of only `ecs:RegisterTaskDefinition`, `ecs:TagResource` and
+  `iam:PassRole` are enough for ECS; the ECR actions listed above are not used
+  by the ECS driver.
+- The task definition is accepted by Fargate; secrets resolve through the
+  execution role.
+- Wake from zero to the first answer of a chat run: 14.7 s and 17.6 s (small
+  image, `assign_public_ip: true`); warm runs 0.8 s. Blocking, streaming and
+  async runs succeed.
+- After the idle timeout the gateway stops the task (`graphrt gateway: stop`),
+  which drains and exits `0`.
+- Found and fixed there: the command replaced only the image's CMD, so the
+  task ran `graphrt graphrt serve` and exited with status 2.
+
+In a VPC without a NAT gateway (the default VPC) set `assign_public_ip: true`
+so that Fargate can pull the image from ECR; the gateway still reaches the
+task on its private IP.
+
+## Still to verify on real AWS
 
 ECS Fargate and Lambda are in preview. How the provider tests run is in
 [CONTRIBUTING.md](../CONTRIBUTING.md#provider-conformance-tests).

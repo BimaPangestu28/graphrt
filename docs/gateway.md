@@ -401,9 +401,13 @@ crash, `stale_after_ms` after a freeze). See [gateway-ha.md](gateway-ha.md).
 
 ## Measured so far
 
-Local measurements, `--profile min-size`. Only local processes and a local
-Kubernetes cluster have run for real. Cloud Run, Container Apps, ECS, Lambda
-and Fly are in preview: they have not been verified on real cloud accounts yet.
+Local measurements, `--profile min-size`, unless the row says otherwise.
+Local processes, a local Kubernetes cluster, Cloud Run and ECS Fargate have
+run for real (Cloud Run and ECS on 2026-11-27, see the
+[Cloud Run](gateway-cloud-run.md#verified-on-real-gcp-2026-11-27) and
+[AWS](gateway-aws.md#verified-on-real-aws-2026-11-27) guides). Container Apps,
+Lambda and Fly are in preview: they have not been verified on real cloud
+accounts yet.
 
 | What | Measured | Where |
 | --- | --- | --- |
