@@ -118,7 +118,6 @@ pub(super) async fn start_run(
         return error_response(StatusCode::BAD_REQUEST, &message);
     }
     // The page context of a web chat: checked, never read as identity.
-    #[cfg(feature = "web-chat")]
     if let Err(message) = super::check_page_context(&body.sys) {
         return error_response(StatusCode::BAD_REQUEST, &message);
     }

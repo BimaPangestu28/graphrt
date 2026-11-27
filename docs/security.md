@@ -276,7 +276,8 @@ They honour standard proxy environment variables, except the OTel exporter and
   [web.md](web.md#guests).
 - **Page context is data, not identity.** `sys.context`, which the chat widget
   sends with every message, is checked for its shape and size only (a JSON
-  object, at most 8 KiB and 5 levels, else `400`). Nothing in the server
+  object, at most 8 KiB and 5 levels, else `400`). A build without the
+  `web-chat` feature refuses any context. Nothing in the server
   reads it: the user is the verified token. Treat it in a workflow like the
   visitor's message, never as proof of who they are or what they may do. See
   [web.md](web.md#page-context).

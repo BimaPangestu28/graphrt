@@ -72,7 +72,6 @@ mod guests;
 mod local_host;
 #[cfg(feature = "web-monitor")]
 mod monitor;
-#[cfg(feature = "web-chat")]
 mod page_context;
 mod resume;
 mod router;
@@ -109,7 +108,6 @@ pub(crate) use execute::{Launch, launch_detached, traceparent};
 pub use guests::{GuestTokenError, Guests, IssuedToken};
 #[cfg(feature = "web-monitor")]
 pub use monitor::Monitor;
-#[cfg(feature = "web-chat")]
 pub(crate) use page_context::check_page_context;
 pub use resume::{ResumeRequest, resume_drained_runs};
 #[cfg(feature = "approvals")]

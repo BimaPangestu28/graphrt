@@ -8,18 +8,33 @@
 //! context says. The limits are the ones of `checkChatContext` in the web
 //! package.
 //!
-//! Part of the cargo feature `web-chat`, which sends it: a build without the
-//! chat (the slim agents, `graphrt gateway`) carries none of this code.
+//! The check is part of the cargo feature `web-chat`, which sends it. A build
+//! without the chat (the slim agents, `graphrt gateway`) carries only a refusal:
+//! it answers `400` to any `sys.context`, so a context never reaches a run
+//! unchecked.
 
 use serde_json::Value;
 
 /// The key in `sys`.
 pub(crate) const CONTEXT_KEY: &str = "context";
 
+/// Refuse `sys.context` in a build that cannot check it.
+///
+/// @throws String - A message for a `400` response when `sys` has a context.
+#[cfg(not(feature = "web-chat"))]
+pub(crate) fn check_page_context(sys: &serde_json::Map<String, Value>) -> Result<(), String> {
+    if sys.contains_key(CONTEXT_KEY) {
+        return Err("`sys.context` needs a build with the cargo feature `web-chat`".to_owned());
+    }
+    Ok(())
+}
+
 /// The largest context, as compact JSON.
+#[cfg(feature = "web-chat")]
 pub(crate) const MAX_CONTEXT_BYTES: usize = 8192;
 
 /// The deepest nesting of objects and arrays: the context object is level 1.
+#[cfg(feature = "web-chat")]
 pub(crate) const MAX_CONTEXT_DEPTH: usize = 5;
 
 /// Check `sys.context` of a run request, when it has one.
@@ -27,6 +42,7 @@ pub(crate) const MAX_CONTEXT_DEPTH: usize = 5;
 /// @throws String - A message for a `400` response: the context is not a JSON
 ///   object, is nested deeper than [`MAX_CONTEXT_DEPTH`] or is larger than
 ///   [`MAX_CONTEXT_BYTES`].
+#[cfg(feature = "web-chat")]
 pub(crate) fn check_page_context(sys: &serde_json::Map<String, Value>) -> Result<(), String> {
     let Some(context) = sys.get(CONTEXT_KEY) else {
         return Ok(());
@@ -45,6 +61,7 @@ pub(crate) fn check_page_context(sys: &serde_json::Map<String, Value>) -> Result
 }
 
 /// Whether an object or array in `value`, which sits at `level`, is deeper than the limit.
+#[cfg(feature = "web-chat")]
 fn depth_exceeds(value: &Value, level: usize) -> bool {
     let children: Box<dyn Iterator<Item = &Value>> = match value {
         Value::Object(map) => Box::new(map.values()),
@@ -57,7 +74,7 @@ fn depth_exceeds(value: &Value, level: usize) -> bool {
     children.into_iter().any(|child| depth_exceeds(child, level + 1))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "web-chat"))]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
