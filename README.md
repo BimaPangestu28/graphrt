@@ -63,6 +63,7 @@ brew install graphrt/graphrt/graphrt
 # with Rust (1.94+ for the default features; 1.89+ without `local-embed`)
 cargo install graphrt-cli            # installs the `graphrt` binary
 cargo install graphrt-cli --features eval,online-eval   # + `graphrt eval` and `serve --evaluators`
+cargo install graphrt-cli --features skills,learning    # + `graphrt skill` and `graphrt learn`
 cargo install graphrt-cli --features gateway-all        # + `graphrt gateway` and `graphrt deploy`
 
 # container (linux/amd64, linux/arm64)
@@ -440,6 +441,13 @@ End-user JWT verification for `serve` (`jwt`, on by default) adds about
 Evaluation (`eval` for `graphrt eval`, `online-eval` for `serve --evaluators`)
 is opt-in: `cargo install graphrt-cli --features eval,online-eval`. The release
 binaries, Homebrew formula and GHCR image are built with both.
+
+Agent skills and self learning (`skills` for `graphrt skill` and the `skills`
+field of agents, `learning` for `graphrt learn` and the `learning` field) are
+opt in the same way: `cargo install graphrt-cli --features skills,learning`.
+From the release after 0.6.2 the release binaries, Homebrew formula and GHCR
+image are built with both. The slim agent builds are not: they keep their
+size and idle memory budgets.
 
 Every feature is optional: build only what a deployment needs.
 

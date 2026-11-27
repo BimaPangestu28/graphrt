@@ -375,7 +375,7 @@ They honour standard proxy environment variables, except the OTel exporter and
     case are refused before anything is written. Configs are extracted into a
     fresh owner-only directory.
 
-## Skills (preview)
+## Skills
 
 A skill is treated as untrusted content that the owner chose to install.
 
@@ -397,6 +397,24 @@ A skill is treated as untrusted content that the owner chose to install.
   an index only after its minisign signature verifies against the catalog
   key, checks the archive's sha256 against that index, and then runs the same
   install as for a directory. There is no unsigned mode.
+- **A catalog install over HTTP cannot choose its catalog.**
+  `POST /v1/skills/catalog/install` reads the index and the key the server
+  was started with. The request has no field for an index, a key, an archive
+  or an unsigned mode, and unknown fields are refused.
+- **A model's draft is only a draft.** `graphrt skill draft` and
+  `POST /v1/skills/drafts/model` return text. Nothing is installed and no
+  tool is granted, whatever the source or the model says. Installing is a
+  separate owner action through the same gate.
+- **A served bundle keeps to its own skills.** A bundle that brings skills
+  runs on a private store. It cannot read a skill of the server, so it never
+  inherits a grant the server's owner gave. The server's routes cannot change
+  the bundle's skills either. A bundle's grants are limited to tools its own
+  skills ask for, name only tools the bundle's workflow could list itself,
+  and are printed at startup. A bundle that fails the install gate is not
+  served.
+- **Managing skills is an owner action.** `/v1/skills` needs the API key. A
+  user token is not accepted, and a server that listens on a network address
+  without a key refuses these routes.
 - **The scan is advisory.** It reports common hostile patterns before an
   install and can be evaded by rewording. The points above do not rely on it.
 - **Not covered.** A skill's instructions can still mislead a model within the
@@ -405,7 +423,7 @@ A skill is treated as untrusted content that the owner chose to install.
 
 See [skills.md](skills.md).
 
-## Self learning (preview)
+## Self learning
 
 What an agent learned is treated as untrusted until a person approved it.
 
@@ -422,6 +440,18 @@ What an agent learned is treated as untrusted until a person approved it.
 - **Prompt text.** A lesson is one line of at most 500 characters without
   invisible characters or markup tags, placed in a section that says it does
   not override the instruction or approval rules.
+- **Whose words feedback is.** Under `graphrt serve`, feedback counts as a
+  user's own words only when it arrives with that user's verified token
+  (`--verify-jwt`) on a run that token started. A token that does not verify
+  is refused, also next to a valid API key. Another user's token is refused.
+  Feedback sent with the API key is `derived` whatever `user` its body names.
+- **A model only proposes.** What a model suggests when distilling
+  (`graphrt learn distill --model`, `POST /v1/learning/{agent}/distill`) is a
+  proposal with trust `derived`. A skill drafted from lessons installs
+  nothing.
+- **Managing lessons is an owner action.** `/v1/learning` needs the API key. A
+  user token is not accepted, and a server that listens on a network address
+  without a key refuses these routes.
 - **Removal.** Lessons can be retired, deleted, or forgotten by user or by
   run. Every change is appended to an audit log.
 - **Not covered.** The owner can approve a harmful lesson. The risk label and

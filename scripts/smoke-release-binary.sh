@@ -1,9 +1,10 @@
 #!/bin/sh
 # Smoke test for a packaged release binary: it starts, reports the workspace
 # version and the release features (`SMOKE_REQUIRED_FEATURES`, default
-# `eval online-eval deploy-fly`; with `gateway`, also the gateway command;
-# with `deploy-fly`, the direct deploy refusing to run without a Fly token),
-# validates and runs the offline hello workflow.
+# `eval online-eval skills learning deploy-fly`; with `gateway`, also the
+# gateway command; with `deploy-fly`, the direct deploy refusing to run without
+# a Fly token; with `skills` and `learning`, a skill installed and a lesson
+# added in scratch stores), validates and runs the offline hello workflow.
 #   scripts/smoke-release-binary.sh dist/graphrt-x86_64-unknown-linux-musl/graphrt
 # Used by .github/workflows/release.yml; POSIX sh (Git Bash on Windows).
 set -eu
@@ -25,8 +26,10 @@ case "$version_output" in
 esac
 
 # Release builds add the opt-in features in release.yml's EXTRA_FEATURES.
+default_features="eval online-eval skills learning deploy-fly"
+required_features=${SMOKE_REQUIRED_FEATURES-$default_features}
 features_output=$("$binary" version | tr -d '\r') || fail "\`version\` exited with $?"
-for feature in ${SMOKE_REQUIRED_FEATURES-eval online-eval deploy-fly}; do
+for feature in $required_features; do
     case "$features_output" in
         *" $feature,"* | *" $feature)"*) ;;
         *) fail "\`version\` printed \`$features_output\`, expected the \`$feature\` feature" ;;
@@ -44,13 +47,51 @@ esac
 
 # The direct deploy (desktop "Put it online") answers in JSON Lines even
 # without a token: one `missing_token` error line, exit 1, no network call.
-case " ${SMOKE_REQUIRED_FEATURES-eval online-eval deploy-fly} " in
+case " $required_features " in
     *" deploy-fly "*)
         direct_output=$(env -u FLY_API_TOKEN "$binary" deploy --target fly --direct --deployment smoke --version v1 \
             --json "$workflow" 2>/dev/null | tr -d '\r') || true
         case "$direct_output" in
             '{"type":"error","code":"missing_token"'*) ;;
             *) fail "\`deploy --direct --json\` printed \`$direct_output\`, expected a missing_token error line" ;;
+        esac
+        ;;
+esac
+
+# Skills and self learning work end to end without a model or the network: a
+# skill is installed into a scratch store and listed, a lesson is added and
+# listed. The stores are scratch directories, never the user's own.
+scratch=""
+cleanup() {
+    if [ -n "$scratch" ]; then rm -rf "$scratch"; fi
+}
+trap cleanup EXIT
+case " $required_features " in
+    *" skills "* | *" learning "*) scratch=$(mktemp -d) || fail "cannot create a scratch directory" ;;
+esac
+case " $required_features " in
+    *" skills "*)
+        mkdir -p "$scratch/smoke-skill"
+        printf -- '---\nname: smoke-skill\ndescription: Checks that skills work. Use in the release smoke test.\n---\n# Smoke\n\nSay hello.\n' \
+            > "$scratch/smoke-skill/SKILL.md"
+        "$binary" skill install "$scratch/smoke-skill" --dir "$scratch/skills" >/dev/null \
+            || fail "\`skill install\` exited with $?"
+        skills_output=$("$binary" skill list --dir "$scratch/skills" | tr -d '\r') || fail "\`skill list\` exited with $?"
+        case "$skills_output" in
+            *smoke-skill*) ;;
+            *) fail "\`skill list\` printed \`$skills_output\`, expected smoke-skill" ;;
+        esac
+        ;;
+esac
+case " $required_features " in
+    *" learning "*)
+        "$binary" learn add smoke-agent "Greet people by name." --dir "$scratch/learning" >/dev/null \
+            || fail "\`learn add\` exited with $?"
+        lessons_output=$("$binary" learn list smoke-agent --dir "$scratch/learning" | tr -d '\r') \
+            || fail "\`learn list\` exited with $?"
+        case "$lessons_output" in
+            *"Greet people by name."*) ;;
+            *) fail "\`learn list\` printed \`$lessons_output\`, expected the added lesson" ;;
         esac
         ;;
 esac

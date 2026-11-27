@@ -1,4 +1,4 @@
-- `graphrt serve` (preview, cargo features `skills` and `learning`):
+- `graphrt serve` (cargo features `skills` and `learning`):
   `/v1/skills` lists, checks, installs, grants and removes skills, and
   `/v1/learning/{agent}/...` lists, adds, approves, edits, promotes, forgets
   and distills lessons, with the policy and the audit log. Feedback posted to

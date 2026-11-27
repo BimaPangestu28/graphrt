@@ -23,12 +23,15 @@ env:
   BIN: graphrt
   # Build profile for release binaries (see [profile.min-size] in Cargo.toml).
   PROFILE: min-size
-  # Opt-in features the released binaries and image add to the CLI defaults.
-  EXTRA_FEATURES: eval,online-eval
+  # Opt-in features the released binaries and image add to the CLI defaults:
+  # evaluation, and agent skills and self learning (docs/skills.md,
+  # docs/learning.md). The slim agent builds of bench/budgets.toml are built
+  # with their own feature lists and stay without them.
+  EXTRA_FEATURES: eval,online-eval,skills,learning
   # The gateway build (`graphrt-gateway-<target>` archives, `:<version>-gateway`
   # image): the same binary plus `graphrt gateway` / `graphrt deploy` with every
   # provider. Separate so the agent binary stays without mimalloc (decision 10).
-  GATEWAY_FEATURES: gateway-all,eval,online-eval
+  GATEWAY_FEATURES: gateway-all,eval,online-eval,skills,learning
   # Opt-in usage telemetry endpoint compiled into release binaries (docs/telemetry.md).
   # Telemetry stays off until a user runs `graphrt telemetry enable`.
   GRAPHRT_TELEMETRY_URL: https://graphrt-telemetry.bimapangestu280.workers.dev/v1/report
@@ -153,7 +156,7 @@ jobs:
         run: |
           sh scripts/smoke-release-binary.sh "${{ steps.package.outputs.agent }}"
           if [ -n "${{ steps.package.outputs.gateway }}" ]; then
-            SMOKE_REQUIRED_FEATURES="eval online-eval deploy-fly gateway" sh scripts/smoke-release-binary.sh "${{ steps.package.outputs.gateway }}"
+            SMOKE_REQUIRED_FEATURES="eval online-eval skills learning deploy-fly gateway" sh scripts/smoke-release-binary.sh "${{ steps.package.outputs.gateway }}"
           fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

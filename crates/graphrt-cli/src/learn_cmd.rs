@@ -1,5 +1,5 @@
 //! `graphrt learn`: review, correct and remove what agents learned (cargo
-//! feature `learning`, preview).
+//! feature `learning`).
 //!
 //! Every subcommand works on one lesson store: `--dir`, else
 //! `$GRAPHRT_LEARNING_DIR`, else `~/.graphrt/learning`. `graphrt run` and

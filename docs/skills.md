@@ -1,11 +1,24 @@
 # Skills
 
-**Preview.** Skills are opt in: the `graphrt` binary needs the `skills` cargo
-feature (`cargo install graphrt-cli --features skills`). Rust hosts add the
-`graphrt-skill` crate and turn on the `skills` feature of `graphrt-llm`.
-Default builds are unchanged: an agent that lists skills is refused there with
-a configuration error, so it never runs without them. The format of the skill
-store may still change before this leaves preview.
+**Availability.** From the release after 0.6.2, skills are in the release
+binaries, the Homebrew formula and the container image (agent and gateway
+builds). A build from source needs the `skills` cargo feature
+(`cargo install graphrt-cli --features skills`), and Rust hosts add the
+`graphrt-skill` crate and turn on the `skills` feature of `graphrt-llm`. The
+slim agent builds (`--no-default-features --features serve,llm,plugins` and
+smaller) stay without skills. A build without the feature refuses an agent
+that lists skills with a configuration error, so it never runs without them.
+
+**Still preview.** Two things may change without a deprecation period:
+
+- What a model writes: `graphrt skill draft` and `POST /v1/skills/drafts/model`.
+  The prompt and the quality of the drafts will change. What a draft is able
+  to do will not: it installs nothing and grants nothing.
+- The files of the skill store (`index.json` and the directory layout). Read
+  them through `graphrt skill`, `/v1/skills` or `SkillStore`, not directly.
+
+Everything under [What a skill can and cannot do](#what-a-skill-can-and-cannot-do)
+is not preview: those rules are enforced in code and covered by tests.
 
 A skill gives an agent a new ability without rewriting the agent. It is a
 directory with a `SKILL.md` file: a name, a description, instructions, and
@@ -216,27 +229,71 @@ expected. A disabled skill is left out silently.
 ## Bundles
 
 `graphrt bundle build` packs the skills a workflow's agents list into the
-`.grt` file, with their grants, and `graphrt run` uses them from there. See
-[bundles.md](bundles.md#skills-in-a-bundle-preview).
+`.grt` file, with their grants, and `graphrt run` and `graphrt serve` use them
+from there: a bundle that brings skills runs on those and on no others. See
+[bundles.md](bundles.md#skills-in-a-bundle).
 
 ## HTTP API
 
-`graphrt serve` in a build with the `skills` feature serves the default skill
-store. Every route needs the API key.
+`graphrt serve` in a build with the `skills` feature serves the skill store
+its agents read (`$GRAPHRT_SKILLS_DIR`, else `~/.graphrt/skills`).
 
 | Method | Path | Body | Response |
 | --- | --- | --- | --- |
-| GET | `/v1/skills` | | `{skills: [...]}` |
+| GET | `/v1/skills` | | `{skills: [...]}`, plus `bundled` when a served bundle brought skills |
 | GET | `/v1/skills/{name}` | | The skill with its tool requests, grants, files and findings |
 | POST | `/v1/skills/drafts` | `{name, description, body, requested_tools?}` | The draft, checked and scanned. Nothing is installed |
+| POST | `/v1/skills/drafts/model` | `{model, describe}` or `{model, conversation}`, `tools?` | A draft written by a model. Nothing is installed |
 | POST | `/v1/skills` | `{draft: {...}, grants?, accept_findings?, replace?}` | `201` and the installed skill (origin `authored`) |
+| POST | `/v1/skills/catalog/install` | `{skill, grants?, accept_findings?, replace?}` | `201` and the installed skill (origin `catalog`, verified) |
 | PATCH | `/v1/skills/{name}` | `{enabled?, grants?}` | The updated skill |
 | DELETE | `/v1/skills/{name}` | | `204` |
 
-A skill is sent as text and passes the same validation, scan and grant rules
-as one installed from a directory. `409` with the `findings` means the scan
-found something that needs `accept_findings`. Installing a package from a
-catalog and drafting with a model are not offered over HTTP.
+**Who may call them.** These are owner actions: a grant decides which tools a
+skill reaches in every later run.
+
+- Every route needs the API key. A user token (`--verify-jwt`) is not accepted.
+- A server without an API key serves them only on loopback, where the person
+  at the computer is the owner. Listening on a network address without a key,
+  it answers `403` on all of them and says so at startup.
+
+**Writing a skill.** A skill is sent as text and passes the same validation,
+scan and grant rules as one installed from a directory. `409` with the
+`findings` means the scan found something that needs `accept_findings`.
+
+**Drafting with a model.** `POST /v1/skills/drafts/model` is
+`graphrt skill draft` over HTTP. `model` is `provider/name` of a provider this
+server has configured, so a request never names an endpoint or a key.
+`describe` is plain language, `conversation` a list of
+`{role, content}` turns, and `tools` the tools the draft may ask for.
+
+- The answer is a draft and nothing else. No field installs it or grants a
+  tool: unknown fields are refused. Post it to `POST /v1/skills`, as returned
+  or edited, to install it through the normal gate.
+- The source is passed to the model as quoted material. A model that obeys
+  text planted in a conversation still only produces a draft, which the scan
+  reads like any other and which gets no tool unless the owner grants one.
+- `502` means the model failed or its answer is not a skill, `504` that it did
+  not answer within two minutes.
+
+**Installing from the catalog.** `POST /v1/skills/catalog/install` is
+`graphrt skill install <name>[@version]` over HTTP, with the same four steps
+as [above](#installing-from-the-catalog).
+
+- The catalog and its key are fixed when the server starts
+  (`$GRAPHRT_PLUGIN_INDEX`, `$GRAPHRT_PLUGIN_INDEX_KEY`, else the
+  graphrt-plugins catalog and its built in key). A request cannot name an
+  index, a key or an archive, and there is no unsigned mode.
+- `404`: the verified catalog lists no such skill or version. `502`: the index
+  did not verify, is older than one seen before, or the archive is not what
+  the index describes. Nothing was installed. `409`: already installed (pass
+  `replace`), or the scan found something that needs `accept_findings`.
+- Needs a build with the `plugins` feature as well.
+
+**Skills of a bundle.** A served bundle that brings skills is listed under
+`bundled` as `{workflow, skills}`. Those skills are read only here: no route
+changes, grants or removes them, and installing a skill of the same name
+changes this server's store and not the bundle's.
 
 ## Limits
 
