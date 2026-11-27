@@ -21,6 +21,7 @@ unless `--console` (or `$GRAPHRT_CONSOLE`) names a config. Without it nothing
 changes. SAML, SCIM and log streaming are not part of it.
 
 - [Quick start](#quick-start)
+- [The console page](#the-console-page)
 - [The config](#the-config)
 - [Signing in](#signing-in)
 - [Roles](#roles)
@@ -65,12 +66,39 @@ changes. SAML, SCIM and log streaming are not part of it.
    graphrt serve flows/ --addr 0.0.0.0:8080 --store /var/lib/graphrt --console console.yaml
    ```
 
-4. Open `https://agents.example.com/console/login`.
+4. Open `https://agents.example.com/console/`.
 
 The console needs the API key: `graphrt serve` refuses `--console` without one.
 Serve it over HTTPS (a reverse proxy or load balancer in front is fine): the
 session cookie is `Secure` and `__Host-` prefixed then. Plain HTTP is accepted
 for `localhost` and `127.0.0.1` only, for trying it out.
+
+## The console page
+
+`/console/` is the console for people: it extends the
+[monitoring page](monitoring.md) and looks the same, at phone width too.
+
+- **Agents**: each served workflow, the version this server runs (or that it
+  runs its file from disk) with its hash, what each environment runs, the
+  versions with who uploaded them and when. Owners upload a version, promote
+  it to the next environment, roll an environment back, run any version in
+  any environment and download a version. When something waits for a
+  restart, owners see "Restart and apply".
+- **Runs**: the monitoring view (runs, one run live, the approvals inbox,
+  devices, notifications) with the console sign in. Viewers read, operators
+  and owners also answer approvals, stop runs and pair devices.
+- **Secrets** (operators and owners): the names, who changed them and which
+  workflows read them, and the variables workflows declare that the console
+  does not set. Owners set and remove secrets. A value is never shown.
+- **People** (owners): everyone who signed in, their role from the groups and
+  the role set here, the group mapping, and the open sessions, which can be
+  ended.
+- **Audit log** (owners): the entries, filtered by kind of action, person and
+  outcome, the JSON lines export of the filter and the check of the chain.
+
+The page loads nothing from other hosts: its `Content-Security-Policy` allows
+scripts, styles and connections of its own origin only, and forbids framing.
+It is `graphrt/console` of the `graphrt` npm package in `web/`, embedded in the binary.
 
 ## The config
 

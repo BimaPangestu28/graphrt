@@ -55,7 +55,11 @@ on iOS that is also what makes notifications possible.
 owner) or takes a device token from a pairing link (a phone). The key stays in
 the page's memory, or in the browser's storage when "Remember on this device"
 is ticked. A paired device is always remembered, until it is unpaired or
-removed.
+removed. On a server with the [admin console](console.md), a person signed in
+with their organization's account uses the page with that sign in and their
+console role (a viewer reads, an operator or owner also answers approvals,
+stops runs and pairs devices), and the sign in screen offers "Sign in with
+your organization" next to the key.
 
 The page's `Content-Security-Policy` allows scripts, workers and connections
 of its own origin only, and forbids framing.

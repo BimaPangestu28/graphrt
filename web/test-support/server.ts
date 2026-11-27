@@ -6,7 +6,7 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -154,6 +154,8 @@ export const API_KEY = "test-api-key";
 export interface TestServer {
   /** `http://127.0.0.1:<port>`. */
   url: string;
+  /** The directory of its workflows and files. */
+  dir: string;
   /** Stop the server and remove its files. */
   stop(): Promise<void>;
 }
@@ -202,23 +204,35 @@ async function waitUntilHealthy(url: string, child: ChildProcess, log: () => str
   throw new Error(`graphrt serve did not become healthy:\n${log()}`);
 }
 
+/** More of what a test server needs. */
+export interface ServerOptions {
+  /** More environment variables of the server. */
+  env?: Record<string, string>;
+  /** Writes files the flags name, once the address is known; returns more flags. */
+  setup?: (files: string, url: string) => Promise<string[]>;
+}
+
 /**
  * Start `graphrt serve` with the test workflows and `flags`.
  *
  * @param flags - Extra `serve` flags, e.g. `["--conversations"]`.
  * @throws Error - When the binary is missing or the server does not start.
  */
-export async function startServer(flags: string[] = []): Promise<TestServer> {
+export async function startServer(flags: string[] = [], options: ServerOptions = {}): Promise<TestServer> {
   const dir = await mkdtemp(join(tmpdir(), "graphrt-web-test-"));
+  const flows = join(dir, "flows");
+  await mkdir(flows);
   for (const [name, text] of Object.entries(WORKFLOWS)) {
-    await writeFile(join(dir, `${name}.yaml`), text);
+    await writeFile(join(flows, `${name}.yaml`), text);
   }
   const port = await freePort();
+  const url = `http://127.0.0.1:${port}`;
+  const more = options.setup === undefined ? [] : await options.setup(dir, url);
   const child = spawn(
     binary(),
-    ["serve", dir, "--addr", `127.0.0.1:${port}`, "--no-default-plugins", ...flags],
+    ["serve", flows, "--addr", `127.0.0.1:${port}`, "--no-default-plugins", ...flags, ...more],
     {
-      env: { ...process.env, GRAPHRT_API_KEY: API_KEY },
+      env: { ...process.env, ...options.env, GRAPHRT_API_KEY: API_KEY },
       stdio: ["ignore", "ignore", "pipe"],
     },
   );
@@ -226,7 +240,6 @@ export async function startServer(flags: string[] = []): Promise<TestServer> {
   child.stderr?.on("data", (chunk: Buffer) => {
     stderr += chunk.toString();
   });
-  const url = `http://127.0.0.1:${port}`;
   const stop = async (): Promise<void> => {
     if (child.exitCode === null) {
       const exited = new Promise((done) => child.once("exit", done));
@@ -241,5 +254,5 @@ export async function startServer(flags: string[] = []): Promise<TestServer> {
     await stop();
     throw error;
   }
-  return { url, stop };
+  return { url, dir, stop };
 }

@@ -970,13 +970,19 @@ mod tests {
     /// A standby's environment has none of the gateway's own secrets.
     #[tokio::test]
     async fn a_standby_holds_none_of_the_gateway_secrets() {
-        use std::os::unix::fs::PermissionsExt as _;
         let dir = std::env::temp_dir().join(format!("graphrt-standby-env-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Stands in for the binary: records its environment, then waits for stdin.
+        // A child process writes it: a file this process wrote would be open in
+        // every child another test forks in the meantime, and running it would
+        // fail with `ETXTBSY` (Text file busy) until those children exec.
         let program = dir.join("agent");
-        std::fs::write(&program, "#!/bin/sh\nenv > \"$0.env\"\ncat > /dev/null\n").unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let written = std::process::Command::new("/bin/sh")
+            .args(["-c", "printf '#!/bin/sh\\nenv > \"$0.env\"\\ncat > /dev/null\\n' > \"$1\" && chmod 700 \"$1\""])
+            .args(["sh", program.to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(written.success(), "cannot write the stand-in agent");
         // `HOME` stands in for a secret: the test cannot set variables (no `unsafe`).
         let provider = LocalProvider::new(&dir, Duration::from_secs(1)).unwrap().with_standby(
             &program,
@@ -984,7 +990,7 @@ mod tests {
             vec!["HOME".to_owned()],
         );
         provider.fill_standby();
-        assert_eq!(provider.standby_ready(), 1);
+        assert_eq!(provider.standby_ready(), 1, "the standby did not start: its spawn error is on stderr");
         let recorded = dir.join("agent.env");
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let env = loop {

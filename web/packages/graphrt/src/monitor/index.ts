@@ -17,6 +17,7 @@ export {
   type EventLine,
   eventLine,
   type KeyValueStore,
+  type MemberSignIn,
   MonitorSession,
   type MonitorSessionOptions,
   type MonitorState,

@@ -2,8 +2,10 @@
  * Monitoring one `graphrt serve`: the state a monitoring view shows and the
  * calls that change it. No DOM here, so it also serves a custom view.
  *
- * The person signs in with the API key (the owner) or with a device token
- * (a paired phone, which reads runs and answers what waits for a person).
+ * The person signs in with the API key (the owner), with a device token
+ * (a paired phone, which reads runs and answers what waits for a person), or
+ * with their organization's account on a server with the admin console
+ * (`graphrt serve --console`), as a member with a console role.
  */
 import {
   type Approval,
@@ -38,6 +40,19 @@ export interface PushBrowser {
   /** Ask the person for permission and subscribe with the server's key. */
   subscribe(publicKey: string): Promise<PushSubscriptionKeys>;
   unsubscribe(): Promise<void>;
+}
+
+/**
+ * A person signed in to the admin console of the server. The session's
+ * `fetch` (see `sessionFetch` of `@graphrt/client`) carries the sign in.
+ */
+export interface MemberSignIn {
+  /** The console role: an `operator` or `owner` answers approvals and stops runs, a `viewer` reads. */
+  role: "owner" | "operator" | "viewer";
+  /** Who it is, as the settings show it. */
+  name: string;
+  /** Ends the console session (the page goes back to signing in). */
+  signOut?: () => void;
 }
 
 /** One line of what a run did. */
@@ -84,8 +99,10 @@ export interface MonitorState {
   /** Why the page cannot be used, or why a credential was refused. */
   notice?: string | undefined;
   config?: MonitorConfig | undefined;
-  /** `owner` holds the API key, `device` a device token. */
-  role?: "owner" | "device" | undefined;
+  /** `owner` holds the API key, `device` a device token, `member` a console sign in. */
+  role?: "owner" | "device" | "member" | undefined;
+  /** The console sign in, for a member. */
+  member?: MemberSignIn | undefined;
   /** The device of the token in use. */
   device?: Device | undefined;
   runs: RunRecord[];
@@ -117,6 +134,8 @@ export interface MonitorSessionOptions {
   storage?: KeyValueStore;
   /** Push notifications of this browser. Default: none. */
   push?: PushBrowser;
+  /** Signed in to the admin console: no credential is asked for. Give the session's `fetch` too. */
+  member?: MemberSignIn;
   fetch?: typeof fetch;
 }
 
@@ -246,6 +265,11 @@ export class MonitorSession {
       return;
     }
     this.#set({ config });
+    if (this.#options.member !== undefined) {
+      this.#set({ member: this.#options.member });
+      await this.#enter("member");
+      return;
+    }
     if (pairingToken !== undefined) {
       await this.unlock(pairingToken, true);
       return;
@@ -299,6 +323,12 @@ export class MonitorSession {
 
   /** Forget the credential on this browser. A device stays paired: remove it in the owner's list. */
   signOut(): void {
+    if (this.#state.role === "member") {
+      this.stopPolling();
+      this.#following?.abort();
+      this.#options.member?.signOut?.();
+      return;
+    }
     this.stopPolling();
     this.#following?.abort();
     this.#forget();
@@ -323,14 +353,20 @@ export class MonitorSession {
     const { role, device, config } = this.#state;
     return (
       config?.approvals === true &&
-      (role === "owner" || device?.scopes.includes("approvals:resolve") === true)
+      (this.canOperate || (role === "device" && device?.scopes.includes("approvals:resolve") === true))
     );
   }
 
   /** Whether the person may read runs. */
   get canReadRuns(): boolean {
     const { role, device } = this.#state;
-    return role === "owner" || device?.scopes.includes("runs:read") === true;
+    return role === "owner" || role === "member" || device?.scopes.includes("runs:read") === true;
+  }
+
+  /** Whether the person may stop runs and pair devices: the API key, or a console operator or owner. */
+  get canOperate(): boolean {
+    const { role, member } = this.#state;
+    return role === "owner" || (role === "member" && member !== undefined && member.role !== "viewer");
   }
 
   /** Load the newest runs and the inbox again. Never throws. */
@@ -512,7 +548,7 @@ export class MonitorSession {
 
   /** Load the paired devices (the owner only). */
   async loadDevices(): Promise<void> {
-    if (this.#state.role !== "owner" || this.#state.config?.devices !== true) {
+    if (!this.canOperate || this.#state.config?.devices !== true) {
       return;
     }
     try {
@@ -671,7 +707,7 @@ export class MonitorSession {
     return this.#state.filter === undefined ? {} : { status: this.#state.filter };
   }
 
-  async #enter(role: "owner" | "device"): Promise<void> {
+  async #enter(role: "owner" | "device" | "member"): Promise<void> {
     this.#set({ status: "ready", role, notice: undefined });
     await Promise.all([this.refresh(), this.#loadPush(), this.loadDevices()]);
   }

@@ -1,8 +1,8 @@
 # graphrt
 
 The browser side of [`graphrt serve`](https://github.com/Graphrt/graphrt/blob/main/docs/serving.md):
-a typed client, web components that draw UI blocks, the chat widget and the
-monitoring view. One package, four entry points: import only the part you use,
+a typed client, web components that draw UI blocks, the chat widget, the
+monitoring view and the admin console. One package, five entry points: import only the part you use,
 and a bundler leaves the rest out.
 
 ```sh
@@ -15,6 +15,7 @@ npm install graphrt
 | `graphrt/ui` | Web components that draw UI blocks: Adaptive Cards, charts, tables, stat tiles, diagrams. No dependencies |
 | `graphrt/chat` | The chat component and the widget, built on the two above |
 | `graphrt/monitor` | The monitoring view: runs, run details, the approvals inbox, push notifications |
+| `graphrt/console` | The admin console of `graphrt serve --console`: agents and versions per environment, runs, secrets, people and roles, the audit log |
 
 The package is ES modules with type declarations. `graphrt/client` uses `fetch`
 only, so it also runs in Node.js 18+, Deno, Bun and workers. The other parts
@@ -108,10 +109,29 @@ monitor.push = browserPush(); // needs a service worker on the page
 
 A server started with `--monitor` serves it ready to use at `/monitor/`.
 
+## Admin console
+
+```ts
+import { defineGraphrtConsole } from "graphrt/console";
+
+defineGraphrtConsole(); // <graphrt-console server="https://agents.example.com">
+```
+
+| Export | What |
+| --- | --- |
+| `<graphrt-console>` | The console, to place in a page of the server's own origin |
+| `ConsoleSession` | The logic without a view |
+
+People sign in with their organization's account at the server, so the page
+must come from the server's origin: the session is an `HttpOnly` cookie and
+every change carries the session's CSRF token. A server started with
+`--console` serves it ready to use at `/console/`.
+
 ## More
 
 - [Browser guide](https://github.com/Graphrt/graphrt/blob/main/docs/web.md)
 - [Monitoring guide](https://github.com/Graphrt/graphrt/blob/main/docs/monitoring.md)
+- [Admin console](https://github.com/Graphrt/graphrt/blob/main/docs/console.md)
 
 The version of this package is the version of the graphrt release it was
 published with. Licensed under Apache-2.0.

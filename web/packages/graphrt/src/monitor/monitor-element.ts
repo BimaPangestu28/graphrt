@@ -6,12 +6,15 @@
  * <graphrt-monitor server="https://agent.example.com"></graphrt-monitor>
  *
  * Attributes: `server` (default: the page's origin), `theme` (`light` or
- * `dark`; absent follows the page) and `hash-routing` (keeps the open view in
- * the URL fragment, for a page that is this element only).
+ * `dark`; absent follows the page), `hash-routing` (keeps the open view in
+ * the URL fragment, for a page that is this element only) and `embedded`
+ * (no title bar, for a page that has its own, such as the admin console).
  *
  * Properties, set before the element is connected: `push` (the browser's push
- * notifications, see `browserPush`) and `pairingToken` (a device token from a
- * pairing link).
+ * notifications, see `browserPush`), `pairingToken` (a device token from a
+ * pairing link), and on a server with the admin console `member` with `fetch`
+ * (signed in with the organization's account, see `sessionFetch`) or
+ * `organizationSignIn` (where to sign in, offered next to the key).
  */
 import { questionBlock, richText } from "../chat/index.ts";
 import type { Approval, ApprovalRequest, Json, RunRecord, RunStatus } from "../client/index.ts";
@@ -26,6 +29,7 @@ import { encodeQr, qrSvg } from "./qr.ts";
 import {
   type EventLine,
   type KeyValueStore,
+  type MemberSignIn,
   MonitorSession,
   type MonitorState,
   type PushBrowser,
@@ -223,6 +227,12 @@ export class GraphrtMonitorElement extends BaseElement {
   push: PushBrowser | undefined;
   /** A device token from a pairing link. Set it before the element is connected. */
   pairingToken: string | undefined;
+  /** Signed in to the server's admin console. Set it, with `fetch`, before the element is connected. */
+  member: MemberSignIn | undefined;
+  /** The `fetch` of the console session that `member` signed in with. */
+  fetch: typeof fetch | undefined;
+  /** Where people sign in with their organization's account, offered next to the key. */
+  organizationSignIn: string | undefined;
   #session: MonitorSession | undefined;
   #unsubscribe: (() => void) | undefined;
   #parts: Parts | undefined;
@@ -259,6 +269,8 @@ export class GraphrtMonitorElement extends BaseElement {
         ...(server === null ? {} : { baseUrl: server }),
         ...(storage === undefined ? {} : { storage }),
         ...(this.push === undefined ? {} : { push: this.push }),
+        ...(this.member === undefined ? {} : { member: this.member }),
+        ...(this.fetch === undefined ? {} : { fetch: this.fetch }),
       });
       this.#session = session;
       this.#unsubscribe = session.subscribe((state) => this.#render(state));
@@ -362,7 +374,9 @@ export class GraphrtMonitorElement extends BaseElement {
     const run = h("section", { class: "view" });
     const settings = h("section", { class: "view" });
     const main = h("main", {}, gate, runs, approvals, run, settings);
-    root.append(h("header", {}, title), main, nav);
+    const header = h("header", {}, title);
+    header.hidden = this.hasAttribute("embedded");
+    root.append(header, main, nav);
     this.#parts = { title, main, nav, tabs, badge, gate, gateNotice, runs, approvals, run, settings };
   }
 
@@ -375,10 +389,18 @@ export class GraphrtMonitorElement extends BaseElement {
       placeholder: "API key or device token",
     });
     const remember = h("input", { type: "checkbox", id: "remember" });
+    const organization =
+      this.organizationSignIn !== undefined &&
+      h("a", { class: "primary button", href: this.organizationSignIn }, "Sign in with your organization");
     const form = h(
       "form",
       { class: "gate" },
-      h("p", {}, "Enter the API key of this server."),
+      organization,
+      h(
+        "p",
+        {},
+        organization === false ? "Enter the API key of this server." : "Or enter the API key of this server.",
+      ),
       h("p", { class: "note" }, "On a phone, open the pairing link the owner made for it instead."),
       credential,
       h("div", { class: "check" }, remember, h("label", { for: "remember" }, "Remember on this device")),
@@ -709,7 +731,7 @@ export class GraphrtMonitorElement extends BaseElement {
       const blocks = record === undefined ? [] : collectUiBlocks(record.outputs ?? {});
       const theme = this.getAttribute("theme");
       const stop =
-        state.role === "owner" &&
+        this.#session?.canOperate === true &&
         record?.active === true &&
         button("Stop this run", "danger", () => void this.#session?.stopRun(detail.runId));
       const tokens = record?.usage?.total_tokens;
@@ -821,7 +843,7 @@ export class GraphrtMonitorElement extends BaseElement {
   }
 
   #devicesSection(state: MonitorState): HTMLElement | false {
-    if (state.role !== "owner" || state.config?.devices !== true) {
+    if (this.#session?.canOperate !== true || state.config?.devices !== true) {
       return false;
     }
     const section = h(
@@ -932,6 +954,16 @@ export class GraphrtMonitorElement extends BaseElement {
           "div",
           { class: "actions" },
           button("Unpair this device", "danger", () => void this.#session?.unpair()),
+        ),
+      );
+    } else if (state.role === "member" && state.member !== undefined) {
+      session.append(
+        h("h2", {}, `Signed in as ${state.member.name}`),
+        h("p", { class: "note" }, `Your role in the console: ${state.member.role}.`),
+        h(
+          "div",
+          { class: "actions" },
+          button("Sign out", "plain", () => this.#session?.signOut()),
         ),
       );
     } else if (state.config?.access === "key") {

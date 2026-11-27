@@ -64,6 +64,8 @@ button.primary { border: 0; background: var(--grt-accent); color: var(--grt-acce
 button.plain { border: 1px solid var(--grt-border); background: var(--grt-surface); color: var(--grt-text); }
 button.danger { border: 1px solid var(--grt-critical); background: var(--grt-surface); color: var(--grt-critical); }
 button:disabled { opacity: 0.5; cursor: default; }
+a.primary.button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 16px;
+  border-radius: 12px; background: var(--grt-accent); color: var(--grt-accent-text); font-weight: 600; text-decoration: none; }
 button.link { border: 0; background: transparent; color: var(--grt-accent); font: inherit; padding: 0; min-height: 36px; cursor: pointer; }
 input[type="text"], input[type="password"] { width: 100%; min-height: 44px; padding: 10px 12px; border-radius: 10px;
   border: 1px solid var(--grt-border); background: var(--grt-surface); color: var(--grt-text); font: inherit; font-size: 16px; }
@@ -79,6 +81,9 @@ input[type="text"], input[type="password"] { width: 100%; min-height: 44px; padd
 .form input { flex: 1; min-width: 0; }
 .call { border: 1px solid var(--grt-border); border-radius: 10px; padding: 10px; min-width: 0; }
 graphrt-block { display: block; min-width: 0; }
+:host([embedded]) nav { order: -1; border-top: 0; border-bottom: 1px solid var(--grt-border); padding-bottom: 0; }
+:host([embedded]) nav button { min-height: 44px; }
+:host([embedded]) nav button[aria-current="page"] { box-shadow: inset 0 -2px 0 var(--grt-accent); }
 @media (min-width: 720px) {
   :host { flex-direction: column; }
   nav { order: -1; border-top: 0; border-bottom: 1px solid var(--grt-border); justify-content: center; }

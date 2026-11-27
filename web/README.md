@@ -10,6 +10,7 @@ npm as one package, [`graphrt`](packages/graphrt). The guide is
 | `graphrt/ui` | [`src/ui`](packages/graphrt/src/ui) | Web components that draw UI blocks: Adaptive Cards, charts, tables, stat tiles, diagrams |
 | `graphrt/chat` | [`src/chat`](packages/graphrt/src/chat) | The chat component and the widget, built on the two above |
 | `graphrt/monitor` | [`src/monitor`](packages/graphrt/src/monitor) | The monitoring view: runs, run details, the approvals inbox, push notifications |
+| `graphrt/console` | [`src/console`](packages/graphrt/src/console) | The admin console of `graphrt serve --console` |
 
 The parts import each other by relative path, so the built `dist/` keeps them
 apart: importing `graphrt/client` loads no web component and no Mermaid loader,
@@ -18,13 +19,14 @@ and nothing runs on import (`"sideEffects": false`). Tests live in
 
 `graphrt serve --chat` serves the chat page and the widget from
 `crates/graphrt-cli/assets/chat`, and `graphrt serve --monitor` the monitoring
-page from `crates/graphrt-cli/assets/monitor`. `npm run build` writes both from
-the sources (`src/chat/page.ts`, `src/chat/embed.ts`, `src/monitor/page.ts`,
-`src/monitor/sw.ts`; these page scripts are not part of the npm package). The
+page from `crates/graphrt-cli/assets/monitor`, and `graphrt serve --console`
+the console page from `crates/graphrt-console/assets/console`. `npm run build`
+writes them from the sources (`src/chat/page.ts`, `src/chat/embed.ts`,
+`src/monitor/page.ts`, `src/monitor/sw.ts`, `src/console/page.ts`; these page scripts are not part of the npm package). The
 result is committed, so building graphrt needs no Node.js.
 
 ```sh
-cargo build -p graphrt-cli   # the tests start a real graphrt serve ($GRAPHRT_BIN to use another binary)
+cargo build -p graphrt-cli --features console   # the tests start a real graphrt serve ($GRAPHRT_BIN to use another binary)
 npm ci
 npm run check                # types, lint, tests, that the embedded pages are up to date and the package publishes cleanly
 npm run build                # after a change: rebuild the embedded pages, then commit them
