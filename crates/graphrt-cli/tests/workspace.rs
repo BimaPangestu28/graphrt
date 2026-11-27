@@ -152,3 +152,41 @@ fn image_tools_inspect_and_thumbnail_a_workspace_image() {
     assert!(!out.status.success());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `--workspace s3://...` is a build option, and a bad location is a usage error
+/// before any request is made.
+#[test]
+fn an_object_storage_workspace_needs_its_feature_and_a_valid_location() {
+    let workflow = example("files.yaml");
+    let run = |location: &str, env: &[(&str, &str)]| {
+        let args =
+            ["run", workflow.to_str().unwrap(), "--workspace", location, "--input", "title=a", "--input", "body=b"];
+        let mut command = Command::new(env!("CARGO_BIN_EXE_graphrt"));
+        command.args(args).env("AWS_ACCESS_KEY_ID", "test").env("AWS_SECRET_ACCESS_KEY", "test");
+        command.env_remove("GRAPHRT_S3_ALLOW_HTTP").env_remove("GRAPHRT_S3_ENDPOINT").envs(env.iter().copied());
+        let out = command.output().unwrap();
+        (out.status.code(), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+    #[cfg(not(feature = "files-s3"))]
+    {
+        let (code, report) = run("s3://my-bucket/agents", &[]);
+        assert_eq!(code, Some(2), "{report}");
+        assert!(report.contains("requires a build with the `files-s3` feature"), "{report}");
+    }
+    #[cfg(feature = "files-s3")]
+    {
+        let (code, report) = run("s3://Not_A_Bucket/agents", &[]);
+        assert_eq!(code, Some(2), "{report}");
+        assert!(report.contains("not a valid bucket name"), "{report}");
+        let (code, report) = run("s3://my-bucket/a/../b", &[]);
+        assert_eq!(code, Some(2), "{report}");
+        assert!(report.contains("prefix"), "{report}");
+        // An unencrypted endpoint is refused unless it is allowed by name.
+        let (code, report) = run("s3://my-bucket/agents", &[("GRAPHRT_S3_ENDPOINT", "http://127.0.0.1:9")]);
+        assert_eq!(code, Some(2), "{report}");
+        assert!(report.contains("unencrypted"), "{report}");
+        let (code, report) = run("s3://my-bucket", &[("GRAPHRT_S3_PATH_STYLE", "maybe")]);
+        assert_eq!(code, Some(2), "{report}");
+        assert!(report.contains("GRAPHRT_S3_PATH_STYLE"), "{report}");
+    }
+}

@@ -118,6 +118,10 @@ They are off without the flag.
 - **Per user.** With `--workspace-per-user` every call needs a scope from the
   agent's `tool_context`, which the model cannot see or change. Each scope is
   its own directory and quota.
+- **Object storage is opt in.** `--workspace s3://bucket/prefix` (feature
+  `files-s3`) keeps the same rules over S3. Requests are signed, redirects
+  are not followed, `http://` endpoints must be allowed explicitly, and no
+  path reaches outside the prefix. Scope the bucket policy to that prefix.
 - **File content is data.** `read` frames content between boundaries that
   change on every call. That lowers the odds of a prompt injection, it does
   not remove them: put destructive and outbound tools under

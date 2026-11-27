@@ -125,7 +125,8 @@ considered (`object_store` 0.14, `opendal` 0.59) and left out: each pulls a
 large tree for backends most agents never use, and the trait is small enough
 for a host to implement over the client it already has. Limits, quotas,
 scopes and type checks live in `Workspace`, above the store, so a new backend
-cannot forget them.
+cannot forget them. An S3 backend was added later with a client of its own,
+see [decision 13](#13-object-storage-with-a-client-of-our-own).
 
 ### 3. No links, checked per component
 
@@ -249,6 +250,34 @@ collect files from tool results are behind the `tool-files` feature of
 `graphrt-core` and `graphrt-llm`. See
 [What it costs a build that does not use it](#what-it-costs-a-build-that-does-not-use-it).
 
+### 13. Object storage with a client of our own
+
+Added 2026-11-27. Agents that run as several replicas, or on machines whose
+disk does not stay, need the workspace somewhere shared.
+
+| Option | For | Against |
+| --- | --- | --- |
+| AWS SDK for Rust (`aws-sdk-s3`) | complete, maintained by AWS | about 100 crates. `aws-sdk-*` and `aws-config` are banned in `bench/budgets.toml` because of what they do to the size of every build that links them. |
+| `object_store` 0.14 | S3, GCS, Azure behind one trait | pulls `quick-xml`, `chrono`, `itertools`, `humantime` and more, and its S3 client does far more than six operations |
+| `opendal` 0.59 | forty backends | the largest tree of the three |
+| `rust-s3`, `rusty-s3` | small | one more signer next to the two the repository already has |
+| **Five requests over `reqwest`, signed by the signer the gateway already ships** | no new crate in the lock file. The SigV4 signer and the credential chain (environment, ECS, EKS, EC2 roles) of `graphrt-provider-aws` are reused, and they are tested against the AWS test vectors. | we own about 450 lines, and only the S3 API is covered |
+
+Decision: the last. `S3Store` is behind the `s3` feature of `graphrt-files`
+and the `files-s3` feature of the CLI. Both are off by default, and the
+budgeted builds cannot enable them by accident because they do not enable
+`files` at all.
+
+What the store does not do: multipart uploads (a workspace file is at most
+32 MiB, far below the 5 GiB of one `PutObject`), versioning, server side
+encryption settings (set them on the bucket), and Google Cloud Storage or
+Azure Blob (GCS has an S3 compatible endpoint, Azure needs its own store
+behind the same trait).
+
+Checked against a real store, SeaweedFS 3 in a container, with the
+`a_real_object_store_when_one_is_configured` test and the CLI: signatures,
+names with URL characters, ranges, conditional creation, listing.
+
 ## Threat model
 
 Who is trusted: the operator (who starts the runtime, picks the workspace
@@ -274,6 +303,16 @@ the host file system goes.
 | F14 | Forged file references (a model or a plugin returns `{"$file": true, "reference": ...}`) | Untrusted JSON never becomes a file value. `workspace:` references are parsed as workspace paths and checked against the resolver's own view. | `graphrt-core` `tool::collect_files` doc test, `resolver::tests::reads_workspace_references_and_ignores_others` |
 | F15 | A crash that leaves half a file | Writes go to a hidden temporary file that is renamed into place | `dir_store::writes_leave_no_temporary_files_and_hashes_stream`, `concurrent_writers_never_tear_a_file` |
 | F16 | Heavy file work stalling every other run | Disk I/O, hashing and extraction run on the blocking pool | `dir_store::heavy_file_work_does_not_block_the_async_worker` |
+| S1 | A path that reaches another prefix or another bucket, or that turns into query parameters (`#`, `&`, `=`, `%2e%2e`, `;`) | A key is the prefix plus a `WorkspacePath`, percent encoded byte by byte. Bucket, region, endpoint and prefix are validated when the store is built. | `s3::a_path_cannot_reach_another_prefix_the_bucket_or_the_query`, `s3::tests::bucket_names_cannot_carry_url_syntax` |
+| S2 | Objects planted in the bucket that are not workspace files (`..`, hidden names, another prefix, names that display as something else) | A listing returns only keys below the prefix that parse as workspace paths | `s3::objects_that_are_not_workspace_files_are_not_listed` |
+| S3 | Unsigned or altered requests, a damaged upload | SigV4 on every request with the SHA-256 of the body in the signature. The test server recomputes both. | `s3::every_request_is_signed_and_a_wrong_key_is_refused` |
+| S4 | A signed request sent to another host by a redirect | Redirects are not followed and are reported | `s3::redirects_are_not_followed` |
+| S5 | A secret key or session token in an error, a log or `Debug` output | Errors are built from the status, the error code and a bounded message. Transport errors carry no URL. `Debug` prints neither. | `s3::secrets_never_appear_in_errors_or_debug_output` |
+| S6 | File content sent unencrypted, credentials or a path smuggled into the endpoint | `http://` needs `allow_http`. An endpoint is an origin: no user, path, query or fragment. | `s3::plain_http_and_malformed_configuration_are_refused`, `s3::tests::endpoints_are_origins_and_http_needs_a_switch` |
+| S7 | A store that answers with more than asked: a whole object for a range, a huge listing, pages without end, an XML entity bomb | Bodies are read up to the requested size, listings up to 4 MiB a page and 64 pages. The XML reader expands the five standard entities and nothing else. | `s3::a_server_that_sends_too_much_is_cut_off`, `s3::tests::a_listing_is_read_without_expanding_anything` |
+| S8 | A store that hangs or throttles | A time limit per request, three attempts with a growing pause, then an error the agent sees | `s3::a_store_that_does_not_answer_times_out`, `s3::throttling_is_retried_and_a_dead_store_is_reported` |
+| S9 | Two replicas creating the same file | `If-None-Match: *` on a create, so the store refuses the second one | `s3::a_create_does_not_replace_what_another_process_wrote` |
+| S10 | The rules of a workspace lost on a new backend (size, quota, programs, user scopes) | They live in `Workspace`, above the store | `s3::a_workspace_keeps_its_rules_over_object_storage` |
 | I1 | Image bomb: a small file that declares a huge canvas | Header probe refuses the pixel count before any decoder runs (5.5 µs for a 64 megapixel PNG). Decoder limits on width, height and allocation are a second line. | `probe::a_huge_canvas_is_refused_from_the_header_alone`, `tools::bombs_spoofed_files_and_escapes_are_error_results`, `prepare::spoofed_vision_inputs_are_refused` |
 | I2 | Malformed image aimed at a decoder or at our own header parsers | Pure Rust decoders, no `unsafe` in the workspace, checked indexing only, decoding behind a panic boundary on the blocking pool | `probe::truncated_files_fail_cleanly_at_every_length`, `probe::corrupted_files_never_panic_or_exceed_the_limits` |
 | I3 | Image type spoofing (SVG, HTML, HEIC or a program sent as `image/png`) | Only PNG, JPEG, GIF and WebP by magic bytes reach a model or a tool. The media type sent to a provider is the detected one. | `probe::spoofed_and_unsupported_content_is_refused`, `prepare::spoofed_vision_inputs_are_refused`, `nodes::a_spoofed_vision_input_stops_the_node_before_the_model_is_called`, `graphrt-llm` `a_refused_image_fails_the_node_and_is_never_sent_as_it_was`, CLI `image_tools_inspect_and_thumbnail_a_workspace_image` |
@@ -300,6 +339,12 @@ the host file system goes.
 - **Quota drift.** The usage of a workspace is counted once and then kept by
   the writes that go through it. Files changed behind its back are counted
   again on the next start (`Workspace::recount`).
+- **Quota across replicas.** With a shared object store each process keeps
+  its own count of the workspace between starts, so replicas writing at the
+  same time can pass the quota by what the others wrote. Bucket policies and
+  lifecycle rules are the hard limit there.
+- **A store that ignores `If-None-Match`.** Creation without overwrite is
+  then only checked inside one process.
 - **CPU time of document extraction.** Bounded by size limits, not by a
   timer. Run agents with a node or run timeout.
 
@@ -359,6 +404,31 @@ machine, one core.
 - Sending 0.39 MiB instead of 2.5 MiB is the larger gain: less upload, and
   no tokens spent on pixels the provider would scale away.
 
+### Object storage
+
+`cargo run --release -p graphrt-files --features s3 --example s3_bench`,
+same machine, SeaweedFS 3 in a container on loopback, medians.
+
+| What | Result |
+| --- | --- |
+| Stat | 0.39 ms |
+| Read a small object | 0.61 ms |
+| Write a small object | 1.17 ms |
+| Read 16 MiB | 11 ms (1,462 MiB/s) |
+| Write 16 MiB (hash, sign, upload) | 89 ms (180 MiB/s) |
+| Read a 256 KiB window in the middle of 16 MiB | 1.09 ms |
+| List 200 objects | 3.7 ms |
+| `files/read`, small file | 1.9 ms |
+| `files/search` across 200 small objects | 101 ms |
+
+The release build of the default CLI grows by 198 KiB with `files-s3`
+(32,835,312 to 33,037,552 bytes, x86_64 Linux), which is the credential
+chain and the signer. It stays opt in.
+
+Against a store in another region every request costs a round trip of tens
+of milliseconds, which makes `files/search` over many files the slow case.
+The windowed reads of `files/read` stay one ranged request per 256 KiB.
+
 ### What it costs a build that does not use it
 
 Nothing, and that took a decision. The first version added the `files`
@@ -405,7 +475,6 @@ is used: nothing is opened, registered or allocated at start without
   Today a host puts files in the directory or uses the crate.
 - Creating PDF and Office files. Agents write text formats.
 - Searching inside documents, and regular expression search.
-- Object storage backends in the repository. The trait is ready for them.
 - Native document blocks (sending a PDF to a provider as a document).
 - Audio and video.
 - A second image generator (Gemini) and image editing.

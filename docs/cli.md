@@ -40,7 +40,7 @@ Workflows can be YAML (`.yaml`, `.yml`) or JSON.
 | `--providers FILE` | Model providers file (YAML/JSON), layered over the environment providers. Defaults to `$GRAPHRT_PROVIDERS`. See below. |
 | `--model PROVIDER/NAME` | Use this model for every `llm`, `question-classifier`, `parameter-extractor` and `agent` node, e.g. `--model ollama/qwen2.5:14b`. The name may contain `/`. |
 | `--allow-python-subprocess` | Run `python3` code nodes in a local subprocess (isolated interpreter, empty environment, temp working dir, CPU/memory/file-size `ulimit`s, timeout). **Not a security sandbox** — only for trusted workflows. |
-| `--workspace DIR` | Give agents a file workspace in `DIR` (created when missing): registers the `files` tools (`files/list`, `read`, `search`, `write`, `info`, `delete`), which work inside it and nowhere else. See [files and images](files-and-images.md). |
+| `--workspace DIR` | Give agents a file workspace in `DIR` (created when missing, or `s3://bucket/prefix` in a build with the `files-s3` feature, see [object storage](files-and-images.md#object-storage)): registers the `files` tools (`files/list`, `read`, `search`, `write`, `info`, `delete`), which work inside it and nowhere else. See [files and images](files-and-images.md). |
 | `--workspace-read-only` | No `files/write` and no `files/delete`. Needs `--workspace`. |
 | `--workspace-per-user` | One private directory and quota per user: agent nodes must send `tool_context: { files: { scope: ... } }`, and calls without a scope are refused. Needs `--workspace`. |
 | `--image-tools` | Add the `image` tools to the workspace: `image/info`, `view` (the model sees the image), `resize`, `convert`, `thumbnail`. Needs `--workspace`. See [images](files-and-images.md#images). |

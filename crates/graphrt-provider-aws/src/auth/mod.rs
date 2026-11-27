@@ -20,8 +20,7 @@ mod presign;
 pub mod sigv4;
 mod sts;
 
-pub use self::clock::Clock;
-pub(crate) use self::clock::parse_http_date;
+pub use self::clock::{Clock, parse_http_date};
 pub use self::credentials::{ChainConfig, CredentialChain, CredentialSource};
 pub use self::presign::eks_token;
 pub use self::sigv4::AwsCredentials;

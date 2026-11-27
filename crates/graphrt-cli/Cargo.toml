@@ -36,6 +36,10 @@ doc = ["dep:graphrt-doc", "graphrt-files?/doc"]
 # File workspaces for agents (`--workspace`): the `files` tools, sandboxed to one
 # directory with quotas. With `doc`, `files/read` also extracts document text.
 files = ["dep:graphrt-files", "graphrt-core/tool-files", "graphrt-llm?/tool-files"]
+# `--workspace s3://bucket/prefix`: keep the workspace in S3 or an S3 compatible
+# object store instead of a directory (`graphrt-files/s3`: a small signed client
+# over the reqwest and sha2 the CLI already links, no AWS SDK). Opt-in.
+files-s3 = ["files", "graphrt-files/s3"]
 # Images: `vision` inputs are checked, stripped of metadata and downscaled before they
 # reach a model, `--image-tools` adds the `image` tools to a workspace and
 # `--image-model` an image generator (OpenAI images API).

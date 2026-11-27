@@ -220,10 +220,11 @@ let file_value = workspace.file_value(&stored);
 ```
 
 Storage is behind the `FileStore` trait (six methods: `stat`, `read`,
-`write`, `delete`, `list`, `sha256`). `DirStore` keeps files in a directory
-and `MemoryStore` in memory. Implement the trait to keep files in object
-storage or a database. Limits, quotas, scopes and type checks live in
-`Workspace`, above the store, so every backend gets them.
+`write`, `delete`, `list`, `sha256`). `DirStore` keeps files in a directory,
+`MemoryStore` in memory and `S3Store` in [object storage](#object-storage).
+Implement the trait to keep files in a database or another service. Limits,
+quotas, scopes and type checks live in `Workspace`, above the store, so every
+backend gets them.
 
 Cargo features of `graphrt-files`:
 
@@ -231,9 +232,71 @@ Cargo features of `graphrt-files`:
 | --- | --- | --- |
 | `tokio` | on | File I/O, hashing and extraction run on Tokio's blocking pool |
 | `doc` | on | `files/read` extracts document text with `graphrt-doc` |
+| `s3` | off | `S3Store`: the workspace in S3 or an S3 compatible object store |
 
 Without `doc` the crate depends on `graphrt-core`, `sha2` and nothing else of
 weight, which suits phones and small agents.
+
+## Object storage
+
+A workspace can live in S3 or in a store that speaks the S3 API (MinIO,
+Cloudflare R2, Ceph, Garage, SeaweedFS) instead of a directory. That suits
+agents that run as several replicas or on machines without a disk that
+stays. It is the `s3` feature of `graphrt-files` and the `files-s3` feature
+of the CLI, both off by default:
+
+```sh
+cargo install graphrt-cli --features files-s3
+
+export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_REGION=eu-west-1
+graphrt run examples/files.yaml --workspace s3://my-bucket/agents/support \
+  --input title=Stock --input body="pear,7"
+```
+
+Every file is one object, `<prefix>/<path>`, and every user of
+`--workspace-per-user` is a prefix of their own. The flags, the tools, the
+limits and the HTTP routes are the same as for a directory.
+
+| Variable | Meaning |
+| --- | --- |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Credentials. Without them the container, web identity and instance roles are tried, as on ECS, EKS and EC2. |
+| `GRAPHRT_S3_REGION`, `AWS_REGION`, `AWS_DEFAULT_REGION` | Signing region, `us-east-1` when none is set |
+| `GRAPHRT_S3_ENDPOINT` | `https://host[:port]` of a compatible store. Without it the bucket is on AWS. |
+| `GRAPHRT_S3_PATH_STYLE` | `false` to address the bucket in the host name on a custom endpoint (the default there is the path) |
+| `GRAPHRT_S3_ALLOW_HTTP` | `true` to accept an `http://` endpoint, for a store on the same machine or network |
+
+From Rust:
+
+```rust
+use std::sync::Arc;
+use graphrt_files::{S3Config, S3Store, Workspace, WorkspaceLimits};
+
+let config = S3Config { prefix: Some("agents/support".into()), ..S3Config::new("my-bucket", "eu-west-1") };
+let workspace = Workspace::new(Arc::new(S3Store::from_env(&config)?), WorkspaceLimits::default());
+```
+
+What to know:
+
+- The policy of the credentials needs `s3:GetObject`, `s3:PutObject`,
+  `s3:DeleteObject` on `bucket/prefix/*` and `s3:ListBucket` on the bucket.
+  Give it nothing else. The prefix is the boundary Graphrt keeps, the policy
+  is the boundary the store keeps.
+- Every call of a tool is one or more HTTP requests. A small read takes about
+  a millisecond against a store in the same network and tens of milliseconds
+  across regions. `files/search` reads every text file it looks at.
+- Objects in the bucket that are not valid workspace paths (hidden names,
+  `..`, names outside the prefix) are invisible to the agent.
+- The quota is counted from a listing at the first write after a start and
+  kept in memory after that. Several replicas each keep their own count, so
+  a quota can be passed by what the others wrote in the meantime. It is exact
+  again after a restart.
+- A file created without `overwrite` uses `If-None-Match: *`, so two replicas
+  cannot both create the same name. A store that ignores that header falls
+  back to the check inside one process.
+- There are no links in object storage, so the link rules have nothing to do.
+
+`cargo run --release -p graphrt-files --features s3 --example s3_bench`
+measures your own store.
 
 ## Images
 

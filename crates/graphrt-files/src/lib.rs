@@ -9,7 +9,7 @@
 //! | Piece | What it does |
 //! | --- | --- |
 //! | [`WorkspacePath`] | A checked relative path. No `..`, no absolute paths, no Windows tricks. |
-//! | [`FileStore`] | The storage backend: [`DirStore`] (a directory), [`MemoryStore`], or your own. |
+//! | [`FileStore`] | The storage backend: [`DirStore`] (a directory), [`MemoryStore`], `S3Store` (object storage, feature `s3`), or your own. |
 //! | [`Workspace`] | Limits, quota, per-user scopes and type checks on top of any store. |
 //! | [`sniff`] | The media type of a file from its bytes, never from its name. |
 //! | [`FileTools`] | The `files` tools for `agent` and `tool` nodes. |
@@ -47,6 +47,8 @@ mod dir;
 mod memory;
 mod path;
 mod resolver;
+#[cfg(feature = "s3")]
+mod s3;
 mod sniff;
 mod store;
 mod text;
@@ -57,6 +59,8 @@ pub use dir::DirStore;
 pub use memory::MemoryStore;
 pub use path::{MAX_COMPONENT_BYTES, MAX_PATH_BYTES, MAX_PATH_DEPTH, PathError, WorkspacePath};
 pub use resolver::WorkspaceResolver;
+#[cfg(feature = "s3")]
+pub use s3::{S3Config, S3Store};
 pub use sniff::{MediaClass, MediaType, SNIFF_BYTES, sniff};
 pub use store::{Entry, FileStore, Listing, StoreError, hex};
 pub use tools::{FileTools, FileToolsConfig, PROVIDER, SCOPE_CONTEXT_KEY};
