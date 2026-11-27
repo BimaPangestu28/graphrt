@@ -249,7 +249,8 @@ impl AuditLog {
         // The lock is on a file of its own: Windows locks are mandatory, and a
         // locked day file could not be read, by this append or by a query.
         let lock_path = self.dir.join(LOCK_FILE);
-        let lock = graphrt_core::private_fs::append_file(&lock_path)
+        // A write handle: `LockFileEx` refuses an append-only one on Windows.
+        let lock = graphrt_core::private_fs::create_file(&lock_path)
             .map_err(|error| ConsoleError::Io(format!("cannot open {}: {error}", lock_path.display())))?;
         lock.lock().map_err(|error| ConsoleError::Io(format!("cannot lock {}: {error}", lock_path.display())))?;
         let written = (|| {
