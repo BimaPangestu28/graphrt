@@ -109,6 +109,7 @@ use super::common::{
     FinishCheck, MemoryConfig, ModelConfig, StreamField, StreamMode, VisionConfig, check_finish, invoke, model_for,
     usage_value,
 };
+use super::tool_call_repair;
 use crate::types::{
     ChatDelta, ChatModel, ChatRequest, ChatResponse, ContentPart, FinishReason, Message, Role, ToolCall, ToolChoice,
     collect,
@@ -450,6 +451,9 @@ struct AgentState {
     usage: Usage,
     /// Calls awaiting approval.
     pending: Vec<ToolCall>,
+    /// Tools already asked once to be called again with their required arguments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    reasked: Vec<String>,
     /// Answer text streamed so far (preambles of tool-calling turns).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     answer: String,
@@ -827,7 +831,10 @@ impl AgentNode {
             state.iteration += 1;
             let offer =
                 TurnTools { offered: !tools.is_empty(), final_turn: state.iteration >= self.config.max_iterations };
-            let turn = self.model_turn(&ctx, model.as_ref(), &mut state, &tools, offer).await?;
+            let mut turn = self.model_turn(&ctx, model.as_ref(), &mut state, &tools, offer).await?;
+            if offer.callable() && turn.response.tool_calls.is_empty() {
+                read_calls_written_as_text(&mut turn, &state, &tools);
+            }
             if !offer.callable() || turn.response.tool_calls.is_empty() {
                 break self.answer_turn(&ctx, &mut state, turn, offer);
             }
@@ -975,7 +982,33 @@ impl AgentNode {
                 continue;
             }
             match call.arguments_json() {
-                Ok(_) => runnable.push(call),
+                Ok(arguments) => {
+                    let mut call = call;
+                    let Some(tool) = bound_tool(tools, &call) else {
+                        runnable.push(call);
+                        continue;
+                    };
+                    // Arguments in the type the tool's schema asks for ("400" for an integer).
+                    let fitted = tool_call_repair::fit_to_schema(Json::Object(arguments), &tool.spec.parameters);
+                    call.arguments = fitted.to_string();
+                    let missing = match &fitted {
+                        Json::Object(fitted) => tool_call_repair::missing_required(fitted, &tool.spec.parameters),
+                        _ => Vec::new(),
+                    };
+                    // A required argument left out: the model is asked once to call again with it.
+                    if !missing.is_empty() && !state.reasked.contains(&call.name) {
+                        state.reasked.push(call.name.clone());
+                        let message = format!(
+                            "error: this call leaves out {} it needs: {}. Call `{}` again with every required argument.",
+                            if missing.len() == 1 { "an argument" } else { "arguments" },
+                            missing.join(", "),
+                            call.name
+                        );
+                        self.record(state, tools, &call, ToolOutput::error(message));
+                        continue;
+                    }
+                    runnable.push(call);
+                }
                 Err(e) => {
                     let message = format!("error: {e}. Call the tool again with a valid JSON object.");
                     self.record(state, tools, &call, ToolOutput::error(message));
@@ -1326,6 +1359,22 @@ fn select_specs<'a>(specs: &'a [ToolSpec], provider: &str, name: &str) -> Result
 /// The bound tool a call names (by its exposed, possibly de-duplicated name).
 fn bound_tool<'a>(tools: &'a [BoundTool], call: &ToolCall) -> Option<&'a BoundTool> {
     tools.iter().find(|t| t.exposed == call.name)
+}
+
+/// A turn without tool calls whose text holds calls written out as JSON (a small model's
+/// `{"name": "resize", "parameters": {...}}`) gets those calls, when they name offered tools.
+/// Text not yet streamed loses the written calls; text already shown stays as it was.
+fn read_calls_written_as_text(turn: &mut Turn, state: &AgentState, tools: &[BoundTool]) {
+    let offered: Vec<&str> =
+        tools.iter().filter(|tool| tool.offered(state)).map(|tool| tool.exposed.as_str()).collect();
+    let prefix = format!("text_call_{}_", state.iteration);
+    let Some((calls, rest)) = tool_call_repair::calls_written_as_text(&turn.response.text, &offered, &prefix) else {
+        return;
+    };
+    if turn.streamed == 0 {
+        turn.response.text = rest;
+    }
+    turn.response.tool_calls = calls;
 }
 
 /// How one model turn streams.
@@ -1768,6 +1817,118 @@ mod tests {
             })
             .collect();
         assert_eq!(progress, ["agent_step", "tool_call", "tool_call", "tool_result", "tool_result", "agent_step"]);
+    }
+
+    /// Tool `image_resize {path*, max_width* (integer), overwrite (boolean)}` that records
+    /// the arguments it got.
+    #[derive(Debug, Default)]
+    struct ImageTools {
+        arguments: Mutex<Vec<Json>>,
+    }
+
+    impl ToolRuntime for ImageTools {
+        fn list(&self) -> BoxFuture<'_, Result<Vec<ToolSpec>, ToolError>> {
+            Box::pin(async {
+                Ok(vec![ToolSpec {
+                    name: "image_resize".into(),
+                    description: "resize a picture".into(),
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "max_width": {"type": "integer", "description": "Largest width in pixels"},
+                            "overwrite": {"type": "boolean"}
+                        },
+                        "required": ["path", "max_width"]
+                    }),
+                }])
+            })
+        }
+
+        fn call<'a>(
+            &'a self,
+            _name: &'a str,
+            arguments: Json,
+            _context: &'a ToolCallContext,
+        ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+            self.arguments.lock().unwrap().push(arguments.clone());
+            Box::pin(async move {
+                Ok(match arguments["max_width"].as_i64() {
+                    Some(width) => ToolOutput::text(format!("resized to {width} px")),
+                    None => ToolOutput::error("invalid arguments: max_width must be an integer"),
+                })
+            })
+        }
+    }
+
+    fn image_ctx(model: &Arc<MockModel>, tools: &Arc<ImageTools>) -> NodeContext {
+        let mut tool_registry = ToolRegistry::new();
+        tool_registry.add("image", Arc::clone(tools) as Arc<dyn ToolRuntime>);
+        let services = Services::new()
+            .with(ModelRegistry::new().with("openai", Arc::clone(model) as Arc<dyn crate::ChatModel>))
+            .with(tool_registry);
+        let mut pool = VariablePool::new();
+        pool.insert("sys", "query", Value::from("make it 400 px wide"));
+        NodeContext::for_test("agent", pool).with_services(Arc::new(services))
+    }
+
+    fn image_agent() -> AgentNode {
+        let config = json!({"model": {"provider": "openai", "name": "gpt"}, "tools": ["image/*"]});
+        AgentNode::from_doc(&NodeDoc::new("agent", "agent", config)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn arguments_are_put_into_the_types_the_tool_asks_for() {
+        let model = Arc::new(MockModel::new(vec![
+            MockModel::tool_calls(&[(
+                "c1",
+                "image_resize",
+                r#"{"path": "a.png", "width": "400", "overwrite": "false"}"#,
+            )]),
+            MockModel::text("Done."),
+        ]));
+        let tools = Arc::new(ImageTools::default());
+
+        let out = completed(image_agent().run(image_ctx(&model, &tools)).await);
+
+        assert_eq!(out.outputs["text"], Value::from("Done."));
+        assert_eq!(*tools.arguments.lock().unwrap(), [json!({"path": "a.png", "max_width": 400, "overwrite": false})]);
+    }
+
+    #[tokio::test]
+    async fn a_call_written_as_text_is_made() {
+        let written =
+            "Sure.\n```json\n{\"name\": \"resize\", \"parameters\": {\"path\": \"a.png\", \"max_width\": 400}}\n```";
+        let model = Arc::new(MockModel::new(vec![MockModel::text(written), MockModel::text("Resized to 400 px.")]));
+        let tools = Arc::new(ImageTools::default());
+
+        let out = completed(image_agent().run(image_ctx(&model, &tools)).await);
+
+        assert_eq!(*tools.arguments.lock().unwrap(), [json!({"path": "a.png", "max_width": 400})]);
+        assert_eq!(out.outputs["iterations"], Value::Int(2));
+        let second = &model.requests()[1].messages;
+        let assistant = second.iter().find(|message| !message.tool_calls.is_empty()).unwrap();
+        assert_eq!(assistant.tool_calls[0].name, "image_resize");
+        assert!(out.outputs["text"].as_str().unwrap().ends_with("Resized to 400 px."));
+    }
+
+    #[tokio::test]
+    async fn a_call_without_a_required_argument_is_asked_again_once() {
+        let model = Arc::new(MockModel::new(vec![
+            MockModel::tool_calls(&[("c1", "image_resize", r#"{"path": "a.png"}"#)]),
+            MockModel::tool_calls(&[("c2", "image_resize", r#"{"path": "a.png"}"#)]),
+            MockModel::text("I could not resize it."),
+        ]));
+        let tools = Arc::new(ImageTools::default());
+
+        let out = completed(image_agent().run(image_ctx(&model, &tools)).await);
+
+        let log = out.outputs["tool_calls"].as_array().unwrap().to_vec();
+        let first_result = log[0].get_path(&["result"]).unwrap();
+        assert!(first_result.as_str().unwrap().contains("`max_width` (Largest width in pixels)"), "{first_result:?}");
+        // Asked once; the second call reaches the tool, which answers for itself.
+        assert_eq!(tools.arguments.lock().unwrap().len(), 1);
+        assert!(log[1].get_path(&["result"]).unwrap().as_str().unwrap().contains("invalid arguments"));
     }
 
     const JWT: &str = "eyJhbGciOiJIUzI1NiJ9.user-token";
