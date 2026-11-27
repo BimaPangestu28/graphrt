@@ -53,7 +53,10 @@ mod types;
 
 #[cfg(feature = "doc")]
 mod doc_extractor;
-pub use chunker::{ChunkerConfig, TextChunk, chunk_text};
+pub use chunker::{
+    CHARS_PER_TOKEN, ChunkerConfig, DEFAULT_SEPARATORS, MAX_SEPARATOR_CHARS, MAX_SEPARATORS, Separator, TextChunk,
+    chunk_text, estimate_tokens, try_chunk_text,
+};
 #[cfg(feature = "doc")]
 pub use doc_extractor::DocExtractor;
 pub use error::RagError;
@@ -64,7 +67,7 @@ pub use http::{
     HttpReranker, HttpRerankerConfig, HttpRetriever, HttpRetrieverConfig, HttpSettings, OpenAiEmbedder,
     OpenAiEmbedderConfig, Secret,
 };
-pub use ingest::{Document, IngestReport, Ingestor};
+pub use ingest::{CHAR_END_KEY, CHAR_START_KEY, Document, IngestReport, Ingestor};
 pub use kb::{
     DatasetConfig, DatasetDetails, DatasetInfo, DatasetSpec, EnvLookup, KnowledgeBase, KnowledgeConfig, ResourceNames,
 };

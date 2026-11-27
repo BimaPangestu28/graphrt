@@ -497,15 +497,10 @@ fn validate_dataset_id(id: &str) -> Result<(), RagError> {
 }
 
 fn validate_chunking(dataset_id: &str, chunking: &ChunkerConfig) -> Result<(), RagError> {
-    if chunking.max_chars == 0 {
-        return Err(RagError::Config(format!("dataset `{dataset_id}`: `chunking.max_chars` must be positive")));
-    }
-    if chunking.parent_max_chars.is_some_and(|p| p <= chunking.max_chars) {
-        return Err(RagError::Config(format!(
-            "dataset `{dataset_id}`: `chunking.parent_max_chars` must be larger than `max_chars`"
-        )));
-    }
-    Ok(())
+    chunking.validate().map_err(|e| match e {
+        RagError::Config(message) => RagError::Config(format!("dataset `{dataset_id}`: {message}")),
+        other => other,
+    })
 }
 
 /// Reject requests that would otherwise silently match nothing.
@@ -930,7 +925,13 @@ mod tests {
             Arc::new(HashEmbedder::new(256)),
             None,
         );
-        let chunking = ChunkerConfig { max_chars: 60, overlap: 0, markdown: false, parent_max_chars: Some(220) };
+        let chunking = ChunkerConfig {
+            max_chars: 60,
+            overlap: 0,
+            markdown: false,
+            parent_max_chars: Some(220),
+            ..ChunkerConfig::default()
+        };
         kb.set_chunking("docs", chunking).unwrap();
         let text = "Leave policy. Every employee gets 24 days of paid annual leave. Unused leave carries over for six months. Sick leave is separate.\n\n\
                     Expense policy. Expenses below 500 USD are approved by your manager. Larger ones need finance approval.";
@@ -1027,7 +1028,13 @@ mod tests {
         assert!(error(DatasetSpec { store: "nope".into(), ..spec("a") }).contains("unknown store `nope`"));
         assert!(error(DatasetSpec { embedder: "nope".into(), ..spec("b") }).contains("unknown embedder `nope`"));
         assert!(error(DatasetSpec { reranker: Some("nope".into()), ..spec("c") }).contains("unknown reranker"));
-        let bad_chunking = ChunkerConfig { max_chars: 100, overlap: 0, markdown: true, parent_max_chars: Some(50) };
+        let bad_chunking = ChunkerConfig {
+            max_chars: 100,
+            overlap: 0,
+            markdown: true,
+            parent_max_chars: Some(50),
+            ..ChunkerConfig::default()
+        };
         assert!(error(DatasetSpec { chunking: Some(bad_chunking), ..spec("d") }).contains("parent_max_chars"));
         assert_eq!(kb.datasets().len(), 1, "failed creations leave nothing behind");
     }

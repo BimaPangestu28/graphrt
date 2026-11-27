@@ -3,13 +3,19 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::chunker::{ChunkerConfig, chunk_text};
+use crate::chunker::{ChunkerConfig, try_chunk_text};
 use crate::error::RagError;
 use crate::pages::{PAGE_KEY, PAGES_KEY, PageTracker};
 use crate::types::{
     DISABLED_KEY, Embedder, Extractor, Metadata, PARENT_KEY, StoredChunk, VectorStore, check_vector, content_hash,
     is_disabled,
 };
+
+/// Chunk metadata: character offset where the chunk's own text starts in the
+/// document (Unicode scalar values, page markers not counted, overlap excluded).
+pub const CHAR_START_KEY: &str = "char_start";
+/// Chunk metadata: character offset just after the chunk's own text (see [`CHAR_START_KEY`]).
+pub const CHAR_END_KEY: &str = "char_end";
 
 /// A document to ingest.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -18,7 +24,8 @@ pub struct Document {
     pub document_id: String,
     pub title: String,
     pub text: String,
-    /// Copied onto every chunk (plus `heading`, `chunk_index`, and `page` /
+    /// Copied onto every chunk (plus `heading`, `chunk_index`, [`CHAR_START_KEY`],
+    /// [`CHAR_END_KEY`], and `page` /
     /// `pages` when the text has page markers, see [`crate::PAGE_MARKER_START`]).
     pub metadata: Metadata,
 }
@@ -100,10 +107,15 @@ impl Ingestor {
     }
 
     /// Ingest one text document.
+    ///
+    /// # Errors
+    /// [`RagError::Config`] for an invalid chunking configuration (checked
+    /// before anything is read or written), and embedder or store failures.
     pub async fn ingest(&self, doc: &Document) -> Result<IngestReport, RagError> {
         if doc.dataset_id.is_empty() || doc.document_id.is_empty() {
             return Err(RagError::Input("document needs a dataset_id and a document_id".into()));
         }
+        let chunks = try_chunk_text(&doc.text, &self.chunker)?;
         let existing: HashMap<String, StoredChunk> = self
             .store
             .document_chunks(&doc.dataset_id, &doc.document_id)
@@ -119,7 +131,7 @@ impl Ingestor {
         let mut fresh: Vec<StoredChunk> = Vec::new();
         let mut refreshed: Vec<StoredChunk> = Vec::new();
         let mut page_tracker = PageTracker::default();
-        for mut chunk in chunk_text(&doc.text, &self.chunker) {
+        for mut chunk in chunks {
             let (stripped, pages) = page_tracker.take(&chunk.text);
             if let Some(text) = stripped {
                 // Markers removed: a chunk that was only a marker has nothing to store.
@@ -137,6 +149,8 @@ impl Ingestor {
             }
             let mut metadata = doc.metadata.clone();
             metadata.insert("chunk_index".into(), serde_json::Value::from(chunk.index));
+            metadata.insert(CHAR_START_KEY.into(), serde_json::Value::from(chunk.start));
+            metadata.insert(CHAR_END_KEY.into(), serde_json::Value::from(chunk.end));
             if let Some(h) = &chunk.heading {
                 metadata.insert("heading".into(), serde_json::Value::String(h.clone()));
             }

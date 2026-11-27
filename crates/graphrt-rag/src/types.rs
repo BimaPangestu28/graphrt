@@ -89,7 +89,8 @@ pub fn is_disabled(metadata: &Metadata) -> bool {
 pub const PARENT_KEY: &str = "parent_index";
 
 /// Chunk metadata keys managed per chunk by graphrt, not part of a document's metadata.
-pub(crate) const PER_CHUNK_KEYS: [&str; 4] = ["chunk_index", "heading", DISABLED_KEY, PARENT_KEY];
+pub(crate) const PER_CHUNK_KEYS: [&str; 6] =
+    ["chunk_index", "heading", DISABLED_KEY, PARENT_KEY, crate::ingest::CHAR_START_KEY, crate::ingest::CHAR_END_KEY];
 
 /// Default and largest page size for document listings.
 pub const DEFAULT_DOCUMENT_PAGE: usize = 50;
