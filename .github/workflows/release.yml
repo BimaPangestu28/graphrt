@@ -336,6 +336,11 @@ jobs:
             type=raw,value=gateway,suffix=,enable=${{ matrix.flavor == 'gateway' }}
             type=raw,value=collab,suffix=,enable=${{ matrix.flavor == 'collab' }}
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          # No build record artifact: the release job downloads every artifact
+          # of the run into dist/ and publishes it (v0.6.3 got a stray
+          # `*.dockerbuild` asset that way).
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: .
           platforms: linux/amd64,linux/arm64
