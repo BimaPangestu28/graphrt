@@ -601,6 +601,17 @@ and an OpenAI key as a `--secret`:
   redeploy of the `graphrt-store` Machine while the proxy had stopped it, and
   the Machine limit of Fly's Free plan (see [Limits](#limits)). Each of these
   took 10 to 20 s.
+- Large agents, checked on 2026-11-28 with an image built from this change
+  and pushed to the app's `registry.fly.io` repository: a 2.2 MB `.grt`
+  bundle with a 46 MB SQLite knowledge store (9,589 passages, offline `hash`
+  embeddings) was uploaded onto a new 2 GB volume in two pieces while the new
+  `graphrt-store` Machine had no services, then served from
+  `/data/agents/<sha>/` on a 512 MB Machine. A retrieval run over the public
+  address found a sentence that is only in the bundled passages. A redeploy of
+  the same file uploaded nothing; a changed bundle was uploaded next to the
+  serving one, served after its readiness check, and the older agent was
+  deleted from the volume (its SHA-256 on the volume matched the local file).
+  `deploy remove` deleted the app with its volume.
 
 What the real API does that the first fake did not, and graphrt now handles:
 updating a stopped Machine leaves it stopped (graphrt starts it), a Machine

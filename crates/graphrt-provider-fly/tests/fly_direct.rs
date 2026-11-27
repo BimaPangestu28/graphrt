@@ -610,6 +610,9 @@ async fn an_agent_larger_than_a_machine_config_is_uploaded_onto_the_store_volume
     assert_eq!(uploading, 3, "one progress line per piece");
     let started = events.iter().find(|event| event.step == Step::Starting && event.status == StepStatus::Done).unwrap();
     assert!(started.message.contains("uploaded onto the store volume"), "{}", started.message);
+    assert!(outcome.store.as_ref().is_some_and(|store| store.in_use), "the volume serves the agent");
+    let checked = events.iter().find(|event| event.step == Step::Checking && event.status == StepStatus::Done).unwrap();
+    assert!(!checked.message.contains("still billed"), "{}", checked.message);
 
     // The same agent again (a new version label): nothing is uploaded.
     fake.state().exec_commands.clear();

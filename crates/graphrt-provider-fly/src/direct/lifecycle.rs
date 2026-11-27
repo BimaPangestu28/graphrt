@@ -174,7 +174,8 @@ impl FlyDirect {
             let dropped = self.drop_store().await?;
             message.push_str(if dropped { "; the store volume was deleted" } else { "; there was no store volume" });
         }
-        let store = self.store_summary(request.serve.needs_store()).await?;
+        // The volume is in use when the deploy keeps state on it or serves its agent from it.
+        let store = self.store_summary(request.serve.needs_store() || agent_on_volume(&request.agent)).await?;
         if let Some(kept) = store.as_ref().filter(|store| !store.in_use) {
             message.push_str(&format!(
                 "; store volume {} is kept and still billed (deploy with --drop-store to delete it)",
