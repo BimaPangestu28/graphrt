@@ -38,8 +38,14 @@ ARG PROFILE=min-size
 # telemetry stays inert. Build args are visible to `option_env!` during the build.
 ARG GRAPHRT_BUILD=docker
 ARG GRAPHRT_TELEMETRY_URL=""
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+# One cache per platform, used by one build at a time: a multi-platform build
+# (linux/amd64 and linux/arm64 in one `docker buildx build`) runs this step for
+# both platforms at once, and a shared registry cache made both unpack the same
+# crate together ("failed to unpack package ... File exists"). Each platform's
+# target directory holds objects for its own architecture.
+ARG TARGETPLATFORM
+RUN --mount=type=cache,id=cargo-registry-${TARGETPLATFORM},target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=cargo-target-${TARGETPLATFORM},target=/src/target,sharing=locked \
     set -eux; \
     if [ -n "$FEATURES" ]; then \
         cargo build -p graphrt-cli --profile "$PROFILE" --locked --no-default-features --features "$FEATURES"; \
