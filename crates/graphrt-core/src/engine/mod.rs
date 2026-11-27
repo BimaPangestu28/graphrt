@@ -317,10 +317,10 @@ impl Stream for RunStream {
         if self.finished {
             return Poll::Ready(None);
         }
-        if let Some(driver) = self.driver.as_mut() {
-            if driver.as_mut().poll(cx).is_ready() {
-                self.driver = None;
-            }
+        if let Some(driver) = self.driver.as_mut()
+            && driver.as_mut().poll(cx).is_ready()
+        {
+            self.driver = None;
         }
         match self.rx.poll_next_unpin(cx) {
             Poll::Ready(Some(event)) => {

@@ -109,14 +109,12 @@ pub(crate) fn check_ods_dimensions(xml: &str, opts: &Options) -> Result<(), DocE
                 "table-cell" | "covered-table-cell" => {
                     let repeated = repeat_count(e, "number-columns-repeated")?;
                     let has_value = is_start || attribute(e, "value-type")?.is_some();
-                    if has_value {
-                        if let Some((_, used)) = row.as_mut() {
-                            let last = col.saturating_add(repeated).saturating_sub(1);
-                            *used = Some(match *used {
-                                Some((lo, hi)) => (lo.min(col), hi.max(last)),
-                                None => (col, last),
-                            });
-                        }
+                    if has_value && let Some((_, used)) = row.as_mut() {
+                        let last = col.saturating_add(repeated).saturating_sub(1);
+                        *used = Some(match *used {
+                            Some((lo, hi)) => (lo.min(col), hi.max(last)),
+                            None => (col, last),
+                        });
                     }
                     col = col.saturating_add(repeated);
                 }
@@ -478,16 +476,15 @@ fn percent_decode_path(href: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while let Some(&b) = bytes.get(i) {
-        if b == b'%' {
-            if let Some(v) = bytes
+        if b == b'%'
+            && let Some(v) = bytes
                 .get(i + 1..i + 3)
                 .and_then(|h| std::str::from_utf8(h).ok())
                 .and_then(|h| u8::from_str_radix(h, 16).ok())
-            {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(b);
         i += 1;

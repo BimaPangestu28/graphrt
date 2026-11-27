@@ -184,10 +184,10 @@ fn exception_text(ctx: &rquickjs::Ctx<'_>) -> String {
             return message;
         }
     }
-    if let Some(s) = value.as_string() {
-        if let Ok(s) = s.to_string() {
-            return s;
-        }
+    if let Some(s) = value.as_string()
+        && let Ok(s) = s.to_string()
+    {
+        return s;
     }
     // Any other thrown value (number, object without `message`...): use its string form.
     if let Ok(rquickjs::convert::Coerced(text)) = value.get::<rquickjs::convert::Coerced<String>>() {

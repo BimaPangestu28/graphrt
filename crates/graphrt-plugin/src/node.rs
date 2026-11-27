@@ -218,10 +218,10 @@ impl Drop for TimeoutGuard {
         if self.settled {
             return;
         }
-        if let Some(deadline) = self.deadline_ms {
-            if self.clock.now_ms() >= deadline {
-                self.transport.note_timeout();
-            }
+        if let Some(deadline) = self.deadline_ms
+            && self.clock.now_ms() >= deadline
+        {
+            self.transport.note_timeout();
         }
     }
 }
@@ -261,13 +261,13 @@ fn outcome_from(plugin: &str, result: serde_json::Value, role: NodeRole, fixed: 
             ));
         }
         (NodeRole::Branch, Some(handle)) => {
-            if let Some(allowed) = fixed {
-                if !allowed.contains(&handle) {
-                    return Err(NodeError::fatal(
-                        "plugin_protocol",
-                        format!("plugin `{plugin}`: branch `{handle}` is not one of the declared handles {allowed:?}"),
-                    ));
-                }
+            if let Some(allowed) = fixed
+                && !allowed.contains(&handle)
+            {
+                return Err(NodeError::fatal(
+                    "plugin_protocol",
+                    format!("plugin `{plugin}`: branch `{handle}` is not one of the declared handles {allowed:?}"),
+                ));
             }
             out.branch = Some(handle);
         }

@@ -94,10 +94,10 @@ impl RunShared {
     /// Host input for a node resumed in `frame`: the frame-qualified key
     /// (`"iter[2]/approve"`) wins over the plain node id (`"approve"`).
     fn resume_input(&self, frame: &str, node_id: &str) -> Option<Value> {
-        if !frame.is_empty() {
-            if let Some(value) = self.resume_inputs.get(&format!("{frame}/{node_id}")) {
-                return Some(value.clone());
-            }
+        if !frame.is_empty()
+            && let Some(value) = self.resume_inputs.get(&format!("{frame}/{node_id}"))
+        {
+            return Some(value.clone());
         }
         self.resume_inputs.get(node_id).cloned()
     }
@@ -829,12 +829,12 @@ impl Frame {
 /// concatenated, other keys overwrite.
 fn merge_response(frame_outputs: &mut IndexMap<String, Value>, outputs: &IndexMap<String, Value>) {
     for (key, value) in outputs {
-        if key == "answer" {
-            if let Some(Value::String(existing)) = frame_outputs.get(key) {
-                let joined = format!("{existing}{}", value.to_text());
-                frame_outputs.insert(key.clone(), Value::from(joined));
-                continue;
-            }
+        if key == "answer"
+            && let Some(Value::String(existing)) = frame_outputs.get(key)
+        {
+            let joined = format!("{existing}{}", value.to_text());
+            frame_outputs.insert(key.clone(), Value::from(joined));
+            continue;
         }
         frame_outputs.insert(key.clone(), value.clone());
     }

@@ -728,17 +728,18 @@ impl GeminiDecoder {
         if is_thought && !has_signature {
             return;
         }
-        if !has_signature && part.get("functionCall").is_none() {
-            if let Some(text) = part.get("text").and_then(Json::as_str) {
-                let last_plain = self
-                    .parts
-                    .last_mut()
-                    .filter(|p| p.get("thoughtSignature").is_none() && p.get("thought").is_none())
-                    .and_then(|p| p.get_mut("text"));
-                if let Some(Json::String(existing)) = last_plain {
-                    existing.push_str(text);
-                    return;
-                }
+        if !has_signature
+            && part.get("functionCall").is_none()
+            && let Some(text) = part.get("text").and_then(Json::as_str)
+        {
+            let last_plain = self
+                .parts
+                .last_mut()
+                .filter(|p| p.get("thoughtSignature").is_none() && p.get("thought").is_none())
+                .and_then(|p| p.get_mut("text"));
+            if let Some(Json::String(existing)) = last_plain {
+                existing.push_str(text);
+                return;
             }
         }
         self.parts.push(part.clone());
@@ -764,12 +765,10 @@ impl SseDecoder for GeminiDecoder {
         }
         let mut out = Vec::new();
         let candidate = v.get("candidates").and_then(Json::as_array).and_then(|c| c.first());
-        if candidate.is_none() {
-            if let Some(reason) = v.get("promptFeedback").and_then(|f| f.get("blockReason")).and_then(Json::as_str) {
-                return Err(LlmError::BadRequest(format!(
-                    "prompt blocked by the provider's safety filters ({reason})"
-                )));
-            }
+        if candidate.is_none()
+            && let Some(reason) = v.get("promptFeedback").and_then(|f| f.get("blockReason")).and_then(Json::as_str)
+        {
+            return Err(LlmError::BadRequest(format!("prompt blocked by the provider's safety filters ({reason})")));
         }
         if let Some(candidate) = candidate {
             let parts = candidate.get("content").and_then(|c| c.get("parts")).and_then(Json::as_array);

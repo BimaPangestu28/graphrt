@@ -29,20 +29,20 @@ fn check(value: &Json, schema: &Json, path: &str, depth: usize) -> Result<(), St
     if depth > MAX_DEPTH || !schema.is_object() {
         return Ok(());
     }
-    if let Some(t) = schema.get("type") {
-        if !type_matches(value, t) {
-            return Err(format!("{path}: expected {}, got {}", type_label(t), kind(value)));
-        }
+    if let Some(t) = schema.get("type")
+        && !type_matches(value, t)
+    {
+        return Err(format!("{path}: expected {}, got {}", type_label(t), kind(value)));
     }
-    if let Some(Json::Array(options)) = schema.get("enum") {
-        if !options.contains(value) {
-            return Err(format!("{path}: value {value} is not one of the allowed values"));
-        }
+    if let Some(Json::Array(options)) = schema.get("enum")
+        && !options.contains(value)
+    {
+        return Err(format!("{path}: value {value} is not one of the allowed values"));
     }
-    if let Some(expected) = schema.get("const") {
-        if expected != value {
-            return Err(format!("{path}: expected constant {expected}"));
-        }
+    if let Some(expected) = schema.get("const")
+        && expected != value
+    {
+        return Err(format!("{path}: expected constant {expected}"));
     }
     match value {
         Json::Object(map) => {

@@ -674,16 +674,16 @@ impl AgentNode {
             state.messages.push(assistant);
 
             let mut calls = response.tool_calls;
-            if let Some(limit) = cfg.max_tool_calls_per_turn {
-                if calls.len() > limit {
-                    for call in calls.split_off(limit) {
-                        self.record(
-                            &mut state,
-                            &tools,
-                            &call,
-                            ToolOutput::error("rejected: too many tool calls in one turn"),
-                        );
-                    }
+            if let Some(limit) = cfg.max_tool_calls_per_turn
+                && calls.len() > limit
+            {
+                for call in calls.split_off(limit) {
+                    self.record(
+                        &mut state,
+                        &tools,
+                        &call,
+                        ToolOutput::error("rejected: too many tool calls in one turn"),
+                    );
                 }
             }
             let mut runnable = Vec::with_capacity(calls.len());
@@ -766,12 +766,11 @@ impl AgentNode {
     fn record(&self, state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, output: ToolOutput) {
         let bound = bound_tool(tools, call);
         #[cfg(feature = "skills")]
-        if !output.is_error {
-            if let Some(skill) = loaded_skill(bound, call) {
-                if !state.loaded_skills.contains(&skill) {
-                    state.loaded_skills.push(skill);
-                }
-            }
+        if !output.is_error
+            && let Some(skill) = loaded_skill(bound, call)
+            && !state.loaded_skills.contains(&skill)
+        {
+            state.loaded_skills.push(skill);
         }
         let text = truncate(&output.text, self.config.max_tool_output_chars);
         state.messages.push(Message::tool(call.id.clone(), text.clone()));

@@ -79,10 +79,10 @@ impl Shared {
     }
 
     fn close(&self, reason: String) {
-        if let Ok(mut r) = self.close_reason.lock() {
-            if r.is_none() {
-                *r = Some(reason.clone());
-            }
+        if let Ok(mut r) = self.close_reason.lock()
+            && r.is_none()
+        {
+            *r = Some(reason.clone());
         }
         // Mark closed and take every pending request under the same lock.
         let drained: Vec<Pending> = match self.pending.lock() {
@@ -395,10 +395,10 @@ fn route_notification(shared: &Shared, n: Notification) {
         forward_log(&shared.label(), level, message);
         shared.push_log(format!("{level}: {message}"));
         // A log tied to a request also reaches that node's event stream.
-        if let Some(request_id) = n.request_id().map(str::to_owned) {
-            if let Some(sink) = shared.sink_for(&request_id) {
-                sink(n);
-            }
+        if let Some(request_id) = n.request_id().map(str::to_owned)
+            && let Some(sink) = shared.sink_for(&request_id)
+        {
+            sink(n);
         }
         return;
     }
