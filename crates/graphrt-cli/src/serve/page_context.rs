@@ -7,6 +7,9 @@
 //! it: who the caller is stays the verified token (`sys.user_id`), whatever the
 //! context says. The limits are the ones of `checkChatContext` in the web
 //! package.
+//!
+//! Part of the cargo feature `web-chat`, which sends it: a build without the
+//! chat (the slim agents, `graphrt gateway`) carries none of this code.
 
 use serde_json::Value;
 

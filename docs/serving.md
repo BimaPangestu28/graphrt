@@ -195,7 +195,7 @@ response carries `Connection: close` and the client opens a new connection.
 | Body field | Meaning |
 | --- | --- |
 | `inputs`, `sys`, `conversation` | Run input |
-| `sys.context` | Optional page context of a web chat, a JSON object of at most 8 KiB and 5 levels (else `400`). Untrusted, never identity. See [web.md](web.md#page-context) |
+| `sys.context` | Optional page context of a web chat, a JSON object of at most 8 KiB and 5 levels (else `400`). Untrusted, never identity. Checked by builds with the cargo feature `web-chat` (default). See [web.md](web.md#page-context) |
 | `stream: true` | Respond with server-sent events |
 | `async: true` | Respond `202 {run_id, run, events}` immediately; the run continues in the background |
 | *(neither)* | Wait and respond with the final JSON result |

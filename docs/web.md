@@ -260,7 +260,8 @@ an LLM prompt can include `{{#sys.context#}}` as JSON.
   Strings, numbers, booleans, `null`, arrays and plain objects only. A property
   that is `undefined` is left out. Anything else throws a `TypeError` in the
   page and the context before stays. The server checks the same limits and
-  answers `400` for a context out of them.
+  answers `400` for a context out of them (cargo feature `web-chat`, in the
+  default build and the released binaries).
 - **Untrusted.** It comes from the browser, so a visitor can change it to
   anything. Never put a secret, a price to charge, a role or a permission in
   it. Nothing in the server reads it, and the user is always the
