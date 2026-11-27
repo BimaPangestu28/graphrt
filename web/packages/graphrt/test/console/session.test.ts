@@ -66,6 +66,7 @@ describe("the admin console", () => {
       "diagram",
       "memo",
       "report",
+      "shop",
       "slow",
       "support",
     ]);
