@@ -1,5 +1,5 @@
 /**
- * `graphrt/monitor`: a monitoring view for agents served by `graphrt serve`,
+ * `@graphrt-dev/graphrt/monitor`: a monitoring view for agents served by `graphrt serve`,
  * as a web component.
  *
  * - `<graphrt-monitor>` shows the runs, what a run did, and the requests that

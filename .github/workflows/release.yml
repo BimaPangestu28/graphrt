@@ -5,7 +5,7 @@ name: Release
 # the runner can execute it), build the mobile SDKs (an Android AAR, an
 # XCFramework and a Swift package), publish a GitHub Release with SHA256SUMS,
 # push multi-arch agent and gateway images to GHCR and (optionally) publish
-# crates to crates.io, the `graphrt` package to npm and the AAR to Maven
+# crates to crates.io, the `@graphrt-dev/graphrt` package to npm and the AAR to Maven
 # Central. Nothing is published unless the tests pass.
 on:
   push:
@@ -375,14 +375,15 @@ jobs:
         run: scripts/publish.sh --execute --delay 30
 
   npm:
-    name: Publish graphrt to npm
+    name: Publish @graphrt-dev/graphrt to npm
     needs: [tag, release]
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Opt-in: set repository variable PUBLISH_NPM=true once the package graphrt
-    # on npmjs.com names this workflow (release.yml, environment npm) as its
-    # trusted publisher. There is no token: npm takes the job's OIDC identity,
-    # and attaches a provenance statement to every version. See web/README.md.
+    # Opt-in: set repository variable PUBLISH_NPM=true once the package
+    # @graphrt-dev/graphrt on npmjs.com names this workflow (release.yml,
+    # environment npm) as its trusted publisher. There is no token: npm takes
+    # the job's OIDC identity, and attaches a provenance statement to every
+    # version. See web/README.md.
     if: ${{ vars.PUBLISH_NPM == 'true' }}
     environment: npm
     permissions:
@@ -409,7 +410,7 @@ jobs:
       # Builds the package, checks what would be uploaded, and publishes it with
       # the version of the tag, which must be the version of Cargo.toml. A
       # version that is on npm already is left alone, so a rerun is harmless.
-      - name: Publish graphrt
+      - name: Publish @graphrt-dev/graphrt
         env:
           TAG: ${{ needs.tag.outputs.tag }}
         run: node scripts/publish.mjs --execute --version "${TAG#v}"

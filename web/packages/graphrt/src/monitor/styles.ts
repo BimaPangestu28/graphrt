@@ -1,4 +1,4 @@
-/** Styles of the monitoring view. Colours are the tokens of `graphrt/ui`. */
+/** Styles of the monitoring view. Colours are the tokens of `@graphrt-dev/graphrt/ui`. */
 import { TOKENS_CSS } from "../ui/index.ts";
 
 export const MONITOR_CSS = `

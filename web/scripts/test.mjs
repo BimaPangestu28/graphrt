@@ -1,4 +1,4 @@
-// Runs the tests of the `graphrt` package: bundles each
+// Runs the tests of the `@graphrt-dev/graphrt` package: bundles each
 // `packages/graphrt/test/*/*.test.ts`
 // with esbuild (Node's own TypeScript support depends on how Node was built),
 // then hands the results to `node --test`.

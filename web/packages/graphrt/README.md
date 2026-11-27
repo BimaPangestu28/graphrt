@@ -1,4 +1,4 @@
-# graphrt
+# @graphrt-dev/graphrt
 
 The browser side of [`graphrt serve`](https://github.com/Graphrt/graphrt/blob/main/docs/serving.md):
 a typed client, web components that draw UI blocks, the chat widget, the
@@ -6,18 +6,18 @@ monitoring view and the admin console. One package, five entry points: import on
 and a bundler leaves the rest out.
 
 ```sh
-npm install graphrt
+npm install @graphrt-dev/graphrt
 ```
 
 | Import | What |
 | --- | --- |
-| `graphrt/client` | A typed client: blocking, streamed and background runs, events with replay, abort, resume, feedback, conversations |
-| `graphrt/ui` | Web components that draw UI blocks: Adaptive Cards, charts, tables, stat tiles, diagrams. No dependencies |
-| `graphrt/chat` | The chat component and the widget, built on the two above |
-| `graphrt/monitor` | The monitoring view: runs, run details, the approvals inbox, push notifications |
-| `graphrt/console` | The admin console of `graphrt serve --console`: agents and versions per environment, runs, secrets, people and roles, the audit log |
+| `@graphrt-dev/graphrt/client` | A typed client: blocking, streamed and background runs, events with replay, abort, resume, feedback, conversations |
+| `@graphrt-dev/graphrt/ui` | Web components that draw UI blocks: Adaptive Cards, charts, tables, stat tiles, diagrams. No dependencies |
+| `@graphrt-dev/graphrt/chat` | The chat component and the widget, built on the two above |
+| `@graphrt-dev/graphrt/monitor` | The monitoring view: runs, run details, the approvals inbox, push notifications |
+| `@graphrt-dev/graphrt/console` | The admin console of `graphrt serve --console`: agents and versions per environment, runs, secrets, people and roles, the audit log |
 
-The package is ES modules with type declarations. `graphrt/client` uses `fetch`
+The package is ES modules with type declarations. `@graphrt-dev/graphrt/client` uses `fetch`
 only, so it also runs in Node.js 18+, Deno, Bun and workers. The other parts
 need a browser (or a DOM such as happy-dom). Nothing runs on import: the web
 components are registered when you call their `define` function.
@@ -25,7 +25,7 @@ components are registered when you call their `define` function.
 ## Client
 
 ```ts
-import { GraphrtClient } from "graphrt/client";
+import { GraphrtClient } from "@graphrt-dev/graphrt/client";
 
 const client = new GraphrtClient({ baseUrl: "https://agent.example.com", token });
 
@@ -50,7 +50,7 @@ Tokens travel in headers, never in URLs: streams are read with `fetch`, not
 ## UI blocks
 
 ```ts
-import { defineGraphrtUi } from "graphrt/ui";
+import { defineGraphrtUi } from "@graphrt-dev/graphrt/ui";
 
 defineGraphrtUi();
 const element = document.createElement("graphrt-block");
@@ -70,7 +70,7 @@ anywhere.
 ```
 
 ```ts
-import { defineGraphrtChat } from "graphrt/chat";
+import { defineGraphrtChat } from "@graphrt-dev/graphrt/chat";
 
 defineGraphrtChat();
 ```
@@ -92,7 +92,7 @@ the page `/chat/` and the one script tag `/chat/embed.js`.
 ```
 
 ```ts
-import { browserPush, defineGraphrtMonitor } from "graphrt/monitor";
+import { browserPush, defineGraphrtMonitor } from "@graphrt-dev/graphrt/monitor";
 
 defineGraphrtMonitor();
 const monitor = document.querySelector("graphrt-monitor");
@@ -112,7 +112,7 @@ A server started with `--monitor` serves it ready to use at `/monitor/`.
 ## Admin console
 
 ```ts
-import { defineGraphrtConsole } from "graphrt/console";
+import { defineGraphrtConsole } from "@graphrt-dev/graphrt/console";
 
 defineGraphrtConsole(); // <graphrt-console server="https://agents.example.com">
 ```

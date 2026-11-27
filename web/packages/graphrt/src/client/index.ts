@@ -1,8 +1,8 @@
 /**
- * `graphrt/client`: a typed client of `graphrt serve` for browsers.
+ * `@graphrt-dev/graphrt/client`: a typed client of `graphrt serve` for browsers.
  *
  * @example
- * import { GraphrtClient } from "graphrt/client";
+ * import { GraphrtClient } from "@graphrt-dev/graphrt/client";
  *
  * const client = new GraphrtClient({ baseUrl: "https://agent.example.com", token: apiKey });
  * const result = await client.run("hello", { inputs: { name: "Ada" } });
