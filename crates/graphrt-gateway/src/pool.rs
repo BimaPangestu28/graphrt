@@ -133,6 +133,10 @@ struct Slot {
     prewarmed: Option<PrewarmSource>,
     /// While unleased after a prewarm, kept at least until then (beyond `idle_timeout`).
     hold_until: Instant,
+    /// A stream to it broke or it was unreachable: it gets no new runs, and
+    /// is stopped at the provider once idle for `idle_timeout` (it may hold an
+    /// orphan the gateway pulls meanwhile), unless a wake reports it again.
+    broken: bool,
 }
 
 /// Prewarm counters per [`PrewarmSource`] (indexed by [`PrewarmSource::index`]).
@@ -200,6 +204,11 @@ struct PoolState {
 }
 
 impl PoolState {
+    /// Replicas that take runs (not broken).
+    fn healthy(&self) -> usize {
+        self.slots.iter().filter(|slot| !slot.broken).count()
+    }
+
     /// Counts a replica leaving the pool: a miss when a prewarm started it and no lease came.
     fn forget(&mut self, slot: &Slot) {
         if let Some(source) = slot.prewarmed {
@@ -214,11 +223,25 @@ impl PoolState {
         for endpoint in endpoints {
             // A thawed replica is live again.
             self.frozen.retain(|frozen| *frozen != endpoint.replica);
-            if !self.slots.iter().any(|slot| slot.endpoint.replica == endpoint.replica) {
-                let slot =
-                    Slot { endpoint, active_runs: 0, idle_since: now, prewarmed: source, hold_until: now + hold };
-                self.slots.push(slot);
-                added += 1;
+            match self.slots.iter_mut().find(|slot| slot.endpoint.replica == endpoint.replica) {
+                // The provider reports a broken replica as up again: it takes runs again.
+                Some(slot) if slot.broken => {
+                    slot.broken = false;
+                    added += 1;
+                }
+                Some(_) => {}
+                None => {
+                    let slot = Slot {
+                        endpoint,
+                        active_runs: 0,
+                        idle_since: now,
+                        prewarmed: source,
+                        hold_until: now + hold,
+                        broken: false,
+                    };
+                    self.slots.push(slot);
+                    added += 1;
+                }
             }
         }
         if let Some(source) = source {
@@ -268,7 +291,8 @@ pub struct Lease {
 
 impl Lease {
     /// Gives the slot back and marks the replica broken (its stream failed):
-    /// it gets no new runs until reconciliation confirms it.
+    /// it gets no new runs, and the pool keeps it until it releases it at the
+    /// provider ([`Pool::release_idle`]) or a wake reports it up again.
     pub fn release_broken(mut self) {
         self.released = true;
         self.pool.give_back(&self.endpoint.replica, true);
@@ -334,8 +358,11 @@ impl Pool {
     /// Takes the least-loaded free slot, if any.
     fn try_take(&self, state: &mut PoolState) -> Option<Endpoint> {
         let capacity = self.slot_capacity();
-        let slot =
-            state.slots.iter_mut().filter(|slot| slot.active_runs < capacity).min_by_key(|slot| slot.active_runs)?;
+        let slot = state
+            .slots
+            .iter_mut()
+            .filter(|slot| !slot.broken && slot.active_runs < capacity)
+            .min_by_key(|slot| slot.active_runs)?;
         slot.active_runs += 1;
         if let Some(source) = slot.prewarmed.take() {
             *source.counter(&mut state.prewarm.hits) += 1;
@@ -373,20 +400,21 @@ impl Pool {
                 }
                 // A wake that just failed is reported instead of retried at once.
                 if let Some((at, message)) = &state.last_wake_error
-                    && state.slots.is_empty()
+                    && state.healthy() == 0
                     && !state.waking
                     && at.elapsed() < Duration::from_secs(1)
                 {
                     break Err(ActivateError::Wake(message.clone()));
                 }
-                if !state.waking && state.slots.len() < self.max_slots() {
+                let healthy = state.healthy();
+                if !state.waking && healthy < self.max_slots() {
                     if !state.wakes.try_record(Instant::now(), self.config.quotas.max_wakes_per_hour) {
-                        if state.slots.is_empty() {
+                        if healthy == 0 {
                             break Err(ActivateError::WakeQuota);
                         }
                     } else {
                         state.waking = true;
-                        let target = state.slots.len() as u32 + 1;
+                        let target = healthy as u32 + 1;
                         let pool = Arc::clone(self);
                         // The outcome is recorded in the pool state for the waiters.
                         graphrt_core::task::spawn(async move {
@@ -440,10 +468,18 @@ impl Pool {
 
     fn give_back(&self, replica: &ReplicaRef, broken: bool) {
         let mut state = self.lock();
-        if broken {
+        // Behind one URL there is no instance to stop: the slot is dropped and the next wake brings it back.
+        if broken && self.capabilities.addressing == Addressing::Url {
             if let Some(index) = state.slots.iter().position(|slot| slot.endpoint.replica == *replica) {
                 let slot = state.slots.swap_remove(index);
                 state.forget(&slot);
+            }
+        } else if broken {
+            // Kept, so it is stopped at the provider once idle instead of left running.
+            if let Some(slot) = state.slots.iter_mut().find(|slot| slot.endpoint.replica == *replica) {
+                slot.active_runs = slot.active_runs.saturating_sub(1);
+                slot.broken = true;
+                slot.idle_since = Instant::now();
             }
         } else if let Some(slot) = state.slots.iter_mut().find(|slot| slot.endpoint.replica == *replica) {
             slot.active_runs = slot.active_runs.saturating_sub(1);
@@ -540,7 +576,8 @@ impl Pool {
     /// prewarm found them up, and their agents may have stopped idle plugins.
     pub fn hint_warm(&self) {
         let Some(hint) = &self.config.warm_hint else { return };
-        let addresses: Vec<_> = self.lock().slots.iter().map(|slot| slot.endpoint.address.clone()).collect();
+        let addresses: Vec<_> =
+            self.lock().slots.iter().filter(|slot| !slot.broken).map(|slot| slot.endpoint.address.clone()).collect();
         if !addresses.is_empty() {
             (hint.0)(addresses);
         }
@@ -556,7 +593,7 @@ impl Pool {
         let wanted = replicas.clamp(1, self.max_slots() as u32);
         if state.closed {
             PrewarmOutcome::Closed
-        } else if state.slots.len() as u32 >= wanted {
+        } else if state.healthy() as u32 >= wanted {
             PrewarmOutcome::AlreadyWarm
         } else if state.waking {
             PrewarmOutcome::InFlight
@@ -584,13 +621,14 @@ impl Pool {
         }
     }
 
-    /// Releases replicas idle for `idle_timeout`, keeping `min_replicas`.
-    /// Returns how many were released.
+    /// Releases replicas idle for `idle_timeout`, keeping `min_replicas`, and
+    /// stops broken ones idle for as long. Returns how many were released.
     pub async fn release_idle(&self) -> usize {
         if self.capabilities.addressing == Addressing::Url {
             return 0;
         }
-        let victims: Vec<ReplicaRef> = {
+        // (replica, broken): broken ones are stopped, never frozen.
+        let victims: Vec<(ReplicaRef, bool)> = {
             let mut state = self.lock();
             self.charge_warm_time(&mut state);
             // A spent budget releases idle replicas at once, `min_replicas` included.
@@ -601,6 +639,16 @@ impl Pool {
             let now = Instant::now();
             let mut victims = Vec::new();
             for slot in std::mem::take(&mut state.slots) {
+                if slot.broken {
+                    // Neither kept for `min_replicas` nor frozen: stopped once idle.
+                    if slot.active_runs == 0 && now.saturating_duration_since(slot.idle_since) >= idle_timeout {
+                        state.forget(&slot);
+                        victims.push((slot.endpoint.replica, true));
+                    } else {
+                        state.slots.push(slot);
+                    }
+                    continue;
+                }
                 let held = !spent && slot.prewarmed.is_some() && now < slot.hold_until;
                 let idle =
                     slot.active_runs == 0 && !held && now.saturating_duration_since(slot.idle_since) >= idle_timeout;
@@ -609,16 +657,17 @@ impl Pool {
                     state.slots.push(slot);
                 } else {
                     state.forget(&slot);
-                    victims.push(slot.endpoint.replica);
+                    victims.push((slot.endpoint.replica, false));
                 }
             }
             victims
         };
         let freeze = self.config.freeze_idle || self.capabilities.supports_suspend;
         let mode = if freeze { ReleaseMode::Suspend } else { ReleaseMode::Stop };
-        for replica in &victims {
+        for (replica, broken) in &victims {
+            let mode = if *broken { ReleaseMode::Stop } else { mode };
             match self.provider.release(replica, mode).await {
-                Ok(()) if self.config.freeze_idle => self.lock().frozen.push(replica.clone()),
+                Ok(()) if self.config.freeze_idle && !broken => self.lock().frozen.push(replica.clone()),
                 Ok(()) => {}
                 Err(error) => {
                     eprintln!("gateway: releasing idle replica {} of {}: {error}", replica.id, self.deployment.name)
@@ -792,6 +841,50 @@ mod tests {
         drop(lease);
         assert_eq!(pool.reconcile().await.unwrap().0, 1);
         assert_eq!(pool.stats().replicas, 0);
+    }
+
+    /// A replica whose stream broke stays at the provider (it may hold an
+    /// orphan to pull). When another replica serves the next runs, no wake
+    /// reports it again, so the pool keeps it and stops it once idle instead of
+    /// leaving it running until a reconciliation (CI: "1 live at the provider,
+    /// pool replicas 0").
+    #[tokio::test(start_paused = true)]
+    async fn a_broken_replica_is_stopped_once_idle_and_gets_no_runs() {
+        let provider = Arc::new(MemoryProvider::new(Duration::from_millis(1)));
+        let config = PoolConfig { max_active_runs: 1, idle_timeout: Duration::from_secs(60), ..PoolConfig::default() };
+        let pool = pool(provider.clone(), config);
+        let first = pool.acquire().await.unwrap();
+        let second = pool.acquire().await.unwrap();
+        assert_eq!(provider.ready_count(&deployment()), 2);
+        let broken = first.endpoint.replica.clone();
+        first.release_broken();
+        drop(second);
+        for _ in 0..3 {
+            let lease = pool.acquire().await.unwrap();
+            assert_ne!(lease.endpoint.replica, broken, "a broken replica got a run");
+        }
+        assert_eq!(pool.stats().replicas, 2, "still tracked");
+        assert_eq!(pool.release_idle().await, 0, "not before idle_timeout: it may hold an orphan");
+
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert_eq!(pool.release_idle().await, 2);
+        assert_eq!((pool.stats().replicas, provider.ready_count(&deployment())), (0, 0));
+        assert_eq!(pool.reconcile().await.unwrap(), (0, 0), "nothing was left for reconciliation");
+    }
+
+    /// A broken replica a wake reports up again takes runs again (the only
+    /// replica, behind `max_replicas: 1`).
+    #[tokio::test(start_paused = true)]
+    async fn a_wake_that_reports_a_broken_replica_heals_it() {
+        let provider = Arc::new(MemoryProvider::new(Duration::from_millis(1)));
+        let config = PoolConfig { quotas: Quotas { max_replicas: 1, ..Quotas::default() }, ..PoolConfig::default() };
+        let pool = pool(provider.clone(), config);
+        let lease = pool.acquire().await.unwrap();
+        let replica = lease.endpoint.replica.clone();
+        lease.release_broken();
+        let again = pool.acquire().await.unwrap();
+        assert_eq!(again.endpoint.replica, replica);
+        assert_eq!((pool.stats().replicas, provider.ready_count(&deployment())), (1, 1));
     }
 
     #[tokio::test(start_paused = true)]
