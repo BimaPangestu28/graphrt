@@ -59,8 +59,14 @@
 //!   `default-value` continues along its regular edges, a `fail-branch` node
 //!   along its `fail-branch` edges, and a branch node with `default-value`
 //!   along the handle named by its `branch` default value (no edge if absent).
-//! - A terminal run event (`RunSucceeded`, `RunFailed`, `RunAborted`) flushes
-//!   everything that can still be rendered, as does [`ResponseAssembler::finish`].
+//! - `RunSucceeded` and `RunAborted` flush everything that can still be
+//!   rendered, as does [`ResponseAssembler::finish`].
+//! - `RunFailed` renders nothing more, and takes back what was rendered ahead
+//!   of time: text is emitted as soon as a response node is certain to run,
+//!   which does not anticipate failures. Chunks already handed out cannot be
+//!   recalled, but [`ResponseAssembler::text_so_far`] then holds only the text
+//!   of response nodes that ran, so the answer kept for a failed run never
+//!   quotes a node that did not execute.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -173,6 +179,9 @@ pub struct ResponseAssembler {
     queue: VecDeque<usize>,
     active: Option<Active>,
     emitted: String,
+    /// The pieces `emitted` is made of, in order: the response (an index into
+    /// `responses`) and the byte length of its text.
+    segments: Vec<(usize, usize)>,
     pass_through: bool,
     include_end: bool,
     finished: bool,
@@ -205,6 +214,7 @@ impl ResponseAssembler {
             queue: VecDeque::new(),
             active: None,
             emitted: String::new(),
+            segments: Vec::new(),
             pass_through: false,
             include_end: false,
             finished: false,
@@ -377,8 +387,14 @@ impl ResponseAssembler {
                 }
                 return;
             }
-            Event::RunSucceeded { .. } | Event::RunFailed { .. } | Event::RunAborted { .. } => {
+            Event::RunSucceeded { .. } | Event::RunAborted { .. } => {
                 self.finish_into(out);
+                return;
+            }
+            Event::RunFailed { .. } => {
+                // Nothing more is rendered: what is left belongs to nodes that will not run.
+                self.keep_text_of_nodes_that_ran();
+                self.finished = true;
                 return;
             }
             _ => return,
@@ -402,6 +418,29 @@ impl ResponseAssembler {
         self.refresh_certainty();
         self.drain(true, out);
         self.finished = true;
+    }
+
+    /// Drop from the emitted text what was rendered for response nodes that
+    /// never executed (they were certain to run until the run failed).
+    fn keep_text_of_nodes_that_ran(&mut self) {
+        let mut kept = String::with_capacity(self.emitted.len());
+        let mut segments = Vec::with_capacity(self.segments.len());
+        let mut start = 0;
+        for &(response, len) in &self.segments {
+            let end = start + len;
+            let ran = self
+                .responses
+                .get(response)
+                .and_then(|r| self.status.get(r.node))
+                .is_some_and(|status| matches!(status, Status::Succeeded | Status::Handled));
+            if ran && let Some(text) = self.emitted.get(start..end) {
+                kept.push_str(text);
+                segments.push((response, len));
+            }
+            start = end;
+        }
+        self.emitted = kept;
+        self.segments = segments;
     }
 
     fn rebuild_responses(&mut self) {
@@ -611,7 +650,8 @@ impl ResponseAssembler {
                     self.finish_active(Some(&id), out);
                 }
                 Some(Part::Text(text)) => {
-                    emit(&mut self.emitted, out, &response.id, text.clone());
+                    let piece = Piece { response: active.response, id: &response.id };
+                    emit(&mut self.emitted, &mut self.segments, out, &piece, text.clone());
                     active.part += 1;
                     active.offset = 0;
                 }
@@ -625,7 +665,8 @@ impl ResponseAssembler {
                     };
                     let step = resolve_var(&sources, sel, active.offset, flush);
                     if !step.text.is_empty() {
-                        emit(&mut self.emitted, out, &response.id, step.text);
+                        let piece = Piece { response: active.response, id: &response.id };
+                        emit(&mut self.emitted, &mut self.segments, out, &piece, step.text);
                     }
                     active.offset = step.offset;
                     if step.complete {
@@ -736,12 +777,29 @@ fn default_branch(strategy: &ErrorStrategy) -> Option<String> {
     }
 }
 
-fn emit(emitted: &mut String, out: &mut Vec<ResponseChunk>, id: &Arc<str>, text: String) {
+/// The response a piece of text is emitted for.
+struct Piece<'a> {
+    /// Its index in `ResponseAssembler::responses`.
+    response: usize,
+    id: &'a Arc<str>,
+}
+
+fn emit(
+    emitted: &mut String,
+    segments: &mut Vec<(usize, usize)>,
+    out: &mut Vec<ResponseChunk>,
+    piece: &Piece<'_>,
+    text: String,
+) {
     if text.is_empty() {
         return;
     }
     emitted.push_str(&text);
-    out.push(ResponseChunk::text(id, text));
+    match segments.last_mut() {
+        Some((response, len)) if *response == piece.response => *len += text.len(),
+        _ => segments.push((piece.response, text.len())),
+    }
+    out.push(ResponseChunk::text(piece.id, text));
 }
 
 fn end_parts(config: &serde_json::Map<String, serde_json::Value>) -> Vec<Part> {

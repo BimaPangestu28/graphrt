@@ -366,6 +366,13 @@ the answer never mixes a failed attempt with the retry (or with a
 attempt are void. For a live answer from such a node, render `node_chunk`
 events and reset on `node_retry`, or drop the retry policy.
 
+**Failed runs.** `response` text goes out as soon as an answer node is certain
+to run, which is before the nodes ahead of it have finished. When the run then
+fails, no more `response` text follows, and the `answer` kept with the run
+holds only the text of answer nodes that ran (`GET /v1/runs/{id}`). A client
+that showed the earlier `response` events should not present them as the
+answer of a failed run.
+
 ### Run context and evaluation data
 
 `metadata`, `session_id`, `user_id` and `tags` describe who ran what, for
