@@ -152,7 +152,7 @@ fn plan_deploy(spec: &DeploymentSpec, env_lookup: &EnvLookup) -> Result<FlyDeplo
         env: machine_env(spec, &secrets_to_write, &secrets_expected)?,
         metadata: machine_metadata(spec),
         guest: Some(guest_config(spec)?),
-        init: (!spec.command.is_empty()).then(|| InitConfig { cmd: spec.command.clone() }),
+        init: init_config(&spec.command),
         restart: Some(RestartConfig { policy: "no".to_owned() }),
         stop_config: Some(StopConfig { signal: "SIGTERM".to_owned(), timeout: format!("{grace_secs}s") }),
         auto_destroy: false,
@@ -330,6 +330,29 @@ fn setting_u32(spec: &DeploymentSpec, key: &str) -> Result<Option<u32>, DeployEr
     }
 }
 
+/// Subcommands of `graphrt` that a command may start with when it leaves the
+/// program to the image (the form `docs/gateway-fly.md` showed before 0.6.4).
+const GRAPHRT_SUBCOMMANDS: [&str; 3] = ["serve", "gateway", "collab"];
+
+/// The Machine's `init` for the agent command.
+///
+/// `command` is the whole argv (`graphrt serve ...`), as for the other
+/// providers. On Fly `init.cmd` replaces only the image's CMD, so the program
+/// goes to `init.entrypoint`: with `cmd` alone the graphrt image (ENTRYPOINT
+/// `graphrt`) would run `graphrt graphrt serve`. A command that starts with a
+/// graphrt subcommand (`serve ...`) is taken as the arguments of the image's
+/// own entrypoint.
+///
+/// @param command - the deployment's command (&[String])
+/// @returns `None` for an empty command (the image's ENTRYPOINT and CMD)
+fn init_config(command: &[String]) -> Option<InitConfig> {
+    let (program, arguments) = command.split_first()?;
+    if GRAPHRT_SUBCOMMANDS.contains(&program.as_str()) {
+        return Some(InitConfig { entrypoint: Vec::new(), cmd: command.to_vec() });
+    }
+    Some(InitConfig { entrypoint: vec![program.clone()], cmd: arguments.to_vec() })
+}
+
 fn is_env_name(name: &str) -> bool {
     let mut characters = name.chars();
     characters.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
@@ -407,6 +430,37 @@ mod tests {
     fn missing_deploy_time_variable_is_an_error_without_value() {
         let error = plan_deploy(&spec(), &(Arc::new(|_: &str| None) as EnvLookup)).unwrap_err();
         assert!(error.message.contains("LOCAL_OPENAI"));
+    }
+
+    fn words(line: &str) -> Vec<String> {
+        line.split_whitespace().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn the_program_of_the_command_replaces_the_image_entrypoint() {
+        let init = init_config(&words("graphrt serve /app/workflows --addr [::]:8080 --trust-gateway")).unwrap();
+        assert_eq!(init.entrypoint, ["graphrt"]);
+        assert_eq!(init.cmd, words("serve /app/workflows --addr [::]:8080 --trust-gateway"));
+        let other = init_config(&words("/usr/local/bin/graphrt serve agent.yaml")).unwrap();
+        assert_eq!(other.entrypoint, ["/usr/local/bin/graphrt"]);
+        assert_eq!(other.cmd, words("serve agent.yaml"));
+    }
+
+    #[test]
+    fn a_command_that_starts_with_serve_keeps_the_image_entrypoint() {
+        let init = init_config(&words("serve /app/workflows --addr [::]:8080")).unwrap();
+        assert!(init.entrypoint.is_empty());
+        assert_eq!(init.cmd, words("serve /app/workflows --addr [::]:8080"));
+        let encoded = serde_json::to_value(&init).unwrap();
+        assert!(encoded.get("entrypoint").is_none(), "the image's ENTRYPOINT stays: {encoded}");
+    }
+
+    #[test]
+    fn no_command_leaves_the_image_as_it_is() {
+        assert_eq!(init_config(&[]), None);
+        let mut plain = spec();
+        plain.command.clear();
+        assert!(plan_deploy(&plain, &lookup()).unwrap().machine_config.init.is_none());
     }
 
     #[test]
