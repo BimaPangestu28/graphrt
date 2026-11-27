@@ -33,7 +33,7 @@ const MAX_BUTTONS: usize = 8;
 
 /// How blocks are written for a channel. Both get Markdown, which the channel
 /// crate converts together with the rest of the message.
-fn text_options(messages: &Messages, first_choice: usize) -> TextOptions {
+pub(super) fn text_options(messages: &Messages, first_choice: usize) -> TextOptions {
     let mut options = TextOptions::markdown().with_choice_prompt(messages.choice_prompt.clone());
     options.markup = Markup::Markdown;
     options.max_chars = MAX_BLOCK_CHARS;

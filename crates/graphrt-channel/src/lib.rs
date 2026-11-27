@@ -1,4 +1,5 @@
-//! Messaging channels for graphrt agents: Telegram (Bot API) and WhatsApp (Cloud API).
+//! Messaging channels for graphrt agents: Telegram (Bot API), WhatsApp (Cloud
+//! API), Slack (Events API and Socket Mode) and Microsoft Teams (Bot Framework).
 //!
 //! The crate is the part every host shares, and nothing more. It does not start
 //! runs, keep conversations or decide who may write: `graphrt serve` and the
@@ -7,7 +8,9 @@
 //! 1. **Receive.** [`telegram::parse_update`] and [`whatsapp::parse_webhook`] turn
 //!    what the channel delivers into [`InboundEvent`]s. [`telegram::verify_secret_token`],
 //!    [`whatsapp::verify_signature`] and [`whatsapp::verify_subscription`] are the
-//!    checks a webhook endpoint runs first, on the raw body.
+//!    checks a webhook endpoint runs first, on the raw body. Slack and Teams have
+//!    the same pair: `slack::verify_signature` with `slack::parse_delivery`, and
+//!    `teams::verify_token` with `teams::parse_activity` (features `slack`, `teams`).
 //! 2. **Write.** [`text::split`] cuts an answer to the channel's length limit
 //!    without breaking a code block, and [`text::to_telegram_html`] and
 //!    [`text::to_whatsapp`] turn the Markdown a model writes into what the channel
@@ -42,12 +45,18 @@
 //! # }
 //! ```
 
+#[cfg(any(feature = "slack", feature = "teams"))]
+mod card;
 #[cfg(feature = "client")]
 mod channel;
-#[cfg(all(feature = "client", any(feature = "telegram", feature = "whatsapp")))]
+#[cfg(all(feature = "client", any(feature = "telegram", feature = "whatsapp", feature = "slack", feature = "teams")))]
 mod http;
 mod model;
 pub mod sign;
+#[cfg(feature = "slack")]
+pub mod slack;
+#[cfg(feature = "teams")]
+pub mod teams;
 #[cfg(feature = "telegram")]
 pub mod telegram;
 pub mod text;
@@ -55,7 +64,7 @@ pub mod text;
 pub mod whatsapp;
 
 #[cfg(feature = "client")]
-pub use channel::{BoxFuture, Channel, Download, OutboundFile};
+pub use channel::{BoxFuture, Channel, Download, OutboundFile, RichMessage, RichPart};
 pub use model::{
     Attachment, AttachmentKind, Button, ChannelError, ChannelKind, ChatKind, Customer, DeliveryState, DeliveryStatus,
     InboundEvent, InboundMessage, Secret,

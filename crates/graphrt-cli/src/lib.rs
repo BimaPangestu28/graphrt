@@ -184,6 +184,10 @@ pub fn enabled_features() -> Vec<&'static str> {
     features.push("channel-telegram");
     #[cfg(feature = "channel-whatsapp")]
     features.push("channel-whatsapp");
+    #[cfg(feature = "channel-slack")]
+    features.push("channel-slack");
+    #[cfg(feature = "channel-teams")]
+    features.push("channel-teams");
     if cfg!(feature = "skills") {
         features.push("skills");
     }

@@ -562,6 +562,21 @@ impl AppState {
         self
     }
 
+    /// Add `more` notifiers to the ones the server has (a channel's `notify`).
+    /// `quiet_user_pauses` is used when the server had none yet.
+    #[cfg(feature = "notify")]
+    pub fn add_notifiers(mut self, more: Vec<Arc<dyn crate::notify::Notifier>>, quiet_user_pauses: bool) -> Self {
+        if more.is_empty() {
+            return self;
+        }
+        let notifications = match self.notifications.take() {
+            Some(existing) => existing.with(more),
+            None => crate::notify::Notifications::new(more, quiet_user_pauses),
+        };
+        self.notifications = Some(Arc::new(notifications));
+        self
+    }
+
     /// Serve the Web Push API (`--push`). The caller also adds it to the notifiers.
     #[cfg(feature = "web-push")]
     pub fn with_push(mut self, push: Option<Arc<crate::notify::webpush::WebPush>>) -> Self {

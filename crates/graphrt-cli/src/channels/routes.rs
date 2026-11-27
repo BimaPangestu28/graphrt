@@ -3,10 +3,11 @@
 //! | Method | Path | Who | What |
 //! | --- | --- | --- | --- |
 //! | GET | `/v1/channels/{name}/webhook` | Meta | The check of a WhatsApp webhook address (`hub.challenge`) |
-//! | POST | `/v1/channels/{name}/webhook` | Telegram, Meta | A delivery, checked by its secret or signature |
+//! | POST | `/v1/channels/{name}/webhook` | Telegram, Meta, Slack, Teams | A delivery, checked by its secret, signature or token |
 //! | GET | `/v1/channels` | API key | The configured channels |
 //! | POST | `/v1/channels/{name}/messages` | API key | `{to, text}`: a message of a person of the team |
 //! | POST | `/v1/channels/{name}/handoff` | API key | `{to, human}`: hand a customer to a person, or back |
+//! | GET | `/v1/channels/{name}/files/{token}` | the link | A file shared in a chat as a link (`--public-url`) |
 //!
 //! A webhook is answered as soon as the delivery is verified and read. The
 //! work it starts runs in the background.
@@ -23,7 +24,6 @@ use axum::extract::{Path as UrlPath, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use graphrt_channel::ChannelKind;
 use serde::Deserialize;
 
 use super::{Bot, Channels, Credentials, Mode};
@@ -38,6 +38,7 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/v1/channels/{name}/webhook", get(verify).post(deliver))
         .route("/v1/channels/{name}/messages", post(send_message))
         .route("/v1/channels/{name}/handoff", post(handoff))
+        .route("/v1/channels/{name}/files/{token}", get(shared_file))
 }
 
 fn not_found() -> Response {
@@ -51,6 +52,10 @@ fn channel<'a>(state: &'a AppState, name: &str) -> Result<(&'a Arc<Channels>, &'
     Ok((channels, bot))
 }
 
+#[cfg_attr(
+    not(any(feature = "channel-telegram", feature = "channel-whatsapp")),
+    allow(unused_variables, unreachable_code, dead_code)
+)]
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
@@ -82,6 +87,10 @@ async fn verify(
 }
 
 /// `POST /v1/channels/{name}/webhook`: a delivery.
+#[cfg_attr(
+    not(any(feature = "channel-telegram", feature = "channel-whatsapp")),
+    allow(unused_variables, unreachable_code, dead_code)
+)]
 async fn deliver(
     State(state): State<Arc<AppState>>,
     UrlPath(name): UrlPath<String>,
@@ -89,6 +98,14 @@ async fn deliver(
     body: Bytes,
 ) -> Response {
     let Ok((channels, bot)) = channel(&state, &name) else { return not_found() };
+    #[cfg(feature = "channel-slack")]
+    if matches!(bot.config.credentials, Credentials::Slack { .. }) {
+        return super::slack::deliver(channels, bot, &headers, &body);
+    }
+    #[cfg(feature = "channel-teams")]
+    if matches!(bot.config.credentials, Credentials::Teams { .. }) {
+        return super::teams::deliver(channels, bot, &headers, &body).await;
+    }
     // The same answer for a missing and a wrong credential: a caller learns nothing from it.
     let refused = || error_response(StatusCode::UNAUTHORIZED, "the delivery is not signed by the channel");
     let malformed = || error_response(StatusCode::BAD_REQUEST, "the delivery is not JSON");
@@ -126,6 +143,22 @@ async fn deliver(
     "ok".into_response()
 }
 
+/// `GET /v1/channels/{name}/files/{token}`: a file shared as a link. The
+/// unguessable token is the credential.
+async fn shared_file(
+    State(state): State<Arc<AppState>>,
+    UrlPath((name, token)): UrlPath<(String, String)>,
+) -> Response {
+    let Ok((channels, bot)) = channel(&state, &name) else { return not_found() };
+    #[cfg(feature = "files")]
+    return channels.shared_file(&state, bot, &token).await;
+    #[cfg(not(feature = "files"))]
+    {
+        let _ = (channels, bot, token);
+        error_response(StatusCode::NOT_FOUND, "this server shares no files")
+    }
+}
+
 /// `GET /v1/channels`.
 async fn list(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if let Some(refused) = state.refuse_without_api_key(&headers) {
@@ -136,16 +169,21 @@ async fn list(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respons
         .iter()
         .map(|bot| {
             let config = &bot.config;
-            let webhook =
-                (config.kind != ChannelKind::Telegram || config.mode == Mode::Webhook).then(|| bot.webhook_path());
+            let webhook = (config.mode == Mode::Webhook).then(|| bot.webhook_path());
+            let mode = match config.mode {
+                Mode::Polling => "polling",
+                Mode::Webhook => "webhook",
+                Mode::Socket => "socket",
+            };
             serde_json::json!({
                 "name": config.name,
                 "kind": config.kind.as_str(),
                 "workflow": config.workflow,
-                "mode": if webhook.is_some() { "webhook" } else { "polling" },
+                "mode": mode,
                 "webhook": webhook,
                 "groups": config.groups,
                 "restricted": !config.allow.is_empty(),
+                "notifies": !config.notify.is_empty(),
             })
         })
         .collect();

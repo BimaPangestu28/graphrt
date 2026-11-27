@@ -112,7 +112,7 @@ pub struct DirectServeArgs {
     /// CONTACT is `mailto:you@example.com` or an `https:` URL (uses the store volume).
     #[arg(long, value_name = "CONTACT")]
     pub push: Option<String>,
-    /// Direct: answer customers on `telegram` or `whatsapp`, credentials
+    /// Direct: answer customers on `telegram`, `whatsapp`, `slack` or `teams`, credentials
     /// passed with `--secret` (docs/deploy-direct.md). Repeatable.
     #[arg(long, value_name = "KIND")]
     pub channel: Vec<String>,

@@ -61,14 +61,21 @@ pub enum DirectChannel {
     Telegram,
     /// WhatsApp Cloud API: Meta posts to `<public url>/v1/channels/whatsapp/webhook`.
     WhatsApp,
+    /// Slack, by the Events API: Slack posts to `<public url>/v1/channels/slack/webhook`.
+    /// With `SLACK_APP_TOKEN` as well it uses Socket Mode, which needs a Machine that keeps running.
+    Slack,
+    /// Microsoft Teams: the Azure Bot posts to `<public url>/v1/channels/teams/webhook`.
+    Teams,
 }
 
 impl DirectChannel {
-    /// The channel named `kind` (`telegram`, `whatsapp`).
+    /// The channel named `kind` (`telegram`, `whatsapp`, `slack`, `teams`).
     pub fn parse(kind: &str) -> Option<Self> {
         match kind {
             "telegram" => Some(Self::Telegram),
             "whatsapp" => Some(Self::WhatsApp),
+            "slack" => Some(Self::Slack),
+            "teams" => Some(Self::Teams),
             _ => None,
         }
     }
@@ -78,16 +85,22 @@ impl DirectChannel {
         match self {
             Self::Telegram => "telegram",
             Self::WhatsApp => "whatsapp",
+            Self::Slack => "slack",
+            Self::Teams => "teams",
         }
     }
 
-    /// The secrets `graphrt serve` reads for this channel (docs/channels.md).
+    /// The secrets `graphrt serve` reads for this channel (docs/channels.md,
+    /// docs/slack-teams.md). Slack's Socket Mode reads `SLACK_APP_TOKEN` instead
+    /// of the signing secret.
     pub fn secret_names(self) -> &'static [&'static str] {
         match self {
             Self::Telegram => &["TELEGRAM_BOT_TOKEN"],
             Self::WhatsApp => {
                 &["WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN"]
             }
+            Self::Slack => &["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"],
+            Self::Teams => &["TEAMS_APP_ID", "TEAMS_APP_PASSWORD", "TEAMS_TENANT_ID"],
         }
     }
 }
@@ -416,6 +429,11 @@ mod tests {
         assert!(!flags.iter().any(|flag| flag.contains("TOKEN")), "secrets never become flags: {flags:?}");
         assert_eq!(DirectChannel::Telegram.secret_names(), ["TELEGRAM_BOT_TOKEN"]);
         assert_eq!(DirectChannel::WhatsApp.secret_names().len(), 4);
+        for kind in ["slack", "teams"] {
+            let channel = DirectChannel::parse(kind).unwrap_or(DirectChannel::Telegram);
+            assert_eq!(channel.as_str(), kind);
+            assert!(!channel.secret_names().is_empty());
+        }
         let summary = serde_json::to_value(options.summary()).unwrap_or_default();
         assert_eq!(summary["channels"], serde_json::json!(["whatsapp"]));
     }

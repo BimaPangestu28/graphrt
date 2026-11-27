@@ -117,6 +117,12 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let state = monitoring_from_args(state, &args, &options, api_key.is_some())?;
     #[cfg(feature = "console")]
     let state = state.with_console(console.clone());
+    // Channels with `notify` targets hear of failed runs and pending approvals.
+    #[cfg(all(feature = "channels", feature = "notify"))]
+    let state = {
+        let notifiers = state.channels().map(crate::channels::Channels::notifiers).unwrap_or_default();
+        state.add_notifiers(notifiers, args.user_resume)
+    };
     let state = Arc::new(state);
     #[cfg(feature = "channels")]
     if let Some(channels) = state.channels() {

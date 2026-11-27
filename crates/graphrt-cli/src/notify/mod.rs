@@ -89,6 +89,13 @@ impl Notifications {
         self.notifiers.is_empty()
     }
 
+    /// These notifications and `more` notifiers, with the same rules.
+    pub fn with(&self, more: Vec<Arc<dyn Notifier>>) -> Self {
+        let mut notifiers = self.notifiers.clone();
+        notifiers.extend(more);
+        Self { notifiers, quiet_user_pauses: self.quiet_user_pauses }
+    }
+
     /// Tell people about the end of an execution of `record`, when it is one
     /// they should know of. Returns at once: delivery runs in the background.
     pub fn run_ended(&self, record: &RunRecord) {

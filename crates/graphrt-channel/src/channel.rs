@@ -36,6 +36,71 @@ pub struct Download {
     pub name: Option<String>,
 }
 
+/// One part of a [`RichMessage`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum RichPart {
+    /// Markdown, as [`Channel::send_text`] takes it.
+    Markdown(String),
+    /// An [Adaptive Card](https://adaptivecards.io) that a host has validated
+    /// (graphrt-ui does), for a channel that can draw one: Teams shows it, Slack
+    /// draws what Block Kit can show of it. `fallback` is the card as Markdown,
+    /// with its choices numbered, for a channel or a card that cannot.
+    Card {
+        card: serde_json::Value,
+        fallback: String,
+        /// The card's answers, in the order of its submit actions (or of the
+        /// options of its one choice input). A tap comes back as an
+        /// [`InboundMessage`] whose `choice` is the button's `id`.
+        choices: Vec<Button>,
+    },
+}
+
+impl RichPart {
+    /// The part as Markdown.
+    pub fn markdown(&self) -> &str {
+        match self {
+            RichPart::Markdown(text) => text,
+            RichPart::Card { fallback, .. } => fallback,
+        }
+    }
+}
+
+/// A message with parts a channel may draw natively (see [`Channel::send_rich`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RichMessage {
+    pub parts: Vec<RichPart>,
+    /// Buttons under the whole message, as for [`Channel::send_text`].
+    pub buttons: Vec<Button>,
+}
+
+impl RichMessage {
+    /// Every part as Markdown, one paragraph each.
+    pub fn markdown(&self) -> String {
+        let parts: Vec<&str> =
+            self.parts.iter().map(RichPart::markdown).map(str::trim).filter(|part| !part.is_empty()).collect();
+        parts.join("\n\n")
+    }
+
+    /// Every button of the message: those of its cards, then its own.
+    pub fn all_buttons(&self) -> Vec<Button> {
+        let mut buttons: Vec<Button> = self
+            .parts
+            .iter()
+            .flat_map(|part| match part {
+                RichPart::Card { choices, .. } => choices.clone(),
+                RichPart::Markdown(_) => Vec::new(),
+            })
+            .collect();
+        buttons.extend(self.buttons.iter().cloned());
+        buttons
+    }
+
+    /// Whether the message says nothing.
+    pub fn is_empty(&self) -> bool {
+        self.markdown().trim().is_empty()
+    }
+}
+
 /// One connected channel account (a Telegram bot, a WhatsApp phone number).
 ///
 /// The methods are what both channels can do. What only one of them has
@@ -71,6 +136,38 @@ pub trait Channel: Send + Sync + std::fmt::Debug {
     ///
     /// @throws ChannelError - When the channel refused. Nothing depends on it: log and go on.
     fn typing<'a>(&'a self, message: &'a InboundMessage) -> BoxFuture<'a, Result<(), ChannelError>>;
+
+    /// Whether [`Channel::send_rich`] draws cards natively. When it does not, a
+    /// host can send the same message as text and get the same result.
+    fn draws_cards(&self) -> bool {
+        false
+    }
+
+    /// Send a message whose cards the channel draws natively where it can.
+    /// The default sends every part as Markdown, with all buttons under the last
+    /// message, which is what a channel without cards shows.
+    ///
+    /// @returns The channel's ids of the messages sent.
+    /// @throws ChannelError - When a message was refused.
+    fn send_rich<'a>(
+        &'a self,
+        chat_id: &'a str,
+        message: &'a RichMessage,
+    ) -> BoxFuture<'a, Result<Vec<String>, ChannelError>> {
+        Box::pin(async move {
+            let (markdown, buttons) = (message.markdown(), message.all_buttons());
+            self.send_text(chat_id, &markdown, &buttons).await
+        })
+    }
+
+    /// The chat to write to `user_id` in, opening one when the channel needs that
+    /// first (Teams). Telegram, WhatsApp and Slack write to a user by their id,
+    /// so the default is the id itself.
+    ///
+    /// @throws ChannelError - When the channel refused to open a chat.
+    fn direct_chat<'a>(&'a self, user_id: &'a str) -> BoxFuture<'a, Result<String, ChannelError>> {
+        Box::pin(async move { Ok(user_id.to_owned()) })
+    }
 
     /// Fetch a file the customer sent, reading at most `max_bytes`.
     ///

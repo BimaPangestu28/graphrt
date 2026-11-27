@@ -13,6 +13,7 @@ is off until you ask for it.
 | A Telegram bot on several replicas | the above, plus `TELEGRAM_WEBHOOK_SECRET` and `--public-url` | A public HTTPS address |
 | A WhatsApp number | `--channel whatsapp=WORKFLOW` | A Meta app, four values, a public HTTPS address |
 | Both, or more than the flag can say | `--channels FILE` | [A channels file](#the-channels-file) |
+| Slack or Microsoft Teams | `--channel slack=WORKFLOW`, `--channel teams=WORKFLOW` | See [slack-teams.md](slack-teams.md) |
 
 ```sh
 TELEGRAM_BOT_TOKEN=... graphrt serve flows/ --channel telegram=support --store ./runs

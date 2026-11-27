@@ -62,7 +62,7 @@ graphrt deploy --target fly --direct --deployment <name> --version <label>
                        [--chat-guest-rate-limit <n>] [--chat-guest-budget <n>]]
                [--cors-origin <origin> ...] [--conversations]
                [--monitor] [--devices] [--approvals] [--expire-approvals] [--push <contact>]
-               [--channel telegram|whatsapp ...] [--drop-store]
+               [--channel telegram|whatsapp|slack|teams ...] [--drop-store]
                <agent.grt|agent.yaml|agent.json>
 graphrt deploy status         --target fly --direct --deployment <name> [--org <slug>] [--app <name>] [--json]
 graphrt deploy list-versions  --target fly --direct --deployment <name> [--org <slug>] [--app <name>] [--json]
@@ -276,7 +276,7 @@ page off again.
 | `--approvals` | The approvals inbox only (`/v1/approvals`) | [monitoring.md](monitoring.md#the-approvals-inbox) |
 | `--expire-approvals` | Requests past their time limit answer themselves (`on_expire`) | [monitoring.md](monitoring.md#requests-that-expire) |
 | `--push CONTACT` | Push notifications when a run fails or waits for a person. Uses the store | [monitoring.md](monitoring.md#notifications) |
-| `--channel telegram\|whatsapp` | Customers talk to the agent on Telegram or WhatsApp (`graphrt serve --channel KIND=<agent>`). Repeatable, each kind once. Uses the store | [channels.md](channels.md) |
+| `--channel telegram\|whatsapp\|slack\|teams` | Customers talk to the agent on Telegram, WhatsApp, Slack or Teams (`graphrt serve --channel KIND=<agent>`). Repeatable, each kind once. Uses the store | [channels.md](channels.md) |
 
 ```sh
 graphrt deploy --target fly --direct --deployment support-bot --version v2 --region ams \
@@ -308,7 +308,7 @@ The deploy result says what the version serves:
 when `--monitor` turned them on. The push contact is not echoed. `channels`
 lists the messaging channels (`["telegram", "whatsapp"]`, `[]` without any).
 
-### Telegram and WhatsApp
+### Telegram, WhatsApp, Slack and Teams
 
 `--channel KIND` serves the agent on a messaging channel, with the same
 behaviour as [`graphrt serve --channel`](channels.md). The channel's
@@ -319,6 +319,8 @@ appear in the Machine command, the deploy output or the logs:
 | --- | --- | --- |
 | `telegram` | `TELEGRAM_BOT_TOKEN` | Needs `--mode always-on`: the server asks Telegram for messages (long polling), which a stopped Machine cannot do |
 | `whatsapp` | `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` | Set the callback URL `{url}/v1/channels/whatsapp/webhook` in the Meta app; Meta's request starts a stopped Machine |
+| `slack` | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | Set the Request URL of Event Subscriptions and Interactivity to `{url}/v1/channels/slack/webhook`. With `SLACK_APP_TOKEN` instead it uses Socket Mode, which needs `--mode always-on` ([slack-teams.md](slack-teams.md)) |
+| `teams` | `TEAMS_APP_ID`, `TEAMS_APP_PASSWORD`, `TEAMS_TENANT_ID` | Set the Messaging endpoint of the Azure Bot to `{url}/v1/channels/teams/webhook` |
 
 ```sh
 export WHATSAPP_ACCESS_TOKEN=... WHATSAPP_PHONE_NUMBER_ID=... WHATSAPP_APP_SECRET=... WHATSAPP_VERIFY_TOKEN=...

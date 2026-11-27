@@ -350,7 +350,8 @@ fn serve_options(args: &DirectServeArgs) -> Result<ServeOptions, Failure> {
             .channel
             .iter()
             .map(|kind| {
-                DirectChannel::parse(kind).ok_or_else(|| Failure::invalid("--channel takes telegram or whatsapp"))
+                DirectChannel::parse(kind)
+                    .ok_or_else(|| Failure::invalid("--channel takes telegram, whatsapp, slack or teams"))
             })
             .collect::<Result<_, _>>()?,
     })
@@ -510,7 +511,7 @@ mod tests {
         assert_eq!(options.channels, [DirectChannel::WhatsApp, DirectChannel::Telegram]);
         assert!(options.needs_store());
         let unknown = DirectServeArgs { channel: vec!["sms".to_owned()], ..DirectServeArgs::default() };
-        assert!(serve_options(&unknown).unwrap_err().message.contains("telegram or whatsapp"));
+        assert!(serve_options(&unknown).unwrap_err().message.contains("slack or teams"));
     }
 
     #[test]

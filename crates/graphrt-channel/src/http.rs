@@ -16,8 +16,11 @@ pub(crate) const MAX_ANSWER_BYTES: u64 = 4 * 1024 * 1024;
 #[derive(Debug)]
 pub(crate) struct Answer {
     pub status: u16,
-    #[cfg_attr(not(feature = "whatsapp"), allow(dead_code))]
+    #[cfg_attr(not(any(feature = "whatsapp", feature = "slack")), allow(dead_code))]
     pub content_type: Option<String>,
+    /// The `Retry-After` header in seconds (Slack and Teams say how long to wait there).
+    #[cfg_attr(not(any(feature = "slack", feature = "teams")), allow(dead_code))]
+    pub retry_after: Option<u64>,
     pub body: Vec<u8>,
 }
 
@@ -55,6 +58,11 @@ pub(crate) async fn send(
     let status = response.status().as_u16();
     let content_type =
         response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
     if response.content_length().is_some_and(|length| length > max_bytes) {
         return Err(ChannelError::TooLarge { limit: max_bytes });
     }
@@ -65,16 +73,43 @@ pub(crate) async fn send(
         }
         body.extend_from_slice(&chunk);
     }
-    Ok(Answer { status, content_type, body })
+    Ok(Answer { status, content_type, retry_after, body })
+}
+
+/// `text` with every byte but the unreserved ones (`A-Z a-z 0-9 - . _ ~`)
+/// percent encoded: safe as a path segment, a query value or a form value.
+#[cfg_attr(not(any(feature = "slack", feature = "teams")), allow(dead_code))]
+pub(crate) fn percent_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// An `application/x-www-form-urlencoded` body of `fields`.
+#[cfg_attr(not(any(feature = "slack", feature = "teams")), allow(dead_code))]
+pub(crate) fn form(fields: &[(&str, &str)]) -> String {
+    fields
+        .iter()
+        .map(|(name, value)| format!("{}={}", percent_encode(name), percent_encode(value)))
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 /// A `multipart/form-data` body with text fields and one file.
+#[cfg_attr(not(any(feature = "telegram", feature = "whatsapp")), allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct Multipart {
     boundary: String,
     body: Vec<u8>,
 }
 
+#[cfg_attr(not(any(feature = "telegram", feature = "whatsapp")), allow(dead_code))]
 impl Multipart {
     pub fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -151,6 +186,12 @@ mod tests {
         assert!(text.contains("name=\"chat_id\"\r\n\r\n42\r\n"));
         assert!(text.contains("filename=\"ab.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n"), "{text}");
         assert!(text.ends_with(&format!("--{boundary}--\r\n")));
+    }
+
+    #[test]
+    fn values_are_percent_encoded_for_paths_and_forms() {
+        assert_eq!(percent_encode("19:abc@thread.tacv2;messageid=1"), "19%3Aabc%40thread.tacv2%3Bmessageid%3D1");
+        assert_eq!(form(&[("a b", "x&y=z"), ("n", "ü")]), "a%20b=x%26y%3Dz&n=%C3%BC");
     }
 
     #[test]

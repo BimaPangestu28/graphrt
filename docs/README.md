@@ -20,6 +20,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 - [Serving workflows](serving.md): HTTP API, SSE, run store, per-user tokens (`--verify-jwt`), webhooks, knowledge base
 - [Knowledge connectors](knowledge-connectors.md): keep a knowledge base in sync with web sites, REST APIs, Google Drive, Notion and SharePoint, incrementally and on a schedule
 - [Monitoring and approving from a phone](monitoring.md): monitoring page (installable), device tokens, approvals inbox, requests that expire, push notifications
+- [A served agent in Slack and Microsoft Teams](slack-teams.md): Socket Mode or the Events API, an Azure Bot with a verified token, threads as conversations, Block Kit and Adaptive Cards, approvals as buttons, notifications of failed runs and pending approvals
 - [Talking to a served agent on Telegram and WhatsApp](channels.md): one flag per channel, long polling and webhooks, a conversation per customer, files, questions and approvals in the chat, hand over to a person, limits, the `graphrt-channel` crate
 - [Admin console](console.md): sign in with OpenID Connect, roles on every route, audit log, encrypted secrets, agent registry with environments, promotion and rollback
 - [Collaboration server](collab.md): team workspaces where people build agents together in real time, invites and roles, presence, offline edits that merge, versions, plugin services, hosted or self hosted ([design](design/collab.md))
