@@ -55,17 +55,24 @@ pub struct ChatOptions {
 
 /// A messaging channel a deployment answers on (`graphrt serve --channel KIND=WORKFLOW`).
 /// Its credentials are Fly secrets of the names `graphrt serve` reads, never flags.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DirectChannel {
     /// Telegram, by long polling: needs a Machine that keeps running.
     Telegram,
     /// WhatsApp Cloud API: Meta posts to `<public url>/v1/channels/whatsapp/webhook`.
-    #[serde(rename = "whatsapp")]
     WhatsApp,
 }
 
 impl DirectChannel {
+    /// The channel named `kind` (`telegram`, `whatsapp`).
+    pub fn parse(kind: &str) -> Option<Self> {
+        match kind {
+            "telegram" => Some(Self::Telegram),
+            "whatsapp" => Some(Self::WhatsApp),
+            _ => None,
+        }
+    }
+
     /// The `KIND` of `--channel KIND=WORKFLOW`.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -222,7 +229,7 @@ impl ServeOptions {
             approvals: self.monitor || self.approvals || self.expire_approvals,
             expire_approvals: self.expire_approvals,
             push: self.push.is_some(),
-            channels: self.channels.clone(),
+            channels: self.channels.iter().map(|channel| channel.as_str()).collect(),
         }
     }
 }
@@ -246,8 +253,8 @@ pub struct ServeSummary {
     pub expire_approvals: bool,
     /// Web Push notifications are sent.
     pub push: bool,
-    /// The messaging channels the agent answers on.
-    pub channels: Vec<DirectChannel>,
+    /// The messaging channels the agent answers on (`telegram`, `whatsapp`).
+    pub channels: Vec<&'static str>,
 }
 
 /// The store volume of a deployment, in deploy results and the status.

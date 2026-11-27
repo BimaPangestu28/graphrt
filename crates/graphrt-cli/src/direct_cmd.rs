@@ -19,9 +19,7 @@ use graphrt_provider_fly::direct::{
 use graphrt_provider_fly::{FLY_API_TOKEN_ENV, FlyToken, TokenOrigin};
 use serde_json::{Value, json};
 
-use crate::deploy_cmd::{
-    DeployAction, DeployRunArgs, DirectChannelKind, DirectChatAccess, DirectMode, DirectServeArgs, DirectTargetArgs,
-};
+use crate::deploy_cmd::{DeployAction, DeployRunArgs, DirectChatAccess, DirectMode, DirectServeArgs, DirectTargetArgs};
 use crate::error::{CliError, EXIT_FAILED, EXIT_INVALID, EXIT_OK};
 
 /// Image repository of the published graphrt image (agent flavour).
@@ -351,11 +349,10 @@ fn serve_options(args: &DirectServeArgs) -> Result<ServeOptions, Failure> {
         channels: args
             .channel
             .iter()
-            .map(|kind| match kind {
-                DirectChannelKind::Telegram => DirectChannel::Telegram,
-                DirectChannelKind::WhatsApp => DirectChannel::WhatsApp,
+            .map(|kind| {
+                DirectChannel::parse(kind).ok_or_else(|| Failure::invalid("--channel takes telegram or whatsapp"))
             })
-            .collect(),
+            .collect::<Result<_, _>>()?,
     })
 }
 
@@ -506,12 +503,14 @@ mod tests {
         let orphan = DirectServeArgs { chat_access: Some(DirectChatAccess::Guests), ..DirectServeArgs::default() };
         assert!(serve_options(&orphan).unwrap_err().message.contains("--chat-access needs --chat"));
         let channels = DirectServeArgs {
-            channel: vec![DirectChannelKind::WhatsApp, DirectChannelKind::Telegram],
+            channel: vec!["whatsapp".to_owned(), "telegram".to_owned()],
             ..DirectServeArgs::default()
         };
         let options = serve_options(&channels).unwrap();
         assert_eq!(options.channels, [DirectChannel::WhatsApp, DirectChannel::Telegram]);
         assert!(options.needs_store());
+        let unknown = DirectServeArgs { channel: vec!["sms".to_owned()], ..DirectServeArgs::default() };
+        assert!(serve_options(&unknown).unwrap_err().message.contains("telegram or whatsapp"));
     }
 
     #[test]
