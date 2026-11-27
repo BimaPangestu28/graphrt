@@ -17,8 +17,5 @@
   when a run fails or waits for a person, encrypted for the browser and signed
   with the server's own key (VAPID), without a vendor account. The `Notifier`
   trait behind it takes further channels.
-- `web/`: the packages are now `@graphrt/client`, `@graphrt/ui` and
-  `@graphrt/chat`, with a new `@graphrt/monitor` (the monitoring view, a QR
-  encoder, push for browsers). The client has `approvals`, `devices`, `push`
-  and `listEvents`. The release workflow can publish them to npm with trusted
-  publishing (repository variable `PUBLISH_NPM`).
+- `web/`: `graphrt/monitor`, the monitoring view (a QR encoder, push for
+  browsers). The client has `approvals`, `devices`, `push` and `listEvents`.

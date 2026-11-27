@@ -280,7 +280,7 @@ jobs:
       - run: examples/supabase-chatbot/tests/run.sh target/debug/graphrt
 
   web:
-    name: web packages (client, UI blocks, chat, monitor) against graphrt serve
+    name: npm package graphrt (client, UI blocks, chat, monitor) against graphrt serve
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
@@ -307,7 +307,7 @@ jobs:
         working-directory: web
       # Types, lint, tests, that crates/graphrt-cli/assets is what the sources
       # build (the pages `graphrt serve --chat` and `--monitor` embed), and that
-      # the packages build and pack as they are published.
+      # the package builds, packs, loads and tree shakes as it is published.
       - run: npm run check
         working-directory: web
 

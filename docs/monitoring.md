@@ -283,11 +283,11 @@ way to tell another system about every run.
 
 ## In your own page
 
-The page is built from two packages you can use directly (see
-[web.md](web.md#building-the-packages)):
+The page is built from two parts of the npm package `graphrt` you can use
+directly (see [web.md](web.md#the-npm-package)):
 
 ```ts
-import { GraphrtClient } from "@graphrt/client";
+import { GraphrtClient } from "graphrt/client";
 
 const client = new GraphrtClient({ baseUrl: "https://agent.example.com", token: deviceToken });
 const { approvals } = await client.approvals.list();
@@ -300,6 +300,6 @@ await client.approvals.resolve(runId, { ask: { action: "approve", values: {} } }
 ```
 
 `client.devices` pairs, lists and revokes devices, `client.push` subscribes a
-browser, and `<graphrt-monitor server="...">` of
-[`@graphrt/monitor`](../web/packages/monitor) is the whole view as one
-element.
+browser, and `<graphrt-monitor server="...">` of `graphrt/monitor`
+(`import { defineGraphrtMonitor } from "graphrt/monitor"`) is the whole view as
+one element.

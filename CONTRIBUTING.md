@@ -126,3 +126,5 @@ pull requests in parallel do not conflict. See `changelog.d/README.md`;
    the runner can execute (`scripts/smoke-release-binary.sh`), publishes the GitHub Release
    "Graphrt X.Y.Z" (body from `scripts/release-notes.sh`) with `SHA256SUMS`, pushes `ghcr.io/<owner>/graphrt`, and publishes crates when the
    repository variable `PUBLISH_CRATES=true` and secret `CARGO_REGISTRY_TOKEN` are set.
+   It publishes the npm package `graphrt` with the same version when the
+   repository variable `PUBLISH_NPM=true` is set (no token, see `web/README.md`).

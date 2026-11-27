@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": true,
+    "sourceMap": false,
+    "rewriteRelativeImportExtensions": true,
+    "customConditions": [],
+    "types": []
+  },
+  "include": ["src/**/*.ts"],
+  // The scripts of the pages `graphrt serve` embeds: they run on import, and
+  // scripts/build.mjs bundles them from the sources.
+  "exclude": ["src/chat/page.ts", "src/chat/embed.ts", "src/monitor/page.ts", "src/monitor/sw.ts"]
+}

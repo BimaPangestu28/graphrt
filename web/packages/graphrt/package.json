@@ -1,0 +1,78 @@
+{
+  "name": "graphrt",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Browser side of graphrt serve: a typed client, web components for UI blocks, the chat widget and the monitoring view.",
+  "keywords": [
+    "graphrt",
+    "agent",
+    "workflow",
+    "client",
+    "sse",
+    "chat",
+    "widget",
+    "web-components",
+    "adaptive-cards",
+    "monitoring"
+  ],
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/Graphrt/graphrt/tree/main/web",
+  "bugs": "https://github.com/Graphrt/graphrt/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Graphrt/graphrt.git",
+    "directory": "web/packages/graphrt"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./client": {
+      "source": "./src/client/index.ts",
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./ui": {
+      "source": "./src/ui/index.ts",
+      "types": "./dist/ui/index.d.ts",
+      "default": "./dist/ui/index.js"
+    },
+    "./chat": {
+      "source": "./src/chat/index.ts",
+      "types": "./dist/chat/index.d.ts",
+      "default": "./dist/chat/index.js"
+    },
+    "./monitor": {
+      "source": "./src/monitor/index.ts",
+      "types": "./dist/monitor/index.d.ts",
+      "default": "./dist/monitor/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "client": [
+        "./dist/client/index.d.ts"
+      ],
+      "ui": [
+        "./dist/ui/index.d.ts"
+      ],
+      "chat": [
+        "./dist/chat/index.d.ts"
+      ],
+      "monitor": [
+        "./dist/monitor/index.d.ts"
+      ]
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "zod": "^4.1.0"
+  }
+}

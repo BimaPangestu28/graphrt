@@ -5,8 +5,8 @@ name: Release
 # the runner can execute it), build the mobile SDKs (an Android AAR, an
 # XCFramework and a Swift package), publish a GitHub Release with SHA256SUMS,
 # push multi-arch agent and gateway images to GHCR and (optionally) publish
-# crates to crates.io, the web packages to npm and the AAR to Maven Central.
-# Nothing is published unless the tests pass.
+# crates to crates.io, the `graphrt` package to npm and the AAR to Maven
+# Central. Nothing is published unless the tests pass.
 on:
   push:
     tags: ["v*"]
@@ -367,14 +367,14 @@ jobs:
         run: scripts/publish.sh --execute --delay 30
 
   npm:
-    name: Publish web packages to npm
+    name: Publish graphrt to npm
     needs: [tag, release]
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Opt-in: set repository variable PUBLISH_NPM=true once the @graphrt packages
-    # on npmjs.com name this workflow (release.yml, environment npm) as their
+    # Opt-in: set repository variable PUBLISH_NPM=true once the package graphrt
+    # on npmjs.com names this workflow (release.yml, environment npm) as its
     # trusted publisher. There is no token: npm takes the job's OIDC identity,
-    # and attaches a provenance statement to every version. See docs/web.md.
+    # and attaches a provenance statement to every version. See web/README.md.
     if: ${{ vars.PUBLISH_NPM == 'true' }}
     environment: npm
     permissions:
@@ -398,10 +398,13 @@ jobs:
             || { echo "::error::npm $version is older than 11.5.1"; exit 1; }
       - run: npm ci
         working-directory: web
-      # Builds each package, checks what would be uploaded, and publishes the
-      # versions that are not on npm yet. A release that did not change a
-      # package's version leaves that package alone.
-      - run: node scripts/publish.mjs --execute
+      # Builds the package, checks what would be uploaded, and publishes it with
+      # the version of the tag, which must be the version of Cargo.toml. A
+      # version that is on npm already is left alone, so a rerun is harmless.
+      - name: Publish graphrt
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: node scripts/publish.mjs --execute --version "${TAG#v}"
         working-directory: web
 
   # Opt-in, and off until the owner has set it up (see docs/mobile.md#publishing):

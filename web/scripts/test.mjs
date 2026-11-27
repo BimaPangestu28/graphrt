@@ -1,4 +1,5 @@
-// Runs the tests of the web packages: bundles each `packages/*/test/*.test.ts`
+// Runs the tests of the `graphrt` package: bundles each
+// `packages/graphrt/test/*/*.test.ts`
 // with esbuild (Node's own TypeScript support depends on how Node was built),
 // then hands the results to `node --test`.
 //
@@ -14,9 +15,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = join(root, ".test-build");
 const filter = process.argv[2] ?? "";
 
+const testRoot = join(root, "packages", "graphrt", "test");
 const entries = [];
-for (const name of readdirSync(join(root, "packages"))) {
-  const testDir = join(root, "packages", name, "test");
+for (const part of readdirSync(testRoot)) {
+  const testDir = join(testRoot, part);
   let files = [];
   try {
     files = readdirSync(testDir);
@@ -39,10 +41,10 @@ rmSync(outDir, { recursive: true, force: true });
 await build({
   entryPoints: entries,
   outdir: outDir,
-  outbase: join(root, "packages"),
+  outbase: testRoot,
   outExtension: { ".js": ".mjs" },
   bundle: true,
-  // The packages of this workspace are bundled from their sources, not from `dist`.
+  // Bundled from the sources, not from `dist`.
   conditions: ["source"],
   platform: "node",
   format: "esm",
@@ -54,9 +56,7 @@ await build({
   logLevel: "warning",
 });
 
-const built = entries.map((path) =>
-  join(outDir, relative(join(root, "packages"), path)).replace(/\.ts$/, ".mjs"),
-);
+const built = entries.map((path) => join(outDir, relative(testRoot, path)).replace(/\.ts$/, ".mjs"));
 const run = spawnSync(process.execPath, ["--enable-source-maps", "--test", ...built], {
   cwd: root,
   env: { ...process.env, GRAPHRT_REPO_ROOT: resolve(root, "..") },
