@@ -1,0 +1,100 @@
+name: Android SDK to Maven Central from a release tag
+
+# Signs the Android SDK of an existing release tag and uploads it to the
+# Central Portal, for a release whose `maven-central` job did not run (v0.6.3:
+# Maven Central was set up after the release). The native libraries are taken
+# from the release's own `graphrt-android-<version>.aar`, checked against its
+# SHA256SUMS, so Maven Central gets the same binaries as the GitHub Release.
+# The release assets are not touched. The upload is USER_MANAGED: an owner
+# presses Publish in the Portal once it is validated.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag, e.g. v0.6.3"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  maven-central:
+    name: Android SDK ${{ inputs.tag }} to the Central Portal
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: maven-central
+    steps:
+      - name: Require an existing v* tag with a release
+        env:
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::the tag must look like v1.2.3, got '$TAG'"; exit 1 ;;
+          esac
+          case "$TAG" in
+            *[!0-9A-Za-z.+-]*) echo "::error::tag '$TAG' has characters a version tag cannot have"; exit 1 ;;
+          esac
+          gh api "repos/$REPO/git/ref/tags/$TAG" --silent || { echo "::error::$TAG is not a tag of $REPO"; exit 1; }
+          gh release view "$TAG" -R "$REPO" > /dev/null || { echo "::error::$TAG has no GitHub Release"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - name: The released native libraries
+        env:
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${TAG#v}"
+          mkdir -p released
+          gh release download "$TAG" -R "$REPO" -D released -p SHA256SUMS -p "graphrt-android-$version.aar"
+          (cd released && grep "  graphrt-android-$version.aar\$" SHA256SUMS | sha256sum -c -)
+          jni=sdk/android/graphrt/src/main/jniLibs
+          rm -rf "$jni" && mkdir -p "$jni"
+          unzip -q "released/graphrt-android-$version.aar" 'jni/*' -d released/aar
+          cp -R released/aar/jni/. "$jni/"
+          find "$jni" -name '*.so' -exec ls -l {} +
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - name: Sign into a Maven layout
+        working-directory: sdk/android
+        env:
+          TAG: ${{ inputs.tag }}
+          ORG_GRADLE_PROJECT_signingKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingPassword: ${{ secrets.SIGNING_PASSWORD }}
+        run: ./gradlew --no-daemon -PgraphrtVersion="${TAG#v}" :graphrt:publishReleasePublicationToStagingRepository
+      - name: Upload the bundle and wait for the Portal's validation
+        working-directory: sdk/android/graphrt/build/staging-repo
+        env:
+          TAG: ${{ inputs.tag }}
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+        run: |
+          version="${TAG#v}"
+          files="$(find . -path "*/graphrt-android/$version/*" -type f)"
+          echo "$files" | grep -q '\.aar\.asc$' || { echo "::error::the AAR is not signed"; exit 1; }
+          echo "$files" | zip -q bundle.zip -@
+          token="$(printf '%s:%s' "$MAVEN_CENTRAL_USERNAME" "$MAVEN_CENTRAL_PASSWORD" | base64 -w0)"
+          id="$(curl --fail-with-body -sS -H "Authorization: Bearer $token" \
+            -F "bundle=@bundle.zip" \
+            "https://central.sonatype.com/api/v1/publisher/upload?name=graphrt-android-$version&publishingType=USER_MANAGED")"
+          echo "Central Portal deployment: $id"
+          for _ in $(seq 1 60); do
+            status="$(curl --fail-with-body -sS -X POST -H "Authorization: Bearer $token" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=$id")"
+            state="$(echo "$status" | jq -r .deploymentState)"
+            case "$state" in
+              VALIDATED|PUBLISHING|PUBLISHED) echo "Central Portal: $state, waiting for Publish in the Portal"; exit 0 ;;
+              FAILED) echo "$status" | jq .errors; echo "::error::Central Portal refused the bundle (deployment $id)"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::Central Portal had not validated deployment $id after 10 minutes"
+          exit 1
