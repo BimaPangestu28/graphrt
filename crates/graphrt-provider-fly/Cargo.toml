@@ -57,3 +57,7 @@ required-features = ["deploy"]
 [[test]]
 name = "fly_direct"
 required-features = ["direct"]
+
+[[test]]
+name = "fly_direct_real_fly"
+required-features = ["direct"]

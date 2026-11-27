@@ -84,8 +84,11 @@ pub(super) fn metadata<'machine>(machine: &'machine Machine, key: &str) -> Optio
 }
 
 /// Whether the Machine belongs to a direct deployment and is not being destroyed.
+/// A Machine that is `replacing` is only taking a new config (Fly reports it so for a
+/// moment after every update): it is still the deployment's.
 pub(super) fn is_direct(machine: &Machine) -> bool {
-    metadata(machine, META_DIRECT) == Some("1") && !machine.state.is_gone()
+    metadata(machine, META_DIRECT) == Some("1")
+        && !matches!(machine.state, MachineState::Destroying | MachineState::Destroyed)
 }
 
 pub(super) fn has_role(machine: &Machine, role: Role) -> bool {
@@ -250,5 +253,13 @@ mod tests {
         assert_eq!(derive_state(&[], &[&crashed], 2), DeploymentState::Failed);
         let unhealthy = machine("current", "v2", "started", 1, r#""checks":[{"name":"readyz","status":"critical"}],"#);
         assert_eq!(derive_state(&[], &[&unhealthy], 2), DeploymentState::Failed);
+    }
+
+    #[test]
+    fn a_machine_taking_a_new_config_still_belongs_to_the_deployment() {
+        assert!(is_direct(&machine("current", "v1", "replacing", 1, "")));
+        assert!(is_direct(&machine("standby", "v1", "stopped", 1, "")));
+        assert!(!is_direct(&machine("current", "v1", "destroying", 1, "")));
+        assert!(!is_direct(&machine("current", "v1", "destroyed", 1, "")));
     }
 }

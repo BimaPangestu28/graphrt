@@ -1,7 +1,6 @@
 # Direct deploys to Fly.io (`graphrt deploy --direct`)
 
-> Status: preview. **Not yet verified against real Fly.io**: see
-> [Unverified on real Fly](#unverified-on-real-fly).
+> Tested on real Fly.io: see [Tested on real Fly](#tested-on-real-fly).
 
 A direct deploy puts one agent online at `https://<app>.fly.dev` with no
 graphrt gateway: the Fly proxy serves `graphrt serve` straight from a Fly
@@ -369,21 +368,41 @@ deployment with a store therefore keeps **one Machine**, named
 Turning the store's features **on** for a deployment without one creates the
 `graphrt-store` Machine next to the existing version, which becomes a standby.
 
-Turning them **off** (a deploy without the four flags) starts a version
-without the volume and leaves the volume and its Machine in place, stopped:
-nothing is deleted without being asked, the result reports
-`"store": {…, "in_use": false}`, and turning the features on again finds the
-same devices. The volume is still billed. To delete it, with every paired
-device, subscription and conversation on it:
+#### Turning the store off and deleting it
+
+Two steps, so that turning a feature off never loses data by accident:
+
+1. **Turn the features off**: deploy without `--monitor`, `--devices`,
+   `--push` and `--conversations`. The new version runs without the volume.
+   The volume and the `graphrt-store` Machine stay, stopped: the result
+   reports `"store": {…, "in_use": false}` and the `checking` step says
+   `store volume vol_… is kept and still billed`. Turning the features on again
+   finds the same devices, subscriptions and push key.
+2. **Delete the volume**: deploy once more with `--drop-store` (the same
+   agent file, and the same `--version` label if you do not want a new
+   version). It destroys the `graphrt-store` Machine, then the volume, with
+   every paired device, push subscription, conversation and stored run on
+   it. The result reports `"store": null` and Fly stops billing the volume.
 
 ```sh
+# 1. off: the volume is kept (and billed)
+graphrt deploy --target fly --direct --deployment support-bot --version v3 --region ams support.grt
+# 2. delete it
 graphrt deploy --target fly --direct --deployment support-bot --version v3 --drop-store support.grt
 ```
 
-`--drop-store` is refused together with a flag that uses the store. A device
-paired before will have to be paired again, and browsers have to turn
+`--drop-store` can also be given on the deploy that turns the features off:
+the new version starts first, then the volume goes. It is refused together
+with a flag that uses the store, and is not an error when there is no volume.
+A device paired before has to be paired again, and browsers have to turn
 notifications on again. `graphrt deploy remove` deletes the app with its
 volume.
+
+Fly takes a daily snapshot of every volume and keeps it for 5 days (Fly bills
+snapshots by the data stored, the first 10 GB a month are free). Fly can
+restore a deleted volume from its snapshots until they expire, so data
+deleted with `--drop-store` or `remove` is gone from graphrt at once and from
+Fly after at most 5 days.
 
 ## How it works
 
@@ -499,23 +518,61 @@ is never printed; `FlyV1 fm2_…` macaroons are sent with the `FlyV1` scheme.
 - One Machine per version; no horizontal scaling or custom domains yet (add
   them with `fly` on the same app). The only volume is
   [the store](#the-store-volume).
+- Fly limits how many Machines an organization may have: **3 on Fly's Free
+  plan**, counted over all its apps. Each kept version is a stopped Machine,
+  so when Fly refuses a new version's Machine for that reason, the deploy
+  removes this deployment's oldest standby versions until it fits and names
+  them in its `starting` step. The serving version and the `graphrt-store`
+  Machine are never removed. When nothing is left to remove the deploy fails
+  with `fly_api` and says to upgrade the organization to Pay As You Go (on its
+  Fly billing page) or remove apps it no longer needs. The version that
+  served keeps serving.
 - `<app>.fly.dev` can take a minute to resolve after the IPs of a new app
   are allocated; the deploy reports success once the Machine's own
   `/readyz` check passes.
 - Only Fly.io is a direct target so far.
 
-## Unverified on real Fly
+## Tested on real Fly
 
-Direct deploys are in preview. These need a real org token before they are
-marked stable (how the tests run is in [CONTRIBUTING.md](../CONTRIBUTING.md#provider-conformance-tests)):
+Checked on 2026-11-27 against the real Machines API with an organization
+token, from a CLI and image built from `main` (the fixes it found are in
+0.6.3). Two apps were deployed in `sin` and `ams` with `examples/chatbot.yaml`
+and an OpenAI key as a `--secret`:
 
-- `POST /v1/apps/{app}/ip_assignments` with `{type: "v6"}` / `{type: "shared_v4"}` (modelled on flyctl's `flaps` client) and the delay until `<app>.fly.dev` answers;
-- the error body and status Fly returns for a globally taken app name (matched on `taken` / `already exists`);
-- `config.files` with `raw_value` for a 1 MiB file, and its permissions for the `nonroot` user of the image;
-- `checks` with `kind: readiness` being reported in `GET /machines/{id}` as `passing`/`critical`, and its timing after boot;
-- `min_secrets_version` on create/update, and secrets injected into Machines created through the API;
-- `POST …/metadata/{key}` not rebooting the Machine; update with `skip_launch: true` keeping a stopped Machine stopped;
-- scale-to-zero autostop/autostart of a Machine created through the API (no `fly.toml`), and the cold start time;
-- `DELETE /v1/apps/{app}?force=true`;
-- which operations an app deploy token (`fly tokens create deploy`) is allowed (secrets, IPs, app deletion, volumes);
-- the store volume: `POST /v1/apps/{app}/volumes` with `{name, region, size_gb, encrypted}`, `config.mounts` on a new Machine, the Machine keeping its volume through updates and stops, `config.processes[0].user: "root"` for a writable mount, `DELETE /v1/apps/{app}/volumes/{id}` after its Machine is destroyed, and the app deletion taking the volume with it.
+- App creation, the IPv6 and shared IPv4 allocation (`<app>.fly.dev` answered
+  within seconds of the deploy), secrets with `min_secrets_version`, the
+  readiness check reported `passing` in `GET /machines/{id}`, metadata changes
+  without a reboot, and `skip_launch` keeping a demoted Machine stopped.
+- An app name another organization holds (`test`) gives `app_name_taken`.
+- Scale to zero on a Machine created through the API: the Fly proxy stopped it
+  when idle and started it on the next request (cold start to `GET /readyz`
+  answering: 1.6 s).
+- A deploy without the store's flags created no volume. A deploy with
+  `--chat --monitor --devices --push` created the encrypted 1 GB volume
+  `graphrt_store` in the Machine's region, mounted at `/data`, with
+  `graphrt serve --store /data` running as root through `config.processes`.
+  A paired device, its push subscription, the VAPID key and the run history
+  survived a stop and start of the Machine and a redeploy of a new version.
+- The chat page and the monitoring page (opened from a pairing link) over the
+  app's public HTTPS address at phone width (390 px), with no horizontal
+  scrolling. A guest chat got an answer from the model.
+- Turning the features off kept the volume (`in_use: false`), `--drop-store`
+  destroyed the `graphrt-store` Machine and deleted the volume, and
+  `deploy remove` deleted an app together with its volume.
+- `pause` and an immediate `resume`, `rollback` to a standby version, a
+  redeploy of the `graphrt-store` Machine while the proxy had stopped it, and
+  the Machine limit of Fly's Free plan (see [Limits](#limits)). Each of these
+  took 10 to 20 s.
+
+What the real API does that the first fake did not, and graphrt now handles:
+updating a stopped Machine leaves it stopped (graphrt starts it), a Machine
+shows its previous config in state `replacing` for a few seconds after an
+update (graphrt waits until the update is applied), and an organization at
+its Machine limit refuses a new Machine (graphrt removes the oldest standby
+versions). The fake Machines API of the tests (`graphrt-provider-fly`, feature
+`fake`) now behaves the same way.
+
+Not checked: which operations an app deploy token
+(`fly tokens create deploy -a <app>`) allows. The table in
+[Least-privilege tokens](#least-privilege-tokens) is what Fly documents for
+it. The organization token is the one that was tested.

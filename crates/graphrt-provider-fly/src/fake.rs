@@ -4,8 +4,8 @@
 //! front of it. Feature `fake`: for tests (this crate's and the CLI's), never
 //! in a binary.
 //!
-//! State transitions are immediate except boot: `start` (or a create / update
-//! without `skip_launch`) moves a Machine to `starting`, and the first
+//! State transitions are immediate except boot: `start` (or a create, or an
+//! update of a started Machine, without `skip_launch`) moves a Machine to `starting`, and the first
 //! `/wait?state=started` completes the boot, which is how a real start looks
 //! to the client. A started Machine with `config.checks` reports each check as
 //! `passing`, or `critical` while [`FakeFlyState::failing_checks`] is set.
@@ -116,6 +116,14 @@ pub struct FakeFlyState {
     pub taken_app_names: Vec<String>,
     /// Machine ids whose host is full: `start` answers 409 with flyd's phrase.
     pub full_hosts: Vec<String>,
+    /// Machines the organization may have, every app counted (Fly's Free plan: 3).
+    /// Creating one more answers 422 with Fly's machine limit message.
+    pub machine_limit: Option<usize>,
+    /// Like Fly: after an update with `skip_launch`, the next this many reads of the
+    /// Machine (get and list) still show its previous config, in state `replacing`.
+    pub replacing_reads: u32,
+    /// Machines still `replacing`: reads left and the config they show meanwhile.
+    replacing: BTreeMap<String, (u32, Value)>,
     /// Calls per `METHOD /path-suffix` (e.g. `POST suspend`).
     pub calls: BTreeMap<String, u32>,
     next_id: u32,
@@ -245,12 +253,12 @@ fn handle(state: &Mutex<FakeFlyState>, request: &RecordedRequest) -> FakeRespons
             FakeResponse::json(200, &json!({ "ips": ips }))
         }
         ("POST", ["apps", app, "ip_assignments"]) => assign_ip(&mut state, app, &body),
-        ("GET", ["apps", _, "machines"]) => list_machines(&state, query),
+        ("GET", ["apps", _, "machines"]) => list_machines(&mut state, query),
         ("POST", ["apps", _, "machines"]) => create_machine(&mut state, &body),
-        ("GET", ["apps", _, "machines", id]) => {
-            let failing_checks = state.failing_checks;
-            with_machine(&mut state, id, |machine| FakeResponse::json(200, &machine.to_json(failing_checks)))
-        }
+        ("GET", ["apps", _, "machines", id]) => match read_machine(&mut state, id) {
+            Some(machine) => FakeResponse::json(200, &machine),
+            None => error(404, "machine not found"),
+        },
         ("POST", ["apps", _, "machines", id]) => update_machine(&mut state, id, &body),
         ("POST", ["apps", _, "machines", id, "metadata", key]) => {
             let value = body["value"].clone();
@@ -358,28 +366,58 @@ fn update_machine(state: &mut FakeFlyState, id: &str, body: &Value) -> FakeRespo
     {
         return error(400, "invalid_argument: unable to add volume after machine is created");
     }
+    if skip_launch
+        && state.replacing_reads > 0
+        && let Some(machine) = state.machine(id)
+    {
+        let previous = machine.config.clone();
+        state.replacing.insert(id.to_owned(), (state.replacing_reads, previous));
+    }
     with_machine(state, id, |machine| {
         machine.config = config;
-        if !skip_launch {
+        // Like Fly: a running Machine reboots with the new config, a stopped one
+        // stays stopped (`update stopped`) until it is started.
+        if !skip_launch && machine.state == "started" {
             machine.state = "starting".to_owned();
         }
         FakeResponse::json(200, &machine.to_json(failing_checks))
     })
 }
 
-fn list_machines(state: &FakeFlyState, query: &str) -> FakeResponse {
+fn list_machines(state: &mut FakeFlyState, query: &str) -> FakeResponse {
     let filters: Vec<(String, String)> = query
         .split('&')
         .filter_map(|pair| pair.split_once('='))
         .filter_map(|(key, value)| key.strip_prefix("metadata.").map(|key| (key.to_owned(), percent_decode(value))))
         .collect();
-    let machines: Vec<Value> = state
-        .machines
+    let ids: Vec<String> = state.machines.iter().map(|machine| machine.id.clone()).collect();
+    let machines: Vec<Value> = ids
         .iter()
-        .filter(|machine| filters.iter().all(|(key, value)| machine.metadata(key) == Some(value.as_str())))
-        .map(|machine| machine.to_json(state.failing_checks))
+        .filter_map(|id| read_machine(state, id))
+        .filter(|machine| {
+            filters.iter().all(|(key, value)| {
+                machine.pointer(&format!("/config/metadata/{key}")).and_then(Value::as_str) == Some(value.as_str())
+            })
+        })
         .collect();
     FakeResponse::json(200, &Value::Array(machines))
+}
+
+/// What a read of Machine `id` returns: its previous config in state `replacing`
+/// while an update is still being applied (see [`FakeFlyState::replacing_reads`]).
+fn read_machine(state: &mut FakeFlyState, id: &str) -> Option<Value> {
+    let machine = state.machine(id)?;
+    let mut shown = machine.to_json(state.failing_checks);
+    if let Some((reads_left, previous_config)) = state.replacing.get_mut(id) {
+        shown["state"] = Value::from("replacing");
+        shown["config"] = previous_config.clone();
+        shown["checks"] = json!([]);
+        *reads_left = reads_left.saturating_sub(1);
+        if *reads_left == 0 {
+            state.replacing.remove(id);
+        }
+    }
+    Some(shown)
 }
 
 fn create_machine(state: &mut FakeFlyState, body: &Value) -> FakeResponse {
@@ -388,6 +426,12 @@ fn create_machine(state: &mut FakeFlyState, body: &Value) -> FakeResponse {
         return FakeResponse::json(
             422,
             &json!({"error": "a machine with this name already exists", "status": "name_taken"}),
+        );
+    }
+    if state.machine_limit.is_some_and(|limit| state.machines.len() >= limit) {
+        return FakeResponse::json(
+            422,
+            &json!({"error": "Your organization has reached its machine limit. Please contact billing@fly.io"}),
         );
     }
     let region = body["region"].as_str().unwrap_or_default().to_owned();
