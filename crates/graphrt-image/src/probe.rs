@@ -15,6 +15,10 @@ pub enum ImageFormat {
     Jpeg,
     Gif,
     WebP,
+    /// HEIC, the format phones take photos in. Input only, and only in builds
+    /// with the `heic` feature: such an image is decoded and leaves as JPEG or
+    /// PNG. Without the feature no function of this crate returns this value.
+    Heic,
 }
 
 impl ImageFormat {
@@ -25,7 +29,13 @@ impl ImageFormat {
             ImageFormat::Jpeg => "image/jpeg",
             ImageFormat::Gif => "image/gif",
             ImageFormat::WebP => "image/webp",
+            ImageFormat::Heic => "image/heic",
         }
+    }
+
+    /// Whether this crate writes the format. HEIC is read, never written.
+    pub fn is_writable(self) -> bool {
+        self != ImageFormat::Heic
     }
 
     /// Usual file extension, without the dot.
@@ -35,6 +45,7 @@ impl ImageFormat {
             ImageFormat::Jpeg => "jpg",
             ImageFormat::Gif => "gif",
             ImageFormat::WebP => "webp",
+            ImageFormat::Heic => "heic",
         }
     }
 
@@ -91,8 +102,18 @@ pub fn sniff_format(bytes: &[u8]) -> Option<ImageFormat> {
     } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
         Some(ImageFormat::WebP)
     } else {
-        None
+        sniff_heic(bytes)
     }
+}
+
+#[cfg(feature = "heic")]
+fn sniff_heic(bytes: &[u8]) -> Option<ImageFormat> {
+    crate::heic::is_heic(bytes).then_some(ImageFormat::Heic)
+}
+
+#[cfg(not(feature = "heic"))]
+fn sniff_heic(_bytes: &[u8]) -> Option<ImageFormat> {
+    None
 }
 
 /// Read format, dimensions and metadata flags from the header of `bytes`.
@@ -118,6 +139,10 @@ pub fn probe(bytes: &[u8]) -> Result<ImageInfo, ImageError> {
         Some(ImageFormat::Jpeg) => probe_jpeg(bytes),
         Some(ImageFormat::Gif) => probe_gif(bytes),
         Some(ImageFormat::WebP) => probe_webp(bytes),
+        #[cfg(feature = "heic")]
+        Some(ImageFormat::Heic) => crate::heic::probe_heic(bytes),
+        #[cfg(not(feature = "heic"))]
+        Some(ImageFormat::Heic) => return Err(ImageError::UnsupportedFormat(describe(bytes))),
         None => return Err(ImageError::UnsupportedFormat(describe(bytes))),
     }?;
     if info.width == 0 || info.height == 0 {
@@ -137,9 +162,13 @@ fn describe(bytes: &[u8]) -> String {
     } else if text.contains("<!doctype html") || text.contains("<html") {
         "HTML".to_owned()
     } else if is_isobmff && matches!(brand, b"heic" | b"heix" | b"hevc" | b"mif1" | b"msf1" | b"heim" | b"heis") {
-        "HEIC (convert it to JPEG first)".to_owned()
+        if cfg!(feature = "heic") {
+            "a HEIC variant that is not HEVC coded (convert it to JPEG first)".to_owned()
+        } else {
+            "HEIC (this build does not decode it: convert it to JPEG first)".to_owned()
+        }
     } else if is_isobmff && matches!(brand, b"avif" | b"avis") {
-        "AVIF (convert it to PNG or JPEG first)".to_owned()
+        "AVIF (not decoded: convert it to PNG or JPEG first)".to_owned()
     } else if head.starts_with(b"BM") {
         "BMP (convert it to PNG first)".to_owned()
     } else if head.starts_with(b"II*\0") || head.starts_with(b"MM\0*") {

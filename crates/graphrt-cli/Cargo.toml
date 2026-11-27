@@ -47,6 +47,10 @@ image = ["files", "dep:graphrt-image", "graphrt-llm?/vision-preparer"]
 # `--document-tools`: agents create PDF, Word and Excel files in the workspace
 # (the `documents` tools of graphrt-docgen). Inert without the flag.
 documents = ["files", "dep:graphrt-docgen"]
+# HEIC photos as vision input and for the `image` tools (`graphrt-image/heic`: a pure
+# Rust decoder, +0.9 MiB). Opt-in: HEVC is covered by patent pools whatever the
+# software licence is, so shipping a decoder is a decision for whoever builds.
+image-heic = ["image", "graphrt-image/heic"]
 # knowledge-retrieval node (`--knowledge`): embeddings, vector stores, hybrid search, rerank.
 rag = ["dep:graphrt-rag"]
 # In-process embeddings for knowledge bases (`type: local` embedders): BERT-family

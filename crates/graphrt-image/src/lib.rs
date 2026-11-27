@@ -22,6 +22,8 @@
 
 mod error;
 mod generate;
+#[cfg(feature = "heic")]
+mod heic;
 mod metadata;
 mod prepare;
 mod probe;

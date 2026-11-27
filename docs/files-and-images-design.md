@@ -361,6 +361,62 @@ What was checked outside the test suite: the PDF with Poppler (`pdftotext`,
 `pdfinfo`, rendered with `pdftoppm`) and Ghostscript, the Word file with
 `python-docx` and the workbook with `openpyxl`. Not checked: Microsoft
 Office and LibreOffice themselves, which were not on the machine.
+### 15. HEIC behind a switch, AVIF not yet
+
+Researched 2026-11-27 (crates.io, the crates' sources, and a trial build).
+iPhones and many Android phones save HEIC by default, so "attach a photo"
+fails for a large share of users unless the client converts first.
+
+HEIC is HEVC still pictures in an ISO base media container.
+
+| Decoder | Licence | Code | Verdict |
+| --- | --- | --- | --- |
+| `libheif-rs` (libheif, libde265) | LGPL-3.0 and C | C and C++ | No. A C parser the size of a video codec for uploads, no static musl build without work, not on `wasm32`. |
+| `heic` 0.1.6 | AGPL-3.0 or commercial | pure Rust | No. The licence is not on the allow list of `deny.toml` and would bind every user of the binary. |
+| `hpvcd` 0.3.6 | BSD-3-Clause or Apache-2.0 | pure Rust | Not now. It needs Rust 1.93, the workspace builds with 1.89. |
+| **`heifer` 0.7.3** | MIT or Apache-2.0 | pure Rust, `#![forbid(unsafe_code)]`, one dependency (`thiserror`) | Yes, as an option. |
+
+What the trial of `heifer` showed: three new crates in a build (`heifer`,
+`heifer-hevc-dec`, `heifer-isobmff`, plus its encoder for the test
+fixtures only), +888 KiB on a release binary, the sample photo of libheif (1280x854) decoded in 54 ms on one
+thread, 200 truncations and 300 bit flips of it without a panic, and its
+pixel limit honoured. Against it: the crate is seven weeks old with one
+author and 42 releases, so its interface still moves.
+
+Decision: support HEIC behind the `heic` feature of `graphrt-image` and the
+`image-heic` feature of the CLI, **off by default in every build**.
+
+- The deciding reason is patents, not code. HEVC is covered by patent pools
+  (Access Advance, Via LA) whatever the licence of an implementation is,
+  which is why browsers lean on the decoder of the operating system. A
+  project cannot make that call for the people who build and ship it. An
+  operator who turns the feature on has made it.
+- The youth of the decoder is contained rather than trusted: the header is
+  read by a parser of our own first (the largest `ispe` size against the
+  pixel limits), the decoder gets the same limit, runs on one thread behind
+  a panic boundary on the blocking pool, and its output is checked again.
+- HEIC is input only. What leaves is JPEG or PNG written by the encoders the
+  crate already has, so no provider or tool sees the format and nothing of
+  the container (EXIF, XMP, depth and gain maps) survives.
+
+AVIF is AV1 still pictures in the same container. AV1 is royalty free, so
+the obstacle here is only the decoder.
+
+| Decoder | Licence | Code | Verdict |
+| --- | --- | --- | --- |
+| `image` with `avif-native` (dav1d) | BSD-2-Clause | C | No. A system C library, which breaks the single static binary and phones. |
+| `rav1d` 1.1.0 | BSD-2-Clause | Rust translated from dav1d, `unsafe` throughout, hand written assembly, needs `nasm` to build | No. Memory safety in name only, and megabytes of code. |
+| `rav1d-safe` 0.6.0, `zenavif` 0.1.7 | AGPL-3.0 or commercial | safe Rust | No. Licence. |
+
+Decision: AVIF stays refused, with a message that says to convert it. This
+is the item to revisit when a safe decoder under a permissive licence
+exists. The container walk written for HEIC would carry over.
+
+Animations (GIF and WebP with several frames, HEIC and AVIF sequences) stay
+as they are: an animation that fits is passed through, one that has to be
+encoded again becomes its first frame. Model APIs read one frame of an
+animation anyway, so decoding and encoding every frame would spend CPU on
+pixels no model sees.
 
 ## Threat model
 
@@ -420,6 +476,10 @@ the host file system goes.
 | D7 | Layout of a large document stalling every other run | Parsing, layout and compression run on the blocking pool | `docgen tools::a_large_document_does_not_block_the_async_worker` |
 | D8 | Text that silently disappears (a script the PDF fonts cannot show, a long number rounded by the spreadsheet) | Replaced characters are counted and reported. Whole numbers above 2^53 are stored as text. Lines are wrapped inside the margins. | `pdf::tests::characters_outside_the_fonts_are_counted_not_dropped`, `xlsx::tests::long_whole_numbers_stay_exact_as_text`, `pdf::tests::lines_never_run_past_the_margin` |
 | I1 | Image bomb: a small file that declares a huge canvas | Header probe refuses the pixel count before any decoder runs (5.5 µs for a 64 megapixel PNG). Decoder limits on width, height and allocation are a second line. | `probe::a_huge_canvas_is_refused_from_the_header_alone`, `tools::bombs_spoofed_files_and_escapes_are_error_results`, `prepare::spoofed_vision_inputs_are_refused` |
+| I10 | HEIC bomb: a small file that declares a huge canvas, or a header that declares a small one to get a large picture through | Our own walk of the container reads the largest `ispe` size before the decoder runs. The decoder has the same pixel limit, and its output is checked again. | `heic::a_huge_heic_canvas_is_refused_from_the_header_alone` |
+| I11 | Malformed HEIC aimed at the HEVC decoder or at our container walk | A decoder without `unsafe`, behind a panic boundary on the blocking pool, on one thread. Checked indexing in the walk, at most 4,096 boxes a level. | `heic::truncated_and_corrupted_heic_files_fail_cleanly` |
+| I12 | HEIC passed on to a provider or a user interface with its metadata (EXIF position, XMP, depth and gain maps), or written by a tool | HEIC is input only: it is always decoded and encoded again as JPEG or PNG, and no tool accepts `heic` as an output format | `heic::nothing_of_a_heic_container_reaches_a_model`, `heic::the_image_tools_take_heic_and_write_jpeg`, `heic::a_heic_photo_is_read_from_its_header_and_leaves_as_a_jpeg` |
+| I13 | Another format announced as HEIC (AVIF, a bare `ftyp` box, a program) | The brands of the `ftyp` box must name HEVC and not AV1. Anything else is refused as before. | `heic::only_hevc_coded_files_count_as_heic`, `probe::spoofed_and_unsupported_content_is_refused` |
 | I2 | Malformed image aimed at a decoder or at our own header parsers | Pure Rust decoders, no `unsafe` in the workspace, checked indexing only, decoding behind a panic boundary on the blocking pool | `probe::truncated_files_fail_cleanly_at_every_length`, `probe::corrupted_files_never_panic_or_exceed_the_limits` |
 | I3 | Image type spoofing (SVG, HTML, HEIC or a program sent as `image/png`) | Only PNG, JPEG, GIF and WebP by magic bytes reach a model or a tool. The media type sent to a provider is the detected one. | `probe::spoofed_and_unsupported_content_is_refused`, `prepare::spoofed_vision_inputs_are_refused`, `nodes::a_spoofed_vision_input_stops_the_node_before_the_model_is_called`, `graphrt-llm` `a_refused_image_fails_the_node_and_is_never_sent_as_it_was`, CLI `image_tools_inspect_and_thumbnail_a_workspace_image` |
 | I4 | Location and device data in EXIF (and XMP, IPTC, text chunks) sent to a model provider or written to a result | Metadata is cut out of the container before an image leaves the runtime, rotated photos are turned upright first, and files the tools write are encoded without any | `metadata::*` (one test per format), `metadata::nothing_prepared_for_a_model_carries_metadata`, `prepare::a_rotated_photo_is_turned_upright_before_its_metadata_goes`, `nodes::a_stored_photo_reaches_the_model_checked_and_without_metadata` |
@@ -510,6 +570,9 @@ machine, one core.
 | The same | 24 MP JPEG (6000x4000), 5.1 MiB | 222 ms, sends 0.33 MiB |
 | The same | 2560x1440 PNG, 0.9 MiB | 124 ms, sends 0.22 MiB |
 | Thumbnail, 256 px | 12 MP JPEG | 67 ms |
+| Read the header of a HEIC photo (feature `heic`) | 12 MP HEIC | 64 ns |
+| Refuse a HEIC that declares 60000x60000 pixels | 0.2 MiB | 4.0 µs, nothing decoded |
+| Prepare a HEIC photo for a model: decode, downscale, encode as JPEG | 12 MP HEIC (4000x3000) | 244 ms, sends 0.36 MiB |
 
 - The common case, an image that already fits, never reaches a decoder: one
   pass over the container and a base64 encode.
@@ -621,7 +684,7 @@ is used: nothing is opened, registered or allocated at start without
 - Native document blocks (sending a PDF to a provider as a document).
 - Audio and video.
 - A second image generator (Gemini) and image editing.
-- HEIC and AVIF input. Phones produce HEIC, and it is refused today with a
-  message that says to convert it. Decoding it in pure Rust is not ready.
+- AVIF input, until a safe decoder under a permissive licence exists
+  ([decision 15](#15-heic-behind-a-switch-avif-not-yet)).
 - Animations. GIF and WebP animations pass through when they fit, and are
   reduced to their first frame when they have to be encoded again.

@@ -28,6 +28,11 @@ pub fn strip_metadata(bytes: &[u8]) -> Result<Vec<u8>, ImageError> {
         Some(ImageFormat::Jpeg) => strip_jpeg(bytes),
         Some(ImageFormat::Gif) => strip_gif(bytes),
         Some(ImageFormat::WebP) => strip_webp(bytes),
+        // A HEIC file is never passed on, so there is nothing to strip in place:
+        // decoding it drops everything but the pixels.
+        Some(ImageFormat::Heic) => {
+            Err(ImageError::UnsupportedFormat("HEIC is decoded and written again, not stripped in place".to_owned()))
+        }
         None => Err(ImageError::UnsupportedFormat("not a PNG, JPEG, GIF or WebP image".to_owned())),
     }
 }

@@ -91,4 +91,31 @@ fn main() {
     let to_webp = Transform { format: Some(ImageFormat::WebP), ..Transform::default() };
     let ms = median(7, || transform(&small, &limits, to_webp).unwrap());
     println!("| Convert to WebP | 1024x768 JPEG | {ms:.0} ms |");
+
+    // HEIC (feature `heic`): the fixture is encoded here, which takes a while.
+    #[cfg(feature = "heic")]
+    {
+        let pixels = photo(4_000, 3_000).to_rgb8();
+        let options = heifer::EncodeOptions::new().with_quality(80);
+        let heic = heifer::encode_rgb8(4_000, 3_000, pixels.as_raw(), &options).unwrap();
+        let nanos = median(20_000, || probe(&heic).unwrap()) * 1e6;
+        println!("| Read the header of a HEIC photo | 12 MP HEIC, {} | {nanos:.0} ns |", mib(heic.len()));
+        let mut bomb = heic.clone();
+        let ispe = bomb.windows(4).position(|window| window == b"ispe").unwrap();
+        bomb[ispe + 8..ispe + 16].copy_from_slice(&[0, 0, 0xea, 0x60, 0, 0, 0xea, 0x60]);
+        let micros = median(2_000, || prepare_for_model(bomb.clone(), &limits).unwrap_err()) * 1e3;
+        println!(
+            "| Refuse a HEIC that declares 60000x60000 pixels | {} | {micros:.1} µs, nothing decoded |",
+            mib(bomb.len())
+        );
+        let prepared = prepare_for_model(heic.clone(), &limits).unwrap();
+        let ms = median(5, || prepare_for_model(heic.clone(), &limits).unwrap());
+        println!(
+            "| Prepare a HEIC photo for a model: decode, downscale to {}x{}, encode as JPEG | 12 MP HEIC, {} | {ms:.0} ms, sends {} |",
+            prepared.width,
+            prepared.height,
+            mib(heic.len()),
+            mib(prepared.bytes.len())
+        );
+    }
 }
