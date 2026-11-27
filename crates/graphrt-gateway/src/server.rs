@@ -266,6 +266,22 @@ fn record_json(record: &RunRecord) -> Json {
     })
 }
 
+/// Put the verified end user `subject` into a run request: as `user_id`, and
+/// as `sys.user_id`, which workflows read (`{{#sys.user_id#}}`, for one user's
+/// lessons or files). Both win over anything the client sent, so a user cannot
+/// run as someone else. `graphrt serve --verify-jwt` does the same.
+fn set_verified_user(body: &mut serde_json::Map<String, Json>, subject: &str) {
+    body.insert("user_id".into(), Json::from(subject));
+    let sys = body.entry("sys").or_insert_with(|| Json::Object(serde_json::Map::new()));
+    // A `sys` that is not an object would be refused by the agent: replaced, so the user is still set.
+    if !sys.is_object() {
+        *sys = Json::Object(serde_json::Map::new());
+    }
+    if let Some(sys) = sys.as_object_mut() {
+        sys.insert("user_id".into(), Json::from(subject));
+    }
+}
+
 /// Builds the in-memory run input: body, input headers, verified `user_id`.
 fn run_input(
     deployment: &Deployment,
@@ -275,7 +291,7 @@ fn run_input(
 ) -> RunInput {
     let mut expires_at = None;
     if let Principal::User { subject, expires_at: exp } = principal {
-        body.insert("user_id".into(), Json::from(subject.clone()));
+        set_verified_user(&mut body, subject);
         expires_at = Some(*exp);
     }
     if !deployment.input_headers.is_empty() {
@@ -945,4 +961,40 @@ pub async fn load_versions(
 /// Status of a record as text, for logs.
 pub fn status_text(status: RunStatus) -> String {
     serde_json::to_value(status).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn object(value: Json) -> serde_json::Map<String, Json> {
+        value.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn a_verified_user_cannot_run_as_someone_else() {
+        // The client names another user everywhere it can.
+        let mut body = object(json!({
+            "inputs": { "text": "hi" },
+            "user_id": "user-budi",
+            "sys": { "user_id": "user-budi", "locale": "id" },
+        }));
+        set_verified_user(&mut body, "user-sari");
+        assert_eq!(body["user_id"], "user-sari");
+        assert_eq!(body["sys"], json!({ "user_id": "user-sari", "locale": "id" }), "other sys values are kept");
+        assert_eq!(body["inputs"], json!({ "text": "hi" }));
+    }
+
+    #[test]
+    fn a_verified_user_is_set_when_the_client_sent_no_sys_or_a_broken_one() {
+        let mut body = object(json!({ "inputs": {} }));
+        set_verified_user(&mut body, "user-sari");
+        assert_eq!(body["sys"], json!({ "user_id": "user-sari" }));
+
+        let mut body = object(json!({ "sys": "user-budi" }));
+        set_verified_user(&mut body, "user-sari");
+        assert_eq!(body["sys"], json!({ "user_id": "user-sari" }));
+    }
 }

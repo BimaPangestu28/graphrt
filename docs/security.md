@@ -445,6 +445,12 @@ What an agent learned is treated as untrusted until a person approved it.
   (`--verify-jwt`) on a run that token started. A token that does not verify
   is refused, also next to a valid API key. Another user's token is refused.
   Feedback sent with the API key is `derived` whatever `user` its body names.
+- **Behind a gateway.** An agent run with `--trust-gateway` takes the user of
+  a run from a request the gateway signed and from nowhere else. The gateway
+  sets `user_id` and `sys.user_id` to the user it verified, over anything the
+  client sent. The agent verifies no user token, so feedback sent to it is
+  always `derived`, and a gateway signature does not open `/v1/skills` or
+  `/v1/learning`.
 - **A model only proposes.** What a model suggests when distilling
   (`graphrt learn distill --model`, `POST /v1/learning/{agent}/distill`) is a
   proposal with trust `derived`. A skill drafted from lessons installs

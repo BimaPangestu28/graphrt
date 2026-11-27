@@ -161,12 +161,20 @@ pub fn read_capped(reader: impl Read, max_bytes: u64) -> Result<Vec<u8>, String>
     Ok(bytes)
 }
 
+/// Download on a thread of its own, so that this also works when the caller
+/// is inside an async runtime (`graphrt skill` is): a runtime cannot be
+/// started on a thread that is already driving one.
 fn download_capped(url: &str, limits: FetchLimits) -> Result<Vec<u8>, String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| format!("cannot start runtime: {error}"))?;
-    runtime.block_on(download_capped_async(url, limits))
+    std::thread::scope(|scope| {
+        let download = scope.spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| format!("cannot start runtime: {error}"))?;
+            runtime.block_on(download_capped_async(url, limits))
+        });
+        download.join().unwrap_or_else(|_| Err("the download stopped unexpectedly".to_owned()))
+    })
 }
 
 /// Redirects are followed (GitHub release downloads redirect to a CDN) only
@@ -222,6 +230,17 @@ mod tests {
 
     fn file_url(path: &str) -> String {
         format!("file:///{}", path.trim_start_matches('/'))
+    }
+
+    /// `graphrt skill install` and `graphrt skill search` read the catalog
+    /// from inside the CLI's async runtime. Nothing listens on the port, so
+    /// the download fails, as an error and not as a panic.
+    #[tokio::test]
+    async fn a_download_inside_an_async_runtime_fails_with_an_error() {
+        let location = Location::Https("https://127.0.0.1:9/index-v2.json".to_owned());
+        let limits = FetchLimits { max_bytes: 1024, timeout: Duration::from_secs(5) };
+        let error = fetch_bytes(&location, limits).expect_err("nothing listens there");
+        assert!(error.contains("https://127.0.0.1:9/index-v2.json"), "{error}");
     }
 
     #[test]
