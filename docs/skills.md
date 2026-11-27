@@ -88,6 +88,37 @@ untrusted material:
 `--conversation` takes a JSON array of `{"role": ..., "content": ...}` objects.
 The latest 60 turns and about 24,000 characters are used.
 
+## Installing from the catalog
+
+```sh
+graphrt skill search refund
+graphrt skill install kebijakan-refund            # the latest version
+graphrt skill install kebijakan-refund@1.0.0 --grant shopify/get_order
+```
+
+A name instead of a directory installs from the
+[graphrt-plugins](https://github.com/Graphrt/graphrt-plugins) catalog (builds
+with the `skills` and `plugins` features):
+
+1. `index-v2.json` and its minisign signature are read, and the signature is
+   checked against the catalog key **before the index is parsed**. An index
+   that does not verify is not used. There is no flag to skip this for skills.
+2. The archive is downloaded over https and must match the sha256 in the
+   verified index.
+3. It is unpacked into a private directory, refusing links and paths that
+   leave it, and must hold exactly the skill and version the index describes.
+4. The normal install runs: validation, the scan, and only the tools you
+   grant. The catalog grants nothing.
+
+`--index` and `$GRAPHRT_PLUGIN_INDEX` point at another catalog (a plugin
+`index.json` location works: the `index-v2.json` next to it is read).
+`--index-key` and `$GRAPHRT_PLUGIN_INDEX_KEY` name the key a catalog of another
+publisher must be signed with. The installed skill records
+`origin: {kind: catalog, verified: true, publisher, version}`.
+
+A signature says who published a skill. It does not say the skill is harmless,
+which is why step 4 is the same as for any directory.
+
 ## What a skill can and cannot do
 
 | A skill can | A skill cannot |
@@ -162,6 +193,8 @@ Every subcommand takes `--dir <DIR>` (the skill store) and `--json`.
 | `graphrt skill list` | Installed skills: state, granted and requested tools, description. |
 | `graphrt skill inspect <name\|dir>` | One skill, installed or not: description, tool requests and grants, files, findings, and the changes against the installed version. Writes nothing. |
 | `graphrt skill install <dir> [--grant T]... [--allow T]... [--accept-findings] [--replace]` | Install a skill directory or every skill of an Agent Plugins package. |
+| `graphrt skill install <name>[@version] [--index I] [--index-key K] [...]` | Install from the signed catalog. |
+| `graphrt skill search [query] [--index I] [--index-key K]` | Catalog skills whose name or description contains `query`. |
 | `graphrt skill draft --model P/N (--describe TEXT \| --conversation FILE) [--tool T]... [--out DIR] [--providers FILE]` | Write a new skill with a model. The folder is then installed with `install`. |
 | `graphrt skill grant <name> [--grant T]... [--allow T]...` | Replace the grants of an installed skill. No flags: grant nothing. |
 | `graphrt skill disable <name>` / `enable <name>` | Hide a skill from every agent, or show it again. |
@@ -253,5 +286,5 @@ with stable field names, and the CLI prints the same shapes with `--json`.
 lists, next to the skill's own `metadata.version` in `SkillEntry::version`.
 
 A host that fetches skills from a catalog verifies the catalog's signature
-itself and records the result in `SkillOrigin`. The `graphrt` CLI installs from
-directories only for now.
+itself (`graphrt_plugin::catalog_signature`, the code the CLI uses) and records
+the result in `SkillOrigin`.

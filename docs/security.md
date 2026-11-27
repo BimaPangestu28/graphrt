@@ -350,6 +350,10 @@ A skill is treated as untrusted content that the owner chose to install.
   invisible characters and markup tags in them are refused. Instructions reach
   the model as a tool result inside a labelled wrapper that the text cannot
   close.
+- **Catalog installs need a signature.** `graphrt skill install <name>` uses
+  an index only after its minisign signature verifies against the catalog
+  key, checks the archive's sha256 against that index, and then runs the same
+  install as for a directory. There is no unsigned mode.
 - **The scan is advisory.** It reports common hostile patterns before an
   install and can be evaded by rewording. The points above do not rely on it.
 - **Not covered.** A skill's instructions can still mislead a model within the

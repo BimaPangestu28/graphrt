@@ -26,6 +26,8 @@ mod fetch;
 #[cfg(feature = "plugins")]
 mod freshness;
 pub mod index;
+#[cfg(all(feature = "plugins", feature = "skills"))]
+pub mod skills;
 #[cfg(feature = "plugins")]
 mod trust;
 

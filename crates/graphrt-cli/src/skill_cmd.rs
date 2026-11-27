@@ -33,9 +33,22 @@ pub async fn skill(args: SkillCmdArgs) -> Result<u8, CliError> {
         SkillCommand::Draft { .. } => Ok(EXIT_OK),
         SkillCommand::List => list(&store, args.json, &mut out),
         SkillCommand::Inspect { skill } => inspect(&store, &skill, args.json, &mut out),
-        SkillCommand::Install { path, grants, accept_findings, replace } => {
-            let request = InstallRequest { path: &path, grants: grants_of(&grants), accept_findings, replace };
-            install(&store, &request, args.json, &mut out)
+        SkillCommand::Install { source, index, index_key, grants, accept_findings, replace } => {
+            let grants = grants_of(&grants);
+            let path = Path::new(&source);
+            if path.is_dir() {
+                if index.is_some() || index_key.is_some() {
+                    return Err(CliError::usage("`--index` and `--index-key` only apply to a catalog skill name"));
+                }
+                let request = InstallRequest { path, grants, accept_findings, replace, catalog: None };
+                return install(&store, &request, args.json, &mut out);
+            }
+            let catalog = CatalogSource { index: index.as_deref(), index_key: index_key.as_deref() };
+            install_from_catalog(&store, &source, catalog, grants, (accept_findings, replace), args.json, &mut out)
+        }
+        SkillCommand::Search { query, index, index_key } => {
+            let catalog = CatalogSource { index: index.as_deref(), index_key: index_key.as_deref() };
+            search(query.as_deref(), catalog, &mut out)
         }
         SkillCommand::Grant { name, grants } => {
             let entry = store.set_grants(&name, grants_of(&grants)).map_err(failed)?;
@@ -135,6 +148,90 @@ struct InstallRequest<'a> {
     grants: Vec<Grant>,
     accept_findings: bool,
     replace: bool,
+    /// Set for a skill fetched from the signed catalog: its origin.
+    catalog: Option<SkillOrigin>,
+}
+
+/// `--index` and `--index-key` of the catalog subcommands.
+#[derive(Clone, Copy)]
+struct CatalogSource<'a> {
+    index: Option<&'a str>,
+    index_key: Option<&'a str>,
+}
+
+/// `graphrt skill install <name>[@version]`: fetch the skill from the signed
+/// catalog, then install the unpacked directory like a local one.
+#[cfg(feature = "plugins")]
+fn install_from_catalog(
+    store: &SkillStore,
+    source: &str,
+    catalog: CatalogSource<'_>,
+    grants: Vec<Grant>,
+    (accept_findings, replace): (bool, bool),
+    json: bool,
+    out: &mut impl Write,
+) -> Result<u8, CliError> {
+    use crate::plugin_catalog::skills::{SkillCatalogSource, fetch_catalog_skill};
+    let spec = crate::plugin_catalog::index::parse_plugin_spec(source)
+        .filter(|spec| graphrt_skill::is_valid_name(&spec.name))
+        .ok_or_else(|| {
+            CliError::usage(format!(
+                "`{source}` is neither a skill directory nor a catalog skill name (`name` or `name@1.2.3`)"
+            ))
+        })?;
+    let fetched =
+        fetch_catalog_skill(&spec, SkillCatalogSource { index: catalog.index, index_key: catalog.index_key })?;
+    // The archive must hold the skill the signed index describes.
+    let review = store.inspect_dir(&fetched.dir).map_err(failed)?;
+    let entry = &fetched.entry;
+    if review.entry.name != entry.name || review.entry.version.as_deref() != Some(entry.version.as_str()) {
+        return Err(CliError::failed(format!(
+            "skill {} {}: the archive holds `{}` {} instead",
+            entry.name,
+            entry.version,
+            review.entry.name,
+            review.entry.version.as_deref().unwrap_or("without a version")
+        )));
+    }
+    let origin = SkillOrigin {
+        kind: OriginKind::Catalog,
+        detail: Some(entry.tarball_url.clone()),
+        publisher: entry.publisher.clone(),
+        verified: true,
+        version: Some(entry.version.clone()),
+    };
+    let request = InstallRequest { path: &fetched.dir, grants, accept_findings, replace, catalog: Some(origin) };
+    install(store, &request, json, out)
+}
+
+#[cfg(not(feature = "plugins"))]
+fn install_from_catalog(
+    _store: &SkillStore,
+    source: &str,
+    _catalog: CatalogSource<'_>,
+    _grants: Vec<Grant>,
+    _flags: (bool, bool),
+    _json: bool,
+    _out: &mut impl Write,
+) -> Result<u8, CliError> {
+    Err(CliError::usage(format!(
+        "`{source}` is not a directory. Installing a skill from the catalog by name needs a build with the `plugins` feature"
+    )))
+}
+
+/// `graphrt skill search [query]`.
+fn search(query: Option<&str>, catalog: CatalogSource<'_>, out: &mut impl Write) -> Result<u8, CliError> {
+    #[cfg(feature = "plugins")]
+    {
+        use crate::plugin_catalog::skills::{SkillCatalogSource, search_catalog_skills};
+        search_catalog_skills(query, SkillCatalogSource { index: catalog.index, index_key: catalog.index_key }, out)?;
+        Ok(EXIT_OK)
+    }
+    #[cfg(not(feature = "plugins"))]
+    {
+        let _ = (query, catalog.index, catalog.index_key, out);
+        Err(CliError::usage("searching the skill catalog needs a build with the `plugins` feature"))
+    }
 }
 
 fn open_store(dir: Option<PathBuf>) -> Result<SkillStore, CliError> {
@@ -242,13 +339,13 @@ fn install(store: &SkillStore, request: &InstallRequest<'_>, json: bool, out: &m
             existing.entry.name
         )));
     }
-    let origin = SkillOrigin {
+    let origin = request.catalog.clone().unwrap_or_else(|| SkillOrigin {
         kind: OriginKind::Local,
         detail: Some(request.path.display().to_string()),
         publisher: found.plugin.as_ref().and_then(|plugin| plugin.name.clone()),
         verified: false,
         version: None,
-    };
+    });
     let mut installed = Vec::with_capacity(found.skills.len());
     for (dir, review) in found.skills.iter().zip(&reviews) {
         let grants =
