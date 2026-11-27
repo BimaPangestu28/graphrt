@@ -242,8 +242,25 @@ fn child_frames_and_unreferenced_chunks() {
     assert_eq!(out, vec![ResponseChunk { node_id: "other".into(), text: "x".into(), is_final: false }]);
 }
 
+fn run_failed() -> Event {
+    Event::RunFailed { error: "boom".into(), error_type: "internal".into(), usage: Default::default(), elapsed_ms: 1 }
+}
+
+fn failed(id: &str) -> Event {
+    Event::NodeFailed {
+        frame: Arc::from(""),
+        node_id: id.into(),
+        exec_id: format!("{id}-x").into(),
+        error: "boom".into(),
+        error_type: "internal".into(),
+        handled: false,
+        outputs: Default::default(),
+        elapsed_ms: 1,
+    }
+}
+
 #[test]
-fn end_nodes_optional_and_flush_on_failure() {
+fn end_nodes_are_optional_and_a_failure_renders_nothing_more() {
     let end = NodeDoc::new(
         "end",
         "end",
@@ -259,16 +276,73 @@ fn end_nodes_optional_and_flush_on_failure() {
     a.push(&started("start"));
     a.push(&ok("start", &[]));
     assert_eq!(texts(&a.push(&chunk("llm", "partial"))), "partial");
-    let out = a.push(&Event::RunFailed {
-        error: "boom".into(),
-        error_type: "internal".into(),
-        usage: Default::default(),
-        elapsed_ms: 1,
-    });
-    assert_eq!(texts(&out), "\n");
-    assert!(out.last().is_some_and(|c| c.is_final));
+    // The run fails before `end` runs: the rest of its template is not
+    // rendered, and the text kept for the run quotes nothing of it.
+    assert!(a.push(&run_failed()).is_empty());
     assert!(a.push(&chunk("llm", "late")).is_empty());
-    assert_eq!(a.text_so_far(), "partial\n");
+    assert_eq!(a.text_so_far(), "");
+}
+
+/// Regression: a run that failed in `work` used to keep "never" as its answer,
+/// the literal text of an answer node that did not execute.
+#[test]
+fn a_failed_run_keeps_no_text_of_an_answer_that_never_ran() {
+    let g = graph(
+        vec![n("start", "start"), n("work", "code"), answer("done", "never")],
+        vec![e("start", "work"), e("work", "done")],
+    );
+    let mut a = ResponseAssembler::new(&g);
+    // Rendered ahead of time, as soon as `done` is certain to run.
+    assert_eq!(feed(&mut a, &[started("start"), ok("start", &[]), started("work")]), "never");
+    assert_eq!(a.text_so_far(), "never");
+    assert!(a.push(&failed("work")).is_empty());
+    assert!(a.push(&run_failed()).is_empty());
+    assert_eq!(a.text_so_far(), "");
+}
+
+#[test]
+fn a_failed_run_keeps_the_text_of_answers_that_ran() {
+    let g = graph(
+        vec![
+            n("start", "start"),
+            n("llm", "llm"),
+            answer("first", "Hello {{#llm.text#}}. "),
+            n("work", "code"),
+            answer("second", "Total: {{#work.total#}}, thanks."),
+        ],
+        vec![e("start", "llm"), e("llm", "first"), e("first", "work"), e("work", "second")],
+    );
+    let mut a = ResponseAssembler::new(&g);
+    let streamed = feed(
+        &mut a,
+        &[
+            started("start"),
+            ok("start", &[]),
+            started("llm"),
+            chunk("llm", "Ana"),
+            ok("llm", &[("text", Value::from("Ana"))]),
+            started("first"),
+            ok("first", &[]),
+            started("work"),
+            failed("work"),
+        ],
+    );
+    // `second` was certain to run, so text of it went out before the failure.
+    assert!(streamed.starts_with("Hello Ana. Total: "), "{streamed}");
+    assert!(a.push(&run_failed()).is_empty(), "nothing of `second` is rendered after the failure");
+    assert_eq!(a.text_so_far(), "Hello Ana. ");
+}
+
+#[test]
+fn a_stopped_run_keeps_what_was_streamed() {
+    let g = graph(
+        vec![n("start", "start"), n("llm", "llm"), answer("done", "Hello {{#llm.text#}}")],
+        vec![e("start", "llm"), e("llm", "done")],
+    );
+    let mut a = ResponseAssembler::new(&g);
+    feed(&mut a, &[started("start"), ok("start", &[]), started("llm"), chunk("llm", "An")]);
+    a.push(&Event::RunAborted { reason: "stopped".into(), elapsed_ms: 1 });
+    assert_eq!(a.text_so_far(), "Hello An");
 }
 
 // ---- retries and handled failures -------------------------------------------------------
