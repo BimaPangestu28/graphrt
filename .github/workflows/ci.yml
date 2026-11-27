@@ -96,7 +96,7 @@ jobs:
       - run: cargo check --workspace --exclude graphrt-cli
       - run: >-
           cargo check -p graphrt-cli --no-default-features --features
-          llm,http,code,python,mcp,doc,files,image,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,cors,run-follow,conversations,web-chat
+          llm,http,code,python,mcp,doc,files,image,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,cors,run-follow,conversations,web-chat,devices,approvals,web-push,web-monitor
 
   minimal-core:
     name: core without default features
@@ -263,7 +263,7 @@ jobs:
       - run: examples/supabase-chatbot/tests/run.sh target/debug/graphrt
 
   web:
-    name: web packages (client, UI blocks, chat) against graphrt serve
+    name: web packages (client, UI blocks, chat, monitor) against graphrt serve
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
@@ -288,8 +288,9 @@ jobs:
       - run: cargo build -p graphrt-cli
       - run: npm ci
         working-directory: web
-      # Types, lint, tests, and that crates/graphrt-cli/assets/chat is what the
-      # sources build (the page `graphrt serve --chat` embeds).
+      # Types, lint, tests, that crates/graphrt-cli/assets is what the sources
+      # build (the pages `graphrt serve --chat` and `--monitor` embed), and that
+      # the packages build and pack as they are published.
       - run: npm run check
         working-directory: web
 

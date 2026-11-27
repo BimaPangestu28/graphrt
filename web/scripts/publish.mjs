@@ -83,7 +83,12 @@ for (const name of PACKAGES) {
     fail(`${manifest.name} would publish the wrong files: ${files.join(", ")}`);
   }
   // The built entry loads on its own in Node.js, with its siblings from their `dist`.
-  const loaded = run(process.execPath, ["-e", `await import(${JSON.stringify(manifest.name)})`], dir, true);
+  const loaded = run(
+    process.execPath,
+    ["--input-type=module", "-e", `await import(${JSON.stringify(manifest.name)})`],
+    dir,
+    true,
+  );
   if (!loaded.ok) {
     fail(`${manifest.name}: the built package does not load\n${loaded.stderr}`);
   }

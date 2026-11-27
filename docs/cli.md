@@ -181,6 +181,16 @@ widget script `/chat/embed.js` (`--chat-access key|users|guests`,
 `--conversation-ttl-days`), and `--user-resume` lets users answer the questions
 of their own paused runs. All are off unless given. See [web.md](web.md).
 
+For watching and approving from a phone: `--monitor` serves a monitoring page
+at `/monitor/` (runs, run details, the approvals inbox) that can be installed
+as an app, `--devices` pairs devices with tokens that only read runs and
+resolve approvals (`/v1/devices`), `--approvals` serves the inbox
+(`/v1/approvals`), `--expire-approvals` carries out `on_expire` of
+`human-input` requests past their time limit, `--push CONTACT` sends push
+notifications when a run fails or waits for a person, and `--public-url URL`
+names the address pairing links use. `--monitor` turns on `--devices` and
+`--approvals`. All are off unless given. See [monitoring.md](monitoring.md).
+
 `--deployment NAME` (or `$GRAPHRT_DEPLOYMENT`) names the deployment the server
 belongs to: webhook idempotency run ids include it, as a graphrt gateway derives
 them (see [serving.md](serving.md#idempotency)), and `--trust-gateway` requires

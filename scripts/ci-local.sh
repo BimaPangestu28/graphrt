@@ -78,7 +78,7 @@ run_chatbot_e2e() {
 run_msrv() {
   cargo "+$MSRV_TOOLCHAIN" check --workspace --exclude graphrt-cli &&
     cargo "+$MSRV_TOOLCHAIN" check -p graphrt-cli --no-default-features --features \
-      llm,http,code,python,mcp,doc,files,image,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,cors,run-follow,conversations,web-chat
+      llm,http,code,python,mcp,doc,files,image,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,cors,run-follow,conversations,web-chat,devices,approvals,web-push,web-monitor
 }
 
 ensure_toolchain() { rustup toolchain list | grep -q "^$1" || rustup toolchain install --profile minimal "$1"; }

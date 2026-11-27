@@ -4,7 +4,8 @@ name: Release
 # build agent and gateway binaries for every platform (each smoke-tested where
 # the runner can execute it), publish a GitHub Release with SHA256SUMS, push
 # multi-arch agent and gateway images to GHCR and (optionally) publish crates
-# to crates.io. Nothing is published unless the tests pass.
+# to crates.io and the web packages to npm. Nothing is published unless the
+# tests pass.
 on:
   push:
     tags: ["v*"]
@@ -274,3 +275,41 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: scripts/publish.sh --execute --delay 30
+
+  npm:
+    name: Publish web packages to npm
+    needs: [tag, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Opt-in: set repository variable PUBLISH_NPM=true once the @graphrt packages
+    # on npmjs.com name this workflow (release.yml, environment npm) as their
+    # trusted publisher. There is no token: npm takes the job's OIDC identity,
+    # and attaches a provenance statement to every version. See docs/web.md.
+    if: ${{ vars.PUBLISH_NPM == 'true' }}
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.tag.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # Trusted publishing needs Node.js 22.14+ and npm 11.5.1+.
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Require an npm that can publish with OIDC
+        run: |
+          version="$(npm --version)"
+          echo "npm $version"
+          node -e 'const [a, b, c] = process.argv[1].split(".").map(Number); process.exit(a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1))) ? 0 : 1)' "$version" \
+            || { echo "::error::npm $version is older than 11.5.1"; exit 1; }
+      - run: npm ci
+        working-directory: web
+      # Builds each package, checks what would be uploaded, and publishes the
+      # versions that are not on npm yet. A release that did not change a
+      # package's version leaves that package alone.
+      - run: node scripts/publish.mjs --execute
+        working-directory: web

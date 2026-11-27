@@ -20,8 +20,8 @@
 - `GET /v1/runs/{id}/events?responses=true` adds the answer text (`response`
   events) for a caller that follows a run, and the `202` answer of an async
   start or resume has `first_event`.
-- `web/`: browser packages built on the above. `graphrt-client` (typed client:
+- `web/`: browser packages built on the above. `@graphrt/client` (typed client:
   blocking, streamed and background runs, events with replay, abort, resume,
-  feedback, conversations), `graphrt-ui` (web components that draw UI blocks,
-  checked against the `graphrt-ui` fixtures) and `graphrt-chat` (the chat
+  feedback, conversations), `@graphrt/ui` (web components that draw UI blocks,
+  checked against the `graphrt-ui` fixtures) and `@graphrt/chat` (the chat
   component and widget).
