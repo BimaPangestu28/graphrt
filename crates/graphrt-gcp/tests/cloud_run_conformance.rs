@@ -297,12 +297,12 @@ async fn c11_old_version_stays_wakeable_until_retired() {
     world.driver.apply(&spec("chat", "v2")).await.unwrap();
     let service = world.google.service(&service_resource("chat")).unwrap();
     let traffic = service["traffic"].as_array().unwrap();
-    assert_eq!(traffic[0]["tag"], "v2");
+    assert_eq!(traffic[0]["tag"], "ver-v2", "Cloud Run tags have 3 characters or more");
     assert_eq!(traffic[0]["percent"], 100);
     assert_eq!(
         traffic[1],
         serde_json::json!({
-            "type": "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION", "revision": "graphrt-chat-v1", "percent": 0, "tag": "v1"
+            "type": "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION", "revision": "graphrt-chat-ver-v1", "percent": 0, "tag": "ver-v1"
         })
     );
     // "Day 6": a run paused on v1 resumes on v1's revision.

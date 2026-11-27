@@ -311,8 +311,10 @@ impl LambdaDeployDriver {
             "Description": plan.description,
         });
         if let Some(object) = body.as_object_mut() {
-            if !plan.command.is_empty() {
-                object.insert("ImageConfig".into(), json!({ "Command": plan.command }));
+            // The whole argv: the program replaces the image's ENTRYPOINT (as on
+            // Kubernetes and Cloud Run); `Command` alone would only replace CMD.
+            if let Some((program, arguments)) = plan.command.split_first() {
+                object.insert("ImageConfig".into(), json!({ "EntryPoint": [program], "Command": arguments }));
             }
             if let Some(key) = &plan.kms_key_arn {
                 object.insert("KMSKeyArn".into(), json!(key));

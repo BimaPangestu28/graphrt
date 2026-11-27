@@ -89,7 +89,9 @@ async fn ecs_registers_a_task_definition_and_the_provider_starts_it() {
     let container = &request["containerDefinitions"][0];
     assert_eq!(container["stopTimeout"], 120, "default grace = Fargate maximum");
     assert_eq!(container["image"], ECR_IMAGE);
-    assert_eq!(container["command"][2], "--trust-gateway");
+    // The whole argv: the program replaces the image's ENTRYPOINT, the rest is CMD.
+    assert_eq!(container["entryPoint"], json!(["graphrt"]));
+    assert_eq!(container["command"][1], "--trust-gateway");
     assert_eq!(container["environment"], json!([{"name": "RUST_LOG", "value": "info"}]));
     assert_eq!(
         container["secrets"],
@@ -167,7 +169,8 @@ async fn lambda_creates_publishes_aliases_and_streams_through_the_provider() {
         assert_eq!(configuration["Timeout"], 870, "max_run_secs 840 + 30");
         assert_eq!(configuration["MemorySize"], 2048);
         assert_eq!(configuration["Architectures"], json!(["arm64"]));
-        assert_eq!(configuration["ImageConfig"]["Command"][1], "serve");
+        assert_eq!(configuration["ImageConfig"]["EntryPoint"], json!(["graphrt"]));
+        assert_eq!(configuration["ImageConfig"]["Command"][0], "serve");
         let variables = &configuration["Environment"]["Variables"];
         assert_eq!(variables["AWS_LWA_INVOKE_MODE"], "response_stream");
         assert_eq!(variables["AWS_LWA_PORT"], "8080");

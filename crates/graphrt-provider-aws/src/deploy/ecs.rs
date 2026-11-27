@@ -130,10 +130,14 @@ pub fn task_definition_request(spec: &DeploymentSpec, region: &str) -> Result<Va
         "secrets": secrets,
         "stopTimeout": grace,
     });
-    if !spec.command.is_empty()
+    // `spec.command` is the whole argv (`graphrt serve ...`), as on Kubernetes and
+    // Cloud Run: the program replaces the image's ENTRYPOINT. ECS `command` alone
+    // only replaces CMD, so the graphrt image would run `graphrt graphrt serve`.
+    if let Some((program, arguments)) = spec.command.split_first()
         && let Some(object) = container.as_object_mut()
     {
-        object.insert("command".into(), json!(spec.command));
+        object.insert("entryPoint".into(), json!([program]));
+        object.insert("command".into(), json!(arguments));
     }
     if let Some(group) = settings.string("log_group")?
         && let Some(object) = container.as_object_mut()

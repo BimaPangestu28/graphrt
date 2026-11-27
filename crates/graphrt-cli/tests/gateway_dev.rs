@@ -98,11 +98,17 @@ impl DevGateway {
     /// Starts `gateway --dev` with `$TMPDIR` (and so its socket directory,
     /// `$TMPDIR/graphrt-gateway`) set to `dir`.
     fn start(dir: PathBuf) -> Self {
+        Self::start_with(dir, std::path::Path::new(HELLO_WORKFLOW))
+    }
+
+    /// Like [`Self::start`], serving `workflow`.
+    fn start_with(dir: PathBuf, workflow: &std::path::Path) -> Self {
         let _cleanup = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let port = free_port();
+        let workflow = workflow.to_str().unwrap();
         let child = Command::new(BIN)
-            .args(["gateway", "--dev", HELLO_WORKFLOW, "--listen", &format!("127.0.0.1:{port}")])
+            .args(["gateway", "--dev", workflow, "--listen", &format!("127.0.0.1:{port}")])
             .current_dir(&dir)
             // The default socket directory is `$TMPDIR/graphrt-gateway` (`%TMP%` on
             // Windows): keep it inside the test directory.
@@ -140,6 +146,32 @@ fn dev_gateway_wakes_a_local_agent_of_this_binary_and_runs_the_workflow() {
     let base = if std::path::Path::new("/tmp").is_dir() { PathBuf::from("/tmp") } else { std::env::temp_dir() };
     let gateway = DevGateway::start(base.join(format!("grt-gw-dev-{}", std::process::id())));
     gateway.run_hello();
+}
+
+/// The run record carries the answer text the agent streamed (`response`
+/// chunks), as a record of `graphrt serve` does: clients of a gateway read
+/// `answer` the same way. It used to be empty behind a gateway.
+#[test]
+fn dev_gateway_records_the_answer_of_a_run() {
+    let base = if std::path::Path::new("/tmp").is_dir() { PathBuf::from("/tmp") } else { std::env::temp_dir() };
+    let workflow = base.join(format!("grt-gw-answer-{}.yaml", std::process::id()));
+    std::fs::write(
+        &workflow,
+        "version: \"1\"\nname: greeter\ngraph:\n  nodes:\n    - { id: start, type: start }\n    - { id: answer, type: answer, answer: \"Hello from the agent.\" }\n  edges:\n    - { source: start, target: answer }\n",
+    )
+    .unwrap();
+    let gateway = DevGateway::start_with(base.join(format!("grt-gw-answer-{}", std::process::id())), &workflow);
+    let (status, body) = http(gateway.port, "POST", "/v1/deployments/dev/runs", r#"{"sys":{"query":"hi"}}"#);
+    assert_eq!(status, 200, "{body}\n{}", gateway.log());
+    let record: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(record["status"], "succeeded", "{record}");
+    assert_eq!(record["answer"], "Hello from the agent.", "{record}");
+    let (_, stored) =
+        http(gateway.port, "GET", &format!("/v1/deployments/dev/runs/{}", record["run_id"].as_str().unwrap()), "");
+    let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(stored["answer"], "Hello from the agent.", "the stored record keeps it: {stored}");
+    drop(gateway);
+    let _cleanup = std::fs::remove_file(workflow);
 }
 
 /// Socket paths must fit `sun_path` (104 bytes on macOS, 108 on Linux). With a

@@ -119,7 +119,7 @@ checks that the new revision is the latest ready one.
 | Spec field | Cloud Run |
 | --- | --- |
 | `name` | service id `graphrt-<name>` (DNS label, ≤ 40 chars) |
-| `version` | revision `<service>-<tag>` and traffic tag `<tag>` (`v7`, ≤ 20 chars) |
+| `version` | revision `<service>-<tag>` and traffic tag `<tag>` (`v12`; 3 to 20 chars, a shorter one gets the prefix `ver-`: `v7` → `ver-v7`) |
 | `image`, `command` | `containers[0].image`, `command` = first word, `args` = the rest; port 8080 (`http1`) |
 | `env` | plain `env` values |
 | `secrets` | `valueSource.secretKeyRef {secret, version}`; only `projects/<p>/secrets/<s>[/versions/<v>]` references are accepted |

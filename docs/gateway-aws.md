@@ -226,7 +226,9 @@ is the task definition ARN that `EcsProvider` starts. No ECS service is
 created: the gateway is the scheduler.
 
 - Fargate, `awsvpc`, Linux, one essential container `agent` with the image,
-  command, port mapping, plain `environment`, and `secrets` as
+  the command (its first word becomes `entryPoint`, the rest `command`, so
+  `graphrt serve ...` replaces the image's ENTRYPOINT as on Kubernetes and
+  Cloud Run), port mapping, plain `environment`, and `secrets` as
   `valueFrom` references (Secrets Manager ARN, optionally `:json-key::`, or an
   SSM parameter ARN; anything else is rejected, plaintext never reaches AWS).
   The task execution role resolves them when the task starts.
@@ -258,7 +260,8 @@ are cheap and immutable); the ref of the latest apply is the one to wake.
    or updates its configuration and then its code, waiting out
    `LastUpdateStatus: InProgress` between steps. A concurrent create falls back
    to the update path.
-3. Sets the Lambda Web Adapter environment: `AWS_LWA_INVOKE_MODE=response_stream`,
+3. Sets the command as `ImageConfig.EntryPoint` (first word) and `Command`
+   (the rest), and the Lambda Web Adapter environment: `AWS_LWA_INVOKE_MODE=response_stream`,
    `AWS_LWA_PORT=<container_port>`, `AWS_LWA_READINESS_CHECK_PATH=/healthz`
    (overridable).
 4. Publishes a version and points an alias named after the deployment version
