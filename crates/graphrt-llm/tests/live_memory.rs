@@ -148,3 +148,58 @@ async fn a_real_model_remembers_a_user_across_runs_and_only_that_user() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[cfg(feature = "memory-graph")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_real_model_reads_notes_into_the_graph_and_a_new_job_closes_the_old_one() {
+    use graphrt_core::memory::MemoryBank;
+    let Some(key) = live_key() else { return };
+    let root = std::env::temp_dir().join(format!("graphrt-live-graph-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let store = MemoryStore::open(&root);
+    let scope = MemoryScope::user(None, "shop", "dana");
+    let model = OpenAiModel::new(OpenAiConfig::new("https://api.openai.com/v1", Some(key))).unwrap();
+    let source = graphrt_core::memory::MemorySource { actor: "agent".into(), ..Default::default() };
+    for text in [
+        "Dana has worked at Acme since January 2024.",
+        "Acme has its head office in Surabaya.",
+        "Dana left Acme and has worked at the company Borealis since March 2026.",
+    ] {
+        let saved = store
+            .remember(
+                &scope,
+                graphrt_core::memory::NewMemory::new(
+                    text,
+                    graphrt_core::memory::MemoryTrust::UserStated,
+                    source.clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        let known = store.known_entities(&scope, 50).await.unwrap();
+        let request = graphrt_llm::ChatRequest::new(model_name(), Vec::new());
+        let facts =
+            graphrt_llm::memory_graph::extract_facts(&model, request, text, &known, "2026-11-27").await.unwrap();
+        println!("{text}\n  -> {}", serde_json::to_string(&facts).unwrap());
+        store.link(&scope, &saved.id, facts).await.unwrap();
+    }
+    let export = store.export_user(&scope).await.unwrap();
+    let relations = export["graph"]["relations"].as_array().unwrap();
+    for relation in relations {
+        println!("  {} closed={}", relation["text"], !relation["closed_ms"].is_null());
+    }
+    let work: Vec<&Json> =
+        relations.iter().filter(|r| r["relation"].as_str().is_some_and(|n| n.contains("work"))).collect();
+    assert!(work.iter().any(|r| r["text"].as_str().unwrap().contains("Borealis") && r["closed_ms"].is_null()));
+    assert!(
+        work.iter().any(|r| r["text"].as_str().unwrap().contains("Acme") && !r["closed_ms"].is_null()),
+        "the old job was closed"
+    );
+    let hits = store
+        .recall(&scope, &graphrt_core::memory::MemoryQuery::new("where did dana work in 2025").as_of(1_740_000_000_000))
+        .await
+        .unwrap();
+    println!("recall as of 2025: {:?}", hits.iter().map(|h| &h.record.text).collect::<Vec<_>>());
+    assert!(hits.iter().any(|h| h.record.text.contains("Acme")));
+    let _ = std::fs::remove_dir_all(&root);
+}

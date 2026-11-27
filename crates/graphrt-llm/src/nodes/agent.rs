@@ -674,7 +674,7 @@ impl AgentNode {
         #[cfg(feature = "memory")]
         let memory = match &self.memory {
             Some(config) => {
-                let (memory, runtime) = crate::memory::RunMemory::attach(ctx, config)?;
+                let (memory, runtime) = crate::memory::RunMemory::attach(ctx, config, &self.config.model)?;
                 let specs = runtime.list().await.map_err(|e| NodeError::new("tool", e.to_string()))?;
                 binder.bind_specs(crate::memory::MEMORY_PROVIDER, "*", &specs, &runtime, Origin::Agent)?;
                 memory

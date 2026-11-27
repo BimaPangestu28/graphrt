@@ -332,6 +332,8 @@ pub struct MemoryQuery {
     /// When fewer notes match than `limit`, add the most recently used
     /// active notes after them (the recall at the start of a run).
     pub fill_recent: bool,
+    /// Graph facts true at this time (milliseconds since the epoch). `None`: now.
+    pub as_of_ms: Option<u64>,
 }
 
 impl MemoryQuery {
@@ -356,6 +358,54 @@ impl MemoryQuery {
         self.fill_recent = true;
         self
     }
+
+    /// Graph facts true at `ms` instead of now.
+    pub fn as_of(mut self, ms: u64) -> Self {
+        self.as_of_ms = Some(ms);
+        self
+    }
+}
+
+/// Entities and relations a model read out of one note, for the memory graph.
+/// What a model writes is untrusted: a store cleans and bounds every field.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ExtractedFacts {
+    #[serde(default)]
+    pub entities: Vec<ExtractedEntity>,
+    #[serde(default)]
+    pub relations: Vec<ExtractedRelation>,
+}
+
+/// One entity of [`ExtractedFacts`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ExtractedEntity {
+    pub name: String,
+    /// `person`, `organization`, `place`, `product`, `event` or `other`.
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
+/// One relation of [`ExtractedFacts`]: `source relation target`, for example
+/// `Alice works_at Acme`, with the period the text says it is true.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ExtractedRelation {
+    pub source: String,
+    pub relation: String,
+    pub target: String,
+    /// `YYYY-MM-DD` when the text says since when.
+    #[serde(default)]
+    pub valid_from: Option<String>,
+    /// `YYYY-MM-DD` when the text says until when.
+    #[serde(default)]
+    pub valid_to: Option<String>,
+    /// The text says this replaces what was true before ("moved to", "now works at").
+    #[serde(default)]
+    pub replaces: bool,
 }
 
 /// What a hit is.
@@ -396,6 +446,11 @@ impl MemoryHit {
     /// A note of `level` found with `score`.
     pub fn note(record: MemoryRecord, level: MemoryLevel, score: f32) -> Self {
         Self { kind: HitKind::Note, record, level, score }
+    }
+
+    /// A fact of the memory graph, as a record whose text says it with its period.
+    pub fn fact(record: MemoryRecord, level: MemoryLevel, score: f32) -> Self {
+        Self { kind: HitKind::Fact, record, level, score }
     }
 }
 
@@ -449,6 +504,35 @@ pub trait MemoryBank: Send + Sync + fmt::Debug {
         target: &'a ForgetTarget,
         source: &'a MemorySource,
     ) -> BoxFuture<'a, Result<usize, MemoryError>>;
+
+    /// Whether this store keeps a memory graph ([`MemoryBank::link`] works).
+    fn keeps_graph(&self) -> bool {
+        false
+    }
+
+    /// The names of entities the graph of `scope` already knows, for an
+    /// extraction to reuse (at most `limit`, the most connected first).
+    fn known_entities<'a>(
+        &'a self,
+        scope: &'a MemoryScope,
+        limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<String>, MemoryError>> {
+        let _ = (scope, limit);
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Add what was read out of note `note_id` of `scope` to its graph. The
+    /// relations take the status and trust of the note: a note waiting for
+    /// review gives relations that wait too. Returns how many relations are new.
+    fn link<'a>(
+        &'a self,
+        scope: &'a MemoryScope,
+        note_id: &'a str,
+        facts: ExtractedFacts,
+    ) -> BoxFuture<'a, Result<usize, MemoryError>> {
+        let _ = (scope, note_id, facts);
+        Box::pin(async { Err(MemoryError::new("memory_graph", "this memory store keeps no graph")) })
+    }
 }
 
 /// Service registered in [`crate::node::Services`] by the host, per workflow:

@@ -183,6 +183,47 @@ refused here: the owner has `/v1/memory`.
 | DELETE | `/v1/me/memory/{agent}` | Erase everything about me (notes and lessons) |
 | DELETE | `/v1/me/memory/{agent}/{id}` | Remove one of my notes |
 
+## The memory graph
+
+With `graph: true` the agent also builds a graph of what the notes say:
+entities (people, organizations, places, products) and the relations between
+them, each with the period it was true.
+
+```yaml
+long_term_memory:
+  graph: true                                         # the node's model reads each note
+  # graph: { model: { provider: openai, name: gpt-4o-mini } }   # or another model
+```
+
+- After a note is saved, a model reads its entities and relations in the
+  background. The run never waits for it, and it costs one small model call
+  per note (which is why it is not on by default).
+- Only saved notes are read, never raw tool results. A relation takes the
+  status of its note: it waits for review while its note waits, comes into
+  use when the note is approved, and goes when its last note goes.
+- "Works at Acme since 2024" and later "left Acme, works at Borealis since
+  March 2026": the first relation is closed at March 2026, never deleted. A
+  recall `as_of` a time in 2025 finds Acme, a recall now finds Borealis.
+  Relations that hold one value at a time (`works_at`, `lives_in`, `has_plan`
+  and a few more) close the one before by themselves. A relation of less
+  trust never closes one of more.
+- Recall searches the graph too: the relations whose words match, and those
+  reached from the entities the question names, two hops wide. A fact takes
+  the place of the note it came from and says its period, for example
+  `Dana works at Acme (from 2024-01 until 2026-03)`.
+- Names and relations a model writes are cleaned, masked for secrets and
+  bounded: 2 000 entities and 10 000 relations per scope.
+- The graph lives in `graph.json` next to the notes of a user. Erasing a user
+  removes it, every change is in the audit log, and export includes it.
+
+```sh
+graphrt memory graph build support --user alice --model openai/gpt-4o-mini   # read the notes again
+graphrt memory graph show support --user alice
+```
+
+The owner reads it with `GET /v1/memory/{agent}/graph?user=`. Cargo feature
+`memory-graph`, in the default build.
+
 ## Between turns of one conversation
 
 Long term memory is for what should be known next week. Within one

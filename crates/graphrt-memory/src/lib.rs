@@ -15,6 +15,8 @@
 //! The design, the limits and the threat model are in `docs/memory-design.md`.
 
 pub mod gate;
+#[cfg(feature = "graph")]
+mod graph;
 pub mod search;
 mod store;
 

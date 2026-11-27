@@ -526,6 +526,36 @@ pub enum MemoryCommand {
         #[arg(long, default_value_t = 200)]
         limit: usize,
     },
+    /// Read the notes of a user into the memory graph again, with a model,
+    /// or print the graph.
+    #[cfg(feature = "memory-graph")]
+    Graph {
+        #[command(subcommand)]
+        command: MemoryGraphCommand,
+    },
+}
+
+/// `graphrt memory graph` subcommands.
+#[cfg(feature = "memory-graph")]
+#[derive(Debug, Subcommand)]
+pub enum MemoryGraphCommand {
+    /// Read every note of a user (in use and waiting) into the graph with MODEL (`provider/name`).
+    Build {
+        agent: String,
+        #[arg(long, value_name = "USER")]
+        user: Option<String>,
+        #[arg(long, value_name = "PROVIDER/NAME")]
+        model: String,
+        /// Model providers file (default: `$GRAPHRT_PROVIDERS` and the environment).
+        #[arg(long, value_name = "FILE")]
+        providers: Option<PathBuf>,
+    },
+    /// Print the entities and relations of a user, or of the agent without `--user`.
+    Show {
+        agent: String,
+        #[arg(long, value_name = "USER")]
+        user: Option<String>,
+    },
 }
 
 /// Options of `graphrt learn`.

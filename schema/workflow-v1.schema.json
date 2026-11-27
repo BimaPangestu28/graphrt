@@ -628,6 +628,49 @@
                     "off"
                   ],
                   "default": "guarded"
+                },
+                "graph": {
+                  "description": "Read each saved note into a memory graph of entities and relations with periods (`true`: with the node's model, or `{model: {provider, name}}`)",
+                  "oneOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "model": {
+                          "type": "object",
+                          "properties": {
+                            "provider": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "mode": {
+                              "type": "string",
+                              "enum": [
+                                "chat",
+                                "completion"
+                              ]
+                            },
+                            "completion_params": {
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "provider",
+                            "name"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "model"
+                      ]
+                    }
+                  ]
                 }
               },
               "required": []

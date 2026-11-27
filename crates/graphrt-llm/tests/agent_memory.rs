@@ -426,3 +426,49 @@ async fn one_run_removes_a_bounded_number_of_notes() {
     succeeded(&run(&engine, input("alice", "forget everything")).await);
     assert_eq!(store.list(&user("alice"), &ListFilter::default()).await.unwrap().len(), 2);
 }
+
+#[cfg(feature = "memory-graph")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_note_is_read_into_the_graph_in_the_background_and_recalled_two_hops_away() {
+    let store = MemoryStore::open(temp_root("graph"));
+    let model = Arc::new(MockModel::new(vec![
+        MockModel::tool_calls(&[(
+            "c1",
+            "remember",
+            r#"{"text":"I work at Acme, whose office is in Jakarta","kind":"fact"}"#,
+        )]),
+        MockModel::text("Noted."),
+        MockModel::text("Jakarta."),
+    ]));
+    let extractor = Arc::new(MockModel::new(vec![MockModel::text(
+        r#"{"entities": [{"name": "the user", "type": "person"}, {"name": "Acme", "type": "organization"}, {"name": "Jakarta", "type": "place"}],
+            "relations": [{"source": "the user", "relation": "works_at", "target": "Acme"},
+                          {"source": "Acme", "relation": "office_in", "target": "Jakarta"}]}"#,
+    )]));
+    let memory = json!({"graph": {"model": {"provider": "extractor", "name": "small"}}});
+    let mut engine = engine(&model, &store, memory, json!({"tools": []}));
+    engine = engine.with_services(
+        Services::new()
+            .with(ModelRegistry::new().with("mock", model.clone()).with("extractor", extractor.clone()))
+            .with(store.clone().into_service())
+            .with(graphrt_core::memory::MemoryDefaults { tenant: None, agent: Some("support".into()) }),
+    );
+    succeeded(&run(&engine, input("alice", "I work at Acme, whose office is in Jakarta")).await);
+    // The run did not wait: the graph fills in a moment.
+    let mut relations = 0;
+    for _ in 0..100 {
+        let export = store.export_user(&user("alice")).await.unwrap();
+        relations = export["graph"]["relations"].as_array().map_or(0, Vec::len);
+        if relations == 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(relations, 2);
+    let sent = extractor.requests().pop().unwrap();
+    assert!(sent.messages[1].text().contains("<note>\nI work at Acme"), "the note, not the conversation");
+    // "the user" works at Acme, Acme is in Jakarta: two hops from "acme".
+    let hits = store.recall(&user("alice"), &graphrt_core::memory::MemoryQuery::new("acme")).await.unwrap();
+    let texts: Vec<&str> = hits.iter().map(|h| h.record.text.as_str()).collect();
+    assert!(texts.contains(&"Acme office in Jakarta"), "{texts:?}");
+}

@@ -36,6 +36,9 @@ pub mod error;
 /// `long_term_memory` of the `agent` node (feature `memory`).
 #[cfg(feature = "memory")]
 pub(crate) mod memory;
+/// Reading facts out of saved notes for the memory graph (feature `memory-graph`).
+#[cfg(feature = "memory-graph")]
+pub mod memory_graph;
 /// Scripted model for tests and offline examples (feature `mock`, on by default).
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;
