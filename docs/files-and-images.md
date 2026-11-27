@@ -1,12 +1,13 @@
 # Files and images
 
 Agents can work with files: take the files a person gives them, read and
-search them, write new ones and hand them back. Two crates provide this, and
-each is off until you turn it on:
+search them, write new ones and hand them back. Three crates provide this,
+and each is off until you turn it on:
 
 | Capability | Crate | Turn it on | What the agent gets |
 | --- | --- | --- | --- |
 | Files | `graphrt-files` | `--workspace DIR` | The `files` tools, working inside one directory |
+| Documents | `graphrt-docgen` | `--document-tools` | The `documents` tools: PDF, Word and Excel files written into the workspace |
 | Images | `graphrt-image` | built into the default CLI for `vision`, `--image-tools` for the tools | Vision input that is checked, stripped of metadata and resized, and the `image` tools |
 
 A runtime started without them has no file or image tools, links none of
@@ -234,6 +235,93 @@ Cargo features of `graphrt-files`:
 
 Without `doc` the crate depends on `graphrt-core`, `sha2` and nothing else of
 weight, which suits phones and small agents.
+
+## Creating documents
+
+`files/write` writes text. For a file a person opens in a PDF reader, in Word
+or in Excel, `--document-tools` (with `--workspace`) adds a third tool
+provider:
+
+```sh
+graphrt run examples/documents.yaml --workspace ./workspace --document-tools \
+  --input title="Sales report"
+ls workspace/reports    # report.docx  report.pdf  revenue.xlsx
+```
+
+```yaml
+- id: agent
+  type: agent
+  tools: [files/*, documents/*]
+```
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `create_pdf` | `path`, `content`, `title?`, `overwrite?` | A PDF on A4 pages with page numbers |
+| `create_docx` | `path`, `content`, `title?`, `overwrite?` | A Word document with real headings, lists and tables |
+| `create_xlsx` | `path`, `sheets`, `overwrite?` | An Excel workbook. Each sheet has `rows`, a `name?` and `header?` (default true: first row bold and kept in view). |
+
+`content` is Markdown, which models write anyway:
+
+| Markdown | Becomes |
+| --- | --- |
+| `# Title`, `## Section`, `### Part` | Headings of three sizes |
+| Text separated by empty lines | Paragraphs |
+| `- item`, `1. item` | Bullet and numbered lists |
+| `\| a \| b \|` rows, with `\|---\|---\|` under the header | A table |
+| ```` ``` ```` blocks | Code in a fixed width font |
+| `---` | A line across the page |
+| `\newpage` on its own line | A page break |
+| `**bold**`, `*italic*`, `` `code` `` | Styled text |
+| `[text](url)`, images, HTML | Their text. Nothing is linked, fetched or embedded. |
+
+A cell of a sheet is a string, a number, `true`, `false` or `null`. Text is
+stored as text: a cell that starts with `=`, `+`, `-` or `@` is shown as it
+is and never calculated. Whole numbers too long for a spreadsheet to keep
+exactly (more than 15 digits, an account number) are stored as text.
+
+The files go through the workspace like any other: path rules, quota, read
+only and user directories apply (`tool_context: { documents: { scope: ... } }`
+with `--workspace-per-user`), and they come back in the `files` output of the
+node. The file name must end in `.pdf`, `.docx` or `.xlsx`.
+
+Limits and what to expect:
+
+| Limit | Default | Field of `DocumentToolsConfig` |
+| --- | --- | --- |
+| Markdown of one document | 400,000 bytes | `max_content_chars` |
+| Pages of a PDF | 200 | `max_pdf_pages` |
+| Sheets of a workbook | 20 | `max_sheets` |
+| Cells of a workbook | 200,000 | `max_cells` |
+| Columns of a table in a PDF | 12 | fixed |
+
+- **PDF is Western European text only.** It uses the fonts every PDF reader
+  has built in, so no font file is shipped or embedded. Characters outside
+  Windows-1252 (Chinese, Japanese, Arabic, emoji) are written as `?`, and
+  the result says how many. Use `create_docx` for those: Word files are
+  Unicode.
+- **Layout is simple on purpose.** One column, one font family, tables with
+  equal columns. No images, charts, headers or footers beyond the page
+  number.
+- The documents hold text, tables and lines. No scripts, macros, links,
+  form fields, embedded files or formulas are ever written.
+
+From Rust, the writers work without the tools:
+
+```rust
+use graphrt_docgen::{markdown, pdf, docx, xlsx};
+
+let blocks = markdown::parse("# Report\n\nRevenue grew **12%**.");
+let report = pdf::render(&blocks, &pdf::PdfOptions::default())?;      // report.bytes, report.pages
+let word = docx::render(&blocks, &docx::DocxOptions::default())?;
+let sheet = xlsx::Sheet { name: "Orders".into(), header: true, rows: vec![vec![xlsx::Cell::Text("Region".into())]] };
+let book = xlsx::render(&[sheet], &xlsx::XlsxLimits::default())?;
+```
+
+| Feature of `graphrt-docgen` | Default | Meaning |
+| --- | --- | --- |
+| `tokio` | on | Layout and writing run on Tokio's blocking pool |
+| `office` | on | DOCX and XLSX (the `zip` crate). Without it: PDF only, with `flate2` as the one dependency. |
+| `tools` | on | `DocumentTools`, over a `graphrt-files` workspace |
 
 ## Images
 

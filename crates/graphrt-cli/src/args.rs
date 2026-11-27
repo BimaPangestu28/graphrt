@@ -714,6 +714,11 @@ pub struct ServiceArgs {
     #[cfg(feature = "image")]
     #[arg(long, value_name = "NAME", requires = "image_tools")]
     pub image_model: Option<String>,
+    /// Add the `documents` tools to the workspace: `documents/create_pdf`,
+    /// `create_docx` and `create_xlsx` write PDF, Word and Excel files.
+    #[cfg(feature = "documents")]
+    #[arg(long, requires = "workspace")]
+    pub document_tools: bool,
     /// Abort a run after this many milliseconds.
     #[arg(long, value_name = "MS")]
     pub timeout_ms: Option<u64>,

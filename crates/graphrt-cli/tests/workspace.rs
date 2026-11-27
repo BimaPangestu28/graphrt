@@ -152,3 +152,35 @@ fn image_tools_inspect_and_thumbnail_a_workspace_image() {
     assert!(!out.status.success());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `--document-tools`: a workflow writes a PDF, a Word document and a workbook.
+#[cfg(feature = "documents")]
+#[test]
+fn document_tools_write_pdf_word_and_excel_files() {
+    let dir = temp_dir("documents");
+    let workflow = example("documents.yaml");
+    let run = |extra: &[&str]| {
+        let mut args = vec!["run", workflow.to_str().unwrap(), "--input", "title=Sales report", "-o", "json"];
+        args.extend(["--workspace", dir.to_str().unwrap()]);
+        args.extend(extra);
+        Command::new(env!("CARGO_BIN_EXE_graphrt")).args(args).output().unwrap()
+    };
+    let out = run(&["--document-tools"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        json["outputs"]["pdf"].as_str().unwrap().starts_with("Created reports/report.pdf (application/pdf, 1 page")
+    );
+    assert_eq!(json["outputs"]["files"][0]["reference"], "workspace:reports/report.pdf");
+    assert_eq!(json["outputs"]["files"][0]["mime_type"], "application/pdf");
+    assert!(std::fs::read(dir.join("reports/report.pdf")).unwrap().starts_with(b"%PDF-1.4"));
+    assert!(std::fs::read(dir.join("reports/report.docx")).unwrap().starts_with(b"PK"));
+    assert!(std::fs::read(dir.join("reports/revenue.xlsx")).unwrap().starts_with(b"PK"));
+
+    // Without the flag a workspace has file tools only.
+    let out = run(&[]);
+    assert!(!out.status.success());
+    let report = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(report.contains("unknown tool provider `documents`"), "{report}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
