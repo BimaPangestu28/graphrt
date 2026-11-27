@@ -59,6 +59,8 @@ const MAX_TURN_BYTES: usize = 16 * 1024;
 const MAX_TURN_FILES: usize = 8;
 /// How long the typing sign is kept up for one run.
 const MAX_TYPING: Duration = Duration::from_secs(10 * 60);
+/// How long a turn waits for its first typing sign before the run starts anyway.
+const FIRST_SIGN_WAIT: Duration = Duration::from_secs(3);
 /// The least time between two notices of the same kind to one customer.
 const NOTICE_INTERVAL: Duration = Duration::from_secs(60);
 /// Conversations remembered at once before the ones at rest are dropped.
@@ -548,7 +550,18 @@ impl Channels {
         }
     }
 
-    /// Keep the typing sign up while the run works.
+    /// Show the first typing sign of a turn, before its run starts. Awaited,
+    /// not left to [`Channels::keep_typing`]: that task stops when the run
+    /// ends, and a quick run would end it before the sign went out. The sign
+    /// also answers a Telegram tap (the button spins until then) and marks a
+    /// WhatsApp message as read, so it must not be lost, and it must not reach
+    /// the customer after the answer. Bounded, so a slow channel only delays it.
+    async fn show_typing(bot: &Bot, message: &InboundMessage) {
+        // Best effort: the answer does not depend on it.
+        let _shown = tokio::time::timeout(FIRST_SIGN_WAIT, bot.channel.typing(message)).await;
+    }
+
+    /// Keep the typing sign up while the run works, after [`Channels::show_typing`] showed it first.
     fn keep_typing(&self, bot: &Arc<Bot>, conversation: &str, message: InboundMessage) {
         let every = match bot.config.kind {
             ChannelKind::Telegram => Duration::from_secs(4),
@@ -557,10 +570,13 @@ impl Channels {
         let bot = Arc::clone(bot);
         let task = tokio::spawn(async move {
             let started = Instant::now();
-            while started.elapsed() < MAX_TYPING {
+            loop {
+                tokio::time::sleep(every).await;
+                if started.elapsed() >= MAX_TYPING {
+                    break;
+                }
                 // Best effort: the answer does not depend on it.
                 let _shown = bot.channel.typing(&message).await;
-                tokio::time::sleep(every).await;
             }
         });
         let mut chats = locked(&self.chats);
@@ -661,7 +677,10 @@ impl Channels {
             return false;
         }
 
+        let mut shown = false;
         if let Some(waiting) = &link.waiting_run {
+            Self::show_typing(bot, &first).await;
+            shown = true;
             match self.answer_question(&state, bot, &conversation, waiting, &text, tapped.as_deref()).await {
                 Waiting::Resumed => {
                     self.keep_typing(bot, conversation_id, first);
@@ -699,6 +718,9 @@ impl Channels {
                 bot.say(&chat_id, &config.messages.unsupported, &[]).await;
             }
             return false;
+        }
+        if !shown {
+            Self::show_typing(bot, &first).await;
         }
         self.keep_typing(bot, conversation_id, first.clone());
         let files = self.take_files(&state, bot, &chat_id, &user_id, &attachments).await;
@@ -855,28 +877,19 @@ impl Channels {
         let Ok(Some(conversation)) = conversations.store().get(conversation_id).await else { return };
         let Some(link) = conversation.channel.clone() else { return };
         let Some(bot) = self.bot(&link.name).cloned() else { return };
-        let messages = &bot.config.messages;
-        let mut waiting_run = None;
-        match record.status {
-            RunStatus::Succeeded => self.send_answer(&state, &bot, &conversation, &link, record, files).await,
-            RunStatus::Paused => {
-                // A pause of a shutdown asks nobody: the next server resumes the run.
-                let requests = requests_of(record);
-                if !requests.is_empty() {
-                    waiting_run = Some(record.run_id.clone());
-                    self.ask(&bot, &conversation, &link, record, &requests).await;
-                }
-            }
-            RunStatus::Running => return,
-            _ => {
-                let expired = record.error.as_deref() == Some(crate::approvals::EXPIRED_REASON);
-                let text = if expired { &messages.expired } else { &messages.error };
-                self.say_in_window(&bot, &link, text, &[]).await;
-            }
+        if record.status == RunStatus::Running {
+            return;
         }
+        let messages = &bot.config.messages;
+        // A pause of a shutdown asks nobody: the next server resumes the run.
+        let requests = if record.status == RunStatus::Paused { requests_of(record) } else { Vec::new() };
+        // The run's state is kept before anything is sent, so that whoever sees
+        // what was sent finds it already: a question finds its run waiting for
+        // the answer, and an answer finds the approvers' copies of its request gone.
         if record.status != RunStatus::Paused {
             self.forget_approvals(&record.run_id);
         }
+        let waiting_run = (!requests.is_empty()).then(|| record.run_id.clone());
         let changed = conversations
             .change(conversation_id, move |conversation, _| {
                 if let Some(link) = &mut conversation.channel {
@@ -886,6 +899,19 @@ impl Channels {
             .await;
         if let Err(error) = changed {
             eprintln!("warning: channel `{}`: cannot update a conversation: {error}", bot.name());
+        }
+        match record.status {
+            RunStatus::Succeeded => self.send_answer(&state, &bot, &conversation, &link, record, files).await,
+            RunStatus::Paused => {
+                if !requests.is_empty() {
+                    self.ask(&bot, &conversation, &link, record, &requests).await;
+                }
+            }
+            _ => {
+                let expired = record.error.as_deref() == Some(crate::approvals::EXPIRED_REASON);
+                let text = if expired { &messages.expired } else { &messages.error };
+                self.say_in_window(&bot, &link, text, &[]).await;
+            }
         }
         self.release(&bot, conversation_id);
     }
@@ -927,10 +953,12 @@ impl Channels {
         files: Vec<graphrt_core::value::File>,
     ) {
         let answer = reply::answer_of(&bot.config.messages, &record.answer, &record.outputs);
-        let sent = self.say_in_window(bot, link, &answer.text, &reply::buttons_of(&answer.choices)).await;
+        let buttons = reply::buttons_of(&answer.choices);
+        // Before the answer goes out, so that a quick pick of one of them finds them.
         if let Some(chat) = locked(&self.chats).get_mut(&conversation.id) {
             chat.choices = answer.choices;
         }
+        let sent = self.say_in_window(bot, link, &answer.text, &buttons).await;
         if !sent && !answer.text.trim().is_empty() {
             return;
         }

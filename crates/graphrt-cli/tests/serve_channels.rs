@@ -664,9 +664,10 @@ async fn a_long_answer_is_split_and_formatted_for_telegram() {
 
     // Telegram refuses the markup: the customer still gets the words, as plain text.
     telegram.refuse_html.store(true, Ordering::Relaxed);
-    let before = telegram.sent_to("42").len();
     assert_eq!(server.telegram(&telegram.text_update(42, 2, "short")).await, StatusCode::OK);
-    until("the plain answer", || telegram.sent_to("42").len() > before).await;
+    // The refused try is recorded too: wait for the plain one itself.
+    let is_plain = |call: &Json| call.get("parse_mode").is_none();
+    until("the plain answer", || telegram.calls_of("sendMessage").iter().any(is_plain)).await;
     let plain = telegram.calls_of("sendMessage").into_iter().rfind(|call| call.get("parse_mode").is_none()).unwrap();
     assert!(plain["text"].as_str().unwrap().starts_with("**Summary** of <your> text"), "{plain}");
 }
