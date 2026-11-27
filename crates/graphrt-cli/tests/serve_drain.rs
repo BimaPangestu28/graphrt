@@ -6,13 +6,13 @@
 #[cfg(unix)]
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use graphrt_cli::drain::{DRAINED, drain};
+use graphrt_cli::drain::{DRAINED, drain, preempt_at, reserve_per_run};
 use graphrt_cli::serve::{AppState, build_state, discover, resume_drained_runs, router};
 use graphrt_cli::setup::ServiceOptions;
 use graphrt_cli::store::FileStore;
@@ -28,10 +28,119 @@ use tower::ServiceExt;
 struct Upstream {
     hang: AtomicBool,
     calls: AtomicUsize,
+    /// When each hanging request was given up by its caller (a preempted node
+    /// drops its connection), for the diagnostics of a failed drain.
+    dropped: Mutex<Vec<Instant>>,
+}
+
+/// Records in [`Upstream::dropped`] that a request ended without an answer.
+struct DroppedCall {
+    upstream: Arc<Upstream>,
+    answered: bool,
+}
+
+impl Drop for DroppedCall {
+    fn drop(&mut self) {
+        if !self.answered
+            && let Ok(mut dropped) = self.upstream.dropped.lock()
+        {
+            dropped.push(Instant::now());
+        }
+    }
+}
+
+/// What happened when during a drain, printed when its outcome is not the
+/// expected one: without it a failure on a CI runner says only how many runs
+/// did not finish, not which stage took the time.
+struct DrainTimeline {
+    began: Instant,
+    /// The store's write latency estimate when the drain began.
+    write_estimate: Duration,
+    /// When the drain is expected to preempt in-flight nodes, from that estimate.
+    expected_preempt: Duration,
+    runs: Vec<Arc<graphrt_cli::store::live::ActiveRun>>,
+    /// When each run was first seen done, by its place in `runs`.
+    done_at: Arc<Mutex<Vec<Option<Duration>>>>,
+    watcher: tokio::task::JoinHandle<()>,
+}
+
+impl DrainTimeline {
+    /// Start watching the runs that are active now. Call it just before the drain.
+    fn start(state: &Arc<AppState>, timeout: Duration) -> Self {
+        let began = Instant::now();
+        let runs = state.active_list();
+        let write_estimate = state.store_write_estimate();
+        let expected_preempt = preempt_at(timeout, runs.len(), reserve_per_run(write_estimate));
+        let done_at = Arc::new(Mutex::new(vec![None; runs.len()]));
+        let watcher = {
+            let (runs, done_at) = (runs.clone(), Arc::clone(&done_at));
+            tokio::spawn(async move {
+                loop {
+                    let mut all_done = true;
+                    for (index, run) in runs.iter().enumerate() {
+                        let mut seen = done_at.lock().unwrap();
+                        if seen[index].is_none() {
+                            if run.is_done() {
+                                seen[index] = Some(began.elapsed());
+                            } else {
+                                all_done = false;
+                            }
+                        }
+                    }
+                    if all_done {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+        };
+        Self { began, write_estimate, expected_preempt, runs, done_at, watcher }
+    }
+
+    /// The timeline as text. Times are from the start of the drain.
+    async fn describe(&self, state: &AppState, upstream: &Upstream, drain_returned: Duration) -> String {
+        self.watcher.abort();
+        let ms = |d: Duration| format!("{:.0} ms", d.as_secs_f64() * 1000.0);
+        let mut lines = vec![
+            format!("drain returned after {}", ms(drain_returned)),
+            format!(
+                "store write estimate: {} at the start, {} now",
+                ms(self.write_estimate),
+                ms(state.store_write_estimate())
+            ),
+            format!("preemption expected at {} for {} run(s)", ms(self.expected_preempt), self.runs.len()),
+        ];
+        let dropped: Vec<String> =
+            upstream.dropped.lock().unwrap().iter().map(|at| ms(at.saturating_duration_since(self.began))).collect();
+        lines.push(format!(
+            "upstream calls given up by their node (preempted): {} of {} [{}]",
+            dropped.len(),
+            upstream.calls.load(Ordering::SeqCst),
+            dropped.join(", ")
+        ));
+        lines.push(format!("runs still active: {}", state.active_runs()));
+        let done_at = self.done_at.lock().unwrap().clone();
+        for (run, done) in self.runs.iter().zip(done_at) {
+            let stored = match state.store().get(&run.run_id).await {
+                Ok(Some(record)) => format!("{:?} with {} event(s)", record.status, record.event_count),
+                Ok(None) => "no record".to_owned(),
+                Err(error) => format!("store error: {error}"),
+            };
+            lines.push(format!(
+                "  {} ({}): done {}, ended as {:?}, stored as {stored}",
+                run.run_id,
+                if run.is_detached() { "async" } else { "stream" },
+                done.map_or_else(|| "never".to_owned(), ms),
+                run.terminal_kind(),
+            ));
+        }
+        lines.join("\n")
+    }
 }
 
 async fn start_upstream() -> (Arc<Upstream>, u16) {
-    let upstream = Arc::new(Upstream { hang: AtomicBool::new(true), calls: AtomicUsize::new(0) });
+    let upstream =
+        Arc::new(Upstream { hang: AtomicBool::new(true), calls: AtomicUsize::new(0), dropped: Mutex::default() });
     let shared = Arc::clone(&upstream);
     let app = axum::Router::new().route(
         "/work",
@@ -39,9 +148,11 @@ async fn start_upstream() -> (Arc<Upstream>, u16) {
             let upstream = Arc::clone(&shared);
             async move {
                 upstream.calls.fetch_add(1, Ordering::SeqCst);
+                let mut call = DroppedCall { upstream: Arc::clone(&upstream), answered: false };
                 if upstream.hang.load(Ordering::SeqCst) {
                     tokio::time::sleep(Duration::from_secs(120)).await;
                 }
+                call.answered = true;
                 "done"
             }
         }),
@@ -176,6 +287,7 @@ async fn sigterm_drain_pauses_async_and_streaming_runs_and_a_restart_completes_t
 
     // SIGTERM: drain with a 3 s deadline (preempting at about 2 s).
     let timeout = Duration::from_secs(3);
+    let timeline = DrainTimeline::start(&state, timeout);
     let began = Instant::now();
     let draining = {
         let state = Arc::clone(&state);
@@ -193,10 +305,12 @@ async fn sigterm_drain_pauses_async_and_streaming_runs_and_a_restart_completes_t
 
     let report = draining.await.unwrap();
     let elapsed = began.elapsed();
+    // Printed with a failed assertion below: which stage of the drain took the time.
+    let timeline = timeline.describe(&state, &upstream, elapsed).await;
 
-    assert!(elapsed <= timeout + Duration::from_millis(250), "drain took {elapsed:?}");
-    assert_eq!((report.runs, report.paused, report.failed, report.unfinished), (10, 10, 0, 0), "{report}");
-    assert!(report.preempted, "the hanging nodes had to be preempted");
+    assert!(elapsed <= timeout + Duration::from_millis(250), "drain took {elapsed:?}\n{timeline}");
+    assert_eq!((report.runs, report.paused, report.failed, report.unfinished), (10, 10, 0, 0), "{report}\n{timeline}");
+    assert!(report.preempted, "the hanging nodes had to be preempted\n{timeline}");
     assert_eq!(state.active_runs(), 0);
 
     // Streaming callers got `run_paused` with the drained reason and the snapshot.

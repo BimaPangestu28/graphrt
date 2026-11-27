@@ -8,7 +8,7 @@
 //! | POST | `/v1/workflows/{name}/runs` | `{inputs, sys, conversation, stream, async}` | SSE stream, JSON result, or `202` + run id when `async` |
 //! | GET | `/v1/runs` | query `workflow`, `status`, `limit`, `cursor` | stored runs, newest first |
 //! | GET | `/v1/runs/{run_id}` | – | run record (status, outputs, pause reasons and expected resume inputs) |
-//! | GET | `/v1/runs/{run_id}/events` | query `from`, `stream=false` | SSE replay (+ live tail while running), or a JSON array |
+//! | GET | `/v1/runs/{run_id}/events` | query `from`, `stream=false`, `responses=true` | SSE replay (+ live tail while running), or a JSON array |
 //! | POST | `/v1/runs/{run_id}/abort` | – | `202` if the run was active |
 //! | POST | `/v1/runs/{run_id}/resume` | `{inputs, secrets, stream, async}` (`snapshot` optional) | SSE stream or JSON result |
 //! | DELETE | `/v1/runs/{run_id}` | – | `204`; `409` while the run executes |
@@ -16,6 +16,9 @@
 //! | POST | `/v1/validate` | workflow document, or `{document: "<yaml/json text>"}` | `{valid, errors, warnings}` |
 //! | GET | `/v1/runs/{run_id}/scores` | – | evaluation scores (feature `scores`, see [`crate::scores`]) |
 //! | POST | `/v1/runs/{run_id}/feedback` | `{name, value, comment?, user?}` | `201` + the stored `human` score |
+//! | GET, POST | `/v1/conversations` | `{workflow, input?, title?}` | conversations kept by the server (`--conversations`, see [`crate::conversations`]) |
+//! | GET, DELETE | `/v1/conversations/{id}` | – | one conversation with its messages |
+//! | GET | `/chat/`, `/chat/{workflow}` | – | the chat page (`--chat`), with `/chat/embed.js`, `/v1/chat/config` and `/v1/chat/guest` |
 //! | GET | `/v1/hooks` | – | webhooks configured with `--webhooks` |
 //! | POST | `/v1/hooks/{hook}` | any JSON (signature-checked when configured) | `202` + run id; see [`crate::webhooks`] |
 //!
@@ -42,12 +45,18 @@
 
 mod auth;
 mod build;
+#[cfg(feature = "web-chat")]
+mod chat;
+#[cfg(feature = "cors")]
+mod cors;
 mod delivery;
 mod errors;
 mod events;
 mod execute;
 #[cfg(feature = "files")]
 mod files_api;
+#[cfg(feature = "web-chat")]
+mod guests;
 mod local_host;
 mod resume;
 mod router;
@@ -63,6 +72,10 @@ pub use auth::AuthenticatedUser;
 pub(crate) use auth::Caller;
 pub(crate) use auth::constant_time_eq;
 pub use build::{build_state, discover};
+#[cfg(feature = "web-chat")]
+pub use chat::{Chat, ChatContext, ChatWorkflow};
+#[cfg(feature = "cors")]
+pub use cors::Cors;
 #[cfg(feature = "trust-gateway")]
 pub(crate) use delivery::{EventScope, StreamGuard};
 pub(crate) use errors::error_response;
@@ -72,6 +85,8 @@ pub use events::EventsQuery;
 #[cfg(feature = "trust-gateway")]
 pub(crate) use execute::to_values;
 pub(crate) use execute::{Launch, launch_detached, traceparent};
+#[cfg(feature = "web-chat")]
+pub use guests::{GuestTokenError, Guests, IssuedToken};
 pub use resume::{ResumeRequest, resume_drained_runs};
 pub use router::{DEFAULT_MAX_UPLOAD_BYTES, router, router_with_uploads};
 pub use runs::ListQuery;

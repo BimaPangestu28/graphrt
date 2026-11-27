@@ -58,7 +58,7 @@ pub(super) async fn execute(
         Delivery::Detached => {
             // No caller waits: a shutdown drain leaves it for the next server to resume.
             active.set_detached();
-            accepted_response(&run_id)
+            accepted_response(&run_id, active.stored_before)
         }
         Delivery::Stream => stream_response(active, stream_assembler, reply.scope),
         Delivery::Blocking => {
@@ -81,13 +81,16 @@ fn stream_response(active: Arc<ActiveRun>, assembler: ResponseAssembler, scope: 
     Sse::new(events).keep_alive(KeepAlive::default()).into_response()
 }
 
-/// `202` for a detached run, with where to follow it.
-fn accepted_response(run_id: &str) -> Response {
+/// `202` for a detached run, with where to follow it. `first_event` is the
+/// index of this execution's first event: `0` for a new run, and for a resumed
+/// one the `?from=` that skips what the run did before it paused.
+fn accepted_response(run_id: &str, first_event: u64) -> Response {
     let body = serde_json::json!({
         "run_id": run_id,
         "status": "running",
         "run": format!("/v1/runs/{run_id}"),
         "events": format!("/v1/runs/{run_id}/events"),
+        "first_event": first_event,
     });
     (StatusCode::ACCEPTED, Json(body)).into_response()
 }
@@ -123,15 +126,31 @@ pub(super) fn launch(
         start_node: state.store_inputs.then(|| root_start_node(engine.graph())).flatten(),
         #[cfg(feature = "online-eval")]
         online: state.online.as_ref().filter(|online| online.covers(&record.workflow)).cloned(),
+        #[cfg(feature = "conversations")]
+        conversation: state
+            .conversations
+            .as_ref()
+            .zip(record.session_id.as_deref())
+            .map(|(conversations, session)| crate::conversations::Turn::of(conversations, session)),
     };
     let assembler = new_assembler(engine, &input);
+    #[cfg(feature = "run-follow")]
+    let seed = live::AssemblerSeed {
+        graph: Arc::clone(engine.graph()),
+        sys: input.sys.clone(),
+        resumed: input.resume.as_ref().map(|resume| resume.snapshot.root.clone()),
+    };
     let run = engine.run(input);
     // Tracked before the driver starts: a run that ends at once must not be
     // untracked first and then left in the active set for good.
     let tracked = Arc::clone(state);
     let weak = Arc::downgrade(state);
     let tracking = live::Tracking {
-        on_start: Box::new(move |active| tracked.track(Arc::clone(active))),
+        on_start: Box::new(move |active| {
+            #[cfg(feature = "run-follow")]
+            active.set_assembler_seed(seed);
+            tracked.track(Arc::clone(active));
+        }),
         on_finish: Box::new(move |id| {
             if let Some(state) = weak.upgrade() {
                 state.untrack(id);

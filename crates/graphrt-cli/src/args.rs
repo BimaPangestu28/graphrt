@@ -977,6 +977,28 @@ pub struct ServeArgs {
     /// Repeatable. See docs/serving.md.
     #[arg(long, value_name = "INPUT=HEADER")]
     pub input_header: Vec<crate::header_inputs::HeaderInputSpec>,
+    /// Let pages of this origin call the API from a browser (CORS), e.g.
+    /// `https://app.example.com`. Repeatable [env: GRAPHRT_CORS_ORIGINS, commas].
+    /// Off unless given. Origins are matched exactly (scheme, host, port); `*`
+    /// allows any origin and needs an API key. Cookies are never accepted from
+    /// another origin: pages send their token in a header. See docs/web.md.
+    #[cfg(feature = "cors")]
+    #[arg(long, value_name = "ORIGIN")]
+    pub cors_origin: Vec<String>,
+    /// Let a verified end user (or a chat guest) answer the questions of their own
+    /// paused runs (`POST /v1/runs/{id}/resume`). Off by default: a paused run can
+    /// be an approval that someone else has to give, such as a tool behind
+    /// `require_approval`. Turn it on only when every pause of the workflows that
+    /// users start is a question to that user.
+    #[cfg(feature = "jwt")]
+    #[arg(long)]
+    pub user_resume: bool,
+    #[cfg(feature = "conversations")]
+    #[command(flatten)]
+    pub conversations: ConversationArgs,
+    #[cfg(feature = "web-chat")]
+    #[command(flatten)]
+    pub chat: ChatArgs,
     /// Online evaluation: an evaluator config (YAML or JSON) that scores a deterministic
     /// sample of finished runs with judge workflows, regexes, JSON schemas, budgets or
     /// trajectory checks, in a bounded background pool. Scores are stored with each run
@@ -1005,6 +1027,77 @@ pub struct ServeArgs {
     pub gateway: GatewayTrustArgs,
     #[command(flatten)]
     pub services: ServiceArgs,
+}
+
+/// Conversations kept by `graphrt serve` (see docs/web.md).
+#[cfg(feature = "conversations")]
+#[derive(Debug, Args)]
+pub struct ConversationArgs {
+    /// Keep conversations on the server: a run that names a `conversation_id` gets
+    /// the earlier turns as `sys.history` and its answer is added when it succeeds,
+    /// so a browser does not hold the history. Stored in `--store` (in memory
+    /// without one). A verified end user reaches only their own conversations.
+    /// `sys.history` from clients keeps working as before.
+    #[arg(long)]
+    pub conversations: bool,
+    /// Messages kept per conversation. When a conversation grows beyond it, the
+    /// oldest turns are dropped (0 = unlimited).
+    #[arg(long, value_name = "N", default_value_t = 200, requires = "conversations")]
+    pub conversation_max_messages: usize,
+    /// Conversations each end user may keep. A new one beyond it replaces the
+    /// user's least recently used one (0 = unlimited). API-key callers are not limited.
+    #[arg(long, value_name = "N", default_value_t = 50, requires = "conversations")]
+    pub conversations_per_user: usize,
+    /// Delete conversations not used for this many days (0 = keep them).
+    #[arg(long, value_name = "DAYS", default_value_t = 30, requires = "conversations")]
+    pub conversation_ttl_days: u64,
+}
+
+/// Who may use the chat page of `graphrt serve` (`--chat-access`).
+#[cfg(feature = "web-chat")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum ChatAccess {
+    /// Holders of the API key: the page asks for it once and keeps it in the browser.
+    #[default]
+    Key,
+    /// End users with a token the server verifies (`--verify-jwt`): the embedding
+    /// page hands the token to the widget.
+    Users,
+    /// Anyone who opens the page: each browser gets a guest session, limited by
+    /// `--chat-guest-rate-limit` and `--chat-guest-budget`.
+    Guests,
+}
+
+/// The chat page and widget of `graphrt serve` (see docs/web.md).
+#[cfg(feature = "web-chat")]
+#[derive(Debug, Args)]
+pub struct ChatArgs {
+    /// Serve a chat page for this workflow at `/chat/WORKFLOW` (and `/chat` for the
+    /// first one), plus the widget script `/chat/embed.js`. `WORKFLOW=INPUT` names
+    /// the start input that takes the message; without it the message is
+    /// `sys.query`. Repeatable. Off unless given.
+    #[arg(long, value_name = "WORKFLOW[=INPUT]")]
+    pub chat: Vec<String>,
+    /// Who may chat: `key` (default), `users` or `guests`.
+    #[arg(long, value_enum, value_name = "WHO", default_value_t = ChatAccess::Key, requires = "chat")]
+    pub chat_access: ChatAccess,
+    /// Title shown on the chat page and the widget [default: the workflow name].
+    #[arg(long, value_name = "TEXT", requires = "chat")]
+    pub chat_title: Option<String>,
+    /// With `--chat-access guests`: runs per minute one guest may start, with bursts
+    /// of the same size (0 = unlimited).
+    #[arg(long, value_name = "N", default_value_t = 10, requires = "chat")]
+    pub chat_guest_rate_limit: u32,
+    /// With `--chat-access guests`: runs per minute all guests together may start
+    /// (0 = unlimited). A guest session costs nothing to open, so this is what
+    /// bounds the model spend of a public page.
+    #[arg(long, value_name = "N", default_value_t = 120, requires = "chat")]
+    pub chat_guest_budget: u32,
+    /// Draw `diagram` UI blocks as pictures in the chat: the path of a Mermaid
+    /// build (`mermaid.min.js`), served at `/chat/mermaid.js` and loaded by the
+    /// chat when a diagram first shows. Without it diagrams show as text.
+    #[arg(long, value_name = "FILE", requires = "chat")]
+    pub chat_mermaid: Option<PathBuf>,
 }
 
 /// Running behind a graphrt gateway (`graphrt serve --trust-gateway`, see

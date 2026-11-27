@@ -68,6 +68,37 @@ pub struct ActiveRun {
     /// No caller waits for the run (async starts, webhooks, resumes after a
     /// restart): after a shutdown drain the server resumes it by itself.
     detached: AtomicBool,
+    /// What the answer assembler of this execution started from (see [`AssemblerSeed`]).
+    #[cfg(feature = "run-follow")]
+    seed: std::sync::OnceLock<AssemblerSeed>,
+}
+
+/// What the answer assembler of an execution starts from: the graph, the
+/// caller's `sys` values and, for a resumed run, the state it resumed from.
+/// A caller that follows the run later (`GET /v1/runs/{id}/events?responses=true`)
+/// builds an assembler of its own from it and gets the same answer text, with
+/// the same ids, as the caller that started the run.
+#[cfg(feature = "run-follow")]
+#[derive(Clone, Debug)]
+pub struct AssemblerSeed {
+    pub graph: Arc<graphrt_core::Graph>,
+    pub sys: indexmap::IndexMap<String, Value>,
+    pub resumed: Option<graphrt_core::snapshot::FrameSnapshot>,
+}
+
+#[cfg(feature = "run-follow")]
+impl AssemblerSeed {
+    /// A new assembler in the state this execution's own assembler started in.
+    pub fn assembler(&self) -> ResponseAssembler {
+        let mut assembler = ResponseAssembler::new(&self.graph);
+        if let Some(root) = &self.resumed {
+            assembler = assembler.resume_from(root);
+        }
+        for (key, value) in &self.sys {
+            assembler = assembler.with_value(&graphrt_core::Selector::of("sys", key), value.clone());
+        }
+        assembler
+    }
 }
 
 /// What a listener receives when it subscribes.
@@ -164,6 +195,20 @@ impl ActiveRun {
         }
     }
 
+    /// Remember what this execution's answer assembler starts from. Call it
+    /// before the driver starts (in [`Tracking::on_start`]); a second call is ignored.
+    #[cfg(feature = "run-follow")]
+    pub fn set_assembler_seed(&self, seed: AssemblerSeed) {
+        let _already_set = self.seed.set(seed);
+    }
+
+    /// An answer assembler for a listener that subscribes from the start of
+    /// this execution, when the run was launched with a seed.
+    #[cfg(feature = "run-follow")]
+    pub fn new_assembler(&self) -> Option<ResponseAssembler> {
+        self.seed.get().map(AssemblerSeed::assembler)
+    }
+
     /// Mark the run as one no caller waits for.
     pub fn set_detached(&self) {
         self.detached.store(true, Ordering::Release);
@@ -208,6 +253,10 @@ pub struct Capture {
     /// Online evaluation pool, when an evaluator covers the run's workflow.
     #[cfg(feature = "online-eval")]
     pub online: Option<Arc<crate::online_eval::OnlineEval>>,
+    /// The conversation the run's record names (`session_id`), on a server that
+    /// keeps conversations: it gets the run's turn when the run succeeds.
+    #[cfg(feature = "conversations")]
+    pub conversation: Option<crate::conversations::Turn>,
 }
 
 /// Called when an execution ends (to drop it from the active set).
@@ -255,8 +304,16 @@ pub fn spawn(
         }),
         done_tx,
         detached: AtomicBool::new(false),
+        #[cfg(feature = "run-follow")]
+        seed: std::sync::OnceLock::new(),
     });
-    let recorder = Recorder { tracer, capture, ids_pending: true };
+    let recorder = Recorder {
+        tracer,
+        capture,
+        ids_pending: true,
+        #[cfg(feature = "conversations")]
+        conversation_variables: indexmap::IndexMap::new(),
+    };
     let Tracking { on_start, on_finish } = tracking;
     on_start(&active);
     graphrt_core::task::spawn(drive(run, assembler, record, store, Arc::clone(&active), on_finish, recorder));
@@ -270,6 +327,9 @@ struct Recorder {
     capture: Capture,
     /// Trace ids not copied yet (only ever true while tracing).
     ids_pending: bool,
+    /// The `conversation` variables this execution wrote, for its conversation.
+    #[cfg(feature = "conversations")]
+    conversation_variables: indexmap::IndexMap<String, serde_json::Value>,
 }
 
 impl Recorder {
@@ -291,6 +351,29 @@ impl Recorder {
             let inputs = outputs.iter().map(|(k, v)| (k.to_string(), Value::from_json(v.to_json()))).collect();
             record.inputs = Some(inputs);
         }
+        #[cfg(feature = "conversations")]
+        if self.capture.conversation.is_some()
+            && let Event::VariableUpdated { selector, value, .. } = event
+            && selector.namespace() == "conversation"
+        {
+            // Through JSON so a secret is stored as its mask.
+            self.conversation_variables.insert(selector.name().to_owned(), value.to_json());
+        }
+    }
+
+    /// Hand the execution's end to its conversation, before the terminal event
+    /// goes out: a client that sends its next message as soon as it sees the
+    /// answer finds this turn in the history.
+    #[cfg(feature = "conversations")]
+    async fn finish_turn(&mut self, run_id: &str, terminal: &Event, answer: &str) {
+        use crate::conversations::TurnEnd;
+        let Some(turn) = &self.capture.conversation else { return };
+        let end = match terminal {
+            Event::RunSucceeded { .. } => TurnEnd::Succeeded,
+            Event::RunPaused { .. } => TurnEnd::Paused,
+            _ => TurnEnd::Dropped,
+        };
+        turn.finish(run_id, end, answer, std::mem::take(&mut self.conversation_variables)).await;
     }
 }
 
@@ -332,6 +415,10 @@ async fn drive(
         chunks.clear();
         let terminal = event.is_terminal();
         pending.push(event_to_stored(&event));
+        #[cfg(feature = "conversations")]
+        if terminal {
+            recorder.finish_turn(&run_id, &event, assembler.text_so_far()).await;
+        }
         let event = Arc::new(event);
         active.publish(&event, || assembler.text_so_far().to_owned());
         if pending.len() >= FLUSH_EVERY || terminal {
@@ -560,6 +647,8 @@ mod tests {
             }),
             done_tx,
             detached: AtomicBool::new(false),
+            #[cfg(feature = "run-follow")]
+            seed: std::sync::OnceLock::new(),
         }
     }
 

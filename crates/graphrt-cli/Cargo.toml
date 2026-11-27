@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "cors", "run-follow", "conversations", "web-chat"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -110,6 +110,21 @@ trust-gateway = ["serve"]
 # `--user-rate-limit`): HS256 / ES256 / RS256 with `ring` and a JWKS fetched with
 # `reqwest`, both already linked for TLS, so it adds no new crates.
 jwt = ["serve", "dep:reqwest", "dep:rustls", "dep:ring", "dep:base64", "dep:thiserror"]
+# Browsers on other origins may call `serve` (`--cors-origin`, off unless given):
+# an explicit origin allowlist, preflight answers, no credentialed wildcard.
+cors = ["serve"]
+# `GET /v1/runs/{id}/events?responses=true`: a caller that follows a run it did
+# not start in the same request (an async run, a reconnect) receives the answer
+# text too. Each run keeps what its answer assembler starts from.
+run-follow = ["serve"]
+# Conversations kept by the server (`serve --conversations`, off unless given):
+# a run names a `conversation_id` instead of sending `sys.history`. Scoped to the
+# verified end user, with limits and retention.
+conversations = ["serve", "dep:thiserror"]
+# The chat page and the embeddable widget served by `serve --chat WORKFLOW`
+# (off unless given), with guest sessions (`--chat-access guests`). The page is
+# built from `web/` and embedded in the binary (about 100 KiB).
+web-chat = ["jwt", "run-follow"]
 # Evaluation scores of served runs: `GET /v1/runs/{id}/scores` and human
 # feedback (`POST /v1/runs/{id}/feedback`), kept next to each run in the store.
 scores = ["serve"]

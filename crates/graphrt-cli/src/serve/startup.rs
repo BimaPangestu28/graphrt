@@ -72,6 +72,8 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let configured =
         configured_state(&args, &options, &files, api_key.clone(), telemetry.clone(), verifies_user_tokens);
     let state = configured.await?;
+    #[cfg(feature = "web-chat")]
+    let user_token_header = user_auth.as_ref().map(|auth| auth.header().to_string());
     #[cfg(feature = "jwt")]
     let (state, user_auth_line) = {
         let line = user_auth.as_ref().map(crate::user_auth::UserAuth::describe);
@@ -81,7 +83,30 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let user_auth_line = None;
     #[cfg(feature = "files")]
     let state = state.with_workspace_api(args.workspace_api, args.max_upload_bytes)?;
+    #[cfg(feature = "cors")]
+    let cors = cors_from_args(&args, &options, api_key.is_some())?;
+    #[cfg(feature = "conversations")]
+    let state = state.with_conversations(conversations_from_args(&args)?);
+    #[cfg(feature = "web-chat")]
+    let state = {
+        let context = super::chat::ChatContext {
+            api_key: api_key.as_deref(),
+            user_token_header,
+            #[cfg(feature = "cors")]
+            frame_origins: cors.as_ref().map(|cors| cors.origins().to_vec()).unwrap_or_default(),
+            #[cfg(not(feature = "cors"))]
+            frame_origins: Vec::new(),
+        };
+        let chat = super::chat::Chat::new(&args.chat, context, |name| state.start_inputs(name))?;
+        state.with_chat(chat)
+    };
+    #[cfg(feature = "jwt")]
+    let state = with_user_resume(state, &args, verifies_user_tokens)?;
     let state = Arc::new(state);
+    #[cfg(feature = "conversations")]
+    if let Some(conversations) = state.conversations() {
+        conversations.spawn_retention();
+    }
     // An agent behind a gateway is started because a run is on its way: its
     // plugin processes (a Node.js host takes tens of ms) start alongside the
     // bind and that run's dispatch instead of at its first plugin node. A
@@ -103,6 +128,16 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     #[cfg(feature = "files")]
     refuse_open_workspace_api(&state, api_key.is_some(), loopback, &args.api_key_env)?;
     let app = guard_keyless_loopback(app, api_key.is_none() && loopback && listener.is_browser_reachable());
+    // Outermost: a refusal of any layer below still carries the CORS headers,
+    // so a page can read why it was refused.
+    #[cfg(feature = "cors")]
+    let app = match &cors {
+        Some(cors) => {
+            eprintln!("  {}", cors.describe());
+            app.layer(axum::middleware::from_fn_with_state(Arc::clone(cors), super::cors::apply))
+        }
+        None => app,
+    };
     let report = StartupReport { args: &args, has_api_key: api_key.is_some(), loopback, user_auth: user_auth_line };
     print_startup(&state, &report);
     if let Stopped::ServerEnded = serve_until_drained(listener, app, &state, &args, signals).await? {
@@ -131,6 +166,61 @@ fn refuse_open_workspace_api(
     Err(CliError::usage(format!(
         "`--workspace-api` on an address other hosts can reach needs an API key: set ${api_key_env}"
     )))
+}
+
+/// The cross-origin policy of `--cors-origin` (else `$GRAPHRT_CORS_ORIGINS`).
+/// Pages may send the headers mapped with `--input-header` besides the standard ones.
+///
+/// @throws CliError (usage) - On an entry that is not an origin, or `*` without an API key.
+#[cfg(feature = "cors")]
+fn cors_from_args(
+    args: &ServeArgs,
+    options: &ServiceOptions,
+    has_api_key: bool,
+) -> Result<Option<Arc<super::cors::Cors>>, CliError> {
+    let origins = super::cors::origins_from(&args.cors_origin, lookup_env(options, super::cors::ORIGINS_ENV));
+    let mapped = args.input_header.iter().map(|spec| spec.header.as_str());
+    Ok(super::cors::Cors::new(&origins, mapped, has_api_key)?.map(Arc::new))
+}
+
+/// The conversations of `--conversations`, kept in the run store directory
+/// (`--store`, else `$GRAPHRT_STORE`) or in memory without one.
+///
+/// @throws CliError (usage) - When the directory cannot be created.
+#[cfg(feature = "conversations")]
+fn conversations_from_args(args: &ServeArgs) -> Result<Option<crate::conversations::Conversations>, CliError> {
+    let flags = &args.conversations;
+    if !flags.conversations {
+        return Ok(None);
+    }
+    let env_dir = std::env::var(crate::store::STORE_ENV).ok().filter(|dir| !dir.is_empty()).map(PathBuf::from);
+    let dir = args.store.clone().or(env_dir);
+    let limits = crate::conversations::Limits {
+        max_messages: flags.conversation_max_messages,
+        per_user: flags.conversations_per_user,
+        ttl_days: flags.conversation_ttl_days,
+    };
+    let conversations = crate::conversations::Conversations::open(dir.as_deref(), limits)?;
+    eprintln!("  {}", conversations.describe(dir.is_some()));
+    Ok(Some(conversations))
+}
+
+/// `--user-resume`, which needs users: `--verify-jwt` or a chat page for guests.
+///
+/// @throws CliError (usage) - When the flag is set and no user can ever call.
+#[cfg(feature = "jwt")]
+fn with_user_resume(state: AppState, args: &ServeArgs, verifies_user_tokens: bool) -> Result<AppState, CliError> {
+    if !args.user_resume {
+        return Ok(state);
+    }
+    #[cfg(feature = "web-chat")]
+    let has_guests = state.chat.as_deref().is_some_and(super::chat::Chat::is_public);
+    #[cfg(not(feature = "web-chat"))]
+    let has_guests = false;
+    if !verifies_user_tokens && !has_guests {
+        return Err(CliError::usage("--user-resume needs users: set --verify-jwt or --chat-access guests"));
+    }
+    Ok(state.with_user_resume(true))
 }
 
 /// `--plugin-pool` and `--plugin-idle`.
@@ -327,6 +417,19 @@ fn print_startup(state: &AppState, report: &StartupReport<'_>) {
     #[cfg(feature = "files")]
     if let Some(line) = state.file_api_line() {
         eprintln!("  {line}");
+    }
+    #[cfg(feature = "web-chat")]
+    if let Some(chat) = state.chat.as_deref() {
+        for line in chat.describe() {
+            eprintln!("  {line}");
+        }
+        if chat.is_public() && !report.loopback {
+            eprintln!(
+                "warning: the chat page is open to anyone who can reach {}: guests start runs with this server's \
+                 credentials, within --chat-guest-rate-limit and --chat-guest-budget",
+                report.args.addr
+            );
+        }
     }
     #[cfg(feature = "rag")]
     if state.knowledge().is_some() {

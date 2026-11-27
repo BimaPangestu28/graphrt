@@ -69,6 +69,13 @@ pub(crate) trait StreamGuard: Send + 'static {
 
 impl StreamGuard for AbortOnDrop {}
 
+/// The guard of a caller that only follows a run: when it goes away, the run goes on.
+#[cfg(feature = "run-follow")]
+pub(super) struct FollowOnly;
+
+#[cfg(feature = "run-follow")]
+impl StreamGuard for FollowOnly {}
+
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         if !self.0.is_done() {
