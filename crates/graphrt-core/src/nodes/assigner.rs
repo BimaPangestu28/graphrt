@@ -189,9 +189,9 @@ fn check_type(target: &Selector, current: &Value, new: Value) -> Result<Value, N
     let ty = target_type(current);
     let new = match (ty, new) {
         // Object targets accept JSON text.
-        (ValueType::Object, Value::String(s)) => {
-            Value::from_json(serde_json::from_str(&s).map_err(|e| err(target, format!("invalid JSON object: {e}")))?)
-        }
+        (ValueType::Object, Value::String(s)) => Value::from_json(
+            serde_json::from_slice(s.as_bytes()).map_err(|e| err(target, format!("invalid JSON object: {e}")))?,
+        ),
         (_, v) => v,
     };
     if ty.is_array() && !matches!(new, Value::Array(_)) && !new.is_null() {

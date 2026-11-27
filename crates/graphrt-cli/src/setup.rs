@@ -181,7 +181,7 @@ pub fn load_graph_with(path: &Path, model_override: Option<&str>, registry: &Reg
 /// Parse a YAML or JSON document into JSON (YAML 1.2 booleans).
 pub fn parse_structured(text: &str, what: &str) -> Result<serde_json::Value, CliError> {
     if text.trim_start().starts_with(['{', '[']) {
-        return serde_json::from_str(text).map_err(|e| CliError::usage(format!("invalid {what}: {e}")));
+        return serde_json::from_slice(text.as_bytes()).map_err(|e| CliError::usage(format!("invalid {what}: {e}")));
     }
     graphrt_core::yaml::to_value(text, true).map_err(|e| CliError::usage(format!("invalid {what}: {e}")))
 }
@@ -319,7 +319,7 @@ pub async fn services(
             Some(path) => {
                 let text = std::fs::read_to_string(path)
                     .map_err(|e| CliError::usage(format!("cannot read MCP config `{}`: {e}", path.display())))?;
-                let servers: graphrt_mcp::McpServers = serde_json::from_str(&text)
+                let servers: graphrt_mcp::McpServers = serde_json::from_slice(text.as_bytes())
                     .map_err(|e| CliError::usage(format!("invalid MCP config `{}`: {e}", path.display())))?;
                 graphrt_mcp::connect_all(&servers.into_configs())
                     .await
@@ -594,8 +594,8 @@ pub fn parse_assignment(raw: &str) -> Result<(String, Value), CliError> {
     if let Some((key, json)) = raw.split_once(":=")
         && !key.contains('=')
     {
-        let value: serde_json::Value =
-            serde_json::from_str(json).map_err(|e| CliError::usage(format!("invalid JSON for `{key}`: {e}")))?;
+        let value: serde_json::Value = serde_json::from_slice(json.as_bytes())
+            .map_err(|e| CliError::usage(format!("invalid JSON for `{key}`: {e}")))?;
         return Ok((key.to_owned(), Value::from_json(value)));
     }
     let (key, value) =
@@ -605,7 +605,7 @@ pub fn parse_assignment(raw: &str) -> Result<(String, Value), CliError> {
     }
     let trimmed = value.trim_start();
     if (trimmed.starts_with('[') || trimmed.starts_with('{'))
-        && let Ok(json) = serde_json::from_str::<serde_json::Value>(value)
+        && let Ok(json) = serde_json::from_slice::<serde_json::Value>(value.as_bytes())
     {
         return Ok((key.to_owned(), Value::from_json(json)));
     }
@@ -639,8 +639,8 @@ pub fn load_knowledge(path: &Path, vars: &[(String, String)]) -> Result<graphrt_
     if saved.is_file() {
         let text = std::fs::read_to_string(&saved)
             .map_err(|e| CliError::usage(format!("cannot read `{}`: {e}", saved.display())))?;
-        let specs: Vec<graphrt_rag::DatasetSpec> =
-            serde_json::from_str(&text).map_err(|e| CliError::usage(format!("invalid `{}`: {e}", saved.display())))?;
+        let specs: Vec<graphrt_rag::DatasetSpec> = serde_json::from_slice(text.as_bytes())
+            .map_err(|e| CliError::usage(format!("invalid `{}`: {e}", saved.display())))?;
         for spec in specs {
             let id = spec.id.clone();
             if let Err(e) = kb.create_dataset(spec) {

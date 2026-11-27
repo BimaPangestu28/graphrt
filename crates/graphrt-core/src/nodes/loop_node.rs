@@ -295,7 +295,7 @@ fn round_pool(base: &VariablePool, loop_id: &str, vars: &IndexMap<String, Value>
 fn constant_value(ty: ValueType, raw: serde_json::Value) -> Value {
     match (ty, raw) {
         (ValueType::String | ValueType::Secret | ValueType::Any, v) => Value::from_json(v),
-        (_, serde_json::Value::String(s)) => match serde_json::from_str::<serde_json::Value>(&s) {
+        (_, serde_json::Value::String(s)) => match serde_json::from_slice::<serde_json::Value>(s.as_bytes()) {
             Ok(parsed) => Value::from_json(parsed),
             Err(_) => Value::from(s),
         },

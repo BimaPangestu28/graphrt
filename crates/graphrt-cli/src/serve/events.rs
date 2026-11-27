@@ -159,7 +159,7 @@ async fn stored_answer(state: &AppState, run_id: &str) -> Option<String> {
 /// A stored event as JSON within `scope`; `None` when the caller does not see it.
 fn scoped_json(event: &StoredEvent, scope: EventScope) -> Option<serde_json::Value> {
     match scope {
-        EventScope::Full => serde_json::from_str(event.get()).ok(),
+        EventScope::Full => serde_json::from_slice(event.get().as_bytes()).ok(),
         #[cfg(feature = "jwt")]
         EventScope::Answer => crate::user_auth::events::stored_event(event).map(|(_, json)| json),
     }

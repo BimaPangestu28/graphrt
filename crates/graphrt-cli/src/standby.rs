@@ -40,7 +40,7 @@ fn serve_args(line: &str) -> Result<Box<crate::args::ServeArgs>, CliError> {
     // name and the deployment's gateway keys (`kid:hex,...`). Read as a `Value`
     // (already in the binary) rather than a derived type.
     let bad = |what: &str| CliError::usage(format!("agent-standby: bad assignment: {what}"));
-    let assignment: serde_json::Value = serde_json::from_str(line).map_err(|e| bad(&e.to_string()))?;
+    let assignment: serde_json::Value = serde_json::from_slice(line.as_bytes()).map_err(|e| bad(&e.to_string()))?;
     let keys = assignment.get("keys").and_then(serde_json::Value::as_str).ok_or_else(|| bad("no `keys`"))?;
     let argv = assignment.get("argv").and_then(serde_json::Value::as_array).ok_or_else(|| bad("no `argv`"))?;
     let argv: Vec<String> = argv

@@ -191,7 +191,7 @@ impl LiveRun {
             return;
         }
         *cursor = Some((index, chunk));
-        if let Some(text) = serde_json::from_str::<Json>(&frame.data)
+        if let Some(text) = serde_json::from_slice::<Json>(frame.data.as_bytes())
             .ok()
             .as_ref()
             .and_then(|data| data.get("text"))
@@ -388,7 +388,7 @@ pub fn new_run_id() -> String {
 }
 
 fn event_type(data: &str) -> Option<String> {
-    serde_json::from_str::<Json>(data).ok()?.get("type")?.as_str().map(str::to_owned)
+    serde_json::from_slice::<Json>(data.as_bytes()).ok()?.get("type")?.as_str().map(str::to_owned)
 }
 
 fn is_terminal_type(kind: &str) -> bool {
@@ -404,7 +404,7 @@ fn answer_chunk_id(id: &str) -> Option<(u64, u64)> {
 /// The stored form of an agent event: the JSON as sent, without the inline
 /// snapshot of `run_paused` (stores keep it separately).
 fn stored_event(data: &str) -> StoredEvent {
-    let mut value: Json = serde_json::from_str(data).unwrap_or(Json::Null);
+    let mut value: Json = serde_json::from_slice(data.as_bytes()).unwrap_or(Json::Null);
     if let Some(object) = value.as_object_mut()
         && object.get("type").and_then(Json::as_str) == Some("run_paused")
     {
@@ -824,7 +824,8 @@ impl Gateway {
                 continue;
             }
             let kind = event_type(&frame.data).unwrap_or_default();
-            let terminal = is_terminal_type(&kind).then(|| serde_json::from_str::<Event>(&frame.data).ok()).flatten();
+            let terminal =
+                is_terminal_type(&kind).then(|| serde_json::from_slice::<Event>(frame.data.as_bytes()).ok()).flatten();
             buffer.push((index, stored_event(&frame.data)));
             let public = if kind == "run_paused" {
                 Frame { data: stored_event(&frame.data).get().to_owned(), ..frame }
@@ -1207,8 +1208,8 @@ impl Gateway {
             Ok(None) => return Ok(None),
             Err(error) => return Err(format!("its stored request cannot be read: {error}")),
         };
-        let stored: StoredRequest =
-            serde_json::from_str(&text).map_err(|error| format!("its stored request is corrupt: {error}"))?;
+        let stored: StoredRequest = serde_json::from_slice(text.as_bytes())
+            .map_err(|error| format!("its stored request is corrupt: {error}"))?;
         if !stored.needs_secrets.is_empty() {
             return Err(format!(
                 "{CREDENTIALS_REQUIRED}: it needs the secret inputs {} and secrets are never stored; submit it again",

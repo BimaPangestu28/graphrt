@@ -266,7 +266,7 @@ impl EdgeDoc {
 impl Workflow {
     /// Parse a JSON document.
     pub fn from_json(text: &str) -> Result<Self, DocumentError> {
-        let raw: serde_json::Value = serde_json::from_str(text)?;
+        let raw: serde_json::Value = serde_json::from_slice(text.as_bytes())?;
         Self::from_value(raw)
     }
 
@@ -909,7 +909,7 @@ fn extract_policy(
 fn default_value(declared: &str, value: serde_json::Value) -> Value {
     match (declared, value) {
         ("string", v) => Value::from_json(v),
-        (_, serde_json::Value::String(s)) => match serde_json::from_str::<serde_json::Value>(&s) {
+        (_, serde_json::Value::String(s)) => match serde_json::from_slice::<serde_json::Value>(s.as_bytes()) {
             Ok(parsed) => Value::from_json(parsed),
             Err(_) => Value::from(s),
         },

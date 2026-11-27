@@ -428,8 +428,10 @@ impl SqliteStore {
             let mut statement =
                 connection.prepare_cached("SELECT record FROM runs WHERE status = ?1").map_err(io_error)?;
             let rows = statement.query_map(params![status], |row| row.get::<_, String>(0)).map_err(io_error)?;
-            rows.map(|row| row.map_err(io_error).and_then(|text| serde_json::from_str(&text).map_err(corrupt)))
-                .collect()
+            rows.map(|row| {
+                row.map_err(io_error).and_then(|text| serde_json::from_slice(text.as_bytes()).map_err(corrupt))
+            })
+            .collect()
         })
         .await
     }
@@ -491,7 +493,7 @@ fn load_record(transaction: &Connection, run_id: &str) -> StoreResult<Option<Run
         query_row(transaction, "SELECT record FROM runs WHERE run_id = ?1", params![run_id], |row| row.get(0))
             .optional()
             .map_err(io_error)?;
-    text.map(|text| serde_json::from_str(&text).map_err(corrupt)).transpose()
+    text.map(|text| serde_json::from_slice(text.as_bytes()).map_err(corrupt)).transpose()
 }
 
 fn write_record(transaction: &Connection, record: &RunRecord) -> StoreResult<()> {
@@ -567,8 +569,10 @@ impl RunStore for SqliteStore {
                     let rows = statement
                         .query_map(params![status, workflow], |row| row.get::<_, String>(0))
                         .map_err(io_error)?;
-                    rows.map(|row| row.map_err(io_error).and_then(|text| serde_json::from_str(&text).map_err(corrupt)))
-                        .collect()
+                    rows.map(|row| {
+                        row.map_err(io_error).and_then(|text| serde_json::from_slice(text.as_bytes()).map_err(corrupt))
+                    })
+                    .collect()
                 })
                 .await?;
             Ok(page_of(records, &filter, MAX_PAGE))
@@ -697,7 +701,7 @@ impl RunStore for SqliteStore {
                     })
                     .optional()
                     .map_err(io_error)?;
-                text.map(|text| serde_json::from_str(&text).map_err(corrupt)).transpose()
+                text.map(|text| serde_json::from_slice(text.as_bytes()).map_err(corrupt)).transpose()
             })
             .await
         })
@@ -766,7 +770,7 @@ impl RunStore for SqliteStore {
                 .map_err(io_error)?;
             drop(statement);
             for text in &texts {
-                let mut record: RunRecord = serde_json::from_str(text).map_err(corrupt)?;
+                let mut record: RunRecord = serde_json::from_slice(text.as_bytes()).map_err(corrupt)?;
                 record.status = RunStatus::Failed;
                 record.error = Some(graphrt_core::store::INTERRUPTED_BY_RESTART.to_owned());
                 record.error_type = Some("interrupted".to_owned());

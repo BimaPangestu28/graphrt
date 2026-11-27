@@ -131,7 +131,8 @@ fn read_conversation(path: &Path) -> Result<Vec<Turn>, CliError> {
         return Err(invalid("larger than 4 MiB"));
     }
     let text = std::fs::read_to_string(path).map_err(|error| invalid(&error.to_string()))?;
-    let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| invalid(&error.to_string()))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(text.as_bytes()).map_err(|error| invalid(&error.to_string()))?;
     let items = value.as_array().ok_or_else(|| invalid("expected a JSON array of {role, content} objects"))?;
     let mut turns = Vec::with_capacity(items.len());
     for item in items {

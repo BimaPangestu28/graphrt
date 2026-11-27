@@ -109,7 +109,12 @@ idle_anon_mib = 0.75
 # | gateway-all | 8.89 MiB (9,324,616 B) | 7.57 MiB (7,938,112 B) | 6.68 MiB (7,008,368 B) |
 #
 # x86_64 is held to the plan's 8 / 9 MiB (about 1 % headroom); aarch64 to the
-# measured size plus about 2.5 %. x86_64 code stays about 15 % larger than
+# measured size plus about 2.5 %. By 2026-11-28 the x86_64 core had grown to the
+# budget (8,393,272 B in a local zig build); about 137 KiB came back without a
+# feature removed: SQLite without its JSON and date functions (about 50 KiB),
+# one serde_json reader (`from_slice` everywhere, the one reqwest and axum use,
+# not also `from_str`: about 66 KiB) and a non-generic poll for the stores'
+# blocking jobs (about 19 KiB), 8,253,456 B. x86_64 code stays about 15 % larger than
 # aarch64's: LLVM runs its machine outliner at -Oz only on aarch64.
 [[build]]
 name = "gateway-core"
