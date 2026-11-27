@@ -260,4 +260,6 @@ The cargo feature is `connectors` of `graphrt-cli` (each connector is a
 feature of `graphrt-connect`: `web`, `api`, `google-drive`, `notion`,
 `sharepoint`). It is in the default build and the released binaries. The slim
 agent builds (`serve,llm,plugins`) have none of this code. No SDK is linked:
-every connector uses the HTTP client the runtime already has.
+every connector uses the HTTP client the runtime already has. In the release
+binary (x86_64 Linux, default features) the feature adds 686 KiB (2.0%), with
+`graphrt-connect` built at `opt-level = "s"`.
