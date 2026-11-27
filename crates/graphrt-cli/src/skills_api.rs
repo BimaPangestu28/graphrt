@@ -5,7 +5,7 @@
 //!
 //! | Method | Path | Body | Response |
 //! | --- | --- | --- | --- |
-//! | GET | `/v1/skills` | – | `{skills: [SkillEntry]}` |
+//! | GET | `/v1/skills` | – | `{skills: [SkillEntry]}`, plus `bundled` when a served bundle brought skills |
 //! | GET | `/v1/skills/{name}` | – | `SkillDetails` |
 //! | POST | `/v1/skills/drafts` | `{name, description, body, requested_tools?}` | `SkillDraft`, checked and scanned, nothing installed |
 //! | POST | `/v1/skills/drafts/model` | `{model, describe? \| conversation?, tools?}` | `SkillDraft` written by a model, nothing installed |
@@ -32,6 +32,11 @@
 //! index or a key, and there is no unsigned mode: the index signature is
 //! checked before the index is parsed, exactly as `graphrt skill install`
 //! does it.
+//!
+//! **Skills of a bundle.** A served `.grt` bundle that brings skills runs on
+//! its own private store. Those skills are listed under `bundled` and cannot
+//! be changed here: the bundle pins them. They are not in this server's store
+//! and no other workflow can reach them.
 
 use std::sync::Arc;
 
@@ -156,16 +161,28 @@ fn draft_of(body: &DraftBody) -> Result<SkillDraft, Response> {
     SkillDraft::new(&body.name, &body.description, &body.body, &body.requested_tools).map_err(|e| skill_error(&e))
 }
 
-/// `GET /v1/skills`
+/// `GET /v1/skills`: this server's skills, and read only, the skills each
+/// served bundle brought with it.
 pub async fn list_skills(State(state): State<Arc<AppState>>) -> Response {
     let store = match store(&state) {
         Ok(store) => store,
         Err(refused) => return refused,
     };
-    match store.list() {
-        Ok(skills) => Json(json!({ "skills": skills })).into_response(),
-        Err(error) => skill_error(&error),
+    let skills = match store.list() {
+        Ok(skills) => skills,
+        Err(error) => return skill_error(&error),
+    };
+    let mut bundled = Vec::new();
+    for (workflow, store) in state.bundled_skills() {
+        match store.list() {
+            Ok(skills) => bundled.push(json!({ "workflow": workflow, "skills": skills })),
+            Err(error) => return skill_error(&error),
+        }
     }
+    if bundled.is_empty() {
+        return Json(json!({ "skills": skills })).into_response();
+    }
+    Json(json!({ "skills": skills, "bundled": bundled })).into_response()
 }
 
 /// `GET /v1/skills/{name}`

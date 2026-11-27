@@ -525,12 +525,41 @@ fn print_startup(state: &AppState, report: &StartupReport<'_>) {
     if state.knowledge().is_some() {
         eprintln!("  knowledge base API under /v1/knowledge (uploads up to {} bytes)", report.args.max_upload_bytes);
     }
+    #[cfg(feature = "skills")]
+    print_bundled_skills(state);
     #[cfg(any(feature = "skills", feature = "learning"))]
     if !report.has_api_key && !report.loopback {
         eprintln!("  /v1/skills and /v1/learning are refused: they need an API key on a network address");
     }
     if !report.has_api_key {
         print_keyless_warnings(report);
+    }
+}
+
+/// Say which skills each served bundle runs on, and what they may use: the
+/// grants came with the bundle, so the operator sees them at every start.
+#[cfg(feature = "skills")]
+fn print_bundled_skills(state: &AppState) {
+    for (workflow, store) in state.bundled_skills() {
+        let skills = match store.list() {
+            Ok(skills) => skills,
+            Err(error) => {
+                eprintln!("warning: the skills bundled with `{workflow}` cannot be read: {error}");
+                continue;
+            }
+        };
+        for skill in skills {
+            let grants: Vec<String> = skill
+                .grants
+                .iter()
+                .map(|grant| match grant.mode {
+                    graphrt_skill::GrantMode::Allow => format!("{} without asking", grant.tool),
+                    graphrt_skill::GrantMode::Ask => format!("{} asking first", grant.tool),
+                })
+                .collect();
+            let tools = if grants.is_empty() { "no tools".to_owned() } else { grants.join(", ") };
+            eprintln!("  workflow `{workflow}` runs on its bundled skill `{}` ({tools})", skill.name);
+        }
     }
 }
 

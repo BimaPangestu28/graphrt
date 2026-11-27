@@ -135,6 +135,10 @@ pub struct AppState {
     /// The skill store behind `/v1/skills` (the default store, opened lazily).
     #[cfg(feature = "skills")]
     pub(super) skills: Option<Arc<graphrt_skill::SkillStore>>,
+    /// The skills each served bundle brought, by workflow name. A bundled
+    /// workflow reads these and never the store above.
+    #[cfg(feature = "skills")]
+    pub(super) bundled_skills: IndexMap<String, Arc<graphrt_skill::SkillStore>>,
     /// The catalog `/v1/skills/catalog/install` reads. Never set by a request.
     #[cfg(all(feature = "skills", feature = "plugins"))]
     pub(super) skill_catalog: crate::plugin_catalog::skills::SkillCatalogConfig,
@@ -206,6 +210,8 @@ impl AppState {
             #[cfg(feature = "skills")]
             skills: graphrt_skill::SkillStore::default_root()
                 .map(|root| Arc::new(graphrt_skill::SkillStore::open(root))),
+            #[cfg(feature = "skills")]
+            bundled_skills: IndexMap::new(),
             #[cfg(all(feature = "skills", feature = "plugins"))]
             skill_catalog: crate::plugin_catalog::skills::SkillCatalogConfig::default(),
             #[cfg(any(feature = "skills", feature = "learning"))]
@@ -267,6 +273,19 @@ impl AppState {
     #[cfg(feature = "skills")]
     pub fn skill_store(&self) -> Option<&Arc<graphrt_skill::SkillStore>> {
         self.skills.as_ref()
+    }
+
+    /// The skills served bundles brought with them, by workflow name.
+    #[cfg(feature = "skills")]
+    pub fn with_bundled_skills(mut self, stores: IndexMap<String, Arc<graphrt_skill::SkillStore>>) -> Self {
+        self.bundled_skills = stores;
+        self
+    }
+
+    /// The private skill store of each served bundle that brought skills.
+    #[cfg(feature = "skills")]
+    pub fn bundled_skills(&self) -> impl Iterator<Item = (&String, &Arc<graphrt_skill::SkillStore>)> {
+        self.bundled_skills.iter()
     }
 
     /// Install catalog skills from `catalog` instead of the catalog the
