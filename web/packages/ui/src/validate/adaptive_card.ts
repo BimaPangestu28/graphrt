@@ -306,6 +306,7 @@ function cardText(fields: Fields, key: string, path: string, long: boolean): voi
   if (text.includes("${")) {
     throw new UiError(
       child(path, key),
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the message quotes the syntax it refuses
       "template expressions (${...}) are not supported; put the values into the text",
     );
   }
@@ -384,7 +385,13 @@ function checkSelectAction(fields: Fields, path: string, depth: number, walk: Wa
 }
 
 const TABLE_COLUMN = ["type", "width", "horizontalCellContentAlignment", "verticalCellContentAlignment"];
-const TABLE_ROW = ["type", "cells", "style", "horizontalCellContentAlignment", "verticalCellContentAlignment"];
+const TABLE_ROW = [
+  "type",
+  "cells",
+  "style",
+  "horizontalCellContentAlignment",
+  "verticalCellContentAlignment",
+];
 
 function validateTable(table: Fields, path: string, depth: number, walk: Walk): void {
   const columns = array(table, "columns", path, 1, 30);

@@ -44,11 +44,14 @@ export interface RenderOptions {
 /** What is shown in place of a block that cannot be drawn. */
 function fallback(value: unknown, error: UiError): HTMLElement {
   const fields = value as Json;
-  const fallbackText = isObject(fields) && typeof fields.fallback_text === "string" ? fields.fallback_text : undefined;
+  const fallbackText =
+    isObject(fields) && typeof fields.fallback_text === "string" ? fields.fallback_text : undefined;
   return el(
     "section",
     { class: "block error" },
-    fallbackText !== undefined ? el("pre", {}, fallbackText) : el("p", { class: "muted" }, "This content cannot be shown."),
+    fallbackText !== undefined
+      ? el("pre", {}, fallbackText)
+      : el("p", { class: "muted" }, "This content cannot be shown."),
     el("small", {}, error.message),
   );
 }
@@ -154,7 +157,8 @@ export class GraphrtBlockElement extends BaseElement {
     if (theme === "light" || theme === "dark") {
       return theme;
     }
-    const prefersDark = typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches;
+    const prefersDark =
+      typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches;
     return prefersDark ? "dark" : "light";
   }
 

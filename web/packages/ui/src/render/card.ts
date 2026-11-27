@@ -122,12 +122,21 @@ function image(fields: Fields): HTMLElement | null {
   });
 }
 
-function field(input: Fields, control: HTMLElement, state: CardState, read: () => Json | undefined): HTMLElement {
+function field(
+  input: Fields,
+  control: HTMLElement,
+  state: CardState,
+  read: () => Json | undefined,
+): HTMLElement {
   const id = freshId();
   control.id = id;
   const label = text(input, "label");
   const required = input.isRequired === true;
-  const problem = el("div", { class: "ac-invalid", role: "alert", hidden: "" }, text(input, "errorMessage") ?? "This field is required.");
+  const problem = el(
+    "div",
+    { class: "ac-invalid", role: "alert", hidden: "" },
+    text(input, "errorMessage") ?? "This field is required.",
+  );
   const inputId = text(input, "id") ?? "";
   state.inputs.push({
     id: inputId,
@@ -135,7 +144,10 @@ function field(input: Fields, control: HTMLElement, state: CardState, read: () =
     check: () => {
       const value = read();
       const empty = value === undefined || value === "";
-      const native = control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement ? control.validity.valid : true;
+      const native =
+        control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement
+          ? control.validity.valid
+          : true;
       const ok = !(required && empty) && native;
       problem.hidden = ok;
       control.setAttribute("aria-invalid", ok ? "false" : "true");
@@ -165,8 +177,17 @@ function inputElement(input: Fields, type: string, state: CardState): HTMLElemen
     box.checked = initial === on;
     const id = freshId();
     box.id = id;
-    state.inputs.push({ id: text(input, "id") ?? "", read: () => (box.checked ? on : off), check: () => true });
-    return el("div", { class: "ac-choice" }, box, el("label", { for: id }, text(input, "title") ?? text(input, "label") ?? ""));
+    state.inputs.push({
+      id: text(input, "id") ?? "",
+      read: () => (box.checked ? on : off),
+      check: () => true,
+    });
+    return el(
+      "div",
+      { class: "ac-choice" },
+      box,
+      el("label", { for: id }, text(input, "title") ?? text(input, "label") ?? ""),
+    );
   }
   if (type === "Input.ChoiceSet") {
     const choices = (Array.isArray(input.choices) ? input.choices : []).filter(isObject);
@@ -186,10 +207,22 @@ function inputElement(input: Fields, type: string, state: CardState): HTMLElemen
     }
     const group = freshId();
     const boxes = choices.map((choice) => {
-      const box = el("input", { type: multi ? "checkbox" : "radio", name: group, value: text(choice, "value") ?? "" });
+      const box = el("input", {
+        type: multi ? "checkbox" : "radio",
+        name: group,
+        value: text(choice, "value") ?? "",
+      });
       box.checked = selected.has(box.value);
       box.id = freshId();
-      return { box, row: el("div", { class: "ac-choice" }, box, el("label", { for: box.id }, text(choice, "title") ?? "")) };
+      return {
+        box,
+        row: el(
+          "div",
+          { class: "ac-choice" },
+          box,
+          el("label", { for: box.id }, text(choice, "title") ?? ""),
+        ),
+      };
     });
     const set = el("fieldset", { class: "ac-choices" }, ...boxes.map((item) => item.row));
     const read = (): Json | undefined => {
@@ -206,7 +239,11 @@ function inputElement(input: Fields, type: string, state: CardState): HTMLElemen
     }
     return field(input, area, state, () => area.value);
   }
-  const kinds: Record<string, string> = { "Input.Number": "number", "Input.Date": "date", "Input.Time": "time" };
+  const kinds: Record<string, string> = {
+    "Input.Number": "number",
+    "Input.Date": "date",
+    "Input.Time": "time",
+  };
   const styles = ["email", "tel", "url", "password"];
   const style = lower(input, "style");
   const control = el("input", {
@@ -270,10 +307,12 @@ function runner(action: Fields, state: CardState, showCards: HTMLElement): (() =
     case "Action.ToggleVisibility":
       return () => {
         for (const target of Array.isArray(action.targetElements) ? action.targetElements : []) {
-          const id = typeof target === "string" ? target : isObject(target) ? text(target, "elementId") : undefined;
+          const id =
+            typeof target === "string" ? target : isObject(target) ? text(target, "elementId") : undefined;
           const element = id === undefined ? undefined : state.byId.get(id);
           if (element !== undefined) {
-            const wanted = isObject(target) && typeof target.isVisible === "boolean" ? target.isVisible : element.hidden;
+            const wanted =
+              isObject(target) && typeof target.isVisible === "boolean" ? target.isVisible : element.hidden;
             element.hidden = !wanted;
           }
         }
@@ -311,17 +350,34 @@ function actionButton(value: Json, state: CardState, showCards: HTMLElement): HT
   }
   const title = text(action, "title") ?? "";
   const iconUrl = text(action, "iconUrl");
-  const icon = iconUrl !== undefined && isImageUrl(iconUrl) ? el("img", { src: iconUrl, alt: "", referrerpolicy: "no-referrer" }) : null;
+  const icon =
+    iconUrl !== undefined && isImageUrl(iconUrl)
+      ? el("img", { src: iconUrl, alt: "", referrerpolicy: "no-referrer" })
+      : null;
   const tooltip = text(action, "tooltip");
   if (text(action, "type") === "Action.OpenUrl") {
     const url = text(action, "url");
     if (url === undefined || !isLinkUrl(url)) {
       return null;
     }
-    return el("a", { class: "button", href: url, target: "_blank", rel: "noopener noreferrer", title: tooltip }, icon, title);
+    return el(
+      "a",
+      { class: "button", href: url, target: "_blank", rel: "noopener noreferrer", title: tooltip },
+      icon,
+      title,
+    );
   }
   const style = lower(action, "style");
-  const button = el("button", { type: "button", class: style === "positive" || style === "destructive" ? style : undefined, title: tooltip }, icon, title);
+  const button = el(
+    "button",
+    {
+      type: "button",
+      class: style === "positive" || style === "destructive" ? style : undefined,
+      title: tooltip,
+    },
+    icon,
+    title,
+  );
   button.disabled = action.isEnabled === false;
   const run = runner(action, state, showCards);
   if (run !== undefined) {
@@ -416,7 +472,11 @@ function draw(value: Fields, type: string, state: CardState): HTMLElement | null
       if (heading) {
         classes.push("ac-heading");
       }
-      return el(heading ? "h4" : "p", { class: classes.join(" ") }, ...inlineMarkdown(text(value, "text") ?? ""));
+      return el(
+        heading ? "h4" : "p",
+        { class: classes.join(" ") },
+        ...inlineMarkdown(text(value, "text") ?? ""),
+      );
     }
     case "RichTextBlock": {
       const runs = (Array.isArray(value.inlines) ? value.inlines : []).map((inline) => {
@@ -448,7 +508,13 @@ function draw(value: Fields, type: string, state: CardState): HTMLElement | null
       return holder;
     }
     case "ImageSet":
-      return el("div", { class: "ac-images" }, ...(Array.isArray(value.images) ? value.images : []).map((item) => (isObject(item) ? image({ size: value.imageSize ?? "medium", ...item }) : null)));
+      return el(
+        "div",
+        { class: "ac-images" },
+        ...(Array.isArray(value.images) ? value.images : []).map((item) =>
+          isObject(item) ? image({ size: value.imageSize ?? "medium", ...item }) : null,
+        ),
+      );
     case "Container": {
       const style = lower(value, "style");
       const classes = ["ac-container"];
@@ -460,12 +526,23 @@ function draw(value: Fields, type: string, state: CardState): HTMLElement | null
       return container;
     }
     case "ColumnSet":
-      return el("div", { class: "ac-columns" }, ...(Array.isArray(value.columns) ? value.columns : []).map((column) => (isObject(column) ? element({ ...column, type: "Column" }, state) : null)));
+      return el(
+        "div",
+        { class: "ac-columns" },
+        ...(Array.isArray(value.columns) ? value.columns : []).map((column) =>
+          isObject(column) ? element({ ...column, type: "Column" }, state) : null,
+        ),
+      );
     case "Column": {
       const width = value.width;
       // Weights are classes, not inline styles: a page's style policy stays strict.
       const weight = typeof width === "number" ? Math.min(6, Math.max(1, Math.round(width))) : undefined;
-      const sizing = width === "auto" || (typeof width === "string" && width.endsWith("px")) ? " auto" : weight ? ` w${weight}` : "";
+      const sizing =
+        width === "auto" || (typeof width === "string" && width.endsWith("px"))
+          ? " auto"
+          : weight
+            ? ` w${weight}`
+            : "";
       const column = el("div", { class: `ac-column${sizing}` }, ...elements(value.items, state));
       selectable(column, value, state);
       return column;
@@ -474,10 +551,12 @@ function draw(value: Fields, type: string, state: CardState): HTMLElement | null
       return el(
         "dl",
         { class: "ac-facts" },
-        ...(Array.isArray(value.facts) ? value.facts : []).filter(isObject).flatMap((fact) => [
-          el("dt", {}, text(fact, "title") ?? ""),
-          el("dd", {}, ...inlineMarkdown(text(fact, "value") ?? "")),
-        ]),
+        ...(Array.isArray(value.facts) ? value.facts : [])
+          .filter(isObject)
+          .flatMap((fact) => [
+            el("dt", {}, text(fact, "title") ?? ""),
+            el("dd", {}, ...inlineMarkdown(text(fact, "value") ?? "")),
+          ]),
       );
     case "ActionSet":
       return actionSet(value.actions, state);
@@ -488,7 +567,15 @@ function draw(value: Fields, type: string, state: CardState): HTMLElement | null
         el(
           "tr",
           {},
-          ...(Array.isArray(row.cells) ? row.cells : []).filter(isObject).map((cell) => el(header && r === 0 ? "th" : "td", {}, el("div", { class: "ac-container" }, ...elements(cell.items, state)))),
+          ...(Array.isArray(row.cells) ? row.cells : [])
+            .filter(isObject)
+            .map((cell) =>
+              el(
+                header && r === 0 ? "th" : "td",
+                {},
+                el("div", { class: "ac-container" }, ...elements(cell.items, state)),
+              ),
+            ),
         ),
       );
       return el("div", { class: "scroll" }, el("table", {}, el("tbody", {}, ...drawnRows)));

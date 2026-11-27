@@ -87,7 +87,12 @@ function textOf(value: Json, path: string, maxChars: number): string {
 }
 
 /** @throws UiError - When the field is present and not a string of at most `maxChars`. */
-export function optionalText(fields: Fields, key: string, path: string, maxChars: number): string | undefined {
+export function optionalText(
+  fields: Fields,
+  key: string,
+  path: string,
+  maxChars: number,
+): string | undefined {
   const value = fields[key];
   return value === undefined || value === null ? undefined : textOf(value, child(path, key), maxChars);
 }

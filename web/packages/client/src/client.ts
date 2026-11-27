@@ -256,7 +256,10 @@ export class Conversations {
     query: { workflow?: string; limit?: number; cursor?: string } & CallOptions = {},
   ): Promise<ConversationPage> {
     const { signal, ...params } = query;
-    return this.#client.request("GET", "/v1/conversations", conversationPageSchema, { query: params, signal });
+    return this.#client.request("GET", "/v1/conversations", conversationPageSchema, {
+      query: params,
+      signal,
+    });
   }
 
   /** One conversation with its messages, oldest first. */
@@ -450,7 +453,11 @@ export class GraphrtClient {
    *
    * @throws GraphrtError - `409` when the run was resumed already.
    */
-  resumeStream(runId: string, request: ResumeRequest = {}, options: CallOptions = {}): AsyncGenerator<RunEvent> {
+  resumeStream(
+    runId: string,
+    request: ResumeRequest = {},
+    options: CallOptions = {},
+  ): AsyncGenerator<RunEvent> {
     return this.#streamOnce("POST", this.#resumePath(runId), { ...request, stream: true }, options.signal);
   }
 
@@ -489,7 +496,10 @@ export class GraphrtClient {
    * @throws GraphrtError - `404` when the server has no chat page (`serve --chat`).
    */
   chatConfig(options: CallOptions = {}): Promise<ChatConfig> {
-    return this.request("GET", "/v1/chat/config", chatConfigSchema, { signal: options.signal, anonymous: true });
+    return this.request("GET", "/v1/chat/config", chatConfigSchema, {
+      signal: options.signal,
+      anonymous: true,
+    });
   }
 
   /**

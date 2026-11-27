@@ -49,7 +49,9 @@ let diagramCounter = 0;
  * import mermaid from "mermaid";
  * setDiagramRenderer(mermaidRenderer(mermaid));
  */
-export function mermaidRenderer(mermaid: MermaidLike): (source: string, theme: "light" | "dark") => Promise<string> {
+export function mermaidRenderer(
+  mermaid: MermaidLike,
+): (source: string, theme: "light" | "dark") => Promise<string> {
   return async (source, theme) => {
     mermaid.initialize({
       startOnLoad: false,
@@ -57,7 +59,15 @@ export function mermaidRenderer(mermaid: MermaidLike): (source: string, theme: "
       theme: theme === "dark" ? "dark" : "neutral",
       htmlLabels: false,
       flowchart: { htmlLabels: false },
-      secure: ["secure", "securityLevel", "startOnLoad", "maxTextSize", "htmlLabels", "theme", "themeVariables"],
+      secure: [
+        "secure",
+        "securityLevel",
+        "startOnLoad",
+        "maxTextSize",
+        "htmlLabels",
+        "theme",
+        "themeVariables",
+      ],
     });
     diagramCounter += 1;
     const { svg } = await mermaid.render(`graphrt-diagram-${diagramCounter}`, source);

@@ -56,7 +56,14 @@ test("a block over the size limit is refused", () => {
 
 test("errors name the field by its JSON pointer", () => {
   try {
-    validate({ $ui: "stats", version: 1, items: [{ label: "Orders", value: 1 }, { label: "", value: 2 }] });
+    validate({
+      $ui: "stats",
+      version: 1,
+      items: [
+        { label: "Orders", value: 1 },
+        { label: "", value: 2 },
+      ],
+    });
     assert.fail("accepted");
   } catch (error) {
     assert.ok(error instanceof UiError);
@@ -109,7 +116,10 @@ test("blocks are found in outputs like the engine finds them", () => {
   );
   assert.equal(collectUiBlocks({ a: { b: { c: { $ui: "chart" } } } }).length, 1);
   assert.equal(collectUiBlocks({ a: { b: { c: { d: { $ui: "chart" } } } } }).length, 0);
-  assert.equal(collectUiBlocks(Array.from({ length: 40 }, () => ({ $ui: "chart" }))).length, MAX_COLLECTED_BLOCKS);
+  assert.equal(
+    collectUiBlocks(Array.from({ length: 40 }, () => ({ $ui: "chart" }))).length,
+    MAX_COLLECTED_BLOCKS,
+  );
   assert.equal(collectUiBlocks("chart").length, 0);
   assert.equal(collectUiBlocks({ $ui: 3 }).length, 0);
 });

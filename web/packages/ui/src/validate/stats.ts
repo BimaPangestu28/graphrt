@@ -21,7 +21,17 @@ import {
 export const MAX_ITEMS = 12;
 const DIRECTIONS = ["up", "down"];
 const TRENDS = ["up", "down", "flat"];
-const ITEM_FIELDS = ["label", "value", "format", "currency", "delta", "delta_format", "trend", "good", "caption"];
+const ITEM_FIELDS = [
+  "label",
+  "value",
+  "format",
+  "currency",
+  "delta",
+  "delta_format",
+  "trend",
+  "good",
+  "caption",
+];
 
 /** @throws UiError - When `fields` (a block without its envelope) is not a stats block. */
 export function validateStats(fields: Fields): void {

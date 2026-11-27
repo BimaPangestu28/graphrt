@@ -24,7 +24,11 @@ export function renderStats(fields: Fields, context: RenderContext): HTMLElement
   const tiles = items.map((item) => {
     const value =
       typeof item.value === "number"
-        ? formatNumber(item.value, { format: text(item, "format"), currency: text(item, "currency") }, context.locale)
+        ? formatNumber(
+            item.value,
+            { format: text(item, "format"), currency: text(item, "currency") },
+            context.locale,
+          )
         : String(item.value ?? "");
     const delta = deltaOf(item, context.locale);
     const caption = text(item, "caption");

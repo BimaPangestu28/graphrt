@@ -4,7 +4,16 @@
   "description": "Web components that render graphrt UI blocks: Adaptive Cards, charts, tables, stat tiles and diagrams.",
   "license": "Apache-2.0",
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
-  "files": ["src", "README.md"],
-  "repository": { "type": "git", "url": "git+https://github.com/Graphrt/graphrt.git", "directory": "web/packages/ui" }
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Graphrt/graphrt.git",
+    "directory": "web/packages/ui"
+  }
 }

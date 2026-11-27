@@ -4,7 +4,9 @@
   "description": "Browser packages of graphrt: the HTTP client, the UI blocks renderer and the chat widget.",
   "license": "Apache-2.0",
   "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "biome check .",
@@ -14,7 +16,9 @@
     "check-assets": "node scripts/build.mjs --check",
     "check": "npm run typecheck && npm run lint && npm run test && npm run check-assets"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "devDependencies": {
     "@biomejs/biome": "2.6.9",
     "@types/node": "^22.18.0",

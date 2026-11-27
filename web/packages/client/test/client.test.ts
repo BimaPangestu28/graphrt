@@ -324,7 +324,8 @@ describe("the chat page and guests", () => {
     const guest = await guestClient();
     const other = await guestClient();
     const { run_id } = await guest.run("support", { inputs: { message: "mine" } });
-    const refused = (status: number) => (error: unknown) => error instanceof GraphrtError && error.status === status;
+    const refused = (status: number) => (error: unknown) =>
+      error instanceof GraphrtError && error.status === status;
     await assert.rejects(other.getRun(run_id), refused(404));
     await assert.rejects(collect(other.events(run_id, { retries: 0 })), refused(404));
     await assert.rejects(guest.run("memo", { sys: { query: "x" } }), refused(403));

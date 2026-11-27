@@ -5,8 +5,19 @@
   "license": "Apache-2.0",
   "type": "module",
   "sideEffects": false,
-  "exports": { ".": "./src/index.ts" },
-  "files": ["src", "README.md"],
-  "dependencies": { "zod": "^4.1.0" },
-  "repository": { "type": "git", "url": "git+https://github.com/Graphrt/graphrt.git", "directory": "web/packages/client" }
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "dependencies": {
+    "zod": "^4.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Graphrt/graphrt.git",
+    "directory": "web/packages/client"
+  }
 }

@@ -42,7 +42,9 @@ export function renderTable(fields: Fields, context: RenderContext): HTMLElement
   const head = el(
     "tr",
     {},
-    ...columns.map((column) => el("th", { scope: "col", class: alignOf(column) }, text(column, "label") ?? "")),
+    ...columns.map((column) =>
+      el("th", { scope: "col", class: alignOf(column) }, text(column, "label") ?? ""),
+    ),
   );
   const body = rows.map((row) =>
     el(
@@ -51,7 +53,11 @@ export function renderTable(fields: Fields, context: RenderContext): HTMLElement
       ...columns.map((column) => {
         const shown = cellText(row[text(column, "key") ?? ""], column, context.locale);
         const isStatus = text(column, "format")?.toLowerCase() === "status" && shown !== "";
-        return el("td", { class: alignOf(column) }, isStatus ? el("span", { class: "status" }, shown) : shown);
+        return el(
+          "td",
+          { class: alignOf(column) },
+          isStatus ? el("span", { class: "status" }, shown) : shown,
+        );
       }),
     ),
   );

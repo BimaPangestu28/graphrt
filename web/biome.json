@@ -1,6 +1,14 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.6.9/schema.json",
-  "files": { "includes": ["packages/**/*.ts", "test-support/**/*.ts", "scripts/**/*.mjs", "*.json", "packages/*/package.json"] },
+  "files": {
+    "includes": [
+      "packages/**/*.ts",
+      "test-support/**/*.ts",
+      "scripts/**/*.mjs",
+      "*.json",
+      "packages/*/package.json"
+    ]
+  },
   "formatter": { "indentStyle": "space", "indentWidth": 2, "lineWidth": 110 },
   "linter": {
     "rules": {

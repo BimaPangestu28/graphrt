@@ -7,7 +7,11 @@ export interface NumberStyle {
 
 const formatters = new Map<string, Intl.NumberFormat>();
 
-function formatter(locale: string | undefined, key: string, options: Intl.NumberFormatOptions): Intl.NumberFormat {
+function formatter(
+  locale: string | undefined,
+  key: string,
+  options: Intl.NumberFormatOptions,
+): Intl.NumberFormat {
   const cacheKey = `${locale ?? ""}|${key}`;
   let cached = formatters.get(cacheKey);
   if (cached === undefined) {

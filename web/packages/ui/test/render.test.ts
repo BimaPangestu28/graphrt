@@ -52,7 +52,11 @@ function assertInert(root: Element, label: string): void {
     }
     const src = element.getAttribute("src");
     if (src !== null) {
-      assert.match(src, /^(https:\/\/|data:image\/(png|jpeg|gif|webp|svg\+xml);)/, `${label}: src ${src.slice(0, 40)}`);
+      assert.match(
+        src,
+        /^(https:\/\/|data:image\/(png|jpeg|gif|webp|svg\+xml);)/,
+        `${label}: src ${src.slice(0, 40)}`,
+      );
     }
   }
 }
@@ -76,13 +80,22 @@ test("every invalid fixture is refused: the notice and the reason are shown inst
     assert.ok(drawn.classList.contains("error"), `${file} was drawn`);
     assert.ok(reasons[0]?.includes(error), `${file}: ${reasons[0]}`);
     assertInert(drawn, file);
-    assert.equal(all(drawn, "img, a, button, input, svg").length, 0, `${file}: parts of the block were drawn`);
+    assert.equal(
+      all(drawn, "img, a, button, input, svg").length,
+      0,
+      `${file}: parts of the block were drawn`,
+    );
   }
 });
 
 test("markup in any text stays text", () => {
   const blocks: unknown[] = [
-    { $ui: "stats", version: 1, title: HOSTILE, items: [{ label: HOSTILE, value: "<b>1</b>", caption: HOSTILE }] },
+    {
+      $ui: "stats",
+      version: 1,
+      title: HOSTILE,
+      items: [{ label: HOSTILE, value: "<b>1</b>", caption: HOSTILE }],
+    },
     {
       $ui: "table",
       version: 1,
@@ -90,7 +103,13 @@ test("markup in any text stays text", () => {
       columns: [{ key: "a", label: HOSTILE, format: "status" }],
       rows: [{ a: HOSTILE }],
     },
-    { $ui: "chart", version: 1, type: "bar", x: { values: [HOSTILE] }, series: [{ name: HOSTILE, values: [1] }] },
+    {
+      $ui: "chart",
+      version: 1,
+      type: "bar",
+      x: { values: [HOSTILE] },
+      series: [{ name: HOSTILE, values: [1] }],
+    },
     { $ui: "chart", version: 1, type: "pie", x: { values: [HOSTILE] }, series: [{ name: "s", values: [1] }] },
     {
       $ui: "adaptive_card",
@@ -130,7 +149,10 @@ test("a block that fails validation is not drawn even when only one field is bad
     card: {
       type: "AdaptiveCard",
       version: "1.5",
-      body: [{ type: "TextBlock", text: "fine" }, { type: "Image", url: "http://tracker.example/pixel.gif" }],
+      body: [
+        { type: "TextBlock", text: "fine" },
+        { type: "Image", url: "http://tracker.example/pixel.gif" },
+      ],
     },
   };
   const drawn = renderBlock(card);
@@ -206,7 +228,13 @@ test("a donut has a slice per category and a legend of the categories", () => {
   assert.equal(all(drawn, "svg path").length, block.x.values.length);
   assert.equal(all(drawn, ".legend li").length, block.x.values.length);
   // One slice of the whole is a full ring, which an arc cannot draw.
-  const whole = renderBlock({ $ui: "chart", version: 1, type: "pie", x: { values: ["all"] }, series: [{ name: "s", values: [5] }] });
+  const whole = renderBlock({
+    $ui: "chart",
+    version: 1,
+    type: "pie",
+    x: { values: ["all"] },
+    series: [{ name: "s", values: [5] }],
+  });
   assert.equal(all(whole, "svg circle").length, 1);
 });
 
@@ -219,7 +247,9 @@ test("axis ticks are round numbers that cover the data", () => {
 });
 
 test("card text keeps a little Markdown and only safe links", () => {
-  const nodes = inlineMarkdown("a **bold** and _soft_ [docs](https://example.com/x) [bad](javascript:alert(1))");
+  const nodes = inlineMarkdown(
+    "a **bold** and _soft_ [docs](https://example.com/x) [bad](javascript:alert(1))",
+  );
   const holder = document.createElement("p");
   for (const node of nodes) {
     if (node) {
@@ -236,7 +266,9 @@ test("card text keeps a little Markdown and only safe links", () => {
 
 test("pressing a card action sends the inputs and the action's id", () => {
   const actions: BlockAction[] = [];
-  const drawn = renderBlock(fixture("adaptive-card-refund-approval"), { onAction: (action) => actions.push(action) });
+  const drawn = renderBlock(fixture("adaptive-card-refund-approval"), {
+    onAction: (action) => actions.push(action),
+  });
   document.body.append(drawn);
   const note = drawn.querySelector("textarea");
   assert.ok(note);
@@ -274,7 +306,15 @@ test("a required input stops the action and shows its message", () => {
     card: {
       type: "AdaptiveCard",
       version: "1.5",
-      body: [{ type: "Input.Text", id: "name", label: "Name", isRequired: true, errorMessage: "Tell us your name" }],
+      body: [
+        {
+          type: "Input.Text",
+          id: "name",
+          label: "Name",
+          isRequired: true,
+          errorMessage: "Tell us your name",
+        },
+      ],
       actions: [
         { type: "Action.Submit", id: "go", title: "Go", data: { step: 2 } },
         { type: "Action.Submit", id: "skip", title: "Skip", associatedInputs: "none" },
@@ -334,7 +374,9 @@ test("show card, toggle visibility and fallbacks act inside the card", () => {
     buttons.map((button) => button.textContent),
     ["Details", "Reply", "Send"],
   );
-  const details = [...drawn.querySelectorAll("p")].find((p) => p.textContent === "The details") as HTMLElement;
+  const details = [...drawn.querySelectorAll("p")].find(
+    (p) => p.textContent === "The details",
+  ) as HTMLElement;
   assert.equal(details.hidden, true);
   buttons[0]?.click();
   assert.equal(details.hidden, false);
@@ -357,7 +399,9 @@ test("a diagram is text until the page brings a renderer, then an image", async 
   const mermaid = {
     initialize: (config: Record<string, unknown>) => configs.push(config),
     render: (_id: string, source: string) =>
-      Promise.resolve({ svg: `<svg xmlns="http://www.w3.org/2000/svg"><script>x</script><text>${source.length}</text></svg>` }),
+      Promise.resolve({
+        svg: `<svg xmlns="http://www.w3.org/2000/svg"><script>x</script><text>${source.length}</text></svg>`,
+      }),
   };
   setDiagramRenderer(mermaidRenderer(mermaid));
   try {
@@ -388,8 +432,12 @@ test("the element draws its block in a shadow tree and reports actions and error
   assert.ok(element instanceof GraphrtBlockElement);
   const actions: BlockAction[] = [];
   const errors: string[] = [];
-  document.body.addEventListener("graphrt-action", (event) => actions.push((event as CustomEvent<BlockAction>).detail));
-  document.body.addEventListener("graphrt-error", (event) => errors.push((event as CustomEvent<{ message: string }>).detail.message));
+  document.body.addEventListener("graphrt-action", (event) =>
+    actions.push((event as CustomEvent<BlockAction>).detail),
+  );
+  document.body.addEventListener("graphrt-error", (event) =>
+    errors.push((event as CustomEvent<{ message: string }>).detail.message),
+  );
   document.body.append(element);
   element.block = fixture("adaptive-card-refund-approval");
   const root = element.shadowRoot;
@@ -405,7 +453,10 @@ test("the element draws its block in a shadow tree and reports actions and error
   assert.match(errors[0] ?? "", /unknown kind `nope`/);
   assert.ok(root.querySelector(".error"));
   // The block can also be given as an attribute.
-  element.setAttribute("data", JSON.stringify({ $ui: "stats", version: 1, items: [{ label: "Visits", value: 7 }] }));
+  element.setAttribute(
+    "data",
+    JSON.stringify({ $ui: "stats", version: 1, items: [{ label: "Visits", value: 7 }] }),
+  );
   assert.ok(root.textContent.includes("Visits"));
   element.remove();
 });
@@ -413,7 +464,10 @@ test("the element draws its block in a shadow tree and reports actions and error
 test("light and dark are tokens on the element, and dark can be forced either way", async () => {
   const { BLOCK_CSS } = await import("../src/index.ts");
   assert.match(BLOCK_CSS, /:host \{[^}]*color-scheme: light/);
-  assert.match(BLOCK_CSS, /@media \(prefers-color-scheme: dark\) \{ :host\(:not\(\[theme="light"\]\)\) \{[^}]*color-scheme: dark/);
+  assert.match(
+    BLOCK_CSS,
+    /@media \(prefers-color-scheme: dark\) \{ :host\(:not\(\[theme="light"\]\)\) \{[^}]*color-scheme: dark/,
+  );
   assert.match(BLOCK_CSS, /:host\(\[theme="dark"\]\) \{[^}]*color-scheme: dark/);
   // Nothing is loaded from anywhere.
   assert.doesNotMatch(BLOCK_CSS, /url\(|@import|https?:/);

@@ -51,7 +51,9 @@ await build({
   logLevel: "warning",
 });
 
-const built = entries.map((path) => join(outDir, relative(join(root, "packages"), path)).replace(/\.ts$/, ".mjs"));
+const built = entries.map((path) =>
+  join(outDir, relative(join(root, "packages"), path)).replace(/\.ts$/, ".mjs"),
+);
 const run = spawnSync(process.execPath, ["--enable-source-maps", "--test", ...built], {
   cwd: root,
   env: { ...process.env, GRAPHRT_REPO_ROOT: resolve(root, "..") },

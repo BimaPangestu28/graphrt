@@ -175,7 +175,8 @@ function htmlTag(line: string): string | undefined {
     }
     const inner = rest.slice(0, end);
     const name = /^[A-Za-z0-9]*/.exec(nameStart)?.[0] ?? "";
-    const isLineBreak = name.toLowerCase() === "br" && inner.replace(/\/+$/, "").trim().length === name.length;
+    const isLineBreak =
+      name.toLowerCase() === "br" && inner.replace(/\/+$/, "").trim().length === name.length;
     if (!isLineBreak) {
       return line.slice(start, start + end + 2);
     }

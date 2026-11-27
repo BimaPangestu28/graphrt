@@ -4,8 +4,20 @@
   "description": "Chat web component and embeddable widget for agents served by graphrt serve.",
   "license": "Apache-2.0",
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
-  "files": ["src", "README.md"],
-  "dependencies": { "graphrt-client": "0.1.0", "graphrt-ui": "0.1.0" },
-  "repository": { "type": "git", "url": "git+https://github.com/Graphrt/graphrt.git", "directory": "web/packages/chat" }
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "dependencies": {
+    "graphrt-client": "0.1.0",
+    "graphrt-ui": "0.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Graphrt/graphrt.git",
+    "directory": "web/packages/chat"
+  }
 }

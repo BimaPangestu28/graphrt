@@ -188,10 +188,14 @@ export async function startServer(flags: string[] = []): Promise<TestServer> {
     await writeFile(join(dir, `${name}.yaml`), text);
   }
   const port = await freePort();
-  const child = spawn(binary(), ["serve", dir, "--addr", `127.0.0.1:${port}`, "--no-default-plugins", ...flags], {
-    env: { ...process.env, GRAPHRT_API_KEY: API_KEY },
-    stdio: ["ignore", "ignore", "pipe"],
-  });
+  const child = spawn(
+    binary(),
+    ["serve", dir, "--addr", `127.0.0.1:${port}`, "--no-default-plugins", ...flags],
+    {
+      env: { ...process.env, GRAPHRT_API_KEY: API_KEY },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
   let stderr = "";
   child.stderr?.on("data", (chunk: Buffer) => {
     stderr += chunk.toString();

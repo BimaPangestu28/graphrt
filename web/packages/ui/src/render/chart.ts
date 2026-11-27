@@ -45,7 +45,9 @@ function read(fields: Fields): ChartData {
   const categories = (Array.isArray(x.values) ? x.values : []).map((value) => String(value));
   const series = (Array.isArray(fields.series) ? fields.series : []).filter(isObject).map((item) => ({
     name: text(item, "name") ?? "",
-    values: (Array.isArray(item.values) ? item.values : []).map((value) => (typeof value === "number" ? value : null)),
+    values: (Array.isArray(item.values) ? item.values : []).map((value) =>
+      typeof value === "number" ? value : null,
+    ),
   }));
   return {
     type: text(fields, "type") ?? "bar",
@@ -146,12 +148,22 @@ function cartesian(data: ChartData, locale: string | undefined): SVGElement {
     } else {
       root.append(
         svg("line", { class: "grid", x1: plot.left, x2: plot.right, y1: at, y2: at }),
-        svg("text", { x: plot.left - 6, y: at, "text-anchor": "end", "dominant-baseline": "middle" }, format(value)),
+        svg(
+          "text",
+          { x: plot.left - 6, y: at, "text-anchor": "end", "dominant-baseline": "middle" },
+          format(value),
+        ),
       );
     }
   }
   // Category labels: every one when they fit, else every n-th.
-  const every = Math.max(1, Math.ceil(data.categories.length / (horizontal ? 14 : Math.max(2, Math.floor(60 / Math.min(longestCategory, 12))))));
+  const every = Math.max(
+    1,
+    Math.ceil(
+      data.categories.length /
+        (horizontal ? 14 : Math.max(2, Math.floor(60 / Math.min(longestCategory, 12)))),
+    ),
+  );
   data.categories.forEach((category, c) => {
     if (c % every !== 0) {
       return;
@@ -159,12 +171,18 @@ function cartesian(data: ChartData, locale: string | undefined): SVGElement {
     const middle = px(bandAt(c) + bandSize / 2);
     root.append(
       horizontal
-        ? svg("text", { x: plot.left - 6, y: middle, "text-anchor": "end", "dominant-baseline": "middle" }, shortLabel(category, 24))
+        ? svg(
+            "text",
+            { x: plot.left - 6, y: middle, "text-anchor": "end", "dominant-baseline": "middle" },
+            shortLabel(category, 24),
+          )
         : svg("text", { x: middle, y: plot.bottom + 14, "text-anchor": "middle" }, shortLabel(category, 12)),
     );
   });
   if (data.xLabel && !horizontal) {
-    root.append(svg("text", { x: (plot.left + plot.right) / 2, y: HEIGHT - 6, "text-anchor": "middle" }, data.xLabel));
+    root.append(
+      svg("text", { x: (plot.left + plot.right) / 2, y: HEIGHT - 6, "text-anchor": "middle" }, data.xLabel),
+    );
   }
 
   const tip = (item: Series, c: number, value: number): SVGElement =>
@@ -196,8 +214,22 @@ function cartesian(data: ChartData, locale: string | undefined): SVGElement {
         // A 2px gap in the surface colour separates touching bars and stack segments.
         const length = Math.max(to - from - (data.stacked ? 2 : 0), 1);
         const rect = horizontal
-          ? svg("rect", { class: seriesClass(s), x: px(from), y: px(across + 1), width: px(length), height: px(thickness - 2), rx: 3 })
-          : svg("rect", { class: seriesClass(s), x: px(across + 1), y: px(from), width: px(thickness - 2), height: px(length), rx: 3 });
+          ? svg("rect", {
+              class: seriesClass(s),
+              x: px(from),
+              y: px(across + 1),
+              width: px(length),
+              height: px(thickness - 2),
+              rx: 3,
+            })
+          : svg("rect", {
+              class: seriesClass(s),
+              x: px(across + 1),
+              y: px(from),
+              width: px(thickness - 2),
+              height: px(length),
+              rx: 3,
+            });
         rect.setAttribute("stroke", "none");
         rect.append(tip(item, c, value));
         root.append(rect);
@@ -217,7 +249,13 @@ function cartesian(data: ChartData, locale: string | undefined): SVGElement {
       if (data.stacked) {
         stackBase[c] = base + value;
       }
-      return { x: bandAt(c) + bandSize / 2, y: valueAt(base + value), y0: valueAt(Math.max(lo, base)), value, c };
+      return {
+        x: bandAt(c) + bandSize / 2,
+        y: valueAt(base + value),
+        y0: valueAt(Math.max(lo, base)),
+        value,
+        c,
+      };
     });
     let run: NonNullable<(typeof points)[number]>[] = [];
     const flush = (): void => {
@@ -226,7 +264,10 @@ function cartesian(data: ChartData, locale: string | undefined): SVGElement {
       }
       const path = run.map((p, i) => `${i === 0 ? "M" : "L"}${px(p.x)} ${px(p.y)}`).join(" ");
       if (data.type === "area") {
-        const back = [...run].reverse().map((p) => `L${px(p.x)} ${px(p.y0)}`).join(" ");
+        const back = [...run]
+          .reverse()
+          .map((p) => `L${px(p.x)} ${px(p.y0)}`)
+          .join(" ");
         root.append(svg("path", { class: `area ${seriesClass(s)}`, d: `${path} ${back} Z` }));
       }
       root.append(svg("path", { class: `line ${seriesClass(s)}`, d: path }));
@@ -244,7 +285,12 @@ function cartesian(data: ChartData, locale: string | undefined): SVGElement {
     if (data.categories.length <= 40) {
       for (const point of points) {
         if (point !== null) {
-          const dot = svg("circle", { class: `dot ${seriesClass(s)}`, cx: px(point.x), cy: px(point.y), r: 4 });
+          const dot = svg("circle", {
+            class: `dot ${seriesClass(s)}`,
+            cx: px(point.x),
+            cy: px(point.y),
+            r: 4,
+          });
           dot.setAttribute("stroke", "var(--grt-surface)");
           dot.append(tip(item, point.c, point.value));
           root.append(dot);
@@ -323,7 +369,11 @@ function dataTable(data: ChartData, locale: string | undefined): HTMLElement {
       el("th", { scope: "row" }, category),
       ...data.series.map((item) => {
         const value = item.values[c];
-        return el("td", { class: "right" }, value === null || value === undefined ? "" : formatNumber(value, data.style, locale));
+        return el(
+          "td",
+          { class: "right" },
+          value === null || value === undefined ? "" : formatNumber(value, data.style, locale),
+        );
       }),
     ),
   );
@@ -343,7 +393,9 @@ export function renderChart(fields: Fields, context: RenderContext): HTMLElement
     "chart-block",
     fields,
     holder,
-    data.yLabel !== undefined && !isRound ? el("p", { class: "muted" }, data.yLabel) : document.createTextNode(""),
+    data.yLabel !== undefined && !isRound
+      ? el("p", { class: "muted" }, data.yLabel)
+      : document.createTextNode(""),
     names.length > 1 || isRound ? legend(names) : document.createTextNode(""),
     dataTable(data, context.locale),
   );
