@@ -9,6 +9,28 @@ change) until it is cut; `scripts/changelog.py preview` shows them together.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-27
+
+An agent goes online from one command and is used from a browser, a phone or a
+chat app. `graphrt deploy --direct` to Fly.io can now serve a chat page, a
+monitoring page for a phone with approvals and push notifications, and
+Telegram, WhatsApp, Slack or Microsoft Teams, and keeps paired phones on a
+small Fly volume. It was tested end to end on real Fly.io, which found and
+fixed three differences from the API fake (stopped and `replacing` Machines,
+the Free plan limit of 3 Machines). `graphrt serve` gains the same pages,
+conversations kept by the server, file workspaces for agents (local or S3),
+images and document tools, knowledge connectors that keep a knowledge base in
+sync with web sites, REST APIs, Google Drive, Notion and SharePoint, agent
+skills and self learning (now in the release builds), an admin console for
+self hosted servers, approvals as buttons and notifications in Slack and
+Teams, and a real time collaboration server (`graphrt collab`). The browser
+packages are now one npm package, `graphrt`. The gateway's Cloud Run and
+ECS/Lambda providers were checked on real clouds, and a mobile SDK ships as an
+Android AAR and a Swift package. This is the first release whose container
+image is `ghcr.io/graphrt/graphrt` (older images stay at
+`ghcr.io/bimapangestu28/graphrt`). One Rust API change for embedders:
+`graphrt-image`'s `ImageFormat` has a new variant (see **Changed**).
+
 ### Added
 
 - `http-request` has a `text` output: the readable text of an HTML page (markup,
@@ -105,6 +127,424 @@ change) until it is cut; `scripts/changelog.py preview` shows them together.
   (one run's inputs each) and the next `cursor`. graphrt-plugin exposes them as
   `PluginManifest::triggers` / `TriggerDescriptor`; the JSON Schema and
   docs/plugin-manifest.md describe them. Used by graphrt Desktop.
+- Skills in bundles (cargo features `skills` and `bundle`):
+  `graphrt bundle build` packs the skills a workflow's agents list, with
+  their grants, and `graphrt run` installs them into a private store for the
+  run through the normal install gate. `SkillStore::export` returns the
+  pinned files of an installed skill.
+- Configurable chunking in graphrt-rag: `ChunkerConfig` gains `separators`
+  (an ordered list of literal strings and, with the new default-on `regex`
+  feature, `{ regex: "..." }` patterns that split before each match),
+  `min_chars` (merge short pieces into a neighbour when they fit) and
+  `split_pages` (never let a chunk span two PDF pages). `ChunkerConfig::validate`
+  and `try_chunk_text` reject unusable settings; `KnowledgeConfig` and
+  `Ingestor::ingest` now use them, so a bad config fails before anything is
+  stored. Chunks carry `start` / `end` character offsets, stored as
+  `char_start` / `char_end` metadata, and `estimate_tokens` / `CHARS_PER_TOKEN`
+  give the token estimate the chunk sizes are based on. Existing configs keep
+  their meaning; the default separators are exported as `DEFAULT_SEPARATORS`.
+- `graphrt collab` (cargo feature `collab`, image `:<version>-collab`): a
+  collaboration server where teams build agents together in real time. Team
+  workspaces with the console's roles (viewer, operator who can edit, owner),
+  invites by link, live co-editing of the graph, prompts and layout that merges
+  without conflicts (a Yjs compatible CRDT), presence, offline edits that merge
+  on reconnect, automatic and named versions with restore, an audit log and
+  secrets per workspace. Sign in with OpenID Connect (a loopback redirect for
+  desktop apps) or with invite codes. Short lived access tokens scoped to a
+  workspace, rotating refresh tokens, rate limits, TLS. Hosted (many teams)
+  or self hosted (one company) from the same binary, with a compose file and a
+  Helm chart in `deploy/collab/`. See docs/collab.md and docs/design/collab.md.
+- `graphrt-collab`: the document model, the sync protocol, the server and a
+  client for apps (Graphrt Desktop uses it).
+- Plugin manifests: optional `services`,
+  server side services a collaboration server runs for workspaces that enable
+  them, sandboxed like every plugin, with workspace secrets an owner grants.
+- `llm` and `agent` nodes keep a long conversation inside the model's context
+  window. With `context_window: auto` (the default) a request that the
+  provider refuses for its size is trimmed and sent once more instead of
+  failing the node: results of old tool calls become placeholders, then the
+  oldest turns are removed whole, and a tool call is never parted from its
+  result. `context_window: summarize` also carries a rolling summary of what
+  was removed, `max_tokens` trims before a request passes a set limit, and
+  `off` keeps the previous behaviour. There is no table of model sizes: the
+  window is read from the provider's refusal. Each trim is reported as a
+  `context_trimmed` progress event. In the default build (cargo feature
+  `context`), not in the slim builds. See "Context window" in
+  `docs/workflow-format.md` and `docs/memory-design.md`.
+- Guide for one served agent on Google Cloud Run (agent file and store on a
+  Cloud Storage volume) and Amazon ECS Fargate (load balancer, EFS store),
+  verified on real accounts: `docs/deploy-cloud-run-ecs.md`.
+- `graphrt deploy --direct --channel telegram|whatsapp`: a direct deployment
+  answers customers on Telegram or WhatsApp (`graphrt serve --channel`). The
+  channel's credentials are passed with `--secret` and stay Fly secrets: the
+  Machine command names only the kind and the workflow. Channel conversations
+  use the store volume, `--channel telegram` needs `--mode always-on`, and the
+  deploy result lists `serve.channels`.
+- `graphrt deploy --direct`: a direct deployment can serve the chat page, the
+  monitoring page and what goes with them. `--chat`, `--chat-access
+  key|guests`, `--chat-title`, `--chat-guest-rate-limit`, `--chat-guest-budget`,
+  `--cors-origin`, `--conversations`, `--monitor`, `--devices`, `--approvals`,
+  `--expire-approvals` and `--push` are the `graphrt serve` flags of the same
+  names, each off unless given. The `result` line of a deploy has `serve`
+  (what the version serves) and `store`. See
+  [docs/deploy-direct.md](docs/deploy-direct.md#chat-page-monitoring-and-the-store).
+- `graphrt deploy --direct`: a deploy with `--monitor`, `--devices`, `--push`
+  or `--conversations` keeps its devices, push subscriptions, push key,
+  conversations and runs on one 1 GB Fly volume (billed by Fly, about 0.15 USD
+  a month), so they outlive a Machine that stops when idle and a redeploy.
+  Such a deployment keeps one Machine that is updated in place, and a version
+  that does not get healthy is replaced by the one that served before. Deploys
+  without these flags create no volume. `--drop-store` deletes the volume, and
+  `graphrt deploy status` reports it as `store`.
+- `graphrt serve`: the flags of the chat page, conversations and monitoring
+  can be set as environment variables, for a container without a command line
+  of its own: `GRAPHRT_CHAT`, `GRAPHRT_CHAT_ACCESS`, `GRAPHRT_CHAT_TITLE`,
+  `GRAPHRT_CHAT_GUEST_RATE_LIMIT`, `GRAPHRT_CHAT_GUEST_BUDGET`,
+  `GRAPHRT_CONVERSATIONS`, `GRAPHRT_MONITOR`, `GRAPHRT_DEVICES`,
+  `GRAPHRT_APPROVALS`, `GRAPHRT_EXPIRE_APPROVALS` and `GRAPHRT_PUSH`. A flag
+  wins over its variable. See
+  [docs/serving.md](docs/serving.md#flags-as-environment-variables).
+- Agents can create documents: the new `graphrt-docgen` crate and
+  `--document-tools` (with `--workspace`) add the `documents` tools.
+  `create_pdf` and `create_docx` turn Markdown (headings, paragraphs, lists,
+  tables, code blocks, bold and italic) into a PDF or a Word document, and
+  `create_xlsx` turns rows of cells into an Excel workbook. The writers are
+  small and in the crate, with no new dependency: the files hold text,
+  tables and lines and never a script, macro, link, embedded file or
+  formula. Spreadsheet text that starts with `=` stays text. PDF text is
+  Western European (the fonts built into every reader), other characters
+  are written as `?` and counted in the result. Files go through the
+  workspace, so paths, quota and user directories apply. See
+  `docs/files-and-images.md` and `examples/documents.yaml`.
+- File workspaces for agents: the new `graphrt-files` crate and
+  `--workspace DIR` on `run`, `serve` and `eval`. Agents get the `files`
+  tools (`files/list`, `read`, `search`, `write`, `info`, `delete`) inside one
+  directory and nowhere else. `read` returns a window of lines of text files
+  and of the extracted text of PDF, Office, EPUB and e-mail files; `search`
+  finds lines containing a text. Paths with `..`, absolute paths, links,
+  hidden names and Windows device names are refused, programs are not stored,
+  file types come from content, and sizes and counts are bounded (32 MiB per
+  file, 512 MiB and 5,000 files per workspace). `--workspace-read-only`
+  removes the write tools, and `--workspace-per-user` gives every user a
+  private directory chosen by `tool_context: { files: { scope: ... } }`,
+  which the model cannot see or change. Storage is behind the `FileStore`
+  trait (`DirStore`, `MemoryStore`). Off unless the flag is given; the slim
+  agent builds do not include it. See `docs/files-and-images.md` and the
+  design and threat model in `docs/files-and-images-design.md`.
+- `agent` nodes have a `files` output and `tool` nodes fill theirs: the files
+  a native tool returned in its structured result
+  (`graphrt_core::tool::collect_files`), for example what `files/write`
+  created. Files are never sent to the model, and JSON from plugins, MCP
+  servers and models still cannot create file values. Behind the `tool-files`
+  feature of `graphrt-core` and `graphrt-llm` (on by default, enabled by the
+  CLI's `files` feature): the slim agent builds have no native file tools,
+  leave it out and stay exactly as large as before.
+- `graphrt-files`: `S3Store`, a `FileStore` over S3 and S3 compatible object
+  stores (MinIO, Cloudflare R2, Ceph, Garage, SeaweedFS), behind the new `s3`
+  feature. Five signed requests over `reqwest` with the SigV4 signer and the
+  credential chain of `graphrt-provider-aws`: no AWS SDK and no new crate in
+  the lock file. Keys never leave the configured prefix, listings only show
+  valid workspace paths, redirects are not followed, `http://` endpoints must
+  be allowed explicitly, and creation without overwrite uses
+  `If-None-Match: *`. `StoreError::Config` reports a store that cannot be set
+  up as asked.
+- `--workspace s3://bucket/prefix` in CLI builds with the opt in `files-s3`
+  feature, configured by `GRAPHRT_S3_ENDPOINT`, `GRAPHRT_S3_REGION`,
+  `GRAPHRT_S3_PATH_STYLE`, `GRAPHRT_S3_ALLOW_HTTP` and the usual AWS
+  credential variables and roles. See `docs/files-and-images.md`.
+- `files/search` takes regular expressions (`regex: true`) and can search
+  inside PDF and Office documents (`documents: true`, or a single document
+  named by `path`). Patterns run on a linear time engine without
+  backtracking, their compiled size and nesting are limited, and every
+  search now ends at a time limit (`FileToolsConfig::max_search_time`, 5
+  seconds) with what it found. At most 25 documents are extracted per search
+  (`max_search_documents`), unreadable ones are counted and skipped, and
+  extracted text is kept so the `read` after a hit does not parse the file
+  again. Large files are matched on the blocking pool. New `regex` feature of
+  `graphrt-files`, on by default.
+- `graphrt gateway`: `POST /v1/deployments/{d}/runs/{id}/feedback` rates a
+  run behind a gateway and teaches its agent, with the rules of
+  `graphrt serve --verify-jwt`. An end user's token, on a run started with a
+  token of the same user, makes the feedback that user's own words (low risk
+  lessons may be approved by `auto_approve_user_feedback`, risky ones wait for
+  the owner). Another user's token is refused with `403`, a missing or bad one
+  with `401`, and with the deployment API key `user` is only a label. The
+  gateway forwards it to an agent of the run's version
+  (`POST /internal/v1/runs/{id}/feedback`). It is in the release gateway
+  build. A build from source needs the `learning` feature next to `gateway`.
+- `human-input`: `on_expire` says what a host should do when the request
+  expires (`expire_after_ms`): `stop` (the default) or `{ action: <id> }` to
+  answer with one of the node's actions and the fields' defaults. It is
+  checked against the actions and reported in the pause data as `on_expire`
+  (`{"kind": "stop"}` or `{"kind": "answer", "action": "<id>"}`) next to
+  `timeout_ms`. graphrt does not expire requests itself (`run`, `serve` and the
+  gateway keep the run paused); hosts that enforce deadlines carry it out.
+- A second image generator: `GeminiImages` in `graphrt-image` (feature
+  `generate-gemini`) for the image models of the Gemini API, behind the same
+  `ImageGenerator` trait. `--image-model gemini/NAME` selects it
+  (`GEMINI_API_KEY` or `GOOGLE_API_KEY`, optional `GEMINI_BASE_URL`), and
+  `NAME` or `openai/NAME` keeps the OpenAI images API. A `WIDTHxHEIGHT` size
+  is mapped to the closest aspect ratio and size class Gemini knows. The key
+  travels in a header, redirects are not followed, an answer that points to
+  a file is refused, not fetched, and a refusal by the provider is reported
+  with its reason.
+- HEIC photos as vision input and for the `image` tools, behind the new
+  `heic` feature of `graphrt-image` and `image-heic` of the CLI. Off by
+  default in every build: HEVC is covered by patent pools whatever the
+  licence of the software is, so shipping a decoder is left to whoever
+  builds the binary. A HEIC photo is checked from its header by a parser of
+  our own before the decoder runs, decoded in safe Rust (`heifer`, MIT or
+  Apache-2.0) with the same pixel limit, and always leaves as JPEG or PNG
+  without its metadata. Graphrt does not write HEIC. AVIF stays refused:
+  the safe Rust AV1 decoders are under the AGPL. See decision 15 in
+  `docs/files-and-images-design.md`.
+- Images for agents: the new `graphrt-image` crate. Every image goes through
+  one gate: only PNG, JPEG, GIF and WebP by magic number (an SVG, an HTML
+  page or a HEIC photo sent as `image/png` is refused), at most 20 MiB and
+  25 megapixels read from the header (an image bomb is refused before any
+  decoder runs), EXIF with its GPS position, XMP, IPTC, text chunks and
+  anything appended after the image removed, and images above 1,568 px on
+  the long side turned upright, downscaled and encoded again on the blocking
+  pool. `--image-tools` adds the `image` tools to a workspace
+  (`image/info`, `view`, `resize`, `convert`, `thumbnail`), and
+  `--image-model NAME` adds `image/generate` through the OpenAI images API.
+  Generation sits behind the `ImageGenerator` trait. See
+  `docs/files-and-images.md`.
+- `graphrt_core::file::ImagePreparer`: a host service that turns an image
+  file into what a model request carries. Model nodes with `vision` ask it
+  for every image (`VisionConfig::prepared_image_parts`, behind the
+  `vision-preparer` feature of `graphrt-llm`, which the CLI's `image` feature
+  enables and the slim agent builds leave out).
+- Knowledge connectors (cargo feature `connectors`, new crate
+  `graphrt-connect`): the `sources:` of a knowledge config keep datasets in
+  sync with web pages (one page, a bounded crawl or a sitemap, robots.txt
+  honoured), REST / JSON APIs (pagination, JSONPath), Google Drive, Notion and
+  SharePoint or OneDrive. Syncs are incremental (versions and content hashes,
+  deleted items removed), run on a schedule (`every`, `daily`, `cron`) in
+  `graphrt serve` and once with `graphrt kb sync`, and share a lock so two
+  processes never sync the same source at once. `GET /v1/knowledge/sources`
+  and `POST /v1/knowledge/sources/{id}/sync` show and start syncs. See
+  docs/knowledge-connectors.md.
+- `graphrt_core::cron` (feature `cron`): the gateway's cron expressions and
+  time zones, shared with the sync schedules.
+- `graphrt_learn::ModelDistiller` (preview): a model suggests lessons from
+  recorded feedback and run excerpts, outside any run. Its suggestions are
+  always `derived` proposals that wait for the owner.
+  `graphrt learn distill AGENT --model provider/name` uses it.
+- `graphrt_learn::draft_skill_from_lessons` (preview): three or more approved
+  procedures that apply to every run of an agent become a skill draft, which
+  is reviewed and installed like any other (origin `learned`).
+  `graphrt learn skill AGENT --model provider/name` writes it as a folder.
+- Mobile SDK: apps give agents native tools (`Runtime.registerToolProvider`, a
+  Kotlin `suspend` / Swift `async` `ToolProvider` with JSON Schema checks, time
+  limits, cancellation and errors the model reads), receive typed run events
+  (`WorkflowHandle.start`, `RunEvent`) and answer what a paused run asks with
+  `PausedRun` (`approve`, `reject`, `decideToolCall`, `answer`, `toJson` /
+  `fromJson`). Skills, learning, the file workspace, photo checks, UI block
+  validation and scripted models are in the FFI behind cargo features, all in
+  the new `sdk` feature set.
+- Releases attach an Android AAR (`graphrt-android-<version>.aar`, arm64-v8a,
+  armeabi-v7a, x86_64) and a Swift package with an XCFramework
+  (`graphrt-swift-<version>.zip`, `GraphrtFFI.xcframework.zip`). Kotlin helpers
+  (`Flow` of events, `registerTools { }`) live in `sdk/android`, Swift helpers
+  (`AsyncThrowingStream`, `registerTools`) in `sdk/swift`. Publishing the AAR to
+  Maven Central is prepared and off until it is set up.
+- docs/mobile.md is a developer guide whose Kotlin and Swift examples are
+  compiled and run by the SDK tests, and CI checks that the bindings match the
+  API.
+- `graphrt serve --cors-origin ORIGIN` (repeatable, or `$GRAPHRT_CORS_ORIGINS`):
+  pages of the listed origins may call the API from a browser. Off by default.
+  Origins are matched exactly, `Access-Control-Allow-Credentials` is never sent,
+  and `*` needs an API key. See [docs/web.md](docs/web.md#cross-origin-requests-cors).
+- `graphrt serve --chat WORKFLOW[=INPUT]`: a chat page at `/chat/` and a chat
+  widget for other sites (`<script src=".../chat/embed.js">`), embedded in the
+  binary, for phones and desktops, light and dark. `--chat-access key|users|guests`
+  decides who may chat. Guests get a signed, stateless session and are limited by
+  `--chat-guest-rate-limit` and `--chat-guest-budget`. `--chat-mermaid FILE`
+  draws `diagram` blocks with a Mermaid build you name, served from your server.
+- `graphrt serve --conversations`: the server keeps chat history. A run names a
+  `conversation_id` instead of sending `sys.history` (which keeps working), and
+  gets the earlier turns and the conversation variables. Scoped to the verified
+  user, with `--conversation-max-messages`, `--conversations-per-user` and
+  `--conversation-ttl-days`. API under `/v1/conversations`.
+- A verified end user (`--verify-jwt`, or a chat guest) can read, follow and stop
+  the runs they started: `GET /v1/runs/{id}`, its events and `abort` accept the
+  user's token for their own runs, filtered like their stream. `--user-resume`
+  also lets them answer the questions of their own paused runs.
+- `GET /v1/runs/{id}/events?responses=true` adds the answer text (`response`
+  events) for a caller that follows a run, and the `202` answer of an async
+  start or resume has `first_event`.
+- `web/`: the browser side built on the above, as parts of the npm package
+  `graphrt`. `graphrt/client` (typed client: blocking, streamed and background
+  runs, events with replay, abort, resume, feedback, conversations),
+  `graphrt/ui` (web components that draw UI blocks, checked against the
+  `graphrt-ui` fixtures) and `graphrt/chat` (the chat component and widget).
+- `graphrt serve` reads the skills of a served bundle (`.grt`), like
+  `graphrt run bundle.grt`: each bundle that brings skills runs on a private
+  store filled through the normal install gate, and on no other skills.
+  `GET /v1/skills` lists them under `bundled`, read only, and the server
+  prints each bundled skill with its grants at startup. A bundle without
+  skills keeps using the server's store.
+- `graphrt serve --channel telegram=WORKFLOW` and `--channel whatsapp=WORKFLOW`:
+  a customer writes on Telegram or WhatsApp, the workflow runs and the answer
+  goes back on the same channel, with one conversation per customer kept by
+  the server. Telegram works by long polling (no public address needed) or by
+  a webhook with a secret, WhatsApp by the signed webhook of the Cloud API.
+  Answers are split to the channel's length limit and converted from Markdown,
+  UI blocks go out as text with numbered choices, files go both ways (with
+  `--workspace`), and a typing sign shows while the run works. A paused run
+  asks the customer (`--user-resume`) or the team (the approvals inbox, or
+  `approvers` in the channel). Each message is handled once, each customer has
+  a rate limit and each channel a budget (`--channel-rate-limit`,
+  `--channel-budget`), and senders can be restricted. `--channels FILE`
+  configures several bots and the server's own sentences. Cargo features
+  `channel-telegram` and `channel-whatsapp`. See
+  [docs/channels.md](docs/channels.md).
+- `graphrt serve`: `GET /v1/channels`, `POST /v1/channels/{name}/handoff` and
+  `POST /v1/channels/{name}/messages` let a person of the team take a channel
+  conversation over and write to the customer.
+- New crate `graphrt-channel`: what a host needs to speak Telegram (Bot API)
+  and WhatsApp (Cloud API): payload parsing, the webhook secret and signature
+  checks, the 24 hour window, text splitting and Markdown conversion, and a
+  `Channel` trait to send text, buttons and files and to download media. It
+  depends on no other Graphrt crate.
+- Conversations kept by the server have a `channel` field (name, chat, the
+  customer's display name) when they happen on a messaging channel.
+- Admin console for self hosted servers (new `graphrt-console` crate, cargo
+  feature `console`, `graphrt serve --console console.yaml`, off unless
+  given): people sign in with OpenID Connect (Entra ID, Google Workspace,
+  Okta, Keycloak, PKCE and nonce, sessions in `HttpOnly` `SameSite=Strict`
+  cookies with CSRF tokens and a `Host` allowlist), get the role owner,
+  operator or viewer from their groups or from an owner, and are held to it
+  on every route of the server. An append only, hash chained audit log
+  records sign ins, role changes, secrets, versions, approvals and devices,
+  with filters, a JSON lines export, a chain check and retention. Secrets are
+  environment variables of the served workflows, sealed with AES-256-GCM
+  under a key from the environment or a file and never shown again. The
+  agent registry keeps every version of a workflow by content hash, per
+  environment (`dev`, `prod`), with promotion and rollback, and
+  `POST /v1/console/apply` restarts the server with a drain so changes take
+  effect. The API key keeps working for automation. See `docs/console.md`.
+- `graphrt serve --monitor`: a monitoring page at `/monitor/` for a phone or a
+  desktop, embedded in the binary: the runs, what each did (live while it
+  executes), and the requests that wait for a person, answered in place. It
+  can be installed as an app. See [docs/monitoring.md](docs/monitoring.md).
+- `graphrt serve --devices`: device tokens for monitoring. `POST /v1/devices`
+  (with the API key) pairs a device and answers its token once, with a pairing
+  payload and link to show as a QR code. A device token only reads runs and
+  resolves approvals, is stored hashed, expires when asked to, and ends when
+  its device is removed (`DELETE /v1/devices/{id}`). `--public-url` names the
+  address pairing links use.
+- `graphrt serve --approvals`: `GET /v1/approvals` lists every run that waits
+  for a person across workflows, with what is asked and when it expires, and
+  `POST /v1/approvals/{run_id}` answers one. `--expire-approvals` carries out
+  `on_expire` of `human-input` requests past their time limit: it answers with
+  the named action, or stops the run.
+- `graphrt serve --push CONTACT`: Web Push notifications to subscribed browsers
+  when a run fails or waits for a person, encrypted for the browser and signed
+  with the server's own key (VAPID), without a vendor account. The `Notifier`
+  trait behind it takes further channels.
+- `web/`: `graphrt/monitor`, the monitoring view (a QR encoder, push for
+  browsers). The client has `approvals`, `devices`, `push` and `listEvents`.
+- `graphrt serve`: `POST /v1/skills/drafts/model` asks one of the server's
+  models to write a skill from a description or a conversation and returns a
+  draft (nothing is installed). `POST /v1/skills/catalog/install` installs a
+  skill by name from the signed catalog the server was started with: a
+  request cannot name an index, a key or an unsigned mode.
+- `graphrt serve`: `POST /v1/learning/{agent}/distill` takes `{model}` to
+  also ask a model for lessons (always proposals with trust `derived`), and
+  `POST /v1/learning/{agent}/skill-draft` writes a skill draft from the
+  procedures an agent learned.
+- `ServiceOptions::learning_dir` and `ServiceOptions::skills_dir` name the
+  stores the served agents read. `build_state` serves `/v1/learning` and
+  `/v1/skills` from the same ones.
+- `graphrt serve`: a skill draft takes a `title` (`POST /v1/skills/drafts`,
+  `POST /v1/skills`), and a draft is accepted as a route returned it, with its
+  `findings` and `title`.
+- `graphrt serve` (cargo features `skills` and `learning`):
+  `/v1/skills` lists, checks, installs, grants and removes skills, and
+  `/v1/learning/{agent}/...` lists, adds, approves, edits, promotes, forgets
+  and distills lessons, with the policy and the audit log. Feedback posted to
+  `POST /v1/runs/{id}/feedback` is recorded as a learning signal for the
+  agents the run's workflow names in `learning.agent`. Only feedback sent with
+  a verified user's token counts as that user's own words.
+- `graphrt serve --channel slack=WORKFLOW` and `--channel teams=WORKFLOW`: the
+  enterprise counterpart of the Telegram and WhatsApp channels. Slack works by
+  Socket Mode (no public address needed) or by the signed Events API, Teams by
+  the messaging endpoint of an Azure Bot with the Bot Framework token checked
+  against Microsoft's published keys. Direct messages and mentions in channels
+  are answered, and a thread is one conversation. Adaptive Cards in an answer
+  are drawn as Block Kit in Slack and as cards in Teams, and approvals are
+  buttons that resume the paused run. See [docs/slack-teams.md](docs/slack-teams.md).
+- Channels can notify: `notify` targets in the channels file hear when any run
+  of the server fails or waits for a person, in Slack, Teams or Telegram, next
+  to or instead of Web Push. A target that is an approver gets the approval as
+  buttons. A channel without `workflow` only sends notifications.
+- `graphrt-channel`: features `slack`, `socket-mode` and `teams` (the Slack
+  signature check, events, taps, `mrkdwn` and Block Kit, a Socket Mode client,
+  the Bot Framework token check, activities and Adaptive Card answers), and
+  `Channel::send_rich` and `Channel::direct_chat` with defaults for the
+  channels that have no cards.
+- `graphrt deploy --direct --channel slack|teams`: a direct deployment answers
+  in Slack (the Events API, or Socket Mode with `--mode always-on`) and Teams,
+  with the credentials as Fly secrets.
+- Files in Teams: a 1:1 chat gets a file consent card and the file lands in
+  the person's OneDrive, a channel or group chat gets a download link
+  (`GET /v1/channels/{name}/files/{token}`, with `--public-url`). Any channel
+  falls back to such a link when a file could not be sent.
+- `graphrt skill install <name>[@version]` and `graphrt skill search`
+  (cargo features `skills` and `plugins`): skills from the `skills`
+  list of the catalog's `index-v2.json`. The index is used only after its
+  minisign signature verifies, with no unsigned mode, the archive must match
+  the sha256 in it and hold exactly the listed skill and version, and the
+  normal install then runs. The catalog grants no tool.
+- Skill drafts (preview): `graphrt_skill::draft_skill` writes a `SKILL.md`
+  from a description in plain language or from an example conversation, with
+  any model behind the new `graphrt_core::text_model::TextModel` trait
+  (`graphrt_llm::text_model::ChatTextModel`, feature `text-model`). A draft is
+  installed through the same gate as any skill (`SkillStore::install_draft`,
+  origin `authored`), can only ask for tools the host offered, and gets none
+  by being installed. `graphrt skill draft` writes the draft as a folder.
+- graphrt-skill and graphrt-learn, for hosts with their own
+  language and screens: `Finding::params` holds the details of a finding as
+  data, `SkillEntry::title` (from `metadata.display_name` or `metadata.title`) and `SkillOrigin::version` give a display name and
+  the catalog's version, `SkillDetails::installed` of `inspect_dir` now says
+  whether a skill of that name is installed, the risk reason `masked_secret`
+  flags text with a masked value, and `Learner::distill` keeps a feedback
+  comment in the queue when it cannot be recorded yet (`DistillReport::kept`).
+- `graphrt-ui`: new block kind `diagram`, a diagram written as Mermaid text
+  (`syntax: mermaid`, `source`). `validate` limits it to 20 000 characters and 500
+  lines of the common diagram types and rejects HTML (except `<br>`), `click` /
+  `link` / `callback` statements, config directives, front matter, colours and
+  `javascript:` / `data:` URLs.
+- `graphrt-ui`: `fallback::to_text` writes any block as text for channels that
+  cannot draw it (WhatsApp, SMS, e-mail). A card becomes its text plus numbered
+  choices, and `fallback::match_choice` maps a reply such as "2" back to the
+  card's `Action.Submit` with the values the button would send; a table becomes
+  compact lines and a chart a short summary. A block's `fallback_text` replaces
+  the generated body.
+- `graphrt-ui`: feature `png` adds `png::chart_png`, which draws a chart as a PNG
+  image (pure Rust, built-in font) for channels that send media.
+- npm: the browser side of `graphrt serve` is one package, `graphrt`, with the
+  entry points `graphrt/client`, `graphrt/ui`, `graphrt/chat` and
+  `graphrt/monitor`. A bundler keeps only the parts a page imports, and its
+  version is the version of the graphrt release. The release workflow publishes
+  it with npm trusted publishing and a provenance statement when the
+  repository variable `PUBLISH_NPM` is `true`.
+- `graphrt serve --workspace-api key|users`: the agents' workspace over HTTP
+  under `/v1/files` (list, info, upload, download, delete), through the same
+  workspace as the `files` tools, so paths, quotas, type checks and user
+  directories are shared. Off unless the flag is given. `users` also admits
+  verified end users (`--verify-jwt`), each inside the directory of their own
+  `sub` (`--workspace-per-user`). Uploads are raw request bodies limited by
+  `--max-upload-bytes`, counted while they arrive. Downloads are streamed and
+  always carry `nosniff` and a sandboxing `Content-Security-Policy`. HTML,
+  SVG and programs are sent as `application/octet-stream` attachments.
+  `?ref=` takes the `reference` of a file value, so a client can offer the
+  files a run returned as downloads. See `docs/files-and-images.md`.
+- Run requests take `files: ["workspace:..."]`: uploaded workspace files
+  attached to the run. They become `sys.files` as file values, checked
+  against what the caller may reach, for `vision` and `document-extractor`.
 
 ### Changed
 
@@ -122,9 +562,51 @@ change) until it is cut; `scripts/changelog.py preview` shows them together.
   `serve --trust-gateway` loads the model HTTP client (the system trust
   store) on a background thread at start instead of in the first model call.
   Model providers of one process share one HTTP client per connect timeout.
+- **Breaking** (`graphrt-image`): `ImageFormat` has a new variant, `Heic`,
+  which builds without the `heic` feature never return. Code that matches
+  on `ImageFormat` needs an arm for it. `ImageFormat::is_writable` tells
+  the formats the crate encodes from the one it only reads.
+- Plugins: a manifest file that uses a key, runtime or value this version does
+  not know (for example a plugin made for a newer graphrt) is refused with
+  "this plugin uses `triggers`, which this version of graphrt does not know ...
+  update graphrt and try again", followed by the parser's own message, instead
+  of only "unknown field `triggers`, expected one of ...". `graphrt plugin
+  install` and every host that loads plugin folders show it.
+- `graphrt serve`: a chat option without a chat page (`--chat-access`,
+  `--chat-title`, `--chat-guest-rate-limit`, `--chat-guest-budget` or
+  `--chat-mermaid` without `--chat` or `$GRAPHRT_CHAT`) is still refused, now
+  when the server starts instead of while the command line is read, because
+  the chat page may come from the environment. The message names the option.
+- graphrt-skill (preview): a drafted skill's description now says when to use
+  the skill ("Use when ...") instead of repeating its steps, so an agent loads
+  the skill instead of acting on the summary line alone. A draft can carry a
+  name for people (`SkillDraft::with_title`, written as `metadata.title` and
+  read back as `SkillEntry::title`).
+- The release binaries, the Homebrew formula and the container images (agent
+  and gateway builds) are built with the `skills` and `learning` cargo
+  features, so `graphrt skill`, `graphrt learn`, the `skills` and `learning`
+  fields of `agent` nodes and the `/v1/skills` and `/v1/learning` routes work
+  without a build from source. `cargo install graphrt-cli` still needs
+  `--features skills,learning`, and the slim agent builds stay without them.
+  Skills and self learning are no longer marked preview as a whole:
+  docs/skills.md and docs/learning.md say what still is (what a model writes,
+  and the files of the two stores).
+- `vision` inputs of `llm`, `agent`, `question-classifier` and
+  `parameter-extractor` nodes are checked and prepared when the `image`
+  feature is compiled in (the default CLI). Images given inline or stored in
+  the workspace or `--files-dir` are sent as base64 after the checks, so an
+  inline image that is not a PNG, JPEG, GIF or WebP, or is above the limits,
+  now fails the node instead of being forwarded to the provider. A stored
+  image without a URL, which was an input error before, now works. Images
+  given as `https` URLs are passed on unchanged, as before.
 
 ### Fixed
 
+- graphrt-wasm requires wasmi 2.0.3. wasmi 2.0.0 to 2.0.2 are yanked on
+  crates.io (2.0.3 fixes memory unsafe `v128.store8_lane` and
+  `v128.store16_lane` with the `simd` feature, which graphrt does not turn
+  on), and `cargo install --locked` would otherwise build with a yanked
+  version.
 - `graphrt serve`'s drain report could count a run that had just finished as
   `unfinished`: a run leaves the active list just before it marks itself
   done, and the drain stopped in between. The drain now waits for both (still
@@ -153,6 +635,130 @@ change) until it is cut; `scripts/changelog.py preview` shows them together.
   the active set for good. `GET /v1/runs/{id}` then kept reporting
   `active: true` and the run kept counting against `--max-active-runs`. Runs
   are now tracked before their driver starts.
+- `graphrt serve --channel telegram=WORKFLOW` for a workflow whose start requires
+  one input (such as `message`, which the Desktop app writes) put the customer's
+  text only in `sys.query`, so every run failed and the customer read "something
+  went wrong". The one required input now takes the message, and a workflow whose
+  required inputs a message cannot fill is refused at startup with their names.
+- The server's own sentences on a channel come in Indonesian too: `language: id`
+  in the channels file or `--channel-language id` (default `en`); single
+  `messages` still replace single sentences.
+- `graphrt serve --channel`: the first typing sign of a turn goes out before
+  its run starts. A quick run used to stop it before it was sent, so a
+  Telegram button could keep spinning and a WhatsApp message could stay
+  unread. A paused run is marked as waiting, an answered request is taken off
+  the approvers' lists and numbered choices are kept before the message that
+  shows them is sent, so a quick answer to it is never taken for a new message.
+- The Cloud Run provider wakes an agent with `GET /readyz` instead of
+  `/healthz`: Cloud Run's front end reserves `/healthz` and answers it with
+  its own 404, so a wake never reached the container (found on real Cloud Run).
+- `graphrt deploy --direct` on real Fly.io: `resume`, `rollback` and a deploy
+  that updates a stopped Machine (the Machine with the store after it went
+  idle, or a standby version deployed again under its label) no longer wait
+  two minutes and fail with `start_timeout`. Fly leaves a stopped Machine
+  stopped when its config is updated, so graphrt now starts it. A rollback
+  whose Machine does not start leaves that version a standby, off the proxy.
+- `graphrt deploy --direct` on a Fly organization at its Machine limit (Fly's
+  Free plan allows 3 Machines): a new version no longer fails with `fly_api`
+  while older versions are kept. The oldest standby versions are removed to
+  make room (the deploy's `starting` step names them). The serving version and
+  the Machine with the store are never removed. When nothing is left to
+  remove, the error says to upgrade the Fly organization or remove apps.
+- `graphrt deploy --direct` on real Fly.io: for a few seconds after a config
+  update Fly shows a Machine as `replacing` with its previous config. A
+  `resume` right after a `pause` no longer reports `changed: false` and leaves
+  the deployment paused, a `rollback` right after a deploy is no longer a
+  silent no-op, `--drop-store` no longer refuses with "serves with the store
+  volume", and `status` no longer shows two current versions. graphrt now
+  waits until the update is applied, and counts a `replacing` Machine as part
+  of the deployment.
+- Model provider keys and `GRAPHRT_API_KEY` read from the environment lose
+  surrounding whitespace. A key mounted from a file (Cloud Run Secret Manager,
+  AWS Secrets Manager, Kubernetes secrets) usually ends with a newline, which
+  made every model call fail with `model_network: builder error`.
+- A failed run no longer keeps answer text of an answer node that never ran.
+  The ordered response is rendered ahead of time, as soon as an answer node is
+  certain to run, so a run that failed before that node had its literal text as
+  `answer` (in `graphrt serve` records, `graphrt run`, the FFI and eval
+  captures). On `run_failed` nothing more is rendered now, and the answer holds
+  only the text of answer nodes that ran. A stopped run keeps what it streamed.
+- `graphrt gateway`: a replica whose run stream broke is no longer left
+  running at the provider until the next reconciliation (up to a minute) when
+  other replicas serve the runs after it. The pool keeps it, gives it no new
+  runs and stops it once idle for `idle_timeout`, as it releases any idle
+  replica. A wake that reports it up again puts it back in service.
+- Gateway active/passive: a live active whose lease write stalls (a busy
+  volume, a virus scanner; seen for about 3 s on Windows) is no longer taken
+  for frozen and killed by a passive on the same host. The active now also
+  overwrites a small liveness mark (`graphrt-gateway.beat`) in place every
+  heartbeat, on a thread of its own apart from the durable lease write, and
+  passives look at both. A lease write slower than `stale_after_ms` is logged.
+- `graphrt deploy --target cloud-run` with a short version (`v1`): Cloud Run
+  refuses traffic tags shorter than 3 characters, so such tags get the
+  prefix `ver-` (`v1` → `ver-v1`). Found on real Cloud Run.
+- `graphrt deploy --target ecs|lambda`: the command (`graphrt serve ...`)
+  replaces the image's entrypoint, as on Kubernetes and Cloud Run. It used to
+  become only the container's CMD, so the graphrt image ran
+  `graphrt graphrt serve` and every task exited at once (found on real ECS).
+- The gateway's run records carry the `answer` text the agent streamed, as
+  records of `graphrt serve` do; it was always empty behind a gateway.
+- `graphrt gateway` with `ha:`: a gateway that leaves the lease unlocks its
+  lease files itself instead of only closing them. An agent process spawned
+  at that moment shared the locks until it started, so a passive could see
+  the departed holder as still running for one poll.
+- `graphrt skill install <name>` and `graphrt skill search` no longer panic
+  ("Cannot start a runtime from within a runtime") when they read the catalog
+  over HTTPS, which is the default. Catalogs read from a file were not
+  affected.
+
+### Security
+
+- `graphrt serve --trust-gateway` no longer takes `sys.user_id` from a run
+  request unless the gateway says it verified that user. The gateway now sets
+  `caller` in the run request it signs (`user` for a verified end user, `key`
+  otherwise). A request without it, from a gateway older than this release,
+  forwarded the client's `sys` as it came, so a user could name another user
+  and read their lessons. Such a request now runs with no `sys.user_id` (no
+  lessons or files per user) and the agent logs a warning once. Upgrade
+  note: upgrade `graphrt gateway` together with its agents, or first, to keep
+  lessons per user working. A run started by a gateway older than this
+  release cannot be rated as a user's own words through the new feedback
+  route (`403`).
+- `graphrt gateway` now sets `sys.user_id` of a run to the user whose token it
+  verified, over anything the client sent, as `graphrt serve --verify-jwt`
+  does. Before, a client could send its own `sys.user_id`, so a workflow that
+  reads `{{#sys.user_id#}}` (one user's lessons with `learning.user`, one
+  user's files) could run as another user behind a gateway, and saw no user
+  when the client sent none.
+- `graphrt plugin install <name>` and `graphrt plugin search` verify the
+  minisign signature of the catalog index (`index.json.minisig`) against the
+  graphrt-plugins catalog key before the index is parsed, as the desktop app
+  does. Before, the CLI trusted any index it could download, so a fake index
+  from a mirror, a misconfigured proxy or a replaced release asset could make
+  it install any plugin. An index without a signature, with a signature of
+  another key, or changed after it was signed is now refused, and tarballs are
+  checked against the sha256 of the verified index. Nothing falls back to an
+  unverified index. **Breaking** for custom catalogs: an index given with
+  `--index` or `$GRAPHRT_PLUGIN_INDEX` needs a valid signature too. A mirror
+  serves `index.json.minisig` next to the index, a catalog of another
+  publisher names their key with the new `--index-key <KEY|PATH>` (or
+  `$GRAPHRT_PLUGIN_INDEX_KEY`), and a local index under development needs the
+  new `--allow-unsigned-index`, which is refused for `https://` indexes.
+  Installs from a directory or a git URL are unchanged. See
+  `docs/plugins.md`, "Catalog signatures".
+- A validly signed catalog index that is older than the newest one already
+  used from the same place and key is refused as a rollback (state in
+  `~/.graphrt/plugin-catalog-state.json`).
+- `graphrt-plugin` has a `catalog_signature` module (feature
+  `catalog-signature`): the trusted catalog keys and the signature check, with
+  no I/O, for hosts that fetch a catalog themselves.
+- `graphrt serve` without an API key on an address other hosts can reach
+  now answers `403` on `/v1/skills` and `/v1/learning`: anyone who reached
+  the port could grant tools to skills and approve lessons, which outlives
+  the run. On loopback and with an API key nothing changes.
+- Skills of a bundle are recorded as `verified` only when the bundle is
+  signed by a key the operator trusts (`--trust-key`,
+  `$GRAPHRT_TRUSTED_KEYS`). A bundle signed with any key used to count.
 
 ## [0.6.2] - 2026-11-24
 

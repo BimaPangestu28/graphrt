@@ -1,6 +1,6 @@
 # Skills
 
-**Availability.** From the release after 0.6.2, skills are in the release
+**Availability.** From 0.6.3, skills are in the release
 binaries, the Homebrew formula and the container image (agent and gateway
 builds). A build from source needs the `skills` cargo feature
 (`cargo install graphrt-cli --features skills`), and Rust hosts add the

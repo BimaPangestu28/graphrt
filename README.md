@@ -449,7 +449,7 @@ binaries, Homebrew formula and GHCR image are built with both.
 Agent skills and self learning (`skills` for `graphrt skill` and the `skills`
 field of agents, `learning` for `graphrt learn` and the `learning` field) are
 opt in the same way: `cargo install graphrt-cli --features skills,learning`.
-From the release after 0.6.2 the release binaries, Homebrew formula and GHCR
+From 0.6.3 the release binaries, Homebrew formula and GHCR
 image are built with both. The slim agent builds are not: they keep their
 size and idle memory budgets.
 

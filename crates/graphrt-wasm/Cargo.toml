@@ -26,7 +26,7 @@ futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch"] }
+wasmi = { version = "2.0.3", default-features = false, features = ["std", "validate", "auto-dispatch"] }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
