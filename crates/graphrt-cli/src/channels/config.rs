@@ -70,6 +70,105 @@ pub struct Messages {
     pub choice_prompt: String,
 }
 
+/// The language of the server's own sentences ([`Messages`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    /// English.
+    #[default]
+    En,
+    /// Indonesian.
+    Id,
+}
+
+impl Language {
+    /// The language named `name` (`en`, `id`).
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "en" => Some(Self::En),
+            "id" => Some(Self::Id),
+            _ => None,
+        }
+    }
+}
+
+impl Messages {
+    /// The built-in sentences of `language`.
+    pub fn of(language: Language) -> Self {
+        match language {
+            Language::En => Self::default(),
+            Language::Id => Self::indonesian(),
+        }
+    }
+
+    fn indonesian() -> Self {
+        let text = str::to_owned;
+        Self {
+            welcome: text("Halo! Silakan kirim pesan untuk mulai."),
+            busy: text("Kami sedang menerima banyak pesan. Silakan coba lagi beberapa menit lagi."),
+            slow_down: text("Pesan Anda terlalu cepat. Mohon tunggu sebentar lalu coba lagi."),
+            error: text("Maaf, ada kendala di sisi kami. Silakan coba lagi."),
+            unsupported: text("Maaf, saya hanya bisa membaca teks, foto, dan dokumen."),
+            no_files: text("Maaf, saya tidak bisa menerima file di sini. Silakan tulis kebutuhan Anda."),
+            file_too_large: text("Maaf, file itu terlalu besar untuk saya baca."),
+            waiting: text("Mohon tunggu sebentar. Tim kami perlu mengonfirmasi ini."),
+            still_waiting: text("Kami masih menunggu tim kami. Jawabannya akan dikirim di sini."),
+            choose: text("Silakan balas dengan salah satu nomor."),
+            new_conversation: text("Percakapan baru dimulai."),
+            expired: text(
+                "Tidak ada yang menjawab tepat waktu, jadi permintaan ini ditutup. Silakan tulis lagi untuk mulai dari awal.",
+            ),
+            choice_prompt: text("Balas dengan nomor:"),
+        }
+    }
+}
+
+/// The `messages` of a channels file entry: the sentences it replaces.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct MessageOverrides {
+    welcome: Option<String>,
+    busy: Option<String>,
+    slow_down: Option<String>,
+    error: Option<String>,
+    unsupported: Option<String>,
+    no_files: Option<String>,
+    file_too_large: Option<String>,
+    waiting: Option<String>,
+    still_waiting: Option<String>,
+    choose: Option<String>,
+    new_conversation: Option<String>,
+    expired: Option<String>,
+    choice_prompt: Option<String>,
+}
+
+impl MessageOverrides {
+    /// `base` with these sentences put in.
+    fn apply(self, mut base: Messages) -> Messages {
+        let pairs: [(Option<String>, &mut String); 13] = [
+            (self.welcome, &mut base.welcome),
+            (self.busy, &mut base.busy),
+            (self.slow_down, &mut base.slow_down),
+            (self.error, &mut base.error),
+            (self.unsupported, &mut base.unsupported),
+            (self.no_files, &mut base.no_files),
+            (self.file_too_large, &mut base.file_too_large),
+            (self.waiting, &mut base.waiting),
+            (self.still_waiting, &mut base.still_waiting),
+            (self.choose, &mut base.choose),
+            (self.new_conversation, &mut base.new_conversation),
+            (self.expired, &mut base.expired),
+            (self.choice_prompt, &mut base.choice_prompt),
+        ];
+        for (given, slot) in pairs {
+            if let Some(given) = given {
+                *slot = given;
+            }
+        }
+        base
+    }
+}
+
 impl Default for Messages {
     fn default() -> Self {
         let text = str::to_owned;
@@ -121,8 +220,10 @@ struct Entry {
     rate_limit: Option<u32>,
     budget: Option<u32>,
     max_file_mb: Option<u64>,
+    /// The language of the server's own sentences. Default: `--channel-language`.
+    language: Option<Language>,
     #[serde(default)]
-    messages: Messages,
+    messages: MessageOverrides,
     /// Another API server (a local Bot API server, a fake in tests).
     api_base: Option<String>,
     // Telegram.
@@ -193,11 +294,13 @@ pub struct ChannelConfig {
 pub struct Defaults {
     pub rate_limit: u32,
     pub budget: u32,
+    /// `--channel-language`.
+    pub language: Language,
 }
 
 impl Default for Defaults {
     fn default() -> Self {
-        Self { rate_limit: DEFAULT_RATE_LIMIT, budget: DEFAULT_BUDGET }
+        Self { rate_limit: DEFAULT_RATE_LIMIT, budget: DEFAULT_BUDGET, language: Language::En }
     }
 }
 
@@ -340,10 +443,56 @@ fn resolve(
         rate_limit: entry.rate_limit.unwrap_or(defaults.rate_limit),
         budget: entry.budget.unwrap_or(defaults.budget),
         max_file_bytes: max_file_mb * 1024 * 1024,
-        messages: entry.messages,
+        messages: entry.messages.apply(Messages::of(entry.language.unwrap_or(defaults.language))),
         api_base: entry.api_base,
         credentials,
     })
+}
+
+/// The start input a customer's message goes to, checked against the workflow's start
+/// inputs (`declared`, `None` when the workflow is not served) and the ones a run cannot
+/// start without (`required`). Without `input`, a workflow whose start requires exactly one
+/// input gets the message there, so `--channel telegram=support` works for a workflow that
+/// asks for `message`. `None`: `sys.query`.
+///
+/// @throws CliError (usage) - An input the workflow does not declare, or required inputs a
+///   message cannot fill: the server would answer every customer "something went wrong".
+pub fn message_input(
+    config: &ChannelConfig,
+    required: &[String],
+    declared: Option<Vec<String>>,
+) -> Result<Option<String>, CliError> {
+    let Some(declared) = declared else { return Ok(config.input.clone()) };
+    let (name, workflow) = (&config.name, &config.workflow);
+    let chosen = match (&config.input, required) {
+        (Some(input), _) => {
+            if !declared.contains(input) {
+                return Err(usage(format!(
+                    "channel `{name}`: workflow `{workflow}` declares no start input `{input}`"
+                )));
+            }
+            input.clone()
+        }
+        (None, []) => return Ok(None),
+        (None, [only]) => only.clone(),
+        (None, several) => {
+            return Err(usage(format!(
+                "channel `{name}`: workflow `{workflow}` requires the start inputs {}; a message fills one: name it \
+                 with `{}={workflow}=INPUT` and give the others a default",
+                several.join(", "),
+                config.kind.as_str()
+            )));
+        }
+    };
+    let unfilled: Vec<&str> = required.iter().map(String::as_str).filter(|input| *input != chosen).collect();
+    if !unfilled.is_empty() {
+        return Err(usage(format!(
+            "channel `{name}`: workflow `{workflow}` also requires {}, which a customer's message cannot fill: give \
+             it a default",
+            unfilled.join(", ")
+        )));
+    }
+    Ok(Some(chosen))
 }
 
 /// The channels of `--channel` flags and of the `--channels` file, with their
@@ -480,7 +629,9 @@ channels:
             (WHATSAPP_APP_SECRET_ENV, "s"),
             (WHATSAPP_VERIFY_TOKEN_ENV, "v"),
         ];
-        let channels = load(&[], Some(&path), Defaults { rate_limit: 10, budget: 50 }, &env(&vars)).unwrap();
+        let channels =
+            load(&[], Some(&path), Defaults { rate_limit: 10, budget: 50, language: Language::En }, &env(&vars))
+                .unwrap();
         let shop = &channels[0];
         assert_eq!((shop.name.as_str(), shop.rate_limit, shop.budget), ("shop", 3, 50));
         assert_eq!((shop.allow.as_slice(), shop.approvers.as_slice()), (&["42".to_owned()][..], &["7".to_owned()][..]));
@@ -496,5 +647,48 @@ channels:
         std::fs::write(&path, "channels:\n  - kind: telegram\n    workflow: s\n    tokn_env: X\n").unwrap();
         assert!(load(&[], Some(&path), Defaults::default(), &env(&vars)).is_err(), "unknown keys are refused");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn telegram_config(input: Option<&str>) -> ChannelConfig {
+        let mut config = load_flags(&["telegram=support"], &[(TELEGRAM_TOKEN_ENV, "123456:token")]).unwrap().remove(0);
+        config.input = input.map(str::to_owned);
+        config
+    }
+
+    #[test]
+    fn the_message_goes_to_the_one_input_a_run_needs_and_impossible_setups_are_refused() {
+        let names = |list: &[&str]| list.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+        // Nothing required: `sys.query`.
+        assert_eq!(message_input(&telegram_config(None), &[], Some(names(&["note"]))).unwrap(), None);
+        // One required input takes the message.
+        let one = message_input(&telegram_config(None), &names(&["message"]), Some(names(&["message", "note"])));
+        assert_eq!(one.unwrap().as_deref(), Some("message"));
+        // A named input must exist.
+        let missing = message_input(&telegram_config(Some("text")), &[], Some(names(&["message"]))).unwrap_err();
+        assert!(missing.to_string().contains("declares no start input `text`"), "{missing}");
+        // Two required inputs: the message fills one, the server says which syntax names it.
+        let two =
+            message_input(&telegram_config(None), &names(&["message", "city"]), Some(names(&["message", "city"])));
+        assert!(two.unwrap_err().to_string().contains("telegram=support=INPUT"));
+        let other = message_input(
+            &telegram_config(Some("message")),
+            &names(&["message", "city"]),
+            Some(names(&["message", "city"])),
+        );
+        assert!(other.unwrap_err().to_string().contains("also requires city"));
+        // A workflow that is not served is reported elsewhere.
+        assert_eq!(message_input(&telegram_config(Some("x")), &[], None).unwrap().as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn the_servers_sentences_follow_the_language_and_single_ones_can_be_replaced() {
+        assert_eq!(Messages::of(Language::Id).error, "Maaf, ada kendala di sisi kami. Silakan coba lagi.");
+        assert_eq!(Language::parse(" ID "), Some(Language::Id));
+        assert_eq!(Language::parse("fr"), None);
+        let overrides =
+            MessageOverrides { welcome: Some("Selamat datang di Toko Kue Sari".into()), ..MessageOverrides::default() };
+        let messages = overrides.apply(Messages::of(Language::Id));
+        assert_eq!(messages.welcome, "Selamat datang di Toko Kue Sari");
+        assert_eq!(messages.busy, Messages::of(Language::Id).busy);
     }
 }

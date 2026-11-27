@@ -336,6 +336,24 @@ graph:
     - { source: start, target: done }
 "#,
     );
+    // Takes the message as its required start input `message` (what the Desktop builder
+    // writes), with an optional second input.
+    write(
+        "order",
+        r#"version: "1"
+name: order
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: message, type: paragraph, required: true }
+        - { variable: note, type: text-input, required: false }
+    - { id: done, type: answer, answer: "Order: {{#start.message#}}" }
+  edges:
+    - { source: start, target: done }
+"#,
+    );
     // Three times the message, with Markdown around it: long answers and formatting.
     write(
         "long",
@@ -496,9 +514,10 @@ async fn start(tag: &str, setup: Setup, telegram: &str, whatsapp: &str) -> Serve
         .unwrap();
     let configs = config::load(&[], Some(&channels_file), Defaults::default(), &lookup).expect("channels file");
     let state = build_state(&files, &options, EngineLimits::default(), Some(API_KEY.into())).await.expect("state");
-    let channels = Channels::new(configs, |name| state.serves(name), setup.public_url, setup.customer_answers)
-        .expect("channels")
-        .map(Arc::new);
+    let channels =
+        Channels::new(configs, |name| state.channel_start_inputs(name), setup.public_url, setup.customer_answers)
+            .expect("channels")
+            .map(Arc::new);
     let conversations = Arc::new(MemoryConversations::default());
     let store: Arc<dyn ConversationStore> = conversations.clone();
     let state = Arc::new(
@@ -875,6 +894,25 @@ async fn telegram_commands_greet_and_start_over() {
     assert_eq!(server.telegram(&telegram.text_update(42, 3, "/new")).await, StatusCode::OK);
     until("the confirmation", || telegram.sent_to("42").len() == 3).await;
     assert_eq!(server.api("GET", "/v1/conversations/ch-telegram-42", Json::Null).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workflow_that_requires_a_message_input_gets_the_customers_text_there() {
+    // Live test of 2026-11-27: `--channel telegram=toko-kue` for a workflow whose start
+    // requires `message` failed every run ("input `message` is required") and the customer
+    // read "something went wrong". The one required input now takes the message.
+    let (telegram, base) = fake_telegram().await;
+    let setup =
+        Setup { channels: telegram_channel("order", "    mode: polling\n    language: id\n"), ..Setup::default() };
+    let server = start("tg-order", setup, &base, "").await;
+    telegram.push(telegram.text_update(42, 1, "Lapis legit 2 kotak"));
+    until("the answer", || telegram.sent_to("42").len() == 1).await;
+    assert_eq!(telegram.sent_to("42")[0], "Order: Lapis legit 2 kotak");
+    // The server's own sentences follow the channel's language.
+    telegram.push(telegram.text_update(42, 2, "/start"));
+    until("the welcome", || telegram.sent_to("42").len() == 2).await;
+    assert_eq!(telegram.sent_to("42")[1], "Halo! Silakan kirim pesan untuk mulai.");
+    assert_eq!(server.conversation("ch-telegram-42").await["messages"].as_array().unwrap().len(), 2);
 }
 
 // ---------------------------------------------------------------- WhatsApp
