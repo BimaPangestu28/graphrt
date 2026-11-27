@@ -36,7 +36,7 @@ pub(crate) fn is_heic(bytes: &[u8]) -> bool {
     let size = be_u32(bytes, 0).and_then(|size| usize::try_from(size).ok()).unwrap_or(0);
     let ftyp = bytes.get(8..size.clamp(8, bytes.len().min(512))).unwrap_or_default();
     // Major brand, minor version, then compatible brands, four bytes each.
-    let brands = || ftyp.chunks_exact(4).enumerate().filter(|(index, _)| *index != 1).map(|(_, brand)| brand);
+    let brands = || ftyp.as_chunks::<4>().0.iter().enumerate().filter(|(index, _)| *index != 1).map(|(_, brand)| brand);
     let is = |wanted: &[u8; 4]| brands().any(|brand| brand == wanted);
     HEIC_BRANDS.iter().any(|brand| is(brand)) && !is(b"avif") && !is(b"avis")
 }
