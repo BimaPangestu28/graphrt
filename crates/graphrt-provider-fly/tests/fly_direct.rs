@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use graphrt_provider_fly::direct::{
-    AgentFile, DeployRequest, DeploymentState, DirectSettings, ErrorCode, FlyDirect, ServiceMode, Step, StepEvent,
-    StepStatus,
+    AgentFile, ChatAccess, ChatOptions, DeployRequest, DeploymentState, DirectSettings, ErrorCode, FlyDirect,
+    ServeOptions, ServiceMode, Step, StepEvent, StepStatus,
 };
 use graphrt_provider_fly::{ClientPolicy, FlyToken, TokenOrigin};
 use support::{FakeFly, TOKEN};
@@ -48,7 +48,26 @@ fn request(version: &str, now_ms: u64) -> DeployRequest {
         rotate_api_key: false,
         agent: AgentFile { file_name: "support.yaml".into(), contents: format!("# {version}\n").into_bytes() },
         now_ms,
+        serve: ServeOptions::default(),
+        drop_store: false,
     }
+}
+
+/// A deploy with the monitoring page, which keeps devices and so needs the store.
+fn monitored(version: &str, now_ms: u64) -> DeployRequest {
+    let mut request = request(version, now_ms);
+    request.serve = ServeOptions {
+        monitor: true,
+        push: Some("mailto:owner@example.com".into()),
+        expire_approvals: true,
+        ..ServeOptions::default()
+    };
+    request
+}
+
+fn command_of(machine: &support::FakeMachine) -> Vec<String> {
+    let command = machine.config.pointer("/processes/0/cmd").or_else(|| machine.config.pointer("/init/cmd"));
+    command.and_then(|cmd| cmd.as_array()).unwrap().iter().map(|part| part.as_str().unwrap().to_owned()).collect()
 }
 
 async fn deploy(direct: &FlyDirect, request: &DeployRequest) -> (Vec<StepEvent>, Result<String, ErrorCode>) {
@@ -298,4 +317,245 @@ async fn keeps_only_the_configured_number_of_standby_versions() {
     let versions = direct.list_versions().await.unwrap();
 
     assert_eq!(versions.iter().map(|version| version.label.as_str()).collect::<Vec<_>>(), ["v5", "v4", "v3"]);
+}
+
+#[tokio::test]
+async fn a_deploy_without_stored_state_creates_no_volume() {
+    let fake = FakeFly::start_empty().await;
+    let direct = direct(&fake);
+    let mut with_chat = request("v1", 1_000);
+    with_chat.serve.chat = Some(ChatOptions { access: ChatAccess::Guests, ..ChatOptions::default() });
+    with_chat.serve.cors_origins = vec!["https://www.example.com".into()];
+    with_chat.serve.expire_approvals = true;
+
+    let outcome = direct.deploy(&with_chat, &mut |_| {}).await.unwrap();
+
+    assert!(outcome.store.is_none());
+    assert_eq!(outcome.serve.chat, Some(ChatAccess::Guests));
+    let state = fake.state();
+    assert!(state.volumes.is_empty(), "a chat page keeps nothing on the server: no volume, no extra cost");
+    assert_eq!(state.count("POST volumes"), 0);
+    let machine = &state.machines[0];
+    assert!(machine.config.get("mounts").is_none());
+    assert_eq!(
+        command_of(machine)[6..],
+        [
+            "--chat",
+            "support",
+            "--chat-access",
+            "guests",
+            "--cors-origin",
+            "https://www.example.com",
+            "--expire-approvals"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn monitoring_gets_one_volume_as_the_store_in_the_machines_region() {
+    let fake = FakeFly::start_empty().await;
+    let direct = direct(&fake);
+
+    let outcome = direct.deploy(&monitored("v1", 1_000), &mut |_| {}).await.unwrap();
+
+    let store = outcome.store.unwrap();
+    assert!(store.in_use);
+    assert_eq!((store.size_gb, store.region.as_str()), (1, "ams"));
+    {
+        let state = fake.state();
+        let volume = state.volume_named("graphrt_store").unwrap();
+        assert_eq!(volume.id, store.volume);
+        let machine = &state.machines[0];
+        assert_eq!(volume.attached_machine_id.as_deref(), Some(machine.id.as_str()));
+        assert_eq!(machine.name, "graphrt-store");
+        assert_eq!(machine.config["mounts"][0]["path"], "/data");
+        assert_eq!(machine.config["processes"][0]["user"], "root");
+        assert_eq!(
+            command_of(machine)[6..],
+            [
+                "--store",
+                "/data",
+                "--store-ttl-days",
+                "30",
+                "--monitor",
+                "--expire-approvals",
+                "--push",
+                "mailto:owner@example.com",
+                "--public-url",
+                "https://support-bot.fly.dev"
+            ]
+        );
+    }
+    let status = direct.status(2_000).await.unwrap();
+    assert_eq!(status.store.unwrap().volume, store.volume);
+}
+
+#[tokio::test]
+async fn redeploys_and_stops_keep_the_same_volume_on_the_same_machine() {
+    let fake = FakeFly::start_empty().await;
+    let direct = direct(&fake);
+    let first = direct.deploy(&monitored("v1", 1_000), &mut |_| {}).await.unwrap();
+    let (machine_id, volume_id) = {
+        let state = fake.state();
+        (state.machines[0].id.clone(), state.volumes[0].id.clone())
+    };
+
+    // Scale to zero: the Fly proxy stops the Machine when idle and starts it again.
+    fake.state().machines[0].state = "stopped".to_owned();
+    let second = direct.deploy(&monitored("v2", 2_000), &mut |_| {}).await.unwrap();
+    let third = direct.deploy(&monitored("v3", 3_000), &mut |_| {}).await.unwrap();
+
+    assert_eq!(first.store, second.store);
+    assert_eq!(second.store, third.store);
+    {
+        let state = fake.state();
+        assert_eq!(state.volumes.len(), 1, "one volume for the life of the deployment");
+        assert_eq!(state.count("POST volumes"), 1);
+        assert_eq!(state.machines.len(), 1, "the Machine with the volume is updated in place");
+        let machine = &state.machines[0];
+        assert_eq!(machine.id, machine_id);
+        assert_eq!(machine.state, "started");
+        assert_eq!(machine.metadata("graphrt_version"), Some("v3"));
+        assert_eq!(machine.metadata("graphrt_role"), Some("current"));
+        assert_eq!(machine.config["mounts"][0]["volume"], volume_id.as_str());
+        assert_eq!(machine.config["files"][0]["raw_value"], "IyB2Mwo=", "it serves the newest agent file");
+        assert_eq!(state.volumes[0].attached_machine_id.as_deref(), Some(machine_id.as_str()));
+    }
+    let versions = direct.list_versions().await.unwrap();
+    assert_eq!(versions.iter().map(|version| version.label.as_str()).collect::<Vec<_>>(), ["v3"]);
+}
+
+#[tokio::test]
+async fn pause_and_resume_keep_the_volume() {
+    let fake = FakeFly::start_empty().await;
+    let direct = direct(&fake);
+    direct.deploy(&monitored("v1", 1_000), &mut |_| {}).await.unwrap();
+
+    assert!(direct.pause().await.unwrap());
+    assert!(fake.state().machines[0].config["mounts"][0]["volume"].is_string());
+    direct.resume(&mut |_| {}).await.unwrap().unwrap();
+
+    let state = fake.state();
+    assert_eq!(state.machines[0].state, "started");
+    assert_eq!(state.volumes[0].attached_machine_id.as_deref(), Some(state.machines[0].id.as_str()));
+}
+
+#[tokio::test]
+async fn an_unhealthy_version_with_a_store_puts_the_previous_one_back() {
+    let fake = FakeFly::start_empty().await;
+    let direct = direct(&fake);
+    direct.deploy(&monitored("v1", 1_000), &mut |_| {}).await.unwrap();
+    fake.state().failing_checks = true;
+
+    let (events, result) = deploy(&direct, &monitored("v2", 2_000)).await;
+
+    assert_eq!(result.unwrap_err(), ErrorCode::HealthCheckFailed);
+    let failed = events.last().unwrap();
+    assert!(failed.message.contains("the version that served before was started again"), "{}", failed.message);
+    fake.state().failing_checks = false;
+    let state = fake.state();
+    assert_eq!(state.machines.len(), 1);
+    let machine = &state.machines[0];
+    assert_eq!(machine.metadata("graphrt_version"), Some("v1"));
+    assert_eq!(machine.metadata("graphrt_role"), Some("current"));
+    assert_eq!(machine.config["files"][0]["raw_value"], "IyB2MQo=", "v1's own agent file serves again");
+    assert!(matches!(machine.state.as_str(), "started" | "starting"));
+    assert_eq!(state.volumes.len(), 1, "the store is untouched");
+}
+
+#[tokio::test]
+async fn turning_monitoring_on_later_moves_to_a_machine_with_the_volume() {
+    let fake = FakeFly::start_empty().await;
+    let direct = direct(&fake);
+    deploy(&direct, &request("v1", 1_000)).await.1.unwrap();
+
+    let outcome = direct.deploy(&monitored("v2", 2_000), &mut |_| {}).await.unwrap();
+
+    assert!(outcome.store.unwrap().in_use);
+    let state = fake.state();
+    assert_eq!(state.machines.len(), 2, "a Machine cannot get a volume later: a new one is created");
+    let old = state.machines.iter().find(|machine| machine.metadata("graphrt_version") == Some("v1")).unwrap();
+    assert_eq!(old.metadata("graphrt_role"), Some("standby"));
+    let new = state.machine_named("graphrt-store").unwrap();
+    assert_eq!(new.metadata("graphrt_role"), Some("current"));
+}
+
+#[tokio::test]
+async fn turning_monitoring_off_keeps_the_data_until_the_store_is_dropped() {
+    let fake = FakeFly::start_empty().await;
+    let direct = direct(&fake);
+    direct.deploy(&monitored("v1", 1_000), &mut |_| {}).await.unwrap();
+
+    let mut events = Vec::new();
+    let kept = direct.deploy(&request("v2", 2_000), &mut |event| events.push(event)).await.unwrap();
+
+    let store = kept.store.unwrap();
+    assert!(!store.in_use, "the serving version no longer uses it");
+    assert!(events.last().unwrap().message.contains("--drop-store"), "{}", events.last().unwrap().message);
+    {
+        let state = fake.state();
+        assert_eq!(state.volumes.len(), 1, "data is never deleted without being asked");
+        assert_eq!(state.machine_named("graphrt-store").unwrap().metadata("graphrt_role"), Some("standby"));
+    }
+    assert_eq!(direct.status(2_500).await.unwrap().store.map(|store| store.in_use), Some(false));
+
+    // Turning it on again finds the devices that were paired before.
+    let again = direct.deploy(&monitored("v3", 3_000), &mut |_| {}).await.unwrap();
+    assert_eq!(again.store.as_ref().map(|store| store.volume.as_str()), Some(store.volume.as_str()));
+    assert_eq!(fake.state().count("POST volumes"), 1);
+
+    let mut dropping = request("v4", 4_000);
+    dropping.drop_store = true;
+    let mut events = Vec::new();
+    let dropped = direct.deploy(&dropping, &mut |event| events.push(event)).await.unwrap();
+
+    assert!(dropped.store.is_none());
+    assert!(events.last().unwrap().message.contains("the store volume was deleted"));
+    let state = fake.state();
+    assert!(state.volumes.is_empty());
+    assert!(state.machine_named("graphrt-store").is_none(), "the Machine that held the volume is gone too");
+    assert_eq!(state.count("DELETE volumes"), 1);
+}
+
+#[tokio::test]
+async fn dropping_a_store_that_does_not_exist_is_not_an_error() {
+    let fake = FakeFly::start_empty().await;
+    let direct = direct(&fake);
+    let mut dropping = request("v1", 1_000);
+    dropping.drop_store = true;
+
+    let outcome = direct.deploy(&dropping, &mut |_| {}).await.unwrap();
+
+    assert!(outcome.store.is_none());
+    assert_eq!(fake.state().count("DELETE volumes"), 0);
+}
+
+#[tokio::test]
+async fn a_store_needs_a_region_and_cannot_be_dropped_by_the_deploy_that_needs_it() {
+    let fake = FakeFly::start_empty().await;
+    let direct = direct(&fake);
+    let mut no_region = monitored("v1", 1_000);
+    no_region.region = String::new();
+
+    let failure = direct.deploy(&no_region, &mut |_| {}).await.unwrap_err();
+
+    assert_eq!(failure.error.code, ErrorCode::InvalidInput);
+    assert!(failure.error.message.contains("--region"), "{}", failure.error.message);
+    assert!(fake.state().volumes.is_empty() && fake.state().machines.is_empty());
+
+    let mut contradicting = monitored("v1", 1_000);
+    contradicting.drop_store = true;
+    let failure = direct.deploy(&contradicting, &mut |_| {}).await.unwrap_err();
+    assert_eq!(failure.error.code, ErrorCode::InvalidInput);
+}
+
+#[tokio::test]
+async fn removing_the_deployment_removes_the_volume_with_the_app() {
+    let fake = FakeFly::start_empty().await;
+    let direct = direct(&fake);
+    direct.deploy(&monitored("v1", 1_000), &mut |_| {}).await.unwrap();
+
+    assert!(direct.remove().await.unwrap());
+
+    assert!(fake.state().volumes.is_empty(), "deleting a Fly app deletes its volumes");
 }

@@ -8,9 +8,10 @@ use graphrt_provider_api::ProviderErrorKind;
 use serde::Serialize;
 
 use super::machine_config::{
-    META_DIRECT, META_MODE, META_PAUSED, Role, machine_name_for, new_machine_config, paused, validate_request,
-    with_role, workflow_name_of,
+    META_DIRECT, META_MODE, META_PAUSED, Role, STORE_MACHINE_NAME, machine_name_for, new_machine_config, paused,
+    store_volume_of, validate_request, with_role, workflow_name_of,
 };
+use super::serve_options::{STORE_VOLUME_GB, STORE_VOLUME_NAME, StoreSummary};
 use super::status::{
     DeploymentStatus, VersionSummary, deployed_at_ms, deployment_status, has_role, is_direct, metadata,
     version_history, version_of,
@@ -21,7 +22,7 @@ use super::{
 };
 use crate::client::MAX_WAIT_SECS;
 use crate::error::is_name_taken;
-use crate::model::{CreateMachineRequest, Machine, MachineState, StopMachineRequest, UpdateMachineRequest};
+use crate::model::{CreateMachineRequest, Machine, MachineState, StopMachineRequest, UpdateMachineRequest, Volume};
 
 /// Receives progress events.
 pub type Progress<'callback> = &'callback mut dyn FnMut(StepEvent);
@@ -66,6 +67,14 @@ struct Candidate {
     id: String,
     /// An existing Machine of the same version was updated instead of a new one created.
     reused: bool,
+    /// The config the Machine served with before this deploy updated it in
+    /// place: put back when the new version does not get healthy.
+    restore: Option<serde_json::Value>,
+}
+
+/// Whether the Machine mounts the deployment's store volume.
+fn mounts_store(machine: &Machine) -> bool {
+    store_volume_of(machine.config.as_ref()).is_some()
 }
 
 fn emit(progress: Progress<'_>, step: Step, status: StepStatus, message: impl Into<String>) {
@@ -113,15 +122,102 @@ impl FlyDirect {
         let started = self.start_candidate(request, &workflow, secrets_version).await;
         let candidate = finish(progress, Step::Starting, started).map_err(fail)?;
         emit(progress, Step::Checking, StepStatus::Running, "Waiting for GET /readyz to pass");
-        let promoted = self.check_and_promote(&candidate, &request.version).await;
-        finish(progress, Step::Checking, promoted).map_err(fail)?;
+        let promoted = self.promote_and_tidy(&candidate, request).await;
+        let store = finish(progress, Step::Checking, promoted).map_err(fail)?;
         Ok(DeployOutcome {
             app: self.app_name().to_owned(),
             url: self.url(),
             version: request.version.clone(),
             workflow,
             api_key,
+            serve: request.serve.summary(),
+            store,
         })
+    }
+
+    /// Promotes the candidate, deletes the store when the deploy asked for
+    /// that, and reports the store the deployment has afterwards.
+    async fn promote_and_tidy(
+        &self,
+        candidate: &Candidate,
+        request: &DeployRequest,
+    ) -> Result<(Option<StoreSummary>, String), DirectError> {
+        let ((), mut message) = self.check_and_promote(candidate, &request.version).await?;
+        if request.drop_store {
+            let dropped = self.drop_store().await?;
+            message.push_str(if dropped { "; the store volume was deleted" } else { "; there was no store volume" });
+        }
+        let store = self.store_summary(request.serve.needs_store()).await?;
+        if let Some(kept) = store.as_ref().filter(|store| !store.in_use) {
+            message.push_str(&format!(
+                "; store volume {} is kept and still billed (deploy with --drop-store to delete it)",
+                kept.volume
+            ));
+        }
+        Ok((store, message))
+    }
+
+    /// The deployment's store volume, if it has one.
+    ///
+    /// @param in_use - whether the serving version mounts it (bool)
+    async fn store_summary(&self, in_use: bool) -> Result<Option<StoreSummary>, DirectError> {
+        Ok(self.store_volume().await?.map(|volume| StoreSummary {
+            volume: volume.id,
+            size_gb: volume.size_gb,
+            region: volume.region,
+            in_use,
+        }))
+    }
+
+    async fn store_volume(&self) -> Result<Option<Volume>, DirectError> {
+        Ok(self.client.list_volumes().await?.into_iter().find(|volume| volume.name == STORE_VOLUME_NAME))
+    }
+
+    /// The store volume, created in `region` when the deployment has none.
+    async fn ensure_store_volume(&self, region: &str) -> Result<Volume, DirectError> {
+        if let Some(volume) = self.store_volume().await? {
+            return match &volume.attached_machine_id {
+                Some(machine_id) => Err(DirectError::new(
+                    ErrorCode::FlyApi,
+                    format!(
+                        "store volume {} is attached to Machine {machine_id}, which graphrt does not manage; \
+                         destroy that Machine (the volume and its data stay), then deploy again",
+                        volume.id
+                    ),
+                )),
+                None => Ok(volume),
+            };
+        }
+        if region.is_empty() {
+            return Err(DirectError::invalid(
+                "--region is required with --monitor, --devices, --push or --conversations: \
+                 their data is kept on a Fly volume, which lives in one region",
+            ));
+        }
+        Ok(self.client.create_volume(STORE_VOLUME_NAME, region, STORE_VOLUME_GB).await?)
+    }
+
+    /// Destroys the Machine that mounts the store (never the serving one: a
+    /// deploy that needs the store cannot drop it) and deletes the volume.
+    ///
+    /// @returns `false` when the deployment had no store volume
+    async fn drop_store(&self) -> Result<bool, DirectError> {
+        for machine in self.direct_machines().await?.iter().filter(|machine| mounts_store(machine)) {
+            if has_role(machine, Role::Current) {
+                return Err(DirectError::new(
+                    ErrorCode::FlyApi,
+                    format!("Machine {} serves with the store volume; it was not deleted", machine.id),
+                ));
+            }
+            match self.client.destroy_machine(&machine.id).await {
+                Ok(()) => {}
+                Err(error) if error.kind == ProviderErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let Some(volume) = self.store_volume().await? else { return Ok(false) };
+        self.client.delete_volume(&volume.id).await?;
+        Ok(true)
     }
 
     /// The deployment's state, current version and Machines.
@@ -130,7 +226,10 @@ impl FlyDirect {
     /// @throws DirectError(NotFound) - the app does not exist
     pub async fn status(&self, now_ms: u64) -> Result<DeploymentStatus, DirectError> {
         let machines = self.direct_machines().await?;
-        Ok(deployment_status(self.app_name(), self.url(), &machines, now_ms))
+        let store_in_use = machines.iter().any(|machine| has_role(machine, Role::Current) && mounts_store(machine));
+        let mut status = deployment_status(self.app_name(), self.url(), &machines, now_ms);
+        status.store = self.store_summary(store_in_use).await?;
+        Ok(status)
     }
 
     /// Every version still kept (current and standby), newest deploy first.
@@ -163,7 +262,7 @@ impl FlyDirect {
             self.relaunch(&target.id, Role::Candidate, mode).await.map(|()| ((), "Machine started".to_owned()));
         finish(progress, Step::Starting, started)?;
         emit(progress, Step::Checking, StepStatus::Running, "Waiting for GET /readyz to pass");
-        let candidate = Candidate { id: target.id.clone(), reused: true };
+        let candidate = Candidate { id: target.id.clone(), reused: true, restore: None };
         finish(progress, Step::Checking, self.check_and_promote(&candidate, version).await)?;
         Ok(self.serving(target))
     }
@@ -330,26 +429,46 @@ impl FlyDirect {
         workflow: &str,
         secrets_version: Option<u64>,
     ) -> Result<(Candidate, String), DirectError> {
-        let config = new_machine_config(request, workflow);
-        let existing = self
-            .direct_machines()
-            .await?
-            .into_iter()
-            .find(|machine| version_of(machine) == Some(request.version.as_str()));
+        let wants_store = request.serve.needs_store();
+        // The store lives on one volume, and only a new Machine can mount a
+        // volume: a deploy that needs the store updates the Machine that has it.
+        let existing = self.direct_machines().await?.into_iter().find(|machine| {
+            if wants_store {
+                mounts_store(machine)
+            } else {
+                !mounts_store(machine) && version_of(machine) == Some(request.version.as_str())
+            }
+        });
         let candidate = match existing {
             Some(machine) => {
+                let volume = store_volume_of(machine.config.as_ref()).map(str::to_owned);
+                let config = new_machine_config(request, workflow, &self.url(), volume.as_deref());
+                let serving = has_role(&machine, Role::Current) && metadata(&machine, META_PAUSED) != Some("1");
+                let restore = machine.config.clone().filter(|_| serving);
                 if !machine.state.is_startable() && machine.state != MachineState::Started {
                     self.halt(&machine.id).await?;
                 }
                 let update =
                     UpdateMachineRequest { config: &config, skip_launch: false, min_secrets_version: secrets_version };
                 self.client.update_machine(&machine.id, &update).await?;
-                Candidate { id: machine.id, reused: true }
+                Candidate { id: machine.id, reused: true, restore }
             }
             None => {
+                let volume = if wants_store { Some(self.ensure_store_volume(&request.region).await?) } else { None };
+                let config = new_machine_config(
+                    request,
+                    workflow,
+                    &self.url(),
+                    volume.as_ref().map(|volume| volume.id.as_str()),
+                );
                 let create = CreateMachineRequest {
-                    name: machine_name_for(&request.version),
-                    region: &request.region,
+                    name: if volume.is_some() {
+                        STORE_MACHINE_NAME.to_owned()
+                    } else {
+                        machine_name_for(&request.version)
+                    },
+                    // A Machine runs where its volume is.
+                    region: volume.as_ref().map_or(request.region.as_str(), |volume| volume.region.as_str()),
                     config: &config,
                     skip_launch: false,
                     min_secrets_version: secrets_version,
@@ -365,9 +484,16 @@ impl FlyDirect {
                         error.into()
                     }
                 })?;
-                Candidate { id: machine.id, reused: false }
+                Candidate { id: machine.id, reused: false, restore: None }
             }
         };
+        if let Err(error) = self.wait_started(&candidate.id).await {
+            return Err(if candidate.restore.is_some() {
+                self.discard_candidate(&candidate, error).await
+            } else {
+                error
+            });
+        }
         self.wait_started(&candidate.id).await?;
         let verb = if candidate.reused { "updated" } else { "created" };
         let message = format!("{verb} Machine {} and booted it", candidate.id);
@@ -397,8 +523,25 @@ impl FlyDirect {
         Ok(((), format!("version {version} is live; {} version(s) demoted, {pruned} pruned", previous.len())))
     }
 
-    /// Removes a candidate that failed its checks: destroyed when new, kept as standby when reused.
+    /// Removes a candidate that failed its checks: destroyed when new, kept as
+    /// standby when reused, and put back as it was when the deploy updated the
+    /// serving Machine in place.
     async fn discard_candidate(&self, candidate: &Candidate, cause: DirectError) -> DirectError {
+        if let Some(previous) = &candidate.restore {
+            return match self.restore(&candidate.id, previous).await {
+                Ok(()) => DirectError::new(
+                    cause.code,
+                    format!("{}; the version that served before was started again", cause.message),
+                ),
+                Err(restore_error) => DirectError::new(
+                    cause.code,
+                    format!(
+                        "{}; starting the version that served before also failed: {}",
+                        cause.message, restore_error.message
+                    ),
+                ),
+            };
+        }
         let cleanup = if candidate.reused {
             self.demote(&candidate.id).await
         } else {
@@ -414,6 +557,13 @@ impl FlyDirect {
                 ),
             ),
         }
+    }
+
+    /// Gives a Machine the config it served with before an in-place deploy and boots it.
+    async fn restore(&self, machine_id: &str, previous: &serde_json::Value) -> Result<(), DirectError> {
+        let update = UpdateMachineRequest { config: previous, skip_launch: false, min_secrets_version: None };
+        self.client.update_machine(machine_id, &update).await?;
+        self.wait_started(machine_id).await
     }
 
     /// Stops a Machine and removes its services so nothing routes to or autostarts it.
@@ -440,6 +590,8 @@ impl FlyDirect {
         let mut standby: Vec<&Machine> = machines
             .iter()
             .filter(|machine| machine.id != keep_id && !has_role(machine, Role::Current))
+            // The Machine with the store is the only one that can ever mount it again.
+            .filter(|machine| !mounts_store(machine))
             .filter(|machine| has_role(machine, Role::Standby) || has_role(machine, Role::Candidate))
             .collect();
         standby.sort_by_key(|machine| std::cmp::Reverse(deployed_at_ms(machine)));

@@ -20,11 +20,21 @@
 //! the previous version keeps serving. Standby Machines have no services, so
 //! the proxy never routes to (or autostarts) an old version.
 //!
+//! A deploy that turns on monitoring, devices, push notifications or
+//! conversations ([`ServeOptions::needs_store`]) keeps state that must outlive
+//! a Machine stop and a redeploy. It gets one 1 GB Fly volume as its `--store`.
+//! Fly attaches a volume to a Machine only when the Machine is created, so the
+//! Machine with the volume is **updated in place** by every later deploy that
+//! needs the store (a short restart, and no standby version of it to roll back
+//! to); a version that does not get healthy is replaced by the config it had.
+//! Deploys that need no store never create a volume.
+//!
 //! Secrets are Fly app secrets (injected as environment variables at boot);
 //! their values are only ever sent in the body of `POST /apps/{app}/secrets`.
 
 mod lifecycle;
 mod machine_config;
+mod serve_options;
 mod status;
 
 use std::collections::BTreeMap;
@@ -38,6 +48,9 @@ use crate::token::TokenOrigin;
 
 pub use lifecycle::{DeployFailure, Progress, ServingVersion};
 pub use machine_config::{AGENT_PORT, MAX_AGENT_FILE_BYTES, WORKFLOW_DIR, app_name_for, workflow_name_of};
+pub use serve_options::{
+    ChatAccess, ChatOptions, STORE_PATH, STORE_VOLUME_GB, STORE_VOLUME_NAME, ServeOptions, ServeSummary, StoreSummary,
+};
 pub use status::{DeploymentState, DeploymentStatus, MachineSummary, VersionSummary, format_rfc3339_ms};
 
 /// Name of the Fly secret holding the deployment's API key (`graphrt serve` reads it).
@@ -120,6 +133,11 @@ pub struct DeployRequest {
     pub agent: AgentFile,
     /// Wall clock of the deploy (Unix ms), recorded as the version's deploy time.
     pub now_ms: u64,
+    /// What `graphrt serve` offers besides the API: chat page, monitoring...
+    pub serve: ServeOptions,
+    /// Delete the store volume (and what is on it) once this deploy, which
+    /// must not need it, serves.
+    pub drop_store: bool,
 }
 
 impl std::fmt::Debug for DeployRequest {
@@ -133,6 +151,8 @@ impl std::fmt::Debug for DeployRequest {
             .field("image", &self.image)
             .field("secret_names", &self.secrets.keys().collect::<Vec<_>>())
             .field("agent", &self.agent)
+            .field("serve", &self.serve)
+            .field("drop_store", &self.drop_store)
             .finish_non_exhaustive()
     }
 }
@@ -147,6 +167,10 @@ pub struct DeployOutcome {
     pub workflow: String,
     /// The API key, only when this deploy created or rotated it (shown once).
     pub api_key: Option<String>,
+    /// What the version serves besides the API.
+    pub serve: ServeSummary,
+    /// The deployment's store volume, if it has one (billed by Fly while it exists).
+    pub store: Option<StoreSummary>,
 }
 
 impl std::fmt::Debug for DeployOutcome {
@@ -384,6 +408,8 @@ mod tests {
             rotate_api_key: false,
             agent: AgentFile { file_name: "a.yaml".into(), contents: b"x".to_vec() },
             now_ms: 0,
+            serve: ServeOptions::default(),
+            drop_store: false,
         };
         let debug = format!("{request:?}");
         assert!(!debug.contains("sk-very-secret") && !debug.contains("grk_candidate_value"), "{debug}");
@@ -393,6 +419,8 @@ mod tests {
             version: "v".into(),
             workflow: "w".into(),
             api_key: Some("grk_shown_once".into()),
+            serve: ServeOptions::default().summary(),
+            store: None,
         };
         assert!(!format!("{outcome:?}").contains("grk_shown_once"));
     }

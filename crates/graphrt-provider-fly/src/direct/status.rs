@@ -59,6 +59,8 @@ pub struct DeploymentStatus {
     /// When the current version was deployed (RFC 3339, UTC).
     pub last_deployed_at: Option<String>,
     pub machines: Vec<MachineSummary>,
+    /// The deployment's store volume, if it has one (billed by Fly while it exists).
+    pub store: Option<super::serve_options::StoreSummary>,
 }
 
 /// One entry of `graphrt deploy list-versions --direct`, newest first.
@@ -116,6 +118,7 @@ pub(super) fn deployment_status(app: &str, url: String, machines: &[Machine], no
         mode: newest_current.and_then(|machine| metadata(machine, META_MODE)).map(str::to_owned),
         last_deployed_at: newest_current.map(|machine| format_rfc3339_ms(deployed_at_ms(machine))),
         machines: machines.iter().map(summarize).collect(),
+        store: None,
     }
 }
 

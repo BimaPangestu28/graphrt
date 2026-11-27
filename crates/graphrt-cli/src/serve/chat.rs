@@ -114,6 +114,9 @@ impl Chat {
         context: ChatContext<'_>,
         start_inputs: impl Fn(&str) -> Option<Vec<String>>,
     ) -> Result<Option<Self>, CliError> {
+        if let Some(flag) = args.option_without_chat() {
+            return Err(CliError::usage(format!("{flag} needs a chat page: add --chat WORKFLOW")));
+        }
         if args.chat.is_empty() {
             return Ok(None);
         }
@@ -135,10 +138,13 @@ impl Chat {
                 workflows.push(workflow);
             }
         }
-        let guests = match args.chat_access {
-            ChatAccess::Guests => {
-                Some(Guests::new(context.api_key, args.chat_guest_rate_limit, args.chat_guest_budget)?)
-            }
+        let access = args.access();
+        let guests = match access {
+            ChatAccess::Guests => Some(Guests::new(
+                context.api_key,
+                args.chat_guest_rate_limit.unwrap_or(ChatArgs::DEFAULT_GUEST_RATE_LIMIT),
+                args.chat_guest_budget.unwrap_or(ChatArgs::DEFAULT_GUEST_BUDGET),
+            )?),
             ChatAccess::Users if context.user_token_header.is_none() => {
                 return Err(CliError::usage(
                     "--chat-access users needs --verify-jwt: the chat page sends the user's token for the server to verify",
@@ -150,11 +156,11 @@ impl Chat {
         let page_policy = page_policy(&context.frame_origins)?;
         Ok(Some(Self {
             workflows,
-            access: args.chat_access,
+            access,
             title: args.chat_title.clone().filter(|title| !title.trim().is_empty()),
             guests,
             has_api_key: context.api_key.is_some(),
-            user_token_header: context.user_token_header.filter(|_| args.chat_access == ChatAccess::Users),
+            user_token_header: context.user_token_header.filter(|_| access == ChatAccess::Users),
             page: Asset::new(PAGE, super::assets::HTML_TYPE),
             page_script: Asset::new(PAGE_SCRIPT, SCRIPT_TYPE),
             widget_script: Asset::new(WIDGET_SCRIPT, SCRIPT_TYPE),
@@ -369,10 +375,10 @@ mod tests {
     fn args(chat: &[&str], access: ChatAccess) -> ChatArgs {
         ChatArgs {
             chat: chat.iter().map(|spec| (*spec).to_owned()).collect(),
-            chat_access: access,
+            chat_access: (!chat.is_empty()).then_some(access),
             chat_title: None,
-            chat_guest_rate_limit: 10,
-            chat_guest_budget: 120,
+            chat_guest_rate_limit: None,
+            chat_guest_budget: None,
             chat_mermaid: None,
         }
     }

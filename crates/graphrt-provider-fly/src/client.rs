@@ -21,9 +21,10 @@ use serde::Serialize;
 
 use crate::error::{classify_fly_response, decode_error};
 use crate::model::{
-    AssignIpRequest, CreateAppRequest, CreateMachineRequest, IpAssignment, ListIpAssignmentsResponse,
-    ListSecretsResponse, METADATA_DEPLOYMENT, METADATA_POOL, METADATA_VERSION, Machine, MachineState,
-    SetMetadataRequest, StopMachineRequest, UpdateMachineRequest, UpdateSecretsRequest, UpdateSecretsResponse,
+    AssignIpRequest, CreateAppRequest, CreateMachineRequest, CreateVolumeRequest, IpAssignment,
+    ListIpAssignmentsResponse, ListSecretsResponse, METADATA_DEPLOYMENT, METADATA_POOL, METADATA_VERSION, Machine,
+    MachineState, SetMetadataRequest, StopMachineRequest, UpdateMachineRequest, UpdateSecretsRequest,
+    UpdateSecretsResponse, Volume,
 };
 use crate::token::{FlyToken, TokenOrigin};
 
@@ -268,6 +269,36 @@ impl MachinesClient {
         let listing: ListSecretsResponse =
             serde_json::from_slice(&body).map_err(|error| decode_error("secret list", &error))?;
         Ok(listing.secrets.into_iter().map(|secret| secret.name).collect())
+    }
+
+    /// `GET /apps/{app}/volumes`: the app's volumes, without the ones being deleted.
+    pub async fn list_volumes(&self) -> Result<Vec<Volume>, ProviderError> {
+        let path = format!("/v1/apps/{}/volumes", self.app_name);
+        let body = self.send(reqwest::Method::GET, &path, None).await?;
+        let volumes: Vec<Volume> =
+            serde_json::from_slice(&body).map_err(|error| decode_error("volume list", &error))?;
+        Ok(volumes.into_iter().filter(|volume| !volume.is_gone()).collect())
+    }
+
+    /// `POST /apps/{app}/volumes`: a new encrypted volume.
+    ///
+    /// @param name - volume name: letters, digits and underscores, at most 30 (&str)
+    /// @param region - Fly region the volume (and the Machine that mounts it) lives in (&str)
+    /// @param size_gb - size in GB, billed by Fly while the volume exists (u32)
+    pub async fn create_volume(&self, name: &str, region: &str, size_gb: u32) -> Result<Volume, ProviderError> {
+        let path = format!("/v1/apps/{}/volumes", self.app_name);
+        let request = CreateVolumeRequest { name, region, size_gb, encrypted: true };
+        let body = self.send(reqwest::Method::POST, &path, Some(encode(&request)?)).await?;
+        serde_json::from_slice(&body).map_err(|error| decode_error("created volume", &error))
+    }
+
+    /// `DELETE /apps/{app}/volumes/{id}`: deletes a volume and what is on it.
+    pub async fn delete_volume(&self, volume_id: &str) -> Result<(), ProviderError> {
+        if volume_id.is_empty() || !volume_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') {
+            return Err(ProviderError::fatal(format!("invalid Fly volume id {volume_id:?}")));
+        }
+        let path = format!("/v1/apps/{}/volumes/{volume_id}", self.app_name);
+        self.send(reqwest::Method::DELETE, &path, None).await.map(drop)
     }
 
     fn machines_path(&self) -> String {

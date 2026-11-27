@@ -13,13 +13,13 @@ use std::io::Write as _;
 use std::path::Path;
 
 use graphrt_provider_fly::direct::{
-    AgentFile, DeployRequest, DirectError, DirectSettings, ErrorCode, FlyDirect, ServiceMode, StepEvent, StepStatus,
-    app_name_for,
+    AgentFile, ChatAccess, ChatOptions, DeployRequest, DirectError, DirectSettings, ErrorCode, FlyDirect, ServeOptions,
+    ServiceMode, StepEvent, StepStatus, app_name_for,
 };
 use graphrt_provider_fly::{FLY_API_TOKEN_ENV, FlyToken, TokenOrigin};
 use serde_json::{Value, json};
 
-use crate::deploy_cmd::{DeployAction, DeployRunArgs, DirectMode, DirectTargetArgs};
+use crate::deploy_cmd::{DeployAction, DeployRunArgs, DirectChatAccess, DirectMode, DirectServeArgs, DirectTargetArgs};
 use crate::error::{CliError, EXIT_FAILED, EXIT_INVALID, EXIT_OK};
 
 /// Image repository of the published graphrt image (agent flavour).
@@ -180,6 +180,7 @@ fn run_deploy(args: &DeployRunArgs, reporter: &mut Reporter) -> Result<(), Failu
     let version = args.version.clone().ok_or_else(|| Failure::invalid("--direct needs --version <label>"))?;
     let workflow_path =
         args.workflow.clone().ok_or_else(|| Failure::invalid("a workflow or bundle file is required"))?;
+    let serve = serve_options(&args.serve)?;
     let secrets = read_secrets(&args.secrets)?;
     for value in secrets.values() {
         reporter.hide(value);
@@ -204,18 +205,33 @@ fn run_deploy(args: &DeployRunArgs, reporter: &mut Reporter) -> Result<(), Failu
         rotate_api_key: args.rotate_api_key,
         agent,
         now_ms: graphrt_core::store::now_ms(),
+        serve,
+        drop_store: args.serve.drop_store,
     };
     let outcome = runtime()?
         .block_on(direct.deploy(&request, &mut |event| reporter.step(&event)))
         .map_err(|failure| Failure { api_key: failure.api_key, ..Failure::from(failure.error) })?;
     let fields = json!({
         "action": "deploy", "url": outcome.url, "version": outcome.version, "app": outcome.app,
-        "workflow": outcome.workflow,
+        "workflow": outcome.workflow, "serve": outcome.serve, "store": outcome.store,
     });
-    let human = format!(
+    let mut human = format!(
         "deployed {} to {} (POST {}/v1/workflows/{}/runs)",
         outcome.version, outcome.url, outcome.url, outcome.workflow
     );
+    if outcome.serve.chat.is_some() {
+        human.push_str(&format!("\nchat page: {}/chat/", outcome.url));
+    }
+    if outcome.serve.monitor {
+        human.push_str(&format!("\nmonitoring page: {}/monitor/", outcome.url));
+    }
+    if let Some(store) = &outcome.store {
+        let note = if store.in_use { "in use" } else { "kept, not used by this version: --drop-store deletes it" };
+        human.push_str(&format!(
+            "\nstore: Fly volume {} ({} GB in {}, billed by Fly; {note})",
+            store.volume, store.size_gb, store.region
+        ));
+    }
     reporter.result(fields, outcome.api_key.as_deref(), &human);
     Ok(())
 }
@@ -303,6 +319,34 @@ fn run_action(action: &DeployAction, reporter: &Reporter) -> Result<(), Failure>
     }
     reporter.result(fields, None, &human);
     Ok(())
+}
+
+/// The `graphrt serve` features of a deploy, from its flags.
+///
+/// @throws Failure(invalid_input) - a chat option without `--chat`
+fn serve_options(args: &DirectServeArgs) -> Result<ServeOptions, Failure> {
+    if let Some(flag) = args.chat_option_without_chat() {
+        return Err(Failure::invalid(format!("{flag} needs --chat")));
+    }
+    let chat = args.chat.then(|| ChatOptions {
+        access: match args.chat_access {
+            Some(DirectChatAccess::Guests) => ChatAccess::Guests,
+            Some(DirectChatAccess::Key) | None => ChatAccess::Key,
+        },
+        title: args.chat_title.clone(),
+        guest_rate_limit: args.chat_guest_rate_limit,
+        guest_budget: args.chat_guest_budget,
+    });
+    Ok(ServeOptions {
+        chat,
+        cors_origins: args.cors_origin.clone(),
+        conversations: args.conversations,
+        monitor: args.monitor,
+        devices: args.devices,
+        approvals: args.approvals,
+        expire_approvals: args.expire_approvals,
+        push: args.push.clone(),
+    })
 }
 
 /// The deployer of a deployment's app, with the token from `FLY_API_TOKEN`.
@@ -429,6 +473,28 @@ mod tests {
     fn secret_flags_take_names_only() {
         assert!(read_secrets(&["OPENAI_API_KEY=sk-x".to_owned()]).is_err());
         assert!(read_secrets(&["GRAPHRT_TEST_SURELY_UNSET_VARIABLE".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn serve_flags_map_to_serve_options() {
+        let none = serve_options(&DirectServeArgs::default()).unwrap();
+        assert_eq!(none, ServeOptions::default());
+        let args = DirectServeArgs {
+            chat: true,
+            chat_access: Some(DirectChatAccess::Guests),
+            chat_guest_budget: Some(30),
+            cors_origin: vec!["https://www.example.com".to_owned()],
+            monitor: true,
+            push: Some("mailto:owner@example.com".to_owned()),
+            ..DirectServeArgs::default()
+        };
+        let options = serve_options(&args).unwrap();
+        let chat = options.chat.clone().unwrap();
+        assert_eq!((chat.access, chat.guest_budget, chat.guest_rate_limit), (ChatAccess::Guests, Some(30), None));
+        assert!(options.monitor && options.needs_store());
+        assert_eq!(options.cors_origins, ["https://www.example.com"]);
+        let orphan = DirectServeArgs { chat_access: Some(DirectChatAccess::Guests), ..DirectServeArgs::default() };
+        assert!(serve_options(&orphan).unwrap_err().message.contains("--chat-access needs --chat"));
     }
 
     #[test]

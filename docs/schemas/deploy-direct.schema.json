@@ -128,7 +128,9 @@
         "version",
         "app",
         "workflow",
-        "api_key"
+        "api_key",
+        "serve",
+        "store"
       ],
       "properties": {
         "type": {
@@ -156,6 +158,19 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "serve": {
+          "$ref": "#/$defs/serve"
+        },
+        "store": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/store"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       }
@@ -231,7 +246,8 @@
         "workflow",
         "mode",
         "last_deployed_at",
-        "machines"
+        "machines",
+        "store"
       ],
       "properties": {
         "type": {
@@ -276,6 +292,16 @@
         },
         "last_deployed_at": {
           "$ref": "#/$defs/timestamp"
+        },
+        "store": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/store"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -489,6 +515,89 @@
         },
         "api_key": {
           "type": "string"
+        }
+      }
+    },
+    "store": {
+      "description": "The deployment's store volume (devices, push subscriptions, conversations). Fly bills it while it exists.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "volume",
+        "size_gb",
+        "region",
+        "in_use"
+      ],
+      "properties": {
+        "volume": {
+          "description": "Fly volume id.",
+          "type": "string"
+        },
+        "size_gb": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "region": {
+          "type": "string"
+        },
+        "in_use": {
+          "description": "false: kept from an earlier deploy, not used by the serving version; a deploy with --drop-store deletes it.",
+          "type": "boolean"
+        }
+      }
+    },
+    "serve": {
+      "description": "What the deployed version serves besides the API.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chat",
+        "cors_origins",
+        "conversations",
+        "monitor",
+        "devices",
+        "approvals",
+        "expire_approvals",
+        "push"
+      ],
+      "properties": {
+        "chat": {
+          "description": "Who may use the chat page at {url}/chat/; null without one.",
+          "enum": [
+            "key",
+            "guests",
+            null
+          ]
+        },
+        "cors_origins": {
+          "description": "Sites whose pages may call the agent and embed the chat widget.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "conversations": {
+          "type": "boolean"
+        },
+        "monitor": {
+          "description": "The monitoring page is served at {url}/monitor/.",
+          "type": "boolean"
+        },
+        "devices": {
+          "description": "Devices can be paired: POST {url}/v1/devices.",
+          "type": "boolean"
+        },
+        "approvals": {
+          "description": "The approvals inbox is served: GET {url}/v1/approvals.",
+          "type": "boolean"
+        },
+        "expire_approvals": {
+          "description": "Requests answer themselves (on_expire) when their time limit passes.",
+          "type": "boolean"
+        },
+        "push": {
+          "description": "Web Push notifications are sent.",
+          "type": "boolean"
         }
       }
     }

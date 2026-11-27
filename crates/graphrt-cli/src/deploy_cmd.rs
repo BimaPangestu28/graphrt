@@ -59,6 +59,104 @@ pub enum DirectMode {
     ScaleToZero,
 }
 
+/// Who may use the chat page of a direct deployment (`--chat-access`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum DirectChatAccess {
+    /// Holders of the deployment's API key: the page asks for it once.
+    Key,
+    /// Anyone who opens the page, within the guest limits.
+    Guests,
+}
+
+/// What a direct deployment serves besides the API (`graphrt serve` flags of
+/// the same names, see docs/deploy-direct.md). Everything is off unless given.
+#[derive(Debug, Default, Args)]
+pub struct DirectServeArgs {
+    /// Direct: serve a chat page for the agent at `/chat/` and the widget `/chat/embed.js`.
+    #[arg(long)]
+    pub chat: bool,
+    /// Direct: who may chat, `key` or `guests` [default: key]. Needs `--chat`.
+    #[arg(long, value_enum, value_name = "WHO")]
+    pub chat_access: Option<DirectChatAccess>,
+    /// Direct: title of the chat page and the widget [default: the workflow name]. Needs `--chat`.
+    #[arg(long, value_name = "TEXT")]
+    pub chat_title: Option<String>,
+    /// Direct: runs per minute one chat guest may start [default: 10]. Needs `--chat`.
+    #[arg(long, value_name = "N")]
+    pub chat_guest_rate_limit: Option<u32>,
+    /// Direct: runs per minute all chat guests together may start [default: 120]. Needs `--chat`.
+    #[arg(long, value_name = "N")]
+    pub chat_guest_budget: Option<u32>,
+    /// Direct: let pages of this site call the agent and show the chat widget,
+    /// e.g. `https://www.example.com`. Repeatable.
+    #[arg(long, value_name = "ORIGIN")]
+    pub cors_origin: Vec<String>,
+    /// Direct: the server keeps chat conversations (uses the store volume).
+    #[arg(long)]
+    pub conversations: bool,
+    /// Direct: serve the monitoring page at `/monitor/`, with device pairing and
+    /// the approvals inbox (uses the store volume).
+    #[arg(long)]
+    pub monitor: bool,
+    /// Direct: pair devices with their own revocable token (uses the store volume).
+    #[arg(long)]
+    pub devices: bool,
+    /// Direct: serve the approvals inbox (`/v1/approvals`).
+    #[arg(long)]
+    pub approvals: bool,
+    /// Direct: carry out `on_expire` of requests whose time limit passed.
+    #[arg(long)]
+    pub expire_approvals: bool,
+    /// Direct: send push notifications when a run fails or waits for a person;
+    /// CONTACT is `mailto:you@example.com` or an `https:` URL (uses the store volume).
+    #[arg(long, value_name = "CONTACT")]
+    pub push: Option<String>,
+    /// Direct: delete the store volume and what is on it (paired devices,
+    /// push subscriptions, conversations) once this deploy serves. Not with an
+    /// option that uses the store.
+    #[arg(long)]
+    pub drop_store: bool,
+}
+
+impl DirectServeArgs {
+    /// The first of these flags that was given, if any.
+    pub fn first_given(&self) -> Option<&'static str> {
+        [
+            ("--chat", self.chat),
+            ("--chat-access", self.chat_access.is_some()),
+            ("--chat-title", self.chat_title.is_some()),
+            ("--chat-guest-rate-limit", self.chat_guest_rate_limit.is_some()),
+            ("--chat-guest-budget", self.chat_guest_budget.is_some()),
+            ("--cors-origin", !self.cors_origin.is_empty()),
+            ("--conversations", self.conversations),
+            ("--monitor", self.monitor),
+            ("--devices", self.devices),
+            ("--approvals", self.approvals),
+            ("--expire-approvals", self.expire_approvals),
+            ("--push", self.push.is_some()),
+            ("--drop-store", self.drop_store),
+        ]
+        .into_iter()
+        .find_map(|(flag, given)| given.then_some(flag))
+    }
+
+    /// The chat option given without `--chat`, if one was.
+    pub fn chat_option_without_chat(&self) -> Option<&'static str> {
+        if self.chat {
+            return None;
+        }
+        [
+            ("--chat-access", self.chat_access.is_some()),
+            ("--chat-title", self.chat_title.is_some()),
+            ("--chat-guest-rate-limit", self.chat_guest_rate_limit.is_some()),
+            ("--chat-guest-budget", self.chat_guest_budget.is_some()),
+        ]
+        .into_iter()
+        .find_map(|(flag, given)| given.then_some(flag))
+    }
+}
+
 /// Options of `graphrt deploy`.
 #[derive(Debug, Args)]
 #[command(subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
@@ -106,6 +204,8 @@ pub struct DeployRunArgs {
     /// Direct: print JSON Lines (progress steps, then one result or error).
     #[arg(long)]
     pub json: bool,
+    #[command(flatten)]
+    pub serve: DirectServeArgs,
     /// Gateway URL; default `$GRAPHRT_GATEWAY_URL` or `http://127.0.0.1:8700`.
     #[arg(long)]
     pub gateway: Option<String>,
@@ -290,8 +390,9 @@ fn reject_direct_only_flags(args: &DeployRunArgs) -> Result<(), CliError> {
         ("--rotate-api-key", args.rotate_api_key),
         ("--json", args.json),
     ];
-    match used.iter().find(|(_, set)| *set) {
-        Some((flag, _)) => Err(CliError::usage(format!("{flag} needs --direct"))),
+    let serve_flag = args.serve.first_given();
+    match used.iter().find(|(_, set)| *set).map(|(flag, _)| *flag).or(serve_flag) {
+        Some(flag) => Err(CliError::usage(format!("{flag} needs --direct"))),
         None => Ok(()),
     }
 }
