@@ -45,10 +45,11 @@ const SYSTEM_PROMPT: &str = "You write skills for an AI agent. A skill is a shor
 loads when a task needs it.\n\n\
 Reply with the contents of one SKILL.md file and nothing else:\n\
 1. A YAML frontmatter block between two `---` lines with `name` (2 to 5 words in lowercase joined by hyphens, \
-letters and digits only) and `description` (the situation in which the agent should use this skill, on one \
-line, under 300 characters, starting with \"Use when\" or the same words in the language of the source. The \
-agent sees only this line until it loads the skill, so it says when the skill applies and keeps every step, \
-rule and detail for the instructions).\n\
+letters and digits only) and `description` (on one line, under 300 characters, starting with \"Use when\" or \
+the same words in the language of the source: the situation in which the agent should use this skill, and \
+nothing about what to do in it. The agent sees only this line until it loads the skill, so every step, rule \
+and detail belongs in the instructions. Write \"Use when a guest wants to cancel a booking.\", not \"Use when a \
+guest wants to cancel a booking and you need to ask for the booking number.\").\n\
 2. Then the instructions in Markdown: a title, numbered steps, and short notes on edge cases. Under 150 lines.\n\n\
 Rules:\n\
 - Write in the language of the source.\n\
@@ -408,6 +409,7 @@ mod tests {
         // The agent sees only the description until it loads the skill. A description
         // that reads as the steps themselves is followed without loading it.
         assert!(SYSTEM_PROMPT.contains("starting with \"Use when\""));
+        assert!(SYSTEM_PROMPT.contains("nothing about what to do in it"));
         assert!(SYSTEM_PROMPT.contains("The agent sees only this line until it loads the skill"));
     }
 }
