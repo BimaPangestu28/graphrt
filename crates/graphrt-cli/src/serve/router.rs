@@ -103,7 +103,8 @@ fn owner_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
 #[cfg(feature = "rag")]
 fn with_knowledge_routes(api: Router<Arc<AppState>>, max_upload_bytes: usize) -> Router<Arc<AppState>> {
     use crate::knowledge_api as k;
-    api.route("/v1/knowledge/datasets", get(k::list_datasets).post(k::create_dataset))
+    let api = api
+        .route("/v1/knowledge/datasets", get(k::list_datasets).post(k::create_dataset))
         .route("/v1/knowledge/datasets/{dataset}", delete(k::delete_dataset))
         .route("/v1/knowledge/resources", get(k::list_resources))
         .route("/v1/knowledge/datasets/{dataset}/documents", get(k::list_documents).post(k::put_text_document))
@@ -115,7 +116,12 @@ fn with_knowledge_routes(api: Router<Arc<AppState>>, max_upload_bytes: usize) ->
             "/v1/knowledge/datasets/{dataset}/documents/{document}/file",
             axum::routing::put(k::put_file_document).layer(DefaultBodyLimit::max(max_upload_bytes)),
         )
-        .route("/v1/knowledge/retrieve", post(k::retrieve))
+        .route("/v1/knowledge/retrieve", post(k::retrieve));
+    #[cfg(feature = "connectors")]
+    let api = api
+        .route("/v1/knowledge/sources", get(k::list_sources))
+        .route("/v1/knowledge/sources/{source}/sync", post(k::sync_source));
+    api
 }
 
 /// The skill store API under `/v1/skills` (owner actions: API key only).

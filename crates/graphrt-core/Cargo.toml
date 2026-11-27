@@ -27,6 +27,9 @@ tokio = ["dep:tokio", "tokio/time", "tokio/rt"]
 # Abstract conformance suite for `RunStore` / `CoordinationStore` implementations
 # (`graphrt_core::store_conformance`), for the tests of store backends.
 store-conformance = []
+# Cron expressions and time zones (`graphrt_core::cron`), for schedules: the
+# gateway's cron triggers and the sync schedules of knowledge sources.
+cron = []
 
 [dependencies]
 futures.workspace = true

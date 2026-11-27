@@ -18,6 +18,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 
 - [The `graphrt` CLI](cli.md): every command and flag
 - [Serving workflows](serving.md): HTTP API, SSE, run store, per-user tokens (`--verify-jwt`), webhooks, knowledge base
+- [Knowledge connectors](knowledge-connectors.md): keep a knowledge base in sync with web sites, REST APIs, Google Drive, Notion and SharePoint, incrementally and on a schedule
 - [Monitoring and approving from a phone](monitoring.md): monitoring page (installable), device tokens, approvals inbox, requests that expire, push notifications
 - [Talking to a served agent on Telegram and WhatsApp](channels.md): one flag per channel, long polling and webhooks, a conversation per customer, files, questions and approvals in the chat, hand over to a person, limits, the `graphrt-channel` crate
 - [Admin console](console.md): sign in with OpenID Connect, roles on every route, audit log, encrypted secrets, agent registry with environments, promotion and rollback

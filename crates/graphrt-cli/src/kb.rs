@@ -53,10 +53,66 @@ pub async fn kb(args: KbArgs) -> Result<u8, CliError> {
             let json = serde_json::to_string_pretty(&hits).map_err(|e| CliError::failed(e.to_string()))?;
             writeln!(out, "{json}").map_err(io)?;
         }
+        #[cfg(feature = "connectors")]
+        KbCommand::Sync { source } => return sync(&args.knowledge, &kb, &options.all_vars(), &source, &mut out).await,
     }
     Ok(EXIT_OK)
 }
 
 fn file_name(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
+}
+
+/// `graphrt kb sync`: sync the config's sources once, one after the other.
+#[cfg(feature = "connectors")]
+async fn sync(
+    config: &Path,
+    kb: &graphrt_rag::KnowledgeBase,
+    vars: &[(String, String)],
+    only: &[String],
+    out: &mut impl Write,
+) -> Result<u8, CliError> {
+    use graphrt_connect::SyncOutcome;
+    let io = |e: std::io::Error| CliError::failed(e.to_string());
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+    let scheduler = crate::knowledge_sync::load_scheduler(config, kb, vars, gate)?
+        .ok_or_else(|| CliError::usage(format!("knowledge config `{}` declares no sources", config.display())))?;
+    let ids: Vec<String> =
+        if only.is_empty() { scheduler.sources().into_iter().map(|s| s.id).collect() } else { only.to_vec() };
+    let mut failed = 0usize;
+    for id in &ids {
+        match scheduler.sync_now(id).await {
+            Ok(status) => {
+                let report = status.report;
+                writeln!(
+                    out,
+                    "{id}: {} indexed, {} unchanged, {} removed, {} failed ({} documents, {} ms)",
+                    report.indexed,
+                    report.unchanged,
+                    report.removed,
+                    report.failed,
+                    status.document_count,
+                    status.duration_ms.unwrap_or(0)
+                )
+                .map_err(io)?;
+                for warning in &status.warnings {
+                    writeln!(out, "  warning: {warning}").map_err(io)?;
+                }
+                if let Some(error) = &status.error {
+                    writeln!(out, "  error ({}): {}", error.kind, error.message).map_err(io)?;
+                }
+                if status.outcome == SyncOutcome::Failed {
+                    failed += 1;
+                }
+            }
+            Err(error) => {
+                writeln!(out, "{id}: {error}").map_err(io)?;
+                failed += 1;
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(CliError::failed(format!("{failed} of {} sources failed to sync", ids.len())));
+    }
+    Ok(EXIT_OK)
 }

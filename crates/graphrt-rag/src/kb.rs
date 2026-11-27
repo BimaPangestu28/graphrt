@@ -557,6 +557,15 @@ pub struct KnowledgeConfig {
     /// Cross-dataset reranker (a key of `rerankers`).
     #[serde(default)]
     pub reranker: Option<String>,
+    /// Sources kept in sync with the datasets (web sites, APIs, Google Drive,
+    /// Notion, SharePoint): read by graphrt-connect, left as JSON here so this
+    /// crate does not depend on it. See docs/knowledge-connectors.md.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<serde_json::Value>,
+    /// File holding the sync state and lock of `sources` (default: next to the
+    /// config). Processes that sync the same sources share it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_state: Option<String>,
 }
 
 /// One dataset entry.

@@ -120,8 +120,15 @@ pub async fn build_state(
     let state = state.with_workspace(services.get::<setup::ServedWorkspace>().cloned());
     // The same knowledge base the workflows use, so documents added over the API
     // are searchable by running workflows right away.
-    #[cfg(feature = "rag")]
+    #[cfg(all(feature = "rag", not(feature = "connectors")))]
     let state = state.with_knowledge(services.get::<graphrt_rag::KnowledgeBase>().cloned(), options.knowledge.clone());
+    // With connectors, the `sources:` of the config come along (scheduled once serving starts).
+    #[cfg(feature = "connectors")]
+    let state = state.with_knowledge_sources(
+        services.get::<graphrt_rag::KnowledgeBase>().cloned(),
+        options.knowledge.clone(),
+        &options.all_vars(),
+    )?;
     Ok(state)
 }
 

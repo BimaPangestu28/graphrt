@@ -49,6 +49,8 @@ pub mod inspect;
 pub mod kb;
 #[cfg(all(feature = "serve", feature = "rag"))]
 pub mod knowledge_api;
+#[cfg(feature = "connectors")]
+pub mod knowledge_sync;
 #[cfg(feature = "langfuse")]
 pub mod langfuse;
 #[cfg(feature = "learning")]

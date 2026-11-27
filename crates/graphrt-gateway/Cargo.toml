@@ -47,7 +47,7 @@ deploy-aca = ["gw-aca", "graphrt-provider-azure/deploy-aca"]
 rustix = { version = "1", default-features = false, features = ["std", "process"] }
 
 [dependencies]
-graphrt-core = { workspace = true, features = ["tokio", "yaml"] }
+graphrt-core = { workspace = true, features = ["tokio", "yaml", "cron"] }
 graphrt-provider-api = { workspace = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 futures.workspace = true

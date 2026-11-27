@@ -8,7 +8,7 @@ graphrt inspect <workflow>   Show nodes, inputs, env variables and missing node 
 graphrt nodes [--json] [--kind K]  The node catalog: built-ins plus plugins (with config JSON Schemas)
 graphrt serve <file|dir>     HTTP + SSE API
 graphrt eval <file.eval.yaml>  Evaluate a workflow against test cases; gate CI on the pass rate
-graphrt kb ingest|query      Fill and query a knowledge base
+graphrt kb ingest|query|sync Fill, query and sync a knowledge base
 graphrt plugin list|install|search|remove|info|new   Manage plugins
 graphrt version              Version and enabled features
 ```

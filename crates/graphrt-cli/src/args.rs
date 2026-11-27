@@ -221,6 +221,15 @@ pub enum KbCommand {
         /// The query text.
         query: String,
     },
+    /// Sync the `sources:` of the knowledge config now (web sites, APIs, Google
+    /// Drive, Notion, SharePoint): only what changed is indexed again, and what
+    /// was deleted at the source is removed.
+    #[cfg(feature = "connectors")]
+    Sync {
+        /// Only this source (repeatable). Every source when left out.
+        #[arg(long = "source")]
+        source: Vec<String>,
+    },
 }
 
 /// A workflow path.

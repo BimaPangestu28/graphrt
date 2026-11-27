@@ -592,6 +592,12 @@ fn print_startup(state: &AppState, report: &StartupReport<'_>) {
     if state.knowledge().is_some() {
         eprintln!("  knowledge base API under /v1/knowledge (uploads up to {} bytes)", report.args.max_upload_bytes);
     }
+    #[cfg(feature = "connectors")]
+    if let Some(sources) =
+        state.knowledge().map(crate::knowledge_api::KnowledgeService::source_count).filter(|n| *n > 0)
+    {
+        eprintln!("  {sources} knowledge source(s) kept in sync (GET /v1/knowledge/sources)");
+    }
     #[cfg(feature = "skills")]
     print_bundled_skills(state);
     #[cfg(any(feature = "skills", feature = "learning"))]
@@ -642,6 +648,17 @@ fn print_keyless_warnings(report: &StartupReport<'_>) {
     }
 }
 
+/// Stops a background task when dropped (the knowledge sync scheduler at shutdown).
+#[cfg(feature = "connectors")]
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+#[cfg(feature = "connectors")]
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Serve `app` until SIGTERM / SIGINT, drain the active runs within
 /// `--drain-timeout`, then close the connections still open. Drained runs of
 /// the previous process are resumed in the background (unless
@@ -663,6 +680,9 @@ async fn serve_until_drained(
         // After listening, so a store scan never delays the first health check.
         tokio::spawn(resume_drained_runs(Arc::clone(state)));
     }
+    // Knowledge sources sync on their schedules in their own tasks; runs never wait for them.
+    #[cfg(feature = "connectors")]
+    let _sync = state.knowledge().and_then(crate::knowledge_api::KnowledgeService::start_sync).map(AbortOnDrop);
     let cause = match futures::future::select(&mut server, std::pin::pin!(signals.recv())).await {
         Either::Left((ended, _)) => {
             server_ended(ended)?;

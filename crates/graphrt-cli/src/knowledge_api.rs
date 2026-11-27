@@ -30,16 +30,51 @@ use crate::serve::{AppState, error_response};
 pub struct KnowledgeService {
     kb: KnowledgeBase,
     /// One ingestion at a time: extraction and embedding are the heavy part.
-    ingest: Semaphore,
+    /// Shared with the syncs of the config's `sources`.
+    ingest: Arc<Semaphore>,
     /// The knowledge config; runtime datasets are saved next to it.
     config: Option<PathBuf>,
     /// Serializes dataset creation and removal with saving them.
     admin: Mutex<()>,
+    /// The schedules of the config's `sources` (connectors).
+    #[cfg(feature = "connectors")]
+    sync: Option<graphrt_connect::Scheduler>,
 }
 
 impl KnowledgeService {
     pub fn new(kb: KnowledgeBase, config: Option<PathBuf>) -> Self {
-        Self { kb, ingest: Semaphore::new(1), config, admin: Mutex::new(()) }
+        Self {
+            kb,
+            ingest: Arc::new(Semaphore::new(1)),
+            config,
+            admin: Mutex::new(()),
+            #[cfg(feature = "connectors")]
+            sync: None,
+        }
+    }
+
+    /// Load the `sources:` of the config, so they can be listed, synced on
+    /// request and (with [`KnowledgeService::start_sync`]) on their schedules.
+    ///
+    /// @throws `CliError::Usage` for invalid sources or an unusable sync state file.
+    #[cfg(feature = "connectors")]
+    pub fn with_sources(mut self, vars: &[(String, String)]) -> Result<Self, crate::error::CliError> {
+        if let Some(config) = &self.config {
+            self.sync = crate::knowledge_sync::load_scheduler(config, &self.kb, vars, Arc::clone(&self.ingest))?;
+        }
+        Ok(self)
+    }
+
+    /// Run the schedules of the sources in the background (no-op without sources).
+    #[cfg(feature = "connectors")]
+    pub fn start_sync(&self) -> Option<tokio::task::JoinHandle<()>> {
+        self.sync.as_ref().map(graphrt_connect::Scheduler::start)
+    }
+
+    /// Number of sources, for the startup report.
+    #[cfg(feature = "connectors")]
+    pub fn source_count(&self) -> usize {
+        self.sync.as_ref().map_or(0, |sync| sync.sources().len())
     }
 
     /// Save the runtime datasets next to the config (no-op without a config path).
@@ -363,5 +398,54 @@ pub async fn retrieve(State(state): State<Arc<AppState>>, JsonBody(body): JsonBo
         }))
         .into_response(),
         Err(e) => rag_error(&e),
+    }
+}
+
+/// `GET /v1/knowledge/sources`: every synced source with its last sync and next sync time.
+#[cfg(feature = "connectors")]
+pub async fn list_sources(State(state): State<Arc<AppState>>) -> Response {
+    let Some(knowledge) = state.knowledge() else { return not_served() };
+    let sources = knowledge.sync.as_ref().map(graphrt_connect::Scheduler::sources).unwrap_or_default();
+    Json(serde_json::json!({ "sources": sources })).into_response()
+}
+
+/// `POST /v1/knowledge/sources/{source}/sync[?wait=true]`: sync a source now.
+/// Answers `202` at once, or `200` with the outcome when `wait=true`.
+#[cfg(feature = "connectors")]
+pub async fn sync_source(
+    State(state): State<Arc<AppState>>,
+    UrlPath(source): UrlPath<String>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    use graphrt_connect::ConnectError;
+    let Some(knowledge) = state.knowledge() else { return not_served() };
+    let Some(scheduler) = &knowledge.sync else {
+        return error_response(StatusCode::NOT_FOUND, "the knowledge config declares no sources");
+    };
+    let wait = QueryParams::parse(raw.as_deref()).string("wait").is_some_and(|v| v == "true" || v == "1");
+    let connect_error = |error: &ConnectError| {
+        let status = match error {
+            ConnectError::NotFound(_) => StatusCode::NOT_FOUND,
+            ConnectError::Busy(_) => StatusCode::CONFLICT,
+            ConnectError::Config(_) | ConnectError::Auth(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            _ => StatusCode::BAD_GATEWAY,
+        };
+        let mut response = error_response(status, &error.to_string());
+        if let Ok(kind) = header::HeaderValue::from_str(error.kind()) {
+            response.headers_mut().insert("x-graphrt-error-kind", kind);
+        }
+        response
+    };
+    if wait {
+        return match scheduler.sync_now(&source).await {
+            Ok(status) => Json(serde_json::json!({ "source": source, "status": status })).into_response(),
+            Err(error) => connect_error(&error),
+        };
+    }
+    match scheduler.trigger(&source) {
+        Ok(()) => {
+            (StatusCode::ACCEPTED, Json(serde_json::json!({ "source": source, "started": true }))).into_response()
+        }
+        Err(error) => connect_error(&error),
     }
 }

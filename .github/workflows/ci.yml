@@ -110,7 +110,7 @@ jobs:
       - run: cargo check --workspace --exclude graphrt-cli
       - run: >-
           cargo check -p graphrt-cli --no-default-features --features
-          llm,http,code,python,mcp,doc,files,image,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,cors,run-follow,conversations,web-chat,devices,approvals,web-push,web-monitor,skills,learning,channel-telegram,channel-whatsapp,context,console
+          llm,http,code,python,mcp,doc,files,image,rag,connectors,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,cors,run-follow,conversations,web-chat,devices,approvals,web-push,web-monitor,skills,learning,channel-telegram,channel-whatsapp,context,console
 
   minimal-core:
     name: core without default features

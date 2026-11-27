@@ -770,6 +770,8 @@ UI (datasets, documents, chunks, retrieval testing).
 | `PATCH /v1/knowledge/datasets/{dataset}/documents/{document}` | `{enabled: false}` disables a document: it is kept (and stays disabled when re-uploaded) but no search returns it; `{enabled: true}` restores it. Listings show `enabled`. |
 | `DELETE /v1/knowledge/datasets/{dataset}/documents/{document}` | `{deleted_chunks}`; 404 when the document does not exist. |
 | `POST /v1/knowledge/retrieve` | Retrieval testing: `{query, datasets, top_k?, score_threshold?, filter?, weights?, rerank?}` returns `{hits, elapsed_ms}`, exactly as the node would retrieve. |
+| `GET /v1/knowledge/sources` | The `sources:` of the config (web, API, Google Drive, Notion, SharePoint) with schedule, `next_sync_at`, `syncing` and the last sync `status`. See [knowledge connectors](knowledge-connectors.md). |
+| `POST /v1/knowledge/sources/{source}/sync[?wait=true]` | Sync a source now: 202 at once, or 200 with the outcome with `wait=true`; 409 while it syncs. |
 
 Chunking is set per dataset in the knowledge config. With `parent_max_chars`
 the dataset uses parent-child retrieval: documents are split into parents of

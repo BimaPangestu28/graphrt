@@ -1630,6 +1630,7 @@ dependencies = [
  "graphrt-bundle",
  "graphrt-channel",
  "graphrt-code",
+ "graphrt-connect",
  "graphrt-console",
  "graphrt-core",
  "graphrt-doc",
@@ -1680,6 +1681,25 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "graphrt-connect"
+version = "0.6.2"
+dependencies = [
+ "futures",
+ "graphrt-core",
+ "graphrt-http",
+ "graphrt-rag",
+ "indexmap",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
 ]
 
 [[package]]
