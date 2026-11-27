@@ -22,6 +22,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 - [Talking to a served agent on Telegram and WhatsApp](channels.md): one flag per channel, long polling and webhooks, a conversation per customer, files, questions and approvals in the chat, hand over to a person, limits, the `graphrt-channel` crate
 - [Using a served agent from a browser](web.md): chat page, chat widget, guests, CORS, conversations on the server, browser client, UI blocks renderer
 - [Deploying graphrt](deploy.md): container, Fly.io, Cloud Run, systemd
+- [One agent on Cloud Run or ECS Fargate](deploy-cloud-run-ecs.md): `graphrt serve` without the gateway, secrets, a volume for the store, zero-downtime redeploys, verified on real GCP and AWS
 - [Direct deploys to Fly.io](deploy-direct.md) (preview): `graphrt deploy --target fly --direct`, no gateway; JSON Lines contract for apps (status, versions, rollback, pause/resume, remove), API key, least-privilege tokens
 - [Gateway](gateway.md) (preview): always-on front of scale-to-zero agents, SQLite store, auth, limits, webhooks, cron, `graphrt deploy --target local|k8s|cloud-run|aca|ecs|lambda|fly`, measured cold starts
 - [Gateway active/passive](gateway-ha.md) (preview): on-prem HA on a shared volume, fenced lease, systemd units, volumes not to use
