@@ -112,11 +112,10 @@ fn skip_element<'a>(rest: &'a str, name: &str) -> &'a str {
 
 fn find_ignore_ascii_case(haystack: &str, needle: &str) -> Option<usize> {
     let (haystack, needle) = (haystack.as_bytes(), needle.as_bytes());
-    if needle.is_empty() || haystack.len() < needle.len() {
+    if needle.is_empty() {
         return None;
     }
-    (0..=haystack.len() - needle.len())
-        .find(|&start| haystack[start..start + needle.len()].eq_ignore_ascii_case(needle))
+    haystack.windows(needle.len()).position(|window| window.eq_ignore_ascii_case(needle))
 }
 
 /// Appends text between tags with its character references decoded.
