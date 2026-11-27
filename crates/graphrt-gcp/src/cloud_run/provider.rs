@@ -3,8 +3,10 @@
 //! Cloud Run scales itself on incoming requests, so this is an
 //! `Addressing::Url` / `Scaler::Platform` provider:
 //! - `wake` resolves the version's tag URL from the Admin API (never from the
-//!   agent) and sends one authenticated `GET /healthz`, which is what makes
+//!   agent) and sends one authenticated `GET /readyz`, which is what makes
 //!   Cloud Run start an instance from zero. Concurrent wakes share that probe.
+//!   Not `/healthz`: Cloud Run's front end reserves that path and answers it
+//!   with its own 404 before the request reaches the container.
 //! - `release` is a no-op: Cloud Run scales in by itself once no request is open.
 //! - `list` reports the one pseudo-replica `url` for reconciliation.
 //!
@@ -44,6 +46,10 @@ pub const URL_REPLICA_ID: &str = "url";
 pub const SHUTDOWN_GRACE_SECS: u64 = 10;
 /// Wake p95 target of plan §5 (startup CPU boost, image cached by the platform).
 pub const WAKE_P95_TARGET_MS: u64 = 2_000;
+/// Path of the wake probe. Cloud Run's front end keeps `/healthz` for itself
+/// (it answers `404` without starting an instance), so the probe asks the
+/// agent's readiness endpoint, which also says `503` while it drains.
+pub const WAKE_PROBE_PATH: &str = "/readyz";
 
 type SharedWake = Shared<BoxFuture<'static, Result<Endpoint, ProviderError>>>;
 
@@ -195,7 +201,7 @@ impl ProviderInner {
         let (url, status) = self.version_url(&resource, &tag).await?;
         let probe = self.probe(&url, status.audience.as_deref());
         tokio::time::timeout(self.config.wake_timeout, probe).await.map_err(|_| {
-            ProviderError::transient(format!("{url} did not answer /healthz within {:?}", self.config.wake_timeout))
+            ProviderError::transient(format!("{url} did not answer /readyz within {:?}", self.config.wake_timeout))
         })??;
         lock(&self.warm).insert(format!("{resource}#{tag}"), Instant::now());
         Ok(Endpoint {
@@ -204,10 +210,11 @@ impl ProviderInner {
         })
     }
 
-    /// `GET {url}/healthz` with the invoker token; retries 5xx/network errors
-    /// with jitter and refreshes the token once after 401/403.
+    /// `GET {url}/readyz` with the invoker token; retries 5xx/network errors
+    /// (a draining instance answers 503) with jitter and refreshes the token
+    /// once after 401/403.
     async fn probe(&self, url: &str, audience: Option<&str>) -> Result<(), ProviderError> {
-        let health_url = format!("{url}/healthz");
+        let health_url = format!("{url}{WAKE_PROBE_PATH}");
         let mut force_refresh = false;
         loop {
             let result = self.policy.run(&self.rng, |_| self.probe_once(&health_url, audience, force_refresh)).await;

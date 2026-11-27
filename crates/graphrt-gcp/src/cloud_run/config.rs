@@ -40,7 +40,7 @@ pub struct CloudRunConfig {
     /// Request timeout set on revisions (≤ 3600 s). The gateway preempts runs at
     /// this cap minus 60 s and re-dispatches them.
     pub request_timeout_secs: u64,
-    /// Upper bound of one wake (cold start + first `/healthz`).
+    /// Upper bound of one wake (cold start + first `/readyz`).
     pub wake_timeout: Duration,
     /// A deployment probed this recently is assumed warm and not probed again.
     pub warm_window: Duration,

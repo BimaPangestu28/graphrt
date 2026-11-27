@@ -73,7 +73,7 @@ Caching rules (conformance C8):
 | `wake_p95_target_ms` | 2000 | startup CPU boost on |
 
 - **wake** resolves the version's **tag URL** from `services.get` (cached 60 s;
-  never from the agent), then sends one `GET /healthz` with
+  never from the agent), then sends one `GET /readyz` with
   `X-Serverless-Authorization: Bearer <ID token>`. That request is what makes
   Cloud Run start an instance from zero. Twenty concurrent wakes share one
   probe (C1). A 429 is `Capacity` (max instances reached or no regional
@@ -161,7 +161,7 @@ reference (C10).
 | Who | Roles | For |
 | --- | --- | --- |
 | Gateway (run time) | `roles/run.viewer` on the services (or project) | `services.get`: tag URLs, readiness, drift |
-| Gateway (run time) | `roles/run.invoker` on each service | ID-token invocations (`/healthz`, runs) |
+| Gateway (run time) | `roles/run.invoker` on each service | ID-token invocations (`/readyz`, runs) |
 | `graphrt deploy` / CI (deploy time) | `roles/run.developer` | `services.patch` (create/update), `operations.get` |
 | `graphrt deploy` / CI | `roles/iam.serviceAccountUser` on the agent's runtime service account | deploying a revision that runs as it (`actAs`) |
 | `graphrt deploy` / CI | `roles/secretmanager.admin` (or `roles/secretmanager.secretVersionAdder` on pre-created secrets) | `secrets.create`, `secrets.addVersion` |

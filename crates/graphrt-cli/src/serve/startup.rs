@@ -63,7 +63,10 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         options.plugins.pool = plugin_pool(&args)?;
     }
     let files = discover(&args.path)?;
-    let api_key = lookup_env(&options, &args.api_key_env).filter(|key| !key.is_empty());
+    // A key mounted from a file (Secret Manager, a Kubernetes secret) ends with a
+    // newline that clients never send.
+    let api_key =
+        lookup_env(&options, &args.api_key_env).map(|key| key.trim().to_owned()).filter(|key| !key.is_empty());
     #[cfg(feature = "jwt")]
     let user_auth = user_auth_from_args(&args, &options, api_key.is_some()).await?;
     #[cfg(feature = "jwt")]
