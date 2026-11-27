@@ -15,19 +15,20 @@ An agent goes online from one command and is used from a browser, a phone or a
 chat app. `graphrt deploy --direct` to Fly.io can now serve a chat page, a
 monitoring page for a phone with approvals and push notifications, and
 Telegram, WhatsApp, Slack or Microsoft Teams, and keeps paired phones on a
-small Fly volume. It was tested end to end on real Fly.io, which found and
-fixed three differences from the API fake (stopped and `replacing` Machines,
-the Free plan limit of 3 Machines). `graphrt serve` gains the same pages,
-conversations kept by the server, file workspaces for agents (local or S3),
-images and document tools, knowledge connectors that keep a knowledge base in
-sync with web sites, REST APIs, Google Drive, Notion and SharePoint, agent
-skills and self learning (now in the release builds), an admin console for
-self hosted servers, approvals as buttons and notifications in Slack and
-Teams, and a real time collaboration server (`graphrt collab`). The browser
-packages are now one npm package, `graphrt`. The gateway's Cloud Run and
-ECS/Lambda providers were checked on real clouds, and a mobile SDK ships as an
-Android AAR and a Swift package. This is the first release whose container
-image is `ghcr.io/graphrt/graphrt` (older images stay at
+small Fly volume, where agents and knowledge bases of any size are uploaded
+too. It was tested end to end on real Fly.io, which found and fixed three
+differences from the API fake (stopped and `replacing` Machines, the Free plan
+limit of 3 Machines). `graphrt serve` gains the same pages, conversations kept
+by the server, file workspaces for agents (local or S3), images and document
+tools, knowledge connectors that keep a knowledge base in sync with web sites,
+REST APIs, Google Drive, Notion and SharePoint, agent skills and self learning
+(now in the release builds), an admin console for self hosted servers,
+approvals as buttons and notifications in Slack and Teams, and a real time
+collaboration server (`graphrt collab`). The browser packages are now one npm
+package, `graphrt`. The gateway's Cloud Run and ECS/Lambda providers were
+checked on real clouds, and a mobile SDK ships as an Android AAR and a Swift
+package. This is the first release whose container image is
+`ghcr.io/graphrt/graphrt` (older images stay at
 `ghcr.io/bimapangestu28/graphrt`). One Rust API change for embedders:
 `graphrt-image`'s `ImageFormat` has a new variant (see **Changed**).
 
@@ -545,6 +546,18 @@ image is `ghcr.io/graphrt/graphrt` (older images stay at
 - Run requests take `files: ["workspace:..."]`: uploaded workspace files
   attached to the run. They become `sys.files` as file values, checked
   against what the caller may reach, for `vision` and `document-extractor`.
+- Direct deploys to Fly carry agents of any size. An agent file larger than
+  1 MiB (Fly refuses Machine requests of about 2 MiB), such as a `.grt` bundle
+  with its knowledge base, is uploaded onto the deployment's store volume
+  through the Machines API `exec` in 2 MiB pieces and served from there. A new
+  hidden `graphrt internal store-file` does the writing inside the Machine:
+  pieces carry offsets, so retries never write twice, and the file is only
+  used once its SHA-256 matches. Each agent has its own directory, so the
+  version serving during an upload is undone cleanly when the new one is not
+  healthy, and a redeploy of the same file uploads nothing. The volume is
+  sized (and grown) for the agent, and the Machine gets more memory for large
+  knowledge stores. See docs/deploy-direct.md, "Large agents and their
+  knowledge".
 
 ### Changed
 
@@ -599,6 +612,12 @@ image is `ghcr.io/graphrt/graphrt` (older images stay at
   now fails the node instead of being forwarded to the provider. A stored
   image without a URL, which was an input error before, now works. Images
   given as `https` URLs are passed on unchanged, as before.
+- Bundles: knowledge base files (`knowledge/`) have their own size limit,
+  `OpenOptions::max_knowledge_bytes` (default 4 GiB for one file and for all of
+  them, `DEFAULT_MAX_KNOWLEDGE_BYTES`), instead of the 64 MiB per file and
+  256 MiB in total that other files keep. A passage store of a few hundred
+  documents passed 64 MiB, and such a bundle could be neither built nor
+  opened. The compression-ratio guard still applies to every file.
 
 ### Fixed
 
@@ -710,6 +729,20 @@ image is `ghcr.io/graphrt/graphrt` (older images stay at
   ("Cannot start a runtime from within a runtime") when they read the catalog
   over HTTPS, which is the default. Catalogs read from a file were not
   affected.
+- `agent` steps forgive the tool calls small models write, for every tool:
+  arguments are put into the types the tool's schema asks for (`"400"` for an
+  integer, `"false"` for a boolean, JSON text for a list, `width` for the only
+  not-given `max_width`, `{}` for a plain value counts as not given); a call
+  written as JSON text (`{"name": "resize", "parameters": {...}}`) is made when
+  it names an offered tool; a call that leaves out a required argument is
+  answered once with the argument's name and description so the model calls
+  again, instead of reaching a tool that can only refuse it.
+- `graphrt serve` now runs a bundle's knowledge-retrieval steps on the
+  knowledge config (and providers file) that came in the bundle, as `graphrt
+  run` already did. The configs were extracted but the served workflow got
+  the host's services, so its steps failed with `no knowledge base
+  configured`. Host flags (`--knowledge`, `--providers`) still take
+  precedence.
 
 ### Security
 
