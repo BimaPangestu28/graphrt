@@ -35,6 +35,15 @@ pub trait Transport: Send + Sync + fmt::Debug {
     /// Run the `initialize` handshake (starting the plugin if needed) and return its result.
     fn initialize<'a>(&'a self, clock: &'a Arc<dyn Clock>) -> BoxFuture<'a, Result<serde_json::Value, CallError>>;
 
+    /// Starts the plugin that request `id` will go to, if it is not up yet
+    /// (its process and `initialize` handshake, bounded by the handshake's own
+    /// timeout), so the request's timeout covers the request only, never a
+    /// slow start-up. Default: [`Transport::initialize`].
+    fn ready_for<'a>(&'a self, id: &'a str, clock: &'a Arc<dyn Clock>) -> BoxFuture<'a, Result<(), CallError>> {
+        let _ = id;
+        Box::pin(async move { self.initialize(clock).await.map(|_| ()) })
+    }
+
     /// A request was abandoned after its timeout. Transports supervising a process
     /// use this to restart a plugin that stopped answering. Default: no-op.
     fn note_timeout(&self) {}

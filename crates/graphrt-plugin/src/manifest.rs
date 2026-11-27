@@ -550,10 +550,10 @@ impl PluginManifest {
                 h.url
             ));
         }
-        if let Some(var) = &h.bearer_token_env {
-            if !self.permissions.env.iter().any(|e| e == var) {
-                return bad(format!("`bearer_token_env` `{var}` must also be listed in `permissions.env`"));
-            }
+        if let Some(var) = &h.bearer_token_env
+            && !self.permissions.env.iter().any(|e| e == var)
+        {
+            return bad(format!("`bearer_token_env` `{var}` must also be listed in `permissions.env`"));
         }
         Ok(())
     }

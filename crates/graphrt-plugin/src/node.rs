@@ -170,6 +170,16 @@ impl Node for PluginNode {
                 _ => {}
             });
 
+            // A plugin that is not up yet starts first, under its handshake's own
+            // timeout (and the run's deadline): `limits.timeout_ms` is the
+            // request's, and a slow start (a cold Node.js or Python process) is
+            // not counted against it.
+            let started = self.shared.transport.ready_for(&id, &ctx.clock);
+            let started = match ctx.remaining() {
+                Some(left) => with_timeout(&ctx.clock, left, started).await,
+                None => started.await,
+            };
+            started.map_err(|e| e.into_node_error(plugin))?;
             let timeout = match ctx.remaining() {
                 Some(left) => left.min(self.shared.timeout),
                 None => self.shared.timeout,
@@ -208,10 +218,10 @@ impl Drop for TimeoutGuard {
         if self.settled {
             return;
         }
-        if let Some(deadline) = self.deadline_ms {
-            if self.clock.now_ms() >= deadline {
-                self.transport.note_timeout();
-            }
+        if let Some(deadline) = self.deadline_ms
+            && self.clock.now_ms() >= deadline
+        {
+            self.transport.note_timeout();
         }
     }
 }
@@ -251,13 +261,13 @@ fn outcome_from(plugin: &str, result: serde_json::Value, role: NodeRole, fixed: 
             ));
         }
         (NodeRole::Branch, Some(handle)) => {
-            if let Some(allowed) = fixed {
-                if !allowed.contains(&handle) {
-                    return Err(NodeError::fatal(
-                        "plugin_protocol",
-                        format!("plugin `{plugin}`: branch `{handle}` is not one of the declared handles {allowed:?}"),
-                    ));
-                }
+            if let Some(allowed) = fixed
+                && !allowed.contains(&handle)
+            {
+                return Err(NodeError::fatal(
+                    "plugin_protocol",
+                    format!("plugin `{plugin}`: branch `{handle}` is not one of the declared handles {allowed:?}"),
+                ));
             }
             out.branch = Some(handle);
         }
@@ -289,6 +299,7 @@ impl ToolRuntime for PluginTools {
             }
             let clock = graphrt_core::node::default_clock();
             let id = self.shared.transport.next_id();
+            self.shared.transport.ready_for(&id, &clock).await.map_err(|e| self.error("tool.list", e))?;
             let call = self.shared.transport.call(id, "tool.list", serde_json::json!({}), None, false, &clock);
             match with_timeout(&clock, self.shared.timeout, call).await {
                 Ok(result) => {
@@ -316,6 +327,7 @@ impl ToolRuntime for PluginTools {
             let clock = graphrt_core::node::default_clock();
             let id = self.shared.transport.next_id();
             let params = serde_json::json!({"request_id": id, "name": name, "arguments": arguments});
+            self.shared.transport.ready_for(&id, &clock).await.map_err(|e| self.error(name, e))?;
             let call = self.shared.transport.call(id, "tool.call", params, None, true, &clock);
             let result = with_timeout(&clock, self.shared.timeout, call).await;
             track(self.shared.transport.as_ref(), &result);

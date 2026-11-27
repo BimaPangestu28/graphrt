@@ -91,10 +91,10 @@ impl EventTracer {
     /// Graph of the run: adds the workflow fingerprint and model attributes
     /// (`gen_ai.request.model`, `gen_ai.system`) from node configuration.
     pub fn with_graph(mut self, graph: Arc<Graph>) -> Self {
-        if self.workflow_name == "workflow" {
-            if let Some(name) = graph.workflow().name.clone() {
-                self.workflow_name = name;
-            }
+        if self.workflow_name == "workflow"
+            && let Some(name) = graph.workflow().name.clone()
+        {
+            self.workflow_name = name;
         }
         self.graph = Some(graph);
         self
@@ -215,10 +215,10 @@ impl EventTracer {
                 if let Some(branch) = branch {
                     open.span.set("graphrt.node.branch", branch.as_str());
                 }
-                if open.span.attr("gen_ai.request.model").is_none() {
-                    if let Some(model) = metadata.get("model").and_then(Value::as_str) {
-                        open.span.set("gen_ai.request.model", model);
-                    }
+                if open.span.attr("gen_ai.request.model").is_none()
+                    && let Some(model) = metadata.get("model").and_then(Value::as_str)
+                {
+                    open.span.set("gen_ai.request.model", model);
                 }
                 if let Some(usage) = usage {
                     self.usage_attributes(&mut open.span, usage);

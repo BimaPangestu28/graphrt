@@ -153,10 +153,8 @@ impl KnowledgeBase {
         let global_rerank = request.rerank && self.reranker.is_some() && request.datasets.len() > 1;
         let per_dataset = self.query_each(request, request.rerank && !global_rerank).await?;
         let mut merged: Vec<Hit> = per_dataset.into_iter().flat_map(|(_, hits)| hits).collect();
-        if global_rerank {
-            if let Some(reranker) = &self.reranker {
-                merged = rerank(reranker.as_ref(), &request.query, merged).await?;
-            }
+        if global_rerank && let Some(reranker) = &self.reranker {
+            merged = rerank(reranker.as_ref(), &request.query, merged).await?;
         }
         Ok(finalize(merged, request.score_threshold, request.top_k))
     }
@@ -394,10 +392,10 @@ fn build_embedder(name: &str, raw: &serde_json::Value, env: EnvLookup<'_>) -> Re
                 true,
             )?;
             let mut value = with_secret(name, raw, env)?;
-            if kind == "ollama" {
-                if let Some(obj) = value.as_object_mut() {
-                    obj.entry("base_url").or_insert_with(|| "http://localhost:11434/v1".into());
-                }
+            if kind == "ollama"
+                && let Some(obj) = value.as_object_mut()
+            {
+                obj.entry("base_url").or_insert_with(|| "http://localhost:11434/v1".into());
             }
             let cfg: crate::http::OpenAiEmbedderConfig = parse(name, value)?;
             Ok(Arc::new(crate::http::OpenAiEmbedder::new(cfg)?))

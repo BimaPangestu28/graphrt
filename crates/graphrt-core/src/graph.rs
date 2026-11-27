@@ -188,10 +188,10 @@ impl Graph {
 
         // Parents must be containers and nesting must be acyclic.
         for (ix, n) in nodes.iter().enumerate() {
-            if let Some(p) = n.parent {
-                if nodes.get(p).map(|pn| pn.role) != Some(NodeRole::Container) {
-                    return Err(GraphError::ParentNotContainer(n.id.to_string()));
-                }
+            if let Some(p) = n.parent
+                && nodes.get(p).map(|pn| pn.role) != Some(NodeRole::Container)
+            {
+                return Err(GraphError::ParentNotContainer(n.id.to_string()));
             }
             let mut seen = HashSet::new();
             let mut cur = Some(ix);
@@ -266,11 +266,10 @@ impl Graph {
             // Reachability from the entry: unreachable nodes never run.
             let reachable = reachable_from(entry, &outgoing, &edges);
             for &ix in &scope_nodes {
-                if !reachable.contains(&ix) {
-                    if let Some(n) = nodes.get(ix) {
-                        warnings
-                            .push(format!("node `{}` is not reachable from the entry of scope `{scope_name}`", n.id));
-                    }
+                if !reachable.contains(&ix)
+                    && let Some(n) = nodes.get(ix)
+                {
+                    warnings.push(format!("node `{}` is not reachable from the entry of scope `{scope_name}`", n.id));
                 }
             }
             scopes.insert(owner, Scope { owner, entry, nodes: order });
@@ -464,12 +463,12 @@ fn topo_order(
     while let Some(ix) = queue.pop_front() {
         order.push(ix);
         for &ex in outgoing.get(ix).map(Vec::as_slice).unwrap_or_default() {
-            if let Some(e) = edges.get(ex) {
-                if let Some(d) = indeg.get_mut(&e.target) {
-                    *d = d.saturating_sub(1);
-                    if *d == 0 {
-                        queue.push_back(e.target);
-                    }
+            if let Some(e) = edges.get(ex)
+                && let Some(d) = indeg.get_mut(&e.target)
+            {
+                *d = d.saturating_sub(1);
+                if *d == 0 {
+                    queue.push_back(e.target);
                 }
             }
         }
@@ -491,10 +490,10 @@ fn reachable_from(entry: NodeIx, outgoing: &[Vec<EdgeIx>], edges: &[GraphEdge]) 
     let mut stack = vec![entry];
     while let Some(ix) = stack.pop() {
         for &ex in outgoing.get(ix).map(Vec::as_slice).unwrap_or_default() {
-            if let Some(e) = edges.get(ex) {
-                if seen.insert(e.target) {
-                    stack.push(e.target);
-                }
+            if let Some(e) = edges.get(ex)
+                && seen.insert(e.target)
+            {
+                stack.push(e.target);
             }
         }
     }

@@ -36,6 +36,15 @@ releases may contain breaking changes; they are called out under **Changed**.
   while the plugin is installed, behind the `mcp-presets` feature of
   graphrt-plugin (default on, and in the CLI's default features).
 
+### Fixed
+
+- graphrt-plugin: a plugin's `limits.timeout_ms` no longer counts its start-up.
+  The first request after a process plugin starts waits for the process and
+  its `initialize` handshake under the handshake's own 15 s bound, then gets
+  its full timeout: a cold Node.js or Python start on a slow machine (seen on
+  Windows CI runners) no longer times out the first request. The node's
+  deadline still covers both.
+
 ## [0.1.0] - 2026-11-18
 
 First public release: one small runtime that runs agentic AI workflows on a

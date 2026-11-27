@@ -137,10 +137,10 @@ impl SystemOneNode {
             }
         }
         for (name, value) in [("min_confidence", config.min_confidence), ("min_probability", config.min_probability)] {
-            if let Some(v) = value {
-                if !(0.0..=1.0).contains(&v) {
-                    return err(format!("{name} must be between 0 and 1"));
-                }
+            if let Some(v) = value
+                && !(0.0..=1.0).contains(&v)
+            {
+                return err(format!("{name} must be between 0 and 1"));
             }
         }
         let mut handles = Vec::new();
@@ -359,12 +359,8 @@ fn render_json(value: &Json, pool: &VariablePool, allow_missing: bool) -> Result
     Ok(match value {
         Json::String(s) => {
             let template = Template::parse(s);
-            if !allow_missing {
-                if let Some(missing) = template.selectors().find(|sel| pool.get(sel).is_none()) {
-                    return Err(format!(
-                        "variable `{missing}` is missing (set `allow_missing: true` to send it as null)"
-                    ));
-                }
+            if !allow_missing && let Some(missing) = template.selectors().find(|sel| pool.get(sel).is_none()) {
+                return Err(format!("variable `{missing}` is missing (set `allow_missing: true` to send it as null)"));
             }
             match template.parts() {
                 [Part::Var(sel)] => pool.get(sel).map(|v| v.to_json()).unwrap_or(Json::Null),

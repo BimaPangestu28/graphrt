@@ -549,10 +549,11 @@ impl HttpRequestNode {
         // Error responses only need a snippet; reading stops at the cap instead of failing,
         // so a large 5xx page is still reported as a (retryable) status error.
         let error_status = self.fail_on_error_status && !status.is_success();
-        if let Some(len) = response.content_length() {
-            if !error_status && usize::try_from(len).map_or(true, |l| l > cap) {
-                return Err(too_large(cap));
-            }
+        if let Some(len) = response.content_length()
+            && !error_status
+            && usize::try_from(len).map_or(true, |l| l > cap)
+        {
+            return Err(too_large(cap));
         }
         let mut header_map: IndexMap<String, Value> = IndexMap::new();
         for (name, value) in response.headers() {

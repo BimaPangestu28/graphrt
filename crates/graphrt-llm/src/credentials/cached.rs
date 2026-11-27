@@ -131,10 +131,10 @@ impl<S: CredentialSource> CredentialSource for CachedCredentials<S> {
             // this point belongs to a fetch we were queued behind.
             let ticket = slot.completed.load(Ordering::SeqCst);
             let mut state = slot.state.lock().await;
-            if let Some((error, seq)) = &state.failure {
-                if *seq > ticket {
-                    return Err(error.clone());
-                }
+            if let Some((error, seq)) = &state.failure
+                && *seq > ticket
+            {
+                return Err(error.clone());
             }
             let generation = self.inner.generation();
             if let Some((credential, cached_generation)) = &state.credential {

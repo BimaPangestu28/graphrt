@@ -118,13 +118,10 @@ impl StartNode {
                     )));
                 }
             }
-            if let (Some(max), Some(text)) = (spec.max_length, value.expose_secret()) {
-                if text.chars().count() > max {
-                    return Err(NodeError::invalid_input(format!(
-                        "input `{}` exceeds max length {max}",
-                        spec.variable
-                    )));
-                }
+            if let (Some(max), Some(text)) = (spec.max_length, value.expose_secret())
+                && text.chars().count() > max
+            {
+                return Err(NodeError::invalid_input(format!("input `{}` exceeds max length {max}", spec.variable)));
             }
             out.outputs.insert(spec.variable.clone(), value);
         }
