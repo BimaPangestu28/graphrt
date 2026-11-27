@@ -456,7 +456,7 @@ fn install_image_tools(
     workspace: &graphrt_files::Workspace,
     tools: &mut graphrt_core::tool::ToolRegistry,
 ) -> Result<(), CliError> {
-    use graphrt_image::{ImageGenerator, ImageTools, OpenAiImages, PROVIDER};
+    use graphrt_image::{ImageTools, PROVIDER};
     if !options.image_tools {
         return Ok(());
     }
@@ -465,23 +465,49 @@ fn install_image_tools(
             "tool provider `{PROVIDER}` is defined by a plugin and by `--image-tools`; rename the plugin's provider"
         )));
     }
-    let lookup = |name: &str| vars.iter().rev().find(|(key, _)| key == name).map(|(_, value)| value.clone());
     let mut image_tools = ImageTools::new(workspace.clone());
     if let Some(model) = &options.image_model {
-        let key = lookup("OPENAI_API_KEY").filter(|key| !key.is_empty()).ok_or_else(|| {
-            CliError::usage("`--image-model` needs `OPENAI_API_KEY` in the environment or the env file")
-        })?;
-        let base_url = lookup("OPENAI_BASE_URL")
-            .filter(|url| !url.is_empty())
-            .unwrap_or_else(|| "https://api.openai.com/v1".to_owned());
-        let generator: Arc<dyn ImageGenerator> = Arc::new(OpenAiImages::new(base_url, key, model.clone()));
-        image_tools = image_tools.with_generator(generator);
+        image_tools = image_tools.with_generator(image_generator(model, vars)?);
     }
     if options.per_user {
         image_tools = image_tools.scoped_by_context();
     }
     tools.add(PROVIDER, Arc::new(image_tools));
     Ok(())
+}
+
+/// The generator behind `image/generate` for `--image-model [PROVIDER/]NAME`:
+/// `openai` (the default) or `gemini`, with the key and endpoint of that
+/// provider from the environment or the env file.
+///
+/// @throws CliError (usage) - A missing key.
+#[cfg(feature = "image")]
+fn image_generator(model: &str, vars: &[(String, String)]) -> Result<Arc<dyn graphrt_image::ImageGenerator>, CliError> {
+    let lookup = |name: &str| {
+        let found = vars.iter().rev().find(|(key, _)| key == name).map(|(_, value)| value.clone());
+        found.filter(|value| !value.is_empty())
+    };
+    // Only the two known prefixes name a provider. Anything else is a model name
+    // of an OpenAI compatible server, which may hold a slash itself.
+    let (provider, name) = match model.split_once('/') {
+        Some((provider @ ("openai" | "gemini"), name)) => (provider, name),
+        _ => ("openai", model),
+    };
+    if provider == "gemini" {
+        let key = lookup("GEMINI_API_KEY").or_else(|| lookup("GOOGLE_API_KEY")).ok_or_else(|| {
+            CliError::usage(
+                "`--image-model gemini/...` needs `GEMINI_API_KEY` or `GOOGLE_API_KEY` in the environment or the \
+                 env file",
+            )
+        })?;
+        let base_url =
+            lookup("GEMINI_BASE_URL").unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_owned());
+        return Ok(Arc::new(graphrt_image::GeminiImages::new(base_url, key, name)));
+    }
+    let key = lookup("OPENAI_API_KEY")
+        .ok_or_else(|| CliError::usage("`--image-model` needs `OPENAI_API_KEY` in the environment or the env file"))?;
+    let base_url = lookup("OPENAI_BASE_URL").unwrap_or_else(|| "https://api.openai.com/v1".to_owned());
+    Ok(Arc::new(graphrt_image::OpenAiImages::new(base_url, key, name)))
 }
 
 /// Add every provider of `extra` to `base`; a provider name used by both is an error.

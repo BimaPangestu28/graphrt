@@ -29,6 +29,9 @@ tools = ["process", "dep:graphrt-files", "dep:serde", "dep:serde_json"]
 # `OpenAiImages`: an `ImageGenerator` for the OpenAI images API and compatible servers
 # (reqwest + rustls with the ring provider).
 generate-openai = ["dep:reqwest", "dep:rustls", "dep:serde_json", "dep:tokio", "tokio/time"]
+# `GeminiImages`: an `ImageGenerator` for the image models of the Gemini API (the same
+# HTTP stack as `generate-openai`).
+generate-gemini = ["dep:reqwest", "dep:rustls", "dep:serde_json", "dep:tokio", "tokio/time"]
 
 [dependencies]
 graphrt-core.workspace = true

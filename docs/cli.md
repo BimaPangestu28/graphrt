@@ -46,7 +46,7 @@ Workflows can be YAML (`.yaml`, `.yml`) or JSON.
 | `--workspace-api key\|users` | `serve` only. Serve the workspace under `/v1/files` (list, upload, download, delete). `key`: for the API key. `users`: also for verified end users (`--verify-jwt`), each inside their own directory, which needs `--workspace-per-user`. Off unless given. See [the workspace over HTTP](files-and-images.md#the-workspace-over-http). |
 | `--document-tools` | Add the `documents` tools to the workspace: `documents/create_pdf`, `create_docx` and `create_xlsx` write PDF, Word and Excel files. Needs `--workspace`. See [creating documents](files-and-images.md#creating-documents). |
 | `--image-tools` | Add the `image` tools to the workspace: `image/info`, `view` (the model sees the image), `resize`, `convert`, `thumbnail`. Needs `--workspace`. See [images](files-and-images.md#images). |
-| `--image-model NAME` | Add `image/generate`, backed by this model of the OpenAI images API (for example `gpt-image-2`). Key from `$OPENAI_API_KEY`, endpoint from `$OPENAI_BASE_URL`. Needs `--image-tools`. |
+| `--image-model [PROVIDER/]NAME` | Add `image/generate`, backed by this image model. `NAME` or `openai/NAME` (for example `gpt-image-2`): the OpenAI images API, key from `$OPENAI_API_KEY`, endpoint from `$OPENAI_BASE_URL`. `gemini/NAME` (for example `gemini/gemini-3.1-flash-image`): the Gemini API, key from `$GEMINI_API_KEY` or `$GOOGLE_API_KEY`, endpoint from `$GEMINI_BASE_URL`. Needs `--image-tools`. |
 | `--timeout-ms MS` | Abort the run after this long. |
 | `--max-steps N` | Maximum node executions. |
 | `--resume SNAPSHOT` | Resume a paused run. |
