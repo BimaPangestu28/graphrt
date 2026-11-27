@@ -120,7 +120,39 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
         let name = graph.workflow().name.clone().unwrap_or(stem);
         setup::with_memory_defaults(&mut services, &options, &name);
     }
-    let engine = Engine::new(graph.clone())
+    #[allow(unused_mut)]
+    let mut engine = Engine::new(graph.clone());
+    #[cfg(feature = "subagents")]
+    if let Some(dir) = &args.workflows {
+        let mut linked = indexmap::IndexMap::new();
+        for (name, path) in workflow_files(dir)? {
+            let graph = setup::load_graph_with(&path, options.model_override.as_deref(), &extensions.registry)?;
+            let env = setup::workflow_env(&graph, &options);
+            // The run's services with the child's own memory scope (its workflow's name).
+            #[allow(unused_mut)]
+            let mut own = services.clone();
+            #[cfg(feature = "memory")]
+            setup::with_memory_defaults(&mut own, &options, &graph.workflow().name.clone().unwrap_or(name.clone()));
+            let link = graphrt_core::engine::LinkedWorkflow::new(graph).with_env(env).with_services(Arc::new(own));
+            if linked.insert(name.clone(), link).is_some() {
+                return Err(CliError::usage(format!("--workflows: two files are named `{name}`")));
+            }
+        }
+        // Only what the run can reach is linked: every linked workflow is in the
+        // fingerprint, and a change to an unrelated file must not refuse a resume.
+        let reached = check_listed(&graph, &linked)?;
+        linked.retain(|name, _| reached.contains(name));
+        engine = engine.with_linked(linked);
+    }
+    #[cfg(feature = "subagents")]
+    if args.workflows.is_none()
+        && let Some(name) = setup::listed(&graph).first()
+    {
+        return Err(CliError::usage(format!(
+            "an agent lists subagent `{name}`: pass the folder of its workflow with `--workflows DIR`"
+        )));
+    }
+    let engine = engine
         .with_services(services)
         .with_clock(Arc::new(TokioClock))
         .with_limits(setup::limits(args.services.timeout_ms, args.services.max_steps));
@@ -366,14 +398,24 @@ impl Printer {
 
 fn print_pause_help(reasons: &[PauseReason], snapshot_path: &Path) {
     eprintln!("run paused; snapshot written to {}", snapshot_path.display());
+    // A node inside a child run is keyed by its frame too (builds with child
+    // runs). Elsewhere the node id alone answers it.
+    let key = |reason: &PauseReason| {
+        let node = reason.node_id.clone()?;
+        #[cfg(feature = "subagents")]
+        if !reason.frame.is_empty() {
+            return Some(format!("{}/{node}", reason.frame));
+        }
+        Some(node)
+    };
     for reason in reasons {
-        let node = reason.node_id.as_deref().unwrap_or("-");
+        let node = key(reason).unwrap_or_else(|| "-".to_owned());
         eprintln!("  waiting: {} (node `{node}`)", reason.kind);
         if !reason.data.is_null() {
             eprintln!("  details: {}", serde_json::to_string(&reason.data).unwrap_or_default());
         }
     }
-    let node = reasons.iter().find_map(|r| r.node_id.clone()).unwrap_or_else(|| "<node>".to_owned());
+    let node = reasons.iter().find_map(key).unwrap_or_else(|| "<node>".to_owned());
     eprintln!(
         "resume with: graphrt run <workflow> --resume {} --resume-input '{node}={{\"action\":\"<id>\",\"values\":{{}}}}'",
         snapshot_path.display()
@@ -394,4 +436,64 @@ fn io_error(e: std::io::Error) -> CliError {
 
 fn json_error(e: serde_json::Error) -> CliError {
     CliError::failed(format!("encoding JSON: {e}"))
+}
+
+/// The subagents the workflow can reach (what it lists, what those list in
+/// turn). Each must be a workflow file of the folder that can run as one, so a
+/// misnamed one stops the run before it starts. Every file of the folder is
+/// loaded, only the reachable ones are checked.
+#[cfg(feature = "subagents")]
+fn check_listed(
+    graph: &graphrt_core::graph::Graph,
+    linked: &IndexMap<String, graphrt_core::engine::LinkedWorkflow>,
+) -> Result<Vec<String>, CliError> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut queue: Vec<(String, String)> =
+        setup::listed(graph).into_iter().map(|name| ("the workflow".to_owned(), name)).collect();
+    while let Some((by, name)) = queue.pop() {
+        if seen.contains(&name) {
+            continue;
+        }
+        let Some(link) = linked.get(&name) else {
+            return Err(CliError::usage(format!(
+                "--workflows: {by} lists subagent `{name}`, but no workflow file there is named `{name}`"
+            )));
+        };
+        link.check()
+            .map_err(|why| CliError::usage(format!("--workflows: subagent `{name}` cannot run as one: {why}")))?;
+        let lister = format!("`{name}`");
+        queue.extend(setup::listed(link.graph()).into_iter().map(|next| (lister.clone(), next)));
+        seen.push(name);
+    }
+    Ok(seen)
+}
+
+/// The workflow files of `path` (one file, or each `.yaml`, `.yml` and `.json`
+/// of a directory), each with its file name as the workflow's name.
+#[cfg(feature = "subagents")]
+fn workflow_files(path: &std::path::Path) -> Result<Vec<(String, std::path::PathBuf)>, CliError> {
+    let name_of = |p: &std::path::Path| p.file_stem().and_then(|s| s.to_str()).unwrap_or("workflow").to_owned();
+    if path.is_file() {
+        return Ok(vec![(name_of(path), path.to_path_buf())]);
+    }
+    let entries = std::fs::read_dir(path)
+        .map_err(|e| CliError::usage(format!("--workflows: cannot read `{}`: {e}", path.display())))?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry =
+            entry.map_err(|e| CliError::usage(format!("--workflows: cannot read `{}`: {e}", path.display())))?;
+        paths.push(entry.path());
+    }
+    // Workflow files only: not the snapshots a paused run writes next to them,
+    // nor an MCP configuration.
+    let workflow = |p: &std::path::Path| {
+        p.is_file()
+            && matches!(p.extension().and_then(|e| e.to_str()), Some("yaml" | "yml" | "json"))
+            && !p.to_string_lossy().ends_with(".snapshot.json")
+            && !setup::is_mcp_config(p)
+    };
+    let mut found: Vec<(String, std::path::PathBuf)> =
+        paths.into_iter().filter(|p| workflow(p)).map(|p| (name_of(&p), p)).collect();
+    found.sort();
+    Ok(found)
 }

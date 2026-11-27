@@ -194,7 +194,7 @@ mod tests {
             let state = std::sync::Arc::clone(&state);
             async move {
                 let workflow = state.workflows.get("chat").unwrap();
-                let record = RunRecord::running(state.new_run_id(), "chat", workflow.engine.graph().fingerprint(), 1);
+                let record = RunRecord::running(state.new_run_id(), "chat", workflow.engine.fingerprint(), 1);
                 state.store.create(record.clone()).await.unwrap();
                 let input = RunInput::new();
                 let assembler = new_assembler(&workflow.engine, &input);

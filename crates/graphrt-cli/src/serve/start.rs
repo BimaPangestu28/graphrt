@@ -112,7 +112,7 @@ pub(super) async fn start_run(
         return busy;
     }
     let run_id = state.new_run_id();
-    let mut record = RunRecord::running(&run_id, &name, workflow.engine.graph().fingerprint(), now_ms());
+    let mut record = RunRecord::running(&run_id, &name, workflow.engine.fingerprint(), now_ms());
     // Validate the run context before the body's inputs are moved out of it.
     if let Err(message) = body.apply_context(&mut record) {
         return error_response(StatusCode::BAD_REQUEST, &message);

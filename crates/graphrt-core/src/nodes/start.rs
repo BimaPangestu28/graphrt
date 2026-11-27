@@ -27,7 +27,7 @@ pub struct InputVariable {
     pub variable: String,
     /// Display label (informational; accepted for document compatibility).
     #[serde(default)]
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "subagents"), allow(dead_code))]
     pub label: Option<String>,
     /// Input kind: `text-input`, `paragraph`, `select`, `number`, `checkbox`,
     /// `file`, `file-list`, `json`, or any value type name (`string`, `integer`...).
@@ -48,7 +48,7 @@ fn default_kind() -> String {
 }
 
 impl InputVariable {
-    fn value_type(&self) -> Result<ValueType, String> {
+    pub(crate) fn value_type(&self) -> Result<ValueType, String> {
         let ty = match self.kind.as_str() {
             "text-input" | "paragraph" | "select" | "string" | "text" => ValueType::String,
             "number" => ValueType::Number,

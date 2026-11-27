@@ -212,6 +212,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "memory-graph") {
         features.push("memory-graph");
     }
+    if cfg!(feature = "subagents") {
+        features.push("subagents");
+    }
     features
 }
 

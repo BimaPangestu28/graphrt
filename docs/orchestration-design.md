@@ -23,6 +23,20 @@ Decided 2026-11-27 against `main` at `ab75abe`.
 
 ## Stage 4: workflows as tools
 
+### As built, and where it differs from the plan below
+
+| Planned | Built | Why |
+| --- | --- | --- |
+| `RunInput` carries the linked graphs | `Engine::with_linked(name -> graph)`, the host links once at start | The graphs belong to the host's set of workflows, not to one request. `serve` links every served workflow to the workflows whose agents list `subagents` (the list stays the allowlist), and leaves the others unlinked, so their runs carry nothing extra. `graphrt run --workflows DIR` links a directory. |
+| A frame holds the graph it executes | Done: `Frame::graph`, every lookup of a frame goes through it, and `ScopeRunner` passes it on, so a container inside a child runs the child's graph | Without it a child could only run the parent's graph. |
+| `ChildRuns` in the `NodeContext` of a node with `subagents` | In the `NodeContext` of every node of a run that has linked graphs | The engine does not know which node kind starts children, and a node of a run without linked graphs gets nothing. |
+| The pause of the agent carries the child's reasons | The agent pauses with kind `child_runs` (`graphrt_core::node::CHILD_PAUSE`), which the engine does not report again, as it does for containers. When the agent also waits for approval of its own calls it pauses with `tool_approval`, and both kinds of reason reach the host | One reason per node that really waits, with its frame qualified key. |
+| Handoff streams the child's answer | The child's answer becomes the `text` output, not streamed token by token | The child streams its own answer under its own frame. Streaming it twice would show it twice. |
+| `pass_context: [provider]` | Not built | A child uses the `tool_context` its own document sets. Passing the parent's values to a child is a decision about trust that no test needed yet. |
+
+Measured: one child run of a two node workflow costs about 4 µs more than a
+native tool call (`examples/subagents_bench.rs`).
+
 ### What the owner writes
 
 ```yaml
@@ -95,14 +109,14 @@ through the engine, the way `iteration` runs its body.
 | Token and cost budget (stage 5) | The same counters. |
 | Deadline | The child runs inside the parent node's attempt, so its timeout bounds it, and `max_duration_ms` of the run is one timer. |
 | Depth | A child frame is one level deeper. `max_depth` (8) covers containers and children together, so a workflow that lists itself ends at the limit instead of recursing forever. |
-| Egress policy, file workspace, plugin and MCP registries | The same `Services`. A child reaches nothing the host did not give the run. |
-| Secrets | The same secret set of the run, so anything a child emits is scrubbed. Environment values are the ones the host was started with. The child document cannot add any. |
+| Egress policy, file workspace, plugin and MCP registries | The services the host gives the child's own workflow (`LinkedWorkflow::with_services`, which `serve` sets). The host's egress policy is the same for every workflow it serves. Without them, the parent run's. |
+| Secrets | The same secret set of the run, so anything a child emits is scrubbed. Its own environment values join the set: they are resolved against its own `env` declarations, so a `secret` one is a secret. |
 | Abort, pause and preempt | The same control signals. |
 | Events | The same sink, with the child's frame id, so one stream shows the whole tree. |
 
-Not inherited: the parent's tools, skills, instructions and memory scope. A
-child uses what its own document lists. `tool_context` values are passed only
-when the entry says so (`pass_context: [provider]`).
+Not inherited: the parent's tools, skills, instructions, environment and
+memory scope. A child uses what its own document lists and what its host
+gives its workflow.
 
 ### Approval inside a child
 
@@ -121,7 +135,10 @@ resume keys work unchanged.
 - `max_subagent_calls` bounds the calls of one node run. Further calls get an
   error result that tells the model the limit, so it can finish with what it has.
 - A failed child is a failed tool call: the model reads the error and decides.
-  It does not fail the parent unless the run's budget or deadline is gone.
+  A child that ended because the run stops (abort, step limit, deadline)
+  stops the parent too.
+- At most `Limits::max_concurrency` child runs run at once in the whole run,
+  every level of nesting included. One frame id runs once at a time.
 
 ### Handoff
 
@@ -129,7 +146,8 @@ An entry with `handoff: true` is a transfer. When the model calls it, the
 child's answer is streamed as the answer of the parent node and the loop ends
 (`stopped_reason: handoff`). It is the cheap form of "pass the conversation to
 a specialist": no second model turn to repeat what the child said. Only one
-handoff per turn is accepted, and other calls of that turn run first.
+handoff per turn is accepted (the first in the model's order), and the other
+calls of that turn run first.
 
 ### Tests
 
@@ -246,9 +264,15 @@ same holds for a node timeout followed by a retry.
 | A model starts children without end (fork bomb, recursion) | `max_subagent_calls`, `max_parallel_subagents`, shared steps, tokens, deadline and depth. | Limits tests above. |
 | A child is used to get around the parent's approval rules | A child has its own tools and its own `require_approval`, and the pause reaches the root. A child cannot call the parent's tools. | Approval inside a child. |
 | A child leaks the parent's context | Fresh pool, arguments only. | Isolation test. |
-| A child reaches the network or secrets the run may not | Same services and secret set, no new environment values. | Secret scrub test. |
+| A child reaches the network or secrets the run may not | Same services and egress rules. A child sees only the environment its own workflow file declares, never the parent's, and those values join the run's secret set, so they are masked in what reaches the parent. | Secret scrub test. |
+| A child uses the parent's memory scope or skills | A child uses the services its host gave its own workflow: `serve` gives each its own, `graphrt run --workflows` the run's services with the child's own memory scope. An embedder that links without `with_services` gives the parent's. | Own services test. |
+| A model passes a file reference to a child | An argument holding a `$file` object is refused before the child starts. A `$file` object that a node reads from outside data becomes a file when a snapshot is read back, in a child as in the root run: that is the snapshot layer, tracked apart from this stage. | Arguments test. |
+| A crafted snapshot resumes a child the agent does not list | The agent checks its list on resume too. | |
+| A caller of the server reaches a workflow it was not given | A workflow listed as a subagent is reachable by everyone who may call the parent. The owner lists only what those callers may run. Serve links only workflows named by an allowlist, transitively. | Serve link test. |
+| Approval keys of the parent approve inside a child | A child's pause is keyed by its frame (`lead.mailer[0]/assistant`). A bare node id never reaches a child. | Plain key test. |
+| A node fakes the pause kind of child runs to hide its pause | The engine passes a pause on without a reason only for a node whose child really paused in this run. | Spoofed pause test. |
 | Injected text in a child's answer steers the parent | The answer is a tool result: bounded, masked, and data to the model like any tool result. A handoff is opt in per entry. | Covered by the tool result tests. |
-| A retry repeats a payment or a message | Checkpoints, the unknown outcome rule, idempotency key per call. | Timeout tests above. |
+| A retry repeats a payment or a message | Checkpoints, the unknown outcome rule, idempotency key per call. Until stage 5 a retry of the parent agent runs its children again. | Timeout tests above. |
 | A run spends without bound | Token and cost limits charged per turn across the tree. | Budget tests above. |
 | A resumed run continues against a changed workflow | The fingerprint covers linked graphs. | Resume with a changed child is refused. |
 
@@ -256,7 +280,7 @@ same holds for a node timeout followed by a retry.
 
 | What | Target |
 | --- | --- |
-| Starting a child frame of a linked graph (graph built at start) | under 100 µs |
+| Starting a child frame of a linked graph (graph built at start) | under 100 µs (measured about 4 µs over a native tool call) |
 | `charge` per model turn | two atomic additions |
 | Checkpoint of a loop with 200 messages | under 1 ms |
 | A run without subagents, budgets or checkpoints | no measurable change |

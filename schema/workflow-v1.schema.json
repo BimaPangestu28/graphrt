@@ -677,6 +677,41 @@
             }
           ]
         },
+        "subagents": {
+          "description": "Workflows the model may start as tools: each runs as a child run of this run with its own context, sharing the run's step budget, deadline and depth limit. An approval inside a child pauses the whole run. Only workflows this host serves can be listed.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "workflow": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string",
+                "description": "What the workflow does, for the model"
+              },
+              "handoff": {
+                "type": "boolean",
+                "default": false,
+                "description": "Its answer becomes this agent's answer"
+              }
+            },
+            "required": [
+              "workflow",
+              "description"
+            ]
+          }
+        },
+        "max_parallel_subagents": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 4
+        },
+        "max_subagent_calls": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 16
+        },
         "context_window": {
           "description": "What happens when the conversation outgrows the model's context window. `auto` (the default) trims it when the provider refuses a request for its size, or when `max_tokens` is passed, and sends the request again. `summarize` also keeps a rolling summary of what was removed. `off` trims nothing.",
           "oneOf": [

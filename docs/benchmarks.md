@@ -212,6 +212,14 @@ The feature holds the store, the write gate, the search, the agent's tools,
 eleven HTTP routes and the `graphrt memory` command. The slim builds grow by
 the check that refuses a document asking for memory in a build without it.
 
+## Subagents
+
+What a child run costs, from
+`cargo run --release -p graphrt-llm --features subagents,mock --example subagents_bench`:
+an agent turn with 50 calls of a linked two node workflow takes 425 µs, the
+same turn with 50 native tool calls 217 µs, so one child run costs about
+4 µs more than a tool call.
+
 ## Gateway targets on Linux
 
 `bench/targets.sh` measures every target of the gateway plan on Linux against

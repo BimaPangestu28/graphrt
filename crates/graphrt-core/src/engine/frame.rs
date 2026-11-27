@@ -60,6 +60,20 @@ pub(crate) struct RunShared {
     pub(crate) resume_inputs: IndexMap<String, Value>,
     /// Plaintext of every secret seen in this run, scrubbed from node error messages.
     pub(crate) secret_values: Arc<SecretSet>,
+    /// What a snapshot of this run carries (see `Engine::fingerprint`):
+    /// the graph's own without linked workflows.
+    #[cfg(feature = "subagents")]
+    pub(crate) fingerprint: String,
+    /// Workflows the run's nodes may start as child runs.
+    #[cfg(feature = "subagents")]
+    pub(crate) linked: Arc<IndexMap<String, super::LinkedWorkflow>>,
+    /// The nodes (as `frame/node`) whose child runs paused in this run: only
+    /// their pauses of kind `CHILD_PAUSE` are passed on without a reason.
+    #[cfg(feature = "subagents")]
+    pub(crate) parents: Mutex<HashSet<String>>,
+    /// Frame ids of the child runs running now, every level of nesting included.
+    #[cfg(feature = "subagents")]
+    pub(crate) running_children: Mutex<HashSet<String>>,
 }
 
 impl std::fmt::Debug for RunShared {
@@ -105,13 +119,21 @@ impl RunShared {
     }
 
     /// Host input for a node resumed in `frame`: the frame-qualified key
-    /// (`"iter[2]/approve"`) wins over the plain node id (`"approve"`).
-    fn resume_input(&self, frame: &str, node_id: &str) -> Option<Value> {
+    /// (`"iter[2]/approve"`) wins over the plain node id (`"approve"`). Inside
+    /// a child run only the qualified key counts: two workflows may name a
+    /// node the same, and an answer meant for one must not reach the other.
+    fn resume_input(&self, frame: &str, node_id: &str, qualified_only: bool) -> Option<Value> {
         if !frame.is_empty()
             && let Some(value) = self.resume_inputs.get(&format!("{frame}/{node_id}"))
         {
             return Some(value.clone());
         }
+        #[cfg(feature = "subagents")]
+        if qualified_only {
+            return None;
+        }
+        #[cfg(not(feature = "subagents"))]
+        let _ = qualified_only;
         self.resume_inputs.get(node_id).cloned()
     }
 }
@@ -172,9 +194,20 @@ struct TaskDone {
 /// One executing frame.
 pub(crate) struct Frame {
     run: Arc<RunShared>,
+    /// The graph this frame executes: the run's own, or a workflow linked to
+    /// it that an agent started as a child run. Builds without child runs
+    /// always run the run's own graph and keep no field for it.
+    #[cfg(feature = "subagents")]
+    graph: Arc<Graph>,
     id: FrameId,
     depth: u32,
     is_root: bool,
+    /// A child run, or a scope inside one: resume inputs need qualified keys.
+    #[cfg(feature = "subagents")]
+    in_child: bool,
+    /// What the child run this frame belongs to has of its own (`None`: the run's root lineage).
+    #[cfg(feature = "subagents")]
+    child: Option<Arc<ChildLink>>,
     scope_nodes: Vec<NodeIx>,
     /// Ids of the scope's nodes, built on the first variable write that needs them.
     scope_ids: std::cell::OnceCell<HashSet<Arc<str>>>,
@@ -236,6 +269,22 @@ fn by_index<V>(capacity: usize) -> ByIndex<V> {
 }
 
 impl Frame {
+    /// The graph this frame executes.
+    fn graph(&self) -> &Arc<Graph> {
+        #[cfg(feature = "subagents")]
+        return &self.graph;
+        #[cfg(not(feature = "subagents"))]
+        return &self.run.graph;
+    }
+
+    /// Whether this frame belongs to a child run (resume inputs need qualified keys).
+    fn in_child(&self) -> bool {
+        #[cfg(feature = "subagents")]
+        return self.in_child;
+        #[cfg(not(feature = "subagents"))]
+        return false;
+    }
+
     /// A fresh frame for the scope owned by `owner` (`None` = root).
     pub(crate) fn fresh(
         run: Arc<RunShared>,
@@ -244,7 +293,38 @@ impl Frame {
         depth: u32,
         pool: VariablePool,
     ) -> Result<Self, NodeError> {
-        let mut frame = Self::empty(run, id, owner, depth, pool)?;
+        #[cfg(feature = "subagents")]
+        let graph = Arc::clone(&run.graph);
+        Self::fresh_in(
+            run,
+            #[cfg(feature = "subagents")]
+            graph,
+            id,
+            owner,
+            depth,
+            pool,
+        )
+    }
+
+    /// [`Frame::fresh`] for a scope of `graph` (builds with child runs: the
+    /// others always run the run's own graph).
+    pub(crate) fn fresh_in(
+        run: Arc<RunShared>,
+        #[cfg(feature = "subagents")] graph: Arc<Graph>,
+        id: FrameId,
+        owner: Option<NodeIx>,
+        depth: u32,
+        pool: VariablePool,
+    ) -> Result<Self, NodeError> {
+        let mut frame = Self::empty(
+            run,
+            #[cfg(feature = "subagents")]
+            graph,
+            id,
+            owner,
+            depth,
+            pool,
+        )?;
         let entry = frame.scope_entry(owner)?;
         frame.mark_ready(entry);
         Ok(frame)
@@ -258,11 +338,47 @@ impl Frame {
         depth: u32,
         snapshot: FrameSnapshot,
     ) -> Result<Self, NodeError> {
+        #[cfg(feature = "subagents")]
+        let graph = Arc::clone(&run.graph);
+        Self::restore_in(
+            run,
+            #[cfg(feature = "subagents")]
+            graph,
+            id,
+            owner,
+            depth,
+            snapshot,
+            #[cfg(feature = "subagents")]
+            false,
+        )
+    }
+
+    /// [`Frame::restore`] for a scope of `graph`. `in_child`: the frame belongs
+    /// to a child run (even one of the run's own workflow).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn restore_in(
+        run: Arc<RunShared>,
+        #[cfg(feature = "subagents")] graph: Arc<Graph>,
+        id: FrameId,
+        owner: Option<NodeIx>,
+        depth: u32,
+        snapshot: FrameSnapshot,
+        #[cfg(feature = "subagents")] in_child: bool,
+    ) -> Result<Self, NodeError> {
+        #[cfg(not(feature = "subagents"))]
+        let in_child = false;
         let mut pool = VariablePool::from_snapshot(snapshot.pool);
-        for (name, value) in &run.env {
-            pool.insert(ENV, name, value.clone());
+        // The run's environment belongs to the run's root lineage. A child run
+        // gets its own back from the runner that restores it.
+        if !in_child {
+            for (name, value) in &run.env {
+                pool.insert(ENV, name, value.clone());
+            }
         }
-        for (selector, value) in &run.secrets {
+        // The run's re-supplied secrets name selectors of the run's own frames:
+        // a child's nodes are other nodes, even when named the same.
+        let secrets: &[(Selector, Value)] = if in_child { &[] } else { &run.secrets };
+        for (selector, value) in secrets {
             if pool.get(selector).is_some_and(|v| v.is_redacted_secret()) {
                 // The selector exists, so the write cannot fail on a missing index.
                 if pool.set_path(selector, value.clone()).is_err() {
@@ -270,12 +386,24 @@ impl Frame {
                 }
             }
         }
-        let mut frame = Self::empty(run, id, owner, depth, pool)?;
+        let mut frame = Self::empty(
+            run,
+            #[cfg(feature = "subagents")]
+            graph,
+            id,
+            owner,
+            depth,
+            pool,
+        )?;
+        #[cfg(feature = "subagents")]
+        {
+            frame.in_child = in_child;
+        }
         frame.outputs = snapshot.outputs.into_iter().map(|(k, v)| (k, v.from_snapshot_value())).collect();
         frame.writes = snapshot.writes.into_iter().map(|(s, v)| (s, v.from_snapshot_value())).collect();
         frame.broke = snapshot.broke;
         frame.usage = snapshot.usage;
-        let graph = frame.run.graph.clone();
+        let graph = Arc::clone(frame.graph());
         for (node_id, ns) in snapshot.nodes {
             let ix = graph
                 .index_of(&node_id)
@@ -319,21 +447,30 @@ impl Frame {
 
     fn empty(
         run: Arc<RunShared>,
+        #[cfg(feature = "subagents")] graph: Arc<Graph>,
         id: FrameId,
         owner: Option<NodeIx>,
         depth: u32,
         pool: VariablePool,
     ) -> Result<Self, NodeError> {
+        #[cfg(not(feature = "subagents"))]
+        let graph = &run.graph;
         let scope = match owner {
-            None => run.graph.root_scope(),
-            Some(o) => run.graph.scope_of(o),
+            None => graph.root_scope(),
+            Some(o) => graph.scope_of(o),
         }
         .ok_or_else(|| NodeError::fatal("graph", "scope not found"))?;
         let scope_nodes = scope.nodes.clone();
         let scope_len = scope_nodes.len();
         Ok(Self {
             is_root: owner.is_none(),
+            #[cfg(feature = "subagents")]
+            in_child: false,
+            #[cfg(feature = "subagents")]
+            child: None,
             run,
+            #[cfg(feature = "subagents")]
+            graph,
             id,
             depth,
             scope_nodes,
@@ -354,14 +491,14 @@ impl Frame {
 
     fn scope_ids(&self) -> &HashSet<Arc<str>> {
         self.scope_ids.get_or_init(|| {
-            self.scope_nodes.iter().filter_map(|&ix| self.run.graph.node(ix)).map(|n| n.id.clone()).collect()
+            self.scope_nodes.iter().filter_map(|&ix| self.graph().node(ix)).map(|n| n.id.clone()).collect()
         })
     }
 
     fn scope_entry(&self, owner: Option<NodeIx>) -> Result<NodeIx, NodeError> {
         let scope = match owner {
-            None => self.run.graph.root_scope(),
-            Some(o) => self.run.graph.scope_of(o),
+            None => self.graph().root_scope(),
+            Some(o) => self.graph().scope_of(o),
         };
         scope.map(|s| s.entry).ok_or_else(|| NodeError::fatal("graph", "scope not found"))
     }
@@ -394,7 +531,7 @@ impl Frame {
     }
 
     fn node_id(&self, ix: NodeIx) -> Arc<str> {
-        self.run.graph.node(ix).map_or_else(|| Arc::from(""), |n| Arc::clone(&n.id))
+        self.graph().node(ix).map_or_else(|| Arc::from(""), |n| Arc::clone(&n.id))
     }
 
     /// Run the frame to completion, failure, pause or stop.
@@ -574,7 +711,7 @@ impl Frame {
         let mut known: Vec<(&EdgeIx, &EdgeStatus)> = self.edges.iter().collect();
         known.sort_by_key(|(ex, _)| **ex);
         for (ex, status) in known {
-            if let Some(e) = self.run.graph.edge(*ex) {
+            if let Some(e) = self.graph().edge(*ex) {
                 edges.insert(String::from(&*e.id), *status);
             }
         }
@@ -596,7 +733,8 @@ impl Frame {
     /// second allocation per node execution.
     fn start(&mut self, ix: NodeIx) -> impl Future<Output = TaskDone> + Send + 'static {
         let run = self.run.clone();
-        let Some(gn) = run.graph.node(ix) else {
+        let graph = Arc::clone(self.graph());
+        let Some(gn) = graph.node(ix) else {
             let error = NodeError::fatal("graph", "unknown node index");
             return Either::Left(futures::future::ready(TaskDone {
                 ix,
@@ -616,10 +754,9 @@ impl Frame {
         rt.state = State::Running;
         let exec_id = Arc::clone(rt.exec_id.get_or_insert_with(|| new_id_arc(started)));
         // Boxed: resuming is rare, and the task future carries this for its whole life.
-        let resume: Option<Box<Resume>> = rt
-            .resume_state
-            .take()
-            .map(|state| Box::new(Resume { state, input: run.resume_input(&self.id, gn.id.as_ref()) }));
+        let resume: Option<Box<Resume>> = rt.resume_state.take().map(|state| {
+            Box::new(Resume { state, input: run.resume_input(&self.id, gn.id.as_ref(), self.in_child()) })
+        });
 
         run.emit(Event::NodeStarted {
             frame: self.id.clone(),
@@ -633,12 +770,29 @@ impl Frame {
         let subgraph: Option<Arc<dyn Subgraph>> = if gn.role == NodeRole::Container {
             Some(Arc::new(ScopeRunner {
                 run: run.clone(),
+                #[cfg(feature = "subagents")]
+                graph: Arc::clone(self.graph()),
+                #[cfg(feature = "subagents")]
+                in_child: self.in_child,
+                #[cfg(feature = "subagents")]
+                child: self.child.clone(),
                 owner: ix,
                 parent_frame: self.id.clone(),
                 depth: self.depth,
             }))
         } else {
             None
+        };
+        #[cfg(feature = "subagents")]
+        let children: Option<Arc<dyn crate::node::ChildRuns>> = if run.linked.is_empty() {
+            None
+        } else {
+            Some(Arc::new(ChildRunner {
+                run: run.clone(),
+                parent_frame: self.id.clone(),
+                node_id: gn.id.clone(),
+                depth: self.depth,
+            }))
         };
         let node: Arc<dyn Node> = gn.node.clone();
         let node_id: Arc<str> = gn.id.clone();
@@ -648,6 +802,9 @@ impl Frame {
         let timeout_ms = gn.policy.timeout_ms.or(run.limits.default_node_timeout_ms);
         let pool = self.pool.clone();
         let frame = self.id.clone();
+        // A child run uses the services its host gave its own workflow.
+        #[cfg(feature = "subagents")]
+        let services = self.child.as_ref().map_or_else(|| run.services.clone(), |child| child.services.clone());
 
         Either::Right(async move {
             let mut attempt: u32 = 1;
@@ -666,7 +823,13 @@ impl Frame {
                     frame.clone(),
                     attempt,
                     pool.clone(),
-                    run.services.clone(),
+                    {
+                        #[cfg(feature = "subagents")]
+                        let services = services.clone();
+                        #[cfg(not(feature = "subagents"))]
+                        let services = run.services.clone();
+                        services
+                    },
                     run.clock.clone(),
                     run.sink.clone(),
                 )
@@ -674,6 +837,8 @@ impl Frame {
                 .with_subgraph(subgraph.clone())
                 .with_deadline(deadline_ms)
                 .with_secret_values(Arc::clone(&run.secret_values));
+                #[cfg(feature = "subagents")]
+                let ctx = ctx.with_children(children.clone());
                 // The result and the error stay inside this block, so the task
                 // does not reserve room for them while it waits for a retry.
                 let delay_ms = {
@@ -721,7 +886,7 @@ impl Frame {
         if self.run.control.is_stopped() {
             return Some(FrameOutcome::Stopped);
         }
-        let Some(gn) = self.run.graph.node(ix) else {
+        let Some(gn) = self.graph().node(ix) else {
             return Some(FrameOutcome::Failed {
                 error: NodeError::fatal("graph", "unknown node index"),
                 usage: self.usage,
@@ -755,7 +920,7 @@ impl Frame {
     }
 
     fn on_success(&mut self, ix: NodeIx, output: NodeOutput, elapsed_ms: u64) -> Option<FrameOutcome> {
-        let graph = self.run.graph.clone();
+        let graph = Arc::clone(self.graph());
         let gn = graph.node(ix)?;
         let node_id = Arc::clone(&gn.id);
         if let Err(error) = self.commit(ix, &output.outputs, &output.writes) {
@@ -793,7 +958,7 @@ impl Frame {
 
     fn on_paused(&mut self, ix: NodeIx, request: PauseRequest) {
         let node_id = self.node_id(ix);
-        let role = self.run.graph.node(ix).map(|n| n.role);
+        let role = self.graph().node(ix).map(|n| n.role);
         let reason = PauseReason {
             frame: self.id.clone(),
             node_id: Some(String::from(&*node_id)),
@@ -804,8 +969,19 @@ impl Frame {
             rt.state = State::Paused;
             rt.resume_state = Some(request.state);
         }
-        // Container pauses are caused by inner nodes, which already reported their reasons.
-        if role != Some(NodeRole::Container) {
+        // Container pauses are caused by inner nodes, which already reported
+        // their reasons, and so are the pauses a node passes on from its child runs.
+        #[cfg(feature = "subagents")]
+        let passed_on = reason.kind == crate::node::CHILD_PAUSE
+            && self
+                .run
+                .parents
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&format!("{}/{node_id}", self.id));
+        #[cfg(not(feature = "subagents"))]
+        let passed_on = false;
+        if role != Some(NodeRole::Container) && !passed_on {
             self.run.control.add_reason(reason.clone());
         }
         self.reasons.push(reason.clone());
@@ -813,7 +989,7 @@ impl Frame {
     }
 
     fn on_error(&mut self, ix: NodeIx, error: NodeError, elapsed_ms: u64) -> Option<FrameOutcome> {
-        let graph = self.run.graph.clone();
+        let graph = Arc::clone(self.graph());
         let gn = graph.node(ix)?;
         let node_id = Arc::clone(&gn.id);
         let mut outputs = Variables::new();
@@ -934,7 +1110,7 @@ impl Frame {
     /// Resolve every outgoing edge of `ix` (taken when `take(handle)`), then
     /// propagate readiness and skips downstream.
     fn traverse(&mut self, ix: NodeIx, take: impl Fn(&str) -> bool) {
-        let graph = self.run.graph.clone();
+        let graph = Arc::clone(self.graph());
         for &ex in graph.outgoing(ix) {
             let Some(edge) = graph.edge(ex) else { continue };
             let status = if take(&edge.handle) { EdgeStatus::Taken } else { EdgeStatus::Skipped };
@@ -962,7 +1138,7 @@ impl Frame {
             return *tally;
         }
         let mut tally = Incoming { unresolved: 0, taken: false };
-        for &ex in self.run.graph.incoming(target) {
+        for &ex in self.graph().incoming(target) {
             match self.edges.get(&ex).copied().unwrap_or(EdgeStatus::Unknown) {
                 EdgeStatus::Unknown => tally.unresolved += 1,
                 EdgeStatus::Taken => tally.taken = true,
@@ -976,7 +1152,7 @@ impl Frame {
     /// Worklist propagation: a node becomes ready once every incoming edge is
     /// resolved and at least one is taken; it is skipped when all are skipped.
     fn resolve_targets(&mut self, targets: impl Iterator<Item = NodeIx>) {
-        let graph = self.run.graph.clone();
+        let graph = Arc::clone(self.graph());
         // Targets reached by skip propagation are resolved before the remaining
         // initial ones (a stack); the stack only allocates when a node is skipped.
         let mut work: Vec<NodeIx> = Vec::new();
@@ -1094,9 +1270,27 @@ fn panic_error(panic: Box<dyn std::any::Any + Send>) -> NodeResult {
 #[derive(Debug)]
 pub(crate) struct ScopeRunner {
     run: Arc<RunShared>,
+    /// The graph of the frame that owns the container.
+    #[cfg(feature = "subagents")]
+    graph: Arc<Graph>,
+    /// Whether that frame belongs to a child run.
+    #[cfg(feature = "subagents")]
+    in_child: bool,
+    /// What that child run has of its own, handed on to the scope's frame.
+    #[cfg(feature = "subagents")]
+    child: Option<Arc<ChildLink>>,
     owner: NodeIx,
     parent_frame: FrameId,
     depth: u32,
+}
+
+impl ScopeRunner {
+    fn graph(&self) -> &Arc<Graph> {
+        #[cfg(feature = "subagents")]
+        return &self.graph;
+        #[cfg(not(feature = "subagents"))]
+        return &self.run.graph;
+    }
 }
 
 impl Subgraph for ScopeRunner {
@@ -1112,7 +1306,7 @@ impl Subgraph for ScopeRunner {
                     usage: Usage::default(),
                 };
             }
-            let owner_id = self.run.graph.node(self.owner).map(|n| String::from(&*n.id)).unwrap_or_default();
+            let owner_id = self.graph().node(self.owner).map(|n| String::from(&*n.id)).unwrap_or_default();
             let segment = format!("{owner_id}[{}]", request.index);
             let id: FrameId = if self.parent_frame.is_empty() {
                 Arc::from(segment)
@@ -1120,11 +1314,43 @@ impl Subgraph for ScopeRunner {
                 Arc::from(format!("{}/{segment}", self.parent_frame))
             };
             let frame = match request.resume {
-                Some(snapshot) => Frame::restore(self.run.clone(), id, Some(self.owner), depth, snapshot),
-                None => Frame::fresh(self.run.clone(), id, Some(self.owner), depth, request.pool),
+                Some(snapshot) => Frame::restore_in(
+                    self.run.clone(),
+                    #[cfg(feature = "subagents")]
+                    Arc::clone(self.graph()),
+                    id,
+                    Some(self.owner),
+                    depth,
+                    snapshot,
+                    #[cfg(feature = "subagents")]
+                    self.in_child,
+                ),
+                None => Frame::fresh_in(
+                    self.run.clone(),
+                    #[cfg(feature = "subagents")]
+                    Arc::clone(self.graph()),
+                    id,
+                    Some(self.owner),
+                    depth,
+                    request.pool,
+                ),
             };
             let frame = match frame {
-                Ok(f) => f,
+                #[cfg_attr(not(feature = "subagents"), allow(unused_mut))]
+                Ok(mut f) => {
+                    #[cfg(feature = "subagents")]
+                    {
+                        f.in_child = self.in_child;
+                    }
+                    #[cfg(feature = "subagents")]
+                    if let Some(child) = &self.child {
+                        for (name, value) in &child.env {
+                            f.pool.insert(ENV, name, value.clone());
+                        }
+                        f.child = Some(Arc::clone(child));
+                    }
+                    f
+                }
                 Err(error) => return SubgraphResult::Failed { error, usage: Usage::default() },
             };
             match frame.run().await {
@@ -1143,4 +1369,296 @@ impl Subgraph for ScopeRunner {
             }
         })
     }
+}
+
+/// What a child run has of its own: its environment (resolved against its
+/// workflow's declarations) and the services its host gave its workflow.
+#[cfg(feature = "subagents")]
+#[derive(Debug)]
+pub(crate) struct ChildLink {
+    env: Vec<(String, Value)>,
+    services: Arc<crate::node::Services>,
+}
+
+/// [`crate::node::ChildRuns`] handed to the nodes of a run that has linked workflows.
+#[cfg(feature = "subagents")]
+#[derive(Debug)]
+pub(crate) struct ChildRunner {
+    run: Arc<RunShared>,
+    parent_frame: FrameId,
+    node_id: Arc<str>,
+    depth: u32,
+}
+
+/// Removes a child's frame id from the run's running children when the child ends
+/// (or its future is dropped by a timeout or an abort).
+#[cfg(feature = "subagents")]
+struct Running<'a> {
+    run: &'a RunShared,
+    id: String,
+}
+
+#[cfg(feature = "subagents")]
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.run.running_children.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.id);
+    }
+}
+
+#[cfg(feature = "subagents")]
+impl crate::node::sealed::Sealed for ChildRunner {}
+
+#[cfg(feature = "subagents")]
+impl crate::node::ChildRuns for ChildRunner {
+    fn workflows(&self) -> Vec<String> {
+        self.run.linked.keys().cloned().collect()
+    }
+
+    fn inputs_schema(&self, workflow: &str) -> Result<serde_json::Value, NodeError> {
+        let link = self.run.linked.get(workflow).ok_or_else(|| {
+            NodeError::fatal("unknown_workflow", format!("workflow `{workflow}` is not linked to this run"))
+        })?;
+        start_schema(&link.graph).map_err(|why| NodeError::fatal("unusable_workflow", why))
+    }
+
+    fn max_concurrency(&self) -> usize {
+        self.run.limits.max_concurrency
+    }
+
+    fn run_stopped(&self) -> bool {
+        self.run.control.stop_reason().is_some()
+    }
+
+    fn run(&self, request: crate::node::ChildRequest) -> BoxFuture<'_, SubgraphResult> {
+        Box::pin(async move {
+            let failed = |error: NodeError| SubgraphResult::Failed { error, usage: Usage::default() };
+            let Some(link) = self.run.linked.get(&request.workflow).cloned() else {
+                return failed(NodeError::fatal(
+                    "unknown_workflow",
+                    format!("workflow `{}` is not linked to this run", request.workflow),
+                ));
+            };
+            // Containers and child runs count against one depth limit, so a
+            // workflow that starts itself ends there instead of recursing for ever.
+            let depth = self.depth.saturating_add(1);
+            if depth > self.run.limits.max_depth {
+                return failed(NodeError::fatal(
+                    "limit_exceeded",
+                    format!("nesting depth limit of {} exceeded by child runs", self.run.limits.max_depth),
+                ));
+            }
+            let segment = format!("{}.{}[{}]", self.node_id, request.workflow, request.index);
+            let id: FrameId = if self.parent_frame.is_empty() {
+                Arc::from(segment)
+            } else {
+                Arc::from(format!("{}/{segment}", self.parent_frame))
+            };
+            // One frame per id, and a bound on the child runs of the whole run,
+            // every level of nesting included. A parent keeps its place while its
+            // children run, so the bound leaves room for a full chain of nesting
+            // at the run's concurrency: `max_concurrency` per level of depth.
+            let _running = {
+                let mut running = self.run.running_children.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if running.contains(id.as_ref()) {
+                    return failed(NodeError::fatal("duplicate_child", format!("child run `{id}` is running already")));
+                }
+                let depth_room = usize::try_from(self.run.limits.max_depth.max(1)).unwrap_or(usize::MAX);
+                let bound = self.run.limits.max_concurrency.max(1).saturating_mul(depth_room);
+                if running.len() >= bound {
+                    let why = format!(
+                        "at most {bound} child runs at once in one run ({} per level of `max_concurrency` x {} levels of `max_depth`)",
+                        self.run.limits.max_concurrency, self.run.limits.max_depth
+                    );
+                    return failed(NodeError::new("limit_exceeded", why));
+                }
+                running.insert(id.to_string());
+                Running { run: &self.run, id: id.to_string() }
+            };
+            let graph = link.graph().clone();
+            // Its own environment, not the parent's, resolved like a run's: defaults
+            // apply and `secret` declarations make secrets, which every event and
+            // the parent's view of the answer mask.
+            // Hosts check this when they link (`LinkedWorkflow::check`).
+            let env = match link.resolved_env() {
+                Ok(env) => env,
+                Err(why) => return failed(NodeError::fatal("child_misconfigured", why)),
+            };
+            for (_, value) in &env {
+                self.run.secret_values.observe(value);
+            }
+            let child = Arc::new(ChildLink {
+                env,
+                services: link.services().cloned().unwrap_or_else(|| self.run.services.clone()),
+            });
+            let frame = match request.resume {
+                Some(snapshot) => {
+                    Frame::restore_in(self.run.clone(), graph, id, None, depth, snapshot, true).map(|mut frame| {
+                        // Environment values are never in a snapshot: the child's own come back here.
+                        for (name, value) in &child.env {
+                            frame.pool.insert(ENV, name, value.clone());
+                        }
+                        frame
+                    })
+                }
+                None => match child_pool(&graph, &child.env, request.sys, request.inputs) {
+                    Ok(pool) => Frame::fresh_in(self.run.clone(), graph, id, None, depth, pool),
+                    Err(error) => return failed(error),
+                },
+            };
+            let frame = match frame {
+                Ok(mut frame) => {
+                    // A child is not the run's root: host updates of variables
+                    // are the root's, and resume inputs need qualified keys.
+                    frame.is_root = false;
+                    frame.in_child = true;
+                    frame.child = Some(child);
+                    frame
+                }
+                Err(error) => return failed(error),
+            };
+            match frame.run().await {
+                FrameOutcome::Completed { pool, outputs, writes, usage, broke } => {
+                    SubgraphResult::Completed { pool, outputs, writes, usage, broke }
+                }
+                FrameOutcome::Failed { error, usage } => SubgraphResult::Failed { error, usage },
+                FrameOutcome::Paused { snapshot, reasons } => {
+                    // This node holds a waiting child: its pause of kind CHILD_PAUSE
+                    // passes the child's reasons on, and adds none of its own.
+                    self.run
+                        .parents
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(format!("{}/{}", self.parent_frame, self.node_id));
+                    SubgraphResult::Paused { snapshot: *snapshot, reasons }
+                }
+                FrameOutcome::Stopped => {
+                    let reason = match self.run.control.stop_reason() {
+                        Some(Stop::Abort(r) | Stop::Fail(r)) => r,
+                        None => "stopped".to_owned(),
+                    };
+                    failed(NodeError::fatal("aborted", reason))
+                }
+            }
+        })
+    }
+}
+
+/// The pool a fresh child starts with: its environment, the `sys` values it
+/// is given and its start inputs, nothing else of the parent.
+///
+/// @throws NodeError - `invalid_input` for an argument the workflow does not
+///   offer (undeclared, or a secret), or one shaped like a file reference.
+#[cfg(feature = "subagents")]
+fn child_pool(
+    graph: &Graph,
+    env: &[(String, Value)],
+    sys: IndexMap<String, Value>,
+    inputs: IndexMap<String, Value>,
+) -> Result<VariablePool, NodeError> {
+    let mut pool = VariablePool::new();
+    for (name, value) in env {
+        pool.insert(ENV, name, value.clone());
+    }
+    for (name, value) in &sys {
+        pool.insert(SYS, name, value.clone());
+    }
+    let offered = start_schema(graph).map_err(|why| NodeError::fatal("unusable_workflow", why))?;
+    let properties = offered.get("properties").and_then(serde_json::Value::as_object);
+    for (name, value) in &inputs {
+        if !properties.is_some_and(|p| p.contains_key(name)) {
+            return Err(NodeError::invalid_input(format!("the workflow takes no argument `{name}`")));
+        }
+        // A model passes data, never a file: an object shaped like a file
+        // reference would become one when a snapshot of the child is read.
+        if holds_file_marker(value) {
+            return Err(NodeError::invalid_input(format!("argument `{name}` holds a `$file` object")));
+        }
+    }
+    if let Some(entry) = graph.root_scope().and_then(|scope| graph.node(scope.entry)) {
+        for (name, value) in inputs {
+            pool.insert(&entry.id, &name, value);
+        }
+    }
+    Ok(pool)
+}
+
+#[cfg(feature = "subagents")]
+fn holds_file_marker(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => map.contains_key("$file") || map.values().any(holds_file_marker),
+        Value::Array(items) => items.iter().any(holds_file_marker),
+        _ => false,
+    }
+}
+
+/// The JSON schema of the start variables of `graph`: what a model passes to
+/// start it, with the types the start node accepts.
+///
+/// @throws String - when a required variable is one a model cannot supply
+///   (a secret or a file), so the workflow cannot be called as a tool.
+#[cfg(feature = "subagents")]
+pub(crate) fn start_schema(graph: &Graph) -> Result<serde_json::Value, String> {
+    use crate::value::ValueType;
+    use serde_json::{Value as Json, json};
+    let start = graph
+        .root_scope()
+        .and_then(|scope| graph.node(scope.entry))
+        .and_then(|entry| graph.workflow().graph.nodes.iter().find(|n| n.id == *entry.id));
+    let config: crate::nodes::start::StartConfig = match start {
+        Some(doc) => serde_json::from_value(serde_json::Value::Object(doc.config.clone()))
+            .map_err(|e| format!("start variables: {e}"))?,
+        None => crate::nodes::start::StartConfig::default(),
+    };
+    fn json_type(ty: ValueType) -> Option<Json> {
+        let name = match ty {
+            ValueType::String => "string",
+            ValueType::Number | ValueType::Float => "number",
+            ValueType::Integer => "integer",
+            ValueType::Boolean => "boolean",
+            ValueType::Object => "object",
+            ValueType::Null => "null",
+            _ => return None,
+        };
+        Some(json!({"type": name}))
+    }
+    let mut properties = serde_json::Map::new();
+    let mut required = Vec::new();
+    for variable in &config.variables {
+        let ty = variable.value_type()?;
+        let mut property = match ty {
+            ValueType::Secret | ValueType::File | ValueType::ArrayFile => {
+                // With a default the start node does not need it from the model.
+                if variable.required && variable.default.is_none() {
+                    return Err(format!(
+                        "required start variable `{}` is a {} a model cannot pass",
+                        variable.variable,
+                        if ty == ValueType::Secret { "secret" } else { "file" }
+                    ));
+                }
+                continue;
+            }
+            ValueType::Any => json!({}),
+            array if array.element().is_some() => {
+                let items = array.element().and_then(json_type).unwrap_or_else(|| json!({}));
+                json!({"type": "array", "items": items})
+            }
+            scalar => json_type(scalar).unwrap_or_else(|| json!({})),
+        };
+        if let Some(fields) = property.as_object_mut() {
+            if let Some(label) = &variable.label {
+                fields.insert("description".to_owned(), Json::String(label.clone()));
+            }
+            if variable.kind == "select" && !variable.options.is_empty() {
+                fields.insert("enum".to_owned(), json!(variable.options));
+            }
+            if let Some(max) = variable.max_length {
+                fields.insert("maxLength".to_owned(), json!(max));
+            }
+        }
+        properties.insert(variable.variable.clone(), property);
+        if variable.required && variable.default.is_none() {
+            required.push(Json::String(variable.variable.clone()));
+        }
+    }
+    Ok(json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false}))
 }

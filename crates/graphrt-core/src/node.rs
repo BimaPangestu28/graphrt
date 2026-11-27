@@ -291,6 +291,79 @@ pub trait Subgraph: Send + Sync + fmt::Debug {
     fn run(&self, request: SubgraphRequest) -> BoxFuture<'_, SubgraphResult>;
 }
 
+/// The pause kind of a node whose pause only passes on the pauses of child
+/// runs it started ([`ChildRuns`]): the nodes inside them reported their
+/// reasons already, so the engine adds none for this node.
+#[cfg(feature = "subagents")]
+pub const CHILD_PAUSE: &str = "child_runs";
+
+/// One child run: workflow `workflow` started by the current node as call
+/// `index` (stable across attempts and resumes, it names the child's frame).
+/// Built with [`ChildRequest::start`] or [`ChildRequest::resume`].
+#[cfg(feature = "subagents")]
+#[derive(Debug, Clone)]
+pub struct ChildRequest {
+    pub(crate) workflow: String,
+    pub(crate) index: usize,
+    /// Values for the start variables of the child workflow (a start only).
+    pub(crate) inputs: IndexMap<String, Value>,
+    /// `sys` values the child sees (a start only). It sees nothing else of the parent.
+    pub(crate) sys: IndexMap<String, Value>,
+    /// The snapshot of a child that paused, to resume it.
+    pub(crate) resume: Option<FrameSnapshot>,
+}
+
+#[cfg(feature = "subagents")]
+impl ChildRequest {
+    /// Start `workflow` as call `index` with `inputs` for its start variables.
+    pub fn start(workflow: impl Into<String>, index: usize, inputs: IndexMap<String, Value>) -> Self {
+        Self { workflow: workflow.into(), index, inputs, sys: IndexMap::new(), resume: None }
+    }
+
+    /// The `sys` values a started child sees.
+    pub fn with_sys(mut self, sys: IndexMap<String, Value>) -> Self {
+        self.sys = sys;
+        self
+    }
+
+    /// Resume call `index` of `workflow` from the snapshot its pause gave.
+    /// The child keeps the inputs and `sys` values it started with.
+    pub fn resume(workflow: impl Into<String>, index: usize, snapshot: FrameSnapshot) -> Self {
+        Self { workflow: workflow.into(), index, inputs: IndexMap::new(), sys: IndexMap::new(), resume: Some(snapshot) }
+    }
+}
+
+#[cfg(feature = "subagents")]
+pub(crate) mod sealed {
+    /// Only the engine implements [`super::ChildRuns`].
+    pub trait Sealed {}
+}
+
+/// Workflows linked to the run that a node may start as child runs. A child
+/// runs inside the same run: it shares the step budget, the deadline, the
+/// depth limit, the secrets that are scrubbed, the control signals and the
+/// event stream, and its pauses reach the root with frame qualified keys. It
+/// uses the services its host gave its own workflow.
+///
+/// Implemented by the engine only.
+#[cfg(feature = "subagents")]
+pub trait ChildRuns: sealed::Sealed + Send + Sync + fmt::Debug {
+    /// The names of the linked workflows.
+    fn workflows(&self) -> Vec<String>;
+    /// The JSON schema of the start variables of `workflow`.
+    ///
+    /// @throws NodeError - `unknown_workflow` when it is not linked,
+    ///   `unusable_workflow` when a model cannot supply a required variable.
+    fn inputs_schema(&self, workflow: &str) -> Result<serde_json::Value, NodeError>;
+    /// Run, or resume, one child.
+    fn run(&self, request: ChildRequest) -> BoxFuture<'_, SubgraphResult>;
+    /// Child runs a node may have at once (the run's concurrency).
+    fn max_concurrency(&self) -> usize;
+    /// Whether the run stops (aborted, or a limit of the run): a child that
+    /// failed then failed for that reason, not for one of its own.
+    fn run_stopped(&self) -> bool;
+}
+
 /// Time source used by the engine and nodes (retries, timeouts, elapsed time).
 pub trait Clock: Send + Sync + fmt::Debug {
     /// Milliseconds since an arbitrary fixed origin.
@@ -453,6 +526,9 @@ pub struct NodeContext {
     pub resume: Option<Resume>,
     /// Present for container nodes.
     pub subgraph: Option<Arc<dyn Subgraph>>,
+    /// Present when the run has linked workflows: the child runs a node may start.
+    #[cfg(feature = "subagents")]
+    pub children: Option<Arc<dyn ChildRuns>>,
     /// Absolute deadline of the current attempt in [`Clock::now_ms`] time, when
     /// the node has an effective timeout. See [`NodeContext::remaining`].
     pub deadline_ms: Option<u64>,
@@ -515,6 +591,8 @@ impl NodeContext {
             clock,
             resume: None,
             subgraph: None,
+            #[cfg(feature = "subagents")]
+            children: None,
             deadline_ms: None,
             sink,
             secret_values: None,
@@ -552,6 +630,13 @@ impl NodeContext {
 
     pub fn with_subgraph(mut self, subgraph: Option<Arc<dyn Subgraph>>) -> Self {
         self.subgraph = subgraph;
+        self
+    }
+
+    /// The child runs this node may start (see [`ChildRuns`]).
+    #[cfg(feature = "subagents")]
+    pub fn with_children(mut self, children: Option<Arc<dyn ChildRuns>>) -> Self {
+        self.children = children;
         self
     }
 

@@ -104,6 +104,8 @@ pub async fn build_state(
         let engine = with_workflow_services(engine, &workflow_services, options, name);
         workflows.insert(name.clone(), ServedWorkflow { engine, env });
     }
+    #[cfg(feature = "subagents")]
+    link_served(&mut workflows)?;
     #[allow(unused_mut)]
     let mut state = AppState::new(workflows, api_key).with_extensions(extensions);
     #[cfg(any(feature = "online-eval", feature = "skills", feature = "learning"))]
@@ -182,4 +184,120 @@ fn services_with_skills(
 
 fn is_mcp_config(path: &Path) -> bool {
     std::fs::read_to_string(path).map(|t| t.contains("\"mcpServers\"")).unwrap_or(false)
+}
+
+/// Give each served workflow whose agents list `subagents` the workflows
+/// they may start: the ones they list, and what those list in turn. Only
+/// those, because every linked workflow is in the fingerprint of a paused
+/// run, and a change to an unrelated one must not refuse its resume. A
+/// workflow without such an agent is linked to nothing. Each linked
+/// workflow brings its own environment and services (memory scope, skills,
+/// tools), not the parent's.
+///
+/// @throws CliError - when an agent lists a workflow this server does not serve,
+///   so a misnamed subagent stops the start, not a run halfway.
+#[cfg(feature = "subagents")]
+pub(crate) fn link_served(workflows: &mut IndexMap<String, ServedWorkflow>) -> Result<(), CliError> {
+    let lists: IndexMap<String, Vec<String>> =
+        workflows.iter().map(|(name, served)| (name.clone(), crate::setup::listed(served.engine.graph()))).collect();
+    let links: IndexMap<String, graphrt_core::engine::LinkedWorkflow> = workflows
+        .iter()
+        .map(|(name, served)| {
+            let link = graphrt_core::engine::LinkedWorkflow::new(Arc::clone(served.engine.graph()))
+                .with_env(served.env.clone())
+                .with_services(Arc::clone(served.engine.services()));
+            (name.clone(), link)
+        })
+        .collect();
+    for (name, names) in &lists {
+        for listed in names {
+            let Some(link) = links.get(listed) else {
+                return Err(CliError::usage(format!(
+                    "workflow `{name}` lists subagent `{listed}`, which this server does not serve (served: {})",
+                    links.keys().cloned().collect::<Vec<_>>().join(", ")
+                )));
+            };
+            link.check().map_err(|why| {
+                CliError::usage(format!("workflow `{name}` lists subagent `{listed}`, which cannot run as one: {why}"))
+            })?;
+        }
+    }
+    for (name, served) in workflows.iter_mut() {
+        if lists.get(name).is_none_or(Vec::is_empty) {
+            continue;
+        }
+        // Every workflow reachable from this one through the lists.
+        let mut reach: Vec<String> = Vec::new();
+        let mut queue: Vec<String> = lists.get(name).cloned().unwrap_or_default();
+        while let Some(next) = queue.pop() {
+            if reach.contains(&next) || !links.contains_key(&next) {
+                continue;
+            }
+            queue.extend(lists.get(&next).cloned().unwrap_or_default());
+            reach.push(next);
+        }
+        let linked: Vec<(String, graphrt_core::engine::LinkedWorkflow)> =
+            reach.into_iter().filter_map(|n| links.get(&n).map(|link| (n, link.clone()))).collect();
+        let graph = Arc::clone(served.engine.graph());
+        let engine = std::mem::replace(&mut served.engine, Engine::new(graph));
+        served.engine = engine.with_linked(linked);
+    }
+    Ok(())
+}
+
+#[cfg(all(test, feature = "subagents"))]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod subagent_tests {
+    use super::*;
+
+    fn served(doc: serde_json::Value) -> ServedWorkflow {
+        let registry = graphrt_core::node::Registry::with_builtins();
+        let mut registry = registry;
+        graphrt_llm::register(&mut registry);
+        let graph =
+            graphrt_core::graph::Graph::build(graphrt_core::Workflow::from_value(doc).unwrap(), &registry).unwrap();
+        ServedWorkflow { engine: Engine::new(Arc::new(graph)), env: IndexMap::new() }
+    }
+
+    fn with_agent(list: &[&str]) -> serde_json::Value {
+        let subagents: Vec<serde_json::Value> =
+            list.iter().map(|w| serde_json::json!({"workflow": w, "description": "d"})).collect();
+        serde_json::json!({"graph": {"nodes": [
+            {"id": "start", "type": "start"},
+            {"id": "lead", "type": "agent", "model": {"provider": "x", "name": "m"}, "subagents": subagents}],
+            "edges": [{"source": "start", "target": "lead"}]}})
+    }
+
+    #[test]
+    fn only_what_is_listed_and_what_that_lists_is_linked() {
+        let plain = serde_json::json!({"graph": {"nodes": [{"id": "start", "type": "start"}], "edges": []}});
+        let mut workflows = IndexMap::new();
+        workflows.insert("lead".to_owned(), served(with_agent(&["middle"])));
+        workflows.insert("middle".to_owned(), served(with_agent(&["leaf"])));
+        workflows.insert("leaf".to_owned(), served(plain.clone()));
+        workflows.insert("other".to_owned(), served(plain));
+        let before_other = workflows["other"].engine.fingerprint().to_owned();
+        link_served(&mut workflows).unwrap();
+        let lead = workflows["lead"].engine.fingerprint();
+        assert!(lead.contains(":middle=") && lead.contains(":leaf=") && !lead.contains(":other="), "{lead}");
+        assert_eq!(workflows["other"].engine.fingerprint(), before_other, "a workflow without subagents is not linked");
+        // A listed workflow the server does not serve stops the start.
+        let mut workflows = IndexMap::new();
+        workflows.insert("lead".to_owned(), served(with_agent(&["researcher"])));
+        let error = link_served(&mut workflows).unwrap_err().to_string();
+        assert!(error.contains("`researcher`"), "{error}");
+        // A served workflow that a model cannot start stops the start too, unless
+        // the variable it cannot pass has a default.
+        let start = |default: serde_json::Value| {
+            serde_json::json!({"graph": {"nodes": [{"id": "start", "type": "start", "variables": [
+                {"variable": "token", "type": "secret", "required": true, "default": default}]}], "edges": []}})
+        };
+        let mut workflows = IndexMap::new();
+        workflows.insert("lead".to_owned(), served(with_agent(&["locked"])));
+        workflows.insert("locked".to_owned(), served(start(serde_json::Value::Null)));
+        let error = link_served(&mut workflows).unwrap_err().to_string();
+        assert!(error.contains("cannot run as one") && error.contains("`token`"), "{error}");
+        workflows.insert("locked".to_owned(), served(start(serde_json::json!("fallback"))));
+        link_served(&mut workflows).unwrap();
+    }
 }
