@@ -1675,12 +1675,18 @@ dependencies = [
 name = "graphrt-channel"
 version = "0.6.2"
 dependencies = [
+ "base64 0.23.1",
+ "futures-util",
  "reqwest",
+ "ring",
  "rustls",
+ "rustls-platform-verifier",
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
 ]
 
 [[package]]
@@ -1692,6 +1698,7 @@ dependencies = [
  "clap",
  "flate2",
  "futures",
+ "futures-util",
  "getrandom 0.4.3",
  "graphrt-bundle",
  "graphrt-channel",
@@ -1732,6 +1739,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite",
  "tower",
 ]
 

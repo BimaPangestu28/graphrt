@@ -1,7 +1,8 @@
 //! Messaging channels of `graphrt serve` (`--channel KIND=WORKFLOW`, cargo
-//! features `channel-telegram` and `channel-whatsapp`): a customer writes on
-//! Telegram or WhatsApp, the workflow runs, and the answer goes back on the
-//! same channel, with one conversation per customer.
+//! features `channel-telegram`, `channel-whatsapp`, `channel-slack` and
+//! `channel-teams`): a customer writes on Telegram, WhatsApp, Slack or Teams,
+//! the workflow runs, and the answer goes back on the same channel, with one
+//! conversation per customer (per thread on Slack and Teams).
 //!
 //! What the channel itself needs (payloads, signatures, formatting, sending) is
 //! the `graphrt-channel` crate. This module is the host around it:
@@ -26,8 +27,17 @@
 //! the webhook's answer or the polling loop.
 
 pub mod config;
+#[cfg(feature = "files")]
+mod links;
+#[cfg(feature = "notify")]
+pub mod notify;
 mod reply;
+mod rich;
 mod routes;
+#[cfg(feature = "channel-slack")]
+mod slack;
+#[cfg(feature = "channel-teams")]
+mod teams;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
@@ -83,11 +93,19 @@ pub fn is_channel_conversation(session_id: &str) -> bool {
     session_id.starts_with(CONVERSATION_PREFIX)
 }
 
-/// The conversation id of `chat_id` on the channel `name`.
+/// The conversation id of `chat_id` on the channel `name`. A chat id longer
+/// than 80 characters (a Teams conversation) keeps its start and gets a digest
+/// of the whole, so two long ids never share a conversation.
 fn conversation_id(name: &str, chat_id: &str) -> String {
-    let chat: String =
-        chat_id.chars().take(80).map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
-    format!("{CONVERSATION_PREFIX}{name}-{chat}")
+    let safe = |text: &str| -> String {
+        text.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect()
+    };
+    if chat_id.chars().count() <= 80 {
+        return format!("{CONVERSATION_PREFIX}{name}-{}", safe(chat_id));
+    }
+    let start: String = chat_id.chars().take(56).collect();
+    let digest = Sha256::digest(chat_id.as_bytes());
+    format!("{CONVERSATION_PREFIX}{name}-{}-{}", safe(&start), crate::hex::to_hex(digest.get(..8).unwrap_or_default()))
 }
 
 /// The run id of the message `message_id` on the channel `name`: the same for
@@ -105,6 +123,10 @@ pub(crate) struct Bot {
     telegram: Option<graphrt_channel::telegram::TelegramBot>,
     #[cfg(feature = "channel-whatsapp")]
     whatsapp: Option<graphrt_channel::whatsapp::WhatsAppCloud>,
+    #[cfg(feature = "channel-slack")]
+    slack_socket: Option<graphrt_channel::slack::SocketMode>,
+    #[cfg(feature = "channel-teams")]
+    teams: Option<teams::Teams>,
     per_customer: Option<UserRateLimiter>,
     budget: Option<UserRateLimiter>,
 }
@@ -116,8 +138,45 @@ impl std::fmt::Debug for Bot {
 }
 
 impl Bot {
+    /// A bot of `config` that sends through `channel`, with the limits of its config.
+    fn new(config: ChannelConfig, channel: Arc<dyn Channel>) -> Self {
+        let limiter = |per_minute: u32| (per_minute > 0).then(|| UserRateLimiter::per_minute(per_minute));
+        Self {
+            per_customer: limiter(config.rate_limit),
+            budget: limiter(config.budget),
+            config,
+            channel,
+            #[cfg(feature = "channel-telegram")]
+            telegram: None,
+            #[cfg(feature = "channel-whatsapp")]
+            whatsapp: None,
+            #[cfg(feature = "channel-slack")]
+            slack_socket: None,
+            #[cfg(feature = "channel-teams")]
+            teams: None,
+        }
+    }
+
     fn name(&self) -> &str {
         &self.config.name
+    }
+
+    /// Send a rich message where the channel draws cards, else its text.
+    /// Returns whether it was sent.
+    async fn say_rich(&self, chat_id: &str, message: &graphrt_channel::RichMessage) -> bool {
+        if !self.channel.draws_cards() {
+            return self.say(chat_id, &message.markdown(), &message.all_buttons()).await;
+        }
+        if message.is_empty() {
+            return true;
+        }
+        match self.channel.send_rich(chat_id, message).await {
+            Ok(_) => true,
+            Err(error) => {
+                eprintln!("warning: channel `{}`: a message was not sent: {error}", self.name());
+                false
+            }
+        }
     }
 
     /// The path Telegram or Meta posts to.
@@ -162,6 +221,8 @@ struct Pending {
     question: reply::Question,
     /// Which run and customer, shown above the question.
     heading: String,
+    /// The request itself, for a channel that draws its card.
+    request: Request,
 }
 
 #[derive(Default)]
@@ -182,6 +243,9 @@ pub struct Channels {
     seen: Mutex<Seen>,
     /// By channel and approver: the requests they may answer, oldest first.
     approvals: Mutex<HashMap<(String, String), VecDeque<Pending>>>,
+    /// Download links of files shared in a chat that cannot take them.
+    #[cfg(feature = "files")]
+    links: links::Links,
 }
 
 impl std::fmt::Debug for Channels {
@@ -206,10 +270,9 @@ fn http_client() -> Result<reqwest::Client, CliError> {
         .map_err(|e| CliError::failed(format!("cannot build the HTTP client of the channels: {e}")))
 }
 
+#[cfg_attr(not(any(feature = "channel-telegram", feature = "channel-whatsapp")), allow(unused_variables))]
 fn connect(config: ChannelConfig, http: &reqwest::Client) -> Result<Bot, CliError> {
     let refused = |error: ChannelError| CliError::usage(format!("channel `{}`: {error}", config.name));
-    let limiter = |per_minute: u32| (per_minute > 0).then(|| UserRateLimiter::per_minute(per_minute));
-    let (per_customer, budget) = (limiter(config.rate_limit), limiter(config.budget));
     match &config.credentials {
         #[cfg(feature = "channel-telegram")]
         Credentials::Telegram { token, .. } => {
@@ -217,15 +280,8 @@ fn connect(config: ChannelConfig, http: &reqwest::Client) -> Result<Bot, CliErro
             if let Some(base) = &config.api_base {
                 bot = bot.with_base_url(base);
             }
-            Ok(Bot {
-                channel: Arc::new(bot.clone()),
-                telegram: Some(bot),
-                #[cfg(feature = "channel-whatsapp")]
-                whatsapp: None,
-                per_customer,
-                budget,
-                config,
-            })
+            let channel: Arc<dyn Channel> = Arc::new(bot.clone());
+            Ok(Bot { telegram: Some(bot), ..Bot::new(config, channel) })
         }
         #[cfg(feature = "channel-whatsapp")]
         Credentials::WhatsApp { access_token, phone_number_id, api_version, .. } => {
@@ -238,16 +294,13 @@ fn connect(config: ChannelConfig, http: &reqwest::Client) -> Result<Bot, CliErro
             if let Some(version) = api_version {
                 cloud = cloud.with_api_version(version).map_err(refused)?;
             }
-            Ok(Bot {
-                channel: Arc::new(cloud.clone()),
-                #[cfg(feature = "channel-telegram")]
-                telegram: None,
-                whatsapp: Some(cloud),
-                per_customer,
-                budget,
-                config,
-            })
+            let channel: Arc<dyn Channel> = Arc::new(cloud.clone());
+            Ok(Bot { whatsapp: Some(cloud), ..Bot::new(config, channel) })
         }
+        #[cfg(feature = "channel-slack")]
+        Credentials::Slack { .. } => slack::connect(config, http),
+        #[cfg(feature = "channel-teams")]
+        Credentials::Teams { .. } => teams::connect(config, http),
         #[allow(unreachable_patterns)]
         _ => Err(CliError::usage(format!(
             "channel `{}`: `{}` is not built into this binary (cargo feature `channel-{}`)",
@@ -276,13 +329,16 @@ impl Channels {
         let http = http_client()?;
         let mut bots = Vec::with_capacity(configs.len());
         for mut config in configs {
-            let Some(inputs) = start_inputs(&config.workflow) else {
-                return Err(CliError::usage(format!(
-                    "channel `{}` names workflow `{}`, which is not served",
-                    config.name, config.workflow
-                )));
-            };
-            config.input = config::message_input(&config, &inputs.required, Some(inputs.declared))?;
+            // A channel that only sends notifications runs no workflow.
+            if !config.workflow.is_empty() {
+                let Some(inputs) = start_inputs(&config.workflow) else {
+                    return Err(CliError::usage(format!(
+                        "channel `{}` names workflow `{}`, which is not served",
+                        config.name, config.workflow
+                    )));
+                };
+                config.input = config::message_input(&config, &inputs.required, Some(inputs.declared))?;
+            }
             bots.push(Arc::new(connect(config, &http)?));
         }
         Ok(Some(Self {
@@ -293,6 +349,8 @@ impl Channels {
             chats: Mutex::new(HashMap::new()),
             seen: Mutex::new(Seen::default()),
             approvals: Mutex::new(HashMap::new()),
+            #[cfg(feature = "files")]
+            links: links::Links::default(),
         }))
     }
 
@@ -304,7 +362,14 @@ impl Channels {
                 let config = &bot.config;
                 let how = match (config.kind, config.mode) {
                     (ChannelKind::Telegram, Mode::Polling) => "long polling, no public address needed".to_owned(),
+                    (_, Mode::Socket) => "Socket Mode, no public address needed".to_owned(),
                     _ => format!("webhook at {}", bot.webhook_path()),
+                };
+                let workflow = if config.workflow.is_empty() { "notifications only" } else { &config.workflow };
+                let notify = if config.notify.is_empty() {
+                    String::new()
+                } else {
+                    format!(", notifies {} target(s)", config.notify.len())
                 };
                 let who = if config.allow.is_empty() {
                     String::new()
@@ -313,7 +378,7 @@ impl Channels {
                 };
                 let input =
                     config.input.as_deref().map(|input| format!(", message into `{input}`")).unwrap_or_default();
-                format!("channel `{}` ({}) -> {} ({how}{who}{input})", config.name, config.kind, config.workflow)
+                format!("channel `{}` ({}) -> {workflow} ({how}{who}{input}{notify})", config.name, config.kind)
             })
             .collect()
     }
@@ -341,9 +406,15 @@ impl Channels {
                     match bot.config.mode {
                         Mode::Polling => channels.poll(&bot, &telegram).await,
                         Mode::Webhook => channels.register_webhook(&bot, &telegram).await,
+                        // Refused by the configuration: Telegram has no socket.
+                        Mode::Socket => {}
                     }
                 });
             }
+            #[cfg(feature = "channel-slack")]
+            slack::start(self, bot);
+            #[cfg(feature = "channel-teams")]
+            teams::start(self, bot);
             #[cfg(feature = "channel-whatsapp")]
             if bot.whatsapp.is_some() {
                 let address = self.public_url.as_deref().unwrap_or("https://<your address>");
@@ -500,8 +571,16 @@ impl Channels {
         {
             let (channels, bot) = (Arc::clone(self), Arc::clone(bot));
             graphrt_core::task::spawn(async move {
+                if message.choice.is_some() && bot.config.kind != ChannelKind::Telegram {
+                    // Slack and Teams mark the tapped buttons as answered. Best effort.
+                    let _marked = bot.channel.typing(&message).await;
+                }
                 channels.resolve_approval(&bot, &message.chat_id, pending, input).await;
             });
+            return;
+        }
+        if config.workflow.is_empty() {
+            // A channel that only sends notifications answers approvers, nobody else.
             return;
         }
         let conversation = conversation_id(bot.name(), &message.chat_id);
@@ -576,12 +655,22 @@ impl Channels {
     /// Keep the typing sign up while the run works, after [`Channels::show_typing`] showed it first.
     fn keep_typing(&self, bot: &Arc<Bot>, conversation: &str, message: InboundMessage) {
         let every = match bot.config.kind {
-            ChannelKind::Telegram => Duration::from_secs(4),
-            _ => Duration::from_secs(20),
+            ChannelKind::Telegram => Some(Duration::from_secs(4)),
+            ChannelKind::Teams => Some(Duration::from_secs(3)),
+            // Slack shows no typing sign: the first call marked a tapped button, nothing more to do.
+            ChannelKind::Slack => None,
+            _ => Some(Duration::from_secs(20)),
         };
         let bot = Arc::clone(bot);
+        let mut message = message;
+        if bot.config.kind != ChannelKind::Telegram {
+            // [`Channels::show_typing`] marked a tapped button already: Slack and Teams mark it once.
+            message.choice = None;
+            message.reference = None;
+        }
         let task = tokio::spawn(async move {
             let started = Instant::now();
+            let Some(every) = every else { return };
             loop {
                 tokio::time::sleep(every).await;
                 if started.elapsed() >= MAX_TYPING {
@@ -964,14 +1053,23 @@ impl Channels {
         record: &RunRecord,
         files: Vec<graphrt_core::value::File>,
     ) {
-        let answer = reply::answer_of(&bot.config.messages, &record.answer, &record.outputs);
-        let buttons = reply::buttons_of(&answer.choices);
-        // Before the answer goes out, so that a quick pick of one of them finds them.
-        if let Some(chat) = locked(&self.chats).get_mut(&conversation.id) {
-            chat.choices = answer.choices;
-        }
-        let sent = self.say_in_window(bot, link, &answer.text, &buttons).await;
-        if !sent && !answer.text.trim().is_empty() {
+        // The choices are kept before the answer goes out, so that a quick pick of one of them finds them.
+        let (sent, said_something) = if bot.channel.draws_cards() {
+            let (message, choices) = rich::answer_message(&bot.config.messages, &record.answer, &record.outputs);
+            if let Some(chat) = locked(&self.chats).get_mut(&conversation.id) {
+                chat.choices = choices;
+            }
+            (bot.say_rich(&link.chat_id, &message).await, !message.is_empty())
+        } else {
+            let answer = reply::answer_of(&bot.config.messages, &record.answer, &record.outputs);
+            let buttons = reply::buttons_of(&answer.choices);
+            let said_something = !answer.text.trim().is_empty();
+            if let Some(chat) = locked(&self.chats).get_mut(&conversation.id) {
+                chat.choices = answer.choices;
+            }
+            (self.say_in_window(bot, link, &answer.text, &buttons).await, said_something)
+        };
+        if !sent && said_something {
             return;
         }
         let mut produced = files;
@@ -982,6 +1080,12 @@ impl Channels {
             match self.read_file(state, bot, file).await {
                 Some(outbound) => {
                     if let Err(error) = bot.channel.send_file(&link.chat_id, &outbound).await {
+                        // A chat that takes no file from a bot (a Teams channel) gets a link.
+                        #[cfg(feature = "files")]
+                        if let Some(url) = self.links.share(self.public_url.as_deref(), bot, file) {
+                            bot.say(&link.chat_id, &format!("{}: {url}", file.name), &[]).await;
+                            continue;
+                        }
                         eprintln!("warning: channel `{}`: a file was not sent: {error}", bot.name());
                     }
                 }
@@ -1035,8 +1139,12 @@ impl Channels {
         record: &RunRecord,
         requests: &[Request],
     ) {
-        if let Some((_, question)) = self.customer_question(bot, record) {
-            self.say_in_window(bot, link, &question.text, &reply::buttons_of(&question.choices)).await;
+        if let Some((request, question)) = self.customer_question(bot, record) {
+            if bot.channel.draws_cards() {
+                bot.say_rich(&link.chat_id, &rich::question_message(None, &request, &question)).await;
+            } else {
+                self.say_in_window(bot, link, &question.text, &reply::buttons_of(&question.choices)).await;
+            }
             return;
         }
         if self.may_notify(&conversation.id) {
@@ -1044,6 +1152,29 @@ impl Channels {
         }
         let customer = link.customer_name.as_deref().unwrap_or(&link.chat_id);
         let heading = format!("**Approval needed** ({}, customer {customer})", record.workflow);
+        let answerable = self.offer(bot, record, requests, &heading, &bot.config.approvers).await;
+        if bot.config.approvers.is_empty() || !answerable {
+            eprintln!(
+                "channel `{}`: run {} waits for a person. Answer it in the approvals inbox (GET /v1/approvals, \
+                 or the monitoring page)",
+                bot.name(),
+                record.run_id
+            );
+        }
+    }
+
+    /// Hand the answerable `requests` of `record` to `approvers`, each shown
+    /// under `heading` when it is the first in their list.
+    ///
+    /// @returns Whether any request can be answered in the channel.
+    async fn offer(
+        &self,
+        bot: &Arc<Bot>,
+        record: &RunRecord,
+        requests: &[Request],
+        heading: &str,
+        approvers: &[String],
+    ) -> bool {
         let mut answerable = false;
         for request in requests {
             let question = reply::question_of(request, &bot.config.messages);
@@ -1051,9 +1182,14 @@ impl Channels {
                 continue;
             }
             answerable = true;
-            let pending =
-                Pending { run_id: record.run_id.clone(), key: request.key.clone(), question, heading: heading.clone() };
-            for approver in &bot.config.approvers {
+            let pending = Pending {
+                run_id: record.run_id.clone(),
+                key: request.key.clone(),
+                question,
+                heading: heading.to_owned(),
+                request: request.clone(),
+            };
+            for approver in approvers {
                 let first = {
                     let mut approvals = locked(&self.approvals);
                     let queue = approvals.entry((bot.name().to_owned(), approver.clone())).or_default();
@@ -1065,14 +1201,7 @@ impl Channels {
                 }
             }
         }
-        if bot.config.approvers.is_empty() || !answerable {
-            eprintln!(
-                "channel `{}`: run {} waits for a person. Answer it in the approvals inbox (GET /v1/approvals, \
-                 or the monitoring page)",
-                bot.name(),
-                record.run_id
-            );
-        }
+        answerable
     }
 
     /// What an approver's message answers, when they have a request waiting
@@ -1191,8 +1320,21 @@ enum Waiting {
 }
 
 async fn show_pending(bot: &Bot, approver: &str, pending: &Pending) {
+    // Teams needs a chat opened first; elsewhere the person's id is their chat.
+    let chat = match bot.channel.direct_chat(approver).await {
+        Ok(chat) => chat,
+        Err(error) => {
+            eprintln!("warning: channel `{}`: cannot write to an approver: {error}", bot.name());
+            return;
+        }
+    };
+    if bot.channel.draws_cards() {
+        let message = rich::question_message(Some(&pending.heading), &pending.request, &pending.question);
+        bot.say_rich(&chat, &message).await;
+        return;
+    }
     let text = format!("{}\n\n{}", pending.heading, pending.question.text);
-    bot.say(approver, &text, &reply::buttons_of(&pending.question.choices)).await;
+    bot.say(&chat, &text, &reply::buttons_of(&pending.question.choices)).await;
 }
 
 #[cfg_attr(not(feature = "files"), allow(dead_code))]
@@ -1257,6 +1399,11 @@ mod tests {
         assert_eq!(conversation_id("telegram", "42"), "ch-telegram-42");
         assert_eq!(conversation_id("telegram", "-100123"), "ch-telegram--100123");
         assert_eq!(conversation_id("wa", "../../x y"), "ch-wa-______x_y");
+        assert_eq!(conversation_id("slack", "C1:1700000000.000100"), "ch-slack-C1_1700000000_000100");
+        let long = |n: u32| format!("a:1{}{n}", "x".repeat(90));
+        let (first, second) = (conversation_id("teams", &long(1)), conversation_id("teams", &long(2)));
+        assert_ne!(first, second, "long ids that share a start are two conversations");
+        assert!(first.len() < 100 && first.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
         assert!(is_channel_conversation("ch-telegram-42"));
         assert!(!is_channel_conversation("conv-1a-1"));
         let id = run_id("telegram", "42:5");

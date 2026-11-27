@@ -566,7 +566,7 @@ mod client {
             let bot = TelegramBot::new(crate::http::test_client(), Secret::new("123456:AAE-xample_token"))
                 .unwrap_or_else(|e| unreachable!("{e}"));
             let body = br#"{"ok":false,"error_code":404,"description":"Not Found: /bot123456:AAE-xample_token/x"}"#;
-            let answer = Answer { status: 404, content_type: None, body: body.to_vec() };
+            let answer = Answer { status: 404, content_type: None, retry_after: None, body: body.to_vec() };
             let text = bot.refusal("getMe", &answer).to_string();
             assert!(!text.contains("AAE-xample_token"), "{text}");
             assert!(text.contains("`getMe` was refused with 404"), "{text}");

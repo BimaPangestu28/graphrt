@@ -606,7 +606,9 @@
           "items": {
             "enum": [
               "telegram",
-              "whatsapp"
+              "whatsapp",
+              "slack",
+              "teams"
             ]
           }
         }

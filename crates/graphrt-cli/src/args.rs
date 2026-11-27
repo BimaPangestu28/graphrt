@@ -1085,12 +1085,14 @@ pub struct ConversationArgs {
 #[cfg(feature = "channels")]
 #[derive(Debug, Default, Args)]
 pub struct ChannelArgs {
-    /// Let customers talk to a workflow on a messaging channel: `telegram=WORKFLOW`
-    /// or `whatsapp=WORKFLOW`. Each customer gets a conversation of their own, the
+    /// Let customers talk to a workflow on a messaging channel: `telegram=WORKFLOW`,
+    /// `whatsapp=WORKFLOW`, `slack=WORKFLOW` or `teams=WORKFLOW`. Each customer gets a conversation of their own, the
     /// message is `sys.query` (or the start input `INPUT`) and the answer goes back
     /// on the channel. Credentials come from the environment or `--env-file`:
     /// `TELEGRAM_BOT_TOKEN`, or `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`,
-    /// `WHATSAPP_APP_SECRET` and `WHATSAPP_VERIFY_TOKEN`. Turns on `--conversations`.
+    /// `WHATSAPP_APP_SECRET` and `WHATSAPP_VERIFY_TOKEN`, `SLACK_BOT_TOKEN` with
+    /// `SLACK_APP_TOKEN` (Socket Mode) or `SLACK_SIGNING_SECRET`, or `TEAMS_APP_ID`,
+    /// `TEAMS_APP_PASSWORD` and `TEAMS_TENANT_ID`. Turns on `--conversations`.
     /// Repeatable. Off unless given. See docs/channels.md.
     #[arg(long, value_name = "KIND=WORKFLOW[=INPUT]")]
     pub channel: Vec<String>,

@@ -20,6 +20,14 @@ pub const WHATSAPP_TOKEN_ENV: &str = "WHATSAPP_ACCESS_TOKEN";
 pub const WHATSAPP_PHONE_NUMBER_ID_ENV: &str = "WHATSAPP_PHONE_NUMBER_ID";
 pub const WHATSAPP_APP_SECRET_ENV: &str = "WHATSAPP_APP_SECRET";
 pub const WHATSAPP_VERIFY_TOKEN_ENV: &str = "WHATSAPP_VERIFY_TOKEN";
+/// Default environment variables of the Slack credentials.
+pub const SLACK_BOT_TOKEN_ENV: &str = "SLACK_BOT_TOKEN";
+pub const SLACK_APP_TOKEN_ENV: &str = "SLACK_APP_TOKEN";
+pub const SLACK_SIGNING_SECRET_ENV: &str = "SLACK_SIGNING_SECRET";
+/// Default environment variables of the Teams (Azure Bot) credentials.
+pub const TEAMS_APP_ID_ENV: &str = "TEAMS_APP_ID";
+pub const TEAMS_APP_PASSWORD_ENV: &str = "TEAMS_APP_PASSWORD";
+pub const TEAMS_TENANT_ID_ENV: &str = "TEAMS_TENANT_ID";
 
 /// Messages one customer may send per minute, and all customers of a channel together.
 pub const DEFAULT_RATE_LIMIT: u32 = 10;
@@ -35,8 +43,10 @@ pub enum Mode {
     /// The server asks Telegram and waits (long polling): no public address needed.
     #[default]
     Polling,
-    /// Telegram (or Meta) posts to this server: a public HTTPS address is needed.
+    /// Telegram, Meta, Slack or Teams posts to this server: a public HTTPS address is needed.
     Webhook,
+    /// Slack Socket Mode: the server opens a WebSocket to Slack, no public address needed.
+    Socket,
 }
 
 /// What the server itself says to a customer. Everything else is the workflow's answer.
@@ -205,6 +215,8 @@ pub struct Template {
 #[serde(deny_unknown_fields)]
 struct Entry {
     kind: String,
+    /// Empty for a channel that only sends notifications (`notify`).
+    #[serde(default)]
     workflow: String,
     /// The name in URLs, conversation ids and logs. Default: the kind.
     name: Option<String>,
@@ -213,10 +225,12 @@ struct Entry {
     mode: Option<Mode>,
     #[serde(default)]
     allow: Vec<String>,
-    #[serde(default)]
-    groups: bool,
+    groups: Option<bool>,
     #[serde(default)]
     approvers: Vec<String>,
+    /// Where notices of failed runs and pending approvals go.
+    #[serde(default)]
+    notify: Vec<String>,
     rate_limit: Option<u32>,
     budget: Option<u32>,
     max_file_mb: Option<u64>,
@@ -237,6 +251,19 @@ struct Entry {
     verify_token_env: Option<String>,
     api_version: Option<String>,
     reengage_template: Option<Template>,
+    // Slack (`token_env` is the bot token).
+    app_token_env: Option<String>,
+    signing_secret_env: Option<String>,
+    // Teams.
+    app_id: Option<String>,
+    app_id_env: Option<String>,
+    app_password_env: Option<String>,
+    tenant_id: Option<String>,
+    tenant_id_env: Option<String>,
+    /// Another token server (a fake in tests).
+    login_base: Option<String>,
+    /// Another OpenID configuration for the keys that sign deliveries (a fake in tests).
+    openid_configuration: Option<String>,
 }
 
 /// The channels file: `channels: [...]`, or the list itself.
@@ -263,6 +290,24 @@ pub enum Credentials {
         api_version: Option<String>,
         reengage_template: Option<Template>,
     },
+    Slack {
+        /// `xoxb-...`: everything the app sends.
+        bot_token: Secret,
+        /// `xapp-...`: Socket Mode (`mode: socket`).
+        app_token: Option<Secret>,
+        /// The secret Slack signs Events API deliveries with (`mode: webhook`).
+        signing_secret: Option<Secret>,
+    },
+    Teams {
+        /// The Microsoft App ID of the Azure Bot.
+        app_id: String,
+        /// Its client secret.
+        app_password: Secret,
+        /// The Entra tenant of a single tenant bot.
+        tenant_id: Option<String>,
+        login_base: Option<String>,
+        openid_configuration: Option<String>,
+    },
 }
 
 /// One configured channel.
@@ -270,6 +315,7 @@ pub enum Credentials {
 pub struct ChannelConfig {
     pub name: String,
     pub kind: ChannelKind,
+    /// The workflow that answers. Empty for a channel that only sends notifications.
     pub workflow: String,
     pub input: Option<String>,
     pub mode: Mode,
@@ -279,6 +325,9 @@ pub struct ChannelConfig {
     pub groups: bool,
     /// Customer ids of the team members who answer approvals in the channel.
     pub approvers: Vec<String>,
+    /// Who hears about failed runs and pending approvals of any run: chats,
+    /// channels or people of this channel. Empty: nobody.
+    pub notify: Vec<String>,
     /// Messages per minute of one customer (0 = unlimited).
     pub rate_limit: u32,
     /// Messages per minute of all customers together (0 = unlimited).
@@ -349,9 +398,12 @@ fn resolve(
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Result<ChannelConfig, CliError> {
     let Some(kind) = ChannelKind::parse(&entry.kind) else {
-        return Err(usage(format!("channel kind `{}` is not known: use `telegram` or `whatsapp`", entry.kind)));
+        return Err(usage(format!(
+            "channel kind `{}` is not known: use `telegram`, `whatsapp`, `slack` or `teams`",
+            entry.kind
+        )));
     };
-    let name = entry.name.unwrap_or_else(|| kind.as_str().to_owned());
+    let name = entry.name.clone().unwrap_or_else(|| kind.as_str().to_owned());
     // The name is part of URLs, conversation ids and file paths.
     let named = !name.is_empty() && name.len() <= 32 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
     if !named {
@@ -367,6 +419,9 @@ fn resolve(
             // With the flag alone, a webhook secret in the environment chooses webhook mode.
             let mode = entry.mode.unwrap_or(if webhook_secret.is_some() { Mode::Webhook } else { Mode::Polling });
             let webhook_secret = match (mode, webhook_secret) {
+                (Mode::Socket, _) => {
+                    return Err(usage(format!("channel `{name}`: Telegram takes `mode: polling` or `webhook`")));
+                }
                 (Mode::Polling, _) => None,
                 (Mode::Webhook, Some(value)) => {
                     let value = value.trim().to_owned();
@@ -422,10 +477,28 @@ fn resolve(
             };
             (credentials, Mode::Webhook)
         }
+        ChannelKind::Slack => slack_credentials(&entry, &name, lookup)?,
+        ChannelKind::Teams => teams_credentials(&entry, &name, lookup)?,
         _ => return Err(usage(format!("channel kind `{}` is not built into this binary", entry.kind))),
     };
-    if entry.groups && kind != ChannelKind::Telegram {
-        return Err(usage(format!("channel `{name}`: `groups` is for Telegram, WhatsApp groups are not read")));
+    // Slack and Teams answer mentions in channels: that is how a team uses them.
+    let groups = match kind {
+        ChannelKind::Slack | ChannelKind::Teams => entry.groups.unwrap_or(true),
+        ChannelKind::Telegram => entry.groups.unwrap_or(false),
+        _ if entry.groups == Some(true) => {
+            return Err(usage(format!("channel `{name}`: `groups` is for Telegram, WhatsApp groups are not read")));
+        }
+        _ => false,
+    };
+    if entry.workflow.is_empty() && entry.notify.is_empty() {
+        return Err(usage(format!(
+            "channel `{name}`: set `workflow` (who answers), or `notify` for a channel that only sends notifications"
+        )));
+    }
+    if !entry.notify.is_empty() && kind == ChannelKind::WhatsApp {
+        return Err(usage(format!(
+            "channel `{name}`: WhatsApp takes no messages a customer did not ask for, so it cannot `notify`"
+        )));
     }
     let max_file_mb = entry.max_file_mb.unwrap_or(DEFAULT_MAX_FILE_MB);
     if !(1..=MAX_FILE_MB).contains(&max_file_mb) {
@@ -438,8 +511,9 @@ fn resolve(
         input: entry.input,
         mode,
         allow: entry.allow,
-        groups: entry.groups,
+        groups,
         approvers: entry.approvers,
+        notify: entry.notify,
         rate_limit: entry.rate_limit.unwrap_or(defaults.rate_limit),
         budget: entry.budget.unwrap_or(defaults.budget),
         max_file_bytes: max_file_mb * 1024 * 1024,
@@ -493,6 +567,85 @@ pub fn message_input(
         )));
     }
     Ok(Some(chosen))
+}
+
+/// A value from the file, else from the environment variable `env_name`.
+fn value_or_env(given: &Option<String>, env_name: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    given.clone().or_else(|| lookup(env_name)).map(|value| value.trim().to_owned()).filter(|value| !value.is_empty())
+}
+
+/// The Slack credentials and mode of `entry`: Socket Mode when an app token is
+/// there (no public address needed), else the Events API with its signing secret.
+fn slack_credentials(
+    entry: &Entry,
+    name: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Credentials, Mode), CliError> {
+    let env = |given: &Option<String>, default: &str| given.clone().unwrap_or_else(|| default.to_owned());
+    let bot_token = secret(
+        name,
+        "the Bot User OAuth Token, xoxb-..., from OAuth & Permissions of the Slack app",
+        &env(&entry.token_env, SLACK_BOT_TOKEN_ENV),
+        lookup,
+    )?;
+    let app_env = env(&entry.app_token_env, SLACK_APP_TOKEN_ENV);
+    let signing_env = env(&entry.signing_secret_env, SLACK_SIGNING_SECRET_ENV);
+    let app_token = lookup(&app_env).map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
+    let signing_secret = lookup(&signing_env).map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
+    let mode = entry.mode.unwrap_or(if app_token.is_some() { Mode::Socket } else { Mode::Webhook });
+    let (app_token, signing_secret) = match mode {
+        Mode::Socket => match app_token {
+            Some(token) => (Some(Secret::new(token)), None),
+            None => {
+                return Err(usage(format!(
+                    "channel `{name}`: Socket Mode needs ${app_env} (an app level token, xapp-..., with \
+                     connections:write, from Basic Information of the Slack app)"
+                )));
+            }
+        },
+        Mode::Webhook => match signing_secret {
+            Some(secret) => (None, Some(Secret::new(secret))),
+            None => {
+                return Err(usage(format!(
+                    "channel `{name}`: set ${app_env} for Socket Mode (no public address needed), or \
+                     ${signing_env} (the Signing Secret from Basic Information) for the Events API"
+                )));
+            }
+        },
+        Mode::Polling => return Err(usage(format!("channel `{name}`: Slack takes `mode: socket` or `webhook`"))),
+    };
+    Ok((Credentials::Slack { bot_token, app_token, signing_secret }, mode))
+}
+
+/// The Teams credentials of `entry`. Teams always posts to the server (an
+/// Azure Bot's messaging endpoint).
+fn teams_credentials(
+    entry: &Entry,
+    name: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Credentials, Mode), CliError> {
+    if matches!(entry.mode, Some(Mode::Polling | Mode::Socket)) {
+        return Err(usage(format!("channel `{name}`: Teams only delivers to the bot's messaging endpoint (webhook)")));
+    }
+    let id_env = entry.app_id_env.clone().unwrap_or_else(|| TEAMS_APP_ID_ENV.to_owned());
+    let app_id = value_or_env(&entry.app_id, &id_env, lookup)
+        .ok_or_else(|| usage(format!("channel `{name}`: set ${id_env} (the Microsoft App ID of the Azure Bot)")))?;
+    let app_password = secret(
+        name,
+        "the client secret of the Azure Bot's app",
+        &entry.app_password_env.clone().unwrap_or_else(|| TEAMS_APP_PASSWORD_ENV.to_owned()),
+        lookup,
+    )?;
+    let tenant_env = entry.tenant_id_env.clone().unwrap_or_else(|| TEAMS_TENANT_ID_ENV.to_owned());
+    let tenant_id = value_or_env(&entry.tenant_id, &tenant_env, lookup);
+    let credentials = Credentials::Teams {
+        app_id,
+        app_password,
+        tenant_id,
+        login_base: entry.login_base.clone(),
+        openid_configuration: entry.openid_configuration.clone(),
+    };
+    Ok((credentials, Mode::Webhook))
 }
 
 /// The channels of `--channel` flags and of the `--channels` file, with their
@@ -586,6 +739,63 @@ mod tests {
             assert!(error.contains(name), "{error}");
             assert!(!error.contains("EAAG-token") && !error.contains("app-secret"), "{error}");
         }
+    }
+
+    #[test]
+    fn slack_picks_socket_mode_with_an_app_token_and_the_events_api_with_a_signing_secret() {
+        let socket = [(SLACK_BOT_TOKEN_ENV, "xoxb-1-2-abc"), (SLACK_APP_TOKEN_ENV, "xapp-1-A-2-abc")];
+        let channels = load_flags(&["slack=support"], &socket).unwrap();
+        assert_eq!((channels[0].kind, channels[0].mode), (ChannelKind::Slack, Mode::Socket));
+        assert!(channels[0].groups, "mentions in channels are answered");
+        let events = [(SLACK_BOT_TOKEN_ENV, "xoxb-1-2-abc"), (SLACK_SIGNING_SECRET_ENV, "signing")];
+        assert_eq!(load_flags(&["slack=support"], &events).unwrap()[0].mode, Mode::Webhook);
+        let error = load_flags(&["slack=support"], &[(SLACK_BOT_TOKEN_ENV, "xoxb-1-2-abc")]).unwrap_err().to_string();
+        assert!(error.contains(SLACK_APP_TOKEN_ENV) && error.contains(SLACK_SIGNING_SECRET_ENV), "{error}");
+        let error = load_flags(&["slack=support"], &[(SLACK_APP_TOKEN_ENV, "xapp-1")]).unwrap_err().to_string();
+        assert!(error.contains(SLACK_BOT_TOKEN_ENV), "{error}");
+    }
+
+    #[test]
+    fn teams_needs_its_app_id_and_secret_and_takes_a_tenant() {
+        let vars = [
+            (TEAMS_APP_ID_ENV, "00000000-1111-2222-3333-444444444444"),
+            (TEAMS_APP_PASSWORD_ENV, "client-secret"),
+            (TEAMS_TENANT_ID_ENV, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+        ];
+        let channels = load_flags(&["teams=support"], &vars).unwrap();
+        assert_eq!((channels[0].kind, channels[0].mode), (ChannelKind::Teams, Mode::Webhook));
+        let Credentials::Teams { tenant_id, .. } = &channels[0].credentials else {
+            panic!("expected Teams credentials")
+        };
+        assert_eq!(tenant_id.as_deref(), Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
+        for missing in [TEAMS_APP_ID_ENV, TEAMS_APP_PASSWORD_ENV] {
+            let rest: Vec<_> = vars.iter().filter(|(name, _)| *name != missing).copied().collect();
+            let error = load_flags(&["teams=support"], &rest).unwrap_err().to_string();
+            assert!(error.contains(missing) && !error.contains("client-secret"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_channel_without_a_workflow_only_notifies_and_whatsapp_cannot() {
+        let dir = std::env::temp_dir().join(format!("graphrt-channels-notify-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("channels.yaml");
+        let vars = [(SLACK_BOT_TOKEN_ENV, "xoxb-1-2-abc"), (SLACK_APP_TOKEN_ENV, "xapp-1-A-2-abc")];
+        std::fs::write(&path, "channels:\n  - { kind: slack, notify: [C0OPS], approvers: [U7] }\n").unwrap();
+        let channels = load(&[], Some(&path), Defaults::default(), &env(&vars)).unwrap();
+        assert_eq!((channels[0].workflow.as_str(), channels[0].notify.as_slice()), ("", &["C0OPS".to_owned()][..]));
+        std::fs::write(&path, "channels:\n  - { kind: slack }\n").unwrap();
+        let error = load(&[], Some(&path), Defaults::default(), &env(&vars)).unwrap_err().to_string();
+        assert!(error.contains("`notify`"), "{error}");
+        let wa = [
+            (WHATSAPP_TOKEN_ENV, "t"),
+            (WHATSAPP_PHONE_NUMBER_ID_ENV, "1"),
+            (WHATSAPP_APP_SECRET_ENV, "s"),
+            (WHATSAPP_VERIFY_TOKEN_ENV, "v"),
+        ];
+        std::fs::write(&path, "channels:\n  - { kind: whatsapp, workflow: w, notify: [\"62811\"] }\n").unwrap();
+        assert!(load(&[], Some(&path), Defaults::default(), &env(&wa)).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

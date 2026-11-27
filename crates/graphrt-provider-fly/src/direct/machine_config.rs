@@ -145,6 +145,15 @@ pub(super) fn validate_request(request: &DeployRequest) -> Result<(), DirectErro
             "--channel telegram needs --mode always-on: a stopped Machine does not ask Telegram for new messages",
         ));
     }
+    if request.mode == ServiceMode::ScaleToZero
+        && request.serve.channels.contains(&DirectChannel::Slack)
+        && request.secrets.contains_key("SLACK_APP_TOKEN")
+    {
+        return Err(DirectError::invalid(
+            "--channel slack with SLACK_APP_TOKEN (Socket Mode) needs --mode always-on: a stopped Machine keeps no \
+             socket open. Or leave out SLACK_APP_TOKEN and use the Events API with SLACK_SIGNING_SECRET",
+        ));
+    }
     if request.secrets.contains_key(super::API_KEY_SECRET) {
         return Err(DirectError::invalid(format!(
             "{} is managed by graphrt deploy (use --rotate-api-key)",
@@ -478,6 +487,10 @@ mod tests {
         assert!(validate_request(&whatsapp).is_ok());
         whatsapp.drop_store = true;
         assert!(validate_request(&whatsapp).unwrap_err().message.contains("--channel"));
+        let mut socket = request(ServiceMode::ScaleToZero);
+        socket.serve.channels = vec![DirectChannel::Slack];
+        socket.secrets.insert("SLACK_APP_TOKEN".into(), "xapp-1".into());
+        assert!(validate_request(&socket).unwrap_err().message.contains("always-on"));
     }
 
     #[test]

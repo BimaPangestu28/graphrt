@@ -10,6 +10,7 @@
 //! - [`to_telegram_html`] writes one part as Telegram HTML (`parse_mode: HTML`),
 //!   where only `&`, `<` and `>` need escaping, so no text can break a message.
 //! - [`to_whatsapp`] writes one part with WhatsApp's marks.
+//! - [`to_slack_mrkdwn`] writes one part as Slack `mrkdwn`.
 //!
 //! Split first, then convert each part: every part is then well formed on its own.
 //!
@@ -127,6 +128,8 @@ pub fn truncate(text: &str, max_units: usize) -> String {
 enum Flavor {
     TelegramHtml,
     WhatsApp,
+    /// Slack's `mrkdwn`: WhatsApp's marks, `<url|label>` links, and `&`, `<`, `>` escaped.
+    Slack,
 }
 
 /// Markdown as Telegram HTML, for `sendMessage` with `parse_mode: HTML`.
@@ -139,6 +142,21 @@ pub fn to_telegram_html(markdown: &str) -> String {
 /// written out, since WhatsApp links only bare addresses.
 pub fn to_whatsapp(markdown: &str) -> String {
     render(markdown, Flavor::WhatsApp)
+}
+
+/// Markdown as Slack `mrkdwn`: `*bold*`, `_italic_`, `~strike~`, links as
+/// `<url|label>`, and `&`, `<` and `>` escaped, so no text can become a mention
+/// or a link the model did not write as one.
+pub fn to_slack_mrkdwn(markdown: &str) -> String {
+    render(markdown, Flavor::Slack)
+}
+
+/// Plain text with Slack's three control characters escaped, for a field that
+/// Slack reads as `mrkdwn` and that must show the text as it is.
+pub fn slack_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    push_text(&mut out, text, Flavor::Slack);
+    out
 }
 
 fn render(markdown: &str, flavor: Flavor) -> String {
@@ -246,16 +264,16 @@ fn push_marked(out: &mut String, inner: &str, mark: Mark, flavor: Flavor) {
         (Flavor::TelegramHtml, Mark::Bold) => ("<b>", "</b>"),
         (Flavor::TelegramHtml, Mark::Italic) => ("<i>", "</i>"),
         (Flavor::TelegramHtml, Mark::Strike) => ("<s>", "</s>"),
-        (Flavor::WhatsApp, Mark::Bold) => ("*", "*"),
-        (Flavor::WhatsApp, Mark::Italic) => ("_", "_"),
-        (Flavor::WhatsApp, Mark::Strike) => ("~", "~"),
+        (Flavor::WhatsApp | Flavor::Slack, Mark::Bold) => ("*", "*"),
+        (Flavor::WhatsApp | Flavor::Slack, Mark::Italic) => ("_", "_"),
+        (Flavor::WhatsApp | Flavor::Slack, Mark::Strike) => ("~", "~"),
     };
     out.push_str(open);
     out.push_str(inner);
     out.push_str(close);
 }
 
-/// Text that is not a mark: escaped for HTML, as it is for WhatsApp.
+/// Text that is not a mark: escaped for HTML and Slack, as it is for WhatsApp.
 fn push_text(out: &mut String, text: &str, flavor: Flavor) {
     if flavor == Flavor::WhatsApp {
         out.push_str(text);
@@ -305,7 +323,7 @@ fn inline(out: &mut String, source: &str, flavor: Flavor) {
                         out.push_str("</code>");
                     } else {
                         out.push('`');
-                        out.push_str(&code);
+                        push_text(out, &code, flavor);
                         out.push('`');
                     }
                     consumed = Some(end + 1);
@@ -383,6 +401,18 @@ fn closing(chars: &[char], from: usize, mark: char, width: usize) -> Option<usiz
 fn push_link(out: &mut String, label: &str, url: &str, flavor: Flavor) {
     let linkable = ["https://", "http://", "mailto:", "tg://"].iter().any(|scheme| url.starts_with(scheme));
     let label = label.trim();
+    if flavor == Flavor::Slack && linkable {
+        // `|` and `>` would end the link early: they are written as the URL escapes they are.
+        let url = url.replace('|', "%7C").replace('>', "%3E").replace('<', "%3C");
+        out.push('<');
+        out.push_str(&url.replace('&', "&amp;"));
+        if !label.is_empty() && label != url {
+            out.push('|');
+            push_text(out, &label.replace('|', "/"), flavor);
+        }
+        out.push('>');
+        return;
+    }
     if flavor == Flavor::TelegramHtml && linkable {
         out.push_str("<a href=\"");
         push_text(out, &url.replace('"', "%22"), flavor);
@@ -402,6 +432,20 @@ fn push_link(out: &mut String, label: &str, url: &str, flavor: Flavor) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slack_gets_its_marks_its_links_and_nothing_it_would_read_as_a_command() {
+        let answer = "## Refund\nOrder **#1042** is _done_. See [the policy](https://example.com/p?a=1&b=2).\n- one";
+        assert_eq!(
+            to_slack_mrkdwn(answer),
+            "*Refund*\nOrder *#1042* is _done_. See <https://example.com/p?a=1&amp;b=2|the policy>.\n• one"
+        );
+        // A model cannot write a mention, a channel ping or a link Slack would follow.
+        assert_eq!(to_slack_mrkdwn("<!channel> <@U123> a & b"), "&lt;!channel&gt; &lt;@U123&gt; a &amp; b");
+        assert_eq!(to_slack_mrkdwn("`<b>` and [x](javascript:alert(1))"), "`&lt;b&gt;` and x (javascript:alert(1))");
+        assert_eq!(to_slack_mrkdwn("[a|b](https://e.com/x|y>z)"), "<https://e.com/x%7Cy%3Ez|a/b>");
+        assert_eq!(slack_escape("1 < 2 & *3*"), "1 &lt; 2 &amp; *3*");
+    }
 
     #[test]
     fn a_short_text_is_one_part_and_nothing_is_no_part() {

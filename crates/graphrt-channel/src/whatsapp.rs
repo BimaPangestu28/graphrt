@@ -657,7 +657,12 @@ mod client {
 
         #[test]
         fn refusals_name_the_window_and_slow_downs_and_never_the_token() {
-            let answer = |body: &str| Answer { status: 400, content_type: None, body: body.as_bytes().to_vec() };
+            let answer = |body: &str| Answer {
+                status: 400,
+                content_type: None,
+                retry_after: None,
+                body: body.as_bytes().to_vec(),
+            };
             let outside = answer(r#"{"error":{"message":"(#131047) Re-engagement message","code":131047}}"#);
             assert!(matches!(cloud().refusal("messages", &outside), ChannelError::OutsideServiceWindow));
             let slow = cloud().refusal("messages", &answer(r#"{"error":{"message":"Rate limit hit","code":130429}}"#));

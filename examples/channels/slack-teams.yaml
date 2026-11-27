@@ -1,0 +1,24 @@
+# A channels file for Slack and Microsoft Teams, for `graphrt serve --channels`.
+# Secrets are never written here: an entry names the environment variable that
+# holds each one. See docs/slack-teams.md.
+#
+#   graphrt serve examples/channels/support.yaml --channels examples/channels/slack-teams.yaml \
+#     --env-file .env --store ./runs --public-url https://agent.example.com
+channels:
+  # Slack by Socket Mode: needs SLACK_BOT_TOKEN (xoxb-...) and SLACK_APP_TOKEN
+  # (xapp-...), and no public address.
+  - kind: slack
+    workflow: support
+    # mode: webhook                # the Events API instead, with SLACK_SIGNING_SECRET
+    # allow: ["U01ABCDEF"]         # only these Slack user ids may write
+    approvers: ["U07LEAD"]         # answer approvals with buttons in a DM
+    notify: ["C0123OPS"]           # failed runs and pending approvals go here
+
+  # Teams through an Azure Bot: needs TEAMS_APP_ID, TEAMS_APP_PASSWORD and
+  # TEAMS_TENANT_ID, and the bot's messaging endpoint set to
+  # https://agent.example.com/v1/channels/teams/webhook
+  - kind: teams
+    workflow: support
+    # approvers: ["7d0c0000-0000-0000-0000-000000000000"]   # Entra object ids
+    messages:
+      waiting: "One moment please. A colleague needs to confirm this."

@@ -38,7 +38,7 @@ pub fn from_hex(hex: &str) -> Option<Vec<u8>> {
 }
 
 /// HMAC-SHA256 (RFC 2104) of `message` under `key`.
-#[cfg(feature = "whatsapp")]
+#[cfg(any(feature = "whatsapp", feature = "slack"))]
 pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     /// SHA-256 block size in bytes.
@@ -86,7 +86,7 @@ mod tests {
         assert!(constant_time_eq(b"", b""));
     }
 
-    #[cfg(feature = "whatsapp")]
+    #[cfg(any(feature = "whatsapp", feature = "slack"))]
     #[test]
     fn hmac_matches_the_rfc_4231_vectors() {
         let case_1 = hmac_sha256(&[0x0b; 20], b"Hi There");

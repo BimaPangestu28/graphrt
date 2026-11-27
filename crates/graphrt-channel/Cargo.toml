@@ -1,10 +1,12 @@
 [package]
 name = "graphrt-channel"
-description = "Messaging channels for graphrt agents: Telegram (Bot API) and WhatsApp (Cloud API). Parses what a channel delivers, verifies its signatures, and sends replies split and formatted for it."
+description = "Messaging channels for graphrt agents: Telegram (Bot API), WhatsApp (Cloud API), Slack and Microsoft Teams. Parses what a channel delivers, verifies its signatures, and sends replies split and formatted for it."
 readme = "README.md"
+# A throwaway RSA key the Teams token tests sign with.
+exclude = ["fixtures"]
 documentation = "https://docs.rs/graphrt-channel"
 homepage = "https://github.com/Graphrt/graphrt"
-keywords = ["agent", "telegram", "whatsapp", "chatbot", "graphrt"]
+keywords = ["agent", "telegram", "whatsapp", "slack", "teams"]
 categories = ["api-bindings", "web-programming"]
 version.workspace = true
 edition.workspace = true
@@ -21,7 +23,16 @@ whatsapp = ["dep:serde_json", "dep:sha2"]
 # The HTTP side: send replies, download and upload media, poll Telegram. The caller
 # brings the `reqwest::Client`, so TLS and proxies are its choice. Without this
 # feature the crate only parses, verifies and formats, and links no HTTP client.
-client = ["dep:reqwest", "dep:tokio"]
+client = ["dep:reqwest", "dep:tokio", "dep:serde_json"]
+# Slack: the Events API (the `X-Slack-Signature` check, `url_verification`),
+# interactive button taps, `mrkdwn` and Block Kit.
+slack = ["dep:serde_json", "dep:sha2"]
+# Slack Socket Mode: the app connects out over a WebSocket, so no public address is
+# needed. Brings a WebSocket client (tungstenite) on the TLS the rest already uses.
+socket-mode = ["slack", "client", "dep:tokio-tungstenite", "dep:tokio-rustls", "dep:rustls", "dep:rustls-platform-verifier", "dep:futures-util", "tokio/net", "tokio/sync"]
+# Microsoft Teams through the Bot Framework: activities, the RS256 check of the
+# connector's token against its published keys, Adaptive Card answers.
+teams = ["dep:serde_json", "dep:ring", "dep:base64"]
 
 [dependencies]
 thiserror.workspace = true
@@ -29,6 +40,13 @@ serde_json = { workspace = true, optional = true }
 sha2 = { version = "0.11", optional = true, default-features = false }
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["time"] }
+ring = { version = "0.17", optional = true, default-features = false, features = ["alloc"] }
+base64 = { version = "0.23", optional = true }
+tokio-tungstenite = { version = "0.29", optional = true, default-features = false, features = ["handshake"] }
+tokio-rustls = { version = "0.26", optional = true, default-features = false }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["std"] }
+rustls-platform-verifier = { version = "0.7", optional = true }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink", "std"] }
 
 [package.metadata.docs.rs]
 all-features = true
@@ -40,3 +58,4 @@ workspace = true
 serde_json.workspace = true
 # The workspace builds reqwest without a TLS provider: the tests that build a client install one.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }

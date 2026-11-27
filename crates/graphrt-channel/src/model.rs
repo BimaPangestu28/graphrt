@@ -8,6 +8,10 @@ pub enum ChannelKind {
     Telegram,
     /// WhatsApp, through the Cloud API of the WhatsApp Business Platform.
     WhatsApp,
+    /// Slack, through the Events API or Socket Mode and the Web API.
+    Slack,
+    /// Microsoft Teams, through the Bot Framework (an Azure Bot).
+    Teams,
 }
 
 impl ChannelKind {
@@ -16,21 +20,31 @@ impl ChannelKind {
         match self {
             ChannelKind::Telegram => "telegram",
             ChannelKind::WhatsApp => "whatsapp",
+            ChannelKind::Slack => "slack",
+            ChannelKind::Teams => "teams",
         }
     }
 
-    /// The kind named `name` (`telegram`, `whatsapp`).
+    /// The kind named `name` (`telegram`, `whatsapp`, `slack`, `teams`).
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "telegram" => Some(ChannelKind::Telegram),
             "whatsapp" => Some(ChannelKind::WhatsApp),
+            "slack" => Some(ChannelKind::Slack),
+            "teams" => Some(ChannelKind::Teams),
             _ => None,
         }
     }
 
-    /// Longest text of one message, in UTF-16 code units (what both channels count).
+    /// Longest text of one message, in UTF-16 code units. Telegram and WhatsApp
+    /// count 4096, a Slack text section 3000, and Teams takes about 28 KB of
+    /// which this stays well clear.
     pub fn max_text_units(self) -> usize {
-        4096
+        match self {
+            ChannelKind::Slack => 3000,
+            ChannelKind::Teams => 8000,
+            ChannelKind::Telegram | ChannelKind::WhatsApp => 4096,
+        }
     }
 
     /// Longest caption of a file, in UTF-16 code units.
@@ -211,6 +225,10 @@ pub enum ChannelError {
         /// Seconds the channel asks to wait before the next call.
         retry_after: Option<u64>,
     },
+    /// The delivery is too old to be trusted: its timestamp is more than five
+    /// minutes away from now (Slack), so it may be a replay.
+    #[error("the delivery is too old or from the future")]
+    Stale,
     /// The channel only takes template messages for this customer now: their
     /// last message is more than 24 hours old (WhatsApp).
     #[error("whatsapp: the 24 hour customer service window is closed, only a template message can be sent")]
@@ -259,7 +277,7 @@ mod tests {
 
     #[test]
     fn kinds_have_stable_names() {
-        for kind in [ChannelKind::Telegram, ChannelKind::WhatsApp] {
+        for kind in [ChannelKind::Telegram, ChannelKind::WhatsApp, ChannelKind::Slack, ChannelKind::Teams] {
             assert_eq!(ChannelKind::parse(kind.as_str()), Some(kind));
         }
         assert_eq!(ChannelKind::parse("sms"), None);
