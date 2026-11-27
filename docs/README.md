@@ -55,4 +55,6 @@ Start with the [project README](../README.md) for install and a first workflow.
 - [Skills and self learning](skills-and-learning.md) (design): research, threats, decisions and the contract for user interfaces
 - [Security guide](security.md)
 - [Files and images: research, design and threat model](files-and-images-design.md)
+- [Memory: research, design and threat model](memory-design.md): short term, long term and graph memory behind one interface
+- [Agents that call workflows, budgets and checkpoints](orchestration-design.md) (design)
 - [Benchmarks](benchmarks.md)

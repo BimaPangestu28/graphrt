@@ -124,7 +124,8 @@ read them. The contract:
   command line); any other type is `invalid_input`.
 - `memory: { window: { enabled: true, size: N } }` keeps only the last `N`
   turns (`2N` messages; `N` defaults to 10). Without a window every message is
-  sent, so hosts should trim long chats themselves.
+  sent. A history that is too large for the model is trimmed by
+  `context_window` (see below) in builds that have it.
 - `memory.variable_selector` reads the history from another variable (default
   `[sys, history]`).
 - `llm`: the history goes after the system prompt, then the current query as a
@@ -135,6 +136,83 @@ read them. The contract:
   `system` entries, so it can steer its own conversation; do not use the system
   prompt as an authorization boundary (enforce access in tools and data, as in
   [examples/supabase-chatbot](../examples/supabase-chatbot/)).
+
+### Context window (`context_window`)
+
+A long conversation or a long agent loop can outgrow what the model accepts.
+`llm` and `agent` nodes keep it inside the window:
+
+```yaml
+context_window: auto        # the default, also when the key is absent
+```
+
+| Value | Behaviour |
+| --- | --- |
+| `auto` | When the provider refuses a request for its size (`model_context_length`), the conversation is trimmed and the request is sent once more. With `max_tokens` set, it is also trimmed before a request that passes the limit. No extra model call. |
+| `summarize` | As `auto`, and a model first rewrites what is removed into a rolling summary that is carried forward. |
+| `off` | Nothing is trimmed. A refused request fails the node. |
+
+```yaml
+context_window:
+  max_tokens: 60000        # input tokens allowed (default: none)
+  keep_tool_results: 4     # the newest tool results are never replaced (default 4)
+  keep_turns: 2            # the newest turns are never removed (default 2, at least 1)
+  summarize: true          # or { model: { provider: openai, name: gpt-4o-mini } }
+```
+
+- Trimming goes in steps, each only while the conversation is still too
+  large: results of old tool calls become a placeholder
+  (`[tool result removed to save context: 18204 characters]`), the oldest
+  model turns that called tools are removed whole, a tool result that alone
+  takes more than a quarter of the room is cut in the middle, then the largest
+  remaining tool results are cut further, and only then the oldest turns of
+  the conversation are removed whole. Tool output goes before what the user
+  said.
+- A tool call is never parted from its result. Always kept: system messages,
+  the current request, the newest turns with their tool results, and the
+  instructions of skills the agent loaded. In an `llm` node only the history
+  (`memory`) is ever removed, never a message of `prompt_template`.
+- The model is told what was removed in a note in front of the first user
+  message. A summary is placed there too, marked as background information.
+  It never becomes part of the system prompt. The summary covers the removed
+  turns and the results that became placeholders.
+- Without `max_tokens` nothing is estimated or trimmed until a provider
+  refuses a request. There is no table of model sizes: the window is read from
+  the provider's refusal when it names one in tokens, kept for the rest of the
+  run and remembered by the server for half an hour for later runs of the
+  same model. A refusal
+  that names no window (for example the error page of a proxy) is answered by
+  cutting the request to 70 % of its size, for that run only. A second refusal
+  of the same turn fails the node with `model_context_length`.
+- `max_tokens` counts input tokens. Sizes are estimates (about 3.5 characters
+  per token for Latin text, one token per character otherwise), corrected with
+  the token counts the provider reports.
+- Each trim emits a `context_trimmed` progress event with `reason`
+  (`provider_limit` or `budget`), `budget_tokens`, `before_tokens`,
+  `after_tokens`, `placeholders`, `removed_messages`, `cut_results`,
+  `summarized`, `fits` (`false` when what must stay is still larger than the
+  budget) and, when a summary could not be made, `summary_error` (the kind of
+  the error, for example `model_server`). The run then goes on without that
+  summary and the note says what the summary does not cover.
+- A node whose conversation was trimmed says so in its result: an `agent`
+  has the output `context` (`{removed_messages, placeholders, cut_results,
+  summarized, unsummarized_messages}`), an `llm` node a warning in its
+  metadata. It is there whenever the model was not sent everything, also when
+  only results became placeholders or were cut.
+- The `tool_calls` output of an `agent` still holds every result in full.
+  Only what the model is sent gets smaller.
+- A summary costs one model call per trim, at most 16 per node run. Its
+  tokens are added to the `usage` of the node. With `summarize.model` the
+  removed part of the conversation is sent to that model, tool results and
+  arguments included (each cut to a few hundred characters). A summary
+  setting that cannot work (an unknown provider, refused credentials) fails
+  the node.
+
+The guard is in the default build (cargo feature `context` of the CLI and of
+`graphrt-llm`). Builds without it, such as the slim agent builds, send every
+message as before, and a document that sets `context_window` to anything but
+`off` is refused when it is loaded. The design and the reasons are in
+[memory-design.md](memory-design.md).
 
 ## Nodes
 
@@ -380,6 +458,7 @@ vision: { enabled: true, variable_selector: [sys, files] }
 memory: { window: { enabled: true, size: 10 }, variable_selector: [sys, history] }   # see "Conversation history"
 structured_output_enabled: true
 structured_output: { schema: { type: object, properties: { score: { type: number } } } }
+context_window: auto            # optional (default auto): see "Context window"
 ```
 
 Streams `text` (and `reasoning`). Outputs `text`, `reasoning`, `usage`,
@@ -406,6 +485,7 @@ skills: [refund-policy]   # optional: installed skills the agent loads on demand
 learning:                 # optional: read approved lessons into the system prompt
   agent: support-bot
   user: "{{#sys.user_id#}}"
+context_window: auto      # optional (default auto): see "Context window"
 ```
 
 Runs a tool-calling loop until the model answers without tools (the last

@@ -22,9 +22,13 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor", "channel-telegram", "channel-whatsapp"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor", "channel-telegram", "channel-whatsapp", "context"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
+# `context_window` of the `llm` and `agent` nodes: a conversation that outgrows the
+# model's context window is trimmed and sent again instead of failing the node. Not in
+# the slim builds (`serve,llm,plugins`), whose nodes send every message as before.
+context = ["llm", "graphrt-llm/context"]
 # http-request node with SSRF-safe egress.
 http = ["dep:graphrt-http", "dep:reqwest"]
 # code node (embedded JavaScript).

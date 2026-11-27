@@ -47,6 +47,11 @@ skills = []
 # (needs a `graphrt_core::learning::Lessons` service, for example from graphrt-learn). Off
 # by default: without it the node refuses a document that sets `learning`.
 learning = []
+# The `context_window` setting of the `agent` and `llm` nodes: a conversation that
+# outgrows the model's context window is trimmed (old tool results, then the oldest
+# turns, optionally with a rolling summary) instead of failing the node. Off by
+# default: without it the nodes send every message, as they always did.
+context = []
 # `text_model::ChatTextModel`: a chat model as a `graphrt_core::text_model::TextModel`, for
 # work outside a run such as drafting a skill. No dependencies.
 text-model = []
@@ -71,6 +76,11 @@ graphrt-core = { workspace = true, features = ["tokio", "jinja", "yaml"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
 graphrt-skill = { workspace = true }
 graphrt-learn = { workspace = true }
+
+# What the context guard costs (docs/benchmarks.md, "Context guard").
+[[example]]
+name = "context_bench"
+required-features = ["context", "mock"]
 
 [lints]
 workspace = true

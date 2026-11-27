@@ -97,7 +97,7 @@ jobs:
       - run: cargo check --workspace --exclude graphrt-cli
       - run: >-
           cargo check -p graphrt-cli --no-default-features --features
-          llm,http,code,python,mcp,doc,files,image,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,cors,run-follow,conversations,web-chat,devices,approvals,web-push,web-monitor,skills,learning,channel-telegram,channel-whatsapp
+          llm,http,code,python,mcp,doc,files,image,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,cors,run-follow,conversations,web-chat,devices,approvals,web-push,web-monitor,skills,learning,channel-telegram,channel-whatsapp,context
 
   minimal-core:
     name: core without default features
@@ -114,6 +114,9 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test -p graphrt-core --no-default-features
+      # The model nodes as the slim builds have them: without the context guard, skills and
+      # learning, where a document that asks for one of them must be refused.
+      - run: cargo test -p graphrt-llm --lib
 
   minimal-gateway:
     name: gateway without default features

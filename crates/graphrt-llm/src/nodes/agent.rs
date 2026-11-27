@@ -62,12 +62,22 @@
 //! feature `learning`: without it, a node with `learning` is a configuration
 //! error.
 //!
+//! `context_window` keeps the conversation of a long loop inside the model's
+//! context window (see [`crate::context`]): by default it acts when the
+//! provider refuses a turn for its size, trims the conversation and sends the
+//! turn once more. A tool call is never parted from its result. The code is
+//! behind the cargo feature `context`: without it nothing is trimmed, and a
+//! node that sets `context_window` to anything but `off` is a configuration
+//! error.
+//!
 //! Progress events: `agent_step`, `agent_thought`, `tool_call`, `tool_result`,
-//! `tool_denied`, `skill_tool_unavailable`, `lessons_applied`. Outputs: `text`, `tool_calls`
+//! `tool_denied`, `skill_tool_unavailable`, `lessons_applied`, `context_trimmed`. Outputs: `text`, `tool_calls`
 //! (`[{name, provider, tool, arguments, result, is_error, images}]`), `ui` (the UI blocks of
 //! successful tool results, see [`graphrt_core::ui`]; never sent to the model), `files` (feature
 //! `tool-files`: the files successful tool results returned, see
-//! `graphrt_core::tool::collect_files`; never sent to the model), `iterations`,
+//! `graphrt_core::tool::collect_files`; never sent to the model), `context`
+//! (feature `context`, only when the guard removed something:
+//! `{removed_messages, summarized}`), `iterations`,
 //! `stopped_reason` (`completed`, `max_iterations` or `length`), `usage`.
 
 use std::borrow::Cow;
@@ -91,6 +101,9 @@ use graphrt_core::value::Value;
 use graphrt_core::{Node, NodeContext, NodeError, NodeOutput, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
+
+#[cfg(feature = "context")]
+use crate::context::{ContextState, ContextWindow};
 
 use super::common::{
     FinishCheck, MemoryConfig, ModelConfig, StreamField, StreamMode, VisionConfig, check_finish, invoke, model_for,
@@ -208,6 +221,12 @@ pub struct AgentConfig {
     /// `tool_context`, so builds without the feature carry no code for it.
     #[serde(default)]
     pub learning: Option<Json>,
+    /// What happens when the conversation outgrows the model's context
+    /// window: `auto` (the default), `summarize`, `off` or a mapping (see
+    /// [`crate::context`]). Needs the cargo feature `context`. Kept as raw
+    /// JSON, like `learning`.
+    #[serde(default)]
+    pub context_window: Option<Json>,
 }
 
 /// `learning` of the `agent` node: whose lessons a run reads.
@@ -442,6 +461,10 @@ struct AgentState {
     #[cfg(all(feature = "skills", feature = "learning"))]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     has_notes: bool,
+    /// What the context guard learned and removed in this run.
+    #[cfg(feature = "context")]
+    #[serde(default, skip_serializing_if = "ContextState::is_empty")]
+    context: ContextState,
 }
 
 /// Why the loop ended.
@@ -478,6 +501,15 @@ pub struct AgentNode {
     /// Parsed `learning`.
     #[cfg(feature = "learning")]
     learning: Option<Learning>,
+    /// Parsed `context_window`.
+    #[cfg(feature = "context")]
+    context: ContextWindow,
+}
+
+/// Whether `context_window` asks for the guard, which this build does not have.
+#[cfg(not(feature = "context"))]
+pub(crate) fn asks_for_context_guard(raw: Option<&Json>) -> bool {
+    !matches!(raw, None | Some(Json::Null | Json::Bool(false))) && raw.and_then(Json::as_str) != Some("off")
 }
 
 /// One provider's `tool_context`: provider name and `(name, template)` pairs.
@@ -546,12 +578,23 @@ impl AgentNode {
         }
         #[cfg(feature = "learning")]
         let learning = parse_learning(doc, config.learning.as_ref())?;
+        #[cfg(not(feature = "context"))]
+        if asks_for_context_guard(config.context_window.as_ref()) {
+            return Err(ConfigError::new(
+                doc,
+                "`context_window` needs a build with the context guard (cargo feature `context`)",
+            ));
+        }
+        #[cfg(feature = "context")]
+        let context = ContextWindow::parse(doc, config.context_window.as_ref())?;
         Ok(Self {
             config,
             refs,
             tool_context,
             #[cfg(feature = "learning")]
             learning,
+            #[cfg(feature = "context")]
+            context,
         })
     }
 
@@ -810,14 +853,22 @@ impl AgentNode {
         if let Some(keep) = cfg.keep_tool_images {
             prune_tool_images(&mut state.messages, keep);
         }
-        let mut request = cfg.model.request(state.messages.clone(), &ctx.pool)?;
-        if offer.offered {
-            // Tools stay declared on the final turn: the history may contain tool calls,
-            // which providers only accept alongside tool definitions.
-            // A tool granted through a skill appears once that skill was loaded.
-            request.tools = tools.iter().filter(|t| t.offered(state)).map(|t| t.spec.clone()).collect();
-            request.tool_choice = Some(if offer.callable() { ToolChoice::Auto } else { ToolChoice::None });
-        }
+        // Tools stay declared on the final turn: the history may contain tool calls,
+        // which providers only accept alongside tool definitions.
+        // A tool granted through a skill appears once that skill was loaded.
+        let specs: Vec<ToolSpec> = if offer.offered {
+            tools.iter().filter(|t| t.offered(state)).map(|t| t.spec.clone()).collect()
+        } else {
+            Vec::new()
+        };
+        let request = |messages: Vec<Message>, tools: Vec<ToolSpec>| -> Result<ChatRequest, NodeError> {
+            let mut request = cfg.model.request(messages, &ctx.pool)?;
+            if offer.offered {
+                request.tools = tools;
+                request.tool_choice = Some(if offer.callable() { ToolChoice::Auto } else { ToolChoice::None });
+            }
+            Ok(request)
+        };
         ctx.progress(
             "agent_step",
             Value::from_json(json!({"iteration": state.iteration, "tools_enabled": offer.callable()})),
@@ -827,7 +878,30 @@ impl AgentNode {
             stop_at_tool_call: offer.callable(),
             separate: !state.answer.is_empty(),
         };
-        let (response, streamed) = stream_turn(ctx, model, request, plan).await?;
+        #[cfg(not(feature = "context"))]
+        let (response, streamed) = stream_turn(ctx, model, request(state.messages.clone(), specs)?, plan).await?;
+        #[cfg(feature = "context")]
+        let (response, streamed) = {
+            // The fields of the state the guard reads and changes, borrowed apart.
+            let AgentState { messages, context, usage, log, .. } = state;
+            let shown = pinned_results(log, messages);
+            let pinned: Vec<(&str, &str)> = shown.iter().map(|(id, text)| (*id, text.as_str())).collect();
+            let scope = crate::context::Scope { pinned: &pinned, tail: 0 };
+            let mut guard = self.context.session(ctx, model, &cfg.model, scope);
+            loop {
+                let estimate = guard.fit(context, messages, &specs, usage).await?;
+                let turn = request(context.request_messages(messages), specs.clone())?;
+                match stream_turn(ctx, model, turn, plan).await {
+                    Ok(done) => {
+                        guard.observe(context, estimate, &done.0.usage);
+                        break done;
+                    }
+                    // A turn the provider refused for its size is trimmed and sent
+                    // once more. Any other error, and a second refusal, end the turn.
+                    Err(error) => guard.refused(context, messages, &specs, error, usage).await?,
+                }
+            }
+        };
         state.usage.add(&response.usage);
         // A content-filtered or malformed turn is an error, never an empty "completed" answer.
         let finish = check_finish(&response)?;
@@ -1125,6 +1199,59 @@ fn replayable_message(response: &ChatResponse) -> Message {
     assistant
 }
 
+/// The tool results the context guard must leave alone, as the id of the
+/// call and the text the model was shown: the instructions of the skills
+/// loaded in this run. Their tools stay on offer, so the model must keep the
+/// text that says how to use them. A skill that was loaded twice is listed
+/// once, where it was loaded last.
+#[cfg(feature = "context")]
+fn pinned_results<'a>(log: &'a [ToolLogEntry], messages: &[Message]) -> Vec<(&'a str, String)> {
+    #[cfg(feature = "skills")]
+    let pinned = {
+        let mut pinned: Vec<(&str, String)> = Vec::new();
+        let loads = log.iter().filter(|e| e.provider == SKILL_PROVIDER && e.tool == LOAD_SKILL_TOOL && !e.is_error);
+        for entry in loads {
+            pinned.retain(|(_, text)| shown_skill(text) != entry.result);
+            pinned.push((&entry.id, shown_text(entry, messages)));
+        }
+        pinned
+    };
+    #[cfg(not(feature = "skills"))]
+    let pinned = {
+        let _ = (log, messages);
+        Vec::new()
+    };
+    pinned
+}
+
+/// The text of a skill without the sentence the agent may add after it.
+#[cfg(all(feature = "context", feature = "skills"))]
+fn shown_skill(text: &str) -> &str {
+    #[cfg(feature = "learning")]
+    let text = text.strip_suffix(NOTES_STILL_APPLY).unwrap_or(text);
+    text
+}
+
+/// What the model was shown for `entry`: its result, or its result with the
+/// sentence [`push_result`] adds when learned notes apply.
+#[cfg(all(feature = "context", feature = "skills"))]
+fn shown_text(entry: &ToolLogEntry, messages: &[Message]) -> String {
+    #[cfg(feature = "learning")]
+    {
+        let with_notes = format!("{}{NOTES_STILL_APPLY}", entry.result);
+        let shown = messages.iter().any(|message| {
+            message.role == Role::Tool
+                && message.tool_call_id.as_deref() == Some(entry.id.as_str())
+                && message.text() == with_notes
+        });
+        if shown {
+            return with_notes;
+        }
+    }
+    let _ = messages;
+    entry.result.clone()
+}
+
 /// The node outputs of a finished loop.
 fn agent_outputs(state: AgentState, final_text: String, stop: &StopReason) -> NodeOutcome {
     let log: Vec<Value> = state
@@ -1142,6 +1269,12 @@ fn agent_outputs(state: AgentState, final_text: String, stop: &StopReason) -> No
         NodeOutput::new().with("text", final_text).with("tool_calls", Value::from(log)).with("ui", Value::from(ui));
     #[cfg(feature = "tool-files")]
     let output = output.with("files", Value::array(produced_files(&state.log)));
+    // Present only when the model was not sent everything.
+    #[cfg(feature = "context")]
+    let output = match state.context.report() {
+        Some(report) => output.with("context", Value::from_json(report)),
+        None => output,
+    };
     output
         .with("iterations", i64::from(state.iteration))
         .with("stopped_reason", stop.as_str())
@@ -1433,6 +1566,8 @@ impl Node for AgentNode {
         if let Some(user) = self.learning.as_ref().and_then(|learning| learning.user.as_ref()) {
             out.extend(user.selectors().cloned());
         }
+        #[cfg(feature = "context")]
+        out.extend(self.context.selectors());
         out
     }
 }
@@ -2144,6 +2279,456 @@ mod tests {
         let out = completed(node.run(ctx(&s).with_resume(Some(Resume { state: p2.state, input: Some(input) }))).await);
         assert_eq!(out.outputs["text"], Value::from("ok"));
         assert_eq!(s.tools.calls.lock().unwrap().len(), 1, "c2 was denied");
+    }
+
+    /// Tool `page {}`: a long result, like a fetched web page.
+    #[cfg(feature = "context")]
+    #[derive(Debug, Default)]
+    struct PageTools {
+        calls: Mutex<usize>,
+    }
+
+    #[cfg(feature = "context")]
+    impl ToolRuntime for PageTools {
+        fn list(&self) -> BoxFuture<'_, Result<Vec<ToolSpec>, ToolError>> {
+            let spec = ToolSpec { name: "page".into(), description: "fetch a page".into(), parameters: json!({}) };
+            Box::pin(async move { Ok(vec![spec]) })
+        }
+
+        fn call<'a>(
+            &'a self,
+            _name: &'a str,
+            _arguments: Json,
+            _context: &'a ToolCallContext,
+        ) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+            let n = {
+                let mut calls = self.calls.lock().unwrap();
+                *calls += 1;
+                *calls
+            };
+            Box::pin(async move { Ok(ToolOutput::text(format!("page {n}: {}", "lorem ".repeat(3_500)))) })
+        }
+    }
+
+    /// A context with the `page` and `math` tools and a model that fetches
+    /// `pages` pages, one per turn, before the rest of its script.
+    #[cfg(feature = "context")]
+    fn page_ctx(pages: usize) -> (Setup, Arc<PageTools>, impl Fn() -> NodeContext) {
+        let s = setup((1..=pages).map(|n| MockModel::tool_calls(&[(&format!("p{n}"), "page", "{}")])).collect());
+        let page_tools = Arc::new(PageTools::default());
+        let (model, tools, events) = (Arc::clone(&s.model), Arc::clone(&s.tools), Arc::clone(&s.events));
+        let pages = Arc::clone(&page_tools);
+        let ctx = move || {
+            let mut tool_registry = ToolRegistry::new();
+            tool_registry.add("math", Arc::clone(&tools) as Arc<dyn ToolRuntime>);
+            tool_registry.add("web", Arc::clone(&pages) as Arc<dyn ToolRuntime>);
+            let services = Services::new()
+                .with(ModelRegistry::new().with("openai", Arc::clone(&model) as Arc<dyn crate::ChatModel>))
+                .with(tool_registry);
+            let mut pool = VariablePool::new();
+            pool.insert("sys", "query", Value::from("read the pages"));
+            let events = Arc::clone(&events);
+            NodeContext::for_test("agent", pool)
+                .with_services(Arc::new(services))
+                .with_sink(Arc::new(move |e| events.lock().unwrap().push(e)))
+        };
+        (s, page_tools, ctx)
+    }
+
+    #[cfg(feature = "context")]
+    fn page_agent(extra: Json) -> AgentNode {
+        let mut config = json!({"tools": ["web/*", "math/*"], "max_iterations": 30});
+        if let (Some(c), Json::Object(e)) = (config.as_object_mut(), extra) {
+            c.extend(e);
+        }
+        agent(config)
+    }
+
+    /// Every tool result of a request has its call in the assistant message
+    /// before its run of results, and every call has its result.
+    #[cfg(feature = "context")]
+    fn assert_request_pairs(messages: &[Message]) {
+        let mut open: Vec<String> = Vec::new();
+        for message in messages {
+            if message.role == Role::Tool {
+                let id = message.tool_call_id.clone().unwrap();
+                assert!(open.contains(&id), "result {id} without its call");
+                open.retain(|other| other != &id);
+            } else {
+                assert!(open.is_empty(), "calls without results: {open:?}");
+                open = message.tool_calls.iter().map(|call| call.id.clone()).collect();
+            }
+        }
+        assert!(open.is_empty(), "calls without results: {open:?}");
+    }
+
+    #[cfg(feature = "context")]
+    fn progress_named(events: &Mutex<Vec<Event>>, wanted: &str) -> Vec<Json> {
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| match e {
+                Event::NodeProgress { name, data, .. } if name == wanted => Some(data.to_json()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "context")]
+    fn too_long(window: u64, sent: u64) -> crate::LlmError {
+        crate::LlmError::ContextLength(format!(
+            "This model's maximum context length is {window} tokens. However, your messages resulted in {sent} tokens."
+        ))
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn a_turn_refused_for_its_size_is_trimmed_and_sent_again() {
+        let (s, pages, ctx) = page_ctx(6);
+        s.model.push_error(too_long(20_000, 36_500));
+        s.model.push(MockModel::text("done"));
+        let out = completed(page_agent(json!({})).run(ctx()).await);
+        assert_eq!(out.outputs["text"], Value::from("done"));
+        assert_eq!(out.outputs["stopped_reason"], Value::from("completed"));
+        // The outputs say that the model was not sent everything.
+        assert_eq!(
+            out.outputs["context"].to_json(),
+            json!({"removed_messages": 8, "placeholders": 0, "cut_results": 1, "summarized": false, "unsummarized_messages": 0})
+        );
+        assert_eq!(*pages.calls.lock().unwrap(), 6, "no tool ran twice");
+        // Six tool turns, the refused turn and the same turn again.
+        let requests = s.model.requests();
+        assert_eq!(requests.len(), 8);
+        let (refused, retried) = (&requests[6], &requests[7]);
+        assert!(crate::context::estimate_messages(&retried.messages) < 15_000);
+        assert!(
+            crate::context::estimate_messages(&refused.messages) > 30_000,
+            "nothing was trimmed before the provider refused"
+        );
+        assert_request_pairs(&retried.messages);
+        assert_eq!(retried.messages[0], refused.messages[0], "the system message is unchanged");
+        let user = retried.messages.iter().find(|m| m.role == Role::User).unwrap().text();
+        assert!(user.ends_with("read the pages"), "the request stays");
+        assert!(user.starts_with("[Context note, written by the runtime. 8 earlier message(s)"), "{user}");
+        assert_eq!(retried.tools, refused.tools);
+        let trims = progress_named(&s.events, "context_trimmed");
+        assert_eq!(trims.len(), 1);
+        assert_eq!(trims[0]["reason"], "provider_limit");
+        // The `tool_calls` output still has every result in full.
+        let log = out.outputs["tool_calls"].as_array().unwrap().to_vec();
+        assert_eq!(log.len(), 6);
+        assert!(log[0].get_path(&["result"]).unwrap().to_text().len() > 20_000);
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn a_second_refusal_fails_the_node_with_the_same_kind() {
+        let (s, pages, ctx) = page_ctx(6);
+        s.model.push_error(too_long(20_000, 36_500));
+        s.model.push_error(too_long(20_000, 21_000));
+        s.model.push(MockModel::text("never reached"));
+        let error = page_agent(json!({})).run(ctx()).await.unwrap_err();
+        assert_eq!(error.kind, "model_context_length");
+        assert!(!error.retryable);
+        assert!(error.message.contains("21000 tokens"), "the provider's own words: {}", error.message);
+        assert!(error.message.contains("already trimmed the conversation and sent it again"), "{}", error.message);
+        assert_eq!(s.model.requests().len(), 8, "sent again once, not in a loop");
+        assert_eq!(*pages.calls.lock().unwrap(), 6);
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn off_fails_on_the_first_refusal_as_before() {
+        let (s, _, ctx) = page_ctx(6);
+        s.model.push_error(too_long(20_000, 36_500));
+        s.model.push(MockModel::text("never reached"));
+        let error = page_agent(json!({"context_window": "off"})).run(ctx()).await.unwrap_err();
+        assert_eq!(error.kind, "model_context_length");
+        assert_eq!(s.model.requests().len(), 7);
+        assert!(progress_named(&s.events, "context_trimmed").is_empty());
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn a_run_that_fits_is_sent_exactly_as_before() {
+        let (s, _, ctx) = page_ctx(3);
+        s.model.push(MockModel::text("done"));
+        let guarded = completed(page_agent(json!({})).run(ctx()).await);
+        let with_guard = s.model.requests();
+        let (s, _, ctx) = page_ctx(3);
+        s.model.push(MockModel::text("done"));
+        let plain = completed(page_agent(json!({"context_window": "off"})).run(ctx()).await);
+        assert_eq!(with_guard, s.model.requests());
+        assert_eq!(guarded.outputs, plain.outputs);
+        assert!(!guarded.outputs.contains_key("context"), "nothing was trimmed, so there is nothing to say");
+        assert!(progress_named(&s.events, "context_trimmed").is_empty());
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn a_set_limit_keeps_every_request_under_it() {
+        let (s, pages, ctx) = page_ctx(12);
+        s.model.push(MockModel::text("done"));
+        let node = page_agent(json!({"context_window": {"max_tokens": 40_000}}));
+        let out = completed(node.run(ctx()).await);
+        assert_eq!(out.outputs["text"], Value::from("done"));
+        assert_eq!(*pages.calls.lock().unwrap(), 12);
+        for (turn, request) in s.model.requests().iter().enumerate() {
+            let size =
+                crate::context::estimate_messages(&request.messages) + crate::context::estimate_tools(&request.tools);
+            assert!(size <= 40_000, "turn {turn}: {size}");
+            assert_request_pairs(&request.messages);
+        }
+        // Old results became placeholders, their calls are still in the conversation.
+        let last = s.model.requests().pop().unwrap();
+        let placeholders =
+            last.messages.iter().filter(|m| m.text().starts_with("[tool result removed to save context")).count();
+        assert!(placeholders >= 3, "{placeholders}");
+        assert!(last.messages.iter().any(|m| m.text() == "read the pages"), "nothing was removed, so no note");
+        let trims = progress_named(&s.events, "context_trimmed");
+        assert!(!trims.is_empty() && trims.len() < 6, "trimmed in large steps, not on every turn: {}", trims.len());
+        assert!(trims.iter().all(|trim| trim["reason"] == "budget"));
+        // The result says so too, not only the events.
+        let Value::Object(context) = &out.outputs["context"] else { panic!("no context output: {:?}", out.outputs) };
+        assert!(context["placeholders"].to_json().as_u64().unwrap() >= 3);
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn a_window_one_run_learned_is_used_by_the_next_run() {
+        // One registry for both runs, as a host keeps it.
+        let (s, pages, _) = page_ctx(6);
+        let registry = ModelRegistry::new().with("openai", Arc::clone(&s.model) as Arc<dyn crate::ChatModel>);
+        let (tools, events) = (Arc::clone(&s.tools), Arc::clone(&s.events));
+        let ctx = move || {
+            let mut tool_registry = ToolRegistry::new();
+            tool_registry.add("math", Arc::clone(&tools) as Arc<dyn ToolRuntime>);
+            tool_registry.add("web", Arc::clone(&pages) as Arc<dyn ToolRuntime>);
+            let mut pool = VariablePool::new();
+            pool.insert("sys", "query", Value::from("read the pages"));
+            let events = Arc::clone(&events);
+            NodeContext::for_test("agent", pool)
+                .with_services(Arc::new(Services::new().with(registry.clone()).with(tool_registry)))
+                .with_sink(Arc::new(move |e| events.lock().unwrap().push(e)))
+        };
+        s.model.push_error(too_long(20_000, 36_500));
+        s.model.push(MockModel::text("done"));
+        completed(page_agent(json!({})).run(ctx()).await);
+        let first_run = s.model.requests().len();
+        s.events.lock().unwrap().clear();
+        // The second run reads as many pages, and no refusal is queued: it
+        // trims before sending, from what the first run learned.
+        for n in 1..=6 {
+            s.model.push(MockModel::tool_calls(&[(&format!("q{n}"), "page", "{}")]));
+        }
+        s.model.push(MockModel::text("done again"));
+        let out = completed(page_agent(json!({})).run(ctx()).await);
+        assert_eq!(out.outputs["text"], Value::from("done again"));
+        let requests = s.model.requests();
+        assert_eq!(requests.len() - first_run, 7, "no request of the second run was refused");
+        for request in &requests[first_run..] {
+            let size =
+                crate::context::estimate_messages(&request.messages) + crate::context::estimate_tools(&request.tools);
+            assert!(size < 20_000, "{size}");
+        }
+        let trims = progress_named(&s.events, "context_trimmed");
+        assert!(!trims.is_empty() && trims.iter().all(|trim| trim["reason"] == "budget"), "{trims:?}");
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn what_the_guard_learned_survives_a_pause() {
+        let (s, _, ctx) = page_ctx(6);
+        s.model.push_error(too_long(20_000, 36_500));
+        s.model.push(MockModel::tool_calls(&[("c1", "add", r#"{"a":2,"b":2}"#)]));
+        s.model.push(MockModel::tool_calls(&[("p7", "page", "{}")]));
+        s.model.push(MockModel::text("done"));
+        let node = page_agent(json!({"require_approval": ["math/add"]}));
+        let NodeOutcome::Paused(paused) = node.run(ctx()).await.unwrap() else { panic!("expected pause") };
+        let state: Json = serde_json::from_str(&paused.state.to_string()).unwrap();
+        assert_eq!(state["context"]["window"], 20_000);
+        let trimmed =
+            ["removed", "placeholders", "cut"].iter().map(|k| state["context"][k].as_u64().unwrap_or(0)).sum::<u64>();
+        assert!(trimmed > 0, "the refusal trimmed something: {}", state["context"]);
+        // The call that waits for approval was not trimmed away.
+        let pending_id = paused.data.get_path(&["calls", "0", "id"]).unwrap().to_text();
+        assert!(state["messages"].to_string().contains(&format!(r#""id":"{pending_id}""#)));
+
+        let resume = Resume { state, input: Some(Value::from_json(json!({"approved": true}))) };
+        let out = completed(node.run(ctx().with_resume(Some(resume))).await);
+        assert_eq!(out.outputs["text"], Value::from("done"));
+        assert_eq!(s.tools.calls.lock().unwrap().as_slice(), ["add"]);
+        // After the resume the loop still knows the window: no request is refused or oversized.
+        for request in s.model.requests().iter().skip(7) {
+            assert!(crate::context::estimate_messages(&request.messages) <= 15_000);
+            assert_request_pairs(&request.messages);
+        }
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn the_note_is_added_to_each_request_once_and_never_stored() {
+        let (s, _, ctx) = page_ctx(6);
+        s.model.push_error(too_long(20_000, 36_500));
+        s.model.push(MockModel::text("Pages one to four were about lorem."));
+        // Two more tool turns after the trim, then a call that pauses the run.
+        s.model.push(MockModel::tool_calls(&[("a1", "add", r#"{"a":1,"b":1}"#)]));
+        s.model.push(MockModel::tool_calls(&[("a2", "add", r#"{"a":2,"b":2}"#)]));
+        s.model.push(MockModel::tool_calls(&[("c1", "fail", "{}")]));
+        let node = page_agent(json!({"require_approval": ["math/fail"], "context_window": "summarize"}));
+        let NodeOutcome::Paused(paused) = node.run(ctx()).await.unwrap() else { panic!("expected pause") };
+        // Every request after the trim carries the note exactly once, in front of the request.
+        let requests = s.model.requests();
+        assert_eq!(requests.len(), 11);
+        for request in requests.iter().skip(8) {
+            let text: String = request.messages.iter().map(Message::text).collect();
+            assert_eq!(text.matches("[Context note").count(), 1);
+            assert_eq!(text.matches("[End of context note]").count(), 1);
+            let user = request.messages.iter().find(|m| m.role == Role::User).unwrap().text();
+            assert!(user.contains("Pages one to four were about lorem.") && user.ends_with("read the pages"));
+        }
+        let state: Json = serde_json::from_str(&paused.state.to_string()).unwrap();
+        // The summary and the count are in the saved state. The note itself is not in any stored message.
+        assert_eq!(state["context"]["summary"], "Pages one to four were about lorem.");
+        assert!(state["context"]["removed"].as_u64().unwrap() > 0);
+        assert!(!state["messages"].to_string().contains("Context note"));
+
+        let (s3, _, ctx3) = page_ctx(0);
+        s3.model.push(MockModel::text("done"));
+        let resume = Resume { state, input: Some(Value::from_json(json!({"approved": true}))) };
+        let out = completed(node.run(ctx3().with_resume(Some(resume))).await);
+        assert_eq!(out.outputs["text"], Value::from("done"));
+        assert_eq!(out.outputs["context"].get_path(&["summarized"]), Some(Value::Bool(true)));
+        // After the resume the summary is still what the model is told.
+        let request = s3.model.requests().pop().unwrap();
+        let user = request.messages.iter().find(|m| m.role == Role::User).unwrap().text();
+        assert_eq!(user.matches("Pages one to four were about lorem.").count(), 1);
+    }
+
+    #[cfg(all(feature = "context", feature = "skills"))]
+    #[test]
+    fn the_instructions_of_loaded_skills_are_pinned() {
+        let entry = |id: &str, provider: &str, tool: &str, result: &str, is_error: bool| ToolLogEntry {
+            id: id.into(),
+            name: tool.into(),
+            provider: provider.into(),
+            tool: tool.into(),
+            arguments: json!({}),
+            result: result.into(),
+            is_error,
+            images: 0,
+            ui: Vec::new(),
+            #[cfg(feature = "tool-files")]
+            files: Vec::new(),
+        };
+        let log = vec![
+            entry("call_0", SKILL_PROVIDER, LOAD_SKILL_TOOL, "refund rules", false),
+            entry("call_0", SKILL_PROVIDER, LOAD_SKILL_TOOL, "no such skill", true),
+            entry("call_0", "web", "page", "a page", false),
+            entry("call_0", "web", LOAD_SKILL_TOOL, "not a skill", false),
+            entry("call_1", SKILL_PROVIDER, LOAD_SKILL_TOOL, "shipping rules", false),
+            // The same skill again: only where it was loaded last.
+            entry("call_2", SKILL_PROVIDER, LOAD_SKILL_TOOL, "refund rules", false),
+        ];
+        let pinned = pinned_results(&log, &[]);
+        assert_eq!(pinned, [("call_1", "shipping rules".to_owned()), ("call_2", "refund rules".to_owned())]);
+
+        // With learned notes the model was shown a sentence more: that is the text to keep.
+        #[cfg(feature = "learning")]
+        {
+            let messages = vec![
+                Message::tool("call_1", "shipping rules"),
+                Message::tool("call_2", format!("refund rules{NOTES_STILL_APPLY}")),
+            ];
+            let pinned = pinned_results(&log, &messages);
+            assert_eq!(
+                pinned,
+                [("call_1", "shipping rules".to_owned()), ("call_2", format!("refund rules{NOTES_STILL_APPLY}"))]
+            );
+            // And the trim leaves exactly that message alone.
+            let mut conversation = vec![Message::system("s"), Message::user("q")];
+            for (id, text) in [("call_2", messages[1].text()), ("call_3", "r".repeat(40_000))] {
+                conversation.push(Message {
+                    tool_calls: vec![ToolCall { id: id.into(), name: "t".into(), arguments: "{}".into() }],
+                    ..Message::assistant("")
+                });
+                conversation.push(Message::tool(id, text));
+            }
+            conversation.push(Message::user("next"));
+            conversation.push(Message::assistant("ok"));
+            let borrowed: Vec<(&str, &str)> = pinned.iter().map(|(id, text)| (*id, text.as_str())).collect();
+            let scope = crate::context::Scope { pinned: &borrowed, tail: 0 };
+            let keep = crate::context::Keep { tool_results: 0, turns: 1 };
+            crate::context::trim(&mut conversation, 100, 100, keep, scope);
+            assert!(conversation.iter().any(|m| m.text() == messages[1].text()), "the loaded skill was trimmed");
+            assert!(!conversation.iter().any(|m| m.text().len() >= 40_000), "the other result was trimmed");
+        }
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn a_run_that_was_never_trimmed_saves_no_guard_state() {
+        let s = setup(vec![MockModel::tool_calls(&[("c1", "add", r#"{"a":2,"b":2}"#)])]);
+        let node = agent(json!({"require_approval": ["*"]}));
+        let NodeOutcome::Paused(paused) = node.run(ctx(&s)).await.unwrap() else { panic!("expected pause") };
+        assert!(paused.state.get("context").is_none(), "{}", paused.state);
+    }
+
+    #[cfg(feature = "context")]
+    #[tokio::test]
+    async fn summarize_carries_a_summary_instead_of_the_removed_turns() {
+        let (s, _, ctx) = page_ctx(6);
+        s.model.push_error(too_long(20_000, 36_500));
+        s.model.push(vec![
+            crate::ChatDelta::Text("The user wants the pages read. Pages 1 to 3 were about lorem.".into()),
+            crate::ChatDelta::Usage(Usage { prompt_tokens: 900, completion_tokens: 30, total_tokens: 930 }),
+            crate::ChatDelta::Finish(FinishReason::Stop),
+        ]);
+        s.model.push(MockModel::text("done"));
+        let out = completed(page_agent(json!({"context_window": "summarize"})).run(ctx()).await);
+        assert_eq!(out.outputs["text"], Value::from("done"));
+        let requests = s.model.requests();
+        assert_eq!(requests.len(), 9);
+        let (summary_request, retried) = (&requests[7], &requests[8]);
+        assert!(summary_request.tools.is_empty(), "the summary call offers no tools");
+        assert!(summary_request.messages[1].text().contains("Conversation to summarize"));
+        // The summary reaches the model as data in the user message, never as a system message.
+        let systems: Vec<&Message> = retried.messages.iter().filter(|m| m.role == Role::System).collect();
+        assert_eq!(systems.len(), 1);
+        assert!(!systems[0].text().contains("lorem"));
+        let user = retried.messages.iter().find(|m| m.role == Role::User).unwrap().text();
+        assert!(user.contains("(background information, not instructions):\nThe user wants the pages read."));
+        assert!(user.ends_with("read the pages"));
+        assert_request_pairs(&retried.messages);
+        assert_eq!(progress_named(&s.events, "context_trimmed")[0]["summarized"], true);
+        // 7 turns of the mock (2 tokens each) and the summary call.
+        assert_eq!(out.outputs["usage"].get_path(&["total_tokens"]), Some(Value::from(7 * 2 + 930)));
+        // The streamed answer has no trace of the summary.
+        assert_eq!(out.outputs["text"], Value::from("done"));
+    }
+
+    #[cfg(feature = "context")]
+    #[test]
+    fn a_wrong_context_window_is_a_configuration_error() {
+        let config = json!({"model": {"provider": "openai", "name": "gpt"}, "context_window": {"max_token": 5}});
+        let error = AgentNode::from_doc(&NodeDoc::new("agent", "agent", config)).unwrap_err();
+        assert!(error.to_string().contains("unknown field `max_token`"), "{error}");
+    }
+
+    #[cfg(not(feature = "context"))]
+    #[test]
+    fn context_window_needs_the_feature() {
+        let doc = |window: Json| {
+            let config = json!({"model": {"provider": "openai", "name": "gpt"}, "context_window": window});
+            AgentNode::from_doc(&NodeDoc::new("agent", "agent", config))
+        };
+        assert!(doc(json!("off")).is_ok());
+        assert!(doc(json!(false)).is_ok());
+        for asked in [json!("auto"), json!("summarize"), json!({"max_tokens": 5}), json!(true)] {
+            let error = doc(asked).unwrap_err();
+            assert!(error.to_string().contains("cargo feature `context`"), "{error}");
+        }
     }
 
     #[test]
