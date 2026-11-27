@@ -69,6 +69,18 @@ pub enum DirectChatAccess {
     Guests,
 }
 
+/// A messaging channel of a direct deployment (`--channel`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum DirectChannelKind {
+    /// Telegram, by long polling (needs `--mode always-on`). Secret: `TELEGRAM_BOT_TOKEN`.
+    Telegram,
+    /// WhatsApp Cloud API, by webhook. Secrets: `WHATSAPP_ACCESS_TOKEN`,
+    /// `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN`.
+    #[value(name = "whatsapp")]
+    WhatsApp,
+}
+
 /// What a direct deployment serves besides the API (`graphrt serve` flags of
 /// the same names, see docs/deploy-direct.md). Everything is off unless given.
 #[derive(Debug, Default, Args)]
@@ -112,6 +124,12 @@ pub struct DirectServeArgs {
     /// CONTACT is `mailto:you@example.com` or an `https:` URL (uses the store volume).
     #[arg(long, value_name = "CONTACT")]
     pub push: Option<String>,
+    /// Direct: answer customers on a messaging channel (`graphrt serve --channel
+    /// KIND=<the agent>`, uses the store volume). Pass its credentials with
+    /// `--secret` (they become Fly secrets, never part of the Machine command).
+    /// Repeatable. See docs/channels.md.
+    #[arg(long, value_enum, value_name = "KIND")]
+    pub channel: Vec<DirectChannelKind>,
     /// Direct: delete the store volume and what is on it (paired devices,
     /// push subscriptions, conversations) once this deploy serves. Not with an
     /// option that uses the store.
@@ -135,6 +153,7 @@ impl DirectServeArgs {
             ("--approvals", self.approvals),
             ("--expire-approvals", self.expire_approvals),
             ("--push", self.push.is_some()),
+            ("--channel", !self.channel.is_empty()),
             ("--drop-store", self.drop_store),
         ]
         .into_iter()

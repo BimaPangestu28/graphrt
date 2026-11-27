@@ -13,13 +13,15 @@ use std::io::Write as _;
 use std::path::Path;
 
 use graphrt_provider_fly::direct::{
-    AgentFile, ChatAccess, ChatOptions, DeployRequest, DirectError, DirectSettings, ErrorCode, FlyDirect, ServeOptions,
-    ServiceMode, StepEvent, StepStatus, app_name_for,
+    AgentFile, ChatAccess, ChatOptions, DeployRequest, DirectChannel, DirectError, DirectSettings, ErrorCode,
+    FlyDirect, ServeOptions, ServiceMode, StepEvent, StepStatus, app_name_for,
 };
 use graphrt_provider_fly::{FLY_API_TOKEN_ENV, FlyToken, TokenOrigin};
 use serde_json::{Value, json};
 
-use crate::deploy_cmd::{DeployAction, DeployRunArgs, DirectChatAccess, DirectMode, DirectServeArgs, DirectTargetArgs};
+use crate::deploy_cmd::{
+    DeployAction, DeployRunArgs, DirectChannelKind, DirectChatAccess, DirectMode, DirectServeArgs, DirectTargetArgs,
+};
 use crate::error::{CliError, EXIT_FAILED, EXIT_INVALID, EXIT_OK};
 
 /// Image repository of the published graphrt image (agent flavour).
@@ -346,6 +348,14 @@ fn serve_options(args: &DirectServeArgs) -> Result<ServeOptions, Failure> {
         approvals: args.approvals,
         expire_approvals: args.expire_approvals,
         push: args.push.clone(),
+        channels: args
+            .channel
+            .iter()
+            .map(|kind| match kind {
+                DirectChannelKind::Telegram => DirectChannel::Telegram,
+                DirectChannelKind::WhatsApp => DirectChannel::WhatsApp,
+            })
+            .collect(),
     })
 }
 
@@ -495,6 +505,13 @@ mod tests {
         assert_eq!(options.cors_origins, ["https://www.example.com"]);
         let orphan = DirectServeArgs { chat_access: Some(DirectChatAccess::Guests), ..DirectServeArgs::default() };
         assert!(serve_options(&orphan).unwrap_err().message.contains("--chat-access needs --chat"));
+        let channels = DirectServeArgs {
+            channel: vec![DirectChannelKind::WhatsApp, DirectChannelKind::Telegram],
+            ..DirectServeArgs::default()
+        };
+        let options = serve_options(&channels).unwrap();
+        assert_eq!(options.channels, [DirectChannel::WhatsApp, DirectChannel::Telegram]);
+        assert!(options.needs_store());
     }
 
     #[test]

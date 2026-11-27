@@ -5,7 +5,7 @@
 use serde_json::{Value, json};
 
 use super::serve_options::STORE_PATH;
-use super::{AgentFile, DeployRequest, DirectError, ServiceMode};
+use super::{AgentFile, DeployRequest, DirectChannel, DirectError, ServiceMode};
 
 /// Port `graphrt serve` listens on inside the Machine.
 pub const AGENT_PORT: u16 = 8080;
@@ -136,8 +136,13 @@ pub(super) fn validate_request(request: &DeployRequest) -> Result<(), DirectErro
     request.serve.validate()?;
     if request.drop_store && request.serve.needs_store() {
         return Err(DirectError::invalid(
-            "--drop-store deletes the store this deploy needs: leave out --monitor, --devices, --push and \
-             --conversations, or leave out --drop-store",
+            "--drop-store deletes the store this deploy needs: leave out --monitor, --devices, --push, \
+             --conversations and --channel, or leave out --drop-store",
+        ));
+    }
+    if request.mode == ServiceMode::ScaleToZero && request.serve.channels.contains(&DirectChannel::Telegram) {
+        return Err(DirectError::invalid(
+            "--channel telegram needs --mode always-on: a stopped Machine does not ask Telegram for new messages",
         ));
     }
     if request.secrets.contains_key(super::API_KEY_SECRET) {
@@ -319,7 +324,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::direct::{ChatAccess, ChatOptions, ServeOptions, ServiceMode};
+    use crate::direct::{ChatAccess, ChatOptions, DirectChannel, ServeOptions, ServiceMode};
 
     const URL: &str = "https://support.fly.dev";
 
@@ -458,5 +463,31 @@ mod tests {
         let mut dropping = request(ServiceMode::AlwaysOn);
         dropping.drop_store = true;
         assert!(validate_request(&dropping).is_ok());
+    }
+
+    #[test]
+    fn a_telegram_channel_needs_a_machine_that_keeps_running() {
+        let mut sleeping = request(ServiceMode::ScaleToZero);
+        sleeping.serve.channels = vec![DirectChannel::Telegram];
+        assert!(validate_request(&sleeping).unwrap_err().message.contains("always-on"));
+        sleeping.mode = ServiceMode::AlwaysOn;
+        assert!(validate_request(&sleeping).is_ok());
+        // Meta's webhook request starts a stopped Machine, like any request.
+        let mut whatsapp = request(ServiceMode::ScaleToZero);
+        whatsapp.serve.channels = vec![DirectChannel::WhatsApp];
+        assert!(validate_request(&whatsapp).is_ok());
+        whatsapp.drop_store = true;
+        assert!(validate_request(&whatsapp).unwrap_err().message.contains("--channel"));
+    }
+
+    #[test]
+    fn channel_secrets_stay_out_of_the_machine_config() {
+        let mut with_channel = request(ServiceMode::AlwaysOn);
+        with_channel.serve.channels = vec![DirectChannel::WhatsApp];
+        with_channel.secrets.insert("WHATSAPP_APP_SECRET".into(), "app-secret-value".into());
+        let config = new_machine_config(&with_channel, "support", URL, Some("vol_1"));
+        let text = config.to_string();
+        assert!(text.contains("whatsapp=support"), "{text}");
+        assert!(!text.contains("app-secret-value"), "{text}");
     }
 }

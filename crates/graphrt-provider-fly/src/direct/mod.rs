@@ -20,8 +20,8 @@
 //! the previous version keeps serving. Standby Machines have no services, so
 //! the proxy never routes to (or autostarts) an old version.
 //!
-//! A deploy that turns on monitoring, devices, push notifications or
-//! conversations ([`ServeOptions::needs_store`]) keeps state that must outlive
+//! A deploy that turns on monitoring, devices, push notifications,
+//! conversations or a messaging channel ([`ServeOptions::needs_store`]) keeps state that must outlive
 //! a Machine stop and a redeploy. It gets one 1 GB Fly volume as its `--store`.
 //! Fly attaches a volume to a Machine only when the Machine is created, so the
 //! Machine with the volume is **updated in place** by every later deploy that
@@ -31,6 +31,8 @@
 //!
 //! Secrets are Fly app secrets (injected as environment variables at boot);
 //! their values are only ever sent in the body of `POST /apps/{app}/secrets`.
+//! A channel's credentials are such secrets too ([`DirectChannel::secret_names`]):
+//! the Machine command names only the channel's kind and workflow.
 
 mod lifecycle;
 mod machine_config;
@@ -49,7 +51,8 @@ use crate::token::TokenOrigin;
 pub use lifecycle::{DeployFailure, Progress, ServingVersion};
 pub use machine_config::{AGENT_PORT, MAX_AGENT_FILE_BYTES, WORKFLOW_DIR, app_name_for, workflow_name_of};
 pub use serve_options::{
-    ChatAccess, ChatOptions, STORE_PATH, STORE_VOLUME_GB, STORE_VOLUME_NAME, ServeOptions, ServeSummary, StoreSummary,
+    ChatAccess, ChatOptions, DirectChannel, STORE_PATH, STORE_VOLUME_GB, STORE_VOLUME_NAME, ServeOptions, ServeSummary,
+    StoreSummary,
 };
 pub use status::{DeploymentState, DeploymentStatus, MachineSummary, VersionSummary, format_rfc3339_ms};
 

@@ -1,6 +1,7 @@
 //! What a direct deployment turns on in `graphrt serve` besides the API: the
-//! chat page, conversations kept by the server, and monitoring from a phone
-//! (`docs/web.md`, `docs/monitoring.md`). Each is off unless asked for.
+//! chat page, conversations kept by the server, monitoring from a phone and
+//! messaging channels (`docs/web.md`, `docs/monitoring.md`, `docs/channels.md`).
+//! Each is off unless asked for.
 
 use serde::Serialize;
 
@@ -52,6 +53,38 @@ pub struct ChatOptions {
     pub guest_budget: Option<u32>,
 }
 
+/// A messaging channel a deployment answers on (`graphrt serve --channel KIND=WORKFLOW`).
+/// Its credentials are Fly secrets of the names `graphrt serve` reads, never flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectChannel {
+    /// Telegram, by long polling: needs a Machine that keeps running.
+    Telegram,
+    /// WhatsApp Cloud API: Meta posts to `<public url>/v1/channels/whatsapp/webhook`.
+    #[serde(rename = "whatsapp")]
+    WhatsApp,
+}
+
+impl DirectChannel {
+    /// The `KIND` of `--channel KIND=WORKFLOW`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Telegram => "telegram",
+            Self::WhatsApp => "whatsapp",
+        }
+    }
+
+    /// The secrets `graphrt serve` reads for this channel (docs/channels.md).
+    pub fn secret_names(self) -> &'static [&'static str] {
+        match self {
+            Self::Telegram => &["TELEGRAM_BOT_TOKEN"],
+            Self::WhatsApp => {
+                &["WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN"]
+            }
+        }
+    }
+}
+
 /// The `graphrt serve` features of one deploy.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ServeOptions {
@@ -71,14 +104,17 @@ pub struct ServeOptions {
     pub expire_approvals: bool,
     /// `--push <contact>`: Web Push notifications.
     pub push: Option<String>,
+    /// `--channel <kind>=<workflow>`: messaging channels (each kind once).
+    pub channels: Vec<DirectChannel>,
 }
 
 impl ServeOptions {
     /// Whether the deployment keeps state that must outlive a Machine stop or a
     /// redeploy: paired devices, push subscriptions with the server's push key,
-    /// or conversations. Such a deployment gets a volume as its `--store`.
+    /// conversations, or channel conversations (with the message ids that keep a
+    /// redelivered message from running twice). Such a deployment gets a volume as its `--store`.
     pub fn needs_store(&self) -> bool {
-        self.monitor || self.devices || self.push.is_some() || self.conversations
+        self.monitor || self.devices || self.push.is_some() || self.conversations || !self.channels.is_empty()
     }
 
     /// Whether a device is ever paired (then the pairing link needs the public address).
@@ -109,6 +145,11 @@ impl ServeOptions {
             return Err(DirectError::invalid(format!(
                 "--push {contact:?} must be an address push services may write to: mailto:you@example.com or an https: URL"
             )));
+        }
+        let mut kinds = self.channels.clone();
+        kinds.sort();
+        if kinds.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(DirectError::invalid("--channel names each kind once"));
         }
         Ok(())
     }
@@ -162,6 +203,9 @@ impl ServeOptions {
         if let Some(contact) = &self.push {
             push("--push", Some(contact.clone()));
         }
+        for channel in &self.channels {
+            push("--channel", Some(format!("{}={workflow}", channel.as_str())));
+        }
         if self.pairs_devices() {
             push("--public-url", Some(public_url.to_owned()));
         }
@@ -179,6 +223,7 @@ impl ServeOptions {
             approvals: self.monitor || self.approvals || self.expire_approvals,
             expire_approvals: self.expire_approvals,
             push: self.push.is_some(),
+            channels: self.channels.clone(),
         }
     }
 }
@@ -202,6 +247,8 @@ pub struct ServeSummary {
     pub expire_approvals: bool,
     /// Web Push notifications are sent.
     pub push: bool,
+    /// The messaging channels the agent answers on.
+    pub channels: Vec<DirectChannel>,
 }
 
 /// The store volume of a deployment, in deploy results and the status.
@@ -260,6 +307,7 @@ mod tests {
             approvals: true,
             expire_approvals: true,
             push: Some("mailto:owner@example.com".into()),
+            channels: vec![DirectChannel::Telegram, DirectChannel::WhatsApp],
         }
     }
 
@@ -307,6 +355,10 @@ mod tests {
                 "--expire-approvals",
                 "--push",
                 "mailto:owner@example.com",
+                "--channel",
+                "telegram=support",
+                "--channel",
+                "whatsapp=support",
                 "--public-url",
                 "https://support.fly.dev",
             ]
@@ -320,6 +372,7 @@ mod tests {
             ServeOptions { devices: true, ..ServeOptions::default() },
             ServeOptions { push: Some("mailto:a@b.co".into()), ..ServeOptions::default() },
             ServeOptions { conversations: true, ..ServeOptions::default() },
+            ServeOptions { channels: vec![DirectChannel::WhatsApp], ..ServeOptions::default() },
         ] {
             assert!(options.needs_store(), "{options:?}");
         }
@@ -342,6 +395,23 @@ mod tests {
         assert!(everything().validate().is_ok());
         let any_site = ServeOptions { cors_origins: vec!["*".into()], ..ServeOptions::default() };
         assert!(any_site.validate().is_ok(), "a direct deployment always has an API key");
+        let twice = ServeOptions {
+            channels: vec![DirectChannel::Telegram, DirectChannel::Telegram],
+            ..ServeOptions::default()
+        };
+        assert!(twice.validate().unwrap_err().message.contains("--channel"));
+    }
+
+    #[test]
+    fn a_channel_is_served_with_its_kind_and_reads_its_secrets_from_the_environment() {
+        let options = ServeOptions { channels: vec![DirectChannel::WhatsApp], ..ServeOptions::default() };
+        let flags = options.serve_flags("support", "https://support.fly.dev", true);
+        assert_eq!(flags[4..], ["--channel", "whatsapp=support"]);
+        assert!(!flags.iter().any(|flag| flag.contains("TOKEN")), "secrets never become flags: {flags:?}");
+        assert_eq!(DirectChannel::Telegram.secret_names(), ["TELEGRAM_BOT_TOKEN"]);
+        assert_eq!(DirectChannel::WhatsApp.secret_names().len(), 4);
+        let summary = serde_json::to_value(options.summary()).unwrap_or_default();
+        assert_eq!(summary["channels"], serde_json::json!(["whatsapp"]));
     }
 
     #[test]

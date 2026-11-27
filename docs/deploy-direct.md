@@ -63,7 +63,7 @@ graphrt deploy --target fly --direct --deployment <name> --version <label>
                        [--chat-guest-rate-limit <n>] [--chat-guest-budget <n>]]
                [--cors-origin <origin> ...] [--conversations]
                [--monitor] [--devices] [--approvals] [--expire-approvals] [--push <contact>]
-               [--drop-store]
+               [--channel telegram|whatsapp ...] [--drop-store]
                <agent.grt|agent.yaml|agent.json>
 graphrt deploy status         --target fly --direct --deployment <name> [--org <slug>] [--app <name>] [--json]
 graphrt deploy list-versions  --target fly --direct --deployment <name> [--org <slug>] [--app <name>] [--json]
@@ -277,6 +277,7 @@ page off again.
 | `--approvals` | The approvals inbox only (`/v1/approvals`) | [monitoring.md](monitoring.md#the-approvals-inbox) |
 | `--expire-approvals` | Requests past their time limit answer themselves (`on_expire`) | [monitoring.md](monitoring.md#requests-that-expire) |
 | `--push CONTACT` | Push notifications when a run fails or waits for a person. Uses the store | [monitoring.md](monitoring.md#notifications) |
+| `--channel telegram\|whatsapp` | Customers talk to the agent on Telegram or WhatsApp (`graphrt serve --channel KIND=<agent>`). Repeatable, each kind once. Uses the store | [channels.md](channels.md) |
 
 ```sh
 graphrt deploy --target fly --direct --deployment support-bot --version v2 --region ams \
@@ -305,17 +306,43 @@ The deploy result says what the version serves:
 ```
 
 `chat` is `key`, `guests` or `null`. `devices` and `approvals` are also true
-when `--monitor` turned them on. The push contact is not echoed.
+when `--monitor` turned them on. The push contact is not echoed. `channels`
+lists the messaging channels (`["telegram", "whatsapp"]`, `[]` without any).
+
+### Telegram and WhatsApp
+
+`--channel KIND` serves the agent on a messaging channel, with the same
+behaviour as [`graphrt serve --channel`](channels.md). The channel's
+credentials are ordinary `--secret`s, so they become Fly secrets and never
+appear in the Machine command, the deploy output or the logs:
+
+| Channel | Secrets | Also |
+| --- | --- | --- |
+| `telegram` | `TELEGRAM_BOT_TOKEN` | Needs `--mode always-on`: the server asks Telegram for messages (long polling), which a stopped Machine cannot do |
+| `whatsapp` | `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` | Set the callback URL `{url}/v1/channels/whatsapp/webhook` in the Meta app; Meta's request starts a stopped Machine |
+
+```sh
+export WHATSAPP_ACCESS_TOKEN=... WHATSAPP_PHONE_NUMBER_ID=... WHATSAPP_APP_SECRET=... WHATSAPP_VERIFY_TOKEN=...
+graphrt deploy --target fly --direct --deployment support-bot --version v3 --region sin \
+  --secret OPENAI_API_KEY --secret WHATSAPP_ACCESS_TOKEN --secret WHATSAPP_PHONE_NUMBER_ID \
+  --secret WHATSAPP_APP_SECRET --secret WHATSAPP_VERIFY_TOKEN --channel whatsapp support.grt
+```
+
+Fly keeps secrets between deploys: a later deploy names `--channel whatsapp`
+again and may leave out the `--secret`s that did not change. Channel
+conversations live in the store, so a redelivered message does not run twice
+after a restart. A team member answers a customer through the server's
+[`/v1/channels` routes](channels.md#a-person-takes-over).
 
 ### The store volume
 
 Paired devices, push subscriptions with the server's push key, and
 conversations must outlive a Machine that stops when idle and a redeploy. A
-deploy with `--monitor`, `--devices`, `--push` or `--conversations` therefore
+deploy with `--monitor`, `--devices`, `--push`, `--conversations` or `--channel` therefore
 gets **one Fly volume** (`graphrt_store`, 1 GB, encrypted) mounted at `/data`
 as `graphrt serve --store /data`. Fly bills a volume while it exists, also
 while the Machine is stopped: about **0.15 USD per month** for 1 GB at Fly's
-list price. A deploy with none of these four creates no volume and costs
+list price. A deploy with none of these creates no volume and costs
 nothing extra: a chat page for guests keeps nothing on the server (guest
 sessions are signed tokens), and neither does the approvals inbox.
 

@@ -29,14 +29,21 @@ fn validator() -> jsonschema::Validator {
 }
 
 async fn graphrt(fake: &FakeFly, args: &[&str]) -> Output {
+    graphrt_with_env(fake, args, &[]).await
+}
+
+async fn graphrt_with_env(fake: &FakeFly, args: &[&str], env: &[(&str, &str)]) -> Output {
     let base_url = fake.server.base_url();
     let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+    let env: Vec<(String, String)> =
+        env.iter().map(|(name, value)| ((*name).to_owned(), (*value).to_owned())).collect();
     tokio::task::spawn_blocking(move || {
         std::process::Command::new(env!("CARGO_BIN_EXE_graphrt"))
             .arg("deploy")
             .args(&args)
             .env("FLY_API_TOKEN", TOKEN)
             .env("GRAPHRT_FLY_API_URL", base_url)
+            .envs(env)
             .output()
             .expect("run graphrt")
     })
@@ -87,7 +94,7 @@ async fn a_plain_deploy_reports_nothing_extra_and_no_store() {
         result["serve"],
         json!({
             "chat": null, "cors_origins": [], "conversations": false, "monitor": false, "devices": false,
-            "approvals": false, "expire_approvals": false, "push": false,
+            "approvals": false, "expire_approvals": false, "push": false, "channels": [],
         })
     );
     assert!(fake.state().volumes.is_empty());
@@ -142,6 +149,54 @@ async fn monitoring_reports_its_store_volume_and_status_shows_it() {
     let dropped = final_line(&graphrt(&fake, &deploy_args("v3", &workflow, &["--drop-store"])).await);
     assert_eq!(dropped["store"], Value::Null);
     assert!(fake.state().volumes.is_empty());
+}
+
+#[tokio::test]
+async fn a_channel_is_served_with_its_credentials_as_fly_secrets_only() {
+    let fake = FakeFly::start_empty().await;
+    let workflow = hello();
+    let app_secret = "whatsapp-app-secret-0123456789";
+    let secrets = [
+        ("WHATSAPP_ACCESS_TOKEN", "whatsapp-access-token-0123456789"),
+        ("WHATSAPP_PHONE_NUMBER_ID", "106540352242922"),
+        ("WHATSAPP_APP_SECRET", app_secret),
+        ("WHATSAPP_VERIFY_TOKEN", "verify-0123456789"),
+    ];
+    let mut extra = vec!["--channel", "whatsapp"];
+    for (name, _) in &secrets {
+        extra.extend(["--secret", name]);
+    }
+
+    let output = graphrt_with_env(&fake, &deploy_args("v1", &workflow, &extra), &secrets).await;
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let result = final_line(&output);
+    assert_eq!(result["serve"]["channels"], json!(["whatsapp"]));
+    assert_eq!(result["store"]["in_use"], true, "channel conversations outlive a restart");
+    let state = fake.state();
+    assert_eq!(state.secrets.get("WHATSAPP_APP_SECRET").map(String::as_str), Some(app_secret));
+    let config = state.machines[0].config.to_string();
+    assert!(config.contains(r#""--channel","whatsapp=hello""#), "{config}");
+    for (_, value) in &secrets {
+        assert!(!config.contains(value), "a secret reached the Machine config: {config}");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(value));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(value));
+    }
+}
+
+#[tokio::test]
+async fn telegram_polling_is_refused_on_a_machine_that_stops_when_idle() {
+    let fake = FakeFly::start_empty().await;
+    let workflow = hello();
+    let extra = ["--mode", "scale-to-zero", "--channel", "telegram"];
+
+    let output = graphrt(&fake, &deploy_args("v1", &workflow, &extra)).await;
+
+    assert_eq!(output.status.code(), Some(2));
+    let error = final_line(&output);
+    assert_eq!(error["code"], "invalid_input", "{error}");
+    assert!(error["message"].as_str().unwrap().contains("--mode always-on"), "{error}");
+    assert!(fake.state().apps.is_empty(), "nothing was created on Fly");
 }
 
 #[tokio::test]

@@ -598,6 +598,17 @@
         "push": {
           "description": "Web Push notifications are sent.",
           "type": "boolean"
+        },
+        "channels": {
+          "description": "Messaging channels the agent answers on (--channel). Absent in results of tools older than the flag.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "telegram",
+              "whatsapp"
+            ]
+          }
         }
       }
     }
