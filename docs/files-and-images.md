@@ -317,12 +317,34 @@ graphrt run examples/vision-agent.yaml --workspace ./workspace --image-tools \
   --image-model gpt-image-2 --input query="Draw a logo for a bike shop and save it as logo.png"
 ```
 
-`--image-model NAME` adds `image/generate`, which calls the OpenAI images API
-(`POST $OPENAI_BASE_URL/images/generations`, default
-`https://api.openai.com/v1`). Any server that implements that API works.
-What comes back is treated like an upload: it must be a real image within
-the limits, and its metadata is removed before it is stored. An answer that
-holds a URL instead of image data is refused, not fetched.
+`--image-model` adds `image/generate` and picks the provider by a prefix:
+
+| `--image-model` | Provider | Key | Endpoint |
+| --- | --- | --- | --- |
+| `NAME` or `openai/NAME` (`gpt-image-2`) | OpenAI images API, `POST .../images/generations`, and any server that implements it | `OPENAI_API_KEY` | `OPENAI_BASE_URL`, default `https://api.openai.com/v1` |
+| `gemini/NAME` (`gemini/gemini-3.1-flash-image`) | Gemini API, `POST .../models/NAME:generateContent` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `GEMINI_BASE_URL`, default `https://generativelanguage.googleapis.com/v1beta` |
+
+```sh
+export GEMINI_API_KEY=...
+graphrt run examples/vision-agent.yaml --workspace ./workspace --image-tools \
+  --image-model gemini/gemini-3.1-flash-image --input query="Draw a logo for a bike shop"
+```
+
+The tool is the same for the agent whichever provider is behind it. What
+comes back is treated like an upload: it must be a real image within the
+limits, and its metadata is removed before it is stored. An answer that
+holds a URL or a file reference instead of image data is refused, not
+fetched.
+
+Differences worth knowing:
+
+- Gemini takes an aspect ratio and one of three sizes, not pixels. A `size`
+  such as `1920x1080` is sent as the closest ratio it knows (`16:9`) and the
+  smallest size that holds the longer side (`2K`).
+- Images from Gemini models carry Google's SynthID watermark, which is in the
+  pixels and stays.
+- A name with a slash that does not start with `openai/` or `gemini/` is a
+  model of an OpenAI compatible server (`black-forest-labs/flux`).
 
 The generator is a trait, `ImageGenerator`, with one method. Embedders plug
 in another provider with `ImageTools::with_generator`.
@@ -364,6 +386,7 @@ tools.add("image", Arc::new(ImageTools::new(workspace.clone())));
 | `process` | on | Decode, resize and encode (pure Rust PNG, JPEG, GIF, WebP) |
 | `tools` | on | `ImageTools`, over a `graphrt-files` workspace |
 | `generate-openai` | off | `OpenAiImages` |
+| `generate-gemini` | off | `GeminiImages` |
 
 Without `process` the crate has no dependency beyond `graphrt-core`: it
 still checks types and pixel counts and removes metadata, and it refuses an

@@ -144,7 +144,7 @@ graphrt-code = { workspace = true, optional = true, features = ["js", "tokio"] }
 graphrt-mcp = { workspace = true, optional = true, features = ["stdio", "http"] }
 graphrt-doc = { workspace = true, optional = true, features = ["default", "tokio"] }
 graphrt-files = { workspace = true, optional = true, features = ["tokio"] }
-graphrt-image = { workspace = true, optional = true, features = ["tokio", "process", "tools", "generate-openai"] }
+graphrt-image = { workspace = true, optional = true, features = ["tokio", "process", "tools", "generate-openai", "generate-gemini"] }
 graphrt-rag = { workspace = true, optional = true, features = ["default"] }
 graphrt-plugin = { workspace = true, optional = true }
 graphrt-skill = { workspace = true, optional = true }

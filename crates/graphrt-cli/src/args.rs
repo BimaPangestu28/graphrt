@@ -708,11 +708,13 @@ pub struct ServiceArgs {
     #[cfg(feature = "image")]
     #[arg(long, requires = "workspace")]
     pub image_tools: bool,
-    /// Add `image/generate`, backed by this model of the OpenAI images API
-    /// (for example `gpt-image-2`). Key from `$OPENAI_API_KEY`, endpoint from
-    /// `$OPENAI_BASE_URL` (default https://api.openai.com/v1).
+    /// Add `image/generate`, backed by this image model. `NAME` or `openai/NAME`
+    /// (for example `gpt-image-2`) uses the OpenAI images API: key from
+    /// `$OPENAI_API_KEY`, endpoint from `$OPENAI_BASE_URL`. `gemini/NAME` (for
+    /// example `gemini/gemini-3.1-flash-image`) uses the Gemini API: key from
+    /// `$GEMINI_API_KEY` or `$GOOGLE_API_KEY`, endpoint from `$GEMINI_BASE_URL`.
     #[cfg(feature = "image")]
-    #[arg(long, value_name = "NAME", requires = "image_tools")]
+    #[arg(long, value_name = "[PROVIDER/]NAME", requires = "image_tools")]
     pub image_model: Option<String>,
     /// Abort a run after this many milliseconds.
     #[arg(long, value_name = "MS")]

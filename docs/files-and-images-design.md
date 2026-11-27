@@ -233,8 +233,27 @@ The same pipeline backs the `image` tools (`info`, `view`, `resize`,
 images API (`POST {base_url}/images/generations`), which GPT image models and
 many compatible servers implement and which always answers with base64. The
 bytes a provider returns are treated like any upload: probed, bounded and
-stored in the workspace. Gemini's image models use the newer Interactions API
-and are a second implementation of the same trait, not part of this work.
+stored in the workspace.
+
+A second implementation, `GeminiImages`, was added on 2026-11-27. Gemini has
+two APIs that produce images. The Interactions API is the newer one, and its
+response schema changed twice in 2026 (the `outputs` array was replaced by
+`steps`, image settings moved into `response_format`), with the raw shape of
+an image block not shown in the reference. `generateContent` answers with
+`candidates[0].content.parts[].inlineData`, which is documented, stable and
+the shape the Gemini provider of `graphrt-llm` already parses. So the
+generator speaks `generateContent`: `POST {base}/models/{model}:generateContent`
+with the key in the `x-goog-api-key` header. Moving to the Interactions API
+later changes one function behind the trait.
+
+The two providers share one transport (client, bounded response, key
+scrubbing, timeout). What differs is small and stays in each: OpenAI takes
+pixels, Gemini an aspect ratio and a size class, so a `WIDTHxHEIGHT` request
+is mapped to the closest of the 14 ratios and the smallest of `1K`, `2K`,
+`4K` that holds the longer side. A Gemini answer can be a refusal with a
+reason (`finishReason`, `blockReason`), which is passed on to the model in
+the error. A model name goes into the URL path, so only a plain name is
+accepted.
 
 ### 11. Features and defaults
 
@@ -248,6 +267,34 @@ Off means not compiled: the flags do not exist, and the code paths that
 collect files from tool results are behind the `tool-files` feature of
 `graphrt-core` and `graphrt-llm`. See
 [What it costs a build that does not use it](#what-it-costs-a-build-that-does-not-use-it).
+
+### 16. Native document blocks: not now
+
+A native document block sends a PDF to the provider as a file instead of as
+text the runtime extracted (Anthropic `document`, OpenAI `input_file`,
+Gemini inline `application/pdf`, Bedrock `document`). Looked at again on
+2026-11-27 and left out, for these reasons:
+
+- **What it buys is narrow.** For a PDF with a text layer the `files` tools
+  already work on every provider, local models included, and read a window
+  at a time. A native block puts the whole file into the context of every
+  turn, where the provider bills each page as text and as an image.
+- **The real gap is scanned documents**, which have no text to extract. A
+  native block closes it for three hosted providers only. What closes it
+  everywhere is rendering pages to images for `vision`, and there is no safe
+  pure Rust PDF renderer to do that with today.
+- **Four wire formats, no way to check them here.** Each provider spells the
+  block differently and limits it differently, and CI has no provider keys.
+  A wrong field fails at run time, in front of a user.
+- **It lands in the hot path of the smallest builds.** The message types and
+  the four provider encoders are in `graphrt-llm`, which `agent-slim` links,
+  and four open pull requests are changing the same files.
+
+What it should look like when it is done: a `DocumentPreparer` contract in
+`graphrt-core::file` next to `ImagePreparer` (type from content, byte and
+page limits, a `data:` URL out), a `ContentPart::Document`, a `documents`
+setting on the model nodes like `vision`, all behind a cargo feature, and a
+fallback to extracted text for providers that have no such block.
 
 ## Threat model
 
@@ -278,9 +325,10 @@ the host file system goes.
 | I2 | Malformed image aimed at a decoder or at our own header parsers | Pure Rust decoders, no `unsafe` in the workspace, checked indexing only, decoding behind a panic boundary on the blocking pool | `probe::truncated_files_fail_cleanly_at_every_length`, `probe::corrupted_files_never_panic_or_exceed_the_limits` |
 | I3 | Image type spoofing (SVG, HTML, HEIC or a program sent as `image/png`) | Only PNG, JPEG, GIF and WebP by magic bytes reach a model or a tool. The media type sent to a provider is the detected one. | `probe::spoofed_and_unsupported_content_is_refused`, `prepare::spoofed_vision_inputs_are_refused`, `nodes::a_spoofed_vision_input_stops_the_node_before_the_model_is_called`, `graphrt-llm` `a_refused_image_fails_the_node_and_is_never_sent_as_it_was`, CLI `image_tools_inspect_and_thumbnail_a_workspace_image` |
 | I4 | Location and device data in EXIF (and XMP, IPTC, text chunks) sent to a model provider or written to a result | Metadata is cut out of the container before an image leaves the runtime, rotated photos are turned upright first, and files the tools write are encoded without any | `metadata::*` (one test per format), `metadata::nothing_prepared_for_a_model_carries_metadata`, `prepare::a_rotated_photo_is_turned_upright_before_its_metadata_goes`, `nodes::a_stored_photo_reaches_the_model_checked_and_without_metadata` |
-| I5 | SSRF through an image URL | URL images are fetched by the model provider, not by the runtime. With inlining on, the fetch goes through the egress policy of `graphrt-http`. A generator answer that holds a URL is refused, not fetched, and redirects of the generator are not followed. | `prepare::remote_images_are_left_to_the_provider_unless_inlined`, `openai::an_answer_with_a_url_is_refused_not_fetched`, `openai::redirects_are_not_followed`, `graphrt-http` `files::tests::rejects_private_addresses_and_non_http` |
+| I5 | SSRF through an image URL | URL images are fetched by the model provider, not by the runtime. With inlining on, the fetch goes through the egress policy of `graphrt-http`. A generator answer that holds a URL is refused, not fetched, and redirects of the generator are not followed. | `prepare::remote_images_are_left_to_the_provider_unless_inlined`, `openai::an_answer_with_a_url_is_refused_not_fetched`, `openai::redirects_are_not_followed`, `gemini::an_answer_that_points_to_a_file_is_refused_not_fetched`, `gemini::redirects_are_not_followed`, `graphrt-http` `files::tests::rejects_private_addresses_and_non_http` |
 | I6 | Prompt injection through text in an image | Same position as F12: the image is data, `image/view` says so, tools stay bounded, approvals for what matters | `tools::view_shows_a_checked_image_to_the_model` |
-| I7 | Output of an image generator trusted as an image, or its key leaking | Probed, bounded and stripped like an upload before it is stored. The key is scrubbed from errors and never printed. | `tools::generated_images_are_checked_like_uploads`, `openai::errors_are_reported_without_the_key` |
+| I7 | Output of an image generator trusted as an image, or its key leaking | Probed, bounded and stripped like an upload before it is stored. The key is scrubbed from errors and never printed, and it travels in a header, never in a URL. | `tools::generated_images_are_checked_like_uploads`, `openai::errors_are_reported_without_the_key`, `gemini::errors_and_refusals_are_reported_without_the_key`, `gemini::an_inline_answer_becomes_image_bytes` |
+| I14 | A model name that changes the request path of a generator (`../`, `?key=`, a second host) | The Gemini model name goes into the URL path, so only letters, digits, `.`, `-` and `_` are accepted and nothing is sent otherwise | `gemini::a_model_name_cannot_change_the_request_path` |
 | I8 | Polyglot files: a valid image with a script, an archive or a page appended | Everything after the end of the image is dropped when metadata is removed | `metadata::*` (each fixture carries a payload after the image) |
 | I9 | Decoding a large image stalling every other run | Probe, decode, resize, encode and base64 run on the blocking pool | `prepare::preparing_a_large_image_does_not_block_the_async_worker` |
 
@@ -406,9 +454,10 @@ is used: nothing is opened, registered or allocated at start without
 - Creating PDF and Office files. Agents write text formats.
 - Searching inside documents, and regular expression search.
 - Object storage backends in the repository. The trait is ready for them.
-- Native document blocks (sending a PDF to a provider as a document).
+- Native document blocks (sending a PDF to a provider as a document), see
+  [decision 16](#16-native-document-blocks-not-now).
 - Audio and video.
-- A second image generator (Gemini) and image editing.
+- Image editing (an image as input to a generator).
 - HEIC and AVIF input. Phones produce HEIC, and it is refused today with a
   message that says to convert it. Decoding it in pure Rust is not ready.
 - Animations. GIF and WebP animations pass through when they fit, and are
