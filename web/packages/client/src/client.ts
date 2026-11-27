@@ -86,7 +86,7 @@ export interface CallOptions {
 
 export interface EventsOptions extends CallOptions {
   /** Index of the first event to receive. Default: 0, the whole run. */
-  from?: number;
+  from?: number | undefined;
   /** Also receive `response` events (the answer text) of the part that still executes. Default: true. */
   responses?: boolean;
   /** How often in a row a broken connection is reopened before giving up. Default: 8. */
@@ -455,7 +455,12 @@ export class GraphrtClient {
   }
 
   /**
-   * Continue a paused run in the background.
+   * Continue a paused run in the background. Follow it from the answer's
+   * `first_event`: the events before it end with the pause.
+   *
+   * @example
+   * const accepted = await client.resumeAsync(runId, { inputs });
+   * for await (const event of client.events(runId, { from: accepted.first_event })) { ... }
    *
    * @throws GraphrtError - `409` when the run was resumed already.
    */

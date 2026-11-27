@@ -62,6 +62,8 @@ export const acceptedRunSchema = z.looseObject({
   status: z.string(),
   run: z.string(),
   events: z.string(),
+  /** Index of this execution's first event: where to follow a resumed run from. */
+  first_event: z.optional(z.number()),
 });
 export type AcceptedRun = z.infer<typeof acceptedRunSchema>;
 

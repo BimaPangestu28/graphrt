@@ -58,7 +58,7 @@ pub(super) async fn execute(
         Delivery::Detached => {
             // No caller waits: a shutdown drain leaves it for the next server to resume.
             active.set_detached();
-            accepted_response(&run_id)
+            accepted_response(&run_id, active.stored_before)
         }
         Delivery::Stream => stream_response(active, stream_assembler, reply.scope),
         Delivery::Blocking => {
@@ -81,13 +81,16 @@ fn stream_response(active: Arc<ActiveRun>, assembler: ResponseAssembler, scope: 
     Sse::new(events).keep_alive(KeepAlive::default()).into_response()
 }
 
-/// `202` for a detached run, with where to follow it.
-fn accepted_response(run_id: &str) -> Response {
+/// `202` for a detached run, with where to follow it. `first_event` is the
+/// index of this execution's first event: `0` for a new run, and for a resumed
+/// one the `?from=` that skips what the run did before it paused.
+fn accepted_response(run_id: &str, first_event: u64) -> Response {
     let body = serde_json::json!({
         "run_id": run_id,
         "status": "running",
         "run": format!("/v1/runs/{run_id}"),
         "events": format!("/v1/runs/{run_id}/events"),
+        "first_event": first_event,
     });
     (StatusCode::ACCEPTED, Json(body)).into_response()
 }
