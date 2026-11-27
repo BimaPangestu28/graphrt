@@ -81,7 +81,15 @@ Linux musl aarch64 and 89 KiB on x86_64. The CI budget gate checks that cost
 | `--listen unix:/path` | Listen on a Unix socket (mode `0600`) instead of TCP; `--listen` is an alias of `--addr` |
 
 `--trust-gateway` and `--verify-jwt` are exclusive: behind a gateway, the
-gateway verifies end-user tokens and passes `user_id` in the run request.
+gateway verifies end-user tokens and passes `user_id` in the run request. It
+also sets `sys.user_id` to that user, over anything the client sent, so a
+workflow that reads `{{#sys.user_id#}}` (one user's lessons or files) gets the
+verified user, as under `graphrt serve --verify-jwt`.
+
+A gateway signature opens `/internal/v1` and nothing else. The public routes
+of the agent, the owner routes `/v1/skills` and `/v1/learning` among them,
+still take the agent's API key. The agent verifies no user token, so feedback
+that reaches it is recorded as a label and never as a user's own words.
 
 ## Signatures
 
