@@ -12,7 +12,7 @@ use graphrt_rag::{
 };
 
 fn small_chunks() -> ChunkerConfig {
-    ChunkerConfig { max_chars: 40, overlap: 0, markdown: false, parent_max_chars: None }
+    ChunkerConfig { max_chars: 40, overlap: 0, markdown: false, ..ChunkerConfig::default() }
 }
 
 fn ingestor(store: &Arc<MemoryStore>, embedder: Arc<dyn Embedder>) -> Ingestor {
@@ -186,4 +186,45 @@ async fn bulk_load_with_autosave_off_writes_once_on_flush() {
     store.flush().unwrap();
     assert_eq!(MemoryStore::open(&path).unwrap().len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn chunks_record_their_character_range() {
+    let store = Arc::new(MemoryStore::new());
+    let text = format!("{A}\n\n{B}");
+    ingestor(&store, Arc::new(HashEmbedder::new(32))).ingest(&Document::new("d", "doc", text.clone())).await.unwrap();
+    let mut chunks = store.document_chunks("d", "doc").await.unwrap();
+    chunks.sort_by_key(|c| c.metadata.get("chunk_index").and_then(serde_json::Value::as_u64));
+    let chars: Vec<char> = text.chars().collect();
+    for chunk in &chunks {
+        let start = chunk.metadata[graphrt_rag::CHAR_START_KEY].as_u64().unwrap() as usize;
+        let end = chunk.metadata[graphrt_rag::CHAR_END_KEY].as_u64().unwrap() as usize;
+        assert_eq!(chars[start..end].iter().collect::<String>(), chunk.text);
+    }
+    // Per-chunk keys are not document metadata.
+    let listed = store.list_documents("d", 10, None).await.unwrap();
+    assert!(!listed[0].metadata.contains_key(graphrt_rag::CHAR_START_KEY));
+}
+
+#[tokio::test]
+async fn invalid_chunking_is_rejected_before_anything_is_stored() {
+    let store = Arc::new(MemoryStore::new());
+    let chunking = ChunkerConfig { min_chars: 500, ..small_chunks() };
+    let error = Ingestor::new(store.clone(), Arc::new(HashEmbedder::new(32)))
+        .chunker(chunking)
+        .ingest(&Document::new("d", "doc", A))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, RagError::Config(_)), "{error}");
+    assert!(store.document_chunks("d", "doc").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn custom_separators_shape_the_stored_chunks() {
+    let store = Arc::new(MemoryStore::new());
+    let chunking =
+        ChunkerConfig { max_chars: 30, separators: vec![graphrt_rag::Separator::Text(" / ".into())], ..small_chunks() };
+    let ing = Ingestor::new(store.clone(), Arc::new(HashEmbedder::new(32))).chunker(chunking);
+    ing.ingest(&Document::new("d", "doc", "first part here / second part here / third")).await.unwrap();
+    assert_eq!(texts(&store, "doc").await, vec!["first part here /", "second part here / third"]);
 }

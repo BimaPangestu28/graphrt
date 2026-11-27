@@ -14,7 +14,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["http", "qdrant", "fs", "sqlite", "yaml", "doc"]
+default = ["http", "qdrant", "fs", "sqlite", "yaml", "doc", "regex"]
 # OpenAI-compatible embeddings, generic HTTP retriever and HTTP reranker (reqwest + rustls/ring).
 http = ["dep:reqwest", "dep:rustls"]
 # Qdrant vector store over its REST API.
@@ -29,6 +29,8 @@ sqlite = ["dep:rusqlite"]
 local-embed = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
 # Load `KnowledgeConfig` from YAML.
 yaml = ["graphrt-core/yaml"]
+# Regular-expression chunk separators (`{ regex: "..." }` in `chunking.separators`).
+regex = ["dep:regex"]
 # Ingest PDF / Office / spreadsheet / HTML / EPUB / email files via graphrt-doc.
 doc = ["dep:graphrt-doc"]
 
@@ -40,6 +42,7 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 indexmap.workspace = true
+regex = { version = "1", optional = true, default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "json"] }
 sha2 = { version = "0.11", optional = true, default-features = false }
 candle-core = { version = "0.11", optional = true, default-features = false }

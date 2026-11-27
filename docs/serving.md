@@ -759,7 +759,7 @@ UI (datasets, documents, chunks, retrieval testing).
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /v1/knowledge/datasets` | `{datasets: [{id, name, description, managed, runtime, store, embedder, chunking}]}`. `managed` is false for datasets served by an external retriever (read-only); `runtime` is true for datasets created over the API; `chunking` is `{max_chars, overlap, markdown, parent_max_chars}`. |
+| `GET /v1/knowledge/datasets` | `{datasets: [{id, name, description, managed, runtime, store, embedder, chunking}]}`. `managed` is false for datasets served by an external retriever (read-only); `runtime` is true for datasets created over the API; `chunking` is `{max_chars, overlap, markdown, parent_max_chars}` plus `separators`, `min_chars` and `split_pages` when they are set. |
 | `GET /v1/knowledge/resources` | `{stores, embedders, rerankers}`: the names declared in the knowledge config that new datasets can use. |
 | `POST /v1/knowledge/datasets` | Create a dataset: `{id, name?, description?, store, embedder, reranker?, chunking?}` naming resources from the config (201). Ids are 1–64 ASCII letters, digits, `-`, `_` or `.`. |
 | `DELETE /v1/knowledge/datasets/{dataset}` | Delete a dataset created over the API together with its documents: `{dataset, deleted_chunks}`. Datasets declared in the config answer 409 (edit the config instead). |
@@ -783,6 +783,23 @@ datasets:
   - { id: handbook, store: local, embedder: local,
       chunking: { max_chars: 400, parent_max_chars: 1600 } }
 ```
+
+The other chunking keys:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `max_chars` | `1000` | Largest chunk, in characters (about 4 per token). |
+| `overlap` | `100` | Characters of the previous chunk repeated at the start of the next (at most half of `max_chars`). |
+| `markdown` | `true` | Start a new chunk at every Markdown heading and keep the heading path as `heading` metadata. |
+| `separators` | paragraph, line, sentence, clause, word | Where to split, coarse to fine. A string splits after each occurrence; `{ regex: "(?m)^Article \\d+" }` splits before each match (feature `regex`, on by default). Splitting by character always comes last, so no chunk exceeds `max_chars`. At most 20 separators of up to 200 characters; empty strings and patterns that match empty text are refused. |
+| `min_chars` | `0` | Merge a piece shorter than this with its neighbour when the result still fits in `max_chars`. |
+| `split_pages` | `false` | Never let a chunk span two PDF pages. |
+
+Every chunk records `chunk_index`, `char_start` and `char_end` (its own text,
+without the overlap, as character offsets in the document with page markers
+removed), `heading`, and `page` / `pages` for PDFs. A configuration that breaks
+these rules fails when the knowledge config loads, and `Ingestor::ingest`
+refuses it before anything is stored.
 
 Datasets created over the API pick their store, embedder and reranker from the
 names the knowledge config declares, so credentials and endpoints stay in the
