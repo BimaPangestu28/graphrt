@@ -94,6 +94,9 @@ pub struct AppState {
     /// The chat page and widget (`--chat`).
     #[cfg(feature = "web-chat")]
     pub(super) chat: Option<Arc<super::chat::Chat>>,
+    /// The messaging channels (`--channel`).
+    #[cfg(feature = "channels")]
+    pub(super) channels: Option<Arc<crate::channels::Channels>>,
     /// Paired monitoring devices (`--devices`).
     #[cfg(feature = "devices")]
     pub(super) devices: Option<Arc<crate::devices::Devices>>,
@@ -183,6 +186,8 @@ impl AppState {
             conversations: None,
             #[cfg(feature = "web-chat")]
             chat: None,
+            #[cfg(feature = "channels")]
+            channels: None,
             #[cfg(feature = "devices")]
             devices: None,
             #[cfg(feature = "devices")]
@@ -475,6 +480,33 @@ impl AppState {
     pub fn with_chat(mut self, chat: Option<super::chat::Chat>) -> Self {
         self.chat = chat.map(Arc::new);
         self
+    }
+
+    /// Talk to customers on messaging channels (`--channel`). Call after
+    /// [`AppState::with_conversations`]: every customer has a conversation.
+    /// Once the state is shared, [`crate::channels::Channels::start`] begins receiving.
+    #[cfg(feature = "channels")]
+    pub fn with_channels(mut self, channels: Option<Arc<crate::channels::Channels>>) -> Self {
+        self.channels = channels;
+        self
+    }
+
+    /// The messaging channels, when the server has any.
+    #[cfg(feature = "channels")]
+    pub fn channels(&self) -> Option<&Arc<crate::channels::Channels>> {
+        self.channels.as_ref()
+    }
+
+    /// The workspace the served agents use.
+    #[cfg(all(feature = "channels", feature = "files"))]
+    pub(crate) fn workspace(&self) -> Option<&crate::setup::ServedWorkspace> {
+        self.workspace.as_ref()
+    }
+
+    /// Whether workflow `name` is served.
+    #[cfg(feature = "channels")]
+    pub fn serves(&self, name: &str) -> bool {
+        self.workflows.contains_key(name)
     }
 
     /// Pair monitoring devices (`--devices`). `public_url` is the address they

@@ -95,6 +95,8 @@ pub(crate) use errors::store_error;
 pub use events::EventsQuery;
 #[cfg(feature = "trust-gateway")]
 pub(crate) use execute::to_values;
+#[cfg(feature = "channels")]
+pub(crate) use execute::{ChannelTurn, TurnRefused, start_channel_turn};
 pub(crate) use execute::{Launch, launch_detached, traceparent};
 #[cfg(feature = "web-chat")]
 pub use guests::{GuestTokenError, Guests, IssuedToken};

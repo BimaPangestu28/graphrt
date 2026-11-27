@@ -83,6 +83,9 @@ fn summary(conversation: &Conversation, to_key: bool) -> serde_json::Value {
     if to_key && let (Some(object), Some(owner)) = (json.as_object_mut(), &conversation.owner) {
         object.insert("owner".into(), owner.as_str().into());
     }
+    if to_key && let (Some(object), Some(channel)) = (json.as_object_mut(), &conversation.channel) {
+        object.insert("channel".into(), serde_json::to_value(channel).unwrap_or_default());
+    }
     json
 }
 
