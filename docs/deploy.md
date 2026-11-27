@@ -144,6 +144,10 @@ gateway, use `graphrt deploy --target fly --direct` ([deploy-direct.md](deploy-d
 it runs the published image with the agent file delivered in the Machine
 config, Fly secrets, an API key and scale-to-zero.
 
+For one agent on Google Cloud Run (agent file and store on a Cloud Storage
+volume) or Amazon ECS Fargate (load balancer, EFS store), with the commands
+verified on real accounts, see [deploy-cloud-run-ecs.md](deploy-cloud-run-ecs.md).
+
 A complete service image, `graphrt serve` with only the `llm`, `serve`, `jwt`
 and `plugins` features plus a Node.js plugin on distroless Node, with Fly.io,
 Cloud Run and VPS notes, is in

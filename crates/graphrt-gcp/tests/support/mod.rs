@@ -1,7 +1,7 @@
 //! Fake Google endpoints for the conformance suite: one scripted server (from
 //! `graphrt-provider-api`'s harness) emulating the metadata server, the OAuth
 //! token endpoint, the Cloud Run Admin API v2 and Secret Manager, plus an axum
-//! "Cloud Run instance" running a fake agent (`/healthz`, streaming runs).
+//! "Cloud Run instance" running a fake agent (`/readyz`, streaming runs).
 
 #![allow(dead_code)]
 
@@ -414,9 +414,9 @@ pub struct FakeInstance {
 
 pub struct InstanceState {
     pub healthz_calls: AtomicU32,
-    /// Delay of the first `/healthz` (cold start), in milliseconds.
+    /// Delay of the first `/readyz` wake probe (cold start), in milliseconds.
     pub cold_start_ms: AtomicU64,
-    /// Status `/healthz` answers (200 by default; 429 = no instance available).
+    /// Status the `/readyz` wake probe answers (200 by default; 429 = no instance available).
     pub healthz_status: AtomicU32,
     /// Audience every invoker token must carry.
     pub expected_audience: Mutex<Option<String>>,
@@ -439,7 +439,9 @@ impl FakeInstance {
             rejected_tokens: AtomicU32::new(0),
         });
         let app = Router::new()
-            .route("/healthz", get(healthz))
+            .route("/readyz", get(healthz))
+            // Cloud Run's front end answers `/healthz` itself, before the container.
+            .route("/healthz", get(|| async { StatusCode::NOT_FOUND }))
             .route("/internal/v1/runs", post(stream_run))
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

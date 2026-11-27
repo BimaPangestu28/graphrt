@@ -8,6 +8,20 @@ use indexmap::IndexMap;
 use crate::error::LlmError;
 use crate::types::ChatModel;
 
+/// The value of the variable `name`, without surrounding whitespace; `None`
+/// when it is unset or blank.
+///
+/// Keys mounted from files (Secret Manager, Kubernetes secrets, `--data-file`
+/// uploads) usually end with a newline, which is never part of a key and makes
+/// an HTTP header invalid.
+pub(crate) fn env_value(vars: &[(String, String)], name: &str) -> Option<String> {
+    vars.iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
 /// Maps provider names (as used in node configs: `model.provider`) to models.
 ///
 /// Register it with `graphrt_core::Services::insert(registry)`.
@@ -173,7 +187,7 @@ impl ModelRegistry {
     /// Like [`ModelRegistry::from_env`] but reads from the given variables.
     #[cfg(feature = "http")]
     pub fn from_vars(vars: &[(String, String)]) -> Result<Self, LlmError> {
-        let get = |k: &str| vars.iter().find(|(name, v)| name == k && !v.is_empty()).map(|(_, v)| v.clone());
+        let get = |k: &str| env_value(vars, k);
         #[allow(unused_mut)]
         let mut registry = Self::new();
 
@@ -199,11 +213,12 @@ impl ModelRegistry {
             for (name, value) in vars {
                 let Some(rest) = name.strip_prefix(PREFIX) else { continue };
                 let Some(provider) = rest.strip_suffix("_BASE_URL") else { continue };
+                let value = value.trim();
                 if value.is_empty() || provider.is_empty() {
                     continue;
                 }
                 let key = get(&format!("{PREFIX}{provider}_API_KEY"));
-                let cfg = OpenAiConfig::new(value.clone(), key);
+                let cfg = OpenAiConfig::new(value.to_owned(), key);
                 // A duplicate (e.g. `..._OPENAI_BASE_URL` next to `OPENAI_API_KEY`) is an error, not an override.
                 registry.try_add(provider.to_ascii_lowercase(), Arc::new(OpenAiModel::new(cfg)?))?;
             }
@@ -317,6 +332,19 @@ mod tests {
             ("GRAPHRT_OPENAI_COMPAT_OPENAI_BASE_URL".to_owned(), "https://other/v1".to_owned()),
         ];
         assert!(matches!(ModelRegistry::from_vars(&vars), Err(LlmError::Config(_))));
+    }
+
+    #[test]
+    fn env_values_lose_the_newline_of_a_mounted_secret() {
+        let vars = vec![
+            ("KEY".to_owned(), "sk-abc\n".to_owned()),
+            ("PADDED".to_owned(), "  sk-xyz \r\n".to_owned()),
+            ("BLANK".to_owned(), " \n".to_owned()),
+        ];
+        assert_eq!(env_value(&vars, "KEY").as_deref(), Some("sk-abc"));
+        assert_eq!(env_value(&vars, "PADDED").as_deref(), Some("sk-xyz"));
+        assert_eq!(env_value(&vars, "BLANK"), None);
+        assert_eq!(env_value(&vars, "MISSING"), None);
     }
 
     #[cfg(all(feature = "openai", feature = "anthropic"))]

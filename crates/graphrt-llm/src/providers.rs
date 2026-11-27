@@ -586,7 +586,7 @@ fn missing(ctx: &dyn Fn(&str) -> String, var: &str) -> LlmError {
 }
 
 fn lookup(vars: &[(String, String)], name: &str) -> Option<String> {
-    vars.iter().find(|(k, v)| k == name && !v.is_empty()).map(|(_, v)| v.clone())
+    crate::registry::env_value(vars, name)
 }
 
 /// Replace `${VAR}` references. Returns the name of the first missing variable on error.
