@@ -535,3 +535,39 @@ async fn the_workflow_can_set_or_disable_the_idempotency_key() {
     let off = serde_json::json!({ "method": "POST", "idempotency_key": false });
     assert!(!raw_request_with_run_id(off).await.contains("idempotency-key"));
 }
+
+#[tokio::test]
+async fn a_request_says_who_is_asking_unless_the_node_sets_its_own_user_agent() {
+    let replies = vec![Reply::text("200 OK", "text/plain", "one"), Reply::text("200 OK", "text/plain", "two")];
+    let (base, mut rx) = serve(replies).await;
+
+    run_with(serde_json::json!({"method": "get", "url": format!("{base}/a")}), EgressPolicy::trusted()).await.unwrap();
+    let default_request = rx.recv().await.unwrap().to_ascii_lowercase();
+    let expected = format!("user-agent: {}", graphrt_http::DEFAULT_USER_AGENT).to_ascii_lowercase();
+    assert!(default_request.contains(&expected), "{default_request}");
+
+    let own = serde_json::json!({"method": "get", "url": format!("{base}/b"), "headers": "User-Agent: my-shop/1.0"});
+    run_with(own, EgressPolicy::trusted()).await.unwrap();
+    let own_request = rx.recv().await.unwrap().to_ascii_lowercase();
+    assert!(own_request.contains("user-agent: my-shop/1.0"), "{own_request}");
+    assert!(!own_request.contains("user-agent: graphrt/"), "{own_request}");
+}
+
+#[tokio::test]
+async fn an_html_page_also_comes_as_readable_text() {
+    let page = "<html><head><title>Menu</title><script>track()</script></head>\
+                <body><h1>Lunch</h1><p>Nasi goreng &amp; tea</p></body></html>";
+    let replies = vec![
+        Reply::text("200 OK", "text/html; charset=utf-8", page),
+        Reply::text("200 OK", "application/json", r#"{"dish":"<b>soto</b>"}"#),
+    ];
+    let (base, _rx) = serve(replies).await;
+
+    let html = run_with(serde_json::json!({"url": format!("{base}/menu")}), EgressPolicy::trusted()).await.unwrap();
+    assert_eq!(html.outputs.get("body"), Some(&Value::from(page)));
+    assert_eq!(html.outputs.get("text"), Some(&Value::from("Lunch\nNasi goreng & tea")));
+
+    // Anything that is not HTML is already text: `text` is the body, markup-like content included.
+    let json = run_with(serde_json::json!({"url": format!("{base}/dish")}), EgressPolicy::trusted()).await.unwrap();
+    assert_eq!(json.outputs.get("text"), Some(&Value::from(r#"{"dish":"<b>soto</b>"}"#)));
+}

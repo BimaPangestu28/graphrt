@@ -105,6 +105,11 @@ impl HttpClient {
     }
 }
 
+/// Sent when a request sets no `User-Agent` of its own. Many public sites (Wikipedia among
+/// them) refuse requests that do not say who is asking.
+pub const DEFAULT_USER_AGENT: &str =
+    concat!("graphrt/", env!("CARGO_PKG_VERSION"), " (+https://github.com/Graphrt/graphrt)");
+
 /// Use the small `ring` crypto backend. Installing fails harmlessly if the
 /// process already chose a provider.
 fn install_crypto_provider() {
@@ -130,6 +135,7 @@ fn build(policy: &Arc<EgressPolicy>, verify_tls: bool, follow_redirects: bool) -
         })
     };
     let mut builder = reqwest::Client::builder()
+        .user_agent(DEFAULT_USER_AGENT)
         .no_proxy()
         .redirect(redirect_policy)
         .dns_resolver(Arc::new(GuardedResolver { policy: Arc::clone(policy) }))
