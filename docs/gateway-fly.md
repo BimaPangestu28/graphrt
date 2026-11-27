@@ -66,7 +66,11 @@ gateway wake(d, n)                      gateway release(r)
    `api_base_url = "http://_api.internal:4280"`. Outside Fly, use
    `https://api.machines.dev` plus a WireGuard tunnel for 6PN.
 2. **Agents listen on IPv6.** 6PN is IPv6, so the agent's command must bind
-   `[::]`, for example `serve /app/workflows --addr [::]:8080 --trust-gateway`.
+   `[::]`, for example `graphrt serve /app/workflows --addr [::]:8080 --trust-gateway`.
+   The command is the whole argv, as for the other providers: its program
+   becomes the Machine's `init.entrypoint` and the rest its `init.cmd`. A
+   command that starts with a graphrt subcommand (`serve ...`, the form shown
+   here up to 0.6.3) keeps the image's own entrypoint (`graphrt`).
    The pool has no public `services`: only the gateway can reach it. The
    gateway signs each call (HMAC per deployment). 6PN is shared by the whole
    organization, so it is not a trust boundary by itself.
