@@ -57,7 +57,8 @@ pub fn prepare_for_model(bytes: Vec<u8>, limits: &ImageLimits) -> Result<ModelIm
     limits.check_dimensions(info.width, info.height)?;
 
     let fits_edge = info.width.max(info.height) <= limits.model_max_edge;
-    if fits_edge && !info.needs_rotation() {
+    // A format this crate does not write (HEIC) is always decoded and encoded again.
+    if fits_edge && !info.needs_rotation() && info.format.is_writable() {
         let (bytes, change) = if limits.strip_metadata {
             // Stripping also cuts off anything appended after the image, so it runs
             // even when the header shows no metadata.

@@ -387,6 +387,7 @@ See [learning.md](learning.md).
 | Python subprocess | `--allow-python-subprocess` | off |
 | Agent file workspace | `--workspace`, `--workspace-read-only`, `--workspace-per-user` | off |
 | Image tools and generation | `--image-tools`, `--image-model` | off |
+| HEIC input | cargo feature `image-heic` | not compiled |
 | Image limits | `ImageLimits` (embedders) | 20 MiB, 25 megapixels, 1,568 px to models, metadata removed |
 | Concurrent runs | `--max-active-runs` | 256 |
 | End-user JWTs, per-user rate limit | `--verify-jwt`, `--jwt-*`, `--user-rate-limit` | off |

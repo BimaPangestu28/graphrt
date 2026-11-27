@@ -69,7 +69,12 @@ fn spoofed_and_unsupported_content_is_refused() {
     ];
     for (bytes, expected) in cases {
         let error = probe(bytes).unwrap_err();
-        let ImageError::UnsupportedFormat(message) = &error else { panic!("{error:?}") };
+        let message = match &error {
+            ImageError::UnsupportedFormat(message) => message.clone(),
+            // A build that decodes HEIC reads the header and finds no image in these 24 bytes.
+            ImageError::Malformed { format: ImageFormat::Heic, .. } if cfg!(feature = "heic") => "HEIC".to_owned(),
+            other => panic!("{other:?}"),
+        };
         assert!(message.contains(expected), "{message}");
         assert!(prepare_for_model(bytes.to_vec(), &ImageLimits::default()).is_err());
         assert!(transform(bytes, &ImageLimits::default(), Default::default()).is_err());

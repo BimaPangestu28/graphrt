@@ -242,7 +242,7 @@ attached it, an agent found it in the workspace or a generator returned it:
 
 1. **What is it?** Only PNG, JPEG, GIF and WebP pass, judged by their first
    bytes. An SVG or an HTML page sent as `image/png` is refused, and so is a
-   HEIC photo (convert it to JPEG first).
+   HEIC photo unless the build [decodes HEIC](#heic-and-avif).
 2. **How large?** At most 20 MiB, 12,000 pixels per side and 25 megapixels,
    read from the header. An image that declares more is refused before any
    decoder runs, so a small file with a huge canvas costs microseconds.
@@ -343,6 +343,38 @@ Decoding needs about four bytes per pixel, so the pixel limit is also the
 memory limit: 25 megapixels is about 100 MiB while one image is processed.
 Lower it on small devices.
 
+### HEIC and AVIF
+
+Phones take photos as HEIC. The default build refuses them with a message
+that says to convert the photo first. A build with the `image-heic` feature
+of the CLI (`heic` in `graphrt-image`) accepts them:
+
+```sh
+cargo install graphrt-cli --features image-heic
+```
+
+- A HEIC photo goes through the same gate: type from its first bytes, size
+  from its header before any decoder runs, then decoding with the same pixel
+  limit.
+- It is never passed on as HEIC. A model gets a JPEG (a PNG when the photo
+  has transparency), and `image/convert`, `resize` and `thumbnail` write
+  JPEG, PNG or WebP. Nothing of the container survives that, so EXIF, XMP
+  and the depth and gain maps a phone adds are gone.
+- Rotation stored in the file is applied, so the picture is upright.
+- Graphrt does not write HEIC.
+
+The feature is off by default for a reason that is not technical. HEVC, the
+codec inside HEIC, is covered by patent pools in many countries whatever the
+licence of the software is. Whether to ship a decoder is a decision for
+whoever builds and distributes the binary, so it is not made for you. The
+decoder itself (`heifer`, MIT or Apache-2.0) is pure Rust without `unsafe`
+and adds about 0.9 MiB.
+
+AVIF is not decoded. The safe Rust AV1 decoders that exist today are under
+the AGPL, and the alternatives are a C library or a machine translated one
+with assembly. An AVIF image is refused with a message that says to convert
+it. See the [design page](files-and-images-design.md) for the comparison.
+
 ### Images from Rust
 
 ```rust
@@ -364,6 +396,7 @@ tools.add("image", Arc::new(ImageTools::new(workspace.clone())));
 | `process` | on | Decode, resize and encode (pure Rust PNG, JPEG, GIF, WebP) |
 | `tools` | on | `ImageTools`, over a `graphrt-files` workspace |
 | `generate-openai` | off | `OpenAiImages` |
+| `heic` | off | HEIC input, decoded in safe Rust and written as JPEG or PNG. See [HEIC and AVIF](#heic-and-avif). |
 
 Without `process` the crate has no dependency beyond `graphrt-core`: it
 still checks types and pixel counts and removes metadata, and it refuses an
