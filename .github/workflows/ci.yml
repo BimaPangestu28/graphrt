@@ -176,14 +176,21 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     # Size, idle RSS and start-up budgets of Linux musl builds (bench/budgets.toml),
     # plus a SIGTERM drain of graphrt running as PID 1 (scripts/test-pid1.sh).
+    #
+    # A pull request and the merge queue check x86_64 only. The aarch64 entry takes
+    # 4 to 6 minutes, so it runs on pushes to main and on manual runs: an aarch64
+    # budget that a pull request breaks shows on main after the merge. On a pull
+    # request the entry is left out of the matrix (not skipped), so `ci-ok` sees
+    # one `budgets` result either way.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+        include: >-
+          ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'merge_group')
+          && '[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-musl"}]'
+          || '[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-musl"},{"os":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-musl"}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
