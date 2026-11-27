@@ -258,6 +258,10 @@ quotas:
 They are config, so a plan change is a config change and a restart. A
 person over a quota gets an error that names the limit.
 
+`deploy/collab/hosted/` has the Kubernetes manifests of the hosted server
+(k3s, ingress-nginx, cert-manager), its deploy script, daily backups with a
+restore script, and a smoke test of the live server.
+
 ## Plugin services
 
 Plugins can run server side services for the workspaces that enable them,

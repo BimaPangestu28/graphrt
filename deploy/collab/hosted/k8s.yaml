@@ -1,0 +1,172 @@
+# Graphrt's hosted team server on a single node k3s with ingress-nginx and
+# cert-manager (ClusterIssuer letsencrypt-prod). deploy.sh fills IMAGE and
+# makes the Secret on the server. See README.md.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: graphrt-collab
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: collab-data
+  namespace: graphrt-collab
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: collab
+  namespace: graphrt-collab
+  labels: { app: collab }
+spec:
+  replicas: 1
+  # One process owns data_dir: stop the old pod before the new one starts.
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: collab }
+  template:
+    metadata:
+      labels: { app: collab }
+      annotations:
+        graphrt.com/config-hash: CONFIG_HASH
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        # local-path volumes are root owned: hand data_dir to the nonroot user.
+        - name: data-owner
+          image: busybox:1.37
+          command: ["sh", "-c", "chown 65532:65532 /data && chmod 0700 /data"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            capabilities: { drop: [ALL], add: [CHOWN, FOWNER] }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          resources:
+            limits: { cpu: 100m, memory: 32Mi }
+      containers:
+        - name: collab
+          image: IMAGE
+          imagePullPolicy: IfNotPresent
+          args: ["collab", "serve", "--config", "/etc/graphrt/collab.yaml"]
+          envFrom:
+            - secretRef: { name: collab-keys }
+          ports:
+            - { name: http, containerPort: 8790 }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { cpu: "1", memory: 256Mi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: config, mountPath: /etc/graphrt, readOnly: true }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: collab-data }
+        - name: config
+          configMap: { name: collab-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: collab
+  namespace: graphrt-collab
+spec:
+  selector: { app: collab }
+  ports:
+    - { name: http, port: 8790, targetPort: http }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: collab
+  namespace: graphrt-collab
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Sync sessions are WebSockets that stay open while people edit.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # The server refuses larger bodies itself (256 KiB REST, max_message_bytes per sync message).
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [collab.graphrt.com]
+      secretName: collab-graphrt-com-tls
+  rules:
+    - host: collab.graphrt.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: collab, port: { name: http } }
+---
+# A copy of data_dir every day at 02:30, kept 14 days on the host
+# (/var/backups/graphrt-collab). A copy taken while the server runs is
+# consistent per project (docs/collab.md, Operations).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: collab-backup
+  namespace: graphrt-collab
+spec:
+  schedule: "30 2 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          containers:
+            - name: backup
+              image: busybox:1.37
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+                  tar -czf "/backups/collab-$stamp.tar.gz.part" -C /data .
+                  mv "/backups/collab-$stamp.tar.gz.part" "/backups/collab-$stamp.tar.gz"
+                  chmod 0600 "/backups/collab-$stamp.tar.gz"
+                  find /backups -name 'collab-*.tar.gz' -mtime +14 -delete
+                  ls -l /backups
+              resources:
+                limits: { cpu: 500m, memory: 128Mi }
+              volumeMounts:
+                - { name: data, mountPath: /data, readOnly: true }
+                - { name: backups, mountPath: /backups }
+          volumes:
+            - name: data
+              persistentVolumeClaim: { claimName: collab-data }
+            - name: backups
+              hostPath: { path: /var/backups/graphrt-collab, type: DirectoryOrCreate }
