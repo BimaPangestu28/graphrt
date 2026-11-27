@@ -19,6 +19,11 @@ l_3f9a01c2b7d4e611  [approved]  Look up the order before you answer.
 Nothing is trained and no instruction is rewritten. Approved lessons are added
 to a bounded section of the agent's system prompt, after the instruction.
 
+When such a run loads a skill, the result of loading it ends with one sentence
+saying that the skill adds to the instructions and the learned notes still
+apply. Without it a model that has just read a skill tends to follow the skill
+alone and leave the notes out.
+
 ## How it works
 
 ```text

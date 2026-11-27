@@ -438,6 +438,10 @@ struct AgentState {
     #[cfg(feature = "skills")]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     loaded_skills: Vec<String>,
+    /// This run reads learned notes: a skill it loads is told they still apply.
+    #[cfg(all(feature = "skills", feature = "learning"))]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    has_notes: bool,
 }
 
 /// Why the loop ended.
@@ -767,7 +771,13 @@ impl AgentNode {
                 let images = self.config.vision.prepared_image_parts(&ctx).await?;
                 #[cfg(not(feature = "vision-preparer"))]
                 let images = self.config.vision.image_parts(&ctx.pool)?;
-                self.initial_state(&ctx, &[&skill_catalog, &notes], images)?
+                #[allow(unused_mut)]
+                let mut state = self.initial_state(&ctx, &[&skill_catalog, &notes], images)?;
+                #[cfg(all(feature = "skills", feature = "learning"))]
+                {
+                    state.has_notes = !notes.is_empty();
+                }
+                state
             }
         };
         let (final_text, stop) = loop {
@@ -1029,18 +1039,23 @@ struct VisibleResult {
 /// Append a visible tool result to the conversation and the log.
 fn push_result(state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, result: VisibleResult) {
     let bound = bound_tool(tools, call);
+    #[allow(unused_mut)]
+    let mut shown = result.text.clone();
     #[cfg(feature = "skills")]
     if !result.is_error
         && let Some(skill) = loaded_skill(bound, call)
-        && !state.loaded_skills.contains(&skill)
     {
-        state.loaded_skills.push(skill);
+        // The skill is the newest text the model reads, and a model then tends to
+        // follow it alone. The notes in the system message are named again.
+        #[cfg(feature = "learning")]
+        if state.has_notes {
+            shown.push_str(NOTES_STILL_APPLY);
+        }
+        if !state.loaded_skills.contains(&skill) {
+            state.loaded_skills.push(skill);
+        }
     }
-    state.messages.push(Message::tool_with_images(
-        call.id.clone(),
-        result.text.clone(),
-        result.images.iter().map(ToolImage::to_url),
-    ));
+    state.messages.push(Message::tool_with_images(call.id.clone(), shown, result.images.iter().map(ToolImage::to_url)));
     state.log.push(ToolLogEntry {
         id: call.id.clone(),
         name: call.name.clone(),
@@ -1055,6 +1070,14 @@ fn push_result(state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, res
         files: result.files,
     });
 }
+
+/// Follows the content of a loaded skill when the run also reads learned notes.
+/// Without it a model that has just read a skill follows the skill alone: measured
+/// with a small hosted model, an approved note was followed in 3 of 12 runs, and in
+/// 12 of 12 with this sentence, the skill's own steps kept in both.
+#[cfg(all(feature = "skills", feature = "learning"))]
+const NOTES_STILL_APPLY: &str = "\nThis skill adds to your instructions and does not replace them: the learned notes in \
+your instructions still apply. Keep every step of the skill, including how it says to end the reply.";
 
 /// The skill a call loads: the `name` argument of the skill tool `load_skill`.
 /// Only the skill tools bound by [`AgentNode::attach_skills`] count, never a
