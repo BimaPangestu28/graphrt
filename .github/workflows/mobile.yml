@@ -21,13 +21,20 @@ on:
   # jobs of a pull request that does not touch what they build, and they report
   # as skipped (`mobile` in .github/path-filters.yml).
   pull_request:
+    # `labeled` and `unlabeled`: the `macos` label takes effect when it is set, not at the next push.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  # The merge queue runs what the pull request ran (`merge_group` takes no path filter).
+  merge_group:
+  schedule:
+    # Every night (02:47 UTC), so an iOS failure is seen within a day.
+    - cron: "47 2 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 # A new push to a pull request cancels the run of its previous push. Every other run
-# (main, manual) gets a group of its own, so it is never cancelled or replaced.
+# (main, merge queue, nightly, manual) gets a group of its own, so it is never cancelled or replaced.
 concurrency:
   group: mobile-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -42,14 +49,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      mobile: ${{ github.event_name != 'pull_request' || steps.filter.outputs.mobile == 'true' }}
+      mobile: ${{ !(github.event_name == 'pull_request' || github.event_name == 'merge_group') || steps.filter.outputs.mobile == 'true' }}
     steps:
-      - if: github.event_name == 'pull_request'
+      - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: .github
-      - if: github.event_name == 'pull_request'
+      - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         id: filter
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
@@ -130,11 +137,18 @@ jobs:
   ios:
     name: iOS (device + simulator, simulator smoke test)
     needs: changes
-    if: needs.changes.outputs.mobile == 'true'
-    # Pull requests run on Intel (macos-15-intel): the arm64 pool is short of
-    # capacity and left PR jobs queued for an hour. The simulator then runs
-    # x86_64, so the xcframework gets an x86_64 simulator slice and the app is
-    # built for x86_64. main and manual runs keep arm64 (macos-15).
+    # Optional for a pull request: macOS runners are slow to start and made every
+    # pull request wait. It runs on pushes to main, every night, on manual runs and
+    # on a pull request with the `macos` label (set it when the change touches the
+    # Swift binding or the iOS sample). It never runs in the merge queue and
+    # `mobile-ok` does not need it: an iOS failure on main shows as a failed run
+    # there and does not block a merge.
+    if: >-
+      needs.changes.outputs.mobile == 'true' && github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'macos'))
+    # A labelled pull request runs on Intel (macos-15-intel): the arm64 pool is
+    # short of capacity and left PR jobs queued for an hour. The simulator then runs
+    # x86_64, so the xcframework gets an x86_64 simulator slice and the app is built
+    # for x86_64. main, nightly and manual runs keep arm64 (macos-15).
     runs-on: ${{ github.event_name == 'pull_request' && 'macos-15-intel' || 'macos-15' }}
     timeout-minutes: 45
     env:
@@ -186,3 +200,21 @@ jobs:
           path: ${{ env.DIAGNOSTICS_DIR }}
           if-no-files-found: ignore
           retention-days: 14
+
+  # The one check a ruleset requires for this workflow: its name never changes when
+  # a job or a matrix entry is added, renamed or removed. It passes when every job
+  # it needs succeeded or was skipped (by the `changes` job), and fails when one
+  # failed or was cancelled. `ios` is not needed on purpose.
+  mobile-ok:
+    name: mobile-ok
+    if: always()
+    needs: [changes, android]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every needed job succeeded or was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null

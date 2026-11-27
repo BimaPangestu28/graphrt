@@ -39,6 +39,7 @@ pub mod store_conformance;
 #[cfg(feature = "tokio")]
 pub mod task;
 pub mod template;
+pub mod text_model;
 pub mod tool;
 pub mod tool_node;
 pub mod ui;

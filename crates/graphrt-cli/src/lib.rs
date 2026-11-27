@@ -169,7 +169,7 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         #[cfg(any(feature = "plugins", feature = "wasm"))]
         Command::Plugin(args) => plugin::plugin(args),
         #[cfg(feature = "skills")]
-        Command::Skill(args) => skill_cmd::skill(args),
+        Command::Skill(args) => block_on_current_thread(skill_cmd::skill(args)),
         #[cfg(feature = "learning")]
         Command::Learn(args) => block_on_current_thread(learn_cmd::learn(args)),
         Command::Nodes(args) => catalog::nodes(&args),

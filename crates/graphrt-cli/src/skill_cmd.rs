@@ -10,18 +10,27 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use graphrt_skill::{
-    Discovered, Error as SkillError, Finding, Grant, InstallOptions, OriginKind, Severity, SkillDetails, SkillEntry,
-    SkillOrigin, SkillStore, discover,
+    Discovered, DraftRequest, DraftSource, Error as SkillError, Finding, Grant, InstallOptions, OriginKind, Severity,
+    SkillDetails, SkillEntry, SkillOrigin, SkillStore, Turn, discover, draft_skill,
 };
 
 use crate::args::{SkillCmdArgs, SkillCommand, SkillGrantArgs};
 use crate::error::{CliError, EXIT_OK};
 
 /// Execute a `graphrt skill` subcommand.
-pub fn skill(args: SkillCmdArgs) -> Result<u8, CliError> {
+pub async fn skill(args: SkillCmdArgs) -> Result<u8, CliError> {
+    // Drafting calls a model first: do it before taking the output lock.
+    let command = match args.command {
+        SkillCommand::Draft { model, describe, conversation, tools, out, providers } => {
+            let request = DraftArgs { model, describe, conversation, tools, out, providers };
+            return draft(request, args.json).await;
+        }
+        other => other,
+    };
     let store = open_store(args.dir)?;
     let mut out = std::io::stdout().lock();
-    match args.command {
+    match command {
+        SkillCommand::Draft { .. } => Ok(EXIT_OK),
         SkillCommand::List => list(&store, args.json, &mut out),
         SkillCommand::Inspect { skill } => inspect(&store, &skill, args.json, &mut out),
         SkillCommand::Install { path, grants, accept_findings, replace } => {
@@ -48,6 +57,77 @@ pub fn skill(args: SkillCmdArgs) -> Result<u8, CliError> {
             Ok(EXIT_OK)
         }
     }
+}
+
+struct DraftArgs {
+    model: String,
+    describe: Option<String>,
+    conversation: Option<PathBuf>,
+    tools: Vec<String>,
+    out: PathBuf,
+    providers: Option<PathBuf>,
+}
+
+/// `graphrt skill draft`: ask a model for a skill and write it as a folder.
+async fn draft(args: DraftArgs, json: bool) -> Result<u8, CliError> {
+    let source = match (&args.describe, &args.conversation) {
+        (Some(text), _) => DraftSource::Description(text.clone()),
+        (None, Some(path)) => DraftSource::Conversation(read_conversation(path)?),
+        (None, None) => return Err(CliError::usage("pass `--describe <TEXT>` or `--conversation <FILE>`")),
+    };
+    let (provider, name) = crate::setup::parse_model_override(&args.model)?;
+    let options = crate::setup::ServiceOptions { providers: args.providers.clone(), ..Default::default() };
+    let services = crate::setup::services(&options, graphrt_core::tool::ToolRegistry::new()).await?;
+    let registry = services
+        .get::<graphrt_llm::ModelRegistry>()
+        .ok_or_else(|| CliError::failed("no model providers are configured"))?;
+    let chat = registry.get(&provider).map_err(|error| CliError::usage(error.to_string()))?;
+    let model = graphrt_llm::text_model::ChatTextModel::new(chat, name);
+    let request = DraftRequest { source, available_tools: args.tools };
+    let draft = draft_skill(&model, &request).await.map_err(failed)?;
+    let dir = draft.write_to(&args.out).map_err(failed)?;
+    let mut out = std::io::stdout().lock();
+    if json {
+        let value = serde_json::json!({ "dir": dir, "draft": draft });
+        return print_json(&value, &mut out);
+    }
+    writeln!(out, "wrote a draft of skill `{}` to {}", draft.name, dir.display()).map_err(io_error)?;
+    writeln!(out, "  {}", draft.description).map_err(io_error)?;
+    if !draft.requested_tools.is_empty() {
+        writeln!(out, "  asks for tools: {} (none is granted by installing)", draft.requested_tools.join(", "))
+            .map_err(io_error)?;
+    }
+    print_findings(&draft.findings, &mut out)?;
+    writeln!(
+        out,
+        "read and edit {}, then run `graphrt skill install {}`",
+        dir.join("SKILL.md").display(),
+        dir.display()
+    )
+    .map_err(io_error)?;
+    Ok(EXIT_OK)
+}
+
+/// An example conversation from a JSON file: an array of objects with `role`
+/// and `content` (or `text`). Other shapes are usage errors.
+fn read_conversation(path: &Path) -> Result<Vec<Turn>, CliError> {
+    const MAX_BYTES: u64 = 4 * 1024 * 1024;
+    let invalid = |why: &str| CliError::usage(format!("conversation file `{}`: {why}", path.display()));
+    let size = std::fs::metadata(path).map_err(|error| invalid(&error.to_string()))?.len();
+    if size > MAX_BYTES {
+        return Err(invalid("larger than 4 MiB"));
+    }
+    let text = std::fs::read_to_string(path).map_err(|error| invalid(&error.to_string()))?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| invalid(&error.to_string()))?;
+    let items = value.as_array().ok_or_else(|| invalid("expected a JSON array of {role, content} objects"))?;
+    let mut turns = Vec::with_capacity(items.len());
+    for item in items {
+        let role = item.get("role").and_then(serde_json::Value::as_str).unwrap_or("user");
+        let content = item.get("content").or_else(|| item.get("text")).and_then(serde_json::Value::as_str);
+        let content = content.ok_or_else(|| invalid("every entry needs a `content` string"))?;
+        turns.push(Turn { role: role.to_owned(), text: content.to_owned() });
+    }
+    Ok(turns)
 }
 
 struct InstallRequest<'a> {

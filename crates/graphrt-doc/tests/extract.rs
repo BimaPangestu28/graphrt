@@ -9,7 +9,7 @@ mod support;
 use std::io::{Cursor, Write};
 
 use graphrt_doc::{DocError, Format, Options, OutputFormat, extract, extract_detailed};
-use support::{pdf_with_content, zip_of};
+use support::{pdf_with_content, pdf_with_pages, zip_of};
 
 fn md() -> Options {
     Options::default().with_format(OutputFormat::Markdown)
@@ -141,6 +141,24 @@ fn pdf(text: &str) -> Vec<u8> {
 fn pdf_text() {
     let text = extract(&pdf("Hello PDF world"), None, None, &Options::default()).unwrap();
     assert_eq!(text.trim(), "Hello PDF world");
+}
+
+#[test]
+fn pdf_page_markers_number_every_page() {
+    let bytes = pdf_with_pages(&["Opening hours", "", "Delivery fees"]);
+    let plain = extract(&bytes, None, None, &Options::default()).unwrap();
+    assert!(!plain.contains(graphrt_doc::PAGE_MARKER_START), "markers are off by default: {plain:?}");
+    let marked = extract(&bytes, None, None, &Options::default().with_page_markers(true)).unwrap();
+    let first = marked.find(&graphrt_doc::page_marker(1)).expect("page 1 marker");
+    let third = marked.find(&graphrt_doc::page_marker(3)).expect("page 3 marker, counted past the empty page");
+    assert!(first < marked.find("Opening hours").unwrap());
+    assert!(third < marked.find("Delivery fees").unwrap());
+    assert!(!marked.contains(&graphrt_doc::page_marker(2)), "a page without text has no marker: {marked:?}");
+    let stripped: String = marked
+        .split(graphrt_doc::PAGE_MARKER_START)
+        .map(|part| part.split_once(graphrt_doc::PAGE_MARKER_END).map_or(part, |(_, rest)| rest))
+        .collect();
+    assert_eq!(stripped, plain, "without its markers the text is unchanged");
 }
 
 #[test]

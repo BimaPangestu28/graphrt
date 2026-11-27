@@ -2,7 +2,7 @@
 //! into `graphrt run`.
 
 #![cfg(feature = "skills")]
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -184,4 +184,96 @@ fn run_reads_the_default_store_for_agents_that_list_skills() {
     assert!(!output.status.success());
     let text = format!("{}{}", stdout(&output), stderr(&output));
     assert!(text.contains("skill `not-installed` is not installed"), "{text}");
+}
+
+/// An OpenAI-compatible endpoint that streams `answer` once and returns the
+/// request body it received.
+fn serve_completion(answer: &str) -> (String, std::thread::JoinHandle<String>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let chunk = serde_json::json!({"choices": [{"index": 0, "delta": {"content": answer}}]});
+    let done = serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]});
+    let body = format!("data: {chunk}\n\ndata: {done}\n\ndata: [DONE]\n\n");
+    let handle = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut received = Vec::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            let read = socket.read(&mut buffer).unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            received.extend_from_slice(&buffer[..read]);
+            let text = String::from_utf8_lossy(&received);
+            let Some(head_end) = text.find("\r\n\r\n") else { continue };
+            let length = text
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))
+                })
+                .unwrap_or(0usize);
+            if received.len() >= head_end + 4 + length {
+                break;
+            }
+        }
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        socket.write_all(head.as_bytes()).unwrap();
+        socket.write_all(body.as_bytes()).unwrap();
+        String::from_utf8_lossy(&received).into_owned()
+    });
+    (url, handle)
+}
+
+#[test]
+fn draft_writes_a_folder_that_installs_like_any_skill() {
+    let scratch = Scratch::new();
+    let answer = "---\nname: Refund Rules\ndescription: Decides refunds. Use when a customer asks for money back.\nallowed-tools: orders/lookup bank/transfer\n---\n# Refunds\n\n1. Look the order up.\n";
+    let (url, server) = serve_completion(answer);
+    let drafts = scratch.0.join("drafts");
+    let output = Command::new(env!("CARGO_BIN_EXE_graphrt"))
+        .args(["skill", "draft", "--model", "openai/gpt-test", "--tool", "orders/lookup", "--describe"])
+        .arg("When a customer asks for a refund, look the order up first.")
+        .arg("--out")
+        .arg(&drafts)
+        .env("OPENAI_API_KEY", "test-key")
+        .env("OPENAI_BASE_URL", &url)
+        .output()
+        .expect("spawn graphrt");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("wrote a draft of skill `refund-rules`"), "{text}");
+    assert!(text.contains("asks for tools: orders/lookup (none is granted by installing)"), "{text}");
+    let sent = server.join().unwrap();
+    assert!(sent.contains("look the order up first") && sent.contains("Available tools: orders/lookup"), "{sent}");
+
+    let dir = drafts.join("refund-rules");
+    let written = std::fs::read_to_string(dir.join("SKILL.md")).unwrap();
+    assert!(written.contains("allowed-tools: orders/lookup\n"), "the tool that was not offered is gone: {written}");
+
+    let installed = scratch.skill_cmd(&["install", path_text(&dir), "--json"]);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    let entries: serde_json::Value = serde_json::from_str(&stdout(&installed)).unwrap();
+    assert_eq!(entries[0]["name"], "refund-rules");
+    assert!(entries[0].get("grants").is_none(), "{entries}");
+}
+
+#[test]
+fn draft_needs_material_and_a_known_provider() {
+    let scratch = Scratch::new();
+    let nothing = Command::new(env!("CARGO_BIN_EXE_graphrt"))
+        .args(["skill", "draft", "--model", "openai/gpt-test"])
+        .output()
+        .expect("spawn graphrt");
+    assert_eq!(nothing.status.code(), Some(2), "{}", stderr(&nothing));
+    let bad = scratch.write("chat.json", "{\"role\": \"user\"}");
+    let shape = Command::new(env!("CARGO_BIN_EXE_graphrt"))
+        .args(["skill", "draft", "--model", "openai/gpt-test", "--conversation", path_text(&bad)])
+        .output()
+        .expect("spawn graphrt");
+    assert_eq!(shape.status.code(), Some(2));
+    assert!(stderr(&shape).contains("expected a JSON array"), "{}", stderr(&shape));
 }
