@@ -10,7 +10,7 @@
 //! | `graphrt-gateway.lease.lock` | `flock` serialising read-modify-write of the lease (held for one write + fsync + rename: milliseconds) |
 //! | `graphrt-gateway.active.lock` | `flock` held by the active for its whole tenure: the kernel drops it when the process dies, and a dropped [`FileLease`] unlocks it |
 //! | `graphrt-gateway.promote` | manual promotion request (`graphrt gateway ha promote`) |
-//! | `graphrt-gateway.beat` | the active's liveness [`Mark`]: its token and a counter, overwritten in place every beat ([`MarkFile`]) |
+//! | `graphrt-gateway.beat` | the active's liveness [`Mark`]: its token, a counter and a checksum (24 bytes), overwritten in place every beat ([`MarkFile`]) |
 //!
 //! A passive ([`Candidate`]) takes the lease when:
 //!
@@ -145,9 +145,9 @@ pub struct Mark {
     pub seq: u64,
 }
 
-/// Bytes of an encoded [`Mark`]: always the same, so a write in place
-/// replaces the whole record and leaves nothing of the one before.
-const MARK_LEN: usize = 63;
+/// Bytes of an encoded [`Mark`] (token, counter, checksum, little endian):
+/// always the same, so a write in place replaces the whole record.
+const MARK_LEN: usize = 24;
 
 impl Mark {
     /// A checksum, so that a read that caught a write halfway is not taken for a mark.
@@ -155,19 +155,18 @@ impl Mark {
         (self.token.rotate_left(17) ^ self.seq).wrapping_mul(0x9E37_79B9_7F4A_7C15)
     }
 
-    fn encode(self) -> String {
-        format!("{:020} {:020} {:020}\n", self.token, self.seq, self.check())
+    fn encode(self) -> [u8; MARK_LEN] {
+        let mut bytes = [0; MARK_LEN];
+        for (word, value) in bytes.as_chunks_mut::<8>().0.iter_mut().zip([self.token, self.seq, self.check()]) {
+            *word = value.to_le_bytes();
+        }
+        bytes
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != MARK_LEN {
-            return None;
-        }
-        let text = std::str::from_utf8(bytes).ok()?;
-        let mut fields = text.trim_end().split(' ').map(str::parse::<u64>);
-        let (token, seq, check) = (fields.next()?.ok()?, fields.next()?.ok()?, fields.next()?.ok()?);
-        let mark = Self { token, seq };
-        (fields.next().is_none() && mark.check() == check).then_some(mark)
+        let ([token, seq, check], []) = bytes.as_chunks::<8>() else { return None };
+        let mark = Self { token: u64::from_le_bytes(*token), seq: u64::from_le_bytes(*seq) };
+        (mark.check() == u64::from_le_bytes(*check)).then_some(mark)
     }
 }
 
@@ -188,32 +187,17 @@ impl MarkFile {
         Ok(Self { file })
     }
 
-    /// Overwrites the mark. No fsync: a passive on this host reads it from
-    /// the page cache at once, and [`MarkFile::sync`] carries it to the
-    /// volume for the others.
+    /// Overwrites the mark. No fsync, so it never waits on the volume: a
+    /// passive on this host (the only one that may kill the holder) reads it
+    /// from the page cache at once, one elsewhere when its view of the volume
+    /// catches up. The lease counter stays the durable signal for those.
     ///
     /// # Errors
     /// I/O errors.
     pub fn write(&mut self, mark: Mark) -> io::Result<()> {
         use std::io::{Seek as _, SeekFrom};
         self.file.seek(SeekFrom::Start(0))?;
-        self.file.write_all(mark.encode().as_bytes())
-    }
-
-    /// A second handle on the same file, for [`MarkFile::sync`] from another thread.
-    ///
-    /// # Errors
-    /// I/O errors.
-    pub fn try_clone(&self) -> io::Result<Self> {
-        Ok(Self { file: self.file.try_clone()? })
-    }
-
-    /// Flushes the mark to the volume.
-    ///
-    /// # Errors
-    /// I/O errors.
-    pub fn sync(&self) -> io::Result<()> {
-        self.file.sync_data()
+        self.file.write_all(&mark.encode())
     }
 }
 
@@ -342,6 +326,11 @@ impl Candidate {
         }
         let busy_since = *self.lock_busy_since.get_or_insert(now_ms);
         if now_ms.saturating_sub(busy_since) < self.settings.stale_after_ms {
+            // Keep watching the mark meanwhile: one that moved just before a
+            // freeze must not restart the count when the decision comes.
+            if let Ok(Some(record)) = medium.read() {
+                self.stale_for(medium, &record, now_ms, Some(busy_since));
+            }
             return Ok(None);
         }
         let promotion = self.take_if_due(medium, now_ms, Some(busy_since))?;
@@ -364,11 +353,10 @@ impl Candidate {
         // A mark that cannot be read, or of another token, says nothing.
         let mark = medium.read_mark().ok().flatten().filter(|mark| mark.token == record.token).map(|mark| mark.seq);
         match self.observed {
-            Some(seen) if seen.token == record.token && seen.seq == record.seq && seen.mark == mark => {
-                now_ms.saturating_sub(seen.since_ms)
-            }
-            Some(seen) if seen.token == record.token && seen.seq == record.seq && mark.is_none() => {
-                // The mark vanished or was caught mid write: no news, the clock runs on.
+            // No mark (vanished, or caught mid write) is no news: the clock runs on.
+            Some(seen)
+                if seen.token == record.token && seen.seq == record.seq && (mark.is_none() || seen.mark == mark) =>
+            {
                 now_ms.saturating_sub(seen.since_ms)
             }
             _ => {
@@ -648,19 +636,6 @@ impl FileLease {
         read_lease(&dir.join(LEASE_FILE))
     }
 
-    /// Reads the liveness mark of `dir` (status).
-    ///
-    /// # Errors
-    /// I/O errors.
-    pub fn peek_mark(dir: &Path) -> io::Result<Option<Mark>> {
-        read_mark(&dir.join(BEAT_FILE))
-    }
-
-    /// The lease directory.
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
     /// Asks the passive `node` (any passive when `None`) to take over.
     ///
     /// # Errors
@@ -870,12 +845,13 @@ mod tests {
     #[test]
     fn a_mark_reads_back_and_a_torn_one_is_no_mark() {
         let mark = Mark { token: 7, seq: 123_456 };
-        let bytes = mark.encode().into_bytes();
+        let bytes = mark.encode();
         assert_eq!(bytes.len(), MARK_LEN);
         assert_eq!(Mark::decode(&bytes), Some(mark));
-        assert_eq!(Mark::decode(&bytes[..40]), None, "cut short");
-        let mut torn = bytes.clone();
-        torn[..21].copy_from_slice(&Mark { token: 8, seq: 1 }.encode().as_bytes()[..21]);
+        assert_eq!(Mark::decode(&bytes[..16]), None, "cut short");
+        assert_eq!(Mark::decode(&[bytes.as_slice(), &[0]].concat()), None, "too long");
+        let mut torn = bytes;
+        torn[..8].copy_from_slice(&Mark { token: 8, seq: 1 }.encode()[..8]);
         assert_eq!(Mark::decode(&torn), None, "half of a newer mark");
         assert_eq!(Mark::decode(b""), None);
     }
@@ -907,6 +883,30 @@ mod tests {
         assert_eq!(auto.step(&mut medium, 24_999).unwrap(), None);
         let stolen = auto.step(&mut medium, 25_000).unwrap().unwrap();
         assert_eq!((stolen.token, stolen.reason, stolen.kill), (2, TakeReason::Stale, Some(1)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A holder that moved its mark and then froze inside the lease lock is
+    /// displaced `stale_after` after the freeze, not twice that.
+    #[test]
+    fn a_mark_moved_just_before_a_freeze_in_the_lock_does_not_delay_the_takeover() {
+        let dir = temp_dir("mark-then-freeze");
+        let mut holder_medium = FileLease::open(&dir, "a").unwrap();
+        let promotion =
+            Candidate::new(identity("a", 1), settings(Takeover::Auto)).step(&mut holder_medium, 0).unwrap().unwrap();
+        let mut mark = MarkFile::open(&dir).unwrap();
+        mark.write(Mark { token: promotion.token, seq: 1 }).unwrap();
+        let mut medium = FileLease::open(&dir, "b").unwrap();
+        let mut auto = Candidate::new(identity("b", 2), settings(Takeover::Auto));
+        assert_eq!(auto.step(&mut medium, 0).unwrap(), None);
+        // The last mark, then the freeze inside a heartbeat.
+        mark.write(Mark { token: promotion.token, seq: 2 }).unwrap();
+        assert!(holder_medium.try_lock_mutex().unwrap());
+        for now in (500..5_500).step_by(500) {
+            assert_eq!(auto.step(&mut medium, now).unwrap(), None);
+        }
+        let stolen = auto.step(&mut medium, 5_500).unwrap().unwrap();
+        assert_eq!((stolen.reason, stolen.kill), (TakeReason::Stale, Some(1)));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

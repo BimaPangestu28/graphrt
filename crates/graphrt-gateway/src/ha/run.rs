@@ -2,13 +2,14 @@
 //! serve as the fenced active, step down when superseded.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
 use super::fence::{Clock, Fence, monotonic_clock};
-use super::lease::{Beat, Candidate, FileLease, Holder, LeaseMedium, LeaseRecord, Mark, MarkFile, Promotion};
+use super::lease::{Beat, Candidate, FileLease, Holder, LeaseMedium, Mark, MarkFile, Promotion};
 use super::{HaConfig, identity, kill_holder};
 use crate::app::{build_on, open_store, register_versions, shutdown_signal, spawn_background};
 use crate::config::GatewayConfig;
@@ -178,37 +179,45 @@ async fn bind_with_retry(listen: &str) -> Result<tokio::net::TcpListener, String
 /// The heartbeat: two plain threads, so a stalled reactor or a slow volume
 /// never delays the other.
 ///
-/// The beat thread keeps the active alive in the eyes of the passives: every
-/// beat it checks that the lease still names us (a plain read), overwrites
-/// the liveness mark in place and confirms the fence. The writer thread does
-/// the durable part (the lease's heartbeat counter: lock, write, fsync,
-/// rename, then the mark's fsync). A write stuck for seconds (a busy volume,
-/// a virus scanner) then only delays the writer: the mark keeps moving, so no
-/// passive takes the active for frozen, and the stuck write is reported.
+/// The beat thread does the durable part: the lease's heartbeat counter
+/// (lock, write, fsync, rename), and steps down when the lease names another
+/// token. The marker thread keeps the active alive in the eyes of the
+/// passives: every beat it reads the lease, and while it names us it
+/// overwrites the liveness mark in place and confirms the fence. A lease
+/// write stuck for seconds (a busy volume, a virus scanner) then only delays
+/// the counter: the mark keeps moving, no passive takes the active for
+/// frozen, and the beat thread reports the slow write once it returns.
 struct Heartbeat {
     stop: mpsc::Sender<()>,
     thread: std::thread::JoinHandle<bool>,
+    marking: Arc<AtomicBool>,
+    marker: Option<std::thread::JoinHandle<bool>>,
 }
 
 impl Heartbeat {
     /// Stops beating and releases the lease if it is still ours.
     fn stop(self) -> bool {
+        self.marking.store(false, Ordering::Relaxed);
+        if let Some(marker) = self.marker {
+            let _joined = marker.join();
+        }
         let _sent = self.stop.send(());
         self.thread.join().unwrap_or(false)
     }
 }
 
-/// What the beat thread asks of the writer.
-enum Job {
-    Beat,
-    /// Release the lease (graceful stop).
-    Release,
+/// The body of a heartbeat thread. Both threads are spawned as this one
+/// type, so the binary carries `std::thread::spawn` once for them.
+type ThreadBody = Box<dyn FnOnce() -> bool + Send>;
+
+fn spawn_thread(body: ThreadBody) -> std::thread::JoinHandle<bool> {
+    std::thread::spawn(body)
 }
 
 fn spawn_heartbeat<M: LeaseMedium + Send + 'static>(
-    medium: M,
+    mut medium: M,
     lease_dir: PathBuf,
-    holder: Holder,
+    mut holder: Holder,
     fence: Arc<Fence>,
     ha: &HaConfig,
     clock: Clock,
@@ -216,76 +225,33 @@ fn spawn_heartbeat<M: LeaseMedium + Send + 'static>(
     let (stop, stopped) = mpsc::channel::<()>();
     let period = ha.heartbeat();
     let fail_after = ha.stale_after_ms;
-    let thread = std::thread::spawn(move || {
-        let identity = holder.identity().clone();
-        let token = holder.token();
-        let mut mark = match MarkFile::open(&lease_dir) {
-            Ok(mark) => Some(mark),
-            Err(error) => {
-                // Liveness then rests on the lease counter alone, as without marks.
-                eprintln!("gateway: ha: cannot open the liveness mark: {error}");
-                None
-            }
-        };
-        let syncer = mark.as_ref().and_then(|mark| mark.try_clone().ok());
-        let (jobs, results, writer) = spawn_writer(medium, holder, syncer);
-        let mut seq = 0_u64;
+    let marking = Arc::new(AtomicBool::new(true));
+    let marker = spawn_marker(&lease_dir, &holder, &fence, &marking, period);
+    let thread = spawn_thread(Box::new(move || {
         let mut unconfirmed_since: Option<u64> = None;
-        // When the writer took the job it has not answered yet.
-        let mut writing_since: Option<u64> = None;
-        let mut stuck_reported = false;
-        let mut write_failing = false;
-        let mut outcome = None;
-        // Until the stop: a message, or the server side dropped.
-        while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(period) {
-            // What the writer found since the last beat.
-            while let Ok(beat) = results.try_recv() {
-                writing_since = None;
-                if stuck_reported {
-                    eprintln!("gateway: ha: the lease write went through again");
-                    stuck_reported = false;
-                }
-                match beat {
-                    Beat::Confirmed => write_failing = false,
-                    Beat::Unconfirmed(error) => {
-                        if !write_failing {
-                            eprintln!("gateway: ha: lease write not confirmed: {error}");
-                            write_failing = true;
-                        }
+        loop {
+            match stopped.recv_timeout(period) {
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    if fence.is_tripped() {
+                        return false;
                     }
-                    Beat::Lost(by) => {
-                        report_superseded(token, by.as_ref());
-                        outcome = Some(false);
-                    }
+                    return holder.release(&mut medium).unwrap_or(false);
                 }
             }
-            if outcome.is_some() {
-                break;
+            let started = clock();
+            let beat = holder.beat(&mut medium);
+            let took = clock().saturating_sub(started);
+            if took > fail_after {
+                eprintln!("gateway: ha: a lease write took {took} ms; the liveness mark kept this gateway active");
             }
-            let now = clock();
-            let live = match FileLease::peek(&lease_dir) {
-                Ok(Some(record)) if record.is_held_by(&identity, token) => {
-                    seq += 1;
-                    match mark.as_mut().map(|mark| mark.write(Mark { token, seq })) {
-                        Some(Err(error)) => Err(format!("liveness mark: {error}")),
-                        _ => Ok(()),
-                    }
-                }
-                Ok(Some(record)) => {
-                    report_superseded(token, Some(&record));
-                    outcome = Some(false);
-                    break;
-                }
-                // Gone or unreadable: the writer decides under the lock.
-                Ok(None) => Err("the lease is missing".to_owned()),
-                Err(error) => Err(error.to_string()),
-            };
-            match live {
-                Ok(()) => {
+            match beat {
+                Beat::Confirmed => {
                     fence.confirm();
                     unconfirmed_since = None;
                 }
-                Err(error) => {
+                Beat::Unconfirmed(error) => {
+                    let now = clock();
                     let since = *unconfirmed_since.get_or_insert(now);
                     if now == since {
                         eprintln!("gateway: ha: heartbeat not confirmed: {error}");
@@ -293,111 +259,64 @@ fn spawn_heartbeat<M: LeaseMedium + Send + 'static>(
                     if now.saturating_sub(since) > fail_after {
                         eprintln!("gateway: ha: lease unconfirmed for {} ms; stepping down", now - since);
                         fence.trip();
-                        outcome = Some(false);
-                        break;
+                        return false;
                     }
                 }
-            }
-            match writing_since {
-                None => {
-                    if jobs.send(Job::Beat).is_err() {
-                        // The writer is gone: nothing durable can be written any more.
-                        fence.trip();
-                        outcome = Some(false);
-                        break;
-                    }
-                    writing_since = Some(now);
-                }
-                Some(since) if !stuck_reported && now.saturating_sub(since) > fail_after => {
-                    eprintln!(
-                        "gateway: ha: a lease write is stuck for {} ms (slow volume?); the liveness mark keeps this gateway active",
-                        now - since
+                Beat::Lost(by) => {
+                    let by = by.map_or_else(
+                        || "nobody".to_owned(),
+                        |record| format!("{} (token {})", record.node, record.token),
                     );
-                    stuck_reported = true;
+                    eprintln!("{{\"audit\":\"ha_superseded\",\"token\":{},\"by\":\"{by}\"}}", holder.token());
+                    fence.trip();
+                    return false;
                 }
-                Some(_) => {}
             }
         }
-        let released = match outcome {
-            Some(released) => {
-                drop(jobs);
-                released
-            }
-            None if fence.is_tripped() => {
-                drop(jobs);
-                false
-            }
-            None => {
-                let sent = jobs.send(Job::Release).is_ok();
-                // The writer ends after the release: its last answer is the release's.
-                drop(jobs);
-                sent && wait_release(&results)
-            }
-        };
-        let _joined = writer.join();
-        released
-    });
-    Heartbeat { stop, thread }
+    }));
+    Heartbeat { stop, thread, marking, marker }
 }
 
-/// The writer thread: runs the jobs of the beat thread, answers each beat.
-/// Ends when the beat thread drops its sender. A release answers `Confirmed`
-/// when the lease was still ours.
-fn spawn_writer<M: LeaseMedium + Send + 'static>(
-    mut medium: M,
-    mut holder: Holder,
-    syncer: Option<MarkFile>,
-) -> (mpsc::Sender<Job>, mpsc::Receiver<Beat>, std::thread::JoinHandle<()>) {
-    let (jobs, inbox) = mpsc::channel::<Job>();
-    let (outbox, results) = mpsc::channel::<Beat>();
-    let writer = std::thread::spawn(move || {
-        while let Ok(job) = inbox.recv() {
-            let beat = match job {
-                Job::Beat => {
-                    let beat = holder.beat(&mut medium);
-                    if let Some(syncer) = &syncer {
-                        // Best effort: the passives of this host read the mark without it.
-                        let _synced = syncer.sync();
-                    }
-                    beat
-                }
-                Job::Release => match holder.release(&mut medium) {
-                    Ok(true) => Beat::Confirmed,
-                    Ok(false) => Beat::Lost(None),
-                    Err(error) => Beat::Unconfirmed(error.to_string()),
-                },
-            };
-            if outbox.send(beat).is_err() {
-                return;
+/// The marker thread (see [`Heartbeat`]). `None` when the mark file cannot
+/// be opened: liveness then rests on the counter alone, as without marks.
+fn spawn_marker(
+    lease_dir: &Path,
+    holder: &Holder,
+    fence: &Arc<Fence>,
+    marking: &Arc<AtomicBool>,
+    period: Duration,
+) -> Option<std::thread::JoinHandle<bool>> {
+    let mut mark = MarkFile::open(lease_dir)
+        .map_err(|error| eprintln!("gateway: ha: cannot open the liveness mark: {error}"))
+        .ok()?;
+    // Token and pid name the holder: a token is never taken twice.
+    let (dir, pid, token) = (lease_dir.to_path_buf(), holder.identity().pid, holder.token());
+    let (fence, marking) = (fence.clone(), marking.clone());
+    Some(spawn_thread(Box::new(move || {
+        let mut seq = 0;
+        while marking.load(Ordering::Relaxed) && !fence.is_tripped() {
+            std::thread::sleep(period);
+            // Only while the lease names us: a lost lease is the beat thread's to act on.
+            let ours =
+                FileLease::peek(&dir).ok().flatten().is_some_and(|record| record.token == token && record.pid == pid);
+            seq += 1;
+            if ours && mark.write(Mark { token, seq }).is_ok() {
+                fence.confirm();
             }
         }
-    });
-    (jobs, results, writer)
-}
-
-/// The answer to [`Job::Release`], after the answers of the beats before it.
-fn wait_release(results: &mpsc::Receiver<Beat>) -> bool {
-    let mut last = None;
-    while let Ok(beat) = results.recv() {
-        last = Some(beat);
-    }
-    matches!(last, Some(Beat::Confirmed))
-}
-
-fn report_superseded(token: u64, by: Option<&LeaseRecord>) {
-    let by = by.map_or_else(|| "nobody".to_owned(), |record| format!("{} (token {})", record.node, record.token));
-    eprintln!("{{\"audit\":\"ha_superseded\",\"token\":{token},\"by\":\"{by}\"}}");
+        true
+    })))
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::AtomicU64;
     use std::time::Instant;
 
     use super::*;
-    use crate::ha::lease::{Identity, LeaseSettings, Takeover};
+    use crate::ha::lease::{Identity, LeaseRecord, LeaseSettings, Takeover};
 
     /// A lease volume whose writes stall while `stall_ms` is set: the
     /// heartbeat's write then sits inside the lease lock, as it did on

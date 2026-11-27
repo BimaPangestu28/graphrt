@@ -269,15 +269,9 @@ fn ha(action: &HaAction, config: Option<PathBuf>) -> Result<u8, CliError> {
             let lease =
                 FileLease::peek(&dir).map_err(|error| CliError::failed(format!("{}: {error}", dir.display())))?;
             let tenure = FileLease::tenure_held(&dir).map_err(|error| CliError::failed(error.to_string()))?;
-            // The active's liveness mark, next to the lease's own counter.
-            let mark = FileLease::peek_mark(&dir)
-                .ok()
-                .flatten()
-                .map(|mark| serde_json::json!({"token": mark.token, "seq": mark.seq}));
             let status = serde_json::json!({
                 "lease_dir": dir.display().to_string(),
                 "lease": lease,
-                "mark": mark,
                 "tenure_lock_held": tenure,
             });
             print(&serde_json::to_string_pretty(&status).map_err(|error| CliError::failed(error.to_string()))?)?;
