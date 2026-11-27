@@ -62,7 +62,7 @@ pub enum Command {
     /// with `--direct` straight to Fly.io; manage direct deployments
     /// (status, list-versions, rollback, pause, resume, remove).
     // `--version` names the deployment version here, not the binary's.
-    #[cfg(any(feature = "gateway", feature = "deploy-fly", feature = "deploy-cloud-run"))]
+    #[cfg(any(feature = "gateway", feature = "deploy-fly", feature = "deploy-cloud-run", feature = "deploy-aws"))]
     #[command(disable_version_flag = true)]
     Deploy(Box<crate::deploy_cmd::DeployArgs>),
     /// Run the collaboration server: team workspaces where people edit agent

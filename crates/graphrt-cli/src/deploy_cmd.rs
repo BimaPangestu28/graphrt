@@ -1,11 +1,12 @@
 //! `graphrt deploy`: ship a version through a graphrt gateway (feature
 //! `gateway`) or straight to a platform with `--direct`: Fly.io (feature
-//! `deploy-fly`, see `docs/deploy-direct.md`) or Google Cloud Run (feature
-//! `deploy-cloud-run`, see `docs/deploy-cloud-run.md`).
+//! `deploy-fly`, see `docs/deploy-direct.md`), Google Cloud Run (feature
+//! `deploy-cloud-run`, see `docs/deploy-cloud-run.md`) or AWS Lambda (feature
+//! `deploy-aws`, see `docs/deploy-direct-aws.md`).
 //!
 //! - `graphrt deploy --target <t> --deployment <d> [--version <v>] <workflow>`: a gateway deploy.
-//! - `graphrt deploy --target fly|cloud-run --direct --deployment <d> --version <v> [--json] <agent>`: a direct deploy.
-//! - `graphrt deploy status|list-versions|rollback <v>|pause|resume|remove --target fly|cloud-run --direct --deployment <d>`:
+//! - `graphrt deploy --target fly|cloud-run|lambda --direct --deployment <d> --version <v> [--json] <agent>`: a direct deploy.
+//! - `graphrt deploy status|list-versions|rollback <v>|pause|resume|remove --target fly|cloud-run|lambda --direct --deployment <d>`:
 //!   manage a direct deployment.
 
 use std::path::PathBuf;
@@ -27,7 +28,8 @@ pub enum DeployTarget {
     CloudRun,
     /// ECS Fargate task definition (feature `gateway-ecs`).
     Ecs,
-    /// Lambda function version (feature `gateway-lambda`).
+    /// Lambda function version behind the gateway (feature `gateway-lambda`), or
+    /// with `--direct` a function behind a public Function URL (feature `deploy-aws`).
     Lambda,
     /// Fly.io: a Machine pool behind the gateway (feature `gateway-fly`), or with
     /// `--direct` an app served by the Fly proxy (feature `deploy-fly`).
@@ -193,19 +195,23 @@ pub struct DeployRunArgs {
     /// Target platform.
     #[arg(long, value_enum, default_value = "local")]
     pub target: DeployTarget,
-    /// Deploy straight to the platform, without a graphrt gateway (`--target fly` or `cloud-run`).
+    /// Deploy straight to the platform, without a graphrt gateway (`--target fly`, `cloud-run` or `lambda`).
     #[arg(long)]
     pub direct: bool,
-    /// Deployment name (gateway: configured there; direct: names the Fly app or Cloud Run service).
+    /// Deployment name (gateway: configured there; direct: names the Fly app, Cloud Run service or Lambda function).
     #[arg(long, required = true)]
     pub deployment: Option<String>,
     /// New immutable version id (gateway default: a timestamp; required with `--direct`).
     #[arg(long)]
     pub version: Option<String>,
-    /// Direct: Fly region of the Machine (default: Fly picks the closest), or
-    /// Cloud Run region (default: us-central1).
+    /// Direct: Fly region of the Machine (default: Fly picks the closest), Cloud Run
+    /// region (default: us-central1), or AWS region (default: `AWS_REGION`, else the profile's).
     #[arg(long, value_name = "CODE")]
     pub region: Option<String>,
+    /// Direct, Lambda: AWS profile of `~/.aws/credentials` / `~/.aws/config`
+    /// [default: `AWS_PROFILE`, else the AWS environment variables, else `default`].
+    #[arg(long, value_name = "NAME")]
+    pub profile: Option<String>,
     /// Direct, Cloud Run: Google Cloud project id [default: $GOOGLE_CLOUD_PROJECT].
     #[arg(long, value_name = "ID")]
     pub project: Option<String>,
@@ -218,7 +224,8 @@ pub struct DeployRunArgs {
     /// Direct: Fly organization slug used when the app is created [default: personal].
     #[arg(long, value_name = "SLUG")]
     pub org: Option<String>,
-    /// Direct: Fly app or Cloud Run service name [default: the deployment name, sanitised].
+    /// Direct: Fly app, Cloud Run service or Lambda function name [default: the
+    /// deployment name, sanitised; `graphrt-<name>` on Lambda].
     #[arg(long)]
     pub app: Option<String>,
     /// Direct: replace the deployment's API key (the new one is printed once).
@@ -291,7 +298,8 @@ pub enum DeployAction {
     /// Bring a paused deployment back.
     Resume(DirectTargetArgs),
     /// Delete the deployment: the Fly app with its Machines, secrets and IPs, or
-    /// the Cloud Run service with its secrets, bucket and service account.
+    /// the Cloud Run service with its secrets, bucket and service account, or the
+    /// Lambda function with its image repository, role and logs.
     Remove(DirectTargetArgs),
 }
 
@@ -324,7 +332,7 @@ impl DeployAction {
 /// Which direct deployment a management subcommand acts on.
 #[derive(Debug, Args)]
 pub struct DirectTargetArgs {
-    /// Target platform (`fly` or `cloud-run`).
+    /// Target platform (`fly`, `cloud-run` or `lambda`).
     #[arg(long, value_enum)]
     pub target: DeployTarget,
     /// Required: these subcommands manage direct deployments only.
@@ -336,15 +344,19 @@ pub struct DirectTargetArgs {
     /// Fly organization slug (accepted for symmetry; apps are addressed by name).
     #[arg(long, value_name = "SLUG")]
     pub org: Option<String>,
-    /// Fly app or Cloud Run service name [default: the deployment name, sanitised].
+    /// Fly app, Cloud Run service or Lambda function name [default: from the deployment name].
     #[arg(long)]
     pub app: Option<String>,
     /// Cloud Run: Google Cloud project id [default: $GOOGLE_CLOUD_PROJECT].
     #[arg(long, value_name = "ID")]
     pub project: Option<String>,
-    /// Cloud Run: region of the service [default: us-central1].
+    /// Cloud Run: region of the service [default: us-central1]. Lambda: AWS region
+    /// [default: `AWS_REGION`, else the profile's].
     #[arg(long, value_name = "CODE")]
     pub region: Option<String>,
+    /// Lambda: AWS profile [default: `AWS_PROFILE`, else the environment, else `default`].
+    #[arg(long, value_name = "NAME")]
+    pub profile: Option<String>,
     /// Print JSON Lines.
     #[arg(long)]
     pub json: bool,
@@ -368,6 +380,8 @@ const DIRECT_TARGETS: &[DeployTarget] = &[
     DeployTarget::Fly,
     #[cfg(feature = "deploy-cloud-run")]
     DeployTarget::CloudRun,
+    #[cfg(feature = "deploy-aws")]
+    DeployTarget::Lambda,
 ];
 
 /// Checks `--direct` and a target this build deploys to directly; with `--json`
@@ -376,7 +390,7 @@ fn check_direct_target(target: DeployTarget, direct: bool, json: bool) -> Result
     let refusal = if !direct {
         "status, list-versions, rollback, pause, resume and remove need --direct".to_owned()
     } else if DIRECT_TARGETS.is_empty() {
-        "this build has no direct deploys (cargo features `deploy-fly`, `deploy-cloud-run`)".to_owned()
+        "this build has no direct deploys (cargo features `deploy-fly`, `deploy-cloud-run`, `deploy-aws`)".to_owned()
     } else if !DIRECT_TARGETS.contains(&target) {
         let names: Vec<&str> = DIRECT_TARGETS.iter().map(|target| target.flag()).collect();
         format!("--direct supports --target {} only, not {}", names.join(" or "), target.flag())
@@ -395,27 +409,27 @@ fn direct_usage_error(json: bool, message: String) -> CliError {
     CliError::usage(message)
 }
 
-#[cfg(any(feature = "deploy-fly", feature = "deploy-cloud-run"))]
+#[cfg(any(feature = "deploy-fly", feature = "deploy-cloud-run", feature = "deploy-aws"))]
 fn manage(action: &DeployAction) -> Result<u8, CliError> {
     let target = action.target();
     check_direct_target(target.target, target.direct, target.json)?;
     crate::direct_cmd::manage(action)
 }
 
-#[cfg(not(any(feature = "deploy-fly", feature = "deploy-cloud-run")))]
+#[cfg(not(any(feature = "deploy-fly", feature = "deploy-cloud-run", feature = "deploy-aws")))]
 fn manage(action: &DeployAction) -> Result<u8, CliError> {
     let target = action.target();
     check_direct_target(target.target, target.direct, target.json)?;
     Ok(0)
 }
 
-#[cfg(any(feature = "deploy-fly", feature = "deploy-cloud-run"))]
+#[cfg(any(feature = "deploy-fly", feature = "deploy-cloud-run", feature = "deploy-aws"))]
 fn deploy_direct(args: &DeployRunArgs) -> Result<u8, CliError> {
     check_direct_target(args.target, true, args.json)?;
     crate::direct_cmd::deploy(args)
 }
 
-#[cfg(not(any(feature = "deploy-fly", feature = "deploy-cloud-run")))]
+#[cfg(not(any(feature = "deploy-fly", feature = "deploy-cloud-run", feature = "deploy-aws")))]
 fn deploy_direct(args: &DeployRunArgs) -> Result<u8, CliError> {
     check_direct_target(args.target, true, args.json)?;
     Ok(0)
@@ -429,6 +443,7 @@ fn reject_direct_only_flags(args: &DeployRunArgs) -> Result<(), CliError> {
         ("--app", args.app.is_some()),
         ("--rotate-api-key", args.rotate_api_key),
         ("--project", args.project.is_some()),
+        ("--profile", args.profile.is_some()),
         ("--label", !args.labels.is_empty()),
         ("--json", args.json),
     ];

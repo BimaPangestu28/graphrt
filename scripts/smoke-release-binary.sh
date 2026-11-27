@@ -26,7 +26,7 @@ case "$version_output" in
 esac
 
 # Release builds add the opt-in features in release.yml's EXTRA_FEATURES.
-default_features="eval online-eval skills learning deploy-fly deploy-cloud-run"
+default_features="eval online-eval skills learning deploy-fly deploy-cloud-run deploy-aws"
 required_features=${SMOKE_REQUIRED_FEATURES-$default_features}
 features_output=$("$binary" version | tr -d '\r') || fail "\`version\` exited with $?"
 for feature in $required_features; do
@@ -54,6 +54,19 @@ case " $required_features " in
         case "$direct_output" in
             '{"type":"error","code":"missing_token"'*) ;;
             *) fail "\`deploy --direct --json\` printed \`$direct_output\`, expected a missing_token error line" ;;
+        esac
+        ;;
+esac
+
+# The Lambda direct deploy refuses a missing profile in JSON Lines, before any network call.
+case " $required_features " in
+    *" deploy-aws "*)
+        lambda_output=$(env -u AWS_ACCESS_KEY_ID -u AWS_PROFILE "$binary" deploy --target lambda --direct \
+            --deployment smoke --version v1 --region us-east-1 --profile graphrt-smoke-surely-missing \
+            --json "$workflow" 2>/dev/null | tr -d '\r') || true
+        case "$lambda_output" in
+            '{"type":"error","code":"missing_credentials"'*) ;;
+            *) fail "\`deploy --target lambda --direct --json\` printed \`$lambda_output\`, expected a missing_credentials error line" ;;
         esac
         ;;
 esac

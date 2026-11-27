@@ -6,6 +6,7 @@
 //! | `provider-ecs` | [`ecs::EcsProvider`]: ECS Fargate, one task per replica, gateway-scheduled (`RunTask` / `StopTask` / `DescribeTasks` / `ListTasks`) |
 //! | `provider-lambda` | [`lambda::LambdaProvider`]: short synchronous runs through `InvokeWithResponseStream` + Lambda Web Adapter |
 //! | `deploy-ecs` / `deploy-lambda` (`deploy`) | `deploy::ecs::EcsDeployDriver` / `deploy::lambda::LambdaDeployDriver`: the `DeployDriver`s of `graphrt deploy`, not linked by the gateway |
+//! | `direct-lambda` | `direct::LambdaDirect`: `graphrt deploy --target lambda --direct`, an agent on a public Function URL with no gateway |
 //!
 //! App Runner is not supported: it is closed to new customers since 30 April 2026.
 //!
@@ -17,6 +18,8 @@ pub use graphrt_provider_api as api;
 pub mod auth;
 #[cfg(any(feature = "deploy-ecs", feature = "deploy-lambda"))]
 pub mod deploy;
+#[cfg(feature = "direct-lambda")]
+pub mod direct;
 #[cfg(feature = "provider-ecs")]
 pub mod ecs;
 #[cfg(feature = "provider-lambda")]

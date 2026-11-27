@@ -12,7 +12,8 @@ a bundle with its knowledge, is uploaded onto a Fly volume instead: see
 [Large agents](#large-agents-and-their-knowledge).
 
 Google Cloud Run has the same command with `--target cloud-run`
-([deploy-cloud-run.md](deploy-cloud-run.md)). Use the [gateway](gateway.md) with the [Fly provider](gateway-fly.md)
+([deploy-cloud-run.md](deploy-cloud-run.md)), AWS Lambda with `--target lambda`
+([deploy-direct-aws.md](deploy-direct-aws.md)), with nothing running while idle. Use the [gateway](gateway.md) with the [Fly provider](gateway-fly.md)
 instead when you need durable runs across restarts, webhooks, cron or many
 deployments behind one endpoint.
 
