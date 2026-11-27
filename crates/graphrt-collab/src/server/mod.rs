@@ -27,7 +27,7 @@ pub mod token;
 mod util;
 pub mod workspaces;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use graphrt_console::audit::{Actor, AuditLog, Event};
@@ -58,15 +58,32 @@ pub struct Options {
     pub signing_key: Option<String>,
     /// The key text of workspace secrets, when one is configured.
     pub secrets_key: Option<String>,
-    /// The OIDC client secret, when one is configured.
-    pub client_secret: Option<String>,
-    /// Checks the signatures of ID tokens (needed with `auth.oidc`).
+    /// The client ids of providers configured with `client_id_env`, by provider id.
+    /// A provider without one is off.
+    pub client_ids: BTreeMap<String, String>,
+    /// The client secrets of providers configured with `client_secret_env`, by provider id.
+    pub client_secrets: BTreeMap<String, String>,
+    /// Checks the signatures of ID tokens (needed with an identity provider).
     pub verifiers: Option<Arc<dyn VerifierSource>>,
+}
+
+/// An identity provider people sign in with.
+#[derive(Debug)]
+pub(crate) struct SignInProvider {
+    pub id: String,
+    pub name: String,
+    /// The issuer as configured: accounts are `<issuer> <sub>`.
+    pub issuer: String,
+    pub groups_claim: String,
+    pub email_verified_claim: Option<String>,
+    pub provider: Provider,
 }
 
 /// A sign in waiting for the identity provider.
 #[derive(Debug)]
 pub(crate) struct PendingLogin {
+    /// The index of the provider in [`Server::providers`].
+    pub provider: usize,
     pub nonce: String,
     pub verifier: String,
     /// The app's loopback address, its state and its PKCE challenge.
@@ -97,7 +114,9 @@ pub struct Server {
     pub(crate) rooms: Arc<Rooms>,
     pub(crate) signing: SigningKey,
     pub(crate) audit: AuditLog,
-    pub(crate) provider: Option<Provider>,
+    pub(crate) providers: Vec<SignInProvider>,
+    /// Configured providers that are off (no client id yet), with why.
+    pub(crate) providers_off: Vec<String>,
     pub(crate) logins: Mutex<HashMap<String, PendingLogin>>,
     pub(crate) codes: Mutex<HashMap<String, AuthCode>>,
     pub(crate) requests: Limiter,
@@ -112,7 +131,7 @@ impl Server {
     ///
     /// @throws ServerError - On an unusable config or key, or files that cannot be read.
     pub fn open(options: Options) -> ServerResult<Arc<Self>> {
-        let Options { config, signing_key, secrets_key, client_secret, verifiers } = options;
+        let Options { config, signing_key, secrets_key, client_ids, mut client_secrets, verifiers } = options;
         config.check()?;
         let public = config.public()?;
         util::ensure_dir(&config.data_dir)?;
@@ -120,15 +139,40 @@ impl Server {
             Some(text) => SigningKey::parse(text)?,
             None => SigningKey::load_or_create(&config.data_dir)?,
         };
-        let provider = match &config.auth.oidc {
-            Some(oidc) => {
-                let verifiers = verifiers.ok_or_else(|| {
-                    ServerError::Config("auth.oidc needs an ID token verifier (built with the CLI's `jwt`)".into())
-                })?;
-                Some(Provider::new(oidc.clone(), client_secret, public.join("/v1/auth/callback"), verifiers)?)
+        let mut providers = Vec::new();
+        let mut providers_off = Vec::new();
+        for wanted in config.auth.all_providers() {
+            let client_id = wanted.client_id.clone().or_else(|| client_ids.get(&wanted.id).cloned());
+            let Some(client_id) = client_id.map(|c| c.trim().to_owned()).filter(|c| !c.is_empty()) else {
+                let variable = wanted.client_id_env.as_deref().unwrap_or_default();
+                providers_off.push(format!("{} is off until ${variable} is set", wanted.id));
+                continue;
+            };
+            let client_secret = client_secrets.remove(&wanted.id);
+            if let Some(variable) = &wanted.client_secret_env
+                && client_secret.is_none()
+            {
+                return Err(ServerError::Config(format!(
+                    "auth.providers.{}: the client secret variable ${variable} is not set",
+                    wanted.id
+                )));
             }
-            None => None,
-        };
+            let verifiers = verifiers.clone().ok_or_else(|| {
+                ServerError::Config(
+                    "an identity provider needs an ID token verifier (built with the CLI's `jwt`)".into(),
+                )
+            })?;
+            let provider =
+                Provider::new(wanted.oidc(client_id), client_secret, public.join("/v1/auth/callback"), verifiers)?;
+            providers.push(SignInProvider {
+                name: wanted.display_name(),
+                id: wanted.id,
+                issuer: wanted.issuer,
+                groups_claim: wanted.groups_claim,
+                email_verified_claim: wanted.email_verified_claim,
+                provider,
+            });
+        }
         let limits = &config.limits;
         let rooms = Arc::new(Rooms::new(RoomLimits {
             max_doc_bytes: limits.max_doc_bytes,
@@ -145,7 +189,8 @@ impl Server {
             sign_in_attempts: Limiter::new(Rule::per_minute(30)),
             rooms,
             signing,
-            provider,
+            providers,
+            providers_off,
             logins: Mutex::new(HashMap::new()),
             codes: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
@@ -166,11 +211,16 @@ impl Server {
 
     /// One line for the startup banner.
     pub fn describe(&self) -> String {
-        let sign_in = match (&self.config.auth.oidc, self.config.auth.invite_accounts()) {
-            (Some(oidc), true) => format!("sign in with {} or invite codes", oidc.issuer),
-            (Some(oidc), false) => format!("sign in with {}", oidc.issuer),
-            (None, _) => "invite codes".to_owned(),
+        let names: Vec<&str> = self.providers.iter().map(|p| p.name.as_str()).collect();
+        let mut sign_in = match (names.is_empty(), self.config.auth.invite_accounts()) {
+            (false, true) => format!("sign in with {} or invite codes", names.join(", ")),
+            (false, false) => format!("sign in with {}", names.join(", ")),
+            (true, true) => "invite codes".to_owned(),
+            (true, false) => "no way to sign in yet".to_owned(),
         };
+        if !self.providers_off.is_empty() {
+            sign_in.push_str(&format!(", {}", self.providers_off.join(", ")));
+        }
         let mode = match self.config.mode {
             Mode::Hosted => "hosted",
             Mode::SelfHosted => "self hosted",

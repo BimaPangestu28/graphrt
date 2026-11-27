@@ -285,8 +285,9 @@ async fn info(State(server): State<Arc<Server>>) -> ApiResult {
         "mode": mode,
         "public_url": server.public.join(""),
         "sign_in": {
-            "oidc": server.provider.is_some(),
-            "provider": server.config.auth.oidc.as_ref().map(|o| o.issuer.clone()),
+            "oidc": !server.providers.is_empty(),
+            "provider": server.providers.first().map(|p| p.issuer.clone()),
+            "providers": server.providers.iter().map(|p| json!({ "id": p.id, "name": p.name })).collect::<Vec<_>>(),
             "invite_codes": server.config.auth.invite_accounts(),
         },
         "limits": {
@@ -345,13 +346,28 @@ struct LoginQuery {
     code_challenge_method: Option<String>,
     #[serde(default)]
     device: Option<String>,
+    /// The id of the provider (`/v1/info` lists them). Default: the first one.
+    #[serde(default)]
+    provider: Option<String>,
 }
 
-/// Start a sign in with the identity provider, for an app listening on a loopback address.
+/// Start a sign in with an identity provider, for an app listening on a loopback address.
 async fn login(State(server): State<Arc<Server>>, Query(query): Query<LoginQuery>) -> ApiResult {
-    let provider = server.provider.as_ref().ok_or_else(|| {
-        ServerError::NotFound("this server has no identity provider: join with an invite code".into())
-    })?;
+    if server.providers.is_empty() {
+        return Err(
+            ServerError::NotFound("this server has no identity provider: join with an invite code".into()).into()
+        );
+    }
+    let index = match query.provider.as_deref() {
+        None | Some("") => 0,
+        Some(id) => server
+            .providers
+            .iter()
+            .position(|p| p.id == id)
+            .ok_or_else(|| ServerError::NotFound(format!("this server has no identity provider `{id}`")))?,
+    };
+    let provider =
+        &server.providers.get(index).ok_or_else(|| ServerError::NotFound("no such provider".into()))?.provider;
     if !is_loopback_redirect(&query.redirect_uri) {
         return Err(ServerError::BadRequest("redirect_uri must be an http loopback address of the app".into()).into());
     }
@@ -370,6 +386,7 @@ async fn login(State(server): State<Arc<Server>>, Query(query): Query<LoginQuery
     server.add_login(
         server_state,
         PendingLogin {
+            provider: index,
             nonce,
             verifier,
             redirect_uri: query.redirect_uri,
@@ -415,17 +432,17 @@ async fn callback(State(server): State<Arc<Server>>, Query(query): Query<Callbac
     let Some(code) = query.code else {
         return back(&[("error", "invalid_request"), ("state", &pending.client_state)]);
     };
-    let Some(provider) = server.provider.as_ref() else {
+    let Some(signer) = server.providers.get(pending.provider) else {
         return back(&[("error", "server_error"), ("state", &pending.client_state)]);
     };
-    let claims = match provider.exchange(&code, &pending.verifier, &pending.nonce).await {
+    let claims = match signer.provider.exchange(&code, &pending.verifier, &pending.nonce).await {
         Ok(claims) => claims,
         Err(error) => {
-            provider.reset().await;
+            signer.provider.reset().await;
             server.record(
                 Event::ok(Actor::system(), "auth.sign_in")
                     .outcome("failed")
-                    .details(json!({ "why": error.to_string() })),
+                    .details(json!({ "provider": signer.id, "why": error.to_string() })),
             );
             return back(&[
                 ("error", "access_denied"),
@@ -434,10 +451,15 @@ async fn callback(State(server): State<Arc<Server>>, Query(query): Query<Callbac
             ]);
         }
     };
-    let groups_claim = server.config.auth.oidc.as_ref().map_or("groups", |o| o.groups_claim.as_str());
-    let Some(identity) = graphrt_console::roles::Identity::from_claims(&claims, groups_claim) else {
+    let Some(mut identity) = graphrt_console::roles::Identity::from_claims(&claims, &signer.groups_claim) else {
         return back(&[("error", "access_denied"), ("state", &pending.client_state)]);
     };
+    if let Some(claim) = &signer.email_verified_claim
+        && !claim_is_true(claims.get(claim))
+    {
+        // The provider does not vouch for this email (e.g. an Entra tenant that set it freely).
+        identity.email = None;
+    }
     // Self hosted: the console's role rules say who may sign in at all.
     // Hosted: anyone, unless the rules narrow it (allowed domains, a default role).
     let rules = &server.config.auth.roles;
@@ -459,7 +481,7 @@ async fn callback(State(server): State<Arc<Server>>, Query(query): Query<Callbac
             ("state", &pending.client_state),
         ]);
     }
-    let issuer = server.config.auth.oidc.as_ref().map_or("", |o| o.issuer.as_str());
+    let issuer = signer.issuer.as_str();
     let name = identity.name.clone().or_else(|| identity.email.clone()).unwrap_or_else(|| "Graphrt user".into());
     let account = server.accounts.upsert(NewIdentity {
         kind: AccountKind::Oidc,
@@ -481,6 +503,15 @@ async fn callback(State(server): State<Arc<Server>>, Query(query): Query<Callbac
         },
     );
     back(&[("code", &one_time), ("state", &pending.client_state)])
+}
+
+/// `true`, or the text `true` (some providers send boolean claims as text).
+fn claim_is_true(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(flag)) => *flag,
+        Some(Value::String(text)) => text.eq_ignore_ascii_case("true"),
+        _ => false,
+    }
 }
 
 fn form_encode(value: &str) -> String {

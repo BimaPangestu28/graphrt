@@ -14,7 +14,8 @@ config:
       default_role: operator
 
 # Keys and the OIDC client secret, from an existing Secret with these keys:
-#   GRAPHRT_COLLAB_SIGNING_KEY, GRAPHRT_COLLAB_SECRETS_KEY, GRAPHRT_COLLAB_OIDC_SECRET (optional)
+#   GRAPHRT_COLLAB_SIGNING_KEY, GRAPHRT_COLLAB_SECRETS_KEY, GRAPHRT_COLLAB_OIDC_SECRET (optional),
+#   and the client id and secret variables `auth.providers` names (optional)
 # Make them with `graphrt collab key`.
 existingSecret: graphrt-collab-keys
 

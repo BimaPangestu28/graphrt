@@ -33,9 +33,15 @@ async fn start(name: &str) -> (String, Arc<Server>, tokio::sync::oneshot::Sender
         temp_dir(name).display()
     );
     let config: CollabConfig = graphrt_core::yaml::from_str(&yaml, true).unwrap();
-    let server =
-        Server::open(Options { config, signing_key: None, secrets_key: None, client_secret: None, verifiers: None })
-            .unwrap();
+    let server = Server::open(Options {
+        config,
+        signing_key: None,
+        secrets_key: None,
+        client_ids: Default::default(),
+        client_secrets: Default::default(),
+        verifiers: None,
+    })
+    .unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let running = Arc::clone(&server);
     tokio::spawn(async move {

@@ -1,23 +1,41 @@
-# Graphrt's hosted service: many teams, open sign up through the identity provider.
+# Graphrt's hosted service at https://collab.graphrt.com: many teams, open
+# sign up with Google or Microsoft, the free plan's quotas (docs/collab.md,
+# "Hosted service"). Client ids and secrets come from the environment: a
+# provider is off while its client id variable is empty.
 mode: hosted
-public_url: https://collab.graphrt.dev     # owner decision: the hosted domain
+public_url: https://collab.graphrt.com
 listen: 0.0.0.0:8790
 data_dir: /data
 behind_proxy: true
 auth:
-  oidc:
-    issuer: https://accounts.google.com     # owner decision: the hosted identity provider
-    client_id: <client-id>
-    client_secret_env: GRAPHRT_COLLAB_OIDC_SECRET
+  providers:
+    - id: google
+      name: Google
+      issuer: https://accounts.google.com
+      client_id_env: GRAPHRT_COLLAB_GOOGLE_CLIENT_ID
+      client_secret_env: GRAPHRT_COLLAB_GOOGLE_CLIENT_SECRET
+      auth_params: { prompt: select_account }
+    - id: microsoft
+      name: Microsoft
+      issuer: https://login.microsoftonline.com/common/v2.0
+      client_id_env: GRAPHRT_COLLAB_MICROSOFT_CLIENT_ID
+      client_secret_env: GRAPHRT_COLLAB_MICROSOFT_CLIENT_SECRET
+      auth_params: { prompt: select_account }
+      email_verified_claim: xms_edov
+  # People without Google or Microsoft join with an invite link of a team.
+  invite_accounts: true
   access_token_minutes: 10
   refresh_token_days: 30
-limits:                                      # per plan (owner decision)
-  workspaces_per_account: 3
-  projects_per_workspace: 50
-  members_per_workspace: 20
-  max_doc_bytes: 8388608
-  sessions_per_account: 10
-  requests_per_minute: 300
-plugins:
-  dirs: [/plugins]
-  trusted: [collab-webhooks]
+limits:                                      # the free plan
+  workspaces_per_account: 2
+  projects_per_workspace: 10
+  members_per_workspace: 5
+  max_doc_bytes: 2097152
+  max_message_bytes: 524288
+  sessions_per_account: 5
+  messages_per_second: 30
+  requests_per_minute: 120
+  auto_versions: 30
+  version_every_minutes: 10
+audit:
+  retention_days: 365

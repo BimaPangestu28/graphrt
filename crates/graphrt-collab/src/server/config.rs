@@ -10,6 +10,9 @@
 //!   oidc:                           # sign in with the company's identity provider
 //!     issuer: https://login.microsoftonline.com/<tenant>/v2.0
 //!     client_id: 00000000-0000-0000-0000-000000000000
+//!   # or several providers, each a button in the app:
+//!   # providers:
+//!   #   - { id: google, issuer: https://accounts.google.com, client_id_env: GOOGLE_ID, client_secret_env: GOOGLE_SECRET }
 //!   roles:                          # who may sign in, and who may create workspaces
 //!     owners: [alice@example.com]
 //!     allowed_domains: [example.com]
@@ -18,6 +21,7 @@
 //!
 //! Everything else has a default (see [`CollabConfig`]).
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -90,9 +94,13 @@ pub struct TlsConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthConfig {
-    /// The identity provider. Without one, people join with invite codes only.
+    /// The identity provider. Without one (and without `providers`), people join with invite codes only.
     #[serde(default)]
     pub oidc: Option<OidcConfig>,
+    /// Several identity providers, each a sign in button in the app (e.g.
+    /// Google and Microsoft). `oidc` is the same as one provider with the id `oidc`.
+    #[serde(default)]
+    pub providers: Vec<ProviderConfig>,
     /// Who may sign in with the provider, and (self hosted) who creates
     /// workspaces: people the roles make owners.
     #[serde(default)]
@@ -117,6 +125,7 @@ impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             oidc: None,
+            providers: Vec::new(),
             roles: RolesConfig::default(),
             invite_accounts: None,
             access_token_minutes: default_access_minutes(),
@@ -129,8 +138,123 @@ impl Default for AuthConfig {
 impl AuthConfig {
     /// Whether invite codes make accounts.
     pub fn invite_accounts(&self) -> bool {
-        self.invite_accounts.unwrap_or(self.oidc.is_none())
+        self.invite_accounts.unwrap_or(self.oidc.is_none() && self.providers.is_empty())
     }
+
+    /// Every identity provider: `oidc` (as the provider `oidc`) first, then `providers`.
+    pub fn all_providers(&self) -> Vec<ProviderConfig> {
+        let legacy = self.oidc.iter().map(|oidc| ProviderConfig {
+            id: LEGACY_PROVIDER.to_owned(),
+            name: None,
+            issuer: oidc.issuer.clone(),
+            client_id: Some(oidc.client_id.clone()),
+            client_id_env: None,
+            client_secret_env: oidc.client_secret_env.clone(),
+            scopes: oidc.scopes.clone(),
+            groups_claim: oidc.groups_claim.clone(),
+            auth_params: oidc.auth_params.clone(),
+            email_verified_claim: None,
+        });
+        legacy.chain(self.providers.iter().cloned()).collect()
+    }
+}
+
+/// The id of the provider `auth.oidc` configures.
+pub const LEGACY_PROVIDER: &str = "oidc";
+
+/// One identity provider (OpenID Connect).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderConfig {
+    /// A short id the app sends to pick this provider, e.g. `google` (a to z, 0 to 9, `-`).
+    pub id: String,
+    /// The name on the sign in button. Default: `Google` or `Microsoft` for
+    /// their issuers, else the issuer's host.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The issuer; `<issuer>/.well-known/openid-configuration` describes it.
+    /// Microsoft's `https://login.microsoftonline.com/common/v2.0` signs in
+    /// work, school and personal accounts of any tenant.
+    pub issuer: String,
+    /// The client id registered at the provider.
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// The environment variable that holds the client id, instead of `client_id`.
+    /// While it is empty the provider is off (the server starts without it and says so).
+    #[serde(default)]
+    pub client_id_env: Option<String>,
+    /// The environment variable that holds the client secret. Without one the
+    /// server signs in as a public client (PKCE only).
+    #[serde(default)]
+    pub client_secret_env: Option<String>,
+    /// Scopes asked for. Default: `openid email profile`.
+    #[serde(default = "default_scopes")]
+    pub scopes: Vec<String>,
+    /// The ID token claim that lists the person's groups. Default: `groups`.
+    #[serde(default = "default_groups_claim")]
+    pub groups_claim: String,
+    /// More parameters of the authorization request, e.g. `{prompt: select_account}`.
+    #[serde(default)]
+    pub auth_params: BTreeMap<String, String>,
+    /// A claim that must be `true` for the email of the token to be used, for a
+    /// provider that does not say `email_verified` (Microsoft: `xms_edov`). Without
+    /// it, an email is used unless the token says `email_verified: false`.
+    #[serde(default)]
+    pub email_verified_claim: Option<String>,
+}
+
+impl ProviderConfig {
+    /// The name on the sign in button.
+    pub fn display_name(&self) -> String {
+        if let Some(name) = self.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            return name.to_owned();
+        }
+        let host = self.issuer.split("://").nth(1).and_then(|rest| rest.split('/').next()).unwrap_or(&self.issuer);
+        match host {
+            "accounts.google.com" => "Google".to_owned(),
+            "login.microsoftonline.com" => "Microsoft".to_owned(),
+            other => other.to_owned(),
+        }
+    }
+
+    /// The console's provider config, with the client id it resolved to.
+    pub fn oidc(&self, client_id: String) -> OidcConfig {
+        OidcConfig {
+            issuer: self.issuer.clone(),
+            client_id,
+            client_secret_env: self.client_secret_env.clone(),
+            scopes: self.scopes.clone(),
+            groups_claim: self.groups_claim.clone(),
+            auth_params: self.auth_params.clone(),
+        }
+    }
+
+    fn check(&self) -> Result<(), String> {
+        let id = &self.id;
+        let id_ok =
+            !id.is_empty() && id.len() <= 32 && id.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'));
+        if !id_ok {
+            return Err(format!("auth.providers: the id `{id}` is 1 to 32 of a to z, 0 to 9 and -"));
+        }
+        if self.issuer.trim().is_empty() {
+            return Err(format!("auth.providers.{id} needs an `issuer`"));
+        }
+        let literal = self.client_id.as_deref().is_some_and(|c| !c.trim().is_empty());
+        if literal == self.client_id_env.is_some() {
+            return Err(format!("auth.providers.{id} needs one of `client_id` or `client_id_env`"));
+        }
+        if self.scopes.iter().all(|scope| scope != "openid") {
+            return Err(format!("auth.providers.{id}: `scopes` must include openid"));
+        }
+        Ok(())
+    }
+}
+
+fn default_scopes() -> Vec<String> {
+    ["openid", "email", "profile"].map(str::to_owned).to_vec()
+}
+fn default_groups_claim() -> String {
+    "groups".to_owned()
 }
 
 /// Quotas and rates. The defaults suit a team server, a hosted server sets its plan's.
@@ -285,13 +409,22 @@ impl CollabConfig {
         if self.auth.refresh_token_days == 0 || self.auth.refresh_token_days > 365 {
             return invalid("auth.refresh_token_days is 1 to 365".into());
         }
-        if self.mode == Mode::Hosted && self.auth.oidc.is_none() && !self.auth.invite_accounts() {
-            return invalid("a hosted server needs `auth.oidc` or `auth.invite_accounts: true`".into());
+        let providers = self.auth.all_providers();
+        if self.mode == Mode::Hosted && providers.is_empty() && !self.auth.invite_accounts() {
+            return invalid(
+                "a hosted server needs `auth.providers`, `auth.oidc` or `auth.invite_accounts: true`".into(),
+            );
         }
         if let Some(oidc) = &self.auth.oidc
             && (oidc.issuer.trim().is_empty() || oidc.client_id.trim().is_empty())
         {
             return invalid("auth.oidc needs `issuer` and `client_id`".into());
+        }
+        for (at, provider) in providers.iter().enumerate() {
+            provider.check().or_else(invalid)?;
+            if providers.iter().take(at).any(|earlier| earlier.id == provider.id) {
+                return invalid(format!("auth.providers: the id `{}` is used twice", provider.id));
+            }
         }
         let limits = &self.limits;
         if limits.max_message_bytes < 1024 || limits.max_message_bytes > 16 * 1024 * 1024 {
@@ -394,5 +527,32 @@ mod tests {
         )
         .unwrap();
         assert!(!c.auth.invite_accounts());
+        assert_eq!(c.auth.all_providers().len(), 1);
+        assert_eq!(c.auth.all_providers()[0].id, LEGACY_PROVIDER);
+    }
+
+    #[test]
+    fn several_providers_are_checked() {
+        let base = "public_url: https://x.example\ndata_dir: /tmp/x\nmode: hosted\nauth:\n  providers:\n";
+        let google = "    - {id: google, issuer: 'https://accounts.google.com', client_id_env: G_ID, client_secret_env: G_SECRET}\n";
+        let microsoft = "    - {id: microsoft, issuer: 'https://login.microsoftonline.com/common/v2.0', client_id: m, email_verified_claim: xms_edov}\n";
+        let c = config(&format!("{base}{google}{microsoft}")).unwrap();
+        assert!(!c.auth.invite_accounts());
+        let names: Vec<String> = c.auth.all_providers().iter().map(ProviderConfig::display_name).collect();
+        assert_eq!(names, ["Google", "Microsoft"]);
+        // The same id twice, a bad id, both or neither client id, no openid scope.
+        assert!(config(&format!("{base}{google}{google}")).is_err());
+        assert!(config(&format!("{base}    - {{id: Google, issuer: 'https://a.example', client_id: c}}\n")).is_err());
+        assert!(config(&format!("{base}    - {{id: a, issuer: 'https://a.example'}}\n")).is_err());
+        assert!(
+            config(&format!("{base}    - {{id: a, issuer: 'https://a.example', client_id: c, client_id_env: C}}\n"))
+                .is_err()
+        );
+        assert!(
+            config(&format!("{base}    - {{id: a, issuer: 'https://a.example', client_id: c, scopes: [email]}}\n"))
+                .is_err()
+        );
+        let named = config(&format!("{base}    - {{id: a, name: Acme, issuer: 'https://a.example', client_id: c}}\n"));
+        assert_eq!(named.unwrap().auth.all_providers()[0].display_name(), "Acme");
     }
 }
