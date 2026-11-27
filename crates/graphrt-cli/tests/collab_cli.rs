@@ -443,7 +443,11 @@ async fn bootstrap_invite_and_https() {
             "tls.crt",
         ],
     ];
-    std::fs::write(dir.0.join("ext.cnf"), "subjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\n").unwrap();
+    std::fs::write(
+        dir.0.join("ext.cnf"),
+        "subjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n",
+    )
+    .unwrap();
     for step in steps {
         let Ok(made) = openssl(step) else {
             eprintln!("openssl is not installed: skipping the HTTPS part");
