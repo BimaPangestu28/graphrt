@@ -189,6 +189,8 @@ fn an_object_storage_workspace_needs_its_feature_and_a_valid_location() {
         assert_eq!(code, Some(2), "{report}");
         assert!(report.contains("GRAPHRT_S3_PATH_STYLE"), "{report}");
     }
+}
+
 /// `--document-tools`: a workflow writes a PDF, a Word document and a workbook.
 #[cfg(feature = "documents")]
 #[test]
@@ -218,6 +220,9 @@ fn document_tools_write_pdf_word_and_excel_files() {
     assert!(!out.status.success());
     let report = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(report.contains("unknown tool provider `documents`"), "{report}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `--image-model gemini/NAME`: the Gemini generator behind `image/generate`,
 /// against a local server that answers like the Gemini API.
 #[cfg(feature = "image")]
