@@ -399,7 +399,9 @@ impl PluginManifest {
         let is_yaml = matches!(path.extension().and_then(|e| e.to_str()), Some("yaml" | "yml"));
         let parsed = if is_yaml { Self::parse_yaml(&text) } else { Self::from_json(&text) };
         parsed.map_err(|e| match e {
-            PluginError::Manifest(m) => PluginError::Manifest(format!("{}: {m}", path.display())),
+            PluginError::Manifest(m) => {
+                PluginError::Manifest(format!("{}: {}", path.display(), with_newer_host_hint(m)))
+            }
             other => other,
         })
     }
@@ -656,6 +658,26 @@ pub fn manifest_in(dir: &Path) -> Option<PathBuf> {
     MANIFEST_FILES.iter().map(|f| dir.join(f)).find(|p| p.is_file())
 }
 
+/// A manifest file refused for a key, runtime or value this version does not know was
+/// most likely written for a newer graphrt. The parser only names the key ("unknown field
+/// `triggers`, expected one of ..."), which reads as a broken plugin, so say what to do
+/// first and keep the parser's words after it.
+fn with_newer_host_hint(message: String) -> String {
+    const MARKERS: [&str; 3] = ["unknown field `", "unknown runtime `", "unknown variant `"];
+    let unknown = MARKERS.iter().find_map(|marker| {
+        let rest = &message[message.find(marker)? + marker.len()..];
+        Some(&rest[..rest.find('`')?])
+    });
+    match unknown {
+        Some(name) => format!(
+            "this plugin uses `{name}`, which this version of graphrt does not know. It was probably made \
+             for a newer graphrt: update graphrt and try again (or check the spelling if this is your own \
+             plugin). Details: {message}"
+        ),
+        None => message,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -724,6 +746,47 @@ mod tests {
         let trigger = serde_json::json!({"id": "t", "title": "T", "watch": "acme.x"});
         v["triggers"] = serde_json::json!([trigger.clone(), trigger]);
         assert!(PluginManifest::from_json(&v.to_string()).unwrap_err().to_string().contains("duplicate trigger"));
+    }
+
+    #[test]
+    fn a_manifest_file_made_for_a_newer_graphrt_says_to_update() {
+        let dir = std::env::temp_dir().join(format!("graphrt-manifest-hint-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("graphrt-plugin.json");
+        let refusal = |manifest: serde_json::Value| {
+            std::fs::write(&path, manifest.to_string()).unwrap();
+            PluginManifest::from_file(&path).unwrap_err().to_string()
+        };
+
+        let mut future_key = base();
+        future_key["holograms"] = serde_json::json!([]);
+        let message = refusal(future_key);
+        assert!(
+            message.contains("this plugin uses `holograms`, which this version of graphrt does not know"),
+            "{message}"
+        );
+        assert!(message.contains("update graphrt and try again"), "{message}");
+        assert!(message.contains("Details: unknown field `holograms`"), "the parser's words are kept: {message}");
+
+        let mut future_runtime = base();
+        future_runtime["runtime"] = "container".into();
+        let message = refusal(future_runtime);
+        assert!(message.contains("this plugin uses `container`"), "{message}");
+        assert!(message.contains("Details: unknown runtime `container`"), "{message}");
+
+        let mut missing_name = base();
+        missing_name.as_object_mut().unwrap().remove("name");
+        let message = refusal(missing_name);
+        assert!(!message.contains("newer graphrt"), "other refusals stay as they are: {message}");
+        assert!(message.contains("missing field `name`"), "{message}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_newer_host_hint_leaves_other_messages_alone() {
+        assert_eq!(with_newer_host_hint("plugin `x`: name must be short".into()), "plugin `x`: name must be short");
+        assert_eq!(with_newer_host_hint("unknown field `never closed".into()), "unknown field `never closed");
     }
 
     #[test]
