@@ -15,4 +15,6 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "graphrt-android-sample"
-include(":app")
+include(":app", ":graphrt")
+// The SDK module, built from this repository.
+project(":graphrt").projectDir = file("../../../sdk/android/graphrt")

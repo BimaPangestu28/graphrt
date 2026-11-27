@@ -10,3 +10,4 @@
 "GraphrtError.InvalidInput.message" = "detail"
 "GraphrtError.Plugin.message" = "detail"
 "GraphrtError.Runtime.message" = "detail"
+"GraphrtError.Unsupported.message" = "detail"

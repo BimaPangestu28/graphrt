@@ -2,10 +2,11 @@ name: Release
 
 # Push a tag like `v0.1.0` to run the test suite on Linux, macOS and Windows,
 # build agent and gateway binaries for every platform (each smoke-tested where
-# the runner can execute it), publish a GitHub Release with SHA256SUMS, push
-# multi-arch agent and gateway images to GHCR and (optionally) publish crates
-# to crates.io and the web packages to npm. Nothing is published unless the
-# tests pass.
+# the runner can execute it), build the mobile SDKs (an Android AAR, an
+# XCFramework and a Swift package), publish a GitHub Release with SHA256SUMS,
+# push multi-arch agent and gateway images to GHCR and (optionally) publish
+# crates to crates.io, the web packages to npm and the AAR to Maven Central.
+# Nothing is published unless the tests pass.
 on:
   push:
     tags: ["v*"]
@@ -167,9 +168,92 @@ jobs:
             dist/*.zip
           if-no-files-found: error
 
+  # The Android SDK: libgraphrt_ffi.so for arm64-v8a, armeabi-v7a and x86_64
+  # with the `sdk` features, the Kotlin binding and helpers, as an AAR and as a
+  # Maven repository layout (POM, sources, checksums) for Maven Central.
+  android-sdk:
+    name: Android SDK (AAR)
+    needs: [tag, test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.tag.outputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
+        with:
+          tool: cargo-ndk
+      - name: Build libgraphrt_ffi.so (arm64-v8a, armeabi-v7a, x86_64)
+        # The image's default NDK (r27): r30 cannot build the QuickJS bindings yet.
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_ROOT" sdk/android/scripts/build-native.sh
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - name: Build the AAR and the Maven layout
+        working-directory: sdk/android
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          ./gradlew --no-daemon -PgraphrtVersion="${TAG#v}" :graphrt:assembleRelease :graphrt:publishReleasePublicationToStagingRepository
+          mkdir -p ../../dist
+          cp graphrt/build/outputs/aar/graphrt-release.aar "../../dist/graphrt-android-${TAG#v}.aar"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-sdk
+          path: dist/*.aar
+          if-no-files-found: error
+      # Not a release asset: what the Maven Central job signs and uploads.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-native-libraries
+          path: sdk/android/graphrt/src/main/jniLibs
+          if-no-files-found: error
+          retention-days: 7
+
+  # The iOS and macOS SDK: GraphrtFFI.xcframework (iOS device, iOS simulator
+  # arm64 + x86_64, macOS arm64 + x86_64) and a Swift package that points at it.
+  swift-sdk:
+    name: Swift SDK (XCFramework + Swift package)
+    needs: [tag, test]
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.tag.outputs.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Build GraphrtFFI.xcframework
+        run: sdk/swift/scripts/build-xcframework.sh
+      - name: Test the Swift package against it
+        working-directory: sdk/swift
+        run: swift test
+      - name: Package for the release
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: sdk/swift/scripts/package-release.sh "$TAG" "$REPO" dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: swift-sdk
+          path: dist/*.zip
+          if-no-files-found: error
+
   release:
     name: GitHub Release
-    needs: [tag, build]
+    needs: [tag, build, android-sdk, swift-sdk]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -185,6 +269,8 @@ jobs:
           merge-multiple: true
       - name: Checksums
         run: |
+          # The Android libraries (directories per ABI) are for the Maven Central job, not assets.
+          find dist -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
           cd dist
           sha256sum -- * > SHA256SUMS
           sha256sum -c SHA256SUMS
@@ -317,3 +403,54 @@ jobs:
       # package's version leaves that package alone.
       - run: node scripts/publish.mjs --execute
         working-directory: web
+
+  # Opt-in, and off until the owner has set it up (see docs/mobile.md#publishing):
+  # repository variable PUBLISH_MAVEN=true, secrets MAVEN_CENTRAL_USERNAME and
+  # MAVEN_CENTRAL_PASSWORD (a Central Portal user token), SIGNING_KEY (an
+  # ASCII-armored PGP private key whose public key is on a key server) and
+  # SIGNING_PASSWORD, and the namespace com.graphrt verified on the Central
+  # Portal (a DNS TXT record on graphrt.com). The upload is USER_MANAGED: it
+  # waits in the Central Portal until someone presses Publish.
+  maven-central:
+    name: Publish the Android SDK to Maven Central
+    needs: [tag, release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ vars.PUBLISH_MAVEN == 'true' }}
+    environment: maven-central
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.tag.outputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android-native-libraries
+          path: sdk/android/graphrt/src/main/jniLibs
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - name: Sign into a Maven layout
+        working-directory: sdk/android
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+          ORG_GRADLE_PROJECT_signingKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingPassword: ${{ secrets.SIGNING_PASSWORD }}
+        run: ./gradlew --no-daemon -PgraphrtVersion="${TAG#v}" :graphrt:publishReleasePublicationToStagingRepository
+      - name: Upload the bundle to the Central Portal
+        working-directory: sdk/android/graphrt/build/staging-repo
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+        run: |
+          version="${TAG#v}"
+          files="$(find . -path "*/graphrt-android/$version/*" -type f)"
+          echo "$files" | grep -q '\.aar\.asc$' || { echo "::error::the AAR is not signed"; exit 1; }
+          echo "$files" | zip -q bundle.zip -@
+          token="$(printf '%s:%s' "$MAVEN_CENTRAL_USERNAME" "$MAVEN_CENTRAL_PASSWORD" | base64 -w0)"
+          curl --fail-with-body -sS -H "Authorization: Bearer $token" \
+            -F "bundle=@bundle.zip" \
+            "https://central.sonatype.com/api/v1/publisher/upload?name=graphrt-android-$version&publishingType=USER_MANAGED"

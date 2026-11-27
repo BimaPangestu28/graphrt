@@ -1,19 +1,28 @@
 # graphrt iOS sample
 
-A minimal SwiftUI app that embeds graphrt as a static XCFramework through the
-UniFFI Swift binding and runs the offline
-[`examples/hello.yaml`](../../hello.yaml) workflow (start → template → end)
+A minimal SwiftUI app that embeds Graphrt as a static XCFramework through the
+Swift binding and the Swift package's helpers, and runs two offline workflows
 on the device. No network, no API key.
 
-- **Run** starts a run and waits for the final result (`RunHandle.waitJson`).
-- **Stream events** prints every engine event as the run produces it
+- **Run** starts the [`hello`](../../hello.yaml) workflow (start -> template ->
+  end) and waits for the final result (`RunHandle.waitJson`).
+- **Stream events** prints every engine event of it as the run produces it
   (`EventListener.onEvent`, then `onFinish`).
+- **Ask the assistant** runs [`agent.yaml`](../agent.yaml) with its scripted
+  model ([`runtime-config.json`](../runtime-config.json)): the agent calls the
+  app's native tool `device/battery_level`, asks in an alert before
+  `device/send_message`, and streams `Done: sent to Ada` (see
+  [`AssistantModel.swift`](GraphrtSample/AssistantModel.swift)).
 
-`GraphrtSample.xcodeproj/project.pbxproj` is a small hand-written project with
+`GraphrtSample.xcodeproj/project.pbxproj` is a small hand written project with
 no generator. It references repository files in place:
-`bindings/swift/graphrt_ffi.swift` (compiled into the app),
-`examples/hello.yaml` (bundled as a resource), and
-`build/GraphrtFFI.xcframework` (built by the script below, not checked in).
+`bindings/swift/graphrt_ffi.swift` and
+`sdk/swift/Sources/Graphrt/Graphrt+Async.swift` (compiled into the app),
+`examples/hello.yaml`, `examples/mobile/agent.yaml` and
+`examples/mobile/runtime-config.json` (bundled as resources), and
+`build/GraphrtFFI.xcframework` (built by the script below, not checked in). An
+app of your own adds the Swift package instead (see
+[docs/mobile.md](../../../docs/mobile.md#install)).
 
 ## Prerequisites
 
@@ -42,16 +51,17 @@ Or open `GraphrtSample.xcodeproj` in Xcode and run it. For a physical device,
 choose your team under Signing & Capabilities (the bundle id is
 `dev.graphrt.sample`; change it if Xcode asks).
 
-The script builds with `--no-default-features` and the `min-size` profile,
-which leaves out the JavaScript code node, MCP, document extraction and RAG.
-The hello workflow needs none of them. To change this, set `GRAPHRT_FEATURES`
-(for example `"--features mobile-js"`), `GRAPHRT_TARGETS` (add
+The script runs the Swift package's `sdk/swift/scripts/build-xcframework.sh`
+for the device and the arm64 simulator, with the SDK's features (`--features
+sdk`, what the release ships) and the `min-size` profile. To change this, set
+`GRAPHRT_FEATURES`, `GRAPHRT_TARGETS` (add
 `x86_64-apple-ios` for Intel simulators and drop the `EXCLUDED_ARCHS` setting
 from the project), or `GRAPHRT_PROFILE`. If the shell's active developer
 directory is the Command Line Tools, the script switches `DEVELOPER_DIR` to
 `/Applications/Xcode.app`.
 
-Sizes measured with `--no-default-features`, `min-size` and Rust 1.95:
+Sizes measured with `--no-default-features` (before the sample used the SDK's
+features), `min-size` and Rust 1.95:
 `libgraphrt_ffi.a` is about 103 MB per slice, because a static archive keeps
 every object and its symbols, and the XCFramework is 197 MB on disk. The
 linker keeps only what the app uses, so the Release device app binary

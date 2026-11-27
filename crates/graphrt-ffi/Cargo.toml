@@ -38,6 +38,28 @@ mcp-http = ["dep:graphrt-mcp"]
 doc = ["dep:graphrt-doc"]
 # knowledge-retrieval node (memory / SQLite / Qdrant / HTTP retrievers; SQLite is compiled from C).
 rag = ["dep:graphrt-rag"]
+# Agent skills: the `skills` field of `agent` nodes, served from the store in the
+# config's `skills_dir` (a directory in the app's own storage). No code of a skill runs.
+skills = ["dep:graphrt-skill", "graphrt-llm/skills"]
+# Self learning: the `learning` field of `agent` nodes reads approved lessons from
+# the store in the config's `learning_dir`. The app reviews lessons through `Runtime`.
+learning = ["dep:graphrt-learn", "graphrt-llm/learning"]
+# A file workspace for agents (config `workspace`): the `files` tools, confined to one
+# directory of the app's own storage, with quotas. With `doc`, `files/read` also
+# extracts document text.
+files = ["dep:graphrt-files", "graphrt-llm/tool-files", "graphrt-core/tool-files", "graphrt-files?/doc"]
+# UI blocks (cards, charts, tables, stat tiles) are validated before the app gets
+# them: `validate_ui_block` and the typed `UiBlock` event.
+ui = ["dep:graphrt-ui"]
+# Photos sent to a model (`vision` inputs) are checked, stripped of EXIF (GPS
+# position, device, time) and downscaled first. Pure Rust decoders.
+image = ["dep:graphrt-image", "graphrt-llm/vision-preparer"]
+# A scripted model provider (config `scripted_models`): runs agent graphs with no
+# network and no key, for app tests, previews and the smoke tests of this repository.
+scripted-llm = ["graphrt-llm/mock"]
+# What the Android AAR and the Swift package ship: every capability that makes
+# sense on a phone. Needs libclang on the build host (see `mobile-js`).
+sdk = ["default", "mobile-js", "skills", "learning", "files", "ui", "image", "scripted-llm"]
 # Enables the `uniffi-bindgen` binary used to generate Kotlin / Swift bindings.
 # `cargo-metadata` lets the generator find this crate's uniffi.toml.
 bindgen-cli = ["uniffi/cli", "uniffi/cargo-metadata"]
@@ -54,7 +76,14 @@ graphrt-mcp = { workspace = true, optional = true, features = ["http"] }
 rquickjs = { version = "0.14", optional = true, default-features = false, features = ["bindgen"] }
 graphrt-doc = { workspace = true, optional = true, features = ["pdf", "office", "spreadsheet", "epub", "email", "tokio"] }
 graphrt-rag = { workspace = true, optional = true, features = ["http", "qdrant", "fs", "sqlite", "yaml"] }
+graphrt-skill = { workspace = true, optional = true }
+graphrt-learn = { workspace = true, optional = true }
+graphrt-files = { workspace = true, optional = true, features = ["tokio", "regex"] }
+graphrt-ui = { workspace = true, optional = true }
+graphrt-image = { workspace = true, optional = true, features = ["tokio", "process"] }
 uniffi = { version = "0.32", default-features = false }
+# Async methods of foreign traits (`ToolProvider::call_tool`).
+async-trait = "0.1"
 thiserror.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true

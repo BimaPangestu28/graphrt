@@ -1,6 +1,8 @@
 package dev.graphrt.sample
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -15,6 +17,13 @@ import android.widget.ScrollView
 import android.widget.TextView
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import kotlin.coroutines.resume
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONObject
 import uniffi.graphrt_ffi.EventListener
 import uniffi.graphrt_ffi.Runtime
@@ -23,13 +32,17 @@ import uniffi.graphrt_ffi.graphrtVersion
 
 private const val LOG_TAG = "GraphrtSample"
 private const val WORKFLOW_ASSET = "hello.yaml"
+private const val AGENT_ASSET = "agent.yaml"
+private const val AGENT_CONFIG_ASSET = "runtime-config.json"
+private const val AGENT_QUERY = "Tell Ada my battery level"
 private const val RUN_TIMEOUT_MS = 10_000UL
 private const val EXTRA_NAME = "name"
 private const val EXTRA_AUTORUN = "autorun"
 
 /**
  * Runs the offline `hello` workflow (start -> template -> end) through the
- * graphrt UniFFI binding.
+ * graphrt UniFFI binding, and the phone assistant of `agent.yaml` (see
+ * [AgentDemo]) through the SDK's typed events, native tools and approvals.
  *
  * "Run" waits for the final result; "Stream events" prints every engine event
  * as the run produces it. graphrt calls happen on [graphrtExecutor] (never the
@@ -37,11 +50,16 @@ private const val EXTRA_AUTORUN = "autorun"
  * every UI update is posted to [mainHandler].
  *
  * Intent extras, handy for emulators and CI:
- * `--es name Grace` pre-fills the name, `--ez autorun true` presses both buttons once loaded.
+ * `--es name Grace` pre-fills the name, `--ez autorun true` presses every button once loaded
+ * and approves the assistant's request without asking.
  */
 class MainActivity : Activity() {
     private val graphrtExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var autorun = false
+    private var agent: AgentDemo? = null
+    private var agentWorkflow: WorkflowHandle? = null
 
     private var runtime: Runtime? = null
     private var workflow: WorkflowHandle? = null
@@ -59,7 +77,9 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        scope.cancel() // aborts a running assistant
         graphrtExecutor.execute {
+            agentWorkflow?.close()
             workflow?.close()
             runtime?.close()
         }
@@ -72,6 +92,7 @@ class MainActivity : Activity() {
         excitedBox = CheckBox(this).apply { text = "excited" }
         val runButton = Button(this).apply { text = "Run"; setOnClickListener { runWorkflow() } }
         val streamButton = Button(this).apply { text = "Stream events"; setOnClickListener { streamWorkflow() } }
+        val agentButton = Button(this).apply { text = "Ask the assistant"; setOnClickListener { runAgent() } }
         statusView = TextView(this)
         resultView = monospaceTextView()
         eventsView = monospaceTextView()
@@ -79,7 +100,7 @@ class MainActivity : Activity() {
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
-            listOf(nameField, excitedBox, runButton, streamButton, statusView, resultView, eventsView).forEach {
+            listOf(nameField, excitedBox, runButton, streamButton, agentButton, statusView, resultView, eventsView).forEach {
                 addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             }
         }
@@ -97,16 +118,55 @@ class MainActivity : Activity() {
 
     private fun loadWorkflow() {
         try {
-            val document = assets.open(WORKFLOW_ASSET).bufferedReader().use { it.readText() }
+            val document = readAsset(WORKFLOW_ASSET)
             val newRuntime = Runtime("{}")
             runtime = newRuntime
             workflow = newRuntime.loadWorkflow(document)
-            showStatus("graphrt ${graphrtVersion()} loaded workflow '${workflow?.name()}'")
-            if (intent.getBooleanExtra(EXTRA_AUTORUN, false)) {
-                mainHandler.post { runWorkflow(); streamWorkflow() }
+            val demo = AgentDemo(::batteryPercent, ::askToApprove, ::appendEvent)
+            agentWorkflow = demo.load(readAsset(AGENT_CONFIG_ASSET), readAsset(AGENT_ASSET))
+            agent = demo
+            showStatus("graphrt ${graphrtVersion()} loaded workflow '${workflow?.name()}' and '${agentWorkflow?.name()}'")
+            autorun = intent.getBooleanExtra(EXTRA_AUTORUN, false)
+            if (autorun) {
+                mainHandler.post { runWorkflow(); streamWorkflow(); runAgent() }
             }
         } catch (error: Exception) {
             reportError("loading $WORKFLOW_ASSET", error)
+        }
+    }
+
+    private fun readAsset(name: String): String = assets.open(name).bufferedReader().use { it.readText() }
+
+    private fun batteryPercent(): Int =
+        (getSystemService(BATTERY_SERVICE) as BatteryManager).getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+
+    /** The assistant waits for this: a dialog, or yes at once under autorun. */
+    private suspend fun askToApprove(toolName: String, argumentsJson: String): Boolean {
+        if (autorun) return true
+        return suspendCancellableCoroutine { continuation ->
+            mainHandler.post {
+                AlertDialog.Builder(this)
+                    .setTitle("Allow $toolName?")
+                    .setMessage(argumentsJson)
+                    .setPositiveButton("Allow") { _, _ -> continuation.resume(true) }
+                    .setNegativeButton("Don't allow") { _, _ -> continuation.resume(false) }
+                    .setOnCancelListener { continuation.resume(false) }
+                    .show()
+            }
+        }
+    }
+
+    /** Runs the phone assistant: native tools, an approval, a streamed answer. */
+    private fun runAgent() {
+        val demo = agent ?: return
+        val loaded = agentWorkflow ?: return
+        mainHandler.post { eventsView.append("\nassistant:") }
+        scope.launch {
+            try {
+                demo.run(loaded, AGENT_QUERY)
+            } catch (error: Exception) {
+                reportError("assistant", error)
+            }
         }
     }
 

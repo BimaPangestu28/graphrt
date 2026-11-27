@@ -2,7 +2,9 @@
 // Hand-written, minimal project for the graphrt iOS sample (see README.md).
 // Sources outside this folder are referenced in place:
 //   ../../../bindings/swift/graphrt_ffi.swift  generated UniFFI binding
+//   ../../../sdk/swift/Sources/Graphrt/Graphrt+Async.swift  the Swift package's helpers
 //   ../../hello.yaml                           the offline workflow, bundled as a resource
+//   ../agent.yaml, ../runtime-config.json      the phone assistant and its scripted model
 //   build/GraphrtFFI.xcframework               produced by scripts/build-xcframework.sh
 {
 	archiveVersion = 1;
@@ -18,6 +20,10 @@
 		B0000000000000000000A004 /* graphrt_ffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000A004 /* graphrt_ffi.swift */; };
 		B0000000000000000000A005 /* hello.yaml in Resources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000A005 /* hello.yaml */; };
 		B0000000000000000000A006 /* GraphrtFFI.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = F0000000000000000000A006 /* GraphrtFFI.xcframework */; };
+		B0000000000000000000A008 /* AssistantModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000A008 /* AssistantModel.swift */; };
+		B0000000000000000000A009 /* Graphrt+Async.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000A009 /* Graphrt+Async.swift */; };
+		B0000000000000000000A00A /* agent.yaml in Resources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000A00A /* agent.yaml */; };
+		B0000000000000000000A00B /* runtime-config.json in Resources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000A00B /* runtime-config.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,6 +33,10 @@
 		F0000000000000000000A004 /* graphrt_ffi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = graphrt_ffi.swift; path = ../../../bindings/swift/graphrt_ffi.swift; sourceTree = SOURCE_ROOT; };
 		F0000000000000000000A005 /* hello.yaml */ = {isa = PBXFileReference; lastKnownFileType = text.yaml; name = hello.yaml; path = ../../hello.yaml; sourceTree = SOURCE_ROOT; };
 		F0000000000000000000A006 /* GraphrtFFI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GraphrtFFI.xcframework; path = build/GraphrtFFI.xcframework; sourceTree = SOURCE_ROOT; };
+		F0000000000000000000A008 /* AssistantModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantModel.swift; sourceTree = "<group>"; };
+		F0000000000000000000A009 /* Graphrt+Async.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "Graphrt+Async.swift"; path = "../../../sdk/swift/Sources/Graphrt/Graphrt+Async.swift"; sourceTree = SOURCE_ROOT; };
+		F0000000000000000000A00A /* agent.yaml */ = {isa = PBXFileReference; lastKnownFileType = text.yaml; name = agent.yaml; path = ../agent.yaml; sourceTree = SOURCE_ROOT; };
+		F0000000000000000000A00B /* runtime-config.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = "runtime-config.json"; path = "../runtime-config.json"; sourceTree = SOURCE_ROOT; };
 		F0000000000000000000A007 /* GraphrtSample.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GraphrtSample.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -57,6 +67,7 @@
 				F0000000000000000000A001 /* GraphrtSampleApp.swift */,
 				F0000000000000000000A002 /* ContentView.swift */,
 				F0000000000000000000A003 /* HelloWorkflowModel.swift */,
+				F0000000000000000000A008 /* AssistantModel.swift */,
 			);
 			path = GraphrtSample;
 			sourceTree = "<group>";
@@ -65,7 +76,10 @@
 			isa = PBXGroup;
 			children = (
 				F0000000000000000000A004 /* graphrt_ffi.swift */,
+				F0000000000000000000A009 /* Graphrt+Async.swift */,
 				F0000000000000000000A005 /* hello.yaml */,
+				F0000000000000000000A00A /* agent.yaml */,
+				F0000000000000000000A00B /* runtime-config.json */,
 				F0000000000000000000A006 /* GraphrtFFI.xcframework */,
 			);
 			name = graphrt;
@@ -133,6 +147,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				B0000000000000000000A005 /* hello.yaml in Resources */,
+				B0000000000000000000A00A /* agent.yaml in Resources */,
+				B0000000000000000000A00B /* runtime-config.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -147,6 +163,8 @@
 				B0000000000000000000A002 /* ContentView.swift in Sources */,
 				B0000000000000000000A003 /* HelloWorkflowModel.swift in Sources */,
 				B0000000000000000000A004 /* graphrt_ffi.swift in Sources */,
+				B0000000000000000000A008 /* AssistantModel.swift in Sources */,
+				B0000000000000000000A009 /* Graphrt+Async.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

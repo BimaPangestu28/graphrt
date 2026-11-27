@@ -26,6 +26,7 @@ import threading
 import itertools
 import traceback
 import typing
+import asyncio
 import platform
 
 
@@ -526,6 +527,8 @@ def _uniffi_check_contract_api_version(lib):
 def _uniffi_check_api_checksums(lib):
     if lib.uniffi_graphrt_ffi_checksum_func_graphrt_version() != 60389:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_func_validate_ui_block() != 38956:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_credentialprovider_get_credential() != 19341:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_credentialprovider_invalidate() != 49006:
@@ -535,6 +538,30 @@ def _uniffi_check_api_checksums(lib):
     if lib.uniffi_graphrt_ffi_checksum_method_eventlistener_on_answer_chunk() != 15801:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_eventlistener_on_finish() != 57497:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_pausedrun_answer() != 9534:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_pausedrun_approve() != 47138:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_pausedrun_decide_tool_call() != 56145:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_pausedrun_inputs_json() != 42785:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_pausedrun_reject() != 40632:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_pausedrun_requests() != 10434:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_pausedrun_run_id() != 14380:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_pausedrun_set_input() != 16492:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_pausedrun_snapshot_json() != 29003:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_pausedrun_to_json() != 28957:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_pausedrun_unanswered() != 14270:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_constructor_pausedrun_from_json() != 59822:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runhandle_abort() != 59515:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -546,21 +573,47 @@ def _uniffi_check_api_checksums(lib):
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runhandle_wait_json() != 47065:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runlistener_on_event() != 15799:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_add_lesson() != 51044:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runtime_catalog_json() != 58775:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_cache() != 52143:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider() != 15810:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_decide_lesson() != 28116:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_delete_lesson() != 55609:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_install_skill() != 51605:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_list_lessons() != 58828:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_list_skills() != 44629:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runtime_load_bundle() != 2040:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runtime_load_workflow() != 197:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_propose_lesson() != 56492:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_register_tool_provider() != 56384:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin() != 10329:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_remove_skill() != 20220:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider() != 21006:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_set_skill_enabled() != 14364:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_runtime_tool_providers() != 15986:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_constructor_runtime_new() != 50642:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_toolprovider_call_tool() != 10940:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_workflowhandle_catalog_json() != 16429:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -570,7 +623,11 @@ def _uniffi_check_api_checksums(lib):
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_workflowhandle_resume() != 30149:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_workflowhandle_resume_paused() != 36973:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_workflowhandle_run() != 11872:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_graphrt_ffi_checksum_method_workflowhandle_start() != 13979:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_graphrt_ffi_checksum_method_workflowhandle_warnings() != 34745:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -606,6 +663,9 @@ _UniffiLib.ffi_graphrt_ffi_uniffi_contract_version.restype = ctypes.c_uint32
 _UniffiLib.uniffi_graphrt_ffi_checksum_func_graphrt_version.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_func_graphrt_version.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_func_validate_ui_block.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_func_validate_ui_block.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_credentialprovider_get_credential.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_credentialprovider_get_credential.restype = ctypes.c_uint16
@@ -621,6 +681,42 @@ _UniffiLib.uniffi_graphrt_ffi_checksum_method_eventlistener_on_answer_chunk.rest
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_eventlistener_on_finish.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_eventlistener_on_finish.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_answer.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_answer.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_approve.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_approve.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_decide_tool_call.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_decide_tool_call.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_inputs_json.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_inputs_json.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_reject.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_reject.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_requests.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_requests.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_run_id.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_run_id.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_set_input.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_set_input.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_snapshot_json.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_snapshot_json.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_to_json.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_to_json.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_unanswered.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_pausedrun_unanswered.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_constructor_pausedrun_from_json.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_constructor_pausedrun_from_json.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runhandle_abort.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runhandle_abort.restype = ctypes.c_uint16
@@ -636,6 +732,12 @@ _UniffiLib.uniffi_graphrt_ffi_checksum_method_runhandle_update_variable.restype 
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runhandle_wait_json.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runhandle_wait_json.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runlistener_on_event.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runlistener_on_event.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_add_lesson.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_add_lesson.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_catalog_json.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_catalog_json.restype = ctypes.c_uint16
@@ -645,21 +747,54 @@ _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_cache.res
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_clear_credential_provider.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_decide_lesson.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_decide_lesson.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_delete_lesson.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_delete_lesson.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_install_skill.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_install_skill.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_list_lessons.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_list_lessons.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_list_skills.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_list_skills.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_load_bundle.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_load_bundle.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_load_workflow.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_load_workflow.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_propose_lesson.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_propose_lesson.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_register_tool_provider.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_register_tool_provider.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_remove_skill.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_remove_skill.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_set_skill_enabled.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_set_skill_enabled.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_tool_providers.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_runtime_tool_providers.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_constructor_runtime_new.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_constructor_runtime_new.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_toolprovider_call_tool.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_toolprovider_call_tool.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_workflowhandle_catalog_json.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_workflowhandle_catalog_json.restype = ctypes.c_uint16
@@ -672,9 +807,15 @@ _UniffiLib.uniffi_graphrt_ffi_checksum_method_workflowhandle_name.restype = ctyp
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_workflowhandle_resume.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_workflowhandle_resume.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_workflowhandle_resume_paused.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_workflowhandle_resume_paused.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_workflowhandle_run.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_workflowhandle_run.restype = ctypes.c_uint16
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_workflowhandle_start.argtypes = (
+)
+_UniffiLib.uniffi_graphrt_ffi_checksum_method_workflowhandle_start.restype = ctypes.c_uint16
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_workflowhandle_warnings.argtypes = (
 )
 _UniffiLib.uniffi_graphrt_ffi_checksum_method_workflowhandle_warnings.restype = ctypes.c_uint16
@@ -682,6 +823,11 @@ _UniffiLib.uniffi_graphrt_ffi_fn_func_graphrt_version.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_func_graphrt_version.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_func_validate_ui_block.argtypes = (
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_func_validate_ui_block.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_graphrt_ffi_fn_method_credentialprovider_get_credential.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -712,6 +858,78 @@ _UniffiLib.uniffi_graphrt_ffi_fn_method_eventlistener_on_finish.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_method_eventlistener_on_finish.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_answer.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_answer.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_approve.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_approve.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_decide_tool_call.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.c_int8,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_decide_tool_call.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_inputs_json.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_inputs_json.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_reject.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_reject.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_requests.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_requests.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_run_id.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_run_id.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_set_input.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_set_input.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_snapshot_json.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_snapshot_json.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_to_json.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_to_json.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_unanswered.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_unanswered.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_constructor_pausedrun_from_json.argtypes = (
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_constructor_pausedrun_from_json.restype = ctypes.c_uint64
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runhandle_abort.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -742,6 +960,21 @@ _UniffiLib.uniffi_graphrt_ffi_fn_method_runhandle_wait_json.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runhandle_wait_json.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runlistener_on_event.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runlistener_on_event.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_add_lesson.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_add_lesson.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_catalog_json.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -758,6 +991,39 @@ _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_clear_credential_provider.argtyp
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_clear_credential_provider.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_decide_lesson.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_decide_lesson.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_delete_lesson.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_delete_lesson.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_install_skill.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_install_skill.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_list_lessons.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_list_lessons.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_list_skills.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_list_skills.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_load_bundle.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -771,12 +1037,32 @@ _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_load_workflow.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_load_workflow.restype = ctypes.c_uint64
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_propose_lesson.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_propose_lesson.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_register_tool_provider.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_register_tool_provider.restype = None
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_register_wasm_plugin.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_register_wasm_plugin.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_remove_skill.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_remove_skill.restype = None
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_set_credential_provider.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -784,11 +1070,28 @@ _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_set_credential_provider.argtypes
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_set_credential_provider.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_set_skill_enabled.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_int8,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_set_skill_enabled.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_tool_providers.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_tool_providers.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_graphrt_ffi_fn_constructor_runtime_new.argtypes = (
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_constructor_runtime_new.restype = ctypes.c_uint64
+_UniffiLib.uniffi_graphrt_ffi_fn_method_toolprovider_call_tool.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_toolprovider_call_tool.restype = ctypes.c_uint64
 _UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_catalog_json.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -813,6 +1116,14 @@ _UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_resume.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_resume.restype = ctypes.c_uint64
+_UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_resume_paused.argtypes = (
+    ctypes.c_uint64,
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_resume_paused.restype = ctypes.c_uint64
 _UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_run.argtypes = (
     ctypes.c_uint64,
     _UniffiRustBuffer,
@@ -821,6 +1132,14 @@ _UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_run.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_run.restype = ctypes.c_uint64
+_UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_start.argtypes = (
+    ctypes.c_uint64,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_start.restype = ctypes.c_uint64
 _UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_warnings.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -846,6 +1165,16 @@ _UniffiLib.uniffi_graphrt_ffi_fn_free_eventlistener.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_free_eventlistener.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_clone_pausedrun.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_clone_pausedrun.restype = ctypes.c_uint64
+_UniffiLib.uniffi_graphrt_ffi_fn_free_pausedrun.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_free_pausedrun.restype = None
 _UniffiLib.uniffi_graphrt_ffi_fn_clone_runhandle.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -856,6 +1185,16 @@ _UniffiLib.uniffi_graphrt_ffi_fn_free_runhandle.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_free_runhandle.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_clone_runlistener.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_clone_runlistener.restype = ctypes.c_uint64
+_UniffiLib.uniffi_graphrt_ffi_fn_free_runlistener.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_free_runlistener.restype = None
 _UniffiLib.uniffi_graphrt_ffi_fn_clone_runtime.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -866,6 +1205,16 @@ _UniffiLib.uniffi_graphrt_ffi_fn_free_runtime.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_free_runtime.restype = None
+_UniffiLib.uniffi_graphrt_ffi_fn_clone_toolprovider.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_clone_toolprovider.restype = ctypes.c_uint64
+_UniffiLib.uniffi_graphrt_ffi_fn_free_toolprovider.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_free_toolprovider.restype = None
 _UniffiLib.uniffi_graphrt_ffi_fn_clone_workflowhandle.argtypes = (
     ctypes.c_uint64,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -922,11 +1271,412 @@ _UniffiLib.uniffi_graphrt_ffi_fn_init_callback_vtable_eventlistener.argtypes = (
     ctypes.POINTER(_UniffiVTableCallbackInterfaceGraphrtFfiEventListener),
 )
 _UniffiLib.uniffi_graphrt_ffi_fn_init_callback_vtable_eventlistener.restype = None
+_UNIFFI_CALLBACK_INTERFACE_GRAPHRT_FFI_RUN_LISTENER_METHOD0 = ctypes.CFUNCTYPE(None,ctypes.c_uint64,_UniffiRustBuffer,ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UNIFFI_CALLBACK_INTERFACE_CLONE_GRAPHRT_FFI_RUN_LISTENER = ctypes.CFUNCTYPE(ctypes.c_uint64,ctypes.c_uint64,
+)
+_UNIFFI_CALLBACK_INTERFACE_FREE_GRAPHRT_FFI_RUN_LISTENER = ctypes.CFUNCTYPE(None,ctypes.c_uint64,
+)
+class _UniffiVTableCallbackInterfaceGraphrtFfiRunListener(ctypes.Structure):
+    _fields_ = [
+        ("uniffi_free", _UNIFFI_CALLBACK_INTERFACE_FREE_GRAPHRT_FFI_RUN_LISTENER),
+        ("uniffi_clone", _UNIFFI_CALLBACK_INTERFACE_CLONE_GRAPHRT_FFI_RUN_LISTENER),
+        ("on_event", _UNIFFI_CALLBACK_INTERFACE_GRAPHRT_FFI_RUN_LISTENER_METHOD0),
+    ]
+_UniffiLib.uniffi_graphrt_ffi_fn_init_callback_vtable_runlistener.argtypes = (
+    ctypes.POINTER(_UniffiVTableCallbackInterfaceGraphrtFfiRunListener),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_init_callback_vtable_runlistener.restype = None
+class _UniffiForeignFutureResultRustBuffer(ctypes.Structure):
+    _fields_ = [
+        ("return_value", _UniffiRustBuffer),
+        ("call_status", _UniffiRustCallStatus),
+    ]
+_UNIFFI_FOREIGN_FUTURE_COMPLETERUST_BUFFER = ctypes.CFUNCTYPE(None,ctypes.c_uint64,_UniffiForeignFutureResultRustBuffer,
+)
+_UNIFFI_FOREIGN_FUTURE_DROPPED_CALLBACK = ctypes.CFUNCTYPE(None,ctypes.c_uint64,
+)
+class _UniffiForeignFutureDroppedCallbackStruct(ctypes.Structure):
+    _fields_ = [
+        ("handle", ctypes.c_uint64),
+        ("free", _UNIFFI_FOREIGN_FUTURE_DROPPED_CALLBACK),
+    ]
+_UNIFFI_CALLBACK_INTERFACE_GRAPHRT_FFI_TOOL_PROVIDER_METHOD0 = ctypes.CFUNCTYPE(None,ctypes.c_uint64,_UniffiRustBuffer,_UNIFFI_FOREIGN_FUTURE_COMPLETERUST_BUFFER,ctypes.c_uint64,ctypes.POINTER(_UniffiForeignFutureDroppedCallbackStruct),
+)
+_UNIFFI_CALLBACK_INTERFACE_CLONE_GRAPHRT_FFI_TOOL_PROVIDER = ctypes.CFUNCTYPE(ctypes.c_uint64,ctypes.c_uint64,
+)
+_UNIFFI_CALLBACK_INTERFACE_FREE_GRAPHRT_FFI_TOOL_PROVIDER = ctypes.CFUNCTYPE(None,ctypes.c_uint64,
+)
+class _UniffiVTableCallbackInterfaceGraphrtFfiToolProvider(ctypes.Structure):
+    _fields_ = [
+        ("uniffi_free", _UNIFFI_CALLBACK_INTERFACE_FREE_GRAPHRT_FFI_TOOL_PROVIDER),
+        ("uniffi_clone", _UNIFFI_CALLBACK_INTERFACE_CLONE_GRAPHRT_FFI_TOOL_PROVIDER),
+        ("call_tool", _UNIFFI_CALLBACK_INTERFACE_GRAPHRT_FFI_TOOL_PROVIDER_METHOD0),
+    ]
+_UniffiLib.uniffi_graphrt_ffi_fn_init_callback_vtable_toolprovider.argtypes = (
+    ctypes.POINTER(_UniffiVTableCallbackInterfaceGraphrtFfiToolProvider),
+)
+_UniffiLib.uniffi_graphrt_ffi_fn_init_callback_vtable_toolprovider.restype = None
+_UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK = ctypes.CFUNCTYPE(None,ctypes.c_uint64,ctypes.c_int8,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_u8.argtypes = (
+    ctypes.c_uint64,
+    _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_u8.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_u8.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_u8.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_u8.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_u8.restype = ctypes.c_uint8
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_u8.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_u8.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_i8.argtypes = (
+    ctypes.c_uint64,
+    _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_i8.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_i8.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_i8.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_i8.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_i8.restype = ctypes.c_int8
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_i8.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_i8.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_u16.argtypes = (
+    ctypes.c_uint64,
+    _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_u16.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_u16.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_u16.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_u16.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_u16.restype = ctypes.c_uint16
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_u16.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_u16.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_i16.argtypes = (
+    ctypes.c_uint64,
+    _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_i16.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_i16.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_i16.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_i16.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_i16.restype = ctypes.c_int16
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_i16.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_i16.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_u32.argtypes = (
+    ctypes.c_uint64,
+    _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_u32.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_u32.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_u32.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_u32.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_u32.restype = ctypes.c_uint32
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_u32.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_u32.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_i32.argtypes = (
+    ctypes.c_uint64,
+    _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_i32.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_i32.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_i32.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_i32.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_i32.restype = ctypes.c_int32
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_i32.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_i32.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_u64.argtypes = (
+    ctypes.c_uint64,
+    _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_u64.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_u64.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_u64.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_u64.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_u64.restype = ctypes.c_uint64
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_u64.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_u64.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_i64.argtypes = (
+    ctypes.c_uint64,
+    _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_i64.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_i64.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_i64.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_i64.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_i64.restype = ctypes.c_int64
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_i64.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_i64.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_f32.argtypes = (
+    ctypes.c_uint64,
+    _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_f32.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_f32.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_f32.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_f32.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_f32.restype = ctypes.c_float
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_f32.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_f32.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_f64.argtypes = (
+    ctypes.c_uint64,
+    _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_f64.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_f64.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_f64.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_f64.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_f64.restype = ctypes.c_double
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_f64.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_f64.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_rust_buffer.argtypes = (
+    ctypes.c_uint64,
+    _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_rust_buffer.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_rust_buffer.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_rust_buffer.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_rust_buffer.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_rust_buffer.restype = _UniffiRustBuffer
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_rust_buffer.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_rust_buffer.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_void.argtypes = (
+    ctypes.c_uint64,
+    _UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK,
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_poll_void.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_void.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_cancel_void.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_void.argtypes = (
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_complete_void.restype = None
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_void.argtypes = (
+    ctypes.c_uint64,
+)
+_UniffiLib.ffi_graphrt_ffi_rust_future_free_void.restype = None
 
 _uniffi_check_contract_api_version(_UniffiLib)
 # _uniffi_check_api_checksums(_UniffiLib)
 
+# RustFuturePoll values
+_UNIFFI_RUST_FUTURE_POLL_READY = 0
+_UNIFFI_RUST_FUTURE_POLL_WAKE = 1
 
+# Stores futures for _uniffi_continuation_callback
+_UniffiContinuationHandleMap = _UniffiHandleMap()
+
+_UNIFFI_GLOBAL_EVENT_LOOP = None
+
+"""
+Set the event loop to use for async functions
+
+This is needed if some async functions run outside of the eventloop, for example:
+    - A non-eventloop thread is spawned, maybe from `EventLoop.run_in_executor` or maybe from the
+      Rust code spawning its own thread.
+    - The Rust code calls an async callback method from a sync callback function, using something
+      like `pollster` to block on the async call.
+
+In this case, we need an event loop to run the Python async function, but there's no eventloop set
+for the thread.  Use `uniffi_set_event_loop` to force an eventloop to be used in this case.
+"""
+def uniffi_set_event_loop(eventloop: asyncio.BaseEventLoop):
+    global _UNIFFI_GLOBAL_EVENT_LOOP
+    _UNIFFI_GLOBAL_EVENT_LOOP = eventloop
+
+def _uniffi_get_event_loop():
+    if _UNIFFI_GLOBAL_EVENT_LOOP is not None:
+        return _UNIFFI_GLOBAL_EVENT_LOOP
+    else:
+        return asyncio.get_running_loop()
+
+# Continuation callback for async functions
+# lift the return value or error and resolve the future, causing the async function to resume.
+@_UNIFFI_RUST_FUTURE_CONTINUATION_CALLBACK
+def _uniffi_continuation_callback(future_ptr, poll_code):
+    (eventloop, future) = _UniffiContinuationHandleMap.remove(future_ptr)
+    eventloop.call_soon_threadsafe(_uniffi_set_future_result, future, poll_code)
+
+def _uniffi_set_future_result(future, poll_code):
+    if not future.cancelled():
+        future.set_result(poll_code)
+
+async def _uniffi_rust_call_async(rust_future, ffi_poll, ffi_complete, ffi_free, lift_func, error_ffi_converter):
+    try:
+        eventloop = _uniffi_get_event_loop()
+
+        # Loop and poll until we see a _UNIFFI_RUST_FUTURE_POLL_READY value
+        while True:
+            future = eventloop.create_future()
+            ffi_poll(
+                rust_future,
+                _uniffi_continuation_callback,
+                _UniffiContinuationHandleMap.insert((eventloop, future)),
+            )
+            poll_code = await future
+            if poll_code == _UNIFFI_RUST_FUTURE_POLL_READY:
+                break
+
+        return lift_func(
+            _uniffi_rust_call_with_error(error_ffi_converter, ffi_complete, rust_future)
+        )
+    finally:
+        ffi_free(rust_future)
+def _uniffi_trait_interface_call_async(make_call, uniffi_out_dropped_callback, handle_success, handle_error):
+    async def make_call_and_call_callback():
+        # Note: it's important we call either `handle_success` or `handle_error` exactly once.  Each
+        # call consumes an Arc reference, which means there should be no possibility of a double
+        # call.  The following code is structured so that will will never call both `handle_success`
+        # and `handle_error`, even in the face of weird exceptions.
+        #
+        # In extreme circumstances we may not call either, for example if we fail to make the ctypes
+        # call to `handle_success`.  This means we will leak the Arc reference, which is better than
+        # double-freeing it.
+        try:
+            call_result = await make_call()
+        except Exception as e:
+            print("UniFFI: Unhandled exception in trait interface call", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            handle_error(
+                _UniffiRustCallStatus.CALL_UNEXPECTED_ERROR,
+                _UniffiFfiConverterString.lower(repr(e)),
+            )
+        else:
+            handle_success(call_result)
+    eventloop = _uniffi_get_event_loop()
+    task = asyncio.run_coroutine_threadsafe(make_call_and_call_callback(), eventloop)
+    handle = _UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert((eventloop, task))
+    uniffi_out_dropped_callback[0] = _UniffiForeignFutureDroppedCallbackStruct(handle, _uniffi_future_dropped_callback)
+
+def _uniffi_trait_interface_call_async_with_error(make_call, uniffi_out_dropped_callback, handle_success, handle_error, error_type, lower_error):
+    async def make_call_and_call_callback():
+        # See the note in _uniffi_trait_interface_call_async for details on `handle_success` and
+        # `handle_error`.
+        try:
+            try:
+                call_result = await make_call()
+            except error_type as e:
+                handle_error(
+                    _UniffiRustCallStatus.CALL_ERROR,
+                    lower_error(e),
+                )
+            else:
+                handle_success(call_result)
+        except Exception as e:
+            print("UniFFI: Unhandled exception in trait interface call", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            handle_error(
+                _UniffiRustCallStatus.CALL_UNEXPECTED_ERROR,
+                _UniffiFfiConverterString.lower(repr(e)),
+            )
+    eventloop = _uniffi_get_event_loop()
+    task = asyncio.run_coroutine_threadsafe(make_call_and_call_callback(), eventloop)
+    handle = _UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert((eventloop, task))
+    uniffi_out_dropped_callback[0] = _UniffiForeignFutureDroppedCallbackStruct(handle, _uniffi_future_dropped_callback)
+
+_UNIFFI_FOREIGN_FUTURE_HANDLE_MAP = _UniffiHandleMap()
+
+@_UNIFFI_FOREIGN_FUTURE_DROPPED_CALLBACK
+def _uniffi_future_dropped_callback(handle):
+    (eventloop, task) = _UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.remove(handle)
+    eventloop.call_soon(_uniffi_cancel_task, task)
+
+def _uniffi_cancel_task(task):
+    if not task.done():
+        task.cancel()
 
 # Public interface members begin here.
 
@@ -962,6 +1712,413 @@ class _UniffiFfiConverterString:
         with _UniffiRustBuffer.alloc_with_builder() as builder:
             builder.write(value.encode("utf-8"))
             return builder.finalize()
+
+
+
+
+
+
+class RequestKind:
+    """
+    What a request asks for.
+"""
+    def __init__(self):
+        raise RuntimeError("RequestKind cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class TOOL_APPROVAL:
+        """
+        An `agent` node holds tool calls until someone approves or rejects them.
+"""
+        
+        def __init__(self, ):
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RequestKind.TOOL_APPROVAL()".format()
+        def __eq__(self, other):
+            if not isinstance(other, RequestKind):
+                return NotImplemented
+            if not other.is_TOOL_APPROVAL():
+                return False
+            return True
+
+    @dataclass
+    class HUMAN_INPUT:
+        """
+        A `human-input` node waits for a form: an action and field values.
+"""
+        
+        def __init__(self, ):
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RequestKind.HUMAN_INPUT()".format()
+        def __eq__(self, other):
+            if not isinstance(other, RequestKind):
+                return NotImplemented
+            if not other.is_HUMAN_INPUT():
+                return False
+            return True
+
+    @dataclass
+    class OTHER:
+        """
+        A pause of another kind (`data_json` holds the details).
+"""
+        
+        def __init__(self, name:str):
+            self.name = name
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RequestKind.OTHER(name={})".format(self.name)
+        def __eq__(self, other):
+            if not isinstance(other, RequestKind):
+                return NotImplemented
+            if not other.is_OTHER():
+                return False
+            if self.name != other.name:
+                return False
+            return True
+
+    
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_TOOL_APPROVAL(self) -> bool:
+        return isinstance(self, RequestKind.TOOL_APPROVAL)
+    def is_tool_approval(self) -> bool:
+        return isinstance(self, RequestKind.TOOL_APPROVAL)
+    def is_HUMAN_INPUT(self) -> bool:
+        return isinstance(self, RequestKind.HUMAN_INPUT)
+    def is_human_input(self) -> bool:
+        return isinstance(self, RequestKind.HUMAN_INPUT)
+    def is_OTHER(self) -> bool:
+        return isinstance(self, RequestKind.OTHER)
+    def is_other(self) -> bool:
+        return isinstance(self, RequestKind.OTHER)
+    
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+RequestKind.TOOL_APPROVAL = type("RequestKind.TOOL_APPROVAL", (RequestKind.TOOL_APPROVAL, RequestKind,), {})  # type: ignore
+RequestKind.HUMAN_INPUT = type("RequestKind.HUMAN_INPUT", (RequestKind.HUMAN_INPUT, RequestKind,), {})  # type: ignore
+RequestKind.OTHER = type("RequestKind.OTHER", (RequestKind.OTHER, RequestKind,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeRequestKind(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return RequestKind.TOOL_APPROVAL(
+            )
+        if variant == 2:
+            return RequestKind.HUMAN_INPUT(
+            )
+        if variant == 3:
+            return RequestKind.OTHER(
+                _UniffiFfiConverterString.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_TOOL_APPROVAL():
+            return
+        if value.is_HUMAN_INPUT():
+            return
+        if value.is_OTHER():
+            _UniffiFfiConverterString.check_lower(value.name)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_TOOL_APPROVAL():
+            buf.write_i32(1)
+        if value.is_HUMAN_INPUT():
+            buf.write_i32(2)
+        if value.is_OTHER():
+            buf.write_i32(3)
+            _UniffiFfiConverterString.write(value.name, buf)
+
+
+
+class _UniffiFfiConverterOptionalString(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiFfiConverterString.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiFfiConverterString.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiFfiConverterString.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+class _UniffiFfiConverterBoolean:
+    @classmethod
+    def check_lower(cls, value):
+        return not not value
+
+    @classmethod
+    def lower(cls, value):
+        return 1 if value else 0
+
+    @staticmethod
+    def lift(value):
+        return value != 0
+
+    @classmethod
+    def read(cls, buf):
+        return cls.lift(buf.read_u8())
+
+    @classmethod
+    def write(cls, value, buf):
+        buf.write_u8(value)
+
+@dataclass
+class FormField:
+    """
+    A field of a `human-input` form.
+"""
+    def __init__(self, *, name:str, label:str, field_type:str, required:bool, default_json:typing.Optional[str]):
+        self.name = name
+        self.label = label
+        self.field_type = field_type
+        self.required = required
+        self.default_json = default_json
+        
+        
+
+    
+    def __str__(self):
+        return "FormField(name={}, label={}, field_type={}, required={}, default_json={})".format(self.name, self.label, self.field_type, self.required, self.default_json)
+    def __eq__(self, other):
+        if self.name != other.name:
+            return False
+        if self.label != other.label:
+            return False
+        if self.field_type != other.field_type:
+            return False
+        if self.required != other.required:
+            return False
+        if self.default_json != other.default_json:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeFormField(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return FormField(
+            name=_UniffiFfiConverterString.read(buf),
+            label=_UniffiFfiConverterString.read(buf),
+            field_type=_UniffiFfiConverterString.read(buf),
+            required=_UniffiFfiConverterBoolean.read(buf),
+            default_json=_UniffiFfiConverterOptionalString.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.name)
+        _UniffiFfiConverterString.check_lower(value.label)
+        _UniffiFfiConverterString.check_lower(value.field_type)
+        _UniffiFfiConverterBoolean.check_lower(value.required)
+        _UniffiFfiConverterOptionalString.check_lower(value.default_json)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.name, buf)
+        _UniffiFfiConverterString.write(value.label, buf)
+        _UniffiFfiConverterString.write(value.field_type, buf)
+        _UniffiFfiConverterBoolean.write(value.required, buf)
+        _UniffiFfiConverterOptionalString.write(value.default_json, buf)
+
+class _UniffiFfiConverterSequenceTypeFormField(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeFormField.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeFormField.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeFormField.read(buf) for i in range(count)
+        ]
+
+@dataclass
+class FormAction:
+    """
+    A button of a `human-input` form.
+"""
+    def __init__(self, *, id:str, title:str):
+        self.id = id
+        self.title = title
+        
+        
+
+    
+    def __str__(self):
+        return "FormAction(id={}, title={})".format(self.id, self.title)
+    def __eq__(self, other):
+        if self.id != other.id:
+            return False
+        if self.title != other.title:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeFormAction(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return FormAction(
+            id=_UniffiFfiConverterString.read(buf),
+            title=_UniffiFfiConverterString.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.id)
+        _UniffiFfiConverterString.check_lower(value.title)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.id, buf)
+        _UniffiFfiConverterString.write(value.title, buf)
+
+class _UniffiFfiConverterSequenceTypeFormAction(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeFormAction.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeFormAction.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeFormAction.read(buf) for i in range(count)
+        ]
+
+@dataclass
+class PendingToolCall:
+    """
+    A tool call waiting for approval.
+"""
+    def __init__(self, *, id:str, name:str, arguments_json:str):
+        self.id = id
+        self.name = name
+        self.arguments_json = arguments_json
+        
+        
+
+    
+    def __str__(self):
+        return "PendingToolCall(id={}, name={}, arguments_json={})".format(self.id, self.name, self.arguments_json)
+    def __eq__(self, other):
+        if self.id != other.id:
+            return False
+        if self.name != other.name:
+            return False
+        if self.arguments_json != other.arguments_json:
+            return False
+        return True
+
+class _UniffiFfiConverterTypePendingToolCall(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return PendingToolCall(
+            id=_UniffiFfiConverterString.read(buf),
+            name=_UniffiFfiConverterString.read(buf),
+            arguments_json=_UniffiFfiConverterString.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.id)
+        _UniffiFfiConverterString.check_lower(value.name)
+        _UniffiFfiConverterString.check_lower(value.arguments_json)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.id, buf)
+        _UniffiFfiConverterString.write(value.name, buf)
+        _UniffiFfiConverterString.write(value.arguments_json, buf)
+
+class _UniffiFfiConverterSequenceTypePendingToolCall(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypePendingToolCall.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypePendingToolCall.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypePendingToolCall.read(buf) for i in range(count)
+        ]
 
 class _UniffiFfiConverterUInt64(_UniffiConverterPrimitiveInt):
     CLASS_NAME = "u64"
@@ -1001,30 +2158,92 @@ class _UniffiFfiConverterOptionalUInt64(_UniffiConverterRustBuffer):
         else:
             raise InternalError("Unexpected flag byte for optional type")
 
-class _UniffiFfiConverterOptionalString(_UniffiConverterRustBuffer):
-    @classmethod
-    def check_lower(cls, value):
-        if value is not None:
-            _UniffiFfiConverterString.check_lower(value)
+@dataclass
+class ApprovalRequest:
+    """
+    One node of a paused run that waits for an answer.
+"""
+    def __init__(self, *, key:str, node_id:str, kind:RequestKind, prompt:typing.Optional[str], fields:typing.List[FormField], actions:typing.List[FormAction], tool_calls:typing.List[PendingToolCall], timeout_ms:typing.Optional[int], card_json:typing.Optional[str], data_json:str):
+        self.key = key
+        self.node_id = node_id
+        self.kind = kind
+        self.prompt = prompt
+        self.fields = fields
+        self.actions = actions
+        self.tool_calls = tool_calls
+        self.timeout_ms = timeout_ms
+        self.card_json = card_json
+        self.data_json = data_json
+        
+        
 
-    @classmethod
-    def write(cls, value, buf):
-        if value is None:
-            buf.write_u8(0)
-            return
+    
+    def __str__(self):
+        return "ApprovalRequest(key={}, node_id={}, kind={}, prompt={}, fields={}, actions={}, tool_calls={}, timeout_ms={}, card_json={}, data_json={})".format(self.key, self.node_id, self.kind, self.prompt, self.fields, self.actions, self.tool_calls, self.timeout_ms, self.card_json, self.data_json)
+    def __eq__(self, other):
+        if self.key != other.key:
+            return False
+        if self.node_id != other.node_id:
+            return False
+        if self.kind != other.kind:
+            return False
+        if self.prompt != other.prompt:
+            return False
+        if self.fields != other.fields:
+            return False
+        if self.actions != other.actions:
+            return False
+        if self.tool_calls != other.tool_calls:
+            return False
+        if self.timeout_ms != other.timeout_ms:
+            return False
+        if self.card_json != other.card_json:
+            return False
+        if self.data_json != other.data_json:
+            return False
+        return True
 
-        buf.write_u8(1)
-        _UniffiFfiConverterString.write(value, buf)
+class _UniffiFfiConverterTypeApprovalRequest(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return ApprovalRequest(
+            key=_UniffiFfiConverterString.read(buf),
+            node_id=_UniffiFfiConverterString.read(buf),
+            kind=_UniffiFfiConverterTypeRequestKind.read(buf),
+            prompt=_UniffiFfiConverterOptionalString.read(buf),
+            fields=_UniffiFfiConverterSequenceTypeFormField.read(buf),
+            actions=_UniffiFfiConverterSequenceTypeFormAction.read(buf),
+            tool_calls=_UniffiFfiConverterSequenceTypePendingToolCall.read(buf),
+            timeout_ms=_UniffiFfiConverterOptionalUInt64.read(buf),
+            card_json=_UniffiFfiConverterOptionalString.read(buf),
+            data_json=_UniffiFfiConverterString.read(buf),
+        )
 
-    @classmethod
-    def read(cls, buf):
-        flag = buf.read_u8()
-        if flag == 0:
-            return None
-        elif flag == 1:
-            return _UniffiFfiConverterString.read(buf)
-        else:
-            raise InternalError("Unexpected flag byte for optional type")
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.key)
+        _UniffiFfiConverterString.check_lower(value.node_id)
+        _UniffiFfiConverterTypeRequestKind.check_lower(value.kind)
+        _UniffiFfiConverterOptionalString.check_lower(value.prompt)
+        _UniffiFfiConverterSequenceTypeFormField.check_lower(value.fields)
+        _UniffiFfiConverterSequenceTypeFormAction.check_lower(value.actions)
+        _UniffiFfiConverterSequenceTypePendingToolCall.check_lower(value.tool_calls)
+        _UniffiFfiConverterOptionalUInt64.check_lower(value.timeout_ms)
+        _UniffiFfiConverterOptionalString.check_lower(value.card_json)
+        _UniffiFfiConverterString.check_lower(value.data_json)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.key, buf)
+        _UniffiFfiConverterString.write(value.node_id, buf)
+        _UniffiFfiConverterTypeRequestKind.write(value.kind, buf)
+        _UniffiFfiConverterOptionalString.write(value.prompt, buf)
+        _UniffiFfiConverterSequenceTypeFormField.write(value.fields, buf)
+        _UniffiFfiConverterSequenceTypeFormAction.write(value.actions, buf)
+        _UniffiFfiConverterSequenceTypePendingToolCall.write(value.tool_calls, buf)
+        _UniffiFfiConverterOptionalUInt64.write(value.timeout_ms, buf)
+        _UniffiFfiConverterOptionalString.write(value.card_json, buf)
+        _UniffiFfiConverterString.write(value.data_json, buf)
 
 @dataclass
 class CredentialRecord:
@@ -1076,6 +2295,814 @@ class _UniffiFfiConverterTypeCredentialRecord(_UniffiConverterRustBuffer):
         _UniffiFfiConverterOptionalUInt64.write(value.expires_at_ms, buf)
         _UniffiFfiConverterOptionalString.write(value.headers_json, buf)
         _UniffiFfiConverterOptionalString.write(value.base_url, buf)
+
+@dataclass
+class HostToolCall:
+    """
+    One call of a tool, as the app receives it.
+"""
+    def __init__(self, *, provider:str, name:str, arguments_json:str):
+        self.provider = provider
+        self.name = name
+        self.arguments_json = arguments_json
+        
+        
+
+    
+    def __str__(self):
+        return "HostToolCall(provider={}, name={}, arguments_json={})".format(self.provider, self.name, self.arguments_json)
+    def __eq__(self, other):
+        if self.provider != other.provider:
+            return False
+        if self.name != other.name:
+            return False
+        if self.arguments_json != other.arguments_json:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeHostToolCall(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return HostToolCall(
+            provider=_UniffiFfiConverterString.read(buf),
+            name=_UniffiFfiConverterString.read(buf),
+            arguments_json=_UniffiFfiConverterString.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.provider)
+        _UniffiFfiConverterString.check_lower(value.name)
+        _UniffiFfiConverterString.check_lower(value.arguments_json)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.provider, buf)
+        _UniffiFfiConverterString.write(value.name, buf)
+        _UniffiFfiConverterString.write(value.arguments_json, buf)
+
+@dataclass
+class HostToolResult:
+    """
+    What a tool returns.
+"""
+    def __init__(self, *, text:str, data_json:typing.Optional[str] = None, is_error:bool = False):
+        self.text = text
+        self.data_json = data_json
+        self.is_error = is_error
+        
+        
+
+    
+    def __str__(self):
+        return "HostToolResult(text={}, data_json={}, is_error={})".format(self.text, self.data_json, self.is_error)
+    def __eq__(self, other):
+        if self.text != other.text:
+            return False
+        if self.data_json != other.data_json:
+            return False
+        if self.is_error != other.is_error:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeHostToolResult(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return HostToolResult(
+            text=_UniffiFfiConverterString.read(buf),
+            data_json=_UniffiFfiConverterOptionalString.read(buf),
+            is_error=_UniffiFfiConverterBoolean.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.text)
+        _UniffiFfiConverterOptionalString.check_lower(value.data_json)
+        _UniffiFfiConverterBoolean.check_lower(value.is_error)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.text, buf)
+        _UniffiFfiConverterOptionalString.write(value.data_json, buf)
+        _UniffiFfiConverterBoolean.write(value.is_error, buf)
+
+@dataclass
+class HostToolSpec:
+    """
+    A tool the app offers to agents.
+"""
+    def __init__(self, *, name:str, description:str, parameters_json:str, timeout_ms:typing.Optional[int] = None):
+        self.name = name
+        self.description = description
+        self.parameters_json = parameters_json
+        self.timeout_ms = timeout_ms
+        
+        
+
+    
+    def __str__(self):
+        return "HostToolSpec(name={}, description={}, parameters_json={}, timeout_ms={})".format(self.name, self.description, self.parameters_json, self.timeout_ms)
+    def __eq__(self, other):
+        if self.name != other.name:
+            return False
+        if self.description != other.description:
+            return False
+        if self.parameters_json != other.parameters_json:
+            return False
+        if self.timeout_ms != other.timeout_ms:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeHostToolSpec(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return HostToolSpec(
+            name=_UniffiFfiConverterString.read(buf),
+            description=_UniffiFfiConverterString.read(buf),
+            parameters_json=_UniffiFfiConverterString.read(buf),
+            timeout_ms=_UniffiFfiConverterOptionalUInt64.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.name)
+        _UniffiFfiConverterString.check_lower(value.description)
+        _UniffiFfiConverterString.check_lower(value.parameters_json)
+        _UniffiFfiConverterOptionalUInt64.check_lower(value.timeout_ms)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.name, buf)
+        _UniffiFfiConverterString.write(value.description, buf)
+        _UniffiFfiConverterString.write(value.parameters_json, buf)
+        _UniffiFfiConverterOptionalUInt64.write(value.timeout_ms, buf)
+
+
+
+
+
+
+class LessonKind(enum.Enum):
+    """
+    What kind of thing a lesson is.
+"""
+    
+    PREFERENCE = 0
+    """
+    How someone likes things done ("answer in Indonesian").
+"""
+    
+    FACT = 1
+    """
+    Something that is true ("invoices go to finance").
+"""
+    
+    PROCEDURE = 2
+    """
+    How to do something ("check stock before quoting").
+"""
+    
+    CORRECTION = 3
+    """
+    A mistake not to repeat.
+"""
+    
+
+
+class _UniffiFfiConverterTypeLessonKind(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return LessonKind.PREFERENCE
+        if variant == 2:
+            return LessonKind.FACT
+        if variant == 3:
+            return LessonKind.PROCEDURE
+        if variant == 4:
+            return LessonKind.CORRECTION
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value == LessonKind.PREFERENCE:
+            return
+        if value == LessonKind.FACT:
+            return
+        if value == LessonKind.PROCEDURE:
+            return
+        if value == LessonKind.CORRECTION:
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value == LessonKind.PREFERENCE:
+            buf.write_i32(1)
+        if value == LessonKind.FACT:
+            buf.write_i32(2)
+        if value == LessonKind.PROCEDURE:
+            buf.write_i32(3)
+        if value == LessonKind.CORRECTION:
+            buf.write_i32(4)
+
+
+
+
+
+
+
+
+class LessonStatus(enum.Enum):
+    """
+    Where a lesson is in its life.
+"""
+    
+    PROPOSED = 0
+    
+    APPROVED = 1
+    
+    REJECTED = 2
+    
+    RETIRED = 3
+    
+
+
+class _UniffiFfiConverterTypeLessonStatus(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return LessonStatus.PROPOSED
+        if variant == 2:
+            return LessonStatus.APPROVED
+        if variant == 3:
+            return LessonStatus.REJECTED
+        if variant == 4:
+            return LessonStatus.RETIRED
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value == LessonStatus.PROPOSED:
+            return
+        if value == LessonStatus.APPROVED:
+            return
+        if value == LessonStatus.REJECTED:
+            return
+        if value == LessonStatus.RETIRED:
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value == LessonStatus.PROPOSED:
+            buf.write_i32(1)
+        if value == LessonStatus.APPROVED:
+            buf.write_i32(2)
+        if value == LessonStatus.REJECTED:
+            buf.write_i32(3)
+        if value == LessonStatus.RETIRED:
+            buf.write_i32(4)
+
+
+
+@dataclass
+class LessonInfo:
+    """
+    A lesson of an agent.
+"""
+    def __init__(self, *, id:str, agent:str, user:typing.Optional[str], kind:LessonKind, text:str, status:LessonStatus, high_risk:bool, origin:str, created_at_ms:int):
+        self.id = id
+        self.agent = agent
+        self.user = user
+        self.kind = kind
+        self.text = text
+        self.status = status
+        self.high_risk = high_risk
+        self.origin = origin
+        self.created_at_ms = created_at_ms
+        
+        
+
+    
+    def __str__(self):
+        return "LessonInfo(id={}, agent={}, user={}, kind={}, text={}, status={}, high_risk={}, origin={}, created_at_ms={})".format(self.id, self.agent, self.user, self.kind, self.text, self.status, self.high_risk, self.origin, self.created_at_ms)
+    def __eq__(self, other):
+        if self.id != other.id:
+            return False
+        if self.agent != other.agent:
+            return False
+        if self.user != other.user:
+            return False
+        if self.kind != other.kind:
+            return False
+        if self.text != other.text:
+            return False
+        if self.status != other.status:
+            return False
+        if self.high_risk != other.high_risk:
+            return False
+        if self.origin != other.origin:
+            return False
+        if self.created_at_ms != other.created_at_ms:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeLessonInfo(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return LessonInfo(
+            id=_UniffiFfiConverterString.read(buf),
+            agent=_UniffiFfiConverterString.read(buf),
+            user=_UniffiFfiConverterOptionalString.read(buf),
+            kind=_UniffiFfiConverterTypeLessonKind.read(buf),
+            text=_UniffiFfiConverterString.read(buf),
+            status=_UniffiFfiConverterTypeLessonStatus.read(buf),
+            high_risk=_UniffiFfiConverterBoolean.read(buf),
+            origin=_UniffiFfiConverterString.read(buf),
+            created_at_ms=_UniffiFfiConverterUInt64.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.id)
+        _UniffiFfiConverterString.check_lower(value.agent)
+        _UniffiFfiConverterOptionalString.check_lower(value.user)
+        _UniffiFfiConverterTypeLessonKind.check_lower(value.kind)
+        _UniffiFfiConverterString.check_lower(value.text)
+        _UniffiFfiConverterTypeLessonStatus.check_lower(value.status)
+        _UniffiFfiConverterBoolean.check_lower(value.high_risk)
+        _UniffiFfiConverterString.check_lower(value.origin)
+        _UniffiFfiConverterUInt64.check_lower(value.created_at_ms)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.id, buf)
+        _UniffiFfiConverterString.write(value.agent, buf)
+        _UniffiFfiConverterOptionalString.write(value.user, buf)
+        _UniffiFfiConverterTypeLessonKind.write(value.kind, buf)
+        _UniffiFfiConverterString.write(value.text, buf)
+        _UniffiFfiConverterTypeLessonStatus.write(value.status, buf)
+        _UniffiFfiConverterBoolean.write(value.high_risk, buf)
+        _UniffiFfiConverterString.write(value.origin, buf)
+        _UniffiFfiConverterUInt64.write(value.created_at_ms, buf)
+
+@dataclass
+class LessonProposal:
+    """
+    A lesson proposed from feedback on a run.
+"""
+    def __init__(self, *, agent:str, user:typing.Optional[str] = None, kind:LessonKind, text:str, run_id:typing.Optional[str] = None, author:typing.Optional[str] = None, author_authenticated:bool = False, evidence:typing.Optional[str] = None):
+        self.agent = agent
+        self.user = user
+        self.kind = kind
+        self.text = text
+        self.run_id = run_id
+        self.author = author
+        self.author_authenticated = author_authenticated
+        self.evidence = evidence
+        
+        
+
+    
+    def __str__(self):
+        return "LessonProposal(agent={}, user={}, kind={}, text={}, run_id={}, author={}, author_authenticated={}, evidence={})".format(self.agent, self.user, self.kind, self.text, self.run_id, self.author, self.author_authenticated, self.evidence)
+    def __eq__(self, other):
+        if self.agent != other.agent:
+            return False
+        if self.user != other.user:
+            return False
+        if self.kind != other.kind:
+            return False
+        if self.text != other.text:
+            return False
+        if self.run_id != other.run_id:
+            return False
+        if self.author != other.author:
+            return False
+        if self.author_authenticated != other.author_authenticated:
+            return False
+        if self.evidence != other.evidence:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeLessonProposal(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return LessonProposal(
+            agent=_UniffiFfiConverterString.read(buf),
+            user=_UniffiFfiConverterOptionalString.read(buf),
+            kind=_UniffiFfiConverterTypeLessonKind.read(buf),
+            text=_UniffiFfiConverterString.read(buf),
+            run_id=_UniffiFfiConverterOptionalString.read(buf),
+            author=_UniffiFfiConverterOptionalString.read(buf),
+            author_authenticated=_UniffiFfiConverterBoolean.read(buf),
+            evidence=_UniffiFfiConverterOptionalString.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.agent)
+        _UniffiFfiConverterOptionalString.check_lower(value.user)
+        _UniffiFfiConverterTypeLessonKind.check_lower(value.kind)
+        _UniffiFfiConverterString.check_lower(value.text)
+        _UniffiFfiConverterOptionalString.check_lower(value.run_id)
+        _UniffiFfiConverterOptionalString.check_lower(value.author)
+        _UniffiFfiConverterBoolean.check_lower(value.author_authenticated)
+        _UniffiFfiConverterOptionalString.check_lower(value.evidence)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.agent, buf)
+        _UniffiFfiConverterOptionalString.write(value.user, buf)
+        _UniffiFfiConverterTypeLessonKind.write(value.kind, buf)
+        _UniffiFfiConverterString.write(value.text, buf)
+        _UniffiFfiConverterOptionalString.write(value.run_id, buf)
+        _UniffiFfiConverterOptionalString.write(value.author, buf)
+        _UniffiFfiConverterBoolean.write(value.author_authenticated, buf)
+        _UniffiFfiConverterOptionalString.write(value.evidence, buf)
+
+
+
+
+
+
+class RunStatus(enum.Enum):
+    """
+    How a run ended.
+"""
+    
+    SUCCEEDED = 0
+    
+    FAILED = 1
+    
+    ABORTED = 2
+    
+    PAUSED = 3
+    
+
+
+class _UniffiFfiConverterTypeRunStatus(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return RunStatus.SUCCEEDED
+        if variant == 2:
+            return RunStatus.FAILED
+        if variant == 3:
+            return RunStatus.ABORTED
+        if variant == 4:
+            return RunStatus.PAUSED
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value == RunStatus.SUCCEEDED:
+            return
+        if value == RunStatus.FAILED:
+            return
+        if value == RunStatus.ABORTED:
+            return
+        if value == RunStatus.PAUSED:
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value == RunStatus.SUCCEEDED:
+            buf.write_i32(1)
+        if value == RunStatus.FAILED:
+            buf.write_i32(2)
+        if value == RunStatus.ABORTED:
+            buf.write_i32(3)
+        if value == RunStatus.PAUSED:
+            buf.write_i32(4)
+
+
+
+@dataclass
+class RunResult:
+    """
+    The result of a run that did not pause.
+"""
+    def __init__(self, *, status:RunStatus, answer:str, outputs_json:str, error:typing.Optional[str], error_type:typing.Optional[str], result_json:str):
+        self.status = status
+        self.answer = answer
+        self.outputs_json = outputs_json
+        self.error = error
+        self.error_type = error_type
+        self.result_json = result_json
+        
+        
+
+    
+    def __str__(self):
+        return "RunResult(status={}, answer={}, outputs_json={}, error={}, error_type={}, result_json={})".format(self.status, self.answer, self.outputs_json, self.error, self.error_type, self.result_json)
+    def __eq__(self, other):
+        if self.status != other.status:
+            return False
+        if self.answer != other.answer:
+            return False
+        if self.outputs_json != other.outputs_json:
+            return False
+        if self.error != other.error:
+            return False
+        if self.error_type != other.error_type:
+            return False
+        if self.result_json != other.result_json:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeRunResult(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return RunResult(
+            status=_UniffiFfiConverterTypeRunStatus.read(buf),
+            answer=_UniffiFfiConverterString.read(buf),
+            outputs_json=_UniffiFfiConverterString.read(buf),
+            error=_UniffiFfiConverterOptionalString.read(buf),
+            error_type=_UniffiFfiConverterOptionalString.read(buf),
+            result_json=_UniffiFfiConverterString.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterTypeRunStatus.check_lower(value.status)
+        _UniffiFfiConverterString.check_lower(value.answer)
+        _UniffiFfiConverterString.check_lower(value.outputs_json)
+        _UniffiFfiConverterOptionalString.check_lower(value.error)
+        _UniffiFfiConverterOptionalString.check_lower(value.error_type)
+        _UniffiFfiConverterString.check_lower(value.result_json)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterTypeRunStatus.write(value.status, buf)
+        _UniffiFfiConverterString.write(value.answer, buf)
+        _UniffiFfiConverterString.write(value.outputs_json, buf)
+        _UniffiFfiConverterOptionalString.write(value.error, buf)
+        _UniffiFfiConverterOptionalString.write(value.error_type, buf)
+        _UniffiFfiConverterString.write(value.result_json, buf)
+
+@dataclass
+class SkillGrant:
+    """
+    A tool granted to a skill.
+"""
+    def __init__(self, *, tool:str, allow:bool):
+        self.tool = tool
+        self.allow = allow
+        
+        
+
+    
+    def __str__(self):
+        return "SkillGrant(tool={}, allow={})".format(self.tool, self.allow)
+    def __eq__(self, other):
+        if self.tool != other.tool:
+            return False
+        if self.allow != other.allow:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeSkillGrant(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return SkillGrant(
+            tool=_UniffiFfiConverterString.read(buf),
+            allow=_UniffiFfiConverterBoolean.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.tool)
+        _UniffiFfiConverterBoolean.check_lower(value.allow)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.tool, buf)
+        _UniffiFfiConverterBoolean.write(value.allow, buf)
+
+class _UniffiFfiConverterSequenceString(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterString.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterString.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterString.read(buf) for i in range(count)
+        ]
+
+class _UniffiFfiConverterSequenceTypeSkillGrant(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeSkillGrant.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeSkillGrant.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeSkillGrant.read(buf) for i in range(count)
+        ]
+
+@dataclass
+class SkillInfo:
+    """
+    An installed skill.
+"""
+    def __init__(self, *, name:str, description:str, title:typing.Optional[str], enabled:bool, requested_tools:typing.List[str], grants:typing.List[SkillGrant], findings:typing.List[str], version:typing.Optional[str]):
+        self.name = name
+        self.description = description
+        self.title = title
+        self.enabled = enabled
+        self.requested_tools = requested_tools
+        self.grants = grants
+        self.findings = findings
+        self.version = version
+        
+        
+
+    
+    def __str__(self):
+        return "SkillInfo(name={}, description={}, title={}, enabled={}, requested_tools={}, grants={}, findings={}, version={})".format(self.name, self.description, self.title, self.enabled, self.requested_tools, self.grants, self.findings, self.version)
+    def __eq__(self, other):
+        if self.name != other.name:
+            return False
+        if self.description != other.description:
+            return False
+        if self.title != other.title:
+            return False
+        if self.enabled != other.enabled:
+            return False
+        if self.requested_tools != other.requested_tools:
+            return False
+        if self.grants != other.grants:
+            return False
+        if self.findings != other.findings:
+            return False
+        if self.version != other.version:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeSkillInfo(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return SkillInfo(
+            name=_UniffiFfiConverterString.read(buf),
+            description=_UniffiFfiConverterString.read(buf),
+            title=_UniffiFfiConverterOptionalString.read(buf),
+            enabled=_UniffiFfiConverterBoolean.read(buf),
+            requested_tools=_UniffiFfiConverterSequenceString.read(buf),
+            grants=_UniffiFfiConverterSequenceTypeSkillGrant.read(buf),
+            findings=_UniffiFfiConverterSequenceString.read(buf),
+            version=_UniffiFfiConverterOptionalString.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.name)
+        _UniffiFfiConverterString.check_lower(value.description)
+        _UniffiFfiConverterOptionalString.check_lower(value.title)
+        _UniffiFfiConverterBoolean.check_lower(value.enabled)
+        _UniffiFfiConverterSequenceString.check_lower(value.requested_tools)
+        _UniffiFfiConverterSequenceTypeSkillGrant.check_lower(value.grants)
+        _UniffiFfiConverterSequenceString.check_lower(value.findings)
+        _UniffiFfiConverterOptionalString.check_lower(value.version)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.name, buf)
+        _UniffiFfiConverterString.write(value.description, buf)
+        _UniffiFfiConverterOptionalString.write(value.title, buf)
+        _UniffiFfiConverterBoolean.write(value.enabled, buf)
+        _UniffiFfiConverterSequenceString.write(value.requested_tools, buf)
+        _UniffiFfiConverterSequenceTypeSkillGrant.write(value.grants, buf)
+        _UniffiFfiConverterSequenceString.write(value.findings, buf)
+        _UniffiFfiConverterOptionalString.write(value.version, buf)
+
+@dataclass
+class SkillInstall:
+    """
+    What to install.
+"""
+    def __init__(self, *, skill_md:str, grants:typing.List[SkillGrant] = _DEFAULT, replace:bool = False, accept_findings:bool = False):
+        self.skill_md = skill_md
+        if grants is _DEFAULT:
+            self.grants = []
+        else:
+            self.grants = grants
+        self.replace = replace
+        self.accept_findings = accept_findings
+        
+        
+
+    
+    def __str__(self):
+        return "SkillInstall(skill_md={}, grants={}, replace={}, accept_findings={})".format(self.skill_md, self.grants, self.replace, self.accept_findings)
+    def __eq__(self, other):
+        if self.skill_md != other.skill_md:
+            return False
+        if self.grants != other.grants:
+            return False
+        if self.replace != other.replace:
+            return False
+        if self.accept_findings != other.accept_findings:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeSkillInstall(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return SkillInstall(
+            skill_md=_UniffiFfiConverterString.read(buf),
+            grants=_UniffiFfiConverterSequenceTypeSkillGrant.read(buf),
+            replace=_UniffiFfiConverterBoolean.read(buf),
+            accept_findings=_UniffiFfiConverterBoolean.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.skill_md)
+        _UniffiFfiConverterSequenceTypeSkillGrant.check_lower(value.grants)
+        _UniffiFfiConverterBoolean.check_lower(value.replace)
+        _UniffiFfiConverterBoolean.check_lower(value.accept_findings)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.skill_md, buf)
+        _UniffiFfiConverterSequenceTypeSkillGrant.write(value.grants, buf)
+        _UniffiFfiConverterBoolean.write(value.replace, buf)
+        _UniffiFfiConverterBoolean.write(value.accept_findings, buf)
+
+@dataclass
+class UiBlock:
+    """
+    A UI block an agent produced, checked against its schema.
+"""
+    def __init__(self, *, kind:str, title:typing.Optional[str], json:str):
+        self.kind = kind
+        self.title = title
+        self.json = json
+        
+        
+
+    
+    def __str__(self):
+        return "UiBlock(kind={}, title={}, json={})".format(self.kind, self.title, self.json)
+    def __eq__(self, other):
+        if self.kind != other.kind:
+            return False
+        if self.title != other.title:
+            return False
+        if self.json != other.json:
+            return False
+        return True
+
+class _UniffiFfiConverterTypeUiBlock(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return UiBlock(
+            kind=_UniffiFfiConverterString.read(buf),
+            title=_UniffiFfiConverterOptionalString.read(buf),
+            json=_UniffiFfiConverterString.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiFfiConverterString.check_lower(value.kind)
+        _UniffiFfiConverterOptionalString.check_lower(value.title)
+        _UniffiFfiConverterString.check_lower(value.json)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiFfiConverterString.write(value.kind, buf)
+        _UniffiFfiConverterOptionalString.write(value.title, buf)
+        _UniffiFfiConverterString.write(value.json, buf)
 
 
 
@@ -1168,6 +3195,20 @@ class GraphrtError:  # type: ignore
         def __repr__(self):
             return "GraphrtError.Runtime({})".format(str(self))
     _UniffiTempGraphrtError.Runtime = Runtime # type: ignore
+    class Unsupported(_UniffiTempGraphrtError):
+        """
+        The capability is not compiled into this build, or not configured.
+"""
+        
+        def __init__(self, message):
+            super().__init__(", ".join([
+                "message={!r}".format(message),
+            ]))
+            self.message = message
+
+        def __repr__(self):
+            return "GraphrtError.Unsupported({})".format(str(self))
+    _UniffiTempGraphrtError.Unsupported = Unsupported # type: ignore
 
 GraphrtError = _UniffiTempGraphrtError # type: ignore
 del _UniffiTempGraphrtError
@@ -1197,6 +3238,10 @@ class _UniffiFfiConverterTypeGraphrtError(_UniffiConverterRustBuffer):
             return GraphrtError.Runtime(
                 _UniffiFfiConverterString.read(buf),
             )
+        if variant == 6:
+            return GraphrtError.Unsupported(
+                _UniffiFfiConverterString.read(buf),
+            )
         raise InternalError("Raw enum value doesn't match any cases")
 
     @staticmethod
@@ -1214,6 +3259,9 @@ class _UniffiFfiConverterTypeGraphrtError(_UniffiConverterRustBuffer):
             _UniffiFfiConverterString.check_lower(value.message)
             return
         if isinstance(value, GraphrtError.Runtime):
+            _UniffiFfiConverterString.check_lower(value.message)
+            return
+        if isinstance(value, GraphrtError.Unsupported):
             _UniffiFfiConverterString.check_lower(value.message)
             return
 
@@ -1234,6 +3282,1182 @@ class _UniffiFfiConverterTypeGraphrtError(_UniffiConverterRustBuffer):
         if isinstance(value, GraphrtError.Runtime):
             buf.write_i32(5)
             _UniffiFfiConverterString.write(value.message, buf)
+        if isinstance(value, GraphrtError.Unsupported):
+            buf.write_i32(6)
+            _UniffiFfiConverterString.write(value.message, buf)
+
+
+
+
+
+
+class LessonDecision(enum.Enum):
+    """
+    A decision about a lesson.
+"""
+    
+    APPROVE = 0
+    """
+    Use it in runs.
+"""
+    
+    REJECT = 1
+    """
+    Decline it; the same text is not proposed again.
+"""
+    
+    RETIRE = 2
+    """
+    Stop using an approved lesson, keeping it on record.
+"""
+    
+
+
+class _UniffiFfiConverterTypeLessonDecision(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return LessonDecision.APPROVE
+        if variant == 2:
+            return LessonDecision.REJECT
+        if variant == 3:
+            return LessonDecision.RETIRE
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value == LessonDecision.APPROVE:
+            return
+        if value == LessonDecision.REJECT:
+            return
+        if value == LessonDecision.RETIRE:
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value == LessonDecision.APPROVE:
+            buf.write_i32(1)
+        if value == LessonDecision.REJECT:
+            buf.write_i32(2)
+        if value == LessonDecision.RETIRE:
+            buf.write_i32(3)
+
+
+
+class _UniffiFfiConverterSequenceTypeApprovalRequest(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeApprovalRequest.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeApprovalRequest.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeApprovalRequest.read(buf) for i in range(count)
+        ]
+
+
+class PausedRunProtocol(typing.Protocol):
+    """
+    A paused run: its requests, the answers given so far and its snapshot.
+"""
+    
+    def answer(self, key: str,action: str,values_json: str) -> None:
+        """
+        Answer the form of request `key` with `action` (one of its actions) and
+        field values as a JSON object; fields left out get their defaults.
+"""
+        raise NotImplementedError
+    def approve(self, key: str,reason: typing.Optional[str]) -> None:
+        """
+        Approve request `key`: every held tool call runs, or a form is answered
+        with its `approve` action and the fields' defaults.
+"""
+        raise NotImplementedError
+    def decide_tool_call(self, key: str,call_id: str,approved: bool) -> None:
+        """
+        Approve or reject one held tool call of request `key`. Calls without a
+        decision keep the node paused.
+"""
+        raise NotImplementedError
+    def inputs_json(self, ) -> str:
+        """
+        The resume inputs collected so far, as JSON (what `WorkflowHandle.resume` takes).
+"""
+        raise NotImplementedError
+    def reject(self, key: str,reason: typing.Optional[str]) -> None:
+        """
+        Reject request `key`: the model is told the calls were not approved (and
+        why, with `reason`), or a form is answered with its `reject` action.
+"""
+        raise NotImplementedError
+    def requests(self, ) -> typing.List[ApprovalRequest]:
+        """
+        Every request of the run, in the order the nodes paused.
+"""
+        raise NotImplementedError
+    def run_id(self, ) -> str:
+        """
+        Run id of the paused run.
+"""
+        raise NotImplementedError
+    def set_input(self, key: str,input_json: str) -> None:
+        """
+        Set the resume input of request `key` as raw JSON, for pause kinds the
+        helpers above do not cover.
+"""
+        raise NotImplementedError
+    def snapshot_json(self, ) -> str:
+        """
+        The snapshot alone, for `WorkflowHandle.resume`.
+"""
+        raise NotImplementedError
+    def to_json(self, ) -> str:
+        """
+        The paused run as JSON (requests and snapshot, not the answers), to store
+        and read back with [`PausedRun::from_json`]. It holds the run's variables
+        (never secrets): keep it in the app's private storage.
+"""
+        raise NotImplementedError
+    def unanswered(self, ) -> typing.List[str]:
+        """
+        Keys of the requests that have no answer yet. Resuming with requests
+        unanswered keeps those nodes paused.
+"""
+        raise NotImplementedError
+
+class PausedRun(PausedRunProtocol):
+    """
+    A paused run: its requests, the answers given so far and its snapshot.
+"""
+    
+    _handle: ctypes.c_uint64
+    @classmethod
+    def from_json(cls, json: str) -> PausedRun:
+        """
+        A paused run from the result JSON of a run that ended with status
+        `paused` (what `RunHandle.waitJson` and `EventListener.onFinish` return),
+        or from what [`PausedRun::to_json`] returned.
+"""
+        
+        _UniffiFfiConverterString.check_lower(json)
+        _uniffi_lowered_args = (
+            _UniffiFfiConverterString.lower(json),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypePausedRun.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_constructor_pausedrun_from_json,
+            *_uniffi_lowered_args,
+        )
+        return cls._uniffi_make_instance(_uniffi_ffi_result)
+    
+    def __init__(self, *args, **kwargs):
+        raise ValueError("This class has no default constructor")
+
+    def __del__(self):
+        # In case of partial initialization of instances.
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            _uniffi_rust_call(_UniffiLib.uniffi_graphrt_ffi_fn_free_pausedrun, handle)
+
+    def _uniffi_clone_handle(self):
+        return _uniffi_rust_call(_UniffiLib.uniffi_graphrt_ffi_fn_clone_pausedrun, self._handle)
+
+    # Used by alternative constructors or any methods which return this type.
+    @classmethod
+    def _uniffi_make_instance(cls, handle):
+        # Lightly yucky way to bypass the usual __init__ logic
+        # and just create a new instance with the required handle.
+        inst = cls.__new__(cls)
+        inst._handle = handle
+        return inst
+    def answer(self, key: str,action: str,values_json: str) -> None:
+        """
+        Answer the form of request `key` with `action` (one of its actions) and
+        field values as a JSON object; fields left out get their defaults.
+"""
+        
+        _UniffiFfiConverterString.check_lower(key)
+
+        _UniffiFfiConverterString.check_lower(action)
+
+        _UniffiFfiConverterString.check_lower(values_json)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(key),
+            _UniffiFfiConverterString.lower(action),
+            _UniffiFfiConverterString.lower(values_json),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_answer,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def approve(self, key: str,reason: typing.Optional[str]) -> None:
+        """
+        Approve request `key`: every held tool call runs, or a form is answered
+        with its `approve` action and the fields' defaults.
+"""
+        
+        _UniffiFfiConverterString.check_lower(key)
+
+        _UniffiFfiConverterOptionalString.check_lower(reason)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(key),
+            _UniffiFfiConverterOptionalString.lower(reason),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_approve,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def decide_tool_call(self, key: str,call_id: str,approved: bool) -> None:
+        """
+        Approve or reject one held tool call of request `key`. Calls without a
+        decision keep the node paused.
+"""
+        
+        _UniffiFfiConverterString.check_lower(key)
+
+        _UniffiFfiConverterString.check_lower(call_id)
+
+        _UniffiFfiConverterBoolean.check_lower(approved)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(key),
+            _UniffiFfiConverterString.lower(call_id),
+            _UniffiFfiConverterBoolean.lower(approved),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_decide_tool_call,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def inputs_json(self, ) -> str:
+        """
+        The resume inputs collected so far, as JSON (what `WorkflowHandle.resume` takes).
+"""
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_inputs_json,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def reject(self, key: str,reason: typing.Optional[str]) -> None:
+        """
+        Reject request `key`: the model is told the calls were not approved (and
+        why, with `reason`), or a form is answered with its `reject` action.
+"""
+        
+        _UniffiFfiConverterString.check_lower(key)
+
+        _UniffiFfiConverterOptionalString.check_lower(reason)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(key),
+            _UniffiFfiConverterOptionalString.lower(reason),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_reject,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def requests(self, ) -> typing.List[ApprovalRequest]:
+        """
+        Every request of the run, in the order the nodes paused.
+"""
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterSequenceTypeApprovalRequest.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_requests,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def run_id(self, ) -> str:
+        """
+        Run id of the paused run.
+"""
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_run_id,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def set_input(self, key: str,input_json: str) -> None:
+        """
+        Set the resume input of request `key` as raw JSON, for pause kinds the
+        helpers above do not cover.
+"""
+        
+        _UniffiFfiConverterString.check_lower(key)
+
+        _UniffiFfiConverterString.check_lower(input_json)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(key),
+            _UniffiFfiConverterString.lower(input_json),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_set_input,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def snapshot_json(self, ) -> str:
+        """
+        The snapshot alone, for `WorkflowHandle.resume`.
+"""
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_snapshot_json,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def to_json(self, ) -> str:
+        """
+        The paused run as JSON (requests and snapshot, not the answers), to store
+        and read back with [`PausedRun::from_json`]. It holds the run's variables
+        (never secrets): keep it in the app's private storage.
+"""
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_to_json,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def unanswered(self, ) -> typing.List[str]:
+        """
+        Keys of the requests that have no answer yet. Resuming with requests
+        unanswered keeps those nodes paused.
+"""
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterSequenceString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_unanswered,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+
+
+
+
+
+class _UniffiFfiConverterTypePausedRun:
+    @staticmethod
+    def lift(value: int) -> PausedRun:
+        return PausedRun._uniffi_make_instance(value)
+
+    @staticmethod
+    def check_lower(value: PausedRun):
+        if not isinstance(value, PausedRun):
+            raise TypeError("Expected PausedRun instance, {} found".format(type(value).__name__))
+
+    @staticmethod
+    def lower(value: PausedRun) -> ctypes.c_uint64:
+        return value._uniffi_clone_handle()
+
+    @classmethod
+    def read(cls, buf: _UniffiRustBuffer) -> PausedRun:
+        ptr = buf.read_u64()
+        if ptr == 0:
+            raise InternalError("Raw handle value was null")
+        return cls.lift(ptr)
+
+    @classmethod
+    def write(cls, value: PausedRun, buf: _UniffiRustBuffer):
+        buf.write_u64(cls.lower(value))
+
+
+
+
+
+
+class RunEvent:
+    """
+    An event of a run.
+"""
+    def __init__(self):
+        raise RuntimeError("RunEvent cannot be instantiated directly")
+
+    # Each enum variant is a nested class of the enum itself.
+    @dataclass
+    class STARTED:
+        
+        def __init__(self, run_id:str, resumed:bool):
+            self.run_id = run_id
+            
+            
+            self.resumed = resumed
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RunEvent.STARTED(run_id={}, resumed={})".format(self.run_id, self.resumed)
+        def __eq__(self, other):
+            if not isinstance(other, RunEvent):
+                return NotImplemented
+            if not other.is_STARTED():
+                return False
+            if self.run_id != other.run_id:
+                return False
+            if self.resumed != other.resumed:
+                return False
+            return True
+
+    @dataclass
+    class NODE_STARTED:
+        
+        def __init__(self, node_id:str, kind:str, title:str):
+            self.node_id = node_id
+            
+            
+            self.kind = kind
+            
+            
+            self.title = title
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RunEvent.NODE_STARTED(node_id={}, kind={}, title={})".format(self.node_id, self.kind, self.title)
+        def __eq__(self, other):
+            if not isinstance(other, RunEvent):
+                return NotImplemented
+            if not other.is_NODE_STARTED():
+                return False
+            if self.node_id != other.node_id:
+                return False
+            if self.kind != other.kind:
+                return False
+            if self.title != other.title:
+                return False
+            return True
+
+    @dataclass
+    class NODE_SUCCEEDED:
+        
+        def __init__(self, node_id:str, elapsed_ms:int):
+            self.node_id = node_id
+            
+            
+            self.elapsed_ms = elapsed_ms
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RunEvent.NODE_SUCCEEDED(node_id={}, elapsed_ms={})".format(self.node_id, self.elapsed_ms)
+        def __eq__(self, other):
+            if not isinstance(other, RunEvent):
+                return NotImplemented
+            if not other.is_NODE_SUCCEEDED():
+                return False
+            if self.node_id != other.node_id:
+                return False
+            if self.elapsed_ms != other.elapsed_ms:
+                return False
+            return True
+
+    @dataclass
+    class NODE_FAILED:
+        """
+        A node failed; with `handled` its error strategy kept the run going.
+"""
+        
+        def __init__(self, node_id:str, error:str, error_type:str, handled:bool):
+            self.node_id = node_id
+            
+            
+            self.error = error
+            
+            
+            self.error_type = error_type
+            
+            
+            self.handled = handled
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RunEvent.NODE_FAILED(node_id={}, error={}, error_type={}, handled={})".format(self.node_id, self.error, self.error_type, self.handled)
+        def __eq__(self, other):
+            if not isinstance(other, RunEvent):
+                return NotImplemented
+            if not other.is_NODE_FAILED():
+                return False
+            if self.node_id != other.node_id:
+                return False
+            if self.error != other.error:
+                return False
+            if self.error_type != other.error_type:
+                return False
+            if self.handled != other.handled:
+                return False
+            return True
+
+    @dataclass
+    class TOOL_CALLED:
+        """
+        An agent called a tool.
+"""
+        
+        def __init__(self, node_id:str, call_id:str, name:str, arguments_json:str):
+            self.node_id = node_id
+            
+            
+            self.call_id = call_id
+            
+            
+            self.name = name
+            
+            
+            self.arguments_json = arguments_json
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RunEvent.TOOL_CALLED(node_id={}, call_id={}, name={}, arguments_json={})".format(self.node_id, self.call_id, self.name, self.arguments_json)
+        def __eq__(self, other):
+            if not isinstance(other, RunEvent):
+                return NotImplemented
+            if not other.is_TOOL_CALLED():
+                return False
+            if self.node_id != other.node_id:
+                return False
+            if self.call_id != other.call_id:
+                return False
+            if self.name != other.name:
+                return False
+            if self.arguments_json != other.arguments_json:
+                return False
+            return True
+
+    @dataclass
+    class TOOL_FINISHED:
+        """
+        A tool call finished.
+"""
+        
+        def __init__(self, node_id:str, call_id:str, name:str, is_error:bool):
+            self.node_id = node_id
+            
+            
+            self.call_id = call_id
+            
+            
+            self.name = name
+            
+            
+            self.is_error = is_error
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RunEvent.TOOL_FINISHED(node_id={}, call_id={}, name={}, is_error={})".format(self.node_id, self.call_id, self.name, self.is_error)
+        def __eq__(self, other):
+            if not isinstance(other, RunEvent):
+                return NotImplemented
+            if not other.is_TOOL_FINISHED():
+                return False
+            if self.node_id != other.node_id:
+                return False
+            if self.call_id != other.call_id:
+                return False
+            if self.name != other.name:
+                return False
+            if self.is_error != other.is_error:
+                return False
+            return True
+
+    @dataclass
+    class TOOL_DENIED:
+        """
+        A held tool call was not approved.
+"""
+        
+        def __init__(self, node_id:str, call_id:str, name:str):
+            self.node_id = node_id
+            
+            
+            self.call_id = call_id
+            
+            
+            self.name = name
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RunEvent.TOOL_DENIED(node_id={}, call_id={}, name={})".format(self.node_id, self.call_id, self.name)
+        def __eq__(self, other):
+            if not isinstance(other, RunEvent):
+                return NotImplemented
+            if not other.is_TOOL_DENIED():
+                return False
+            if self.node_id != other.node_id:
+                return False
+            if self.call_id != other.call_id:
+                return False
+            if self.name != other.name:
+                return False
+            return True
+
+    @dataclass
+    class ANSWER_CHUNK:
+        """
+        User facing answer text, in order, as it is produced.
+"""
+        
+        def __init__(self, text:str):
+            self.text = text
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RunEvent.ANSWER_CHUNK(text={})".format(self.text)
+        def __eq__(self, other):
+            if not isinstance(other, RunEvent):
+                return NotImplemented
+            if not other.is_ANSWER_CHUNK():
+                return False
+            if self.text != other.text:
+                return False
+            return True
+
+    @dataclass
+    class UI:
+        """
+        A UI block in a node's outputs that passed validation (feature `ui`).
+"""
+        
+        def __init__(self, node_id:str, block:UiBlock):
+            self.node_id = node_id
+            
+            
+            self.block = block
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RunEvent.UI(node_id={}, block={})".format(self.node_id, self.block)
+        def __eq__(self, other):
+            if not isinstance(other, RunEvent):
+                return NotImplemented
+            if not other.is_UI():
+                return False
+            if self.node_id != other.node_id:
+                return False
+            if self.block != other.block:
+                return False
+            return True
+
+    @dataclass
+    class UI_REJECTED:
+        """
+        A UI block that failed validation and must not be shown.
+"""
+        
+        def __init__(self, node_id:str, error:str):
+            self.node_id = node_id
+            
+            
+            self.error = error
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RunEvent.UI_REJECTED(node_id={}, error={})".format(self.node_id, self.error)
+        def __eq__(self, other):
+            if not isinstance(other, RunEvent):
+                return NotImplemented
+            if not other.is_UI_REJECTED():
+                return False
+            if self.node_id != other.node_id:
+                return False
+            if self.error != other.error:
+                return False
+            return True
+
+    @dataclass
+    class PAUSED:
+        """
+        The run paused and waits for answers. Terminal.
+"""
+        
+        def __init__(self, run:PausedRun):
+            self.run = run
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RunEvent.PAUSED(run={})".format(self.run)
+        def __eq__(self, other):
+            if not isinstance(other, RunEvent):
+                return NotImplemented
+            if not other.is_PAUSED():
+                return False
+            if self.run != other.run:
+                return False
+            return True
+
+    @dataclass
+    class FINISHED:
+        """
+        The run ended. Terminal.
+"""
+        
+        def __init__(self, result:RunResult):
+            self.result = result
+            
+            
+            pass
+
+    
+            
+            
+    
+        def __str__(self):
+            return "RunEvent.FINISHED(result={})".format(self.result)
+        def __eq__(self, other):
+            if not isinstance(other, RunEvent):
+                return NotImplemented
+            if not other.is_FINISHED():
+                return False
+            if self.result != other.result:
+                return False
+            return True
+
+    
+
+    # For each variant, we have `is_NAME` and `is_name` methods for easily checking
+    # whether an instance is that variant.
+    def is_STARTED(self) -> bool:
+        return isinstance(self, RunEvent.STARTED)
+    def is_started(self) -> bool:
+        return isinstance(self, RunEvent.STARTED)
+    def is_NODE_STARTED(self) -> bool:
+        return isinstance(self, RunEvent.NODE_STARTED)
+    def is_node_started(self) -> bool:
+        return isinstance(self, RunEvent.NODE_STARTED)
+    def is_NODE_SUCCEEDED(self) -> bool:
+        return isinstance(self, RunEvent.NODE_SUCCEEDED)
+    def is_node_succeeded(self) -> bool:
+        return isinstance(self, RunEvent.NODE_SUCCEEDED)
+    def is_NODE_FAILED(self) -> bool:
+        return isinstance(self, RunEvent.NODE_FAILED)
+    def is_node_failed(self) -> bool:
+        return isinstance(self, RunEvent.NODE_FAILED)
+    def is_TOOL_CALLED(self) -> bool:
+        return isinstance(self, RunEvent.TOOL_CALLED)
+    def is_tool_called(self) -> bool:
+        return isinstance(self, RunEvent.TOOL_CALLED)
+    def is_TOOL_FINISHED(self) -> bool:
+        return isinstance(self, RunEvent.TOOL_FINISHED)
+    def is_tool_finished(self) -> bool:
+        return isinstance(self, RunEvent.TOOL_FINISHED)
+    def is_TOOL_DENIED(self) -> bool:
+        return isinstance(self, RunEvent.TOOL_DENIED)
+    def is_tool_denied(self) -> bool:
+        return isinstance(self, RunEvent.TOOL_DENIED)
+    def is_ANSWER_CHUNK(self) -> bool:
+        return isinstance(self, RunEvent.ANSWER_CHUNK)
+    def is_answer_chunk(self) -> bool:
+        return isinstance(self, RunEvent.ANSWER_CHUNK)
+    def is_UI(self) -> bool:
+        return isinstance(self, RunEvent.UI)
+    def is_ui(self) -> bool:
+        return isinstance(self, RunEvent.UI)
+    def is_UI_REJECTED(self) -> bool:
+        return isinstance(self, RunEvent.UI_REJECTED)
+    def is_ui_rejected(self) -> bool:
+        return isinstance(self, RunEvent.UI_REJECTED)
+    def is_PAUSED(self) -> bool:
+        return isinstance(self, RunEvent.PAUSED)
+    def is_paused(self) -> bool:
+        return isinstance(self, RunEvent.PAUSED)
+    def is_FINISHED(self) -> bool:
+        return isinstance(self, RunEvent.FINISHED)
+    def is_finished(self) -> bool:
+        return isinstance(self, RunEvent.FINISHED)
+    
+
+# Now, a little trick - we make each nested variant class be a subclass of the main
+# enum class, so that method calls and instance checks etc will work intuitively.
+# We might be able to do this a little more neatly with a metaclass, but this'll do.
+RunEvent.STARTED = type("RunEvent.STARTED", (RunEvent.STARTED, RunEvent,), {})  # type: ignore
+RunEvent.NODE_STARTED = type("RunEvent.NODE_STARTED", (RunEvent.NODE_STARTED, RunEvent,), {})  # type: ignore
+RunEvent.NODE_SUCCEEDED = type("RunEvent.NODE_SUCCEEDED", (RunEvent.NODE_SUCCEEDED, RunEvent,), {})  # type: ignore
+RunEvent.NODE_FAILED = type("RunEvent.NODE_FAILED", (RunEvent.NODE_FAILED, RunEvent,), {})  # type: ignore
+RunEvent.TOOL_CALLED = type("RunEvent.TOOL_CALLED", (RunEvent.TOOL_CALLED, RunEvent,), {})  # type: ignore
+RunEvent.TOOL_FINISHED = type("RunEvent.TOOL_FINISHED", (RunEvent.TOOL_FINISHED, RunEvent,), {})  # type: ignore
+RunEvent.TOOL_DENIED = type("RunEvent.TOOL_DENIED", (RunEvent.TOOL_DENIED, RunEvent,), {})  # type: ignore
+RunEvent.ANSWER_CHUNK = type("RunEvent.ANSWER_CHUNK", (RunEvent.ANSWER_CHUNK, RunEvent,), {})  # type: ignore
+RunEvent.UI = type("RunEvent.UI", (RunEvent.UI, RunEvent,), {})  # type: ignore
+RunEvent.UI_REJECTED = type("RunEvent.UI_REJECTED", (RunEvent.UI_REJECTED, RunEvent,), {})  # type: ignore
+RunEvent.PAUSED = type("RunEvent.PAUSED", (RunEvent.PAUSED, RunEvent,), {})  # type: ignore
+RunEvent.FINISHED = type("RunEvent.FINISHED", (RunEvent.FINISHED, RunEvent,), {})  # type: ignore
+
+
+
+
+class _UniffiFfiConverterTypeRunEvent(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return RunEvent.STARTED(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterBoolean.read(buf),
+            )
+        if variant == 2:
+            return RunEvent.NODE_STARTED(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 3:
+            return RunEvent.NODE_SUCCEEDED(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterUInt64.read(buf),
+            )
+        if variant == 4:
+            return RunEvent.NODE_FAILED(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterBoolean.read(buf),
+            )
+        if variant == 5:
+            return RunEvent.TOOL_CALLED(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 6:
+            return RunEvent.TOOL_FINISHED(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterBoolean.read(buf),
+            )
+        if variant == 7:
+            return RunEvent.TOOL_DENIED(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 8:
+            return RunEvent.ANSWER_CHUNK(
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 9:
+            return RunEvent.UI(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterTypeUiBlock.read(buf),
+            )
+        if variant == 10:
+            return RunEvent.UI_REJECTED(
+                _UniffiFfiConverterString.read(buf),
+                _UniffiFfiConverterString.read(buf),
+            )
+        if variant == 11:
+            return RunEvent.PAUSED(
+                _UniffiFfiConverterTypePausedRun.read(buf),
+            )
+        if variant == 12:
+            return RunEvent.FINISHED(
+                _UniffiFfiConverterTypeRunResult.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if value.is_STARTED():
+            _UniffiFfiConverterString.check_lower(value.run_id)
+            _UniffiFfiConverterBoolean.check_lower(value.resumed)
+            return
+        if value.is_NODE_STARTED():
+            _UniffiFfiConverterString.check_lower(value.node_id)
+            _UniffiFfiConverterString.check_lower(value.kind)
+            _UniffiFfiConverterString.check_lower(value.title)
+            return
+        if value.is_NODE_SUCCEEDED():
+            _UniffiFfiConverterString.check_lower(value.node_id)
+            _UniffiFfiConverterUInt64.check_lower(value.elapsed_ms)
+            return
+        if value.is_NODE_FAILED():
+            _UniffiFfiConverterString.check_lower(value.node_id)
+            _UniffiFfiConverterString.check_lower(value.error)
+            _UniffiFfiConverterString.check_lower(value.error_type)
+            _UniffiFfiConverterBoolean.check_lower(value.handled)
+            return
+        if value.is_TOOL_CALLED():
+            _UniffiFfiConverterString.check_lower(value.node_id)
+            _UniffiFfiConverterString.check_lower(value.call_id)
+            _UniffiFfiConverterString.check_lower(value.name)
+            _UniffiFfiConverterString.check_lower(value.arguments_json)
+            return
+        if value.is_TOOL_FINISHED():
+            _UniffiFfiConverterString.check_lower(value.node_id)
+            _UniffiFfiConverterString.check_lower(value.call_id)
+            _UniffiFfiConverterString.check_lower(value.name)
+            _UniffiFfiConverterBoolean.check_lower(value.is_error)
+            return
+        if value.is_TOOL_DENIED():
+            _UniffiFfiConverterString.check_lower(value.node_id)
+            _UniffiFfiConverterString.check_lower(value.call_id)
+            _UniffiFfiConverterString.check_lower(value.name)
+            return
+        if value.is_ANSWER_CHUNK():
+            _UniffiFfiConverterString.check_lower(value.text)
+            return
+        if value.is_UI():
+            _UniffiFfiConverterString.check_lower(value.node_id)
+            _UniffiFfiConverterTypeUiBlock.check_lower(value.block)
+            return
+        if value.is_UI_REJECTED():
+            _UniffiFfiConverterString.check_lower(value.node_id)
+            _UniffiFfiConverterString.check_lower(value.error)
+            return
+        if value.is_PAUSED():
+            _UniffiFfiConverterTypePausedRun.check_lower(value.run)
+            return
+        if value.is_FINISHED():
+            _UniffiFfiConverterTypeRunResult.check_lower(value.result)
+            return
+        raise ValueError(value)
+
+    @staticmethod
+    def write(value, buf):
+        if value.is_STARTED():
+            buf.write_i32(1)
+            _UniffiFfiConverterString.write(value.run_id, buf)
+            _UniffiFfiConverterBoolean.write(value.resumed, buf)
+        if value.is_NODE_STARTED():
+            buf.write_i32(2)
+            _UniffiFfiConverterString.write(value.node_id, buf)
+            _UniffiFfiConverterString.write(value.kind, buf)
+            _UniffiFfiConverterString.write(value.title, buf)
+        if value.is_NODE_SUCCEEDED():
+            buf.write_i32(3)
+            _UniffiFfiConverterString.write(value.node_id, buf)
+            _UniffiFfiConverterUInt64.write(value.elapsed_ms, buf)
+        if value.is_NODE_FAILED():
+            buf.write_i32(4)
+            _UniffiFfiConverterString.write(value.node_id, buf)
+            _UniffiFfiConverterString.write(value.error, buf)
+            _UniffiFfiConverterString.write(value.error_type, buf)
+            _UniffiFfiConverterBoolean.write(value.handled, buf)
+        if value.is_TOOL_CALLED():
+            buf.write_i32(5)
+            _UniffiFfiConverterString.write(value.node_id, buf)
+            _UniffiFfiConverterString.write(value.call_id, buf)
+            _UniffiFfiConverterString.write(value.name, buf)
+            _UniffiFfiConverterString.write(value.arguments_json, buf)
+        if value.is_TOOL_FINISHED():
+            buf.write_i32(6)
+            _UniffiFfiConverterString.write(value.node_id, buf)
+            _UniffiFfiConverterString.write(value.call_id, buf)
+            _UniffiFfiConverterString.write(value.name, buf)
+            _UniffiFfiConverterBoolean.write(value.is_error, buf)
+        if value.is_TOOL_DENIED():
+            buf.write_i32(7)
+            _UniffiFfiConverterString.write(value.node_id, buf)
+            _UniffiFfiConverterString.write(value.call_id, buf)
+            _UniffiFfiConverterString.write(value.name, buf)
+        if value.is_ANSWER_CHUNK():
+            buf.write_i32(8)
+            _UniffiFfiConverterString.write(value.text, buf)
+        if value.is_UI():
+            buf.write_i32(9)
+            _UniffiFfiConverterString.write(value.node_id, buf)
+            _UniffiFfiConverterTypeUiBlock.write(value.block, buf)
+        if value.is_UI_REJECTED():
+            buf.write_i32(10)
+            _UniffiFfiConverterString.write(value.node_id, buf)
+            _UniffiFfiConverterString.write(value.error, buf)
+        if value.is_PAUSED():
+            buf.write_i32(11)
+            _UniffiFfiConverterTypePausedRun.write(value.run, buf)
+        if value.is_FINISHED():
+            buf.write_i32(12)
+            _UniffiFfiConverterTypeRunResult.write(value.result, buf)
+
+
+
+
+
+# ToolCallError
+# We want to define each variant as a nested class that's also a subclass,
+# which is tricky in Python.  To accomplish this we're going to create each
+# class separately, then manually add the child classes to the base class's
+# __dict__.  All of this happens in dummy class to avoid polluting the module
+# namespace.
+class ToolCallError(Exception):
+    """
+    An error a tool reports. The model receives `reason` and may try again.
+"""
+    pass
+
+_UniffiTempToolCallError = ToolCallError
+
+class ToolCallError:  # type: ignore
+    """
+    An error a tool reports. The model receives `reason` and may try again.
+"""
+    
+    class Failed(_UniffiTempToolCallError):
+        """
+        The tool could not do what was asked.
+"""
+        
+        def __init__(self, reason):
+            super().__init__(", ".join([
+                "reason={!r}".format(reason),
+            ]))
+            self.reason = reason
+
+        def __repr__(self):
+            return "ToolCallError.Failed({})".format(str(self))
+    _UniffiTempToolCallError.Failed = Failed # type: ignore
+
+ToolCallError = _UniffiTempToolCallError # type: ignore
+del _UniffiTempToolCallError
+
+
+class _UniffiFfiConverterTypeToolCallError(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        variant = buf.read_i32()
+        if variant == 1:
+            return ToolCallError.Failed(
+                _UniffiFfiConverterString.read(buf),
+            )
+        raise InternalError("Raw enum value doesn't match any cases")
+
+    @staticmethod
+    def check_lower(value):
+        if isinstance(value, ToolCallError.Failed):
+            _UniffiFfiConverterString.check_lower(value.reason)
+            return
+
+    @staticmethod
+    def write(value, buf):
+        if isinstance(value, ToolCallError.Failed):
+            buf.write_i32(1)
+            _UniffiFfiConverterString.write(value.reason, buf)
 
 
 class CredentialProvider():
@@ -1667,27 +4891,6 @@ class _UniffiFfiConverterTypeEventListener:
     def write(cls, value: EventListener, buf: _UniffiRustBuffer):
         buf.write_u64(cls.lower(value))
 
-class _UniffiFfiConverterBoolean:
-    @classmethod
-    def check_lower(cls, value):
-        return not not value
-
-    @classmethod
-    def lower(cls, value):
-        return 1 if value else 0
-
-    @staticmethod
-    def lift(value):
-        return value != 0
-
-    @classmethod
-    def read(cls, buf):
-        return cls.lift(buf.read_u8())
-
-    @classmethod
-    def write(cls, value, buf):
-        buf.write_u8(value)
-
 
 class RunHandleProtocol(typing.Protocol):
     """
@@ -1865,6 +5068,217 @@ class _UniffiFfiConverterTypeRunHandle:
     def write(cls, value: RunHandle, buf: _UniffiRustBuffer):
         buf.write_u64(cls.lower(value))
 
+
+class RunListener():
+    """
+    Receives the typed events of one run. Implemented in the host language.
+
+    Called on a background thread, in order; marshal to the UI thread yourself.
+    Exceptions thrown here are swallowed so they cannot break the run.
+"""
+    
+    def on_event(self, event: RunEvent) -> None:
+        raise NotImplementedError
+
+class RunListenerImpl(RunListener):
+    """
+    Receives the typed events of one run. Implemented in the host language.
+
+    Called on a background thread, in order; marshal to the UI thread yourself.
+    Exceptions thrown here are swallowed so they cannot break the run.
+"""
+    
+    _handle: ctypes.c_uint64
+    
+    def __init__(self, *args, **kwargs):
+        raise ValueError("This class has no default constructor")
+
+    def __del__(self):
+        # In case of partial initialization of instances.
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            _uniffi_rust_call(_UniffiLib.uniffi_graphrt_ffi_fn_free_runlistener, handle)
+
+    def _uniffi_clone_handle(self):
+        return _uniffi_rust_call(_UniffiLib.uniffi_graphrt_ffi_fn_clone_runlistener, self._handle)
+
+    # Used by alternative constructors or any methods which return this type.
+    @classmethod
+    def _uniffi_make_instance(cls, handle):
+        # Lightly yucky way to bypass the usual __init__ logic
+        # and just create a new instance with the required handle.
+        inst = cls.__new__(cls)
+        inst._handle = handle
+        return inst
+    def on_event(self, event: RunEvent) -> None:
+        
+        _UniffiFfiConverterTypeRunEvent.check_lower(event)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterTypeRunEvent.lower(event),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runlistener_on_event,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+
+
+
+
+# Put all the bits inside a class to keep the top-level namespace clean
+class _UniffiTraitImplRunListenerImpl:
+    # For each method, generate a callback function to pass to Rust
+
+    @_UNIFFI_CALLBACK_INTERFACE_GRAPHRT_FFI_RUN_LISTENER_METHOD0
+    def on_event(
+            uniffi_handle,
+            event,
+            uniffi_out_return,
+            uniffi_call_status_ptr,
+        ):
+        uniffi_obj = _UniffiFfiConverterTypeRunListener._handle_map.get(uniffi_handle)
+        def make_call():
+            uniffi_args = (_UniffiFfiConverterTypeRunEvent.lift(event), )
+            uniffi_method = uniffi_obj.on_event
+            return uniffi_method(*uniffi_args)
+        write_return_value = lambda v: None
+        _uniffi_trait_interface_call(
+                uniffi_call_status_ptr.contents,
+                make_call,
+                write_return_value,
+        )
+
+    @_UNIFFI_CALLBACK_INTERFACE_FREE_GRAPHRT_FFI_RUN_LISTENER
+    def _uniffi_free(uniffi_handle):
+        _UniffiFfiConverterTypeRunListener._handle_map.remove(uniffi_handle)
+
+    @_UNIFFI_CALLBACK_INTERFACE_CLONE_GRAPHRT_FFI_RUN_LISTENER
+    def _uniffi_clone(uniffi_handle):
+        return _UniffiFfiConverterTypeRunListener._handle_map.clone(uniffi_handle)
+
+    # Generate the FFI VTable.  This has a field for each callback interface method.
+    _uniffi_vtable = _UniffiVTableCallbackInterfaceGraphrtFfiRunListener(
+        _uniffi_free,
+        _uniffi_clone,
+        on_event,
+    )
+    # Send Rust a pointer to the VTable.  Note: this means we need to keep the struct alive forever,
+    # or else bad things will happen when Rust tries to access it.
+    _UniffiLib.uniffi_graphrt_ffi_fn_init_callback_vtable_runlistener(ctypes.byref(_uniffi_vtable))
+
+class _UniffiFfiConverterTypeRunListener:
+    _handle_map = _UniffiHandleMap()
+
+    @staticmethod
+    def lift(value: int):
+        if (value & 1) == 0:
+            # Rust-generated handle, construct a new class that uses the handle to implement the
+            # interface
+            return RunListenerImpl._uniffi_make_instance(value)
+        else:
+            # Python-generated handle, get the object from the handle map
+            return _UniffiFfiConverterTypeRunListener._handle_map.remove(value)
+
+    @staticmethod
+    def check_lower(value: RunListener):
+        if not isinstance(value, RunListener):
+            raise TypeError("Expected RunListener subclass, {} found".format(type(value).__name__))
+
+    @staticmethod
+    def lower(value: RunListener):
+         if isinstance(value, RunListenerImpl):
+            # Rust-implementated object.  Clone the handle and return it
+            return value._uniffi_clone_handle()
+         else:
+            # Python-implementated object, generate a new vtable handle and return that.
+            return _UniffiFfiConverterTypeRunListener._handle_map.insert(value)
+
+    @classmethod
+    def read(cls, buf: _UniffiRustBuffer):
+        ptr = buf.read_u64()
+        if ptr == 0:
+            raise InternalError("Raw handle value was null")
+        return cls.lift(ptr)
+
+    @classmethod
+    def write(cls, value: RunListener, buf: _UniffiRustBuffer):
+        buf.write_u64(cls.lower(value))
+
+class _UniffiFfiConverterOptionalTypeLessonStatus(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiFfiConverterTypeLessonStatus.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiFfiConverterTypeLessonStatus.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiFfiConverterTypeLessonStatus.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+class _UniffiFfiConverterSequenceTypeLessonInfo(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeLessonInfo.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeLessonInfo.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeLessonInfo.read(buf) for i in range(count)
+        ]
+
+class _UniffiFfiConverterSequenceTypeSkillInfo(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeSkillInfo.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeSkillInfo.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeSkillInfo.read(buf) for i in range(count)
+        ]
+
 class _UniffiFfiConverterBytes(_UniffiConverterRustBuffer):
     @staticmethod
     def read(buf):
@@ -1884,29 +5298,6 @@ class _UniffiFfiConverterBytes(_UniffiConverterRustBuffer):
     def write(value, buf):
         buf.write_i32(len(value))
         buf.write(value)
-
-class _UniffiFfiConverterSequenceString(_UniffiConverterRustBuffer):
-    @classmethod
-    def check_lower(cls, value):
-        for item in value:
-            _UniffiFfiConverterString.check_lower(item)
-
-    @classmethod
-    def write(cls, value, buf):
-        items = len(value)
-        buf.write_i32(items)
-        for item in value:
-            _UniffiFfiConverterString.write(item, buf)
-
-    @classmethod
-    def read(cls, buf):
-        count = buf.read_i32()
-        if count < 0:
-            raise InternalError("Unexpected negative sequence length")
-
-        return [
-            _UniffiFfiConverterString.read(buf) for i in range(count)
-        ]
 
 
 class WorkflowHandleProtocol(typing.Protocol):
@@ -1937,9 +5328,22 @@ class WorkflowHandleProtocol(typing.Protocol):
         re-supplies non-env secrets as `{"namespace.name": "value"}`.
 """
         raise NotImplementedError
+    def resume_paused(self, paused: PausedRun,secrets_json: str,listener: RunListener) -> RunHandle:
+        """
+        Resume a paused run with the answers given on `paused`
+        ([`PausedRun::approve`], [`PausedRun::answer`]...). `secrets_json`
+        re-supplies non-env secrets as `{"namespace.name": "value"}`.
+"""
+        raise NotImplementedError
     def run(self, inputs_json: str,sys_json: str,listener: EventListener) -> RunHandle:
         """
         Start a run. `inputs_json` / `sys_json` are JSON objects (`"{}"` when empty).
+"""
+        raise NotImplementedError
+    def start(self, inputs_json: str,sys_json: str,listener: RunListener) -> RunHandle:
+        """
+        Start a run whose events arrive typed ([`RunEvent`]). It ends with
+        [`RunEvent::Paused`] or [`RunEvent::Finished`].
 """
         raise NotImplementedError
     def warnings(self, ) -> typing.List[str]:
@@ -2050,6 +5454,32 @@ class WorkflowHandle(WorkflowHandleProtocol):
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
+    def resume_paused(self, paused: PausedRun,secrets_json: str,listener: RunListener) -> RunHandle:
+        """
+        Resume a paused run with the answers given on `paused`
+        ([`PausedRun::approve`], [`PausedRun::answer`]...). `secrets_json`
+        re-supplies non-env secrets as `{"namespace.name": "value"}`.
+"""
+        
+        _UniffiFfiConverterTypePausedRun.check_lower(paused)
+
+        _UniffiFfiConverterString.check_lower(secrets_json)
+
+        _UniffiFfiConverterTypeRunListener.check_lower(listener)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterTypePausedRun.lower(paused),
+            _UniffiFfiConverterString.lower(secrets_json),
+            _UniffiFfiConverterTypeRunListener.lower(listener),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeRunHandle.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_resume_paused,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def run(self, inputs_json: str,sys_json: str,listener: EventListener) -> RunHandle:
         """
         Start a run. `inputs_json` / `sys_json` are JSON objects (`"{}"` when empty).
@@ -2071,6 +5501,31 @@ class WorkflowHandle(WorkflowHandleProtocol):
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
             _UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_run,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def start(self, inputs_json: str,sys_json: str,listener: RunListener) -> RunHandle:
+        """
+        Start a run whose events arrive typed ([`RunEvent`]). It ends with
+        [`RunEvent::Paused`] or [`RunEvent::Finished`].
+"""
+        
+        _UniffiFfiConverterString.check_lower(inputs_json)
+
+        _UniffiFfiConverterString.check_lower(sys_json)
+
+        _UniffiFfiConverterTypeRunListener.check_lower(listener)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(inputs_json),
+            _UniffiFfiConverterString.lower(sys_json),
+            _UniffiFfiConverterTypeRunListener.lower(listener),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeRunHandle.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_start,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -2119,6 +5574,199 @@ class _UniffiFfiConverterTypeWorkflowHandle:
     def write(cls, value: WorkflowHandle, buf: _UniffiRustBuffer):
         buf.write_u64(cls.lower(value))
 
+class _UniffiFfiConverterSequenceTypeHostToolSpec(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiFfiConverterTypeHostToolSpec.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiFfiConverterTypeHostToolSpec.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiFfiConverterTypeHostToolSpec.read(buf) for i in range(count)
+        ]
+
+
+class ToolProvider():
+    """
+    Native tools implemented by the app.
+
+    `call_tool` is a `suspend fun` in Kotlin and an `async throws` function in
+    Swift. It is called from the runtime's threads, possibly for several calls
+    at once; it is cancelled when its time limit passes or the run is aborted.
+"""
+    
+    async def call_tool(self, call: HostToolCall) -> HostToolResult:
+        """
+        Run one tool call. Throw [`ToolCallError::Failed`] to tell the model why it failed.
+"""
+        raise NotImplementedError
+
+class ToolProviderImpl(ToolProvider):
+    """
+    Native tools implemented by the app.
+
+    `call_tool` is a `suspend fun` in Kotlin and an `async throws` function in
+    Swift. It is called from the runtime's threads, possibly for several calls
+    at once; it is cancelled when its time limit passes or the run is aborted.
+"""
+    
+    _handle: ctypes.c_uint64
+    
+    def __init__(self, *args, **kwargs):
+        raise ValueError("This class has no default constructor")
+
+    def __del__(self):
+        # In case of partial initialization of instances.
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            _uniffi_rust_call(_UniffiLib.uniffi_graphrt_ffi_fn_free_toolprovider, handle)
+
+    def _uniffi_clone_handle(self):
+        return _uniffi_rust_call(_UniffiLib.uniffi_graphrt_ffi_fn_clone_toolprovider, self._handle)
+
+    # Used by alternative constructors or any methods which return this type.
+    @classmethod
+    def _uniffi_make_instance(cls, handle):
+        # Lightly yucky way to bypass the usual __init__ logic
+        # and just create a new instance with the required handle.
+        inst = cls.__new__(cls)
+        inst._handle = handle
+        return inst
+    async def call_tool(self, call: HostToolCall) -> HostToolResult:
+        """
+        Run one tool call. Throw [`ToolCallError::Failed`] to tell the model why it failed.
+"""
+        
+        _UniffiFfiConverterTypeHostToolCall.check_lower(call)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterTypeHostToolCall.lower(call),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeHostToolResult.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeToolCallError
+        return await _uniffi_rust_call_async(
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_toolprovider_call_tool(*_uniffi_lowered_args),
+            _UniffiLib.ffi_graphrt_ffi_rust_future_poll_rust_buffer,
+            _UniffiLib.ffi_graphrt_ffi_rust_future_complete_rust_buffer,
+            _UniffiLib.ffi_graphrt_ffi_rust_future_free_rust_buffer,
+            _uniffi_lift_return,
+            _uniffi_error_converter,
+        )
+
+
+
+
+# Put all the bits inside a class to keep the top-level namespace clean
+class _UniffiTraitImplToolProviderImpl:
+    # For each method, generate a callback function to pass to Rust
+
+    @_UNIFFI_CALLBACK_INTERFACE_GRAPHRT_FFI_TOOL_PROVIDER_METHOD0
+    def call_tool(
+            uniffi_handle,
+            call,
+            uniffi_future_callback,
+            uniffi_callback_data,
+            uniffi_out_dropped_callback,
+        ):
+        uniffi_obj = _UniffiFfiConverterTypeToolProvider._handle_map.get(uniffi_handle)
+        def make_call():
+            uniffi_args = (_UniffiFfiConverterTypeHostToolCall.lift(call), )
+            uniffi_method = uniffi_obj.call_tool
+            return uniffi_method(*uniffi_args)
+        def handle_success(return_value):
+            uniffi_future_callback(
+                uniffi_callback_data,
+                _UniffiForeignFutureResultRustBuffer(
+                    _UniffiFfiConverterTypeHostToolResult.lower(return_value),
+                    _UniffiRustCallStatus.default()
+                )
+            )
+
+        def handle_error(status_code, rust_buffer):
+            uniffi_future_callback(
+                uniffi_callback_data,
+                _UniffiForeignFutureResultRustBuffer(
+                    _UniffiRustBuffer.default(),
+                    _UniffiRustCallStatus(status_code, rust_buffer),
+                )
+            )
+        _uniffi_trait_interface_call_async_with_error(
+            make_call,
+            uniffi_out_dropped_callback,
+            handle_success,
+            handle_error,
+            ToolCallError,
+            _UniffiFfiConverterTypeToolCallError.lower,
+        )
+
+    @_UNIFFI_CALLBACK_INTERFACE_FREE_GRAPHRT_FFI_TOOL_PROVIDER
+    def _uniffi_free(uniffi_handle):
+        _UniffiFfiConverterTypeToolProvider._handle_map.remove(uniffi_handle)
+
+    @_UNIFFI_CALLBACK_INTERFACE_CLONE_GRAPHRT_FFI_TOOL_PROVIDER
+    def _uniffi_clone(uniffi_handle):
+        return _UniffiFfiConverterTypeToolProvider._handle_map.clone(uniffi_handle)
+
+    # Generate the FFI VTable.  This has a field for each callback interface method.
+    _uniffi_vtable = _UniffiVTableCallbackInterfaceGraphrtFfiToolProvider(
+        _uniffi_free,
+        _uniffi_clone,
+        call_tool,
+    )
+    # Send Rust a pointer to the VTable.  Note: this means we need to keep the struct alive forever,
+    # or else bad things will happen when Rust tries to access it.
+    _UniffiLib.uniffi_graphrt_ffi_fn_init_callback_vtable_toolprovider(ctypes.byref(_uniffi_vtable))
+
+class _UniffiFfiConverterTypeToolProvider:
+    _handle_map = _UniffiHandleMap()
+
+    @staticmethod
+    def lift(value: int):
+        if (value & 1) == 0:
+            # Rust-generated handle, construct a new class that uses the handle to implement the
+            # interface
+            return ToolProviderImpl._uniffi_make_instance(value)
+        else:
+            # Python-generated handle, get the object from the handle map
+            return _UniffiFfiConverterTypeToolProvider._handle_map.remove(value)
+
+    @staticmethod
+    def check_lower(value: ToolProvider):
+        if not isinstance(value, ToolProvider):
+            raise TypeError("Expected ToolProvider subclass, {} found".format(type(value).__name__))
+
+    @staticmethod
+    def lower(value: ToolProvider):
+         if isinstance(value, ToolProviderImpl):
+            # Rust-implementated object.  Clone the handle and return it
+            return value._uniffi_clone_handle()
+         else:
+            # Python-implementated object, generate a new vtable handle and return that.
+            return _UniffiFfiConverterTypeToolProvider._handle_map.insert(value)
+
+    @classmethod
+    def read(cls, buf: _UniffiRustBuffer):
+        ptr = buf.read_u64()
+        if ptr == 0:
+            raise InternalError("Raw handle value was null")
+        return cls.lift(ptr)
+
+    @classmethod
+    def write(cls, value: ToolProvider, buf: _UniffiRustBuffer):
+        buf.write_u64(cls.lower(value))
+
 
 class RuntimeProtocol(typing.Protocol):
     """
@@ -2126,6 +5774,11 @@ class RuntimeProtocol(typing.Protocol):
     Create one per app and share it.
 """
     
+    def add_lesson(self, agent: str,user: typing.Optional[str],kind: LessonKind,text: str) -> LessonInfo:
+        """
+        A lesson the owner wrote; it is approved at once.
+"""
+        raise NotImplementedError
     def catalog_json(self, ) -> str:
         """
         Catalog of every node kind available in this runtime, as a JSON array.
@@ -2143,6 +5796,31 @@ class RuntimeProtocol(typing.Protocol):
         every cached credential (sign-out takes effect on the next request).
 """
         raise NotImplementedError
+    def decide_lesson(self, agent: str,id: str,decision: LessonDecision) -> LessonInfo:
+        """
+        Approve, reject or retire a lesson.
+"""
+        raise NotImplementedError
+    def delete_lesson(self, agent: str,id: str) -> None:
+        """
+        Delete a lesson for good.
+"""
+        raise NotImplementedError
+    def install_skill(self, request: SkillInstall) -> SkillInfo:
+        """
+        Install a skill from its `SKILL.md`. It is enabled once installed.
+"""
+        raise NotImplementedError
+    def list_lessons(self, agent: str,status: typing.Optional[LessonStatus]) -> typing.List[LessonInfo]:
+        """
+        The lessons of `agent`, optionally only those in `status`.
+"""
+        raise NotImplementedError
+    def list_skills(self, ) -> typing.List[SkillInfo]:
+        """
+        Every installed skill.
+"""
+        raise NotImplementedError
     def load_bundle(self, bundle: bytes,trusted_keys: typing.List[str]) -> WorkflowHandle:
         """
         Open a portable bundle (`.grt` bytes), register its WebAssembly plugins and
@@ -2157,10 +5835,31 @@ class RuntimeProtocol(typing.Protocol):
         Parse and compile a workflow (YAML or JSON).
 """
         raise NotImplementedError
+    def propose_lesson(self, proposal: LessonProposal) -> LessonInfo:
+        """
+        Propose a lesson from feedback on a run. It waits for the owner's decision
+        ([`Runtime::decide_lesson`]) before any run uses it.
+"""
+        raise NotImplementedError
+    def register_tool_provider(self, name: str,tools: typing.List[HostToolSpec],provider: ToolProvider) -> None:
+        """
+        Register native tools implemented by the app under provider `name`.
+        Agents list them in `tools` as `<name>/<tool>`, or all of them with a `*` as the tool; `require_approval`
+        of an `agent` node can hold their calls for approval. Workflows loaded
+        after this call see the tools. Fails when the name is taken (by an MCP
+        server, the `files` workspace or an earlier provider) or a declaration
+        is invalid.
+"""
+        raise NotImplementedError
     def register_wasm_plugin(self, wasm: bytes) -> typing.List[str]:
         """
         Load a sandboxed WebAssembly plugin; its node kinds become available to
         workflows loaded afterwards. Returns the registered kinds.
+"""
+        raise NotImplementedError
+    def remove_skill(self, name: str) -> None:
+        """
+        Remove an installed skill.
 """
         raise NotImplementedError
     def set_credential_provider(self, provider: str,callback: CredentialProvider) -> None:
@@ -2169,6 +5868,16 @@ class RuntimeProtocol(typing.Protocol):
         config's `credentials` section), or `"*"` for every provider. Replaces any
         previous callback and drops every cached credential, so it takes effect for
         requests made after the call (e.g. a different user signed in).
+"""
+        raise NotImplementedError
+    def set_skill_enabled(self, name: str,enabled: bool) -> SkillInfo:
+        """
+        Turn a skill on or off for every agent.
+"""
+        raise NotImplementedError
+    def tool_providers(self, ) -> typing.List[str]:
+        """
+        Names of the registered tool providers (MCP servers, `files`, the app's own).
 """
         raise NotImplementedError
 
@@ -2215,6 +5924,33 @@ class Runtime(RuntimeProtocol):
         inst = cls.__new__(cls)
         inst._handle = handle
         return inst
+    def add_lesson(self, agent: str,user: typing.Optional[str],kind: LessonKind,text: str) -> LessonInfo:
+        """
+        A lesson the owner wrote; it is approved at once.
+"""
+        
+        _UniffiFfiConverterString.check_lower(agent)
+
+        _UniffiFfiConverterOptionalString.check_lower(user)
+
+        _UniffiFfiConverterTypeLessonKind.check_lower(kind)
+
+        _UniffiFfiConverterString.check_lower(text)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(agent),
+            _UniffiFfiConverterOptionalString.lower(user),
+            _UniffiFfiConverterTypeLessonKind.lower(kind),
+            _UniffiFfiConverterString.lower(text),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeLessonInfo.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_add_lesson,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def catalog_json(self, ) -> str:
         """
         Catalog of every node kind available in this runtime, as a JSON array.
@@ -2265,6 +6001,105 @@ class Runtime(RuntimeProtocol):
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
+    def decide_lesson(self, agent: str,id: str,decision: LessonDecision) -> LessonInfo:
+        """
+        Approve, reject or retire a lesson.
+"""
+        
+        _UniffiFfiConverterString.check_lower(agent)
+
+        _UniffiFfiConverterString.check_lower(id)
+
+        _UniffiFfiConverterTypeLessonDecision.check_lower(decision)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(agent),
+            _UniffiFfiConverterString.lower(id),
+            _UniffiFfiConverterTypeLessonDecision.lower(decision),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeLessonInfo.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_decide_lesson,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def delete_lesson(self, agent: str,id: str) -> None:
+        """
+        Delete a lesson for good.
+"""
+        
+        _UniffiFfiConverterString.check_lower(agent)
+
+        _UniffiFfiConverterString.check_lower(id)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(agent),
+            _UniffiFfiConverterString.lower(id),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_delete_lesson,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def install_skill(self, request: SkillInstall) -> SkillInfo:
+        """
+        Install a skill from its `SKILL.md`. It is enabled once installed.
+"""
+        
+        _UniffiFfiConverterTypeSkillInstall.check_lower(request)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterTypeSkillInstall.lower(request),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeSkillInfo.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_install_skill,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def list_lessons(self, agent: str,status: typing.Optional[LessonStatus]) -> typing.List[LessonInfo]:
+        """
+        The lessons of `agent`, optionally only those in `status`.
+"""
+        
+        _UniffiFfiConverterString.check_lower(agent)
+
+        _UniffiFfiConverterOptionalTypeLessonStatus.check_lower(status)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(agent),
+            _UniffiFfiConverterOptionalTypeLessonStatus.lower(status),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterSequenceTypeLessonInfo.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_list_lessons,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def list_skills(self, ) -> typing.List[SkillInfo]:
+        """
+        Every installed skill.
+"""
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterSequenceTypeSkillInfo.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_list_skills,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def load_bundle(self, bundle: bytes,trusted_keys: typing.List[str]) -> WorkflowHandle:
         """
         Open a portable bundle (`.grt` bytes), register its WebAssembly plugins and
@@ -2308,6 +6143,54 @@ class Runtime(RuntimeProtocol):
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
+    def propose_lesson(self, proposal: LessonProposal) -> LessonInfo:
+        """
+        Propose a lesson from feedback on a run. It waits for the owner's decision
+        ([`Runtime::decide_lesson`]) before any run uses it.
+"""
+        
+        _UniffiFfiConverterTypeLessonProposal.check_lower(proposal)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterTypeLessonProposal.lower(proposal),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeLessonInfo.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_propose_lesson,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def register_tool_provider(self, name: str,tools: typing.List[HostToolSpec],provider: ToolProvider) -> None:
+        """
+        Register native tools implemented by the app under provider `name`.
+        Agents list them in `tools` as `<name>/<tool>`, or all of them with a `*` as the tool; `require_approval`
+        of an `agent` node can hold their calls for approval. Workflows loaded
+        after this call see the tools. Fails when the name is taken (by an MCP
+        server, the `files` workspace or an earlier provider) or a declaration
+        is invalid.
+"""
+        
+        _UniffiFfiConverterString.check_lower(name)
+
+        _UniffiFfiConverterSequenceTypeHostToolSpec.check_lower(tools)
+
+        _UniffiFfiConverterTypeToolProvider.check_lower(provider)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(name),
+            _UniffiFfiConverterSequenceTypeHostToolSpec.lower(tools),
+            _UniffiFfiConverterTypeToolProvider.lower(provider),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_register_tool_provider,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
     def register_wasm_plugin(self, wasm: bytes) -> typing.List[str]:
         """
         Load a sandboxed WebAssembly plugin; its node kinds become available to
@@ -2324,6 +6207,24 @@ class Runtime(RuntimeProtocol):
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
             _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_register_wasm_plugin,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def remove_skill(self, name: str) -> None:
+        """
+        Remove an installed skill.
+"""
+        
+        _UniffiFfiConverterString.check_lower(name)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(name),
+        )
+        _uniffi_lift_return = lambda val: None
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_remove_skill,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -2348,6 +6249,42 @@ class Runtime(RuntimeProtocol):
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
             _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_set_credential_provider,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def set_skill_enabled(self, name: str,enabled: bool) -> SkillInfo:
+        """
+        Turn a skill on or off for every agent.
+"""
+        
+        _UniffiFfiConverterString.check_lower(name)
+
+        _UniffiFfiConverterBoolean.check_lower(enabled)
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+            _UniffiFfiConverterString.lower(name),
+            _UniffiFfiConverterBoolean.lower(enabled),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterTypeSkillInfo.lift
+        _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_set_skill_enabled,
+            *_uniffi_lowered_args,
+        )
+        return _uniffi_lift_return(_uniffi_ffi_result)
+    def tool_providers(self, ) -> typing.List[str]:
+        """
+        Names of the registered tool providers (MCP servers, `files`, the app's own).
+"""
+        _uniffi_lowered_args = (
+            self._uniffi_clone_handle(),
+        )
+        _uniffi_lift_return = _UniffiFfiConverterSequenceString.lift
+        _uniffi_error_converter = None
+        _uniffi_ffi_result = _uniffi_rust_call_with_error(
+            _uniffi_error_converter,
+            _UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_tool_providers,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)
@@ -2394,20 +6331,66 @@ def graphrt_version() -> str:
         *_uniffi_lowered_args,
     )
     return _uniffi_lift_return(_uniffi_ffi_result)
+def validate_ui_block(block_json: str) -> UiBlock:
+    """
+    Check a UI block (`{"$ui": "chart", "version": 1, ...}`) against its schema,
+    for blocks an app receives outside a run (stored messages, a server).
+"""
+    
+    _UniffiFfiConverterString.check_lower(block_json)
+    _uniffi_lowered_args = (
+        _UniffiFfiConverterString.lower(block_json),
+    )
+    _uniffi_lift_return = _UniffiFfiConverterTypeUiBlock.lift
+    _uniffi_error_converter = _UniffiFfiConverterTypeGraphrtError
+    _uniffi_ffi_result = _uniffi_rust_call_with_error(
+        _uniffi_error_converter,
+        _UniffiLib.uniffi_graphrt_ffi_fn_func_validate_ui_block,
+        *_uniffi_lowered_args,
+    )
+    return _uniffi_lift_return(_uniffi_ffi_result)
 
 __all__ = [
     "InternalError",
+    "RequestKind",
+    "LessonKind",
+    "LessonStatus",
+    "RunStatus",
     "GraphrtError",
+    "LessonDecision",
+    "RunEvent",
+    "ToolCallError",
+    "FormField",
+    "FormAction",
+    "PendingToolCall",
+    "ApprovalRequest",
     "CredentialRecord",
+    "HostToolCall",
+    "HostToolResult",
+    "HostToolSpec",
+    "LessonInfo",
+    "LessonProposal",
+    "RunResult",
+    "SkillGrant",
+    "SkillInfo",
+    "SkillInstall",
+    "UiBlock",
     "graphrt_version",
+    "validate_ui_block",
+    "PausedRun",
+    "PausedRunProtocol",
     "CredentialProviderImpl",
     "CredentialProvider",
     "EventListenerImpl",
     "EventListener",
     "RunHandle",
     "RunHandleProtocol",
+    "RunListenerImpl",
+    "RunListener",
     "WorkflowHandle",
     "WorkflowHandleProtocol",
+    "ToolProviderImpl",
+    "ToolProvider",
     "Runtime",
     "RuntimeProtocol",
 ]

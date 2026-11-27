@@ -21,11 +21,15 @@ code:
   - "!.github/ISSUE_TEMPLATE/**"
   - "!.github/pull_request_template.md"
 
-# What graphrt-ffi, the bindings and the sample apps in examples/mobile are built from.
+# What graphrt-ffi, the bindings, the SDKs in sdk/android and sdk/swift and the
+# sample apps in examples/mobile are built from.
 mobile:
   - "crates/**"
-  - "bindings/kotlin/**"
-  - "bindings/swift/**"
+  - "bindings/**"
+  - "sdk/android/**"
+  - "sdk/swift/**"
+  - "scripts/generate-bindings.sh"
+  - "scripts/check-doc-snippets.py"
   - "examples/hello.yaml"
   - "examples/mobile/**"
   - "Cargo.toml"

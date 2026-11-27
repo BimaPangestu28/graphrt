@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Installs the sample app on a booted iOS simulator, runs the hello workflow with
-# autorun, and checks the console output. Exits non-zero on any mismatch.
+# Installs the sample app on a booted iOS simulator, runs the hello workflow and
+# the phone assistant (examples/mobile/agent.yaml: a scripted model, native tools
+# through the Swift ToolProvider, a pause for approval, the resume and the
+# streamed answer) with autorun, and checks the console output. Exits non-zero on
+# any mismatch.
 #
 # Usage: examples/mobile/ios/scripts/smoke-test.sh [path/to/GraphrtSample.app]
 #
@@ -25,6 +28,7 @@ launch_timeout_seconds="${LAUNCH_TIMEOUT_SECONDS:-300}"
 timeout_seconds="${SMOKE_TIMEOUT_SECONDS:-60}"
 bundle_id="dev.graphrt.sample"
 expected_greeting="Hello, Grace."
+expected_answer="Done: sent to Ada"
 
 if [[ ! -d "$app_bundle" ]]; then
   echo "error: $app_bundle not found; build it with xcodebuild (see examples/mobile/ios/README.md)" >&2
@@ -75,13 +79,15 @@ else
   stamp "the app did not load the workflow within ${launch_timeout_seconds} s"
 fi
 
-# Both runs print a line once they are done: "result:" (waitJson) and "finish:" (listener).
+# The runs print a line once they are done: "result:" (waitJson), "finish:" (listener)
+# and "agent finished:" (the assistant).
 deadline=$((SECONDS + timeout_seconds))
 while ((SECONDS < deadline)); do
   if grep -q "\[GraphrtSample\] .* failed" "$log_file"; then
     break
   fi
-  if grep -q "\[GraphrtSample\] result: " "$log_file" && grep -q "\[GraphrtSample\] finish: " "$log_file"; then
+  if grep -q "\[GraphrtSample\] result: " "$log_file" && grep -q "\[GraphrtSample\] finish: " "$log_file" \
+    && grep -q "\[GraphrtSample\] agent finished: " "$log_file"; then
     break
   fi
   if ! kill -0 "$launch_pid" 2>/dev/null; then
@@ -97,6 +103,13 @@ grep -q "result: .*\"status\":\"succeeded\"" "$log_file" || failures+=("waitJson
 grep -q "result: .*\"greeting\":\"$expected_greeting\"" "$log_file" || failures+=("waitJson result lacks greeting '$expected_greeting'")
 grep -q "event: run_succeeded" "$log_file" || failures+=("no run_succeeded event was streamed")
 grep -q "finish: .*\"greeting\":\"$expected_greeting\"" "$log_file" || failures+=("onFinish result lacks greeting '$expected_greeting'")
+grep -q "agent tool: battery_level" "$log_file" || failures+=("the agent did not call the native tool battery_level")
+grep -q "agent tool done: battery_level error=false" "$log_file" || failures+=("battery_level did not answer through the ToolProvider")
+grep -q "agent ui: stats" "$log_file" || failures+=("the checked UI block of battery_level did not reach the app")
+grep -q "agent paused: send_message" "$log_file" || failures+=("the run did not pause for approval of send_message")
+grep -q "agent tool done: send_message error=false" "$log_file" || failures+=("send_message did not run after the approval")
+(( $(grep -c "agent answer chunk: " "$log_file") > 1 )) || failures+=("the answer did not stream in several chunks")
+grep -q "agent finished: succeeded $expected_answer" "$log_file" || failures+=("the assistant did not finish with '$expected_answer'")
 
 if ((${#failures[@]} > 0)); then
   printf 'smoke test FAILED: %s\n' "${failures[@]}" >&2
@@ -120,4 +133,4 @@ if ((${#failures[@]} > 0)); then
     --predicate 'process == "GraphrtSample"' 2>&1 | tail -n 80 >&2 || true
   exit 1
 fi
-echo "smoke test passed: hello workflow ran through the Swift binding"
+echo "smoke test passed: hello workflow and the phone assistant ran through the Swift SDK"

@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
+# The agent of the mobile sample apps and their smoke tests. Fully offline: the
+# model is the scripted provider `demo` of the runtime config, and the tools are
+# native tools the app registers as provider `device`:
+#   device/battery_level   runs at once
+#   device/send_message    waits for the person's approval
+# The script asks for the battery level, then for a message to Ada, then
+# answers with what the message tool returned. See docs/mobile.md.
+version: "1"
+name: phone-assistant
+description: A phone assistant with native tools and an approval step.
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: query, type: paragraph, required: true, max_length: 2000 }
+
+    - id: assistant
+      type: agent
+      model: { provider: demo, name: scripted }
+      instruction: You help with the phone. Ask before you send anything.
+      query: "{{#start.query#}}"
+      tools: [device/*]
+      require_approval: [device/send_message]
+      max_iterations: 6
+
+    - id: reply
+      type: answer
+      answer: "{{#assistant.text#}}"
+
+  edges:
+    - { source: start, target: assistant }
+    - { source: assistant, target: reply }
