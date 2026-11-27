@@ -66,18 +66,34 @@ retry_wait="${PUBLISH_RETRY_WAIT:-600}"
 verify_flag=""
 [ "${PUBLISH_VERIFY:-1}" = "0" ] && verify_flag="--no-verify"
 retry_limit="${PUBLISH_RETRY_LIMIT:-12}"
+# Seconds until the time crates.io names ("Please try again after Fri, 27 Nov
+# 2026 22:34:11 GMT"), plus a margin, or $retry_wait when it names none or GNU
+# date cannot read it.
+retry_after() {
+    when=$(sed -n 's/.*try again after \([^.]*GMT\).*/\1/p' "$1" | head -n 1)
+    if [ -n "$when" ] && until=$(date -u -d "$when" +%s 2>/dev/null); then
+        seconds=$((until - $(date -u +%s) + 15))
+        [ "$seconds" -lt 15 ] && seconds=15
+        echo "$seconds"
+    else
+        echo "$retry_wait"
+    fi
+}
 publish_with_retry() {
     attempt=1
     while :; do
         log=$(mktemp)
+        # cargo's own exit status (not a pipe's), and plain text in the log:
+        # with CARGO_TERM_COLOR=always (as in CI) colour codes hid `error:`
+        # from the checks below, so a refused crate counted as published.
         # shellcheck disable=SC2086 # $verify_flag is empty or one flag
-        if cargo publish -p "$1" --locked $verify_flag 2>&1 | tee "$log"; then
+        if cargo publish -p "$1" --locked --color never $verify_flag >"$log" 2>&1; then
             status=0
         else
             status=1
         fi
-        # `tee` hides cargo's exit status, so read it from the log as well.
-        if [ "$status" -eq 0 ] && ! grep -q "^error" "$log"; then
+        cat "$log"
+        if [ "$status" -eq 0 ]; then
             rm -f "$log"
             return 0
         fi
@@ -89,9 +105,10 @@ publish_with_retry() {
             return 0
         fi
         if grep -qiE "429|too many" "$log" && [ "$attempt" -lt "$retry_limit" ]; then
+            wait_for=$(retry_after "$log")
             rm -f "$log"
-            echo "    rate limited by crates.io; retrying $1 in ${retry_wait}s (attempt $attempt/$retry_limit)"
-            sleep "$retry_wait"
+            echo "    rate limited by crates.io; retrying $1 in ${wait_for}s (attempt $attempt/$retry_limit)"
+            sleep "$wait_for"
             attempt=$((attempt + 1))
             continue
         fi
