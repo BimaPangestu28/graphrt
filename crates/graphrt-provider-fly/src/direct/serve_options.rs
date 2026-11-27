@@ -146,9 +146,8 @@ impl ServeOptions {
                 "--push {contact:?} must be an address push services may write to: mailto:you@example.com or an https: URL"
             )));
         }
-        let mut kinds = self.channels.clone();
-        kinds.sort();
-        if kinds.windows(2).any(|pair| pair[0] == pair[1]) {
+        let distinct: std::collections::BTreeSet<DirectChannel> = self.channels.iter().copied().collect();
+        if distinct.len() != self.channels.len() {
             return Err(DirectError::invalid("--channel names each kind once"));
         }
         Ok(())
