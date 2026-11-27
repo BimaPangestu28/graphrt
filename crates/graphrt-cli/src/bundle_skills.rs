@@ -13,8 +13,9 @@
 //!
 //! **Running.** The bundled skills are installed into a new private skill
 //! store, through the normal install (validation, scan, grant rules), and that
-//! store replaces the default one for the run. A bundled agent sees the
-//! bundled skills and nothing else.
+//! store replaces the default one: for the run under `graphrt run`, and for
+//! that bundle's workflow alone under `graphrt serve`. A bundled agent sees
+//! the bundled skills and nothing else, and no other workflow sees them.
 //!
 //! The grants travel with the bundle because they belong to its author, like
 //! the `tools` an agent lists in the workflow of the same bundle. The bundle
@@ -94,11 +95,20 @@ pub fn files_for_bundle(store: &SkillStore, names: &[String]) -> Result<Vec<(Str
 /// Install the skills of `bundle` into a new store under `private_dir` and
 /// return that store's directory, or `None` when the bundle has no skills.
 ///
+/// `signed_by_trusted_key` says the bundle carries a signature of a key the
+/// operator trusts (`--trust-key`, `$GRAPHRT_TRUSTED_KEYS`). Only then are its
+/// skills recorded as `verified`: anyone can sign a bundle with a key of
+/// their own.
+///
 /// # Errors
 /// An invalid bundle error when the index cannot be read, a skill it names is
 /// missing, or a skill is refused by the install (bad content, a blocking
 /// finding that was not accepted, a grant for a tool it does not ask for).
-pub fn install_from_bundle(bundle: &graphrt_bundle::Bundle, private_dir: &Path) -> Result<Option<PathBuf>, CliError> {
+pub fn install_from_bundle(
+    bundle: &graphrt_bundle::Bundle,
+    private_dir: &Path,
+    signed_by_trusted_key: bool,
+) -> Result<Option<PathBuf>, CliError> {
     let Some(index) = bundle.file(SKILL_INDEX_PATH) else { return Ok(None) };
     let invalid = |why: String| CliError::invalid(format!("bundle skills: {why}"));
     let index: BundledSkills = serde_json::from_slice(index).map_err(|error| invalid(error.to_string()))?;
@@ -108,7 +118,6 @@ pub fn install_from_bundle(bundle: &graphrt_bundle::Bundle, private_dir: &Path) 
     let source = private_dir.join("skill-source");
     let store_dir = private_dir.join("skill-store");
     let store = SkillStore::open(&store_dir);
-    let signed = bundle.signer().is_some();
     for (name, bundled) in index.skills {
         if !graphrt_skill::is_valid_name(&name) {
             return Err(invalid("a skill name is not valid".to_owned()));
@@ -138,7 +147,7 @@ pub fn install_from_bundle(bundle: &graphrt_bundle::Bundle, private_dir: &Path) 
             kind: OriginKind::Local,
             detail: Some(format!("bundle {}", bundle.manifest().name)),
             publisher: None,
-            verified: signed,
+            verified: signed_by_trusted_key,
             version: None,
         };
         let options =

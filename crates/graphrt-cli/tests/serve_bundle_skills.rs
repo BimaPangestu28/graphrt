@@ -294,3 +294,39 @@ async fn a_bundle_without_skills_of_its_own_uses_the_servers_like_a_plain_workfl
     let (_, listed) = call(&app, Method::GET, "/v1/skills", None).await;
     assert!(listed.get("bundled").is_none(), "{listed}");
 }
+
+#[tokio::test]
+async fn a_bundle_signed_with_a_key_nobody_trusts_does_not_make_its_skills_verified() {
+    let model = FakeModel::start(&[]);
+    // Whether the skills of a bundle signed with `signer` are listed as verified
+    // by a server that trusts `trusted`.
+    let verified = |signer: graphrt_bundle::KeyPair, trusted: Vec<String>| {
+        let model = model.clone();
+        async move {
+            let scratch = Scratch::new();
+            let path = scratch.bundle(
+                "bundled",
+                &workflow("[refund-policy]"),
+                &no_grants(),
+                &[("refund-policy", skill("refund-policy", "BUNDLESKILL"))],
+            );
+            let signed = graphrt_bundle::sign_bundle(&std::fs::read(&path).unwrap(), &signer.secret_key).unwrap();
+            std::fs::write(&path, signed).unwrap();
+            let files = discover(&scratch.0.join("flows")).expect("discover");
+            let options = ServiceOptions { trust_keys: trusted, ..scratch.options(&model) };
+            let state = build_state(&files, &options, Limits::default(), Some(API_KEY.to_owned())).await?;
+            let (_, listed) = call(&router(Arc::new(state), 1 << 20), Method::GET, "/v1/skills", None).await;
+            Ok::<_, graphrt_cli::error::CliError>(listed["bundled"][0]["skills"][0]["origin"]["verified"].clone())
+        }
+    };
+    let attacker = graphrt_bundle::generate_keypair().unwrap();
+    let publisher = graphrt_bundle::generate_keypair().unwrap();
+
+    // Anyone can sign a bundle. Without a trusted key that proves nothing.
+    assert_eq!(verified(attacker.clone(), Vec::new()).await.unwrap(), false);
+    // Signed by the key this server trusts.
+    assert_eq!(verified(publisher.clone(), vec![publisher.public_key.clone()]).await.unwrap(), true);
+    // Signed by another key than the trusted one: not served at all.
+    let refused = verified(attacker, vec![publisher.public_key]).await.expect_err("an untrusted signer");
+    assert!(refused.message.contains("untrusted key"), "{}", refused.message);
+}
