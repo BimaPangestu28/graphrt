@@ -435,6 +435,7 @@ impl AgentClient {
     }
 
     /// `POST` of `body` to `path` (`/internal/v1/runs/{id}/feedback`), answered with JSON.
+    #[cfg(feature = "feedback")]
     ///
     /// # Errors
     /// See [`AgentError`] (an agent older than the route answers `404`).

@@ -16,6 +16,8 @@ repository.workspace = true
 default = ["gw-local"]
 # local-process provider: one `graphrt serve --trust-gateway` process per replica on a Unix socket.
 gw-local = []
+# `POST /v1/deployments/{d}/runs/{id}/feedback`: feedback through the gateway (outside `gateway-core`, in the release gateway).
+feedback = []
 # Kubernetes (self-hosted, GKE, EKS, AKS): scale subresource + EndpointSlices, in-cluster service account auth.
 gw-k8s = ["dep:graphrt-provider-k8s"]
 # Kubernetes from outside the cluster: kubeconfig files (token, client cert, exec plugins); ≈ +65 KiB.

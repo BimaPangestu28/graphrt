@@ -53,6 +53,7 @@ pub(super) fn dispatch(
             done(reattach(&state, &agent, &request, run_id, cursor))
         }
         ["runs", run_id, "abort"] if method == Method::POST => done(abort(&state, &agent, &request, run_id)),
+        #[cfg(feature = "scores")]
         ["runs", run_id, "feedback"] if method == Method::POST => feedback(state, run_id, &body),
         ["drain"] if method == Method::POST => {
             let deadline_ms = match super::body::drain_deadline_ms(&body) {
@@ -79,15 +80,6 @@ fn feedback(state: Arc<AppState>, run_id: &str, body: &[u8]) -> BoxFuture<'stati
         Ok(body) => Box::pin(crate::scores::gateway_feedback(state, run_id.to_owned(), body)),
         Err(message) => Box::pin(std::future::ready(bad_request(message))),
     }
-}
-
-/// Without the `scores` feature the agent records no feedback.
-#[cfg(not(feature = "scores"))]
-fn feedback(state: Arc<AppState>, run_id: &str, body: &[u8]) -> BoxFuture<'static, Response> {
-    let _ = (state, run_id, body);
-    let refused =
-        protocol_error(StatusCode::NOT_FOUND, "not_found", "this agent records no feedback (cargo feature `scores`)");
-    Box::pin(std::future::ready(refused))
 }
 
 fn bad_request(message: &str) -> Response {

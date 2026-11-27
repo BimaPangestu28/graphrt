@@ -8,7 +8,7 @@
 //! | GET | `/v1/deployments/{d}/runs/{id}/events` | SSE replay + live tail (`Last-Event-ID` or `?from=`) |
 //! | POST | `/v1/deployments/{d}/runs/{id}/resume` | resume a paused run (`inputs`, `secrets`) |
 //! | POST | `/v1/deployments/{d}/runs/{id}/abort` | abort |
-//! | POST | `/v1/deployments/{d}/runs/{id}/feedback` | rate a run (`name`, `value`, `comment`, `user`), recorded by an agent |
+//! | POST | `/v1/deployments/{d}/runs/{id}/feedback` | rate a run (`name`, `value`, `comment`, `user`), recorded by an agent (cargo feature `feedback`) |
 //! | POST | `/v1/deployments/{d}/hooks/{hook}` | webhook ingress |
 //! | POST | `/v1/deployments/{d}/warm` | prewarm replicas ahead of traffic (`{"replicas": n}`) |
 //! | POST | `/admin/v1/deployments/{d}/versions` | register a version (admin token) |
@@ -40,7 +40,6 @@ use serde::Deserialize;
 use serde_json::{Value as Json, json};
 use tokio::sync::broadcast;
 
-use crate::agent_client::{AgentError, RunScope};
 use crate::auth::{AuthError, Principal};
 use crate::deployment::{Deployment, VersionError, VersionInfo};
 use crate::limiter::{Decision, Gcra};
@@ -126,7 +125,7 @@ pub fn router(app: Arc<App>) -> Router {
         .with_state(app)
 }
 
-fn error(status: StatusCode, error_type: &str, message: &str) -> Response {
+pub(crate) fn error(status: StatusCode, error_type: &str, message: &str) -> Response {
     (status, axum::Json(json!({ "error": message, "error_type": error_type }))).into_response()
 }
 
@@ -138,7 +137,7 @@ fn retry_after(status: StatusCode, error_type: &str, message: &str, seconds: u64
     response
 }
 
-fn start_error(app: &App, failure: StartError) -> Response {
+pub(crate) fn start_error(app: &App, failure: StartError) -> Response {
     match failure {
         StartError::Version(VersionError::Retired(_)) => {
             error(StatusCode::GONE, "version_retired", &failure.to_string())
@@ -318,7 +317,7 @@ fn run_input(
     RunInput { body, expires_at }
 }
 
-fn parse_object(bytes: &[u8]) -> Result<serde_json::Map<String, Json>, Response> {
+pub(crate) fn parse_object(bytes: &[u8]) -> Result<serde_json::Map<String, Json>, Response> {
     if bytes.is_empty() {
         return Ok(serde_json::Map::new());
     }
@@ -385,7 +384,7 @@ async fn create_run(
     (StatusCode::OK, axum::Json(record_json(&record))).into_response()
 }
 
-async fn load_run(app: &App, deployment: &Deployment, run_id: &str) -> Result<RunRecord, Response> {
+pub(crate) async fn load_run(app: &App, deployment: &Deployment, run_id: &str) -> Result<RunRecord, Response> {
     match app.gateway.store.get(run_id).await {
         Ok(Some(record)) if record.deployment.as_deref() == Some(deployment.name.as_str()) => Ok(record),
         Ok(_) | Err(graphrt_core::store::StoreError::InvalidId(_)) => {
@@ -669,8 +668,8 @@ struct ResumeBody {
     stream: bool,
 }
 
-/// `POST .../runs/{id}/resume`, `.../abort` and `.../feedback`: one handler,
-/// so the binary holds one copy of the extractor code for the three.
+/// `POST .../runs/{id}/resume`, `.../abort` and `.../feedback` (cargo feature
+/// `feedback`): one handler, so the binary holds one copy of the extractor code.
 async fn run_action(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -678,7 +677,8 @@ async fn run_action(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if !matches!(action.as_str(), "resume" | "abort" | "feedback") {
+    let known = matches!(action.as_str(), "resume" | "abort") || (cfg!(feature = "feedback") && action == "feedback");
+    if !known {
         return error(StatusCode::NOT_FOUND, "not_found", "unknown run action");
     }
     let deployment = match find_deployment(&app, &name) {
@@ -691,8 +691,9 @@ async fn run_action(
     };
     match action.as_str() {
         "resume" => resume_run(&app, &deployment, &principal, run_id, &headers, &body).await,
-        "abort" => abort_run(&app, &deployment, &run_id).await,
-        _ => run_feedback(&app, &deployment, &principal, &run_id, &body).await,
+        #[cfg(feature = "feedback")]
+        "feedback" => crate::feedback::run_feedback(&app, &deployment, &principal, &run_id, &body).await,
+        _ => abort_run(&app, &deployment, &run_id).await,
     }
 }
 
@@ -737,87 +738,6 @@ async fn abort_run(app: &App, deployment: &Deployment, run_id: &str) -> Response
         }
         Err(failure) => start_error(app, failure),
     }
-}
-
-/// `POST .../runs/{id}/feedback`: feedback on a run, recorded by an agent of
-/// the run's version (`POST /internal/v1/runs/{id}/feedback`), which learns
-/// from it as `graphrt serve` does from its own route. An end user with a
-/// verified token rates only a run started with a token of the same user, and
-/// is its author whatever `user` says: the agent records their words as their
-/// own. With a deployment API key, `user` is a label and the feedback is never
-/// a user's own words.
-async fn run_feedback(
-    app: &App,
-    deployment: &Deployment,
-    principal: &Principal,
-    run_id: &str,
-    body: &[u8],
-) -> Response {
-    let mut feedback = match parse_object(body) {
-        Ok(feedback) => feedback,
-        Err(response) => return response,
-    };
-    let record = match load_run(app, deployment, run_id).await {
-        Ok(record) => record,
-        Err(response) => return response,
-    };
-    if let Err(refused) = set_feedback_author(&mut feedback, principal, &record) {
-        return refused;
-    }
-    feedback.insert("workflow".into(), Json::from(record.workflow.clone()));
-    // Any replica of the run's version: the one that ran it may be gone.
-    let version = match deployment.version(record.deployment_version.as_deref().unwrap_or_default(), now_ms()) {
-        Ok(version) => version,
-        Err(failure) => return start_error(app, failure.into()),
-    };
-    let Some(key) = deployment.signing_key() else {
-        return error(StatusCode::SERVICE_UNAVAILABLE, "no_capacity", "the deployment has no gateway key");
-    };
-    let lease = match version.pool.acquire().await {
-        Ok(lease) => lease,
-        Err(failure) => return start_error(app, failure.into()),
-    };
-    let path = format!("/internal/v1/runs/{run_id}/feedback");
-    let scope = RunScope { run_id, epoch: None };
-    let body = Json::Object(feedback);
-    match app.gateway.agents.call_json(&lease.endpoint.address, key, &deployment.name, &path, scope, &body).await {
-        Ok(score) => (StatusCode::CREATED, axum::Json(score)).into_response(),
-        Err(AgentError::Refused { status, body }) if (400..500).contains(&status) => {
-            let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
-            let body = serde_json::from_str(&body).unwrap_or_else(|_| json!({ "error": body }));
-            (status, axum::Json(body)).into_response()
-        }
-        Err(failure) => error(StatusCode::BAD_GATEWAY, "agent_error", &failure.to_string()),
-    }
-}
-
-/// Who wrote feedback on `record`'s run, as the agent will believe it:
-/// `verified` and `user` set over anything the client sent.
-///
-/// @throws Response - `403` when a verified end user rates a run that was not
-///   started with a token of the same user (a `user_id` an API-key caller sent
-///   is only a label and makes no run theirs).
-fn set_feedback_author(
-    feedback: &mut serde_json::Map<String, Json>,
-    principal: &Principal,
-    record: &RunRecord,
-) -> Result<(), Response> {
-    let verified = match principal {
-        Principal::User { subject, .. } => {
-            if !record.user_verified || record.user_id.as_deref() != Some(subject.as_str()) {
-                return Err(error(
-                    StatusCode::FORBIDDEN,
-                    "forbidden",
-                    "this run does not belong to the authenticated user",
-                ));
-            }
-            feedback.insert("user".into(), Json::from(subject.clone()));
-            true
-        }
-        Principal::ApiKey => false,
-    };
-    feedback.insert("verified".into(), Json::Bool(verified));
-    Ok(())
 }
 
 async fn webhook(

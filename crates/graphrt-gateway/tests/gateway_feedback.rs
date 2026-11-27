@@ -5,10 +5,12 @@
 //! whose words feedback is: an end user rates only a run started with a token
 //! of the same user, and is then its author whatever the body says
 //! (`verified: true` for the agent); a deployment API key only labels feedback
-//! (`verified: false`). End-user tokens here are ES256, signed with a key made
+//! (`verified: false`). The feedback tests need the cargo feature `feedback`. End-user tokens here are ES256, signed with a key made
 //! for each test and served as a JWKS on loopback.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+// Without the `feedback` feature only the `caller` tests run.
+#![cfg_attr(not(feature = "feedback"), allow(dead_code))]
 
 mod common;
 
@@ -127,6 +129,7 @@ fn received(world: &AgentWorld) -> Vec<(String, Json)> {
     world.feedback.lock().unwrap().clone()
 }
 
+#[cfg(feature = "feedback")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_users_feedback_on_their_own_run_reaches_the_agent_as_their_own_words() {
     let issuer = Issuer::start().await;
@@ -153,6 +156,7 @@ async fn a_users_feedback_on_their_own_run_reaches_the_agent_as_their_own_words(
     assert_eq!(forwarded["comment"], "Look the order up first.");
 }
 
+#[cfg(feature = "feedback")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn feedback_without_a_valid_token_or_key_is_refused() {
     let issuer = Issuer::start().await;
@@ -168,6 +172,7 @@ async fn feedback_without_a_valid_token_or_key_is_refused() {
     assert!(received(&world).is_empty(), "a refused caller reached the agent");
 }
 
+#[cfg(feature = "feedback")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn another_users_token_cannot_rate_someone_elses_run() {
     let issuer = Issuer::start().await;
@@ -187,6 +192,7 @@ async fn another_users_token_cannot_rate_someone_elses_run() {
     assert!(received(&world).is_empty());
 }
 
+#[cfg(feature = "feedback")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_run_the_api_key_started_is_no_users_even_when_it_names_them() {
     let issuer = Issuer::start().await;
@@ -205,6 +211,7 @@ async fn a_run_the_api_key_started_is_no_users_even_when_it_names_them() {
     assert!(received(&world).is_empty());
 }
 
+#[cfg(feature = "feedback")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn feedback_with_the_api_key_is_a_label_whatever_it_claims() {
     let issuer = Issuer::start().await;
@@ -221,6 +228,7 @@ async fn feedback_with_the_api_key_is_a_label_whatever_it_claims() {
     assert_eq!(forwarded[0].1["user"], SARI, "a label the key holder chose");
 }
 
+#[cfg(feature = "feedback")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_agents_refusal_reaches_the_client() {
     let issuer = Issuer::start().await;
