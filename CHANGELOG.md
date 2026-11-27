@@ -50,7 +50,7 @@ change) until it is cut; `scripts/changelog.py preview` shows them together.
   standby serves one deployment once; versions with another command or their
   own environment start a process as before. About 13 MiB of RSS per standby.
   See `docs/gateway.md#standby-agents`.
-- Agent skills (preview, opt in): the new `graphrt-skill` crate reads
+- Agent skills (opt in for builds from source): the new `graphrt-skill` crate reads
   `SKILL.md` packages in the Agent Skills format, and `agent` nodes take
   `skills: [name]`. The system prompt lists each skill in one line, the model
   loads instructions and files on demand, and tools granted to a skill are
@@ -58,7 +58,7 @@ change) until it is cut; `scripts/changelog.py preview` shows them together.
   the owner granted, and every file is pinned by SHA-256 at install.
   `graphrt skill` (cargo feature `skills`, off by default) lists, inspects,
   installs, grants and removes skills. See `docs/skills.md`.
-- Self learning (preview, opt in): the new `graphrt-learn` crate keeps
+- Self learning (opt in for builds from source): the new `graphrt-learn` crate keeps
   lessons, short statements with their source, per agent and per user. `agent`
   nodes take `learning: {agent, user}` and read the approved lessons into the
   system prompt. Feedback is recorded cheaply and turned into proposals

@@ -38,10 +38,10 @@ pub enum Command {
     /// Manage plugins: list, install, remove, inspect, scaffold.
     #[cfg(any(feature = "plugins", feature = "wasm"))]
     Plugin(PluginCmdArgs),
-    /// Manage agent skills: list, inspect, install, grant tools, remove (preview).
+    /// Manage agent skills: list, inspect, install, grant tools, remove.
     #[cfg(feature = "skills")]
     Skill(SkillCmdArgs),
-    /// Review what agents learned: list, approve, edit, forget (preview).
+    /// Review what agents learned: list, approve, edit, forget.
     #[cfg(feature = "learning")]
     Learn(LearnCmdArgs),
     /// Build, inspect, verify and sign portable bundles (`.grt`).

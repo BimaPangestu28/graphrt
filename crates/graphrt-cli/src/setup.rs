@@ -41,6 +41,10 @@ pub struct ServiceOptions {
     /// Skill store for `agent` nodes that list skills, instead of the default
     /// one (set when a bundle brings its own skills). Builds with `skills`.
     pub skills_dir: Option<std::path::PathBuf>,
+    /// Lesson store for `agent` nodes with `learning`, instead of the default
+    /// one. `graphrt serve` manages the same store under `/v1/learning`.
+    /// Builds with `learning`.
+    pub learning_dir: Option<std::path::PathBuf>,
 }
 
 /// The workspace the agents use (`--workspace`), kept in the host services so
@@ -256,7 +260,7 @@ pub async fn services(
     // Self learning: the store is opened lazily, so this costs nothing until an
     // `agent` node has `learning`.
     #[cfg(feature = "learning")]
-    if let Some(root) = graphrt_learn::LessonStore::default_root() {
+    if let Some(root) = options.learning_dir.clone().or_else(graphrt_learn::LessonStore::default_root) {
         services.insert(Arc::new(graphrt_learn::LessonStore::open(root)).into_service());
     }
     #[allow(unused_mut)]

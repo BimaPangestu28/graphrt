@@ -304,6 +304,25 @@ pub(super) async fn require_auth(State(state): State<Arc<AppState>>, request: Re
     }
 }
 
+/// Refuse the owner routes of a server that has no API key and listens beyond
+/// loopback (see [`AppState::close_owner_api`]). With a key, the `require_auth`
+/// layer around these routes decides.
+#[cfg(any(feature = "skills", feature = "learning"))]
+pub(super) async fn refuse_closed_owner_api(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if state.owner_api_is_closed() {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "skills and lessons are not managed over an unauthenticated network address: \
+             set an API key or listen on 127.0.0.1",
+        );
+    }
+    next.run(request).await
+}
+
 /// Compare without early exit so response timing does not reveal the key prefix.
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     let mut diff = a.len() ^ b.len();

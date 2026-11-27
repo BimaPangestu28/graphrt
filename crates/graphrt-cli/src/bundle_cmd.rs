@@ -71,7 +71,10 @@ pub fn bundle_graph(
     if bundle.file(crate::bundle_skills::SKILL_INDEX_PATH).is_some() {
         let fingerprint = graphrt_bundle::sha256_hex(bundle.manifest_bytes());
         let dir = create_private_dir(&format!("skills-{}", fingerprint.get(..16).unwrap_or(&fingerprint)))?;
-        options.skills_dir = crate::bundle_skills::install_from_bundle(&bundle, &dir)?;
+        // `open` refused a signer outside the trusted keys when there are any. Without
+        // trusted keys a signature only says that someone signed it.
+        let signed_by_trusted_key = bundle.signer().is_some() && !trusted_keys(trust).is_empty();
+        options.skills_dir = crate::bundle_skills::install_from_bundle(&bundle, &dir, signed_by_trusted_key)?;
     }
     let mut workflow = bundle.workflow(None).map_err(|e| CliError::invalid(format!("{}: {e}", path.display())))?;
     if let Some(raw) = options.model_override.as_deref() {

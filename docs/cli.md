@@ -368,8 +368,8 @@ rollback, checksum and extraction failures exit with 1.
 
 ## `graphrt skill`
 
-Preview, in builds with the `skills` cargo feature. Skills are `SKILL.md`
-packages an `agent` node loads on demand (`skills: [name]`).
+In the release binaries and in builds with the `skills` cargo feature. Skills
+are `SKILL.md` packages an `agent` node loads on demand (`skills: [name]`).
 
 | Command | Description |
 | --- | --- |
@@ -386,8 +386,9 @@ and `--json`. See [skills.md](skills.md).
 
 ## `graphrt learn`
 
-Preview, in builds with the `learning` cargo feature. Lessons are short
-statements an `agent` node with `learning` reads from earlier feedback.
+In the release binaries and in builds with the `learning` cargo feature.
+Lessons are short statements an `agent` node with `learning` reads from
+earlier feedback.
 
 | Command | Description |
 | --- | --- |

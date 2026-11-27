@@ -109,5 +109,7 @@ pub use runs::ListQuery;
 pub(crate) use sse::sse_stream;
 pub use start::RunRequest;
 pub use startup::serve;
+#[cfg(any(feature = "skills", feature = "learning"))]
+pub(crate) use state::MODEL_ANSWER_TIMEOUT;
 pub use state::{AppState, DEFAULT_MAX_ACTIVE_RUNS, ServedWorkflow};
 pub use workflows::validation_report;

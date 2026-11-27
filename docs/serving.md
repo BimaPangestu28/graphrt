@@ -288,7 +288,7 @@ links here.
 | `/v1/conversations` (with `--conversations`) | The user's own conversations only. See [web.md](web.md#conversations-kept-by-the-server) |
 | `POST /v1/runs/{id}/feedback` | Allowed only on the user's **own** runs: those started with a token of the same `sub` (the record has `user_verified: true`). Other runs answer `403`, including runs started with the API key whose body set `user_id`: that is a label, not proof of who the user is. The score's `user` is the token's `sub`, whatever the body says |
 | `/v1/files` (with `--workspace-api users`) | Allowed inside the directory of the token's `sub` only. `scope` cannot be sent, and files of other users answer `404`. See [the workspace over HTTP](files-and-images.md#who-may-call-it) |
-| Every other endpoint | API key only: run lists, scores, delete, nodes, validate, hooks and knowledge. Webhook deliveries take their signature or the API key |
+| Every other endpoint | API key only: run lists, scores, delete, nodes, validate, hooks, knowledge, skills and learning. Webhook deliveries take their signature or the API key |
 
 A third kind of credential, the device token of `--devices`, reads runs and
 resolves approvals and nothing else. Its rules are in
@@ -691,12 +691,22 @@ timeouts, `408`, `429` and `5xx` are retried with exponential backoff
 final. Each request times out after `timeout_ms` (default 10000). Callbacks are
 held in memory: a restart drops pending retries.
 
-## Skills and self learning (preview)
+## Skills and self learning
 
-Builds with the cargo features `skills` and `learning` add `/v1/skills` and
-`/v1/learning/{agent}/...`, and record feedback posted to
-`POST /v1/runs/{id}/feedback` as a learning signal. All of it needs the API
-key. See [skills.md](skills.md#http-api) and [learning.md](learning.md#http-api).
+The release binaries, and builds with the cargo features `skills` and
+`learning`, add `/v1/skills` and `/v1/learning/{agent}/...`, and record
+feedback posted to `POST /v1/runs/{id}/feedback` as a learning signal.
+
+- `/v1/skills` and `/v1/learning` are owner routes: they need the API key, a
+  user token or a device token (`--devices`) is not accepted, and a server
+  that listens on a network address without a key answers `403` on them.
+- Feedback sent with a verified user token on that user's own run counts as
+  the user's own words. Feedback sent with the API key is a proposal that
+  waits for the owner.
+- A served bundle (`.grt`) that brings skills runs on those and on no others.
+
+See [skills.md](skills.md#http-api), [learning.md](learning.md#http-api) and
+[bundles.md](bundles.md#skills-in-a-bundle).
 
 ## Knowledge base API
 

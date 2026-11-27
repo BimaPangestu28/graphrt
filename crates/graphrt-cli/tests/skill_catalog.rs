@@ -5,119 +5,19 @@
 #![cfg(all(feature = "skills", feature = "plugins"))]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::OnceLock;
 
-use sha2::{Digest, Sha256};
+mod common;
+use common::catalog::{Catalog, SKILL, key_pair, sign_with, skill_archive, tar_gz};
 
-const SKILL: &str = "---\nname: kebijakan-refund\ndescription: Menilai permintaan refund. Gunakan saat pelanggan meminta uang kembali.\nmetadata:\n  version: \"1.0.0\"\n  display_name: Kebijakan Refund dan Retur\nallowed-tools: shopify/get_order\n---\n# Menilai permintaan refund\n\n1. Kumpulkan nomor pesanan.\n";
-
-struct Catalog {
-    root: PathBuf,
+/// Running `graphrt skill` against a [`Catalog`].
+trait CatalogCli {
+    fn skill(&self, args: &[&str]) -> Output;
+    fn skill_with_key(&self, args: &[&str], key: &str) -> Output;
+    fn installed(&self) -> bool;
 }
 
-impl Drop for Catalog {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-fn key_pair() -> &'static minisign::KeyPair {
-    static KEY_PAIR: OnceLock<minisign::KeyPair> = OnceLock::new();
-    KEY_PAIR.get_or_init(|| minisign::KeyPair::generate_unencrypted_keypair().expect("test key pair"))
-}
-
-fn sign_with(key: &minisign::KeyPair, file: &Path) {
-    let bytes = std::fs::read(file).unwrap();
-    let comment = "graphrt-plugins index-v2.json plugins=0 generated_at=test";
-    let signature = minisign::sign(Some(&key.pk), &key.sk, std::io::Cursor::new(bytes), Some(comment), None).unwrap();
-    std::fs::write(format!("{}.minisig", file.display()), signature.into_string()).unwrap();
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-/// A `.tar.gz` of regular files (`type_flag` `0`) and, for one test, a link (`2`).
-fn tar_gz(entries: &[(&str, u8, &[u8], &str)]) -> Vec<u8> {
-    let mut tar = Vec::new();
-    for (path, type_flag, content, link) in entries {
-        let mut header = [0u8; 512];
-        header[..path.len()].copy_from_slice(path.as_bytes());
-        let octal = |field: &mut [u8], value: u64| {
-            let text = format!("{value:0width$o}\0", width = field.len() - 1);
-            field.copy_from_slice(text.as_bytes());
-        };
-        octal(&mut header[100..108], 0o644);
-        octal(&mut header[108..116], 0);
-        octal(&mut header[116..124], 0);
-        octal(&mut header[124..136], content.len() as u64);
-        octal(&mut header[136..148], 0);
-        header[156] = *type_flag;
-        header[157..157 + link.len()].copy_from_slice(link.as_bytes());
-        header[257..263].copy_from_slice(b"ustar\0");
-        header[263..265].copy_from_slice(b"00");
-        header[148..156].copy_from_slice(b"        ");
-        let checksum: u32 = header.iter().map(|&byte| u32::from(byte)).sum();
-        header[148..156].copy_from_slice(format!("{checksum:06o}\0 ").as_bytes());
-        tar.extend_from_slice(&header);
-        tar.extend_from_slice(content);
-        tar.resize(tar.len().div_ceil(512) * 512, 0);
-    }
-    tar.resize(tar.len() + 1024, 0);
-    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    encoder.write_all(&tar).unwrap();
-    encoder.finish().unwrap()
-}
-
-fn skill_archive(skill_md: &str) -> Vec<u8> {
-    tar_gz(&[
-        ("kebijakan-refund/SKILL.md", b'0', skill_md.as_bytes(), ""),
-        ("kebijakan-refund/references/matriks.md", b'0', b"| hari | keputusan |\n", ""),
-    ])
-}
-
-impl Catalog {
-    fn new() -> Self {
-        Self { root: graphrt_core::private_fs::create_fresh_temp_dir("graphrt-skill-catalog").unwrap() }
-    }
-
-    fn file_url(&self, name: &str) -> String {
-        let path = self.root.join("catalog").join(name);
-        let text = path.to_string_lossy().replace('\\', "/");
-        if text.starts_with('/') { format!("file://{text}") } else { format!("file:///{text}") }
-    }
-
-    /// Write an archive and return its catalog entry.
-    fn publish(&self, version: &str, archive: &[u8]) -> serde_json::Value {
-        let name = format!("skill-kebijakan-refund-{version}.tar.gz");
-        std::fs::create_dir_all(self.root.join("catalog")).unwrap();
-        std::fs::write(self.root.join("catalog").join(&name), archive).unwrap();
-        serde_json::json!({
-            "name": "kebijakan-refund", "display_name": "Kebijakan Refund dan Retur", "version": version,
-            "description": "Menilai permintaan refund.", "tarball_url": self.file_url(&name),
-            "sha256": sha256_hex(archive), "size_bytes": archive.len(), "publisher": "graphrt",
-        })
-    }
-
-    /// Write `index-v2.json` with `skills` (unsigned) and return its path.
-    fn write_index(&self, skills: &[serde_json::Value]) -> PathBuf {
-        let index =
-            serde_json::json!({"schema": 2, "generated_at": "2026-11-27T10:00:00Z", "plugins": [], "skills": skills});
-        let path = self.root.join("catalog/index-v2.json");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, serde_json::to_vec(&index).unwrap()).unwrap();
-        path
-    }
-
-    fn signed_index(&self, skills: &[serde_json::Value]) -> PathBuf {
-        let path = self.write_index(skills);
-        sign_with(key_pair(), &path);
-        path
-    }
-
+impl CatalogCli for Catalog {
     /// `graphrt skill <args>` with an isolated home and store, trusting the test key.
     fn skill(&self, args: &[&str]) -> Output {
         self.skill_with_key(args, &key_pair().pk.to_base64())

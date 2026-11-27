@@ -123,7 +123,7 @@ fixed timestamps and permissions, so the same inputs produce the same bytes
 (set `$SOURCE_DATE_EPOCH` to pin `created_at`). `format_version` is `1`; hosts
 refuse bundles with a newer format.
 
-## Skills in a bundle (preview)
+## Skills in a bundle
 
 In a build with the `skills` feature, `graphrt bundle build` packs every skill
 the workflow's `agent` nodes list (`skills: [name]`), taken from the skill
@@ -147,6 +147,21 @@ the `tools` an agent lists in the same bundle. The manifest pins the index and
 every skill file, so a signature covers them. Require signatures
 (`GRAPHRT_TRUSTED_KEYS`) for bundles you did not build.
 
-`graphrt serve` does not read bundled skills yet: as with bundled providers and
-knowledge, a served bundle uses the host's services, here the host's skill
-store. See [skills.md](skills.md).
+`graphrt serve` does the same for each bundle it serves, with the same install
+gate. A bundle that fails it stops the server from starting. A served bundle
+and the server's own skill store live side by side under these rules:
+
+| Rule | Why |
+| --- | --- |
+| A bundle that brings skills runs on its private store and on no other | It behaves the same on every host, and it cannot pick up a skill, or a grant, that the server's owner gave to something else |
+| An agent in such a bundle that lists a skill the bundle did not bring fails (`skill_not_found`) | Falling back to a server skill of that name would hand the bundle that skill's grants |
+| The server's skills are not changed by serving a bundle | A bundle is not an install into the server |
+| `/v1/skills` lists a bundle's skills under `bundled` and cannot change them | The bundle pins them. To change one, build the bundle again |
+| A grant in a bundle must name a tool the skill asks for | The same rule as for every install |
+| The grants of each bundled skill are printed when the server starts | They came with the bundle, so the operator sees them every time |
+| A bundle without skills uses the server's store, like a plain workflow file | Nothing was brought, so there is nothing to isolate |
+
+A grant in a bundle reaches no tool the bundle could not already use: its
+workflow may list any tool of the host in an agent's `tools`. A bundled skill
+is recorded with `origin.verified: true` only when the bundle is signed by a
+trusted key. See [skills.md](skills.md).

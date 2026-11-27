@@ -74,13 +74,16 @@ mcp = ["dep:graphrt-mcp"]
 # `kind: replay` model providers in providers files: record responses to
 # cassette files and replay them offline (deterministic runs, evals, CI).
 replay = ["llm", "graphrt-llm/replay"]
-# Agent skills (preview, opt-in): `graphrt skill` and the `skills` field of `agent`
-# nodes, served from the skill store in `$GRAPHRT_SKILLS_DIR` or `~/.graphrt/skills`.
-# See docs/skills.md.
+# Agent skills: `graphrt skill` and the `skills` field of `agent` nodes, served
+# from the skill store in `$GRAPHRT_SKILLS_DIR` or `~/.graphrt/skills`. Opt-in
+# (`--features skills`): the release binaries and the GHCR image are built with
+# it, the slim agent builds of bench/budgets.toml are not. See docs/skills.md.
 skills = ["llm", "graphrt-llm/skills", "graphrt-llm/text-model", "dep:graphrt-skill"]
-# Self learning (preview, opt-in): `graphrt learn` and the `learning` field of
-# `agent` nodes, served from the lesson store in `$GRAPHRT_LEARNING_DIR` or
-# `~/.graphrt/learning`. See docs/learning.md.
+# Self learning: `graphrt learn` and the `learning` field of `agent` nodes,
+# served from the lesson store in `$GRAPHRT_LEARNING_DIR` or
+# `~/.graphrt/learning`. Opt-in (`--features learning`): the release binaries
+# and the GHCR image are built with it, the slim agent builds are not. See
+# docs/learning.md.
 learning = ["llm", "graphrt-llm/learning", "graphrt-llm/text-model", "dep:graphrt-learn", "dep:graphrt-skill"]
 # `graphrt eval`: run a workflow against test cases with assertions and a CI
 # gate (JSON and JUnit reports). Pulls in `replay`. Opt-in (`--features eval`):

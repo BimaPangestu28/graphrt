@@ -402,8 +402,8 @@ keep_tool_images: 3   # optional (default 3): images of only the last 3 image-be
 stream_tool_turns: true   # optional (default true): stream every turn's text per token; false buffers turns that may call tools
 tool_context:         # optional: per-run values sent to a provider's tools outside the arguments
   crm: { user_jwt: "{{#start.user_jwt#}}" }
-skills: [refund-policy]   # optional (preview): installed skills the agent loads on demand
-learning:                 # optional (preview): read approved lessons into the system prompt
+skills: [refund-policy]   # optional: installed skills the agent loads on demand
+learning:                 # optional: read approved lessons into the system prompt
   agent: support-bot
   user: "{{#sys.user_id#}}"
 ```
@@ -446,13 +446,13 @@ rendered with secrets in plaintext. Only plugins that request
 other provider fails the node with `tool_context_denied`. See
 [plugins.md](plugins.md#tool-call-context).
 
-`skills` (preview) lists installed skills. The system prompt gets one line per
+`skills` lists installed skills. The system prompt gets one line per
 skill, the model loads a skill's instructions with the `load_skill` tool when a
 task needs them, and tools the owner granted to a skill are offered only after
 that skill was loaded. It needs a host with a skill store (the `skills` cargo
 feature of the CLI). See [skills.md](skills.md).
 
-`learning` (preview) adds the approved lessons of `agent`, and of `user` when
+`learning` adds the approved lessons of `agent`, and of `user` when
 given, to the system prompt after the instruction. The node only reads lessons.
 It needs a host with a lesson store (the `learning` cargo feature of the CLI).
 See [learning.md](learning.md).

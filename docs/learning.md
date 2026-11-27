@@ -1,11 +1,29 @@
 # Self learning
 
-**Preview.** Self learning is opt in: the `graphrt` binary needs the
-`learning` cargo feature (`cargo install graphrt-cli --features learning`).
-Rust hosts add the `graphrt-learn` crate and turn on the `learning` feature of
-`graphrt-llm`. Default builds are unchanged: an agent with `learning` is
-refused there with a configuration error. The
-format of the lesson store may still change before this leaves preview.
+**Availability.** From the release after 0.6.2, self learning is in the
+release binaries, the Homebrew formula and the container image (agent and
+gateway builds). A build from source needs the `learning` cargo feature
+(`cargo install graphrt-cli --features learning`), and Rust hosts add the
+`graphrt-learn` crate and turn on the `learning` feature of `graphrt-llm`. The
+slim agent builds (`--no-default-features --features serve,llm,plugins` and
+smaller) stay without it. A build without the feature refuses an agent with
+`learning` with a configuration error.
+
+It stays off until a workflow asks for it: an agent without `learning` reads
+no lesson, and nothing is approved automatically unless the owner switches
+that on for an agent.
+
+**Still preview.** Two things may change without a deprecation period:
+
+- What a model writes: `graphrt learn distill --model`, `graphrt learn skill`
+  and the HTTP routes that do the same. The prompts and the quality of the
+  suggestions will change. Their standing will not: a suggestion is a
+  proposal with trust `derived` and a draft installs nothing.
+- The files of the lesson store. Read them through `graphrt learn`,
+  `/v1/learning` or `LessonStore`, not directly.
+
+Everything under [What keeps it safe](#what-keeps-it-safe) is not preview:
+those rules are enforced in code and covered by tests.
 
 An agent gets better from its own use. Corrections from users and patterns
 from earlier runs become **lessons**: short statements that later runs read.
@@ -157,9 +175,17 @@ only (`0700` directories, `0600` files on Unix). Use one store per tenant.
 
 ## HTTP API
 
-`graphrt serve` in a build with the `learning` feature serves the default
-lesson store. Every route needs the API key: these are owner actions. A body
-may carry `actor`, the name recorded in the audit log (default `api`).
+`graphrt serve` in a build with the `learning` feature serves the lesson
+store its agents read (`$GRAPHRT_LEARNING_DIR`, else `~/.graphrt/learning`).
+These are owner actions: approving a lesson changes what an agent is told in
+every later run.
+
+- Every route needs the API key. A user token (`--verify-jwt`) is not accepted.
+- A server without an API key serves them only on loopback. Listening on a
+  network address without a key, it answers `403` on all of them and says so
+  at startup.
+
+A body may carry `actor`, the name recorded in the audit log (default `api`).
 
 | Method | Path | Body or query | Response |
 | --- | --- | --- | --- |
@@ -168,20 +194,44 @@ may carry `actor`, the name recorded in the audit log (default `api`).
 | PATCH | `/v1/learning/{agent}/lessons/{id}` | one of `{decision: approve\|reject\|retire}`, `{text}`, `{promote: true}` | The lesson |
 | DELETE | `/v1/learning/{agent}/lessons/{id}` | | `204` |
 | POST | `/v1/learning/{agent}/forget` | `{user}` or `{run_id}` | `{removed}` |
-| POST | `/v1/learning/{agent}/distill` | | `{observations, lessons, skipped, kept}` |
+| POST | `/v1/learning/{agent}/distill` | nothing, or `{model}` | `{observations, lessons, skipped, kept}` |
+| POST | `/v1/learning/{agent}/skill-draft` | `{model, tools?}` | `{draft}`, or `{draft: null, needed: 3}`. Nothing is installed |
 | GET, PATCH | `/v1/learning/{agent}/policy` | `{auto_approve_user_feedback}` | The policy |
 | GET | `/v1/learning/{agent}/audit` | | `{entries: [...]}` |
 
 **Feedback is captured automatically.** `POST /v1/runs/{id}/feedback` (see
 [serving.md](serving.md)) records a signal for every agent that the run's
 workflow names in `learning.agent`. Nothing is learned at that moment: the
-signal waits for `distill`. Feedback counts as a verified user's own words
-only when it came with that user's token (`--verify-jwt`) for their own run.
-A `user` that an API key caller puts in the body is a label, so such feedback
-is `derived` and always waits for the owner.
+signal waits for `distill`.
 
-`distill` over HTTP calls no model. Use `graphrt learn distill --model` or the
-Rust API for suggestions by a model.
+**Whose words feedback is.** Feedback is the one route here that an end user
+calls, so who sent it decides how far it is trusted:
+
+| Feedback sent with | Becomes |
+| --- | --- |
+| The verified token (`--verify-jwt`) of the user who started the run | That user's own words: trust `user`, for that user's runs only. Approved automatically only when the owner switched `auto_approve_user_feedback` on and the text is low risk |
+| A verified token of another user | Refused with `403`. Nothing is recorded |
+| A token that does not verify, alone or next to the API key | Refused with `401`. Nothing is recorded |
+| The API key, with or without a `user` in the body | `derived`: a proposal that waits for the owner. The `user` is a label that anyone holding the key can write |
+
+A `user` in the body of a request that carries a verified token is ignored:
+the token says who the author is.
+
+**Routes that ask a model.** `distill` with `{model}` also asks that model
+what the recorded signals teach, like `graphrt learn distill --model`.
+`skill-draft` is `graphrt learn skill` over HTTP. `model` is `provider/name`
+of a provider this server has configured.
+
+- A suggestion of a model is a proposal with trust `derived`. No policy
+  approves it and no field of the request changes that: unknown fields are
+  refused.
+- The signals are passed to the model as quoted material. A model that obeys
+  text planted in a feedback comment or a run excerpt still only proposes.
+- A model that fails is listed in `skipped` and loses no comment.
+- `skill-draft` uses only approved lessons that apply to every run, and
+  returns a draft. Post it to `POST /v1/skills` to install it through the
+  normal gate. With fewer than three such lessons it returns `draft: null`
+  and calls no model.
 
 ## Embedding
 

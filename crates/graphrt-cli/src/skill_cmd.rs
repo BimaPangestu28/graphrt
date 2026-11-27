@@ -1,5 +1,5 @@
 //! `graphrt skill`: list, inspect, install, grant, enable, disable and remove
-//! agent skills (cargo feature `skills`, preview).
+//! agent skills (cargo feature `skills`).
 //!
 //! Every subcommand works on one skill store: `--dir`, else
 //! `$GRAPHRT_SKILLS_DIR`, else `~/.graphrt/skills`. `graphrt run` and
@@ -171,7 +171,7 @@ fn install_from_catalog(
     json: bool,
     out: &mut impl Write,
 ) -> Result<u8, CliError> {
-    use crate::plugin_catalog::skills::{SkillCatalogSource, fetch_catalog_skill};
+    use crate::plugin_catalog::skills::{SkillCatalogSource, checked_origin, fetch_catalog_skill};
     let spec = crate::plugin_catalog::index::parse_plugin_spec(source)
         .filter(|spec| graphrt_skill::is_valid_name(&spec.name))
         .ok_or_else(|| {
@@ -179,27 +179,10 @@ fn install_from_catalog(
                 "`{source}` is neither a skill directory nor a catalog skill name (`name` or `name@1.2.3`)"
             ))
         })?;
-    let fetched =
-        fetch_catalog_skill(&spec, SkillCatalogSource { index: catalog.index, index_key: catalog.index_key })?;
+    let source = SkillCatalogSource { index: catalog.index, index_key: catalog.index_key, state_file: None };
+    let fetched = fetch_catalog_skill(&spec, source)?;
     // The archive must hold the skill the signed index describes.
-    let review = store.inspect_dir(&fetched.dir).map_err(failed)?;
-    let entry = &fetched.entry;
-    if review.entry.name != entry.name || review.entry.version.as_deref() != Some(entry.version.as_str()) {
-        return Err(CliError::failed(format!(
-            "skill {} {}: the archive holds `{}` {} instead",
-            entry.name,
-            entry.version,
-            review.entry.name,
-            review.entry.version.as_deref().unwrap_or("without a version")
-        )));
-    }
-    let origin = SkillOrigin {
-        kind: OriginKind::Catalog,
-        detail: Some(entry.tarball_url.clone()),
-        publisher: entry.publisher.clone(),
-        verified: true,
-        version: Some(entry.version.clone()),
-    };
+    let origin = checked_origin(store, &fetched)?;
     let request = InstallRequest { path: &fetched.dir, grants, accept_findings, replace, catalog: Some(origin) };
     install(store, &request, json, out)
 }
@@ -224,7 +207,8 @@ fn search(query: Option<&str>, catalog: CatalogSource<'_>, out: &mut impl Write)
     #[cfg(feature = "plugins")]
     {
         use crate::plugin_catalog::skills::{SkillCatalogSource, search_catalog_skills};
-        search_catalog_skills(query, SkillCatalogSource { index: catalog.index, index_key: catalog.index_key }, out)?;
+        let source = SkillCatalogSource { index: catalog.index, index_key: catalog.index_key, state_file: None };
+        search_catalog_skills(query, source, out)?;
         Ok(EXIT_OK)
     }
     #[cfg(not(feature = "plugins"))]

@@ -1,7 +1,9 @@
 # Skills and self learning: research and design
 
-**Status: design, preview.** Nothing on this page changes how Graphrt behaves
-today. It records what was researched, what Graphrt already has, the threats
+**Status: design record.** Both features are implemented and shipped in the
+release builds. [skills.md](skills.md) and [learning.md](learning.md) describe
+how they behave, and say what is still preview. This page records what was
+researched, what Graphrt already has, the threats
 that are specific to these two features, and the decisions the implementation
 follows. Each decision has its reason next to it.
 

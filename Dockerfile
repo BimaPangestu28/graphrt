@@ -8,8 +8,9 @@
 # Build args:
 #   FEATURES   cargo features of graphrt-cli (empty = the CLI's default set)
 #   EXTRA_FEATURES  features added to the default set when FEATURES is empty,
-#              e.g. `eval,online-eval` (the release image does this), or
-#              `gateway-all,eval,online-eval` (the `:<version>-gateway` release
+#              e.g. `eval,online-eval,skills,learning` (the release image does
+#              this), or `gateway-all,eval,online-eval,skills,learning` (the
+#              `:<version>-gateway` release
 #              image; run it with `gateway --config ...` instead of the default
 #              `serve` command)
 #   PROFILE    cargo profile (default: min-size)
