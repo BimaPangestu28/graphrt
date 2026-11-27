@@ -16,12 +16,14 @@
 //! | [`prepare_for_model`] | Steps 1 to 3 for one image |
 //! | [`VisionPreparer`] | The same for the `vision` inputs of model nodes ([`graphrt_core::file::ImagePreparer`]) |
 //! | `ImageTools` (feature `tools`) | The `image` tools over a `graphrt-files` workspace: `info`, `view`, `resize`, `convert`, `thumbnail`, `generate` |
-//! | [`ImageGenerator`] | The contract of an image generation provider. `OpenAiImages` (feature `generate-openai`) is one. |
+//! | [`ImageGenerator`] | The contract of an image generation provider. `OpenAiImages` (feature `generate-openai`) and `GeminiImages` (feature `generate-gemini`) are two. |
 //!
 //! Nothing is on unless a host registers it.
 
 mod error;
 mod generate;
+#[cfg(feature = "heic")]
+mod heic;
 mod metadata;
 mod prepare;
 mod probe;
@@ -31,6 +33,8 @@ mod process;
 mod tools;
 
 pub use error::{ImageError, ImageLimits};
+#[cfg(feature = "generate-gemini")]
+pub use generate::GeminiImages;
 #[cfg(feature = "generate-openai")]
 pub use generate::OpenAiImages;
 pub use generate::{GenerateRequest, GeneratedImage, ImageGenerator};

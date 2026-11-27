@@ -13,11 +13,18 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["tokio", "doc"]
+default = ["tokio", "doc", "regex"]
 # Run file I/O, hashing and extraction on Tokio's blocking pool when a Tokio runtime is present.
 tokio = ["dep:tokio", "tokio/rt"]
 # `files/read` extracts the text of PDF, Office, spreadsheet, EPUB and e-mail files with graphrt-doc.
 doc = ["dep:graphrt-doc"]
+# `S3Store`: keep workspace files in S3 or an S3 compatible object store (MinIO,
+# Cloudflare R2, Ceph, Garage...). A small signed HTTP client over reqwest and the
+# SigV4 signer and credential chain of graphrt-provider-aws: no AWS SDK.
+s3 = ["tokio", "tokio/time", "dep:graphrt-provider-aws", "dep:reqwest", "dep:bytes"]
+# `files/search` takes regular expressions (`regex: true`). The engine matches in
+# linear time, and the size of a compiled pattern is bounded.
+regex = ["dep:regex"]
 
 [dependencies]
 # `tool-files`: the files the tools return reach the `files` output of `tool` nodes.
@@ -29,6 +36,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 sha2 = { version = "0.11", default-features = false }
 tokio = { workspace = true, optional = true }
+graphrt-provider-aws = { workspace = true, optional = true, features = ["auth-aws"] }
+reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
+bytes = { version = "1", optional = true }
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"], optional = true }
 
 # `O_NOFOLLOW` for opening workspace files (already linked through std and tokio).
 [target.'cfg(unix)'.dependencies]
@@ -38,7 +49,17 @@ libc = "0.2"
 # The real `agent` node with a scripted model, for the end-to-end test.
 graphrt-llm = { workspace = true, features = ["mock", "tool-files"] }
 futures = { workspace = true, features = ["executor"] }
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net"] }
+# The fake S3 server of the `s3` tests.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query"] }
+
+[[example]]
+name = "s3_bench"
+required-features = ["s3"]
+
+[[test]]
+name = "s3"
+required-features = ["s3"]
 
 [[example]]
 name = "bench"

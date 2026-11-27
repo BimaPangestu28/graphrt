@@ -67,6 +67,9 @@ pub struct WorkspaceOptions {
     /// `--image-model`.
     #[cfg(feature = "image")]
     pub image_model: Option<String>,
+    /// `--document-tools`.
+    #[cfg(feature = "documents")]
+    pub document_tools: bool,
 }
 
 /// Environment variable naming a default providers file.
@@ -342,8 +345,11 @@ fn install_workspace(
 ) -> Result<(ServedWorkspace, Arc<dyn graphrt_core::file::FileResolver>), CliError> {
     use graphrt_files::{FileTools, PROVIDER, Workspace, WorkspaceLimits, WorkspaceResolver};
     let limits = WorkspaceLimits { read_only: options.read_only, ..WorkspaceLimits::default() };
-    let workspace = Workspace::dir(&options.dir, limits)
-        .map_err(|e| CliError::usage(format!("`--workspace {}`: {e}", options.dir.display())))?;
+    let workspace = match options.dir.to_str().and_then(|dir| dir.strip_prefix(S3_SCHEME)) {
+        Some(location) => object_storage_workspace(location, limits, vars)?,
+        None => Workspace::dir(&options.dir, limits)
+            .map_err(|e| CliError::usage(format!("`--workspace {}`: {e}", options.dir.display())))?,
+    };
     if tools.get(PROVIDER).is_some() {
         return Err(CliError::usage(format!(
             "tool provider `{PROVIDER}` is defined by a plugin and by `--workspace`; rename the plugin's provider"
@@ -354,6 +360,8 @@ fn install_workspace(
     #[cfg(not(feature = "image"))]
     let _ = vars;
     let served = ServedWorkspace { workspace: workspace.clone(), per_user: options.per_user };
+    #[cfg(feature = "documents")]
+    install_document_tools(options, &workspace, tools)?;
     let file_tools = FileTools::new(workspace.clone());
     let (file_tools, resolver) = if options.per_user {
         (file_tools.scoped_by_context(), WorkspaceResolver::across_scopes(workspace))
@@ -362,6 +370,81 @@ fn install_workspace(
     };
     tools.add(PROVIDER, Arc::new(file_tools));
     Ok((served, Arc::new(resolver)))
+}
+
+/// Prefix of a `--workspace` kept in object storage: `s3://bucket/prefix`.
+#[cfg(feature = "files")]
+const S3_SCHEME: &str = "s3://";
+
+/// A workspace in S3 or an S3 compatible store (`--workspace s3://bucket/prefix`).
+///
+/// Region from `GRAPHRT_S3_REGION`, `AWS_REGION` or `AWS_DEFAULT_REGION`
+/// (default `us-east-1`), credentials from the usual AWS variables and roles.
+/// For other stores: `GRAPHRT_S3_ENDPOINT` (`https://host[:port]`),
+/// `GRAPHRT_S3_PATH_STYLE=false` for bucket host names, and
+/// `GRAPHRT_S3_ALLOW_HTTP=true` to accept an `http://` endpoint.
+///
+/// @throws CliError (usage) - An invalid location or setting, or a build without `files-s3`.
+#[cfg(feature = "files")]
+fn object_storage_workspace(
+    location: &str,
+    limits: graphrt_files::WorkspaceLimits,
+    vars: &[(String, String)],
+) -> Result<graphrt_files::Workspace, CliError> {
+    #[cfg(feature = "files-s3")]
+    {
+        let lookup = |name: &str| {
+            let found = vars.iter().rev().find(|(key, _)| key == name).map(|(_, value)| value.clone());
+            found.filter(|value| !value.is_empty())
+        };
+        let flag = |name: &str| match lookup(name).as_deref() {
+            None => Ok(None),
+            Some("true") => Ok(Some(true)),
+            Some("false") => Ok(Some(false)),
+            Some(other) => Err(CliError::usage(format!("`{name}` must be `true` or `false`, not `{other}`"))),
+        };
+        let (bucket, prefix) = location.split_once('/').unwrap_or((location, ""));
+        let region = ["GRAPHRT_S3_REGION", "AWS_REGION", "AWS_DEFAULT_REGION"].into_iter().find_map(lookup);
+        let config = graphrt_files::S3Config {
+            endpoint: lookup("GRAPHRT_S3_ENDPOINT"),
+            prefix: Some(prefix.to_owned()).filter(|prefix| !prefix.is_empty()),
+            path_style: flag("GRAPHRT_S3_PATH_STYLE")?,
+            allow_http: flag("GRAPHRT_S3_ALLOW_HTTP")?.unwrap_or(false),
+            ..graphrt_files::S3Config::new(bucket, region.unwrap_or_else(|| "us-east-1".to_owned()))
+        };
+        let store = graphrt_files::S3Store::from_lookup(&config, lookup)
+            .map_err(|e| CliError::usage(format!("`--workspace {S3_SCHEME}{location}`: {e}")))?;
+        Ok(graphrt_files::Workspace::new(Arc::new(store), limits))
+    }
+    #[cfg(not(feature = "files-s3"))]
+    {
+        let _ = (limits, vars);
+        Err(CliError::usage(format!(
+            "`--workspace {S3_SCHEME}{location}` requires a build with the `files-s3` feature"
+        )))
+    }
+}
+
+/// Register the `documents` tool provider over the workspace (`--document-tools`).
+#[cfg(feature = "documents")]
+fn install_document_tools(
+    options: &WorkspaceOptions,
+    workspace: &graphrt_files::Workspace,
+    tools: &mut graphrt_core::tool::ToolRegistry,
+) -> Result<(), CliError> {
+    use graphrt_docgen::{DocumentTools, PROVIDER};
+    if !options.document_tools {
+        return Ok(());
+    }
+    if tools.get(PROVIDER).is_some() {
+        return Err(CliError::usage(format!(
+            "tool provider `{PROVIDER}` is defined by a plugin and by `--document-tools`; rename the plugin's provider"
+        )));
+    }
+    let document_tools = DocumentTools::new(workspace.clone());
+    let document_tools = if options.per_user { document_tools.scoped_by_context() } else { document_tools };
+    tools.add(PROVIDER, Arc::new(document_tools));
+    Ok(())
 }
 
 /// Register the `image` tool provider over the workspace (`--image-tools`),
@@ -373,7 +456,7 @@ fn install_image_tools(
     workspace: &graphrt_files::Workspace,
     tools: &mut graphrt_core::tool::ToolRegistry,
 ) -> Result<(), CliError> {
-    use graphrt_image::{ImageGenerator, ImageTools, OpenAiImages, PROVIDER};
+    use graphrt_image::{ImageTools, PROVIDER};
     if !options.image_tools {
         return Ok(());
     }
@@ -382,23 +465,49 @@ fn install_image_tools(
             "tool provider `{PROVIDER}` is defined by a plugin and by `--image-tools`; rename the plugin's provider"
         )));
     }
-    let lookup = |name: &str| vars.iter().rev().find(|(key, _)| key == name).map(|(_, value)| value.clone());
     let mut image_tools = ImageTools::new(workspace.clone());
     if let Some(model) = &options.image_model {
-        let key = lookup("OPENAI_API_KEY").filter(|key| !key.is_empty()).ok_or_else(|| {
-            CliError::usage("`--image-model` needs `OPENAI_API_KEY` in the environment or the env file")
-        })?;
-        let base_url = lookup("OPENAI_BASE_URL")
-            .filter(|url| !url.is_empty())
-            .unwrap_or_else(|| "https://api.openai.com/v1".to_owned());
-        let generator: Arc<dyn ImageGenerator> = Arc::new(OpenAiImages::new(base_url, key, model.clone()));
-        image_tools = image_tools.with_generator(generator);
+        image_tools = image_tools.with_generator(image_generator(model, vars)?);
     }
     if options.per_user {
         image_tools = image_tools.scoped_by_context();
     }
     tools.add(PROVIDER, Arc::new(image_tools));
     Ok(())
+}
+
+/// The generator behind `image/generate` for `--image-model [PROVIDER/]NAME`:
+/// `openai` (the default) or `gemini`, with the key and endpoint of that
+/// provider from the environment or the env file.
+///
+/// @throws CliError (usage) - A missing key.
+#[cfg(feature = "image")]
+fn image_generator(model: &str, vars: &[(String, String)]) -> Result<Arc<dyn graphrt_image::ImageGenerator>, CliError> {
+    let lookup = |name: &str| {
+        let found = vars.iter().rev().find(|(key, _)| key == name).map(|(_, value)| value.clone());
+        found.filter(|value| !value.is_empty())
+    };
+    // Only the two known prefixes name a provider. Anything else is a model name
+    // of an OpenAI compatible server, which may hold a slash itself.
+    let (provider, name) = match model.split_once('/') {
+        Some((provider @ ("openai" | "gemini"), name)) => (provider, name),
+        _ => ("openai", model),
+    };
+    if provider == "gemini" {
+        let key = lookup("GEMINI_API_KEY").or_else(|| lookup("GOOGLE_API_KEY")).ok_or_else(|| {
+            CliError::usage(
+                "`--image-model gemini/...` needs `GEMINI_API_KEY` or `GOOGLE_API_KEY` in the environment or the \
+                 env file",
+            )
+        })?;
+        let base_url =
+            lookup("GEMINI_BASE_URL").unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_owned());
+        return Ok(Arc::new(graphrt_image::GeminiImages::new(base_url, key, name)));
+    }
+    let key = lookup("OPENAI_API_KEY")
+        .ok_or_else(|| CliError::usage("`--image-model` needs `OPENAI_API_KEY` in the environment or the env file"))?;
+    let base_url = lookup("OPENAI_BASE_URL").unwrap_or_else(|| "https://api.openai.com/v1".to_owned());
+    Ok(Arc::new(graphrt_image::OpenAiImages::new(base_url, key, name)))
 }
 
 /// Add every provider of `extra` to `base`; a provider name used by both is an error.

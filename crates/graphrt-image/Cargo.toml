@@ -20,11 +20,18 @@ tokio = ["dep:tokio", "tokio/rt"]
 # Without it, images are probed and stripped of metadata but never resized: an image
 # that is too large for a model is refused.
 process = ["dep:image"]
+# HEIC input: phone photos are decoded (pure Rust, no unsafe) and leave as JPEG or
+# PNG. Off by default: HEVC is covered by patent pools whatever the software
+# licence is, so shipping a decoder is a decision for whoever builds the binary.
+heic = ["process", "dep:heifer"]
 # The `image` tools (info, view, resize, convert, thumbnail, generate) over a graphrt-files workspace.
 tools = ["process", "dep:graphrt-files", "dep:serde", "dep:serde_json"]
 # `OpenAiImages`: an `ImageGenerator` for the OpenAI images API and compatible servers
 # (reqwest + rustls with the ring provider).
 generate-openai = ["dep:reqwest", "dep:rustls", "dep:serde_json", "dep:tokio", "tokio/time"]
+# `GeminiImages`: an `ImageGenerator` for the image models of the Gemini API (the same
+# HTTP stack as `generate-openai`).
+generate-gemini = ["dep:reqwest", "dep:rustls", "dep:serde_json", "dep:tokio", "tokio/time"]
 
 [dependencies]
 graphrt-core.workspace = true
@@ -35,6 +42,7 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"], optional = true }
+heifer = { version = "0.7.3", default-features = false, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider", "json"] }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 
@@ -44,6 +52,8 @@ graphrt-llm = { workspace = true, features = ["mock", "tool-files", "vision-prep
 futures = { workspace = true, features = ["executor"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util"] }
 serde_json.workspace = true
+# Its encoder writes the HEIC fixtures of the `heic` tests.
+heifer = { version = "0.7.3" }
 
 [[example]]
 name = "bench"

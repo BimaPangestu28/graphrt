@@ -1,0 +1,67 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
+# Fully offline: writes a PDF report, a Word document and an Excel workbook into the workspace.
+#   graphrt run examples/documents.yaml --workspace ./workspace --document-tools --input title="Sales report"
+# The files are then in ./workspace/reports/. See docs/files-and-images.md.
+version: "1"
+name: documents
+description: Creates a PDF, a Word document and an Excel workbook in the agent workspace with the documents tools.
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: title, type: text-input, required: true, max_length: 80 }
+
+    - id: pdf
+      type: tool
+      provider_id: documents
+      tool_name: create_pdf
+      tool_parameters:
+        path: { type: constant, value: reports/report.pdf }
+        title: { type: variable, value: [start, title] }
+        content:
+          type: mixed
+          value: "# {{#start.title#}}\n\nRevenue grew **12%** over the quarter.\n\n| Region | Revenue |\n|---|---|\n| Jakarta | 120.5 |\n| Medan | 41.2 |\n\n1. Open a third outlet\n2. Review prices\n"
+        overwrite: { type: constant, value: true }
+
+    - id: docx
+      type: tool
+      provider_id: documents
+      tool_name: create_docx
+      tool_parameters:
+        path: { type: constant, value: reports/report.docx }
+        title: { type: variable, value: [start, title] }
+        content:
+          type: mixed
+          value: "# {{#start.title#}}\n\nRevenue grew **12%** over the quarter.\n\n- Jakarta\n- Medan\n"
+        overwrite: { type: constant, value: true }
+
+    - id: xlsx
+      type: tool
+      provider_id: documents
+      tool_name: create_xlsx
+      tool_parameters:
+        path: { type: constant, value: reports/revenue.xlsx }
+        sheets:
+          type: constant
+          value:
+            - name: Revenue
+              rows:
+                - [Region, Revenue, Open]
+                - [Jakarta, 120.5, true]
+                - [Medan, 41.2, false]
+        overwrite: { type: constant, value: true }
+
+    - id: end
+      type: end
+      outputs:
+        - { variable: pdf, value_selector: [pdf, text] }
+        - { variable: docx, value_selector: [docx, text] }
+        - { variable: xlsx, value_selector: [xlsx, text] }
+        - { variable: files, value_selector: [pdf, files] }
+
+  edges:
+    - { source: start, target: pdf }
+    - { source: pdf, target: docx }
+    - { source: docx, target: xlsx }
+    - { source: xlsx, target: end }

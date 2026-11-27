@@ -138,6 +138,34 @@ async fn main() {
     .await;
     row("`files/search`, 32 MiB of text", format!("{:.0} ms ({:.0} MiB/s)", seconds * 1e3, 32.0 / seconds));
 
+    // The same log by pattern: an ordinary one, and one built to be as slow as a pattern can be.
+    #[cfg(feature = "regex")]
+    {
+        let patterns = [
+            ("`files/search` by regular expression, 32 MiB", r"ERROR \w+-in-the-\w+$"),
+            ("The same with a worst case pattern", r"(.*e){8}needle"),
+        ];
+        for (what, pattern) in patterns {
+            let seconds = median(3, || async {
+                let args = json!({"query": pattern, "regex": true});
+                let out = search_tools.call("search", args, ToolCallContext::empty()).await.unwrap();
+                assert!(!out.is_error, "{}", out.text);
+            })
+            .await;
+            row(what, format!("{:.0} ms ({:.0} MiB/s)", seconds * 1e3, 32.0 / seconds));
+        }
+        let started = Instant::now();
+        let refused = search_tools
+            .call("search", json!({"query": r"(\w{1,500}){500}", "regex": true}), ToolCallContext::empty())
+            .await
+            .unwrap();
+        assert!(refused.is_error);
+        row(
+            "Refuse a pattern that would compile too large",
+            format!("{:.1} ms", started.elapsed().as_secs_f64() * 1e3),
+        );
+    }
+
     // 2,000 small files: listing and searching a busy workspace.
     for index in 0..2_000 {
         let name = format!("many/d{}/f{index}.md", index % 20);

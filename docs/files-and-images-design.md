@@ -125,7 +125,8 @@ considered (`object_store` 0.14, `opendal` 0.59) and left out: each pulls a
 large tree for backends most agents never use, and the trait is small enough
 for a host to implement over the client it already has. Limits, quotas,
 scopes and type checks live in `Workspace`, above the store, so a new backend
-cannot forget them.
+cannot forget them. An S3 backend was added later with a client of its own,
+see [decision 13](#13-object-storage-with-a-client-of-our-own).
 
 ### 3. No links, checked per component
 
@@ -164,14 +165,44 @@ Decision: tools. `files/read` extracts documents with `graphrt-doc`, which
 already bounds zip and PDF decompression, and keeps the text of the last
 document so paging does not parse it again.
 
-### 6. Search is a text search
+### 6. Search is a text search, with patterns and documents on request
 
-A regular expression from a model is an input to a pattern engine. Rust's
-`regex` crate is linear time, but it is still a second parser fed by a model,
-and literal search answers almost every "which file mentions X" question. The
-tool takes a text, reads text files in steps of 256 KiB and stops at 50
-matches or 64 MiB. Documents are not searched: that is what a knowledge base
-is for, and the tool says how many it skipped.
+The first version took a text only: a literal search answers almost every
+"which file mentions X" question, and a regular expression from a model is
+an input to a second parser. Both were added on 2026-11-27, each behind an
+argument the model has to set.
+
+**Regular expressions** (`regex: true`). What makes a pattern from an
+untrusted author dangerous is backtracking: `(a+)+$` takes exponential time
+in engines that try every way to match. The choice of engine is therefore
+the defence.
+
+| Option | Time on hostile patterns | Notes |
+| --- | --- | --- |
+| A backtracking engine with a step counter (`fancy-regex`, PCRE2 with match limits) | bounded only by the counter, and one more knob to get wrong | supports backreferences and lookaround |
+| **`regex` 1.13** | linear in the text for every pattern, by construction | no backreferences, no lookaround. Already linked into the default CLI. |
+| A hand written glob or wildcard matcher | linear | too weak for `inv-\d{4}` or `^total` |
+
+Linear time is not the whole answer, so three more bounds hold:
+
+- **Compiling.** `(\w{1,500}){500}` is a short text that compiles into a huge
+  program. The compiled size is limited to 1 MiB, the matching cache to
+  2 MiB and nesting to 50 levels, and the query to 200 characters. A pattern
+  over a limit is refused in milliseconds, before a file is read.
+- **Time.** Linear with a large constant is still slow over 64 MiB. Every
+  search has a deadline (5 seconds by default) that is checked between files
+  and every 256 lines. It applies to text searches too. The search answers
+  with what it found and says it is incomplete.
+- **The executor.** A step of a file (256 KiB) is matched on the blocking
+  pool, so a slow pattern over a large file does not hold an async worker.
+
+**Documents** (`documents: true`, or a single document named by `path`).
+Extraction is the expensive part, so it is opt in per call, limited to 25
+documents per search and to the size `read` accepts, and the extracted text
+is kept (16 MiB of text across documents) so the `read` that follows a hit
+does not parse the file again. A document that cannot be read is counted
+and skipped. One extraction cannot be interrupted by the deadline. It is
+bounded by the size limits of `graphrt-doc`, as before.
 
 ### 7. Users are separated by a scope the model cannot touch
 
@@ -233,8 +264,27 @@ The same pipeline backs the `image` tools (`info`, `view`, `resize`,
 images API (`POST {base_url}/images/generations`), which GPT image models and
 many compatible servers implement and which always answers with base64. The
 bytes a provider returns are treated like any upload: probed, bounded and
-stored in the workspace. Gemini's image models use the newer Interactions API
-and are a second implementation of the same trait, not part of this work.
+stored in the workspace.
+
+A second implementation, `GeminiImages`, was added on 2026-11-27. Gemini has
+two APIs that produce images. The Interactions API is the newer one, and its
+response schema changed twice in 2026 (the `outputs` array was replaced by
+`steps`, image settings moved into `response_format`), with the raw shape of
+an image block not shown in the reference. `generateContent` answers with
+`candidates[0].content.parts[].inlineData`, which is documented, stable and
+the shape the Gemini provider of `graphrt-llm` already parses. So the
+generator speaks `generateContent`: `POST {base}/models/{model}:generateContent`
+with the key in the `x-goog-api-key` header. Moving to the Interactions API
+later changes one function behind the trait.
+
+The two providers share one transport (client, bounded response, key
+scrubbing, timeout). What differs is small and stays in each: OpenAI takes
+pixels, Gemini an aspect ratio and a size class, so a `WIDTHxHEIGHT` request
+is mapped to the closest of the 14 ratios and the smallest of `1K`, `2K`,
+`4K` that holds the longer side. A Gemini answer can be a refusal with a
+reason (`finishReason`, `blockReason`), which is passed on to the model in
+the error. A model name goes into the URL path, so only a plain name is
+accepted.
 
 ### 11. Features and defaults
 
@@ -266,6 +316,153 @@ results, and until now a host had to write into the directory itself.
 | How does an upload reach a model? | The client sends file JSON, or the server makes the file value | The run request takes `files: [reference]` and the server builds the file values after checking each against what the caller may reach. Untrusted JSON still never becomes a file value. |
 
 Range requests and resumable uploads are left out. Files are at most 32 MiB.
+### 13. Object storage with a client of our own
+
+Added 2026-11-27. Agents that run as several replicas, or on machines whose
+disk does not stay, need the workspace somewhere shared.
+
+| Option | For | Against |
+| --- | --- | --- |
+| AWS SDK for Rust (`aws-sdk-s3`) | complete, maintained by AWS | about 100 crates. `aws-sdk-*` and `aws-config` are banned in `bench/budgets.toml` because of what they do to the size of every build that links them. |
+| `object_store` 0.14 | S3, GCS, Azure behind one trait | pulls `quick-xml`, `chrono`, `itertools`, `humantime` and more, and its S3 client does far more than six operations |
+| `opendal` 0.59 | forty backends | the largest tree of the three |
+| `rust-s3`, `rusty-s3` | small | one more signer next to the two the repository already has |
+| **Five requests over `reqwest`, signed by the signer the gateway already ships** | no new crate in the lock file. The SigV4 signer and the credential chain (environment, ECS, EKS, EC2 roles) of `graphrt-provider-aws` are reused, and they are tested against the AWS test vectors. | we own about 450 lines, and only the S3 API is covered |
+
+Decision: the last. `S3Store` is behind the `s3` feature of `graphrt-files`
+and the `files-s3` feature of the CLI. Both are off by default, and the
+budgeted builds cannot enable them by accident because they do not enable
+`files` at all.
+
+What the store does not do: multipart uploads (a workspace file is at most
+32 MiB, far below the 5 GiB of one `PutObject`), versioning, server side
+encryption settings (set them on the bucket), and Google Cloud Storage or
+Azure Blob (GCS has an S3 compatible endpoint, Azure needs its own store
+behind the same trait).
+
+Checked against a real store, SeaweedFS 3 in a container, with the
+`a_real_object_store_when_one_is_configured` test and the CLI: signatures,
+names with URL characters, ranges, conditional creation, listing.
+### 14. Documents are written by small writers of our own
+
+Added 2026-11-27. Agents are asked for "a PDF of this" and "an Excel file of
+that" all the time, and `files/write` only writes text.
+
+| Option | For | Against |
+| --- | --- | --- |
+| `printpdf` 0.9, `genpdf` | fonts, images, full layout | need font files to embed, pull `lopdf`, font parsers and image decoders into every build that creates a PDF |
+| Typst as a library | beautiful output | tens of megabytes, a full compiler |
+| `rust_xlsxwriter`, `docx-rs` | complete Office feature sets | large APIs of which an agent needs a few percent, and features we would have to keep switched off (formulas, links, embedded objects) |
+| Convert through LibreOffice or a headless browser | any layout | a process to install and sandbox, not on phones, the opposite of one small binary |
+| **Own writers: PDF with the 14 standard fonts, DOCX and XLSX as a few XML parts** | no new crate (`zip` and `flate2` are already linked by the document extractor), about 900 lines, and the files can only hold what the writers know how to write | Western European text only in PDF, simple layout |
+
+Decision: the last, as a new crate `graphrt-docgen` with its own tool
+provider (`documents`) and its own switch (`--document-tools`). The format
+of the input is Markdown for text documents, because models produce it
+without being taught, and rows of JSON values for sheets.
+
+Two limits are accepted and said out loud in the tool descriptions and
+results. PDF text is Windows-1252, because the fonts every reader has built
+in cover nothing else and embedding a Unicode font means shipping megabytes
+of font files. A character outside it becomes `?` and is counted in the
+result, which points the model to Word for other scripts. And layout is one
+column with equal table columns: a report, not a designed page.
+
+Presentations (PPTX) were left out. A slide deck needs layout decisions a
+Markdown outline does not carry, and nothing asked for it.
+
+The security argument for own writers is the strongest one. A general
+library can write a formula, an external link, a macro or an embedded file
+if some input reaches the wrong call. These writers have no code for any of
+them, so no input can produce one.
+
+What was checked outside the test suite: the PDF with Poppler (`pdftotext`,
+`pdfinfo`, rendered with `pdftoppm`) and Ghostscript, the Word file with
+`python-docx` and the workbook with `openpyxl`. Not checked: Microsoft
+Office and LibreOffice themselves, which were not on the machine.
+### 15. HEIC behind a switch, AVIF not yet
+
+Researched 2026-11-27 (crates.io, the crates' sources, and a trial build).
+iPhones and many Android phones save HEIC by default, so "attach a photo"
+fails for a large share of users unless the client converts first.
+
+HEIC is HEVC still pictures in an ISO base media container.
+
+| Decoder | Licence | Code | Verdict |
+| --- | --- | --- | --- |
+| `libheif-rs` (libheif, libde265) | LGPL-3.0 and C | C and C++ | No. A C parser the size of a video codec for uploads, no static musl build without work, not on `wasm32`. |
+| `heic` 0.1.6 | AGPL-3.0 or commercial | pure Rust | No. The licence is not on the allow list of `deny.toml` and would bind every user of the binary. |
+| `hpvcd` 0.3.6 | BSD-3-Clause or Apache-2.0 | pure Rust | Not now. It needs Rust 1.93, the workspace builds with 1.89. |
+| **`heifer` 0.7.3** | MIT or Apache-2.0 | pure Rust, `#![forbid(unsafe_code)]`, one dependency (`thiserror`) | Yes, as an option. |
+
+What the trial of `heifer` showed: three new crates in a build (`heifer`,
+`heifer-hevc-dec`, `heifer-isobmff`, plus its encoder for the test
+fixtures only), +888 KiB on a release binary, the sample photo of libheif (1280x854) decoded in 54 ms on one
+thread, 200 truncations and 300 bit flips of it without a panic, and its
+pixel limit honoured. Against it: the crate is seven weeks old with one
+author and 42 releases, so its interface still moves.
+
+Decision: support HEIC behind the `heic` feature of `graphrt-image` and the
+`image-heic` feature of the CLI, **off by default in every build**.
+
+- The deciding reason is patents, not code. HEVC is covered by patent pools
+  (Access Advance, Via LA) whatever the licence of an implementation is,
+  which is why browsers lean on the decoder of the operating system. A
+  project cannot make that call for the people who build and ship it. An
+  operator who turns the feature on has made it.
+- The youth of the decoder is contained rather than trusted: the header is
+  read by a parser of our own first (the largest `ispe` size against the
+  pixel limits), the decoder gets the same limit, runs on one thread behind
+  a panic boundary on the blocking pool, and its output is checked again.
+- HEIC is input only. What leaves is JPEG or PNG written by the encoders the
+  crate already has, so no provider or tool sees the format and nothing of
+  the container (EXIF, XMP, depth and gain maps) survives.
+
+AVIF is AV1 still pictures in the same container. AV1 is royalty free, so
+the obstacle here is only the decoder.
+
+| Decoder | Licence | Code | Verdict |
+| --- | --- | --- | --- |
+| `image` with `avif-native` (dav1d) | BSD-2-Clause | C | No. A system C library, which breaks the single static binary and phones. |
+| `rav1d` 1.1.0 | BSD-2-Clause | Rust translated from dav1d, `unsafe` throughout, hand written assembly, needs `nasm` to build | No. Memory safety in name only, and megabytes of code. |
+| `rav1d-safe` 0.6.0, `zenavif` 0.1.7 | AGPL-3.0 or commercial | safe Rust | No. Licence. |
+
+Decision: AVIF stays refused, with a message that says to convert it. This
+is the item to revisit when a safe decoder under a permissive licence
+exists. The container walk written for HEIC would carry over.
+
+Animations (GIF and WebP with several frames, HEIC and AVIF sequences) stay
+as they are: an animation that fits is passed through, one that has to be
+encoded again becomes its first frame. Model APIs read one frame of an
+animation anyway, so decoding and encoding every frame would spend CPU on
+pixels no model sees.
+### 16. Native document blocks: not now
+
+A native document block sends a PDF to the provider as a file instead of as
+text the runtime extracted (Anthropic `document`, OpenAI `input_file`,
+Gemini inline `application/pdf`, Bedrock `document`). Looked at again on
+2026-11-27 and left out, for these reasons:
+
+- **What it buys is narrow.** For a PDF with a text layer the `files` tools
+  already work on every provider, local models included, and read a window
+  at a time. A native block puts the whole file into the context of every
+  turn, where the provider bills each page as text and as an image.
+- **The real gap is scanned documents**, which have no text to extract. A
+  native block closes it for three hosted providers only. What closes it
+  everywhere is rendering pages to images for `vision`, and there is no safe
+  pure Rust PDF renderer to do that with today.
+- **Four wire formats, no way to check them here.** Each provider spells the
+  block differently and limits it differently, and CI has no provider keys.
+  A wrong field fails at run time, in front of a user.
+- **It lands in the hot path of the smallest builds.** The message types and
+  the four provider encoders are in `graphrt-llm`, which `agent-slim` links,
+  and four open pull requests are changing the same files.
+
+What it should look like when it is done: a `DocumentPreparer` contract in
+`graphrt-core::file` next to `ImagePreparer` (type from content, byte and
+page limits, a `data:` URL out), a `ContentPart::Document`, a `documents`
+setting on the model nodes like `vision`, all behind a cargo feature, and a
+fallback to extracted text for providers that have no such block.
 
 ## Threat model
 
@@ -283,6 +480,9 @@ the host file system goes.
 | F5 | FIFO or device that blocks or never ends | Only regular files are opened, and with `O_NONBLOCK` | `dir_store::special_files_are_not_opened` |
 | F6 | Filling the disk: one huge file, many files, many small writes | Per file size, total bytes and file count, checked under one lock so concurrent writers cannot pass together | `workspace::tests::size_quota_and_count_limits_hold`, `concurrent_writers_cannot_pass_the_quota_together`, `tools::limits_come_back_as_errors_the_model_can_act_on` |
 | F7 | Flooding the context: a huge file, endless lines, a search that matches everything | Windowed reads with a character budget, lines cut at 16 KiB, search capped by matches, files and bytes | `tools::reading_pages_through_long_files`, `search_stops_at_its_limits`, `text::tests::an_endless_line_is_cut_not_buffered` |
+| F17 | A regular expression written to hang the search (`(a+)+$`, `(a\|aa)+$`, `(.*a){12}`) or to exhaust memory when compiled (`(\w{1,500}){500}`, deep nesting) | A linear time engine without backtracking. Limits on compiled size, matching cache, nesting and query length. A deadline on every search. | `tools::a_hostile_pattern_cannot_take_the_search_hostage`, `text::tests::patterns_match_lines_and_are_bounded_when_they_are_built`, `text::tests::a_search_stops_at_its_deadline` |
+| F18 | A search over many or large documents that keeps the CPU busy, or a broken document that ends it | Documents are searched only on request, at most 25 per search and up to the size `read` accepts. Unreadable ones are counted and skipped. | `tools::a_search_extracts_a_bounded_number_of_documents`, `tools::search_looks_inside_documents_when_asked` |
+| F19 | Pattern matching over a large file stalling every other run | Steps of 64 KiB and more are matched on the blocking pool | `tools::matching_a_large_file_does_not_block_the_async_worker` |
 | F8 | MIME spoofing: a program named `photo.png`, a PDF named `notes.txt` | The type is sniffed from content. The extension only refines text and zip containers. | `sniff::tests::the_extension_never_overrides_the_content`, `workspace::tests::the_type_comes_from_the_bytes_and_programs_are_refused` |
 | F9 | Storing something the system would run | ELF, PE, Mach-O, WebAssembly and `#!` scripts are refused. Files are created `0600`, directories `0700`. | `tools::programs_cannot_be_written_whatever_the_name`, `dir_store::files_and_directories_are_owner_only` |
 | F10 | Active content served back to a user interface (HTML, SVG with script) | Detected wherever the tag is and whatever the extension, reported as `text/html` or `image/svg+xml` with `inline_safe: false` | `sniff::tests::html_and_svg_are_active_whatever_they_are_called`, `tools::programs_cannot_be_written_whatever_the_name` |
@@ -303,13 +503,36 @@ the host file system goes.
 | H9 | Attaching another user's file to a run, or forging a file value in the request | References are resolved inside the caller's view, at most 16 per run. File JSON in `inputs` and `sys` stays plain data. | `serve_files::a_run_cannot_attach_another_users_file_or_forge_one`, `an_attached_upload_reaches_the_run_as_a_file_value` |
 | H10 | Changing a read only workspace over HTTP | `--workspace-read-only` refuses uploads and deletes with `403` | `serve_files::a_read_only_workspace_serves_files_and_refuses_changes` |
 | H11 | File routes eating the run budget of a user, or bypassing it | Token verification without the run rate limiter. Storage is bounded by the quota of the user's directory. | `serve_files::file_requests_do_not_spend_the_run_rate_limit` |
+| S1 | A path that reaches another prefix or another bucket, or that turns into query parameters (`#`, `&`, `=`, `%2e%2e`, `;`) | A key is the prefix plus a `WorkspacePath`, percent encoded byte by byte. Bucket, region, endpoint and prefix are validated when the store is built. | `s3::a_path_cannot_reach_another_prefix_the_bucket_or_the_query`, `s3::tests::bucket_names_cannot_carry_url_syntax` |
+| S2 | Objects planted in the bucket that are not workspace files (`..`, hidden names, another prefix, names that display as something else) | A listing returns only keys below the prefix that parse as workspace paths | `s3::objects_that_are_not_workspace_files_are_not_listed` |
+| S3 | Unsigned or altered requests, a damaged upload | SigV4 on every request with the SHA-256 of the body in the signature. The test server recomputes both. | `s3::every_request_is_signed_and_a_wrong_key_is_refused` |
+| S4 | A signed request sent to another host by a redirect | Redirects are not followed and are reported | `s3::redirects_are_not_followed` |
+| S5 | A secret key or session token in an error, a log or `Debug` output | Errors are built from the status, the error code and a bounded message. Transport errors carry no URL. `Debug` prints neither. | `s3::secrets_never_appear_in_errors_or_debug_output` |
+| S6 | File content sent unencrypted, credentials or a path smuggled into the endpoint | `http://` needs `allow_http`. An endpoint is an origin: no user, path, query or fragment. | `s3::plain_http_and_malformed_configuration_are_refused`, `s3::tests::endpoints_are_origins_and_http_needs_a_switch` |
+| S7 | A store that answers with more than asked: a whole object for a range, a huge listing, pages without end, an XML entity bomb | Bodies are read up to the requested size, listings up to 4 MiB a page and 64 pages. The XML reader expands the five standard entities and nothing else. | `s3::a_server_that_sends_too_much_is_cut_off`, `s3::tests::a_listing_is_read_without_expanding_anything` |
+| S8 | A store that hangs or throttles | A time limit per request, three attempts with a growing pause, then an error the agent sees | `s3::a_store_that_does_not_answer_times_out`, `s3::throttling_is_retried_and_a_dead_store_is_reported` |
+| S9 | Two replicas creating the same file | `If-None-Match: *` on a create, so the store refuses the second one | `s3::a_create_does_not_replace_what_another_process_wrote` |
+| S10 | The rules of a workspace lost on a new backend (size, quota, programs, user scopes) | They live in `Workspace`, above the store | `s3::a_workspace_keeps_its_rules_over_object_storage` |
+| D1 | Formula injection: text from an e-mail or a web page that starts with `=`, `+`, `-` or `@` and runs when a person opens the sheet | Text is always an inline string. The writer has no code that writes a formula. | `docgen tools::spreadsheet_text_is_never_a_formula` |
+| D2 | Markup injection: text that closes an XML element or a PDF string and adds structure (a link, a script action) | XML text is escaped and control characters dropped. PDF strings escape `(`, `)` and `\` and write everything outside ASCII in octal. | `docgen tools::text_cannot_inject_markup_into_a_document`, `xml::tests::text_cannot_open_a_tag_or_break_the_document`, `pdf::tests::text_cannot_end_a_string_or_start_an_operator` |
+| D3 | Active content in a created document: scripts, macros, links that phone home, embedded files, fields | Links, images and HTML in the Markdown become their text. The parts of a package are a fixed list. | `docgen tools::documents_hold_nothing_a_reader_would_run_or_fetch` |
+| D4 | Leaving the workspace through the output path, or a file whose name lies about its type | `WorkspacePath`, and the extension must match the tool | `docgen tools::a_path_cannot_leave_the_workspace_and_the_name_must_say_what_the_file_is` |
+| D5 | Exhausting memory, CPU or disk with a huge document | Limits on input size, pages, table columns, sheets, cells and cell length before and while writing, then the workspace quota. Sheet names are made valid, never trusted. | `docgen tools::limits_come_back_as_errors_the_model_can_act_on`, `the_rules_of_the_workspace_hold_for_documents`, `pdf::tests::a_document_stops_at_the_page_limit`, `xlsx::tests::a_workbook_stops_at_its_limits`, `xlsx::tests::sheet_names_are_made_valid_and_distinct` |
+| D6 | One user writing a document into another user's directory | Scope from `tool_context`, calls without one refused, a `scope` argument is an invalid argument | `docgen tools::users_only_write_into_their_own_directory` |
+| D7 | Layout of a large document stalling every other run | Parsing, layout and compression run on the blocking pool | `docgen tools::a_large_document_does_not_block_the_async_worker` |
+| D8 | Text that silently disappears (a script the PDF fonts cannot show, a long number rounded by the spreadsheet) | Replaced characters are counted and reported. Whole numbers above 2^53 are stored as text. Lines are wrapped inside the margins. | `pdf::tests::characters_outside_the_fonts_are_counted_not_dropped`, `xlsx::tests::long_whole_numbers_stay_exact_as_text`, `pdf::tests::lines_never_run_past_the_margin` |
 | I1 | Image bomb: a small file that declares a huge canvas | Header probe refuses the pixel count before any decoder runs (5.5 µs for a 64 megapixel PNG). Decoder limits on width, height and allocation are a second line. | `probe::a_huge_canvas_is_refused_from_the_header_alone`, `tools::bombs_spoofed_files_and_escapes_are_error_results`, `prepare::spoofed_vision_inputs_are_refused` |
+| I10 | HEIC bomb: a small file that declares a huge canvas, or a header that declares a small one to get a large picture through | Our own walk of the container reads the largest `ispe` size before the decoder runs. The decoder has the same pixel limit, and its output is checked again. | `heic::a_huge_heic_canvas_is_refused_from_the_header_alone` |
+| I11 | Malformed HEIC aimed at the HEVC decoder or at our container walk | A decoder without `unsafe`, behind a panic boundary on the blocking pool, on one thread. Checked indexing in the walk, at most 4,096 boxes a level. | `heic::truncated_and_corrupted_heic_files_fail_cleanly` |
+| I12 | HEIC passed on to a provider or a user interface with its metadata (EXIF position, XMP, depth and gain maps), or written by a tool | HEIC is input only: it is always decoded and encoded again as JPEG or PNG, and no tool accepts `heic` as an output format | `heic::nothing_of_a_heic_container_reaches_a_model`, `heic::the_image_tools_take_heic_and_write_jpeg`, `heic::a_heic_photo_is_read_from_its_header_and_leaves_as_a_jpeg` |
+| I13 | Another format announced as HEIC (AVIF, a bare `ftyp` box, a program) | The brands of the `ftyp` box must name HEVC and not AV1. Anything else is refused as before. | `heic::only_hevc_coded_files_count_as_heic`, `probe::spoofed_and_unsupported_content_is_refused` |
 | I2 | Malformed image aimed at a decoder or at our own header parsers | Pure Rust decoders, no `unsafe` in the workspace, checked indexing only, decoding behind a panic boundary on the blocking pool | `probe::truncated_files_fail_cleanly_at_every_length`, `probe::corrupted_files_never_panic_or_exceed_the_limits` |
 | I3 | Image type spoofing (SVG, HTML, HEIC or a program sent as `image/png`) | Only PNG, JPEG, GIF and WebP by magic bytes reach a model or a tool. The media type sent to a provider is the detected one. | `probe::spoofed_and_unsupported_content_is_refused`, `prepare::spoofed_vision_inputs_are_refused`, `nodes::a_spoofed_vision_input_stops_the_node_before_the_model_is_called`, `graphrt-llm` `a_refused_image_fails_the_node_and_is_never_sent_as_it_was`, CLI `image_tools_inspect_and_thumbnail_a_workspace_image` |
 | I4 | Location and device data in EXIF (and XMP, IPTC, text chunks) sent to a model provider or written to a result | Metadata is cut out of the container before an image leaves the runtime, rotated photos are turned upright first, and files the tools write are encoded without any | `metadata::*` (one test per format), `metadata::nothing_prepared_for_a_model_carries_metadata`, `prepare::a_rotated_photo_is_turned_upright_before_its_metadata_goes`, `nodes::a_stored_photo_reaches_the_model_checked_and_without_metadata` |
-| I5 | SSRF through an image URL | URL images are fetched by the model provider, not by the runtime. With inlining on, the fetch goes through the egress policy of `graphrt-http`. A generator answer that holds a URL is refused, not fetched, and redirects of the generator are not followed. | `prepare::remote_images_are_left_to_the_provider_unless_inlined`, `openai::an_answer_with_a_url_is_refused_not_fetched`, `openai::redirects_are_not_followed`, `graphrt-http` `files::tests::rejects_private_addresses_and_non_http` |
+| I5 | SSRF through an image URL | URL images are fetched by the model provider, not by the runtime. With inlining on, the fetch goes through the egress policy of `graphrt-http`. A generator answer that holds a URL is refused, not fetched, and redirects of the generator are not followed. | `prepare::remote_images_are_left_to_the_provider_unless_inlined`, `openai::an_answer_with_a_url_is_refused_not_fetched`, `openai::redirects_are_not_followed`, `gemini::an_answer_that_points_to_a_file_is_refused_not_fetched`, `gemini::redirects_are_not_followed`, `graphrt-http` `files::tests::rejects_private_addresses_and_non_http` |
 | I6 | Prompt injection through text in an image | Same position as F12: the image is data, `image/view` says so, tools stay bounded, approvals for what matters | `tools::view_shows_a_checked_image_to_the_model` |
-| I7 | Output of an image generator trusted as an image, or its key leaking | Probed, bounded and stripped like an upload before it is stored. The key is scrubbed from errors and never printed. | `tools::generated_images_are_checked_like_uploads`, `openai::errors_are_reported_without_the_key` |
+| I7 | Output of an image generator trusted as an image, or its key leaking | Probed, bounded and stripped like an upload before it is stored. The key is scrubbed from errors and never printed, and it travels in a header, never in a URL. | `tools::generated_images_are_checked_like_uploads`, `openai::errors_are_reported_without_the_key`, `gemini::errors_and_refusals_are_reported_without_the_key`, `gemini::an_inline_answer_becomes_image_bytes` |
+| I14 | A model name that changes the request path of a generator (`../`, `?key=`, a second host) | The Gemini model name goes into the URL path, so only letters, digits, `.`, `-` and `_` are accepted and nothing is sent otherwise | `gemini::a_model_name_cannot_change_the_request_path` |
 | I8 | Polyglot files: a valid image with a script, an archive or a page appended | Everything after the end of the image is dropped when metadata is removed | `metadata::*` (each fixture carries a payload after the image) |
 | I9 | Decoding a large image stalling every other run | Probe, decode, resize, encode and base64 run on the blocking pool | `prepare::preparing_a_large_image_does_not_block_the_async_worker` |
 
@@ -334,8 +557,15 @@ the host file system goes.
   of a public server.
 - **Cookies.** The routes take bearer credentials only. A host that puts a
   cookie based login in front of them must add its own CSRF protection.
+- **Quota across replicas.** With a shared object store each process keeps
+  its own count of the workspace between starts, so replicas writing at the
+  same time can pass the quota by what the others wrote. Bucket policies and
+  lifecycle rules are the hard limit there.
+- **A store that ignores `If-None-Match`.** Creation without overwrite is
+  then only checked inside one process.
 - **CPU time of document extraction.** Bounded by size limits, not by a
-  timer. Run agents with a node or run timeout.
+  timer: the deadline of a search is checked between documents, not inside
+  one. Run agents with a node or run timeout.
 
 ## Performance
 
@@ -353,9 +583,12 @@ Measured with `cargo run --release -p graphrt-files --example bench` on a
 | `files/write`, small file | 22 µs |
 | `files/read`, small file | 29 µs |
 | `files/read`, last 10 lines of a 32 MiB file | 20 ms (1,598 MiB/s), one 256 KiB buffer at a time |
-| `files/search`, 32 MiB of text | 55 ms (587 MiB/s) |
+| `files/search`, 32 MiB of text | 50 ms (646 MiB/s) |
+| `files/search` by regular expression (`ERROR \w+-in-the-\w+$`), 32 MiB | 35 ms (917 MiB/s) |
+| The same with nested repetition (`(.*e){8}needle`) | 69 ms (464 MiB/s) |
+| Refuse a pattern that would compile too large | 3.7 ms |
 | List 2,000 files in 20 directories | 1.8 ms |
-| `files/search` across 2,000 small files | 59 ms |
+| `files/search` across 2,000 small files | 65 ms |
 
 How the code gets there:
 
@@ -384,6 +617,9 @@ machine, one core.
 | The same | 24 MP JPEG (6000x4000), 5.1 MiB | 222 ms, sends 0.33 MiB |
 | The same | 2560x1440 PNG, 0.9 MiB | 124 ms, sends 0.22 MiB |
 | Thumbnail, 256 px | 12 MP JPEG | 67 ms |
+| Read the header of a HEIC photo (feature `heic`) | 12 MP HEIC | 64 ns |
+| Refuse a HEIC that declares 60000x60000 pixels | 0.2 MiB | 4.0 µs, nothing decoded |
+| Prepare a HEIC photo for a model: decode, downscale, encode as JPEG | 12 MP HEIC (4000x3000) | 244 ms, sends 0.36 MiB |
 
 - The common case, an image that already fits, never reaches a decoder: one
   pass over the container and a base64 encode.
@@ -409,6 +645,46 @@ machine, one core.
 The routes are behind the `files` feature of the CLI, which the budgeted
 builds (`agent-minimal`, `agent-slim`) do not enable, so their binaries do
 not change by a byte.
+### Object storage
+
+`cargo run --release -p graphrt-files --features s3 --example s3_bench`,
+same machine, SeaweedFS 3 in a container on loopback, medians.
+
+| What | Result |
+| --- | --- |
+| Stat | 0.39 ms |
+| Read a small object | 0.61 ms |
+| Write a small object | 1.17 ms |
+| Read 16 MiB | 11 ms (1,462 MiB/s) |
+| Write 16 MiB (hash, sign, upload) | 89 ms (180 MiB/s) |
+| Read a 256 KiB window in the middle of 16 MiB | 1.09 ms |
+| List 200 objects | 3.7 ms |
+| `files/read`, small file | 1.9 ms |
+| `files/search` across 200 small objects | 101 ms |
+
+The release build of the default CLI grows by 198 KiB with `files-s3`
+(32,835,312 to 33,037,552 bytes, x86_64 Linux), which is the credential
+chain and the signer. It stays opt in.
+
+Against a store in another region every request costs a round trip of tens
+of milliseconds, which makes `files/search` over many files the slow case.
+The windowed reads of `files/read` stay one ranged request per 256 KiB.
+### Documents
+
+`cargo run --release -p graphrt-docgen --example bench`, same machine, one
+core, medians.
+
+| What | Result |
+| --- | --- |
+| Read 29 KiB of Markdown | 0.34 ms |
+| PDF, a one page report | 0.045 ms |
+| PDF, 25 pages | 1.9 ms, 33 KiB |
+| DOCX, the same content | 0.8 ms, 6 KiB |
+| XLSX, 10,000 rows of 5 cells | 22.7 ms, 265 KiB |
+
+The default CLI grows by 318 KiB with the `documents` feature (32,834,544
+to 33,159,792 bytes, release, x86_64 Linux). The budgeted builds do not
+enable it and do not change.
 
 ### What it costs a build that does not use it
 
@@ -449,16 +725,14 @@ is used: nothing is opened, registered or allocated at start without
 
 - A user interface in Graphrt Desktop: attach files and images to an agent,
   see and save what it produced. The host side is small (a `Workspace` per
-  agent, `FileTools` and `ImageTools` in the tool registry, a
-  `VisionPreparer` in the services, the `files` output for the results), but
-  it has to follow the runtime version the app builds against.
-- Creating PDF and Office files. Agents write text formats.
-- Searching inside documents, and regular expression search.
-- Object storage backends in the repository. The trait is ready for them.
-- Native document blocks (sending a PDF to a provider as a document).
+  agent, `FileTools`, `ImageTools` and `DocumentTools` in the tool registry,
+  a `VisionPreparer` in the services, the `files` output for the results),
+  but it has to follow the runtime version the app builds against.
+- Native document blocks (sending a PDF to a provider as a document), see
+  [decision 16](#16-native-document-blocks-not-now).
 - Audio and video.
-- A second image generator (Gemini) and image editing.
-- HEIC and AVIF input. Phones produce HEIC, and it is refused today with a
-  message that says to convert it. Decoding it in pure Rust is not ready.
+- Image editing (an image as input to a generator).
+- AVIF input, until a safe decoder under a permissive licence exists
+  ([decision 15](#15-heic-behind-a-switch-avif-not-yet)).
 - Animations. GIF and WebP animations pass through when they fit, and are
   reduced to their first frame when they have to be encoded again.

@@ -1608,6 +1608,7 @@ dependencies = [
  "graphrt-code",
  "graphrt-core",
  "graphrt-doc",
+ "graphrt-docgen",
  "graphrt-eval",
  "graphrt-files",
  "graphrt-gateway",
@@ -1691,6 +1692,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphrt-docgen"
+version = "0.6.2"
+dependencies = [
+ "flate2",
+ "futures",
+ "graphrt-core",
+ "graphrt-doc",
+ "graphrt-files",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "zip",
+]
+
+[[package]]
 name = "graphrt-eval"
 version = "0.6.2"
 dependencies = [
@@ -1733,11 +1750,16 @@ dependencies = [
 name = "graphrt-files"
 version = "0.6.2"
 dependencies = [
+ "axum",
+ "bytes",
  "futures",
  "graphrt-core",
  "graphrt-doc",
  "graphrt-llm",
+ "graphrt-provider-aws",
  "libc",
+ "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -1818,6 +1840,7 @@ dependencies = [
  "graphrt-core",
  "graphrt-files",
  "graphrt-llm",
+ "heifer",
  "image",
  "reqwest",
  "rustls",
@@ -2135,6 +2158,46 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "heifer"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39676a49d27cf38f4fa8686db427e83e110806b50ef3ccfea7903320445442a6"
+dependencies = [
+ "heifer-hevc-dec",
+ "heifer-hevc-enc",
+ "heifer-isobmff",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "heifer-hevc-dec"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd5ce282048345ad4bd3b3a803e82116e1199dfbd7e8ebd10e3ee5c624e038f9"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "heifer-hevc-enc"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c03c90d3e4022fce21a9abd779725271428cc9acaf723b7bdf3a42002163610"
+dependencies = [
+ "heifer-hevc-dec",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "heifer-isobmff"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "734709f75671c5c91806a4c1334eed5e6e6d21ec1fab51d068cf7563d7ab08b0"
+dependencies = [
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "hermit-abi"

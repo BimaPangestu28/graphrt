@@ -152,3 +152,170 @@ fn image_tools_inspect_and_thumbnail_a_workspace_image() {
     assert!(!out.status.success());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `--workspace s3://...` is a build option, and a bad location is a usage error
+/// before any request is made.
+#[test]
+fn an_object_storage_workspace_needs_its_feature_and_a_valid_location() {
+    let workflow = example("files.yaml");
+    let run = |location: &str, env: &[(&str, &str)]| {
+        let args =
+            ["run", workflow.to_str().unwrap(), "--workspace", location, "--input", "title=a", "--input", "body=b"];
+        let mut command = Command::new(env!("CARGO_BIN_EXE_graphrt"));
+        command.args(args).env("AWS_ACCESS_KEY_ID", "test").env("AWS_SECRET_ACCESS_KEY", "test");
+        command.env_remove("GRAPHRT_S3_ALLOW_HTTP").env_remove("GRAPHRT_S3_ENDPOINT").envs(env.iter().copied());
+        let out = command.output().unwrap();
+        (out.status.code(), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+    #[cfg(not(feature = "files-s3"))]
+    {
+        let (code, report) = run("s3://my-bucket/agents", &[]);
+        assert_eq!(code, Some(2), "{report}");
+        assert!(report.contains("requires a build with the `files-s3` feature"), "{report}");
+    }
+    #[cfg(feature = "files-s3")]
+    {
+        let (code, report) = run("s3://Not_A_Bucket/agents", &[]);
+        assert_eq!(code, Some(2), "{report}");
+        assert!(report.contains("not a valid bucket name"), "{report}");
+        let (code, report) = run("s3://my-bucket/a/../b", &[]);
+        assert_eq!(code, Some(2), "{report}");
+        assert!(report.contains("prefix"), "{report}");
+        // An unencrypted endpoint is refused unless it is allowed by name.
+        let (code, report) = run("s3://my-bucket/agents", &[("GRAPHRT_S3_ENDPOINT", "http://127.0.0.1:9")]);
+        assert_eq!(code, Some(2), "{report}");
+        assert!(report.contains("unencrypted"), "{report}");
+        let (code, report) = run("s3://my-bucket", &[("GRAPHRT_S3_PATH_STYLE", "maybe")]);
+        assert_eq!(code, Some(2), "{report}");
+        assert!(report.contains("GRAPHRT_S3_PATH_STYLE"), "{report}");
+    }
+}
+
+/// `--document-tools`: a workflow writes a PDF, a Word document and a workbook.
+#[cfg(feature = "documents")]
+#[test]
+fn document_tools_write_pdf_word_and_excel_files() {
+    let dir = temp_dir("documents");
+    let workflow = example("documents.yaml");
+    let run = |extra: &[&str]| {
+        let mut args = vec!["run", workflow.to_str().unwrap(), "--input", "title=Sales report", "-o", "json"];
+        args.extend(["--workspace", dir.to_str().unwrap()]);
+        args.extend(extra);
+        Command::new(env!("CARGO_BIN_EXE_graphrt")).args(args).output().unwrap()
+    };
+    let out = run(&["--document-tools"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        json["outputs"]["pdf"].as_str().unwrap().starts_with("Created reports/report.pdf (application/pdf, 1 page")
+    );
+    assert_eq!(json["outputs"]["files"][0]["reference"], "workspace:reports/report.pdf");
+    assert_eq!(json["outputs"]["files"][0]["mime_type"], "application/pdf");
+    assert!(std::fs::read(dir.join("reports/report.pdf")).unwrap().starts_with(b"%PDF-1.4"));
+    assert!(std::fs::read(dir.join("reports/report.docx")).unwrap().starts_with(b"PK"));
+    assert!(std::fs::read(dir.join("reports/revenue.xlsx")).unwrap().starts_with(b"PK"));
+
+    // Without the flag a workspace has file tools only.
+    let out = run(&[]);
+    assert!(!out.status.success());
+    let report = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(report.contains("unknown tool provider `documents`"), "{report}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--image-model gemini/NAME`: the Gemini generator behind `image/generate`,
+/// against a local server that answers like the Gemini API.
+#[cfg(feature = "image")]
+#[test]
+fn a_gemini_image_model_generates_into_the_workspace() {
+    use std::io::{Read, Write};
+    const PNG_1X1: &str =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let dir = temp_dir("gemini");
+    let workflow = dir.join("draw.yaml");
+    std::fs::write(
+        &workflow,
+        r#"version: "1"
+name: draw
+graph:
+  nodes:
+    - { id: start, type: start }
+    - id: draw
+      type: tool
+      provider_id: image
+      tool_name: generate
+      tool_parameters:
+        prompt: { type: constant, value: "a red bicycle" }
+        size: { type: constant, value: "1024x1024" }
+        output: { type: constant, value: "generated/bike.png" }
+    - id: end
+      type: end
+      outputs:
+        - { variable: text, value_selector: [draw, text] }
+        - { variable: files, value_selector: [draw, files] }
+  edges:
+    - { source: start, target: draw }
+    - { source: draw, target: end }
+"#,
+    )
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}/v1beta", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let read = socket.read(&mut buffer).unwrap_or(0);
+            request.extend_from_slice(&buffer[..read]);
+            let text = String::from_utf8_lossy(&request).into_owned();
+            let complete = text.split_once("\r\n\r\n").is_some_and(|(head, body)| {
+                let length = head.lines().find_map(|line| {
+                    line.to_ascii_lowercase().strip_prefix("content-length:")?.trim().parse::<usize>().ok()
+                });
+                body.len() >= length.unwrap_or(0)
+            });
+            if read == 0 || complete {
+                break;
+            }
+        }
+        let body = format!(
+            r#"{{"candidates":[{{"content":{{"parts":[{{"inlineData":{{"mimeType":"image/png","data":"{PNG_1X1}"}}}}]}}}}]}}"#
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        socket.write_all(response.as_bytes()).unwrap();
+        String::from_utf8_lossy(&request).into_owned()
+    });
+    let run = |env: &[(&str, &str)]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_graphrt"));
+        command.args([
+            "run",
+            workflow.to_str().unwrap(),
+            "-o",
+            "json",
+            "--workspace",
+            dir.join("ws").to_str().unwrap(),
+        ]);
+        command.args(["--image-tools", "--image-model", "gemini/gemini-3.1-flash-image"]);
+        command.env_remove("GEMINI_API_KEY").env_remove("GOOGLE_API_KEY").envs(env.iter().copied());
+        command.output().unwrap()
+    };
+    let out = run(&[("GEMINI_API_KEY", "test-key-for-the-fake"), ("GEMINI_BASE_URL", &base_url)]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(json["outputs"]["text"].as_str().unwrap().starts_with("Generated: generated/bike.png (image/png, 1x1"));
+    assert_eq!(json["outputs"]["files"][0]["reference"], "workspace:generated/bike.png");
+    assert!(std::fs::read(dir.join("ws/generated/bike.png")).unwrap().starts_with(b"\x89PNG"));
+    let request = server.join().unwrap();
+    assert!(request.starts_with("POST /v1beta/models/gemini-3.1-flash-image:generateContent HTTP/1.1"), "{request}");
+    assert!(request.to_ascii_lowercase().contains("x-goog-api-key: test-key-for-the-fake"));
+
+    // Without a key the server does not start a run at all.
+    let out = run(&[]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("GEMINI_API_KEY"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

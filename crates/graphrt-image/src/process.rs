@@ -47,6 +47,8 @@ fn codec(format: ImageFormat) -> image::ImageFormat {
         ImageFormat::Jpeg => image::ImageFormat::Jpeg,
         ImageFormat::Gif => image::ImageFormat::Gif,
         ImageFormat::WebP => image::ImageFormat::WebP,
+        // Never reached: HEIC is decoded by `crate::heic` and never written.
+        ImageFormat::Heic => image::ImageFormat::Jpeg,
     }
 }
 
@@ -59,6 +61,10 @@ fn codec(format: ImageFormat) -> image::ImageFormat {
 pub(crate) fn decode(bytes: &[u8], info: &ImageInfo, limits: &ImageLimits) -> Result<DynamicImage, ImageError> {
     limits.check_dimensions(info.width, info.height)?;
     let format = info.format;
+    #[cfg(feature = "heic")]
+    if format == ImageFormat::Heic {
+        return crate::heic::decode_heic(bytes, limits);
+    }
     let decoded = catch_unwind(AssertUnwindSafe(|| {
         let mut reader = ImageReader::with_format(Cursor::new(bytes), codec(format));
         let mut bounds = Limits::default();
@@ -148,6 +154,7 @@ pub(crate) fn encode(image: &DynamicImage, format: ImageFormat, jpeg_quality: u8
     let mut out = Vec::new();
     let failed = |e: image::ImageError| ImageError::Encode(e.to_string());
     match format {
+        ImageFormat::Heic => return Err(ImageError::Encode("HEIC images are read, not written".to_owned())),
         ImageFormat::Jpeg => {
             let rgb = flatten(image);
             JpegEncoder::new_with_quality(&mut out, jpeg_quality.clamp(1, 100)).encode_image(&rgb).map_err(failed)?;
