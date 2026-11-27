@@ -109,6 +109,12 @@ pub async fn build_state(
         };
         state.with_bundled_skills(bundled_skills)
     };
+    // `/v1/learning` manages the lessons the served agents read.
+    #[cfg(feature = "learning")]
+    let state = match &options.learning_dir {
+        Some(dir) => state.with_lesson_store(Some(Arc::new(graphrt_learn::LessonStore::open(dir)))),
+        None => state,
+    };
     // The same workspace the `files` tools use, so `/v1/files` shares its quota.
     #[cfg(feature = "files")]
     let state = state.with_workspace(services.get::<setup::ServedWorkspace>().cloned());

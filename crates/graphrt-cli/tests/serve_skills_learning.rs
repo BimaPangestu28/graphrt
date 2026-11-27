@@ -11,7 +11,6 @@ use axum::http::{Method, Request, StatusCode};
 use graphrt_cli::serve::{AppState, build_state, discover, router};
 use graphrt_cli::setup::ServiceOptions;
 use graphrt_core::engine::Limits;
-use graphrt_learn::LessonStore;
 use http_body_util::BodyExt;
 use serde_json::{Value as Json, json};
 use tower::ServiceExt;
@@ -43,13 +42,11 @@ impl Server {
             env_file: model.map(FakeModel::env).unwrap_or_default(),
             allow_private_network: true,
             skills_dir: Some(root.join("skills")),
+            learning_dir: Some(root.join("learning")),
             ..ServiceOptions::default()
         };
         let files = discover(&file).expect("discover");
-        let state = build_state(&files, &options, Limits::default(), api_key.map(str::to_owned))
-            .await
-            .expect("state")
-            .with_lesson_store(Some(Arc::new(LessonStore::open(root.join("learning")))));
+        let state = build_state(&files, &options, Limits::default(), api_key.map(str::to_owned)).await.expect("state");
         let state = Arc::new(state);
         (Self { app: router(Arc::clone(&state), 1 << 20), root }, state)
     }

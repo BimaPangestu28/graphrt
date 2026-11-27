@@ -338,6 +338,9 @@ impl AppState {
     }
 
     /// Serve `/v1/learning` from `store` instead of the default lesson store.
+    /// The served agents read the store of `ServiceOptions::learning_dir`:
+    /// set that instead and [`build_state`](super::build_state) keeps the two
+    /// the same. Use this only to turn the routes off (`None`).
     #[cfg(feature = "learning")]
     pub fn with_lesson_store(mut self, store: Option<Arc<graphrt_learn::LessonStore>>) -> Self {
         self.lessons = store;
