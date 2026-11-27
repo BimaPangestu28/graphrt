@@ -253,6 +253,10 @@ the command line.
   Office, Markdown...), inspect chunks, enable or disable and delete documents,
   and test retrieval — on the same knowledge base the workflows use. See
   [docs/serving.md](docs/serving.md#knowledge-base-api).
+- **Connectors**: the `sources:` of a knowledge config keep datasets in sync
+  with web sites (pages, crawls, sitemaps), REST APIs, Google Drive, Notion and
+  SharePoint, incrementally and on a schedule (`graphrt serve`, `graphrt kb sync`).
+  See [docs/knowledge-connectors.md](docs/knowledge-connectors.md).
 
 ```yaml
 embedders: { local: { type: local } }                  # in-process, offline after first use
@@ -508,6 +512,7 @@ graphrt-files   file workspaces for agents: sandboxed store, quotas, the `files`
 graphrt-image   images for agents: checked and resized vision input, EXIF removal, the `image` tools
 graphrt-docgen  documents from agents: PDF, Word and Excel files, the `documents` tools
 graphrt-rag     knowledge-retrieval node, stores, embedders, ingestion
+graphrt-connect knowledge connectors: web, REST APIs, Google Drive, Notion, SharePoint, sync and schedules
 graphrt-plugin  process / HTTP plugin host; graphrt-wasm: sandboxed WebAssembly plugins
 graphrt-bundle  portable .grt bundles; graphrt-otel: OpenTelemetry export
 graphrt-eval    eval harness: test suites, assertions, trajectories, retrieval metrics, CI gate

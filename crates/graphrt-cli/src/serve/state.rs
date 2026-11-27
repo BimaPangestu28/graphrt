@@ -686,6 +686,23 @@ impl AppState {
         self
     }
 
+    /// Serve the knowledge base together with the `sources:` of its config.
+    ///
+    /// @throws `CliError::Usage` for invalid sources.
+    #[cfg(feature = "connectors")]
+    pub fn with_knowledge_sources(
+        mut self,
+        knowledge: Option<graphrt_rag::KnowledgeBase>,
+        config: Option<PathBuf>,
+        vars: &[(String, String)],
+    ) -> Result<Self, crate::error::CliError> {
+        self.knowledge = match knowledge {
+            Some(kb) => Some(crate::knowledge_api::KnowledgeService::new(kb, config).with_sources(vars)?),
+            None => None,
+        };
+        Ok(self)
+    }
+
     #[cfg(feature = "rag")]
     pub(crate) fn knowledge(&self) -> Option<&crate::knowledge_api::KnowledgeService> {
         self.knowledge.as_ref()

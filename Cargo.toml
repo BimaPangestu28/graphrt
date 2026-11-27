@@ -11,6 +11,7 @@ members = [
     "crates/graphrt-image",
     "crates/graphrt-docgen",
     "crates/graphrt-rag",
+    "crates/graphrt-connect",
     "crates/graphrt-plugin",
     "crates/graphrt-plugin-sdk",
     "crates/graphrt-skill",
@@ -53,6 +54,7 @@ graphrt-files = { path = "crates/graphrt-files", version = "0.6.2", default-feat
 graphrt-image = { path = "crates/graphrt-image", version = "0.6.2", default-features = false }
 graphrt-docgen = { path = "crates/graphrt-docgen", version = "0.6.2", default-features = false }
 graphrt-rag = { path = "crates/graphrt-rag", version = "0.6.2", default-features = false }
+graphrt-connect = { path = "crates/graphrt-connect", version = "0.6.2", default-features = false }
 graphrt-plugin = { path = "crates/graphrt-plugin", version = "0.6.2", default-features = false }
 graphrt-plugin-sdk = { path = "crates/graphrt-plugin-sdk", version = "0.6.2", default-features = false }
 graphrt-skill = { path = "crates/graphrt-skill", version = "0.6.2", default-features = false }

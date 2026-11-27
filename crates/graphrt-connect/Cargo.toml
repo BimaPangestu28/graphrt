@@ -1,0 +1,57 @@
+[package]
+name = "graphrt-connect"
+description = "Knowledge connectors for graphrt: keep knowledge bases in sync with web sites, REST APIs, Google Drive, Notion and SharePoint, incrementally and on a schedule."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-connect"
+keywords = ["rag", "connector", "sync", "knowledge", "graphrt"]
+categories = ["text-processing", "web-programming"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["web", "api", "google-drive", "notion", "sharepoint", "sqlite", "rag"]
+# Web pages: one page, a crawl bounded by depth, page count and domain, or a
+# sitemap.xml. Honours robots.txt.
+web = []
+# REST / JSON APIs: method, headers, pagination, JSONPath to the text fields.
+api = []
+# Google Drive folders and files (Google Docs, Sheets and Slides exported as text).
+google-drive = []
+# Notion pages and databases.
+notion = []
+# SharePoint document libraries and OneDrive folders over Microsoft Graph.
+sharepoint = []
+# `SqliteSyncState`: sync state and the sync lock in one SQLite file, shared by
+# every process that syncs the same knowledge base.
+sqlite = ["dep:rusqlite"]
+# `KnowledgeSink`: synced documents go into a graphrt-rag knowledge base
+# (text extraction with graphrt-doc, then the usual chunking and embedding).
+rag = ["dep:graphrt-rag"]
+
+[dependencies]
+graphrt-core = { workspace = true, features = ["cron"] }
+graphrt-http.workspace = true
+graphrt-rag = { workspace = true, optional = true, features = ["doc"] }
+futures.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+reqwest = { workspace = true, features = ["rustls-no-provider", "json"] }
+tokio = { workspace = true, features = ["time", "sync", "rt"] }
+url = "2"
+sha2 = { version = "0.11", default-features = false }
+rusqlite = { version = "0.43", optional = true, features = ["bundled"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+graphrt-rag = { workspace = true, features = ["doc", "sqlite"] }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true

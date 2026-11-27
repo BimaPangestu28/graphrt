@@ -17,7 +17,7 @@ pub mod quota;
 pub mod retire;
 pub mod signature;
 pub mod store;
-pub mod tz;
+pub use graphrt_core::cron::tz;
 pub mod warm;
 
 /// Installs rustls' ring crypto provider for the process (idempotent). The

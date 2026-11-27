@@ -17,6 +17,8 @@ pub mod catalog;
 pub mod child_env;
 pub mod condition;
 pub mod coordination;
+#[cfg(feature = "cron")]
+pub mod cron;
 pub mod doc_schema;
 pub mod dsl;
 pub mod engine;
