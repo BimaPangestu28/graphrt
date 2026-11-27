@@ -342,8 +342,11 @@ fn install_workspace(
 ) -> Result<(ServedWorkspace, Arc<dyn graphrt_core::file::FileResolver>), CliError> {
     use graphrt_files::{FileTools, PROVIDER, Workspace, WorkspaceLimits, WorkspaceResolver};
     let limits = WorkspaceLimits { read_only: options.read_only, ..WorkspaceLimits::default() };
-    let workspace = Workspace::dir(&options.dir, limits)
-        .map_err(|e| CliError::usage(format!("`--workspace {}`: {e}", options.dir.display())))?;
+    let workspace = match options.dir.to_str().and_then(|dir| dir.strip_prefix(S3_SCHEME)) {
+        Some(location) => object_storage_workspace(location, limits, vars)?,
+        None => Workspace::dir(&options.dir, limits)
+            .map_err(|e| CliError::usage(format!("`--workspace {}`: {e}", options.dir.display())))?,
+    };
     if tools.get(PROVIDER).is_some() {
         return Err(CliError::usage(format!(
             "tool provider `{PROVIDER}` is defined by a plugin and by `--workspace`; rename the plugin's provider"
@@ -362,6 +365,59 @@ fn install_workspace(
     };
     tools.add(PROVIDER, Arc::new(file_tools));
     Ok((served, Arc::new(resolver)))
+}
+
+/// Prefix of a `--workspace` kept in object storage: `s3://bucket/prefix`.
+#[cfg(feature = "files")]
+const S3_SCHEME: &str = "s3://";
+
+/// A workspace in S3 or an S3 compatible store (`--workspace s3://bucket/prefix`).
+///
+/// Region from `GRAPHRT_S3_REGION`, `AWS_REGION` or `AWS_DEFAULT_REGION`
+/// (default `us-east-1`), credentials from the usual AWS variables and roles.
+/// For other stores: `GRAPHRT_S3_ENDPOINT` (`https://host[:port]`),
+/// `GRAPHRT_S3_PATH_STYLE=false` for bucket host names, and
+/// `GRAPHRT_S3_ALLOW_HTTP=true` to accept an `http://` endpoint.
+///
+/// @throws CliError (usage) - An invalid location or setting, or a build without `files-s3`.
+#[cfg(feature = "files")]
+fn object_storage_workspace(
+    location: &str,
+    limits: graphrt_files::WorkspaceLimits,
+    vars: &[(String, String)],
+) -> Result<graphrt_files::Workspace, CliError> {
+    #[cfg(feature = "files-s3")]
+    {
+        let lookup = |name: &str| {
+            let found = vars.iter().rev().find(|(key, _)| key == name).map(|(_, value)| value.clone());
+            found.filter(|value| !value.is_empty())
+        };
+        let flag = |name: &str| match lookup(name).as_deref() {
+            None => Ok(None),
+            Some("true") => Ok(Some(true)),
+            Some("false") => Ok(Some(false)),
+            Some(other) => Err(CliError::usage(format!("`{name}` must be `true` or `false`, not `{other}`"))),
+        };
+        let (bucket, prefix) = location.split_once('/').unwrap_or((location, ""));
+        let region = ["GRAPHRT_S3_REGION", "AWS_REGION", "AWS_DEFAULT_REGION"].into_iter().find_map(lookup);
+        let config = graphrt_files::S3Config {
+            endpoint: lookup("GRAPHRT_S3_ENDPOINT"),
+            prefix: Some(prefix.to_owned()).filter(|prefix| !prefix.is_empty()),
+            path_style: flag("GRAPHRT_S3_PATH_STYLE")?,
+            allow_http: flag("GRAPHRT_S3_ALLOW_HTTP")?.unwrap_or(false),
+            ..graphrt_files::S3Config::new(bucket, region.unwrap_or_else(|| "us-east-1".to_owned()))
+        };
+        let store = graphrt_files::S3Store::from_lookup(&config, lookup)
+            .map_err(|e| CliError::usage(format!("`--workspace {S3_SCHEME}{location}`: {e}")))?;
+        Ok(graphrt_files::Workspace::new(Arc::new(store), limits))
+    }
+    #[cfg(not(feature = "files-s3"))]
+    {
+        let _ = (limits, vars);
+        Err(CliError::usage(format!(
+            "`--workspace {S3_SCHEME}{location}` requires a build with the `files-s3` feature"
+        )))
+    }
 }
 
 /// Register the `image` tool provider over the workspace (`--image-tools`),

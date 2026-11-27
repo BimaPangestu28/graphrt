@@ -1702,11 +1702,15 @@ dependencies = [
 name = "graphrt-files"
 version = "0.6.2"
 dependencies = [
+ "axum",
+ "bytes",
  "futures",
  "graphrt-core",
  "graphrt-doc",
  "graphrt-llm",
+ "graphrt-provider-aws",
  "libc",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",

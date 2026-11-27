@@ -125,6 +125,10 @@ They are off without the flag.
   sandboxing `Content-Security-Policy`. HTML, SVG and programs are always
   `application/octet-stream` attachments. The server refuses to start with
   the routes on an address other hosts can reach unless an API key is set.
+- **Object storage is opt in.** `--workspace s3://bucket/prefix` (feature
+  `files-s3`) keeps the same rules over S3. Requests are signed, redirects
+  are not followed, `http://` endpoints must be allowed explicitly, and no
+  path reaches outside the prefix. Scope the bucket policy to that prefix.
 - **File content is data.** `read` frames content between boundaries that
   change on every call. That lowers the odds of a prompt injection, it does
   not remove them: put destructive and outbound tools under

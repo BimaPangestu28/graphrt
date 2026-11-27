@@ -29,6 +29,9 @@ pub enum StoreError {
     Denied { path: String, reason: String },
     #[error("storage error on `{path}`: {message}")]
     Io { path: String, message: String },
+    /// A store that cannot be set up as asked (a bad bucket, endpoint or prefix).
+    #[error("invalid storage configuration: {0}")]
+    Config(String),
 }
 
 impl StoreError {

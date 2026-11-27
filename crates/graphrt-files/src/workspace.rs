@@ -394,6 +394,7 @@ fn rename_error(error: StoreError, path: &WorkspacePath) -> StoreError {
         StoreError::NotAFile(_) => StoreError::NotAFile(shown),
         StoreError::Denied { reason, .. } => StoreError::Denied { path: shown, reason },
         StoreError::Io { message, .. } => StoreError::Io { path: shown, message },
+        StoreError::Config(message) => StoreError::Config(message),
     }
 }
 

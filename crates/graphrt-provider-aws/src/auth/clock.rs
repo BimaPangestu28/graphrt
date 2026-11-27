@@ -46,7 +46,7 @@ impl Clock {
 }
 
 /// Parse an RFC 7231 HTTP date (`Sun, 06 Nov 1994 08:49:37 GMT`) into Unix seconds.
-pub(crate) fn parse_http_date(value: &str) -> Option<u64> {
+pub fn parse_http_date(value: &str) -> Option<u64> {
     let mut parts = value.split_whitespace().skip(1);
     let day: u32 = parts.next()?.parse().ok()?;
     let month = match parts.next()? {
