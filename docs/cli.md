@@ -201,6 +201,12 @@ the messages a minute of one customer and of all customers of a channel. A
 channel turns on `--conversations`. All are off unless given. See
 [channels.md](channels.md).
 
+`--console console.yaml` (or `$GRAPHRT_CONSOLE`, cargo feature `console`)
+serves the admin console at `/console/`: sign in with OpenID Connect, roles on
+every route, an audit log, encrypted secrets and an agent registry with
+environments. It needs the API key. Off unless given. See
+[console.md](console.md).
+
 `--deployment NAME` (or `$GRAPHRT_DEPLOYMENT`) names the deployment the server
 belongs to: webhook idempotency run ids include it, as a graphrt gateway derives
 them (see [serving.md](serving.md#idempotency)), and `--trust-gateway` requires

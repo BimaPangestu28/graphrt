@@ -155,6 +155,11 @@ pub fn parse(token: &str) -> Result<ParsedToken<'_>, TokenError> {
 }
 
 impl ParsedToken<'_> {
+    /// The claims, not verified yet.
+    pub fn claims(&self) -> &serde_json::Value {
+        &self.claims
+    }
+
     /// Whether some key in `keys` could have signed this token (same `alg`, matching `kid`).
     pub fn has_candidate(&self, keys: &[VerifyKey]) -> bool {
         keys.iter().any(|k| k.matches(self.algorithm, self.key_id.as_deref()))

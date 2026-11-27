@@ -67,6 +67,9 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     // newline that clients never send.
     let api_key =
         lookup_env(&options, &args.api_key_env).map(|key| key.trim().to_owned()).filter(|key| !key.is_empty());
+    // The console's secrets and registry versions are part of what is served.
+    #[cfg(feature = "console")]
+    let (console, files) = super::console::open(&args, &mut options, files, api_key.as_deref())?;
     #[cfg(feature = "jwt")]
     let user_auth = user_auth_from_args(&args, &options, api_key.is_some()).await?;
     #[cfg(feature = "jwt")]
@@ -112,11 +115,15 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let state = with_user_resume(state, &args, verifies_user_tokens)?;
     #[cfg(feature = "devices")]
     let state = monitoring_from_args(state, &args, &options, api_key.is_some())?;
+    #[cfg(feature = "console")]
+    let state = state.with_console(console.clone());
     let state = Arc::new(state);
     #[cfg(feature = "channels")]
     if let Some(channels) = state.channels() {
         channels.start(&state);
     }
+    #[cfg(feature = "console")]
+    super::console::attach(console.as_ref(), &state, &files, &options);
     #[cfg(feature = "approvals")]
     if state.approvals().is_some_and(|approvals| approvals.expire) {
         crate::approvals::spawn_expiry(&state);
@@ -169,6 +176,11 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     if let Some(telemetry) = &telemetry {
         telemetry.shutdown().await;
     }
+    // An owner applied console changes: start again with them.
+    #[cfg(feature = "console")]
+    if super::console::restart_requested() {
+        return super::console::restart();
+    }
     Ok(EXIT_OK)
 }
 
@@ -207,8 +219,8 @@ fn cors_from_args(
 }
 
 /// The run store directory: `--store`, else `$GRAPHRT_STORE`.
-#[cfg(any(feature = "conversations", feature = "devices"))]
-fn store_dir(args: &ServeArgs) -> Option<PathBuf> {
+#[cfg(any(feature = "conversations", feature = "devices", feature = "console"))]
+pub(super) fn store_dir(args: &ServeArgs) -> Option<PathBuf> {
     let env_dir = std::env::var(crate::store::STORE_ENV).ok().filter(|dir| !dir.is_empty()).map(PathBuf::from);
     args.store.clone().or(env_dir)
 }
@@ -377,7 +389,7 @@ fn plugin_pool(args: &ServeArgs) -> Result<crate::extensions::PluginPool, CliErr
 }
 
 /// A variable of the process environment, else of `--env-file`.
-fn lookup_env(options: &ServiceOptions, name: &str) -> Option<String> {
+pub(super) fn lookup_env(options: &ServiceOptions, name: &str) -> Option<String> {
     std::env::var(name).ok().or_else(|| options.env_file.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()))
 }
 

@@ -1,0 +1,36 @@
+[package]
+name = "graphrt-console"
+description = "Admin console for self hosted graphrt servers: OIDC sign in, roles, an audit log, encrypted secrets and an agent registry with environments."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-console"
+homepage = "https://github.com/Graphrt/graphrt"
+keywords = ["agent", "workflow", "oidc", "audit", "admin"]
+categories = ["web-programming::http-server", "authentication"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+graphrt-core = { workspace = true, features = ["yaml"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+base64 = "0.23"
+futures.workspace = true
+reqwest = { workspace = true, features = ["rustls-no-provider", "form"] }
+# The TLS provider of the HTTP client to the identity provider (the one the workspace uses).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+ring = { version = "0.17", default-features = false, features = ["alloc"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = { version = "0.11", default-features = false }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "fs", "rt"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+http-body-util = "0.1"
+
+[lints]
+workspace = true

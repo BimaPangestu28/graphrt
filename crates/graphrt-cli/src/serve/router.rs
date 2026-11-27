@@ -36,10 +36,12 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     // Gateway-signed routes authenticate themselves (HMAC, `--trust-gateway`).
     #[cfg(feature = "trust-gateway")]
     let counted = if state.gateway_agent.is_some() { counted.merge(crate::gateway_agent::router()) } else { counted };
-    Router::new()
-        .route("/healthz", get(|| async { "ok" }))
-        .route("/readyz", get(readiness))
-        .merge(counted)
+    let routes =
+        Router::new().route("/healthz", get(|| async { "ok" })).route("/readyz", get(readiness)).merge(counted);
+    // The admin console checks sessions and roles in front of every route (`--console`).
+    #[cfg(feature = "console")]
+    let routes = super::console::wrap(routes, &state, max_upload_bytes);
+    routes
         .layer(DefaultBodyLimit::max(max_body_bytes))
         // Outermost: early rejections leave the body unread; drain it so keep-alive clients can reuse the connection.
         .layer(middleware::from_fn_with_state(

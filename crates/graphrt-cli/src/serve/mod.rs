@@ -25,6 +25,7 @@
 //! | GET | `/monitor/` | – | the monitoring page (`--monitor`), with `/v1/monitor/config` |
 //! | GET | `/chat/`, `/chat/{workflow}` | – | the chat page (`--chat`), with `/chat/embed.js`, `/v1/chat/config` and `/v1/chat/guest` |
 //! | GET, POST | `/v1/channels/{name}/webhook` | a Telegram update or a WhatsApp delivery | messaging channels (`--channel`, see [`crate::channels`]) |
+//! | GET | `/console/`, `/v1/console/...` | – | the admin console (`--console`, see `docs/console.md`): sign in, registry, secrets, roles, audit log |
 //! | GET | `/v1/hooks` | – | webhooks configured with `--webhooks` |
 //! | POST | `/v1/hooks/{hook}` | any JSON (signature-checked when configured) | `202` + run id; see [`crate::webhooks`] |
 //!
@@ -55,6 +56,8 @@ mod auth;
 mod build;
 #[cfg(feature = "web-chat")]
 mod chat;
+#[cfg(feature = "console")]
+mod console;
 #[cfg(feature = "cors")]
 mod cors;
 mod delivery;
