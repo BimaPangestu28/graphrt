@@ -64,11 +64,45 @@ impl FakeMachine {
     }
 }
 
+/// One fake volume.
+#[derive(Clone, Debug)]
+pub struct FakeVolume {
+    pub id: String,
+    pub name: String,
+    pub region: String,
+    pub size_gb: u64,
+    /// The Machine whose config mounts it.
+    pub attached_machine_id: Option<String>,
+}
+
+impl FakeVolume {
+    fn to_json(&self) -> Value {
+        json!({
+            "id": self.id, "name": self.name, "state": "created", "region": self.region, "size_gb": self.size_gb,
+            "encrypted": true, "attached_machine_id": self.attached_machine_id,
+        })
+    }
+}
+
+/// The volume ids a Machine config mounts.
+fn mounted_volumes(config: &Value) -> Vec<String> {
+    config
+        .get("mounts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|mount| mount.get("volume").and_then(Value::as_str).map(str::to_owned))
+        .collect()
+}
+
 /// Everything the fake knows.
 #[derive(Debug, Default)]
 pub struct FakeFlyState {
     pub apps: BTreeMap<String, String>,
     pub machines: Vec<FakeMachine>,
+    /// Volumes of the app. Like Fly, a volume is mounted by at most one
+    /// Machine, in its region, and only a new Machine can mount one.
+    pub volumes: Vec<FakeVolume>,
     pub secrets: BTreeMap<String, String>,
     /// Version of the app's secrets, bumped by every secrets update.
     pub secrets_version: u64,
@@ -94,6 +128,10 @@ impl FakeFlyState {
 
     pub fn count(&self, call: &str) -> u32 {
         self.calls.get(call).copied().unwrap_or(0)
+    }
+
+    pub fn volume_named(&self, name: &str) -> Option<&FakeVolume> {
+        self.volumes.iter().find(|volume| volume.name == name)
     }
 
     pub fn machine_named(&self, name: &str) -> Option<&FakeMachine> {
@@ -234,6 +272,11 @@ fn handle(state: &Mutex<FakeFlyState>, request: &RecordedRequest) -> FakeRespons
             FakeResponse::json(200, &json!({"ok": true}))
         }),
         ("GET", ["apps", _, "machines", id, "wait"]) => wait_machine(&mut state, id, query),
+        ("GET", ["apps", _, "volumes"]) => {
+            FakeResponse::json(200, &Value::Array(state.volumes.iter().map(FakeVolume::to_json).collect()))
+        }
+        ("POST", ["apps", _, "volumes"]) => create_volume(&mut state, &body),
+        ("DELETE", ["apps", _, "volumes", id]) => delete_volume(&mut state, id),
         ("GET", ["apps", _, "secrets"]) => {
             let names: Vec<Value> = state.secrets.keys().map(|name| json!({"name": name, "digest": "d"})).collect();
             FakeResponse::json(200, &json!({ "secrets": names }))
@@ -257,6 +300,7 @@ fn delete_app(state: &mut FakeFlyState, app: &str) -> FakeResponse {
         return error(404, "app not found");
     }
     state.machines.clear();
+    state.volumes.clear();
     state.secrets.clear();
     state.ips.remove(app);
     FakeResponse::status(202)
@@ -272,10 +316,48 @@ fn assign_ip(state: &mut FakeFlyState, app: &str, body: &Value) -> FakeResponse 
     FakeResponse::json(200, &json!({"ip": address}))
 }
 
+fn create_volume(state: &mut FakeFlyState, body: &Value) -> FakeResponse {
+    let (Some(name), Some(region)) =
+        (body["name"].as_str(), body["region"].as_str().filter(|region| !region.is_empty()))
+    else {
+        return error(400, "a volume needs a name and a region");
+    };
+    let size_gb = body["size_gb"].as_u64().unwrap_or(1);
+    state.next_id += 1;
+    let volume = FakeVolume {
+        id: format!("vol_{:08x}", state.next_id),
+        name: name.to_owned(),
+        region: region.to_owned(),
+        size_gb,
+        attached_machine_id: None,
+    };
+    state.volumes.push(volume.clone());
+    FakeResponse::json(200, &volume.to_json())
+}
+
+fn delete_volume(state: &mut FakeFlyState, id: &str) -> FakeResponse {
+    match state.volumes.iter().position(|volume| volume.id == id) {
+        Some(index) if state.volumes[index].attached_machine_id.is_some() => {
+            error(400, "volume is attached to a machine")
+        }
+        Some(index) => {
+            state.volumes.remove(index);
+            FakeResponse::json(200, &json!({"ok": true}))
+        }
+        None => error(404, "volume not found"),
+    }
+}
+
 fn update_machine(state: &mut FakeFlyState, id: &str, body: &Value) -> FakeResponse {
     let failing_checks = state.failing_checks;
     let skip_launch = body["skip_launch"].as_bool() == Some(true);
     let config = body["config"].clone();
+    // Like Fly: the volumes of a Machine are decided when it is created.
+    if let Some(machine) = state.machine(id)
+        && mounted_volumes(&machine.config) != mounted_volumes(&config)
+    {
+        return error(400, "invalid_argument: unable to add volume after machine is created");
+    }
     with_machine(state, id, |machine| {
         machine.config = config;
         if !skip_launch {
@@ -308,13 +390,25 @@ fn create_machine(state: &mut FakeFlyState, body: &Value) -> FakeResponse {
             &json!({"error": "a machine with this name already exists", "status": "name_taken"}),
         );
     }
+    let region = body["region"].as_str().unwrap_or_default().to_owned();
+    let mounts = mounted_volumes(&body["config"]);
+    for volume_id in &mounts {
+        match state.volumes.iter().find(|volume| &volume.id == volume_id) {
+            None => return error(400, "volume not found"),
+            Some(volume) if volume.attached_machine_id.is_some() => {
+                return error(400, "volume is already attached to a machine");
+            }
+            Some(volume) if volume.region != region => {
+                return error(400, "the volume is in another region than the machine");
+            }
+            Some(_) => {}
+        }
+    }
     let initial_state = if body["skip_launch"].as_bool() == Some(true) { "created" } else { "starting" };
-    let machine = state.add_machine(
-        name,
-        body["region"].as_str().unwrap_or_default().to_owned(),
-        body["config"].clone(),
-        initial_state,
-    );
+    let machine = state.add_machine(name, region, body["config"].clone(), initial_state);
+    for volume in state.volumes.iter_mut().filter(|volume| mounts.contains(&volume.id)) {
+        volume.attached_machine_id = Some(machine.id.clone());
+    }
     FakeResponse::json(200, &machine.to_json(state.failing_checks))
 }
 
@@ -332,6 +426,11 @@ fn with_machine(
 fn destroy_machine(state: &mut FakeFlyState, id: &str) -> FakeResponse {
     let before = state.machines.len();
     state.machines.retain(|machine| machine.id != id);
+    for volume in &mut state.volumes {
+        if volume.attached_machine_id.as_deref() == Some(id) {
+            volume.attached_machine_id = None;
+        }
+    }
     if state.machines.len() < before {
         FakeResponse::json(200, &json!({"ok": true}))
     } else {

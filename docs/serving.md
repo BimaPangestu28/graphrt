@@ -25,6 +25,47 @@ graphrt serve examples/ --store ./runs --store-ttl-days 30
 | `--listen unix:/path` | Listen on a Unix socket (mode `0600`) instead of TCP (`--listen` is an alias of `--addr`). |
 | `--trust-gateway` | Run as an agent behind a graphrt gateway: signed `/internal/v1` API. See [gateway-protocol.md](gateway-protocol.md). |
 
+### Flags as environment variables
+
+A container started without a command line of its own (`docker run -e ...`, a
+compose file, a platform's settings page) can turn on the chat page,
+conversations and monitoring with variables instead of flags:
+
+| Variable | Flag | Value |
+| --- | --- | --- |
+| `GRAPHRT_STORE` | `--store` | a directory |
+| `GRAPHRT_PUBLIC_URL` | `--public-url` | the address clients reach the server at |
+| `GRAPHRT_CORS_ORIGINS` | `--cors-origin` | origins, separated by commas |
+| `GRAPHRT_CHAT` | `--chat` | `WORKFLOW` or `WORKFLOW=INPUT`, several separated by commas |
+| `GRAPHRT_CHAT_ACCESS` | `--chat-access` | `key`, `users` or `guests` |
+| `GRAPHRT_CHAT_TITLE` | `--chat-title` | text |
+| `GRAPHRT_CHAT_GUEST_RATE_LIMIT` | `--chat-guest-rate-limit` | a number |
+| `GRAPHRT_CHAT_GUEST_BUDGET` | `--chat-guest-budget` | a number |
+| `GRAPHRT_CONVERSATIONS` | `--conversations` | `1` |
+| `GRAPHRT_MONITOR` | `--monitor` | `1` |
+| `GRAPHRT_DEVICES` | `--devices` | `1` |
+| `GRAPHRT_APPROVALS` | `--approvals` | `1` |
+| `GRAPHRT_EXPIRE_APPROVALS` | `--expire-approvals` | `1` |
+| `GRAPHRT_PUSH` | `--push` | `mailto:you@example.com` or an `https:` URL |
+
+A flag on the command line wins over its variable. A switch is on with `1`,
+`true`, `yes` or `on` and off with `0`, `false`, `no`, `off` or an empty value.
+Any other value stops the server at startup with a message that names the
+variable. The variables are also read from `--env-file`.
+
+```sh
+docker run -d -p 8080:8080 -v "$PWD/flows:/workflows:ro" -v graphrt-store:/data \
+  -e GRAPHRT_API_KEY=... -e OPENAI_API_KEY=... \
+  -e GRAPHRT_STORE=/data -e GRAPHRT_PUBLIC_URL=https://agent.example.com \
+  -e GRAPHRT_CHAT=support -e GRAPHRT_CHAT_ACCESS=guests \
+  -e GRAPHRT_MONITOR=1 -e GRAPHRT_PUSH=mailto:you@example.com \
+  ghcr.io/graphrt/graphrt:<version>
+```
+
+The image runs as an unprivileged user: a volume for `GRAPHRT_STORE` has to be
+writable by it (a named Docker volume created by this `docker run` is; for a
+host directory, `chown 65532:65532` it).
+
 ### Small devices
 
 A finished run with its events takes roughly 10–20 KiB in the in-memory store,

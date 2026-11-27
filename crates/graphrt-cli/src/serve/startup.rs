@@ -55,6 +55,9 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         graphrt_llm::prewarm_http_client();
     }
     let mut options = service_options(&args.services)?;
+    let mut args = args;
+    super::env_flags::apply(&mut args, |name| lookup_env(&options, name))?;
+    let args = args;
     #[cfg(feature = "plugins")]
     {
         options.plugins.pool = plugin_pool(&args)?;

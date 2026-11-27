@@ -249,6 +249,40 @@ pub struct AssignIpRequest<'request> {
     pub ip_type: &'request str,
 }
 
+/// A volume of an app, as `GET /apps/{app}/volumes` lists it.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct Volume {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    /// `created`, or a state on the way out (`pending_destroy`, `destroying`, `destroyed`...).
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub size_gb: u32,
+    #[serde(default)]
+    pub region: String,
+    /// The Machine whose config mounts the volume, if any.
+    #[serde(default)]
+    pub attached_machine_id: Option<String>,
+}
+
+impl Volume {
+    /// Whether the volume is being deleted or already gone.
+    pub fn is_gone(&self) -> bool {
+        self.state.contains("destroy")
+    }
+}
+
+/// Body of `POST /apps/{app}/volumes`.
+#[derive(Clone, Debug, Serialize)]
+pub struct CreateVolumeRequest<'request> {
+    pub name: &'request str,
+    pub region: &'request str,
+    pub size_gb: u32,
+    pub encrypted: bool,
+}
+
 /// Body of `POST /apps/{app}/machines/{id}/stop`.
 #[derive(Clone, Debug, Serialize)]
 pub struct StopMachineRequest {

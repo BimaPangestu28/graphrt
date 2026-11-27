@@ -19,6 +19,12 @@ GRAPHRT_API_KEY=... graphrt serve flows/ --store ./runs \
   --chat support --chat-access guests --conversations
 ```
 
+Every flag in this table can also be set as an environment variable
+(`GRAPHRT_CHAT=support`, `GRAPHRT_CHAT_ACCESS=guests`,
+`GRAPHRT_CORS_ORIGINS=https://your.site`, `GRAPHRT_CONVERSATIONS=1`), for a
+container without a command line of its own: see
+[serving.md](serving.md#flags-as-environment-variables).
+
 The cargo features are `cors`, `run-follow`, `conversations` and `web-chat`.
 They are in the default build and in the released binaries. A build without
 them (`--no-default-features --features serve,llm,...`) has none of this code.

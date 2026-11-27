@@ -59,6 +59,11 @@ direct deploys are available (releases after 0.5.0).
 graphrt deploy --target fly --direct --deployment <name> --version <label>
                [--region <code>] [--mode always-on|scale-to-zero] [--secret NAME ...]
                [--org <slug>] [--app <name>] [--image <ref>] [--rotate-api-key] [--json]
+               [--chat [--chat-access key|guests] [--chat-title <text>]
+                       [--chat-guest-rate-limit <n>] [--chat-guest-budget <n>]]
+               [--cors-origin <origin> ...] [--conversations]
+               [--monitor] [--devices] [--approvals] [--expire-approvals] [--push <contact>]
+               [--drop-store]
                <agent.grt|agent.yaml|agent.json>
 graphrt deploy status         --target fly --direct --deployment <name> [--org <slug>] [--app <name>] [--json]
 graphrt deploy list-versions  --target fly --direct --deployment <name> [--org <slug>] [--app <name>] [--json]
@@ -80,6 +85,7 @@ graphrt deploy remove         --target fly --direct --deployment <name> [--org <
 | `--image` | `ghcr.io/graphrt/graphrt:<this CLI's version>` | Image running `graphrt serve`. |
 | `--rotate-api-key` | off | Replace the deployment's API key; the new one is printed once. |
 | `--json` | off | JSON Lines on stdout (below). Without it, progress goes to stderr and a summary to stdout. |
+| `--chat`, `--monitor`, `--push`... | off | What the deployment serves besides the API: see [Chat page, monitoring and the store](#chat-page-monitoring-and-the-store). |
 
 Environment: `FLY_API_TOKEN` (required), `GRAPHRT_FLY_API_URL` (Machines API
 base URL; default `https://api.machines.dev`, used by tests and for
@@ -128,7 +134,7 @@ before the first step (only the `error` line is printed). `rollback` and
 
 | Command | Final line |
 | --- | --- |
-| deploy | `{"type":"result","action":"deploy","url":"https://support-bot.fly.dev","version":"v1","app":"support-bot","workflow":"support","api_key":"grk_…"}` |
+| deploy | `{"type":"result","action":"deploy","url":"https://support-bot.fly.dev","version":"v1","app":"support-bot","workflow":"support","serve":{…},"store":null,"api_key":"grk_…"}` |
 | status | see [status](#status-and-list-versions) |
 | list-versions | see [list-versions](#status-and-list-versions) |
 | rollback | `{"type":"result","action":"rollback","app":…,"url":…,"version":"v1","workflow":"support"}` |
@@ -143,6 +149,9 @@ before the first step (only the `error` line is printed). `rollback` and
 - `workflow` is the name to call: `POST {url}/v1/workflows/{workflow}/runs`.
   It is the agent file's stem (`support.grt` → `support`), characters other
   than letters, digits and `_` turned into `-`.
+- `serve` says what the version serves besides the API, and `store` is the
+  deployment's volume or `null`: see
+  [Chat page, monitoring and the store](#chat-page-monitoring-and-the-store).
 - `status` is `online` (scale-to-zero: also while stopped, it starts on the
   next request), `paused`, `deploying` (a version is being started; a
   candidate older than 15 minutes counts as abandoned), `failed` (the current
@@ -207,6 +216,7 @@ On success there is no `api_key` line: the key is in the result's
   "workflow": "support",
   "mode": "scale-to-zero",
   "last_deployed_at": "2026-11-24T16:00:00.123Z",
+  "store": null,
   "machines": [
     {"id": "148e…", "name": "graphrt-v2-1a2b3c4d", "state": "stopped", "region": "ams",
      "version": "v2", "role": "current", "checks": [{"name": "readyz", "status": "passing"}]},
@@ -222,6 +232,7 @@ On success there is no `api_key` line: the key is in the result's
 | `current_version` | string \| null | label of the version serving (null when `offline`) |
 | `last_deployed_at` | RFC 3339 UTC string \| null | when the current version was deployed; a rollback keeps that version's original time |
 | `mode` | `always-on` \| `scale-to-zero` \| null | mode of the current version |
+| `store` | `{volume, size_gb, region, in_use}` \| null | the [store volume](#the-store-volume), when the deployment has one |
 | `machines[]` | `{id, state, region, …}` | every Machine of the app (current and standby); `state` is Fly's (`started`, `stopped`, `suspended`, `starting`, `failed`…), plus `name`, `version`, `role` (`current`/`candidate`/`standby`) and `checks[{name, status}]` |
 
 `graphrt deploy list-versions --json`, final line (newest deploy first):
@@ -245,6 +256,107 @@ On success there is no `api_key` line: the key is in the result's
 `versions[]` always has `label`, `deployed_at`, `current`, plus `role`,
 `mode`, `workflow` and `state` (the version's Machine). Only these versions
 can be passed to `rollback`.
+
+## Chat page, monitoring and the store
+
+A direct deployment can serve what `graphrt serve` offers to browsers and
+phones. Each flag is the `graphrt serve` flag of the same name, and each is
+off unless given, on every deploy: a deploy without `--chat` turns the chat
+page off again.
+
+| Flag | What the deployment gets | Docs |
+| --- | --- | --- |
+| `--chat` | A chat page at `{url}/chat/` and the widget `{url}/chat/embed.js` for the deployed agent | [web.md](web.md#the-chat-page) |
+| `--chat-access key\|guests` | Who may chat: holders of the API key (default), or anyone who opens the page | [web.md](web.md#who-may-chat) |
+| `--chat-title TEXT` | Title of the page and the widget | |
+| `--chat-guest-rate-limit N`, `--chat-guest-budget N` | Runs per minute of one guest (default 10) and of all guests together (default 120) | [web.md](web.md#guests) |
+| `--cors-origin ORIGIN` | A site whose pages may call the agent and show the widget. Repeatable | [web.md](web.md#cross-origin-requests-cors) |
+| `--conversations` | The server keeps the chat history. Uses the store | [web.md](web.md#conversations-kept-by-the-server) |
+| `--monitor` | The monitoring page at `{url}/monitor/`, device pairing and the approvals inbox. Uses the store | [monitoring.md](monitoring.md) |
+| `--devices` | Device tokens only (`/v1/devices`), for your own app. Uses the store | [monitoring.md](monitoring.md#devices-a-token-for-a-phone) |
+| `--approvals` | The approvals inbox only (`/v1/approvals`) | [monitoring.md](monitoring.md#the-approvals-inbox) |
+| `--expire-approvals` | Requests past their time limit answer themselves (`on_expire`) | [monitoring.md](monitoring.md#requests-that-expire) |
+| `--push CONTACT` | Push notifications when a run fails or waits for a person. Uses the store | [monitoring.md](monitoring.md#notifications) |
+
+```sh
+graphrt deploy --target fly --direct --deployment support-bot --version v2 --region ams \
+  --secret OPENAI_API_KEY \
+  --chat --chat-access guests --cors-origin https://www.example.com \
+  --monitor --push mailto:you@example.com --expire-approvals support.grt
+# deployed v2 to https://support-bot.fly.dev (POST https://support-bot.fly.dev/v1/workflows/support/runs)
+# chat page: https://support-bot.fly.dev/chat/
+# monitoring page: https://support-bot.fly.dev/monitor/
+# store: Fly volume vol_4y5… (1 GB in ams, billed by Fly; in use)
+```
+
+`--chat-access users` is not offered: it needs an identity provider
+(`--verify-jwt`), which a direct deploy does not set up. Options are checked
+before any call to Fly: a chat option without `--chat`, a `--cors-origin`
+that is not `scheme://host[:port]` (or `*`), or a `--push` contact that is
+not `mailto:` or `https:` is `invalid_input`. Pairing links name the
+deployment's own address (`--public-url https://<app>.fly.dev` is set for you).
+
+The deploy result says what the version serves:
+
+```json
+"serve": {"chat": "guests", "cors_origins": ["https://www.example.com"], "conversations": false,
+          "monitor": true, "devices": true, "approvals": true, "expire_approvals": true, "push": true},
+"store": {"volume": "vol_4y5…", "size_gb": 1, "region": "ams", "in_use": true}
+```
+
+`chat` is `key`, `guests` or `null`. `devices` and `approvals` are also true
+when `--monitor` turned them on. The push contact is not echoed.
+
+### The store volume
+
+Paired devices, push subscriptions with the server's push key, and
+conversations must outlive a Machine that stops when idle and a redeploy. A
+deploy with `--monitor`, `--devices`, `--push` or `--conversations` therefore
+gets **one Fly volume** (`graphrt_store`, 1 GB, encrypted) mounted at `/data`
+as `graphrt serve --store /data`. Fly bills a volume while it exists, also
+while the Machine is stopped: about **0.15 USD per month** for 1 GB at Fly's
+list price. A deploy with none of these four creates no volume and costs
+nothing extra: a chat page for guests keeps nothing on the server (guest
+sessions are signed tokens), and neither does the approvals inbox.
+
+With a store, the run records are on the volume too, so runs stay listed
+across stops. Finished runs older than 30 days are deleted
+(`--store-ttl-days 30`).
+
+Fly attaches a volume to a Machine only when the Machine is created. A
+deployment with a store therefore keeps **one Machine**, named
+`graphrt-store`, and what changes for it:
+
+- **A deploy updates that Machine in place.** There is a restart of a few
+  seconds instead of the blue/green overlap, and the volume stays where it is.
+  The store needs `--region` on the deploy that creates it. Later deploys run
+  in the volume's region whatever `--region` says.
+- **A version that does not get healthy is undone.** The Machine gets the
+  config it served with before and is started again. The error says so.
+- **No standby versions.** `list-versions` shows the serving version only, and
+  `rollback` has nothing to go back to: deploy the earlier agent file again.
+- **The server runs as root inside the Machine** (a microVM of its own),
+  because a new volume belongs to root and the image's default user could not
+  write to it.
+
+Turning the store's features **on** for a deployment without one creates the
+`graphrt-store` Machine next to the existing version, which becomes a standby.
+
+Turning them **off** (a deploy without the four flags) starts a version
+without the volume and leaves the volume and its Machine in place, stopped:
+nothing is deleted without being asked, the result reports
+`"store": {…, "in_use": false}`, and turning the features on again finds the
+same devices. The volume is still billed. To delete it, with every paired
+device, subscription and conversation on it:
+
+```sh
+graphrt deploy --target fly --direct --deployment support-bot --version v3 --drop-store support.grt
+```
+
+`--drop-store` is refused together with a flag that uses the store. A device
+paired before will have to be paired again, and browsers have to turn
+notifications on again. `graphrt deploy remove` deletes the app with its
+volume.
 
 ## How it works
 
@@ -331,8 +443,8 @@ For a desktop "cloud runs" list: `run_id`, `workflow`, `status`
 (`queued`, `running`, `paused`, `succeeded`, `failed`, `aborted`), `created_ms` as the
 start time and, for a finished status, `updated_ms` as the end time (Unix ms).
 
-The run store of a direct deploy is **in memory**: runs are listed until the
-Machine stops. With scale-to-zero that is a few minutes after the last
+Without [a store volume](#the-store-volume), the run store of a direct deploy
+is **in memory**: runs are listed until the Machine stops. With scale-to-zero that is a few minutes after the last
 request (and on every deploy, rollback or pause). Keep run history you need
 on the client, or use the gateway for a durable store.
 
@@ -357,8 +469,9 @@ is never printed; `FlyV1 fm2_…` macaroons are sent with the `FlyV1` scheme.
   Fly documents no limit for `files`; the cap keeps the request small.
   Bundles needing process or HTTP plugins require Node.js etc. that the
   distroless image does not have: only WebAssembly plugins work.
-- One Machine per version; no horizontal scaling, volumes or custom domains
-  yet (add them with `fly` on the same app).
+- One Machine per version; no horizontal scaling or custom domains yet (add
+  them with `fly` on the same app). The only volume is
+  [the store](#the-store-volume).
 - `<app>.fly.dev` can take a minute to resolve after the IPs of a new app
   are allocated; the deploy reports success once the Machine's own
   `/readyz` check passes.
@@ -377,4 +490,5 @@ marked stable (how the tests run is in [CONTRIBUTING.md](../CONTRIBUTING.md#prov
 - `POST …/metadata/{key}` not rebooting the Machine; update with `skip_launch: true` keeping a stopped Machine stopped;
 - scale-to-zero autostop/autostart of a Machine created through the API (no `fly.toml`), and the cold start time;
 - `DELETE /v1/apps/{app}?force=true`;
-- which operations an app deploy token (`fly tokens create deploy`) is allowed (secrets, IPs, app deletion).
+- which operations an app deploy token (`fly tokens create deploy`) is allowed (secrets, IPs, app deletion, volumes);
+- the store volume: `POST /v1/apps/{app}/volumes` with `{name, region, size_gb, encrypted}`, `config.mounts` on a new Machine, the Machine keeping its volume through updates and stops, `config.processes[0].user: "root"` for a writable mount, `DELETE /v1/apps/{app}/volumes/{id}` after its Machine is destroyed, and the app deletion taking the volume with it.

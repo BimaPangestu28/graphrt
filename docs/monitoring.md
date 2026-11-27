@@ -17,6 +17,12 @@ GRAPHRT_API_KEY=... graphrt serve flows/ --store ./runs \
   --monitor --push mailto:you@example.com --public-url https://agent.example.com
 ```
 
+Every flag in this table can also be set as an environment variable
+(`GRAPHRT_MONITOR=1`, `GRAPHRT_PUSH=mailto:you@example.com`,
+`GRAPHRT_EXPIRE_APPROVALS=1`, `GRAPHRT_PUBLIC_URL=https://agent.example.com`),
+for a container without a command line of its own: see
+[serving.md](serving.md#flags-as-environment-variables).
+
 The cargo features are `devices`, `approvals`, `web-push` (with `notify`) and
 `web-monitor`. They are in the default build and in the released binaries. A
 build without them (`--no-default-features --features serve,llm,...`) has none

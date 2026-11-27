@@ -157,10 +157,10 @@ async fn app(dir: &TempDir, setup: Setup) -> axum::Router {
     let chat = setup.chat.map(|access| {
         let args = ChatArgs {
             chat: vec!["support=message".to_owned()],
-            chat_access: access,
+            chat_access: Some(access),
             chat_title: Some("Support".to_owned()),
-            chat_guest_rate_limit: setup.guest_rate_limit,
-            chat_guest_budget: 0,
+            chat_guest_rate_limit: Some(setup.guest_rate_limit),
+            chat_guest_budget: Some(0),
             chat_mermaid: setup.mermaid.clone(),
         };
         let context = ChatContext {

@@ -1040,7 +1040,7 @@ pub struct ConversationArgs {
     /// the earlier turns as `sys.history` and its answer is added when it succeeds,
     /// so a browser does not hold the history. Stored in `--store` (in memory
     /// without one). A verified end user reaches only their own conversations.
-    /// `sys.history` from clients keeps working as before.
+    /// `sys.history` from clients keeps working as before [env: GRAPHRT_CONVERSATIONS].
     #[arg(long)]
     pub conversations: bool,
     /// Messages kept per conversation. When a conversation grows beyond it, the
@@ -1062,29 +1062,32 @@ pub struct ConversationArgs {
 pub struct MonitorArgs {
     /// Serve the monitoring page at `/monitor/`: the runs, what each did, and the
     /// requests that wait for a person, for a phone or a desktop. It can be
-    /// installed as an app. Turns on `--devices` and `--approvals`. Off unless given.
+    /// installed as an app. Turns on `--devices` and `--approvals`. Off unless given
+    /// [env: GRAPHRT_MONITOR].
     #[cfg(feature = "web-monitor")]
     #[arg(long)]
     pub monitor: bool,
     /// Pair monitoring devices: `POST /v1/devices` (with the API key) gives a
     /// device its own token, which only reads runs and resolves approvals and
-    /// can be revoked. Kept in `--store` (in memory without one), hashed.
+    /// can be revoked. Kept in `--store` (in memory without one), hashed
+    /// [env: GRAPHRT_DEVICES].
     #[arg(long)]
     pub devices: bool,
     /// Serve the approvals inbox: `GET /v1/approvals` lists every run that waits
-    /// for a person, `POST /v1/approvals/{run_id}` answers one.
+    /// for a person, `POST /v1/approvals/{run_id}` answers one [env: GRAPHRT_APPROVALS].
     #[cfg(feature = "approvals")]
     #[arg(long)]
     pub approvals: bool,
     /// Carry out `on_expire` of `human-input` requests whose time limit passed:
     /// answer with the named action, or stop the run. Without it a request waits
-    /// until someone answers. Turns on `--approvals`.
+    /// until someone answers. Turns on `--approvals` [env: GRAPHRT_EXPIRE_APPROVALS].
     #[cfg(feature = "approvals")]
     #[arg(long)]
     pub expire_approvals: bool,
     /// Send a push notification to subscribed browsers when a run fails or waits
     /// for a person (Web Push). CONTACT is an address push services may write to
-    /// about this server, e.g. `mailto:you@example.com`. Off unless given.
+    /// about this server, e.g. `mailto:you@example.com`. Off unless given
+    /// [env: GRAPHRT_PUSH].
     #[cfg(feature = "web-push")]
     #[arg(long, value_name = "CONTACT")]
     pub push: Option<String>,
@@ -1117,29 +1120,60 @@ pub struct ChatArgs {
     /// Serve a chat page for this workflow at `/chat/WORKFLOW` (and `/chat` for the
     /// first one), plus the widget script `/chat/embed.js`. `WORKFLOW=INPUT` names
     /// the start input that takes the message; without it the message is
-    /// `sys.query`. Repeatable. Off unless given.
+    /// `sys.query`. Repeatable [env: GRAPHRT_CHAT, commas]. Off unless given.
     #[arg(long, value_name = "WORKFLOW[=INPUT]")]
     pub chat: Vec<String>,
-    /// Who may chat: `key` (default), `users` or `guests`.
-    #[arg(long, value_enum, value_name = "WHO", default_value_t = ChatAccess::Key, requires = "chat")]
-    pub chat_access: ChatAccess,
-    /// Title shown on the chat page and the widget [default: the workflow name].
-    #[arg(long, value_name = "TEXT", requires = "chat")]
+    /// Who may chat: `key`, `users` or `guests` [env: GRAPHRT_CHAT_ACCESS] [default: key].
+    #[arg(long, value_enum, value_name = "WHO")]
+    pub chat_access: Option<ChatAccess>,
+    /// Title shown on the chat page and the widget [env: GRAPHRT_CHAT_TITLE]
+    /// [default: the workflow name].
+    #[arg(long, value_name = "TEXT")]
     pub chat_title: Option<String>,
     /// With `--chat-access guests`: runs per minute one guest may start, with bursts
-    /// of the same size (0 = unlimited).
-    #[arg(long, value_name = "N", default_value_t = 10, requires = "chat")]
-    pub chat_guest_rate_limit: u32,
+    /// of the same size (0 = unlimited) [env: GRAPHRT_CHAT_GUEST_RATE_LIMIT] [default: 10].
+    #[arg(long, value_name = "N")]
+    pub chat_guest_rate_limit: Option<u32>,
     /// With `--chat-access guests`: runs per minute all guests together may start
     /// (0 = unlimited). A guest session costs nothing to open, so this is what
-    /// bounds the model spend of a public page.
-    #[arg(long, value_name = "N", default_value_t = 120, requires = "chat")]
-    pub chat_guest_budget: u32,
+    /// bounds the model spend of a public page [env: GRAPHRT_CHAT_GUEST_BUDGET]
+    /// [default: 120].
+    #[arg(long, value_name = "N")]
+    pub chat_guest_budget: Option<u32>,
     /// Draw `diagram` UI blocks as pictures in the chat: the path of a Mermaid
     /// build (`mermaid.min.js`), served at `/chat/mermaid.js` and loaded by the
     /// chat when a diagram first shows. Without it diagrams show as text.
-    #[arg(long, value_name = "FILE", requires = "chat")]
+    #[arg(long, value_name = "FILE")]
     pub chat_mermaid: Option<PathBuf>,
+}
+
+#[cfg(feature = "web-chat")]
+impl ChatArgs {
+    /// Runs per minute one guest may start without `--chat-guest-rate-limit`.
+    pub const DEFAULT_GUEST_RATE_LIMIT: u32 = 10;
+    /// Runs per minute all guests together may start without `--chat-guest-budget`.
+    pub const DEFAULT_GUEST_BUDGET: u32 = 120;
+
+    /// `--chat-access`, else `key`.
+    pub fn access(&self) -> ChatAccess {
+        self.chat_access.unwrap_or_default()
+    }
+
+    /// The chat option given without any `--chat`, if one was: they all need a chat page.
+    pub fn option_without_chat(&self) -> Option<&'static str> {
+        if !self.chat.is_empty() {
+            return None;
+        }
+        [
+            (self.chat_access.is_some(), "--chat-access"),
+            (self.chat_title.is_some(), "--chat-title"),
+            (self.chat_guest_rate_limit.is_some(), "--chat-guest-rate-limit"),
+            (self.chat_guest_budget.is_some(), "--chat-guest-budget"),
+            (self.chat_mermaid.is_some(), "--chat-mermaid"),
+        ]
+        .into_iter()
+        .find_map(|(given, flag)| given.then_some(flag))
+    }
 }
 
 /// Running behind a graphrt gateway (`graphrt serve --trust-gateway`, see
