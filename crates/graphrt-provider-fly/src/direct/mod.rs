@@ -34,8 +34,10 @@
 //! A channel's credentials are such secrets too ([`DirectChannel::secret_names`]):
 //! the Machine command names only the channel's kind and workflow.
 
+mod launch;
 mod lifecycle;
 mod machine_config;
+mod machine_limit;
 mod serve_options;
 mod status;
 

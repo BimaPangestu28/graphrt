@@ -21,7 +21,6 @@ use super::{
     StepStatus,
 };
 use crate::client::MAX_WAIT_SECS;
-use crate::error::is_name_taken;
 use crate::model::{CreateMachineRequest, Machine, MachineState, StopMachineRequest, UpdateMachineRequest, Volume};
 
 /// Receives progress events.
@@ -72,8 +71,15 @@ struct Candidate {
     restore: Option<serde_json::Value>,
 }
 
+impl Candidate {
+    /// A kept Machine (a standby version) brought back by a rollback.
+    fn kept(id: &str) -> Self {
+        Self { id: id.to_owned(), reused: true, restore: None }
+    }
+}
+
 /// Whether the Machine mounts the deployment's store volume.
-fn mounts_store(machine: &Machine) -> bool {
+pub(super) fn mounts_store(machine: &Machine) -> bool {
     store_volume_of(machine.config.as_ref()).is_some()
 }
 
@@ -258,12 +264,13 @@ impl FlyDirect {
             .find_map(|machine| metadata(machine, META_MODE).and_then(ServiceMode::parse))
             .unwrap_or(ServiceMode::ScaleToZero);
         emit(progress, Step::Starting, StepStatus::Running, format!("Starting version {version}"));
-        let started =
-            self.relaunch(&target.id, Role::Candidate, mode).await.map(|()| ((), "Machine started".to_owned()));
+        let started = match self.relaunch(&target.id, Role::Candidate, mode).await {
+            Ok(()) => Ok(((), "Machine started".to_owned())),
+            Err(error) => Err(self.discard_candidate(&Candidate::kept(&target.id), error).await),
+        };
         finish(progress, Step::Starting, started)?;
         emit(progress, Step::Checking, StepStatus::Running, "Waiting for GET /readyz to pass");
-        let candidate = Candidate { id: target.id.clone(), reused: true, restore: None };
-        finish(progress, Step::Checking, self.check_and_promote(&candidate, version).await)?;
+        finish(progress, Step::Checking, self.check_and_promote(&Candidate::kept(&target.id), version).await)?;
         Ok(self.serving(target))
     }
 
@@ -280,7 +287,7 @@ impl FlyDirect {
             let fresh = self.client.get_machine(&machine.id).await?;
             let config = paused(fresh.config.as_ref().unwrap_or(&serde_json::Value::Null));
             let update = UpdateMachineRequest { config: &config, skip_launch: true, min_secrets_version: None };
-            self.client.update_machine(&machine.id, &update).await?;
+            self.update_stopped(&machine.id, &update).await?;
         }
         Ok(!running.is_empty())
     }
@@ -335,7 +342,7 @@ impl FlyDirect {
         }
     }
 
-    async fn direct_machines(&self) -> Result<Vec<Machine>, DirectError> {
+    pub(super) async fn direct_machines(&self) -> Result<Vec<Machine>, DirectError> {
         match self.client.list_machines_with_metadata(META_DIRECT, "1").await {
             Ok(machines) => Ok(machines.into_iter().filter(is_direct).collect()),
             Err(error) if error.kind == ProviderErrorKind::NotFound => Err(DirectError::new(
@@ -439,6 +446,7 @@ impl FlyDirect {
                 !mounts_store(machine) && version_of(machine) == Some(request.version.as_str())
             }
         });
+        let mut note = String::new();
         let candidate = match existing {
             Some(machine) => {
                 let volume = store_volume_of(machine.config.as_ref()).map(str::to_owned);
@@ -450,7 +458,7 @@ impl FlyDirect {
                 }
                 let update =
                     UpdateMachineRequest { config: &config, skip_launch: false, min_secrets_version: secrets_version };
-                self.client.update_machine(&machine.id, &update).await?;
+                self.update_and_launch(&machine.id, &update).await?;
                 Candidate { id: machine.id, reused: true, restore }
             }
             None => {
@@ -473,18 +481,9 @@ impl FlyDirect {
                     skip_launch: false,
                     min_secrets_version: secrets_version,
                 };
-                let machine = self.client.create_machine(&create).await.map_err(|error| {
-                    if is_name_taken(&error) {
-                        DirectError::invalid(format!(
-                            "a Machine named {} exists in {} but is not managed by graphrt",
-                            create.name,
-                            self.app_name()
-                        ))
-                    } else {
-                        error.into()
-                    }
-                })?;
-                Candidate { id: machine.id, reused: false, restore: None }
+                let created = self.create_version_machine(&create).await?;
+                note = created.note();
+                Candidate { id: created.machine.id, reused: false, restore: None }
             }
         };
         if let Err(error) = self.wait_started(&candidate.id).await {
@@ -496,7 +495,7 @@ impl FlyDirect {
         }
         self.wait_started(&candidate.id).await?;
         let verb = if candidate.reused { "updated" } else { "created" };
-        let message = format!("{verb} Machine {} and booted it", candidate.id);
+        let message = format!("{verb} Machine {} and booted it{note}", candidate.id);
         Ok((candidate, message))
     }
 
@@ -562,7 +561,7 @@ impl FlyDirect {
     /// Gives a Machine the config it served with before an in-place deploy and boots it.
     async fn restore(&self, machine_id: &str, previous: &serde_json::Value) -> Result<(), DirectError> {
         let update = UpdateMachineRequest { config: previous, skip_launch: false, min_secrets_version: None };
-        self.client.update_machine(machine_id, &update).await?;
+        self.update_and_launch(machine_id, &update).await?;
         self.wait_started(machine_id).await
     }
 
@@ -572,8 +571,7 @@ impl FlyDirect {
         let fresh = self.client.get_machine(machine_id).await?;
         let config = with_role(fresh.config.as_ref().unwrap_or(&serde_json::Value::Null), Role::Standby, None);
         let update = UpdateMachineRequest { config: &config, skip_launch: true, min_secrets_version: None };
-        self.client.update_machine(machine_id, &update).await?;
-        Ok(())
+        self.update_stopped(machine_id, &update).await
     }
 
     /// Re-adds services to a kept Machine with `role` and boots it.
@@ -581,7 +579,7 @@ impl FlyDirect {
         let fresh = self.client.get_machine(machine_id).await?;
         let config = with_role(fresh.config.as_ref().unwrap_or(&serde_json::Value::Null), role, Some(mode));
         let update = UpdateMachineRequest { config: &config, skip_launch: false, min_secrets_version: None };
-        self.client.update_machine(machine_id, &update).await?;
+        self.update_and_launch(machine_id, &update).await?;
         self.wait_started(machine_id).await
     }
 
@@ -633,6 +631,10 @@ impl FlyDirect {
                 Ok(()) => return Ok(()),
                 Err(error) if error.kind == ProviderErrorKind::Transient => {
                     let machine = self.client.get_machine(machine_id).await?;
+                    // Still down after the update: Fly does not start a stopped Machine by itself.
+                    if machine.state.is_startable() {
+                        self.client.start_machine(machine_id).await?;
+                    }
                     if machine.state == MachineState::Failed {
                         return Err(DirectError::new(
                             ErrorCode::StartTimeout,
