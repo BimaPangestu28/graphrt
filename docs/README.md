@@ -20,6 +20,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 - [Serving workflows](serving.md): HTTP API, SSE, run store, per-user tokens (`--verify-jwt`), webhooks, knowledge base
 - [Monitoring and approving from a phone](monitoring.md): monitoring page (installable), device tokens, approvals inbox, requests that expire, push notifications
 - [Talking to a served agent on Telegram and WhatsApp](channels.md): one flag per channel, long polling and webhooks, a conversation per customer, files, questions and approvals in the chat, hand over to a person, limits, the `graphrt-channel` crate
+- [Admin console](console.md): sign in with OpenID Connect, roles on every route, audit log, encrypted secrets, agent registry with environments, promotion and rollback
 - [Using a served agent from a browser](web.md): chat page, chat widget, guests, CORS, conversations on the server, browser client, UI blocks renderer
 - [Deploying graphrt](deploy.md): container, Fly.io, Cloud Run, systemd
 - [One agent on Cloud Run or ECS Fargate](deploy-cloud-run-ecs.md): `graphrt serve` without the gateway, secrets, a volume for the store, zero-downtime redeploys, verified on real GCP and AWS

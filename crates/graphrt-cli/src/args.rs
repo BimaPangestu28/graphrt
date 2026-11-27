@@ -1005,6 +1005,15 @@ pub struct ServeArgs {
     #[cfg(feature = "channels")]
     #[command(flatten)]
     pub channels: ChannelArgs,
+    /// Serve the admin console at `/console/` with this config (YAML or JSON)
+    /// [env: GRAPHRT_CONSOLE]: people sign in with your OpenID Connect provider,
+    /// get a role (owner, operator, viewer) checked on every route, and manage
+    /// secrets and workflow versions per environment; what they do goes to an
+    /// audit log. Needs the API key, which keeps working for automation. Off
+    /// unless given. See docs/console.md.
+    #[cfg(feature = "console")]
+    #[arg(long, value_name = "FILE")]
+    pub console: Option<PathBuf>,
     /// Online evaluation: an evaluator config (YAML or JSON) that scores a deterministic
     /// sample of finished runs with judge workflows, regexes, JSON schemas, budgets or
     /// trajectory checks, in a bounded background pool. Scores are stored with each run

@@ -832,3 +832,7 @@ server; they only reach the workflow, and whatever the workflow calls with them
 (PostgREST row-level security, for example) enforces them. With `--verify-jwt`
 the server verifies them, and a token reaches only its user's own runs (see
 [What a user token may do](#what-a-user-token-may-do)).
+
+For the people who operate a server, `--console` adds sign in with OpenID
+Connect and roles (owner, operator, viewer) checked on every route, with an
+audit log, secrets and an agent registry (see [console.md](console.md)).

@@ -93,11 +93,11 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # `local-embed` (default in graphrt-cli) builds candle-core, which needs Rust 1.94+:
       # every crate is checked on 1.89, graphrt-cli with its default features minus `local-embed`,
-      # plus `skills` and `learning`, which the release builds add.
+      # plus `skills`, `learning` and `console`, which the release builds add.
       - run: cargo check --workspace --exclude graphrt-cli
       - run: >-
           cargo check -p graphrt-cli --no-default-features --features
-          llm,http,code,python,mcp,doc,files,image,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,cors,run-follow,conversations,web-chat,devices,approvals,web-push,web-monitor,skills,learning,channel-telegram,channel-whatsapp,context
+          llm,http,code,python,mcp,doc,files,image,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,cors,run-follow,conversations,web-chat,devices,approvals,web-push,web-monitor,skills,learning,channel-telegram,channel-whatsapp,context,console
 
   minimal-core:
     name: core without default features

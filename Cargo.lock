@@ -1619,6 +1619,7 @@ dependencies = [
  "graphrt-bundle",
  "graphrt-channel",
  "graphrt-code",
+ "graphrt-console",
  "graphrt-core",
  "graphrt-doc",
  "graphrt-docgen",
@@ -1668,6 +1669,26 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "graphrt-console"
+version = "0.6.2"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "futures",
+ "graphrt-core",
+ "http-body-util",
+ "reqwest",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower",
 ]
 
 [[package]]
@@ -3573,6 +3594,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",

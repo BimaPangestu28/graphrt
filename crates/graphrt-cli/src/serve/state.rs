@@ -148,6 +148,9 @@ pub struct AppState {
     /// The lesson store behind `/v1/learning` (the default store, opened lazily).
     #[cfg(feature = "learning")]
     pub(super) lessons: Option<Arc<graphrt_learn::LessonStore>>,
+    /// The admin console (`--console`).
+    #[cfg(feature = "console")]
+    pub(super) console: Option<Arc<graphrt_console::Console>>,
     /// Set when the server listens beyond loopback without an API key: the
     /// owner routes (`/v1/skills`, `/v1/learning`) are refused then.
     #[cfg(any(feature = "skills", feature = "learning"))]
@@ -219,6 +222,8 @@ impl AppState {
             bundled_skills: IndexMap::new(),
             #[cfg(all(feature = "skills", feature = "plugins"))]
             skill_catalog: crate::plugin_catalog::skills::SkillCatalogConfig::default(),
+            #[cfg(feature = "console")]
+            console: None,
             #[cfg(any(feature = "skills", feature = "learning"))]
             owner_api_closed: AtomicBool::new(false),
             #[cfg(feature = "learning")]

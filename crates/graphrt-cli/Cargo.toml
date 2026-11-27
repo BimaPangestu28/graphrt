@@ -158,6 +158,11 @@ channels = ["conversations", "approvals", "dep:graphrt-channel", "graphrt-channe
 channel-telegram = ["channels", "graphrt-channel/telegram"]
 # WhatsApp, through the official Cloud API: a signed webhook.
 channel-whatsapp = ["channels", "graphrt-channel/whatsapp"]
+# The admin console of `serve --console FILE` (off unless given): sign in with
+# OpenID Connect, roles on every route, an audit log, encrypted secrets and an
+# agent registry with environments, in the `graphrt-console` crate. Opt-in.
+# See docs/console.md.
+console = ["serve", "jwt", "dep:graphrt-console"]
 # Evaluation scores of served runs: `GET /v1/runs/{id}/scores` and human
 # feedback (`POST /v1/runs/{id}/feedback`), kept next to each run in the store.
 scores = ["serve"]
@@ -218,6 +223,7 @@ graphrt-ui = { workspace = true, optional = true }
 graphrt-gateway = { workspace = true, optional = true }
 graphrt-provider-api = { workspace = true, optional = true }
 graphrt-provider-fly = { workspace = true, optional = true }
+graphrt-console = { workspace = true, optional = true }
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 tokio = { workspace = true, features = ["rt", "time", "signal", "fs", "io-util", "sync", "net", "macros"] }
 futures.workspace = true
