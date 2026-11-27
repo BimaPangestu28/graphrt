@@ -32,8 +32,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use futures::future::BoxFuture;
 use graphrt_core::coordination::{CoordinationStore, Versioned, validate_key, validate_value};
 use graphrt_core::store::{
-    RunFilter, RunPage, RunRecord, RunStore, StoreError, StoreResult, StoredEvent, append_mismatch, check_epoch,
-    page_of, plan_append, sort_newest_first, validate_run_id,
+    FinalWrite, RunFilter, RunPage, RunRecord, RunStore, StoreError, StoreResult, StoredEvent, append_mismatch,
+    check_epoch, page_of, plan_append, sort_newest_first, validate_run_id,
 };
 use graphrt_core::{Snapshot, private_fs};
 
@@ -110,6 +110,31 @@ fn io(context: &str, e: &std::io::Error) -> StoreError {
     StoreError::Io(format!("{context}: {e}"))
 }
 
+/// A synced temporary file waiting to replace its target; removed when dropped
+/// before [`Prepared::replace`].
+struct Prepared {
+    tmp: PathBuf,
+    target: PathBuf,
+    renamed: bool,
+}
+
+impl Prepared {
+    /// Rename the file over its target. Durable once the directory is synced.
+    fn replace(mut self) -> StoreResult<()> {
+        fs::rename(&self.tmp, &self.target).map_err(|e| io("cannot replace file", &e))?;
+        self.renamed = true;
+        Ok(())
+    }
+}
+
+impl Drop for Prepared {
+    fn drop(&mut self) {
+        if !self.renamed {
+            let _cleanup = fs::remove_file(&self.tmp);
+        }
+    }
+}
+
 /// Holds the exclusive OS lock until dropped.
 struct LockGuard(File);
 
@@ -162,19 +187,23 @@ impl Inner {
 
     fn atomic_write(&self, dir: &Path, name: &str, bytes: &[u8]) -> StoreResult<()> {
         private_fs::create_dir_all(dir).map_err(|e| io("cannot create run directory", &e))?;
+        self.prepare(dir, name, bytes)?.replace()?;
+        sync_dir(dir)
+    }
+
+    /// Write `bytes` to a new temporary file next to `dir/name` and sync it:
+    /// the first half of an atomic replace, which needs no store lock.
+    fn prepare(&self, dir: &Path, name: &str, bytes: &[u8]) -> StoreResult<Prepared> {
         let n = self.tmp_counter.fetch_add(1, Ordering::Relaxed);
-        let tmp = dir.join(format!(".{name}.{}.{n}.tmp", std::process::id()));
-        let result = (|| {
-            let mut file = private_fs::create_file(&tmp).map_err(|e| io("cannot create temporary file", &e))?;
-            file.write_all(bytes).map_err(|e| io("cannot write temporary file", &e))?;
-            file.sync_all().map_err(|e| io("cannot sync temporary file", &e))?;
-            fs::rename(&tmp, dir.join(name)).map_err(|e| io("cannot replace file", &e))?;
-            sync_dir(dir)
-        })();
-        if result.is_err() {
-            let _cleanup = fs::remove_file(&tmp);
-        }
-        result
+        let prepared = Prepared {
+            tmp: dir.join(format!(".{name}.{}.{n}.tmp", std::process::id())),
+            target: dir.join(name),
+            renamed: false,
+        };
+        let mut file = private_fs::create_file(&prepared.tmp).map_err(|e| io("cannot create temporary file", &e))?;
+        file.write_all(bytes).map_err(|e| io("cannot write temporary file", &e))?;
+        file.sync_all().map_err(|e| io("cannot sync temporary file", &e))?;
+        Ok(prepared)
     }
 
     fn all_records(&self) -> StoreResult<Vec<(PathBuf, RunRecord)>> {
@@ -224,6 +253,23 @@ impl Inner {
     /// Append `events` at `first_index` (see [`RunStore::append_events`]).
     fn append(&self, run_id: &str, first_index: u64, events: &[StoredEvent]) -> StoreResult<u64> {
         let (dir, mut record) = self.require_record(run_id)?;
+        if self.append_lines(&dir, &mut record, first_index, events)? {
+            self.write_record(&dir, &record)?;
+        }
+        Ok(record.event_count)
+    }
+
+    /// Append `events` at `first_index` to the events file in `dir` (synced) and
+    /// update the counters of `record`, the run's stored record, without writing
+    /// it. Returns whether the counters changed.
+    fn append_lines(
+        &self,
+        dir: &Path,
+        record: &mut RunRecord,
+        first_index: u64,
+        events: &[StoredEvent],
+    ) -> StoreResult<bool> {
+        let run_id = record.run_id.as_str();
         let path = dir.join(EVENTS);
         let stored = Self::count_lines(&path)?;
         // Lines written before a crash that kept the record from being updated count too.
@@ -247,12 +293,40 @@ impl Inner {
             file.write_all(&buf).map_err(|e| io("cannot append events", &e))?;
             file.sync_data().map_err(|e| io("cannot sync events", &e))?;
         }
-        if plan.new_count != record.event_count || new.len() > room {
+        let changed = plan.new_count != record.event_count || new.len() > room;
+        if changed {
             record.event_count = plan.new_count;
             record.events_truncated |= new.len() > room;
-            self.write_record(&dir, &record)?;
         }
-        Ok(plan.new_count)
+        Ok(changed)
+    }
+
+    /// [`RunStore::finish`] under the store lock, with the snapshot already in
+    /// `snapshot` (prepared before the lock was taken).
+    fn finish(
+        &self,
+        record: RunRecord,
+        expected_epoch: u64,
+        first_index: u64,
+        events: &[StoredEvent],
+        snapshot: Option<Prepared>,
+    ) -> StoreResult<()> {
+        let (dir, mut stored) = self.require_record(&record.run_id)?;
+        check_epoch(&stored, expected_epoch)?;
+        if !events.is_empty() {
+            self.append_lines(&dir, &mut stored, first_index, events)?;
+        }
+        let mut record = record;
+        keep_counters(&mut record, &stored);
+        let bytes = serde_json::to_vec_pretty(&record).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        let prepared = self.prepare(&dir, RECORD, &bytes)?;
+        if let Some(snapshot) = snapshot {
+            snapshot.replace()?;
+            // The snapshot is durable before the record that points readers at it.
+            sync_dir(&dir)?;
+        }
+        prepared.replace()?;
+        sync_dir(&dir)
     }
 
     /// Path of coordination object `key` (already validated).
@@ -541,6 +615,33 @@ impl RunStore for FileStore {
         })
     }
 
+    /// One lock for the whole final state, three file syncs and one or two
+    /// directory syncs under it (instead of three locks and seven syncs); the
+    /// snapshot is written and synced before the lock is taken.
+    fn finish<'a>(&'a self, write: FinalWrite<'a>) -> BoxFuture<'a, StoreResult<()>> {
+        let FinalWrite { first_index, events, snapshot, record, expected_epoch } = write;
+        let events = events.to_vec();
+        let record = record.clone();
+        let encoded = snapshot.map(Snapshot::to_json);
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move {
+            graphrt_core::task::spawn_blocking(move || {
+                let dir = inner.run_dir(&record.run_id)?;
+                let snapshot = match encoded {
+                    Some(text) => {
+                        let text = text.map_err(|e| StoreError::Corrupt(format!("cannot encode snapshot: {e}")))?;
+                        Some(inner.prepare(&dir, SNAPSHOT, text.as_bytes())?)
+                    }
+                    None => None,
+                };
+                let _lock = inner.lock()?;
+                inner.finish(record, expected_epoch, first_index, &events, snapshot)
+            })
+            .await
+            .map_err(|e| StoreError::Io(format!("store task failed: {e}")))?
+        })
+    }
+
     fn load_snapshot<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, StoreResult<Option<Snapshot>>> {
         let run_id = run_id.to_owned();
         self.blocking(move |inner| {
@@ -664,6 +765,60 @@ mod tests {
         assert_eq!(store.append_events("c1", 1, &events[1..]).await.unwrap(), 3);
         assert_eq!(crate::store::texts(&store.events("c1", 0).await.unwrap()), crate::store::texts(&events));
         assert_eq!(store.get("c1").await.unwrap().unwrap().event_count, 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Names of the files in a run's directory.
+    fn files_of(dir: &Path, run_id: &str) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir.join("runs").join(run_id))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[tokio::test]
+    async fn a_final_write_survives_reopen_and_a_refused_one_leaves_nothing_behind() {
+        let dir = temp_dir("finish");
+        let store = FileStore::open(&dir).unwrap();
+        store.create(RunRecord::running("f1", "wf", "fp", 1)).await.unwrap();
+        let events = crate::store::raw(&[r#"{"a":1}"#, r#"{"b":2}"#, r#"{"c":3}"#]);
+        store.append_events("f1", 0, &events[..1]).await.unwrap();
+        let snapshot = Snapshot {
+            format: graphrt_core::snapshot::SNAPSHOT_FORMAT,
+            run_id: "f1".into(),
+            graph_fingerprint: "fp".into(),
+            elapsed_ms: 0,
+            steps: 1,
+            usage: graphrt_core::event::Usage::default(),
+            handled_errors: 0,
+            root: graphrt_core::snapshot::FrameSnapshot::default(),
+        };
+        let mut paused = RunRecord::running("f1", "wf", "fp", 1);
+        paused.status = RunStatus::Paused;
+        let write = FinalWrite {
+            first_index: 1,
+            events: &events[1..],
+            snapshot: Some(&snapshot),
+            record: &paused,
+            expected_epoch: 0,
+        };
+
+        // At another epoch (the run was claimed elsewhere): nothing is written.
+        let fenced = FinalWrite { expected_epoch: 3, ..write };
+        assert!(matches!(store.finish(fenced).await, Err(StoreError::Precondition(_))));
+        assert_eq!(files_of(&dir, "f1"), ["events.jsonl", "record.json"], "no snapshot and no temporary file");
+        assert_eq!(crate::store::texts(&store.events("f1", 0).await.unwrap()), [r#"{"a":1}"#]);
+
+        store.finish(write).await.unwrap();
+        assert_eq!(files_of(&dir, "f1"), ["events.jsonl", "record.json", "snapshot.json"]);
+        drop(store);
+        let store = FileStore::open(&dir).unwrap();
+        let record = store.get("f1").await.unwrap().unwrap();
+        assert_eq!((record.status, record.event_count), (RunStatus::Paused, 3));
+        assert_eq!(crate::store::texts(&store.events("f1", 0).await.unwrap()), crate::store::texts(&events));
+        assert_eq!(store.load_snapshot("f1").await.unwrap(), Some(snapshot));
         let _ = fs::remove_dir_all(&dir);
     }
 

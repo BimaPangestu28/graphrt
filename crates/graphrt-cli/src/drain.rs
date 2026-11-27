@@ -78,7 +78,10 @@ pub fn parse_duration(text: &str) -> Result<Duration, String> {
 /// final state.
 const RESERVE_PER_RUN: Duration = Duration::from_millis(10);
 
-/// Store writes a stopped run makes: its last events, its snapshot, its record.
+/// Store writes counted for a stopped run. Its final state (last events,
+/// snapshot, record) is one write ([`graphrt_core::store::RunStore::finish`]),
+/// but a heavier one than the event flushes the estimate mostly sees, and
+/// stores without their own `finish` make three.
 const FINAL_WRITES_PER_RUN: u32 = 3;
 
 /// Reserve one active run needs at the end of a drain, given the store's recent

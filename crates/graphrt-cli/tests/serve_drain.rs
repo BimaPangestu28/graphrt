@@ -6,7 +6,7 @@
 #[cfg(unix)]
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,6 @@ use axum::http::{Request, StatusCode};
 use graphrt_cli::drain::{DRAINED, drain, preempt_at, reserve_per_run};
 use graphrt_cli::serve::{AppState, build_state, discover, resume_drained_runs, router};
 use graphrt_cli::setup::ServiceOptions;
-use graphrt_cli::store::FileStore;
 use graphrt_core::engine::Limits;
 use graphrt_core::store::RunStore;
 use http_body_util::BodyExt;
@@ -258,12 +257,24 @@ fn run_id_of_sse(body: &str) -> String {
     body[start..].split('"').next().unwrap().to_owned()
 }
 
+/// How long each store write takes once the drain began, in
+/// [`sigterm_drain_pauses_async_and_streaming_runs_and_a_restart_completes_them`]:
+/// a disk that wrote in 3 ms before the drain and is busy during it, like the
+/// CI runners whose ten runs' final writes took over 2.5 s. The ten pending
+/// event flushes and ten final writes take 1.6 s; with three writes per final
+/// state (events, snapshot and record one by one) the drain needed 3.2 s and
+/// left every run unfinished at its 3 s deadline.
+const BUSY_DISK_WRITE: Duration = Duration::from_millis(80);
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sigterm_drain_pauses_async_and_streaming_runs_and_a_restart_completes_them() {
     let (upstream, port) = start_upstream().await;
     let wf = workflows_dir("mix", port);
-    let store_dir = temp_dir("store-mix");
-    let state = state_with(&wf, Arc::new(FileStore::open(&store_dir).unwrap())).await;
+    // Writes are fast until the drain begins and slow during it: the latency
+    // estimate the drain starts from is too low for the writes it waits for.
+    let memory = Arc::new(graphrt_cli::store::MemoryStore::new());
+    let store = Arc::new(SlowStore::new(Arc::clone(&memory), Duration::ZERO));
+    let state = state_with(&wf, Arc::clone(&store) as Arc<dyn RunStore>).await;
     let app = router(Arc::clone(&state), 1 << 20);
 
     // Five async runs and five streaming runs, all waiting on the hanging upstream.
@@ -288,6 +299,7 @@ async fn sigterm_drain_pauses_async_and_streaming_runs_and_a_restart_completes_t
     // SIGTERM: drain with a 3 s deadline (preempting at about 2 s).
     let timeout = Duration::from_secs(3);
     let timeline = DrainTimeline::start(&state, timeout);
+    store.set_write(BUSY_DISK_WRITE);
     let began = Instant::now();
     let draining = {
         let state = Arc::clone(&state);
@@ -341,7 +353,7 @@ async fn sigterm_drain_pauses_async_and_streaming_runs_and_a_restart_completes_t
 
     // Restart on the same store, with the upstream answering now.
     upstream.hang.store(false, Ordering::SeqCst);
-    let state = state_with(&wf, Arc::new(FileStore::open(&store_dir).unwrap())).await;
+    let state = state_with(&wf, memory).await;
     assert_eq!(state.recover().await.unwrap(), 0, "nothing was left running");
     let app = router(Arc::clone(&state), 1 << 20);
     // Async runs resume by themselves; streaming callers resume theirs.
@@ -359,7 +371,6 @@ async fn sigterm_drain_pauses_async_and_streaming_runs_and_a_restart_completes_t
     // The preempted node ran again once per run (at-least-once).
     assert_eq!(upstream.calls.load(Ordering::SeqCst), 20);
     let _ = std::fs::remove_dir_all(&wf);
-    let _ = std::fs::remove_dir_all(&store_dir);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -517,20 +528,37 @@ fn http(addr: &str, method: &str, path: &str, body: &str) -> (u16, String) {
     (status, body)
 }
 
-/// A store whose writes are serialised and slow, like [`FileStore`] (one store
-/// lock, several fsyncs per write) on a disk busy with other work.
+/// A store whose writes are serialised and slow, like `FileStore` (one store
+/// lock, several fsyncs per write) on a disk busy with other work. Reads are
+/// not slowed, so a test sees at once what was stored.
 #[derive(Debug)]
 struct SlowStore {
-    inner: graphrt_cli::store::MemoryStore,
+    inner: Arc<graphrt_cli::store::MemoryStore>,
     lock: tokio::sync::Mutex<()>,
-    write: Duration,
+    /// Duration of each write, in microseconds (changed while the test runs).
+    write_micros: AtomicU64,
 }
 
 impl SlowStore {
-    async fn slowly<T>(&self, write: impl std::future::Future<Output = T>) -> T {
+    fn new(inner: Arc<graphrt_cli::store::MemoryStore>, write: Duration) -> Self {
+        let micros = u64::try_from(write.as_micros()).unwrap();
+        Self { inner, lock: tokio::sync::Mutex::new(()), write_micros: AtomicU64::new(micros) }
+    }
+
+    /// From now on each write takes `write`.
+    fn set_write(&self, write: Duration) {
+        self.write_micros.store(u64::try_from(write.as_micros()).unwrap(), Ordering::SeqCst);
+    }
+
+    /// Run `write` once the store lock is free and the write's duration passed.
+    /// The memory store writes when called, so the call is made at the end.
+    async fn slowly<T, F: std::future::Future<Output = T>>(&self, write: impl FnOnce() -> F) -> T {
         let _serialised = self.lock.lock().await;
-        tokio::time::sleep(self.write).await;
-        write.await
+        let micros = self.write_micros.load(Ordering::SeqCst);
+        if micros > 0 {
+            tokio::time::sleep(Duration::from_micros(micros)).await;
+        }
+        write().await
     }
 }
 
@@ -539,20 +567,20 @@ impl RunStore for SlowStore {
         &self,
         record: graphrt_core::store::RunRecord,
     ) -> futures::future::BoxFuture<'_, graphrt_core::store::StoreResult<()>> {
-        Box::pin(self.slowly(self.inner.create(record)))
+        Box::pin(self.slowly(move || self.inner.create(record)))
     }
     fn put(
         &self,
         record: graphrt_core::store::RunRecord,
     ) -> futures::future::BoxFuture<'_, graphrt_core::store::StoreResult<()>> {
-        Box::pin(self.slowly(self.inner.put(record)))
+        Box::pin(self.slowly(move || self.inner.put(record)))
     }
     fn put_if(
         &self,
         record: graphrt_core::store::RunRecord,
         expected_epoch: u64,
     ) -> futures::future::BoxFuture<'_, graphrt_core::store::StoreResult<()>> {
-        Box::pin(self.slowly(self.inner.put_if(record, expected_epoch)))
+        Box::pin(self.slowly(move || self.inner.put_if(record, expected_epoch)))
     }
     fn get<'a>(
         &'a self,
@@ -567,7 +595,7 @@ impl RunStore for SlowStore {
         self.inner.list(filter)
     }
     fn delete<'a>(&'a self, run_id: &'a str) -> futures::future::BoxFuture<'a, graphrt_core::store::StoreResult<bool>> {
-        Box::pin(self.slowly(self.inner.delete(run_id)))
+        Box::pin(self.slowly(move || self.inner.delete(run_id)))
     }
     fn append_events<'a>(
         &'a self,
@@ -575,7 +603,7 @@ impl RunStore for SlowStore {
         first_index: u64,
         events: &'a [graphrt_core::store::StoredEvent],
     ) -> futures::future::BoxFuture<'a, graphrt_core::store::StoreResult<u64>> {
-        Box::pin(self.slowly(self.inner.append_events(run_id, first_index, events)))
+        Box::pin(self.slowly(move || self.inner.append_events(run_id, first_index, events)))
     }
     fn events<'a>(
         &'a self,
@@ -589,7 +617,7 @@ impl RunStore for SlowStore {
         run_id: &'a str,
         snapshot: &'a graphrt_core::Snapshot,
     ) -> futures::future::BoxFuture<'a, graphrt_core::store::StoreResult<()>> {
-        Box::pin(self.slowly(self.inner.save_snapshot(run_id, snapshot)))
+        Box::pin(self.slowly(move || self.inner.save_snapshot(run_id, snapshot)))
     }
     fn load_snapshot<'a>(
         &'a self,
@@ -602,7 +630,7 @@ impl RunStore for SlowStore {
         run_id: &'a str,
         now_ms: u64,
     ) -> futures::future::BoxFuture<'a, graphrt_core::store::StoreResult<graphrt_core::store::RunRecord>> {
-        Box::pin(self.slowly(self.inner.claim_resume(run_id, now_ms)))
+        Box::pin(self.slowly(move || self.inner.claim_resume(run_id, now_ms)))
     }
     fn recover_interrupted(
         &self,
@@ -612,6 +640,13 @@ impl RunStore for SlowStore {
     }
     fn purge_before(&self, cutoff_ms: u64) -> futures::future::BoxFuture<'_, graphrt_core::store::StoreResult<usize>> {
         self.inner.purge_before(cutoff_ms)
+    }
+    /// One write, like `FileStore`, which takes its lock once for a final state.
+    fn finish<'a>(
+        &'a self,
+        write: graphrt_core::store::FinalWrite<'a>,
+    ) -> futures::future::BoxFuture<'a, graphrt_core::store::StoreResult<()>> {
+        Box::pin(self.slowly(move || self.inner.finish(write)))
     }
 }
 
@@ -623,11 +658,7 @@ impl RunStore for SlowStore {
 async fn drain_leaves_time_for_a_slow_serialised_store() {
     let (upstream, port) = start_upstream().await;
     let wf = workflows_dir("slow-store", port);
-    let store = SlowStore {
-        inner: graphrt_cli::store::MemoryStore::new(),
-        lock: tokio::sync::Mutex::new(()),
-        write: Duration::from_millis(40),
-    };
+    let store = SlowStore::new(Arc::new(graphrt_cli::store::MemoryStore::new()), Duration::from_millis(40));
     let state = state_with(&wf, Arc::new(store)).await;
     let app = router(Arc::clone(&state), 1 << 20);
     for _ in 0..10 {

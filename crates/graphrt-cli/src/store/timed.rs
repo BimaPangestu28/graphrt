@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use futures::future::BoxFuture;
 use graphrt_core::Snapshot;
-use graphrt_core::store::{RunFilter, RunPage, RunRecord, RunStore, StoreResult, StoredEvent};
+use graphrt_core::store::{FinalWrite, RunFilter, RunPage, RunRecord, RunStore, StoreResult, StoredEvent};
 
 /// Decaying maximum of recent store write durations.
 ///
@@ -130,6 +130,10 @@ impl RunStore for TimedStore {
 
     fn recover_interrupted(&self, now_ms: u64) -> BoxFuture<'_, StoreResult<usize>> {
         self.inner.recover_interrupted(now_ms)
+    }
+
+    fn finish<'a>(&'a self, write: FinalWrite<'a>) -> BoxFuture<'a, StoreResult<()>> {
+        self.timed(self.inner.finish(write))
     }
 
     fn purge_before(&self, cutoff_ms: u64) -> BoxFuture<'_, StoreResult<usize>> {
