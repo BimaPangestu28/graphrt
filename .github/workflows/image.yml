@@ -1,0 +1,123 @@
+name: Container image from a release tag
+
+# Builds and pushes the container image of an existing release tag again, from
+# that tag's source, with the Dockerfile of the branch this workflow runs on.
+# For a release whose image job failed for a reason that is fixed in the
+# Dockerfile since (v0.6.3: two platforms raced on one cargo cache), without
+# moving the tag and without touching the GitHub Release, crates or packages.
+# The cargo features and the telemetry endpoint come from the tag's own
+# release.yml, so the image is the one the release would have pushed.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag, e.g. v0.6.3"
+        required: true
+      flavor:
+        description: "Which image"
+        required: true
+        type: choice
+        options: [agent, gateway, collab]
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: Container image (GHCR, ${{ inputs.flavor }}) for ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    # Both architectures build in one job, arm64 under QEMU.
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Require an existing v* tag
+        env:
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::the tag must look like v1.2.3, got '$TAG'"; exit 1 ;;
+          esac
+          case "$TAG" in
+            *[!0-9A-Za-z.+-]*) echo "::error::tag '$TAG' has characters a version tag cannot have"; exit 1 ;;
+          esac
+          gh api "repos/$REPO/git/ref/tags/$TAG" --silent || { echo "::error::$TAG is not a tag of $REPO"; exit 1; }
+      # This branch's Dockerfile, kept aside before the tag's source replaces it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: current
+          persist-credentials: false
+          sparse-checkout: Dockerfile
+          sparse-checkout-cone-mode: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          path: source
+          persist-credentials: false
+      - name: The tag's features, this branch's Dockerfile
+        id: settings
+        env:
+          FLAVOR: ${{ inputs.flavor }}
+        run: |
+          cp current/Dockerfile source/Dockerfile
+          value() { sed -n "s/^  $1: //p" source/.github/workflows/release.yml | head -n 1; }
+          extra="$(value EXTRA_FEATURES)"
+          gateway="$(value GATEWAY_FEATURES)"
+          telemetry="$(value GRAPHRT_TELEMETRY_URL)"
+          [ -n "$extra" ] && [ -n "$gateway" ] || { echo "::error::the tag's release.yml names no features"; exit 1; }
+          case "$FLAVOR" in
+            agent) features=""; extra_features="$extra" ;;
+            gateway) features=""; extra_features="$gateway" ;;
+            collab) features="collab"; extra_features="" ;;
+          esac
+          {
+            echo "features=$features"
+            echo "extra_features=$extra_features"
+            echo "telemetry=$telemetry"
+            echo "revision=$(git -C source rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+          echo "features='$features' extra_features='$extra_features'"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The same tags as release.yml's image job.
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          context: workflow
+          images: ghcr.io/${{ github.repository_owner }}/graphrt
+          flavor: |
+            latest=false
+            suffix=${{ inputs.flavor != 'agent' && format('-{0}', inputs.flavor) || '' }},onlatest=true
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag }}
+            type=raw,value=latest,enable=${{ inputs.flavor == 'agent' }}
+            type=raw,value=gateway,suffix=,enable=${{ inputs.flavor == 'gateway' }}
+            type=raw,value=collab,suffix=,enable=${{ inputs.flavor == 'collab' }}
+          # The labels name the tag's commit, not this branch's.
+          labels: |
+            org.opencontainers.image.revision=${{ steps.settings.outputs.revision }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        with:
+          context: source
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GRAPHRT_TELEMETRY_URL=${{ steps.settings.outputs.telemetry }}
+            EXTRA_FEATURES=${{ steps.settings.outputs.extra_features }}
+            FEATURES=${{ steps.settings.outputs.features }}
+          cache-from: type=gha,scope=${{ inputs.flavor }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.flavor }}
