@@ -361,6 +361,46 @@ pub trait RunStore: Send + Sync + fmt::Debug {
     /// Delete runs (any status except `running` and `queued`) last updated before
     /// `cutoff_ms`.
     fn purge_before(&self, cutoff_ms: u64) -> BoxFuture<'_, StoreResult<usize>>;
+    /// Store what an execution leaves when it ends, in one write: its last
+    /// events, its snapshot when it paused, and its record (as
+    /// [`RunStore::put_if`] at [`FinalWrite::expected_epoch`]). Idempotent like
+    /// its parts, so a failed one can be retried.
+    ///
+    /// The default implementation is `append_events` (when there are events),
+    /// `save_snapshot` (when there is one) and `put_if`, in that order. A store
+    /// that serialises its writes (one lock) overrides it to take the lock once:
+    /// when a shutdown stops many runs at once, each run's final state is then
+    /// complete after one write, instead of every run waiting until three writes
+    /// of each of them went through.
+    fn finish<'a>(&'a self, write: FinalWrite<'a>) -> BoxFuture<'a, StoreResult<()>> {
+        Box::pin(async move {
+            let run_id = write.record.run_id.as_str();
+            if !write.events.is_empty() {
+                self.append_events(run_id, write.first_index, write.events).await?;
+            }
+            if let Some(snapshot) = write.snapshot {
+                self.save_snapshot(run_id, snapshot).await?;
+            }
+            self.put_if(write.record.clone(), write.expected_epoch).await
+        })
+    }
+}
+
+/// The final state of an execution, stored by [`RunStore::finish`].
+#[derive(Clone, Copy, Debug)]
+pub struct FinalWrite<'a> {
+    /// Index of the first of `events` in the run's log.
+    pub first_index: u64,
+    /// The execution's events not stored yet (possibly none), as for
+    /// [`RunStore::append_events`].
+    pub events: &'a [StoredEvent],
+    /// The snapshot of a paused run.
+    pub snapshot: Option<&'a Snapshot>,
+    /// The run's final record. The store keeps its own event counters.
+    pub record: &'a RunRecord,
+    /// The epoch the execution was claimed at: the write is refused with
+    /// [`StoreError::Precondition`] when the stored record is at another one.
+    pub expected_epoch: u64,
 }
 
 /// [`StoreError::Precondition`] unless `record` is at `expected_epoch`.

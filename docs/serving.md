@@ -119,7 +119,10 @@ On SIGTERM or SIGINT (Ctrl-C) the server **drains** before it exits, within
    quarter of the timeout (0.5–2 s) plus, per active run, three times the
    store's recent write latency (at least 10 ms): a `--store` directory takes
    one lock per write and syncs to disk, so on a busy disk ten runs stopping at
-   once need ten times their final writes.
+   once need ten times their final writes. Each run stores its final state
+   (last events, snapshot, record) in one write, so the runs are stored one
+   after another: when the disk is too slow for the deadline, only the last
+   ones are left unfinished.
 4. Once every run stored its final state, open connections close and the
    process exits `0`. A second signal preempts at once.
 

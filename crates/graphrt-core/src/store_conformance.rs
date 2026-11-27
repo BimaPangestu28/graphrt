@@ -25,7 +25,7 @@
 use futures::future::join;
 
 use crate::coordination::{CoordinationStore, MAX_VALUE_BYTES};
-use crate::store::{RunFilter, RunRecord, RunStatus, RunStore, StoreError, StoredEvent};
+use crate::store::{FinalWrite, RunFilter, RunRecord, RunStatus, RunStore, StoreError, StoredEvent};
 
 /// Events `{"type":"e","i":<i>}` for `indices`.
 pub fn numbered_events(indices: std::ops::Range<u64>) -> Vec<StoredEvent> {
@@ -52,6 +52,7 @@ pub async fn run_store_suite(store: &dyn RunStore) {
     conditional_writes(store).await;
     claims_are_exclusive_and_bump_the_epoch(store).await;
     queued_runs_survive_recovery_and_purge(store).await;
+    final_writes_store_events_snapshot_and_record(store).await;
 }
 
 async fn create_and_fields(store: &dyn RunStore) {
@@ -131,6 +132,55 @@ async fn conditional_writes(store: &dyn RunStore) {
     b.answer = "b".into();
     let (ra, rb) = join(store.put_if(a, 1), store.put_if(b, 1)).await;
     assert_eq!(usize::from(ra.is_ok()) + usize::from(rb.is_ok()), 1, "exactly one of two concurrent put_if wins");
+}
+
+async fn final_writes_store_events_snapshot_and_record(store: &dyn RunStore) {
+    let id = "conformance-finish";
+    store.create(record(id)).await.expect("create");
+    let events = numbered_events(0..5);
+    store.append_events(id, 0, &events[0..2]).await.expect("append");
+    let snapshot = crate::Snapshot {
+        format: crate::snapshot::SNAPSHOT_FORMAT,
+        run_id: id.into(),
+        graph_fingerprint: "fp".into(),
+        elapsed_ms: 3,
+        steps: 2,
+        usage: crate::event::Usage::default(),
+        handled_errors: 0,
+        root: crate::snapshot::FrameSnapshot::default(),
+    };
+    let mut paused = record(id);
+    paused.status = RunStatus::Paused;
+    paused.answer = "half".into();
+    let write = FinalWrite {
+        first_index: 2,
+        events: &events[2..5],
+        snapshot: Some(&snapshot),
+        record: &paused,
+        expected_epoch: 0,
+    };
+    store.finish(write).await.expect("finish at the stored epoch");
+    // The reply was lost: the same final write again changes nothing.
+    store.finish(write).await.expect("retried finish");
+    assert_eq!(texts(&store.events(id, 0).await.expect("events")), texts(&events), "events are stored once, in order");
+    let got = store.get(id).await.expect("get").expect("exists");
+    assert_eq!((got.status, got.answer.as_str(), got.event_count), (RunStatus::Paused, "half", 5));
+    assert_eq!(store.load_snapshot(id).await.expect("load").expect("saved"), snapshot, "the snapshot is stored");
+
+    let fenced = "conformance-finish-fenced";
+    store.create(record(fenced)).await.expect("create");
+    let mut done = record(fenced);
+    done.status = RunStatus::Succeeded;
+    let stale = FinalWrite { first_index: 0, events: &[], snapshot: None, record: &done, expected_epoch: 4 };
+    assert!(
+        matches!(store.finish(stale).await, Err(StoreError::Precondition(_))),
+        "a final write at an old epoch is refused"
+    );
+    let got = store.get(fenced).await.expect("get").expect("exists");
+    assert_eq!(got.status, RunStatus::Running, "a refused final write leaves the record");
+    let current = FinalWrite { expected_epoch: 0, ..stale };
+    store.finish(current).await.expect("finish without events or snapshot");
+    assert_eq!(store.get(fenced).await.expect("get").expect("exists").status, RunStatus::Succeeded);
 }
 
 async fn claims_are_exclusive_and_bump_the_epoch(store: &dyn RunStore) {

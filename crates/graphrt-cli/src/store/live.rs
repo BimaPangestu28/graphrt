@@ -15,7 +15,9 @@ use futures::future::Either;
 use futures::{Stream, StreamExt};
 use graphrt_core::engine::{RunHandle, RunStream};
 use graphrt_core::response::ResponseAssembler;
-use graphrt_core::store::{RunRecord, RunStore, StoreError, StoreResult, StoredEvent, event_to_stored, now_ms};
+use graphrt_core::store::{
+    FinalWrite, RunRecord, RunStore, StoreError, StoreResult, StoredEvent, event_to_stored, now_ms,
+};
 use graphrt_core::{Event, Value};
 use tokio::sync::{broadcast, watch};
 
@@ -476,15 +478,10 @@ async fn drive(
         }
         let event = Arc::new(event);
         active.publish(&event, || assembler.text_so_far().to_owned());
-        if pending.len() >= FLUSH_EVERY || terminal {
-            timer_armed = false;
-            writer.write(&run_id, std::mem::take(&mut pending)).await;
-        } else if !timer_armed {
-            flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_AFTER);
-            timer_armed = true;
-        }
         if terminal {
-            store_final_state(&*store, &mut record, &event, assembler.text_so_far()).await;
+            timer_armed = false;
+            let last = std::mem::take(&mut pending);
+            store_final_state(&*store, &mut writer, &mut record, &event, assembler.text_so_far(), last).await;
             // After the state is stored: whoever follows the notice finds it.
             #[cfg(feature = "notify")]
             if let Some(notifications) = &recorder.capture.notify {
@@ -494,6 +491,12 @@ async fn drive(
             if let Some(channels) = &recorder.capture.channels {
                 channels.run_ended(&record, std::mem::take(&mut recorder.produced_files));
             }
+        } else if pending.len() >= FLUSH_EVERY {
+            timer_armed = false;
+            writer.write(&run_id, std::mem::take(&mut pending)).await;
+        } else if !timer_armed {
+            flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_AFTER);
+            timer_armed = true;
         }
     }
     writer.write(&run_id, pending).await;
@@ -506,13 +509,49 @@ async fn drive(
     }
 }
 
-/// Record a finished execution: its status, its snapshot when it paused, and
-/// the final answer text. Failures are logged; a snapshot that could not be
+/// Record a finished execution: its last events (`last`, after any whose write
+/// failed before), its status, its snapshot when it paused, and the final
+/// answer text, in one store write ([`RunStore::finish`]): when a shutdown
+/// stops many runs at once, each one is stored as soon as its own write went
+/// through, not only once every run's three writes did.
+///
+/// When that write fails, the parts are written one by one, each failure
+/// handled on its own: lost events are logged, and a snapshot that could not be
 /// stored is recorded as `error_type` `store_unavailable`, so the paused run
 /// shows why it cannot be resumed by id.
-async fn store_final_state(store: &dyn RunStore, record: &mut RunRecord, terminal: &Event, answer: &str) {
+async fn store_final_state(
+    store: &dyn RunStore,
+    writer: &mut EventWriter,
+    record: &mut RunRecord,
+    terminal: &Event,
+    answer: &str,
+    last: Vec<StoredEvent>,
+) {
     let run_id = record.run_id.clone();
-    if let Some(snapshot) = record.apply_terminal(terminal, now_ms()) {
+    let snapshot = record.apply_terminal(terminal, now_ms());
+    record.answer = answer.to_owned();
+    // Fenced by the epoch this execution was claimed at; the store keeps its
+    // own event counters.
+    let epoch = record.epoch;
+    let (first_index, events) = writer.unwritten(last);
+    let finished = with_retries(|| {
+        store.finish(FinalWrite {
+            first_index,
+            events: &events,
+            snapshot: snapshot.as_ref(),
+            record,
+            expected_epoch: epoch,
+        })
+    })
+    .await;
+    let Err(error) = finished else {
+        writer.stored(events.len());
+        return;
+    };
+    // Every part is idempotent, so the ones that went through are not stored twice.
+    eprintln!("warning: run {run_id}: cannot store the final state in one write, writing it in parts: {error}");
+    writer.write(&run_id, events).await;
+    if let Some(snapshot) = snapshot {
         let saved = with_retries(|| store.save_snapshot(&run_id, &snapshot)).await;
         if let Err(e) = saved {
             eprintln!("warning: run {run_id}: cannot store snapshot, it will not be resumable by id: {e}");
@@ -520,10 +559,6 @@ async fn store_final_state(store: &dyn RunStore, record: &mut RunRecord, termina
             record.error_type = Some("store_unavailable".to_owned());
         }
     }
-    record.answer = answer.to_owned();
-    // Fenced by the epoch this execution was claimed at; the store keeps its
-    // own event counters.
-    let epoch = record.epoch;
     if let Err(e) = with_retries(|| store.put_if(record.clone(), epoch)).await {
         eprintln!("warning: run {run_id}: cannot store final status: {e}");
     }
@@ -548,6 +583,19 @@ struct EventWriter {
 const MAX_BEHIND: usize = 4 * FEED_CAP;
 
 impl EventWriter {
+    /// The events not stored yet (those whose write failed, then `batch`), and
+    /// the index of the first; [`EventWriter::stored`] reports them written.
+    fn unwritten(&mut self, batch: Vec<StoredEvent>) -> (u64, Vec<StoredEvent>) {
+        let mut events = std::mem::take(&mut self.behind);
+        events.extend(batch);
+        (self.first_index + self.written, events)
+    }
+
+    /// `count` events from [`EventWriter::unwritten`] were stored.
+    fn stored(&mut self, count: usize) {
+        self.written += u64::try_from(count).unwrap_or(u64::MAX);
+    }
+
     /// Append `batch`, the events right after the ones already handed over.
     async fn write(&mut self, run_id: &str, batch: Vec<StoredEvent>) {
         if batch.is_empty() && self.behind.is_empty() {
