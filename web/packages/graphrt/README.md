@@ -81,9 +81,16 @@ defineGraphrtChat();
 | `<graphrt-chat-widget>` | A bubble in a corner that opens it |
 | `ChatSession` | The logic without a view, for a chat of your own design |
 | `loadDiagrams` | Draws `diagram` blocks with the Mermaid a server serves (`--chat-mermaid`) |
+| `GraphrtChatApi`, `ChatEventMap`, `ChatContext`, ... | Types of the widget script's API `window.GraphrtChat` |
+
+Both elements have `send(text)`, `setContext(context)` and `reset()`, and fire
+`graphrt-chat-ready`, `-message`, `-answer`, `-handoff`, `-error`, `-open` and
+`-close` with the payload in `detail`. The context reaches the workflow as
+`sys.context`: untrusted page data, never identity.
 
 A server started with `--chat` serves both ready to use, without this package:
-the page `/chat/` and the one script tag `/chat/embed.js`.
+the page `/chat/` and the one script tag `/chat/embed.js`. See
+[Embed SDK](https://github.com/Graphrt/graphrt/blob/main/docs/web.md#embed-sdk).
 
 ## Monitor
 

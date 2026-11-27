@@ -46,6 +46,16 @@ graph:
   edges:
     - { source: start, target: done }
 `,
+  // Answers with the page context the chat sent (sys.context).
+  shop: `version: "1"
+name: shop
+graph:
+  nodes:
+    - { id: start, type: start }
+    - { id: done, type: answer, answer: "{{#sys.query#}} about {{#sys.context.product_id#}}" }
+  edges:
+    - { source: start, target: done }
+`,
   // Pauses for a person.
   confirm: `version: "1"
 name: confirm

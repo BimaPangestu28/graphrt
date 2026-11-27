@@ -16,6 +16,7 @@ const NAMES = [
   "HTMLButtonElement",
   "HTMLSelectElement",
   "HTMLAnchorElement",
+  "HTMLScriptElement",
   "HTMLImageElement",
   "Element",
   "Node",

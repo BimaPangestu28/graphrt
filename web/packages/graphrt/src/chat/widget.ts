@@ -5,10 +5,17 @@
  * Attributes: `server`, `workflow`, `heading`, `greeting`, `placeholder`,
  * `theme` (passed on to the chat), `position` (`right`, the default, or
  * `left`) and `open`.
+ *
+ * Methods: `open()`, `close()`, `toggle()`, `send(text)`, `setContext(context)`
+ * and `reset()`. Events: those of `<graphrt-chat>` (they leave its shadow
+ * tree), and `graphrt-chat-open` and `graphrt-chat-close` when the panel opens
+ * and closes, however it happened.
  */
 import type { TokenSource } from "../client/index.ts";
 import { adoptStyles } from "../ui/index.ts";
 import { defineGraphrtChat, type GraphrtChatElement } from "./chat-element.ts";
+import { type ChatContext, checkChatContext } from "./context.ts";
+import { dispatchChatEvent } from "./events.ts";
 import { WIDGET_CSS } from "./styles.ts";
 
 const PASSED_ON = ["server", "workflow", "heading", "greeting", "placeholder", "theme"];
@@ -23,6 +30,11 @@ export class GraphrtChatWidgetElement extends BaseElement {
   #panel: HTMLElement | undefined;
   #launcher: HTMLButtonElement | undefined;
   #chat: GraphrtChatElement | undefined;
+  #context: ChatContext | undefined;
+  /** Whether the panel was shown when last synced, to fire `open` and `close` once each. */
+  #shown = false;
+  /** Calls made before the chat existed, run on it once it does. */
+  #onCreate: ((chat: GraphrtChatElement) => void)[] = [];
 
   connectedCallback(): void {
     if (this.#panel !== undefined) {
@@ -47,7 +59,11 @@ export class GraphrtChatWidgetElement extends BaseElement {
     const panel = document.createElement("div");
     panel.className = "panel";
     panel.hidden = true;
-    panel.addEventListener("graphrt-chat-close", () => this.close());
+    panel.addEventListener("graphrt-chat-close", (event) => {
+      // The chat's close button: the widget fires its own `close` once the panel closed.
+      event.stopPropagation();
+      this.close();
+    });
     panel.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         this.close();
@@ -89,6 +105,52 @@ export class GraphrtChatWidgetElement extends BaseElement {
     }
   }
 
+  /** The page context of the chat, see {@link GraphrtChatWidgetElement.setContext}. */
+  get context(): ChatContext | undefined {
+    return this.#context;
+  }
+
+  set context(context: ChatContext | undefined) {
+    this.setContext(context);
+  }
+
+  /**
+   * Set the page context the workflow reads as `sys.context`. Untrusted data
+   * of the browser: never identity, secrets or permissions.
+   *
+   * @throws TypeError - When it is not a JSON object of at most 8 KiB and 5 levels.
+   */
+  setContext(context: ChatContext | undefined): void {
+    const checked = context === undefined ? undefined : checkChatContext(context);
+    this.#context = checked;
+    this.#chat?.setContext(checked);
+  }
+
+  /**
+   * Open the panel and send `text` as the visitor's message, once the chat is
+   * ready. See {@link GraphrtChatElement.send}.
+   */
+  send(text: string): Promise<void> {
+    this.open();
+    return this.#withChat((chat) => chat.send(text));
+  }
+
+  /** Start a new conversation. Before the chat was first opened, it starts with one. */
+  reset(): Promise<void> {
+    return this.#withChat((chat) => chat.reset());
+  }
+
+  /** Run `work` on the chat, once it exists (the panel opened in the page). */
+  #withChat(work: (chat: GraphrtChatElement) => Promise<void>): Promise<void> {
+    const chat = this.#chat;
+    if (chat !== undefined) {
+      return work(chat);
+    }
+    return new Promise((resolve, reject) => {
+      this.#onCreate.push((created) => work(created).then(resolve, reject));
+    });
+  }
+
   #sync(): void {
     const panel = this.#panel;
     if (panel === undefined) {
@@ -106,12 +168,26 @@ export class GraphrtChatWidgetElement extends BaseElement {
         }
       }
       chat.userToken = this.userToken;
+      if (this.#context !== undefined) {
+        chat.setContext(this.#context);
+      }
       panel.append(chat);
       this.#chat = chat;
+      const waiting = this.#onCreate;
+      this.#onCreate = [];
+      for (const work of waiting) {
+        work(chat);
+      }
     }
     panel.hidden = !open;
     this.#launcher?.setAttribute("aria-expanded", String(open));
     this.#launcher?.setAttribute("aria-label", open ? "Close chat" : "Open chat");
+    if (open !== this.#shown) {
+      this.#shown = open;
+      dispatchChatEvent(this, open ? "open" : "close", {
+        workflow: this.getAttribute("workflow") ?? undefined,
+      });
+    }
   }
 }
 

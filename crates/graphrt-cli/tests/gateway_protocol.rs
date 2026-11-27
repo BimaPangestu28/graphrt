@@ -247,6 +247,11 @@ async fn a_gateway_run_streams_hello_global_ids_and_response_text_and_is_never_e
         send(&app, signed("POST", "/internal/v1/runs", Some(("r2", 1)), &unknown)).await.0,
         StatusCode::NOT_FOUND
     );
+    // The page context the gateway forwarded from the client is checked like on `serve`.
+    let forwarded = json!({ "workflow": "linear", "sys": { "context": "not an object" } });
+    let (status, _, text) = send(&app, signed("POST", "/internal/v1/runs", Some(("r-context", 1)), &forwarded)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(text.contains("`sys.context` must be a JSON object"), "{text}");
     let changed = json!({ "workflow": "linear", "fingerprint": "something-else" });
     let (status, _, text) = send(&app, signed("POST", "/internal/v1/runs", Some(("r3", 1)), &changed)).await;
     assert_eq!(status, StatusCode::CONFLICT);

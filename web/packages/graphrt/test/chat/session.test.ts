@@ -4,6 +4,8 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { API_KEY, startServer, type TestServer } from "../../../../test-support/server.ts";
+import { checkChatContext, MAX_CONTEXT_BYTES } from "../../src/chat/context.ts";
+import type { SessionEvent } from "../../src/chat/events.ts";
 import { ChatSession, type ChatState, type KeyValueStore, questionBlock } from "../../src/chat/session.ts";
 
 function memoryStorage(): KeyValueStore & { entries: Map<string, string> } {
@@ -285,5 +287,165 @@ describe("questions of paused runs", () => {
   test("other pauses are not questions to the person chatting", () => {
     assert.equal(questionBlock({ kind: "tool_approval", data: { tool: "refund" } }), undefined);
     assert.equal(questionBlock({ kind: "human_input", data: "text" }), undefined);
+  });
+});
+
+describe("events and the page context", () => {
+  let server: TestServer;
+  before(async () => {
+    server = await startServer([
+      "--chat",
+      "shop",
+      "--chat",
+      "confirm",
+      "--chat",
+      "report",
+      "--chat-access",
+      "guests",
+      "--user-resume",
+    ]);
+  });
+  after(() => server.stop());
+
+  function record(session: ChatSession): SessionEvent[] {
+    const events: SessionEvent[] = [];
+    session.on((event) => events.push(event));
+    return events;
+  }
+
+  test("ready, message and answer come in order, with the answer's text and blocks", async () => {
+    const session = new ChatSession({ baseUrl: server.url, workflow: "report" });
+    const events = record(session);
+    await session.start();
+    await session.send("numbers please");
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ["ready", "message", "answer"],
+    );
+    const [ready, message, answer] = events;
+    // The title is the server's (`--chat-title`, else its first chat workflow).
+    assert.deepEqual(ready?.detail, { workflow: "report", title: "shop" });
+    assert.deepEqual(message?.detail, { id: "m1", text: "numbers please" });
+    assert.equal(answer?.type, "answer");
+    if (answer?.type === "answer") {
+      assert.equal(answer.detail.text, "Here are the numbers.");
+      assert.match(answer.detail.runId ?? "", /^run-/);
+      assert.equal((answer.detail.blocks[0] as { $ui: string }).$ui, "stats");
+    }
+  });
+
+  test("the page context reaches the workflow as sys.context", async () => {
+    const context = { product_id: "sku-1", page: "https://shop.example/p/sku-1", name: undefined };
+    const session = new ChatSession({ baseUrl: server.url, workflow: "shop", context });
+    await session.start();
+    await session.send("Is it in stock?");
+    assert.equal(last(session.state).text, "Is it in stock? about sku-1");
+    // A change of the caller's object after the call does not change what is sent.
+    const next = { product_id: "sku-2" };
+    session.setContext(next);
+    next.product_id = "changed";
+    await session.send("And this one?");
+    assert.equal(last(session.state).text, "And this one? about sku-2");
+    assert.deepEqual(session.context, { product_id: "sku-2" });
+    session.setContext(undefined);
+    await session.send("Nothing?");
+    assert.equal(last(session.state).text, "Nothing? about ");
+  });
+
+  test("a context out of the limits is refused and the one before stays", () => {
+    const session = new ChatSession({ baseUrl: server.url, context: { product_id: "sku-1" } });
+    const refuse = (value: unknown, reason: RegExp): void => {
+      assert.throws(
+        () => session.setContext(value as never),
+        (error: unknown) => {
+          assert.ok(error instanceof TypeError);
+          assert.match(error.message, reason);
+          return true;
+        },
+      );
+    };
+    refuse("sku-1", /must be a JSON object/);
+    refuse(["sku-1"], /must be a JSON object/);
+    refuse(null, /must be a JSON object/);
+    refuse({ when: new Date() }, /context\.when is not a plain object/);
+    refuse({ total: Number.NaN }, /context\.total is not a finite number/);
+    refuse({ handler: () => undefined }, /context\.handler is function, not JSON/);
+    refuse({ ids: [1, undefined] }, /context\.ids\[1\] is undefined, not JSON/);
+    refuse({ a: { b: { c: { d: { e: { f: "six levels" } } } } } }, /nested deeper than 5/);
+    refuse({ notes: "x".repeat(MAX_CONTEXT_BYTES) }, /more than 8192/);
+    assert.deepEqual(session.context, { product_id: "sku-1" });
+    // The same limits as the server: five levels and 8192 bytes fit.
+    assert.doesNotThrow(() => checkChatContext({ a: { b: { c: { d: { e: "five levels" } } } } }));
+    assert.doesNotThrow(() => checkChatContext({ a: [[[["five levels"]]]] }));
+    const fits = { text: "x".repeat(MAX_CONTEXT_BYTES - 11) };
+    assert.equal(JSON.stringify(fits).length, MAX_CONTEXT_BYTES);
+    assert.doesNotThrow(() => checkChatContext(fits));
+    assert.throws(() => checkChatContext({ text: "é".repeat(MAX_CONTEXT_BYTES / 2) }), /more than 8192/);
+    assert.throws(() => new ChatSession({ context: { bad: Symbol("x") } as never }), TypeError);
+  });
+
+  test("a question to the visitor is a handoff to them", async () => {
+    const session = new ChatSession({ baseUrl: server.url, workflow: "confirm" });
+    const events = record(session);
+    await session.start();
+    await session.send("send it");
+    const handoff = events.at(-1);
+    assert.equal(handoff?.type, "handoff");
+    if (handoff?.type === "handoff") {
+      assert.equal(handoff.detail.waitingFor, "visitor");
+      assert.equal(handoff.detail.id, last(session.state).id);
+    }
+    await session.answer(last(session.state).id, "ask", "no", { note: "" });
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ["ready", "message", "handoff", "answer"],
+    );
+  });
+
+  test("a failed answer and a chat that cannot connect are errors", async () => {
+    let fail = false;
+    const flaky: typeof fetch = (input, init) =>
+      fail && String(input).includes("/runs")
+        ? Promise.resolve(Response.json({ error: "down" }, { status: 503 }))
+        : fetch(input, init);
+    const session = new ChatSession({ baseUrl: server.url, workflow: "shop", fetch: flaky });
+    const events = record(session);
+    await session.start();
+    fail = true;
+    await session.send("hello");
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ["ready", "message", "error"],
+    );
+    assert.deepEqual(events.at(-1)?.detail, { during: "answer", message: "down", id: "m2" });
+
+    const missing = new ChatSession({ baseUrl: server.url, workflow: "memo" });
+    const missed = record(missing);
+    await missing.start();
+    assert.deepEqual(missed, [
+      { type: "error", detail: { during: "connect", message: "This chat is not available." } },
+    ]);
+  });
+
+  test("a listener that throws does not break the chat", async () => {
+    const session = new ChatSession({ baseUrl: server.url, workflow: "shop" });
+    const seen: string[] = [];
+    const thrown: unknown[] = [];
+    // What a browser has: errors of listeners are reported like uncaught ones.
+    const holder = globalThis as { reportError?: (error: unknown) => void };
+    holder.reportError = (error) => void thrown.push(error);
+    try {
+      session.on(() => {
+        throw new Error("a bug of the page");
+      });
+      session.on((event) => seen.push(event.type));
+      await session.start();
+      await session.send("still works");
+    } finally {
+      delete holder.reportError;
+    }
+    assert.deepEqual(seen, ["ready", "message", "answer"]);
+    assert.equal(thrown.length, 3, "each error is reported, not swallowed");
+    assert.equal(last(session.state).state, "done");
   });
 });

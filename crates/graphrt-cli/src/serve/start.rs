@@ -117,6 +117,10 @@ pub(super) async fn start_run(
     if let Err(message) = body.apply_context(&mut record) {
         return error_response(StatusCode::BAD_REQUEST, &message);
     }
+    // The page context of a web chat: checked, never read as identity.
+    if let Err(message) = super::check_page_context(&body.sys) {
+        return error_response(StatusCode::BAD_REQUEST, &message);
+    }
     let verified_user = user.map(|axum::Extension(AuthenticatedUser(subject))| subject);
     if let Err(refused) = join_conversation(&state, &name, &run_id, verified_user.as_deref(), &mut body).await {
         return refused;
