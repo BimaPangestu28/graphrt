@@ -434,6 +434,25 @@ impl AgentClient {
         self.send(address, key, deployment, reqwest::Method::POST, &path, scope, Vec::new()).await.map(|_| ())
     }
 
+    /// `POST` of `body` to `path` (`/internal/v1/runs/{id}/feedback`), answered with JSON.
+    ///
+    /// # Errors
+    /// See [`AgentError`] (an agent older than the route answers `404`).
+    pub async fn call_json(
+        &self,
+        address: &EndpointAddress,
+        key: &GatewayKey,
+        deployment: &str,
+        path: &str,
+        scope: RunScope<'_>,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, AgentError> {
+        let body = serde_json::to_vec(body).map_err(|error| AgentError::Stream(error.to_string()))?;
+        let reply = self.send(address, key, deployment, reqwest::Method::POST, path, scope, body).await?;
+        let bytes = reply.bytes().await?;
+        serde_json::from_slice(&bytes).map_err(|error| AgentError::Stream(error.to_string()))
+    }
+
     /// `GET /internal/v1/hello`.
     ///
     /// # Errors

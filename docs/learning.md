@@ -217,6 +217,14 @@ calls, so who sent it decides how far it is trusted:
 A `user` in the body of a request that carries a verified token is ignored:
 the token says who the author is.
 
+Behind a gateway the gateway verifies the tokens, so an end user sends
+feedback to `POST /v1/deployments/{d}/runs/{id}/feedback` of the gateway (see
+[gateway.md](gateway.md#api)), with the same rules as the table above: their
+own token on a run started with a token of the same user makes it their own
+words, another user's token is `403`, a missing or bad one `401`, and the
+deployment API key only labels it. The agent's own feedback route, called with
+its API key, stays `derived`.
+
 **Routes that ask a model.** `distill` with `{model}` also asks that model
 what the recorded signals teach, like `graphrt learn distill --model`.
 `skill-draft` is `graphrt learn skill` over HTTP. `model` is `provider/name`

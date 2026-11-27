@@ -82,6 +82,8 @@ pub struct AgentWorld {
     pub busy_refusals: AtomicU32,
     /// Warm hints (`POST /internal/v1/warm`) received.
     pub warm_hints: AtomicU32,
+    /// Feedback bodies (`POST /internal/v1/runs/{id}/feedback`) received: (run id, body).
+    pub feedback: Mutex<Vec<(String, Json)>>,
 }
 
 struct AgentState {
@@ -293,6 +295,26 @@ async fn release_orphan(
     if orphans.len() < before { StatusCode::NO_CONTENT.into_response() } else { StatusCode::NOT_FOUND.into_response() }
 }
 
+/// Records the feedback and answers with a score, as `serve --trust-gateway` does.
+async fn feedback(
+    State(state): State<Arc<AgentState>>,
+    axum::extract::Path(run_id): axum::extract::Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(refused) = verify(&state, "POST", &format!("/internal/v1/runs/{run_id}/feedback"), &headers, &body) {
+        return refused;
+    }
+    let request: Json = serde_json::from_slice(&body).unwrap();
+    if request["name"] == "refuse-me" {
+        let refused = json!({ "error": "`name` must be 1-200 bytes" });
+        return (StatusCode::BAD_REQUEST, axum::Json(refused)).into_response();
+    }
+    state.world.feedback.lock().unwrap().push((run_id.clone(), request.clone()));
+    let score = json!({ "run_id": run_id, "name": request["name"], "user": request["user"], "source": "human" });
+    (StatusCode::CREATED, axum::Json(score)).into_response()
+}
+
 /// One fake protocol-1 agent on a loopback port.
 pub async fn serve_agent(world: Arc<AgentWorld>, id: &str) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let state = Arc::new(AgentState { world, verifier: Verifier::new(vec![key()]), replica: id.to_owned() });
@@ -300,6 +322,7 @@ pub async fn serve_agent(world: Arc<AgentWorld>, id: &str) -> (SocketAddr, tokio
         .route("/internal/v1/runs", post(start_run))
         .route("/internal/v1/hello", get(hello))
         .route("/internal/v1/warm", post(warm))
+        .route("/internal/v1/runs/{run_id}/feedback", post(feedback))
         .route("/internal/v1/orphans", get(orphans))
         .route("/internal/v1/orphans/{run_id}", axum::routing::delete(release_orphan))
         // Platform readiness probes (Cloud Run wake) hit the agent's /healthz.
@@ -469,6 +492,8 @@ pub struct Options {
     pub target: String,
     /// The fake-agent provider behaves like a platform-scaled service (`Addressing::Url`).
     pub url_provider: bool,
+    /// End-user tokens the deployment accepts next to its API key.
+    pub jwt: Option<graphrt_gateway::auth::JwtConfig>,
 }
 
 impl Default for Options {
@@ -482,6 +507,7 @@ impl Default for Options {
             provider: None,
             target: "fake".into(),
             url_provider: false,
+            jwt: None,
         }
     }
 }
@@ -497,9 +523,12 @@ pub async fn start_gateway(options: Options) -> TestGateway {
     let provider = Arc::new(FakeAgentProvider::new(options.world.clone()));
     provider.url.store(options.url_provider, Ordering::SeqCst);
     let chosen: Arc<dyn Provider> = options.provider.clone().unwrap_or_else(|| provider.clone());
-    let auth =
-        DeploymentAuth::new(vec![graphrt_gateway::hex::sha256_hex(API_KEY.as_bytes())], None, &reqwest::Client::new())
-            .unwrap();
+    let auth = DeploymentAuth::new(
+        vec![graphrt_gateway::hex::sha256_hex(API_KEY.as_bytes())],
+        options.jwt,
+        &reqwest::Client::new(),
+    )
+    .unwrap();
     let mut pool = options.pool;
     pool.warm_hint = graphrt_gateway::app::warm_hint(&gateway, DEPLOYMENT, Some(&key()));
     let deployment = Arc::new(Deployment::new(DEPLOYMENT, auth, vec![key()], chosen, pool));

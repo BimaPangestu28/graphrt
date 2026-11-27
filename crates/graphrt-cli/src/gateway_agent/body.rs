@@ -40,6 +40,10 @@ pub struct RunBody {
     pub session_id: Option<String>,
     pub user_id: Option<String>,
     pub tags: Vec<String>,
+    /// Who started the run, as the gateway says: `user` (an end user whose
+    /// token it verified, named in `user_id`) or `key`. `None` from a gateway
+    /// older than the field.
+    pub caller: Option<String>,
 }
 
 /// `resume` of [`RunBody`].
@@ -90,6 +94,7 @@ pub fn run(body: &[u8]) -> Result<RunBody, BodyError> {
         metadata: strings(object_field(&mut map, "metadata")?)?,
         session_id: string(&mut map, "session_id")?,
         user_id: string(&mut map, "user_id")?,
+        caller: string(&mut map, "caller")?,
         ..RunBody::default()
     };
     run.tags = match map.remove("tags") {
@@ -162,7 +167,7 @@ mod tests {
         let body = serde_json::json!({
             "workflow": "chat", "fingerprint": "fp", "event_index": 7, "deployment_version": "v2",
             "inputs": { "q": 1 }, "sys": { "s": true }, "metadata": { "tenant": "acme" },
-            "session_id": "s1", "user_id": "u1", "tags": ["a", "b"], "stream": true,
+            "session_id": "s1", "user_id": "u1", "tags": ["a", "b"], "stream": true, "caller": "user",
         });
         let run = run(body.to_string().as_bytes()).unwrap();
         assert_eq!((run.workflow.as_str(), run.fingerprint.as_deref(), run.event_index), ("chat", Some("fp"), 7));
@@ -171,6 +176,7 @@ mod tests {
         assert_eq!(run.metadata.get("tenant").map(String::as_str), Some("acme"));
         assert_eq!((run.session_id.as_deref(), run.user_id.as_deref()), (Some("s1"), Some("u1")));
         assert_eq!(run.tags, ["a", "b"]);
+        assert_eq!(run.caller.as_deref(), Some("user"));
         assert!(run.resume.is_none());
     }
 
@@ -189,6 +195,7 @@ mod tests {
             r#"{"workflow": "w", "resume": {"snapshot": 1}}"#,
             r#"{"workflow": "w", "resume": 1}"#,
             r#"{"workflow": "w", "preempt_after_ms": "soon"}"#,
+            r#"{"workflow": "w", "caller": true}"#,
         ] {
             assert!(run(bad.as_bytes()).is_err(), "{bad}");
         }
