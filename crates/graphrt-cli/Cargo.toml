@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -44,6 +44,9 @@ files-s3 = ["files", "graphrt-files/s3"]
 # reach a model, `--image-tools` adds the `image` tools to a workspace and
 # `--image-model` an image generator (OpenAI images API).
 image = ["files", "dep:graphrt-image", "graphrt-llm?/vision-preparer"]
+# `--document-tools`: agents create PDF, Word and Excel files in the workspace
+# (the `documents` tools of graphrt-docgen). Inert without the flag.
+documents = ["files", "dep:graphrt-docgen"]
 # knowledge-retrieval node (`--knowledge`): embeddings, vector stores, hybrid search, rerank.
 rag = ["dep:graphrt-rag"]
 # In-process embeddings for knowledge bases (`type: local` embedders): BERT-family
@@ -149,6 +152,7 @@ graphrt-mcp = { workspace = true, optional = true, features = ["stdio", "http"] 
 graphrt-doc = { workspace = true, optional = true, features = ["default", "tokio"] }
 graphrt-files = { workspace = true, optional = true, features = ["tokio"] }
 graphrt-image = { workspace = true, optional = true, features = ["tokio", "process", "tools", "generate-openai"] }
+graphrt-docgen = { workspace = true, optional = true, features = ["tokio", "office", "tools"] }
 graphrt-rag = { workspace = true, optional = true, features = ["default"] }
 graphrt-plugin = { workspace = true, optional = true }
 graphrt-skill = { workspace = true, optional = true }

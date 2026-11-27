@@ -1,0 +1,50 @@
+[package]
+name = "graphrt-docgen"
+description = "Document creation for graphrt agents: PDF, Word (DOCX) and Excel (XLSX) files written from Markdown and rows, and the `documents` tools over a file workspace."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-docgen"
+homepage = "https://github.com/Graphrt/graphrt"
+keywords = ["agent", "pdf", "docx", "xlsx", "tools"]
+categories = ["text-processing", "development-tools"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["tokio", "office", "tools"]
+# Lay out and write documents on Tokio's blocking pool when a Tokio runtime is present.
+tokio = ["graphrt-files?/tokio"]
+# DOCX and XLSX (zip containers). Without it the crate writes PDF only.
+office = ["dep:zip"]
+# The `documents` tools (create_pdf, create_docx, create_xlsx) over a graphrt-files workspace.
+tools = ["dep:graphrt-files", "dep:graphrt-core", "dep:futures", "dep:serde", "dep:serde_json"]
+
+[dependencies]
+graphrt-core = { workspace = true, optional = true, features = ["tool-files"] }
+graphrt-files = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+thiserror.workspace = true
+# Compresses PDF page streams. The same crate the document extractor links.
+flate2 = "1"
+# The zip writer the document extractor already links as a reader.
+zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
+
+[dev-dependencies]
+# Every document written is read back by the extractor agents use on uploads.
+graphrt-doc = { workspace = true, features = ["default"] }
+graphrt-files = { workspace = true, features = ["tokio", "doc"] }
+futures = { workspace = true, features = ["executor"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+serde_json.workspace = true
+
+
+[[example]]
+name = "bench"
+required-features = ["office"]
+
+[lints]
+workspace = true

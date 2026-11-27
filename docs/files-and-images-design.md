@@ -324,6 +324,43 @@ behind the same trait).
 Checked against a real store, SeaweedFS 3 in a container, with the
 `a_real_object_store_when_one_is_configured` test and the CLI: signatures,
 names with URL characters, ranges, conditional creation, listing.
+### 14. Documents are written by small writers of our own
+
+Added 2026-11-27. Agents are asked for "a PDF of this" and "an Excel file of
+that" all the time, and `files/write` only writes text.
+
+| Option | For | Against |
+| --- | --- | --- |
+| `printpdf` 0.9, `genpdf` | fonts, images, full layout | need font files to embed, pull `lopdf`, font parsers and image decoders into every build that creates a PDF |
+| Typst as a library | beautiful output | tens of megabytes, a full compiler |
+| `rust_xlsxwriter`, `docx-rs` | complete Office feature sets | large APIs of which an agent needs a few percent, and features we would have to keep switched off (formulas, links, embedded objects) |
+| Convert through LibreOffice or a headless browser | any layout | a process to install and sandbox, not on phones, the opposite of one small binary |
+| **Own writers: PDF with the 14 standard fonts, DOCX and XLSX as a few XML parts** | no new crate (`zip` and `flate2` are already linked by the document extractor), about 900 lines, and the files can only hold what the writers know how to write | Western European text only in PDF, simple layout |
+
+Decision: the last, as a new crate `graphrt-docgen` with its own tool
+provider (`documents`) and its own switch (`--document-tools`). The format
+of the input is Markdown for text documents, because models produce it
+without being taught, and rows of JSON values for sheets.
+
+Two limits are accepted and said out loud in the tool descriptions and
+results. PDF text is Windows-1252, because the fonts every reader has built
+in cover nothing else and embedding a Unicode font means shipping megabytes
+of font files. A character outside it becomes `?` and is counted in the
+result, which points the model to Word for other scripts. And layout is one
+column with equal table columns: a report, not a designed page.
+
+Presentations (PPTX) were left out. A slide deck needs layout decisions a
+Markdown outline does not carry, and nothing asked for it.
+
+The security argument for own writers is the strongest one. A general
+library can write a formula, an external link, a macro or an embedded file
+if some input reaches the wrong call. These writers have no code for any of
+them, so no input can produce one.
+
+What was checked outside the test suite: the PDF with Poppler (`pdftotext`,
+`pdfinfo`, rendered with `pdftoppm`) and Ghostscript, the Word file with
+`python-docx` and the workbook with `openpyxl`. Not checked: Microsoft
+Office and LibreOffice themselves, which were not on the machine.
 
 ## Threat model
 
@@ -374,6 +411,14 @@ the host file system goes.
 | S8 | A store that hangs or throttles | A time limit per request, three attempts with a growing pause, then an error the agent sees | `s3::a_store_that_does_not_answer_times_out`, `s3::throttling_is_retried_and_a_dead_store_is_reported` |
 | S9 | Two replicas creating the same file | `If-None-Match: *` on a create, so the store refuses the second one | `s3::a_create_does_not_replace_what_another_process_wrote` |
 | S10 | The rules of a workspace lost on a new backend (size, quota, programs, user scopes) | They live in `Workspace`, above the store | `s3::a_workspace_keeps_its_rules_over_object_storage` |
+| D1 | Formula injection: text from an e-mail or a web page that starts with `=`, `+`, `-` or `@` and runs when a person opens the sheet | Text is always an inline string. The writer has no code that writes a formula. | `docgen tools::spreadsheet_text_is_never_a_formula` |
+| D2 | Markup injection: text that closes an XML element or a PDF string and adds structure (a link, a script action) | XML text is escaped and control characters dropped. PDF strings escape `(`, `)` and `\` and write everything outside ASCII in octal. | `docgen tools::text_cannot_inject_markup_into_a_document`, `xml::tests::text_cannot_open_a_tag_or_break_the_document`, `pdf::tests::text_cannot_end_a_string_or_start_an_operator` |
+| D3 | Active content in a created document: scripts, macros, links that phone home, embedded files, fields | Links, images and HTML in the Markdown become their text. The parts of a package are a fixed list. | `docgen tools::documents_hold_nothing_a_reader_would_run_or_fetch` |
+| D4 | Leaving the workspace through the output path, or a file whose name lies about its type | `WorkspacePath`, and the extension must match the tool | `docgen tools::a_path_cannot_leave_the_workspace_and_the_name_must_say_what_the_file_is` |
+| D5 | Exhausting memory, CPU or disk with a huge document | Limits on input size, pages, table columns, sheets, cells and cell length before and while writing, then the workspace quota. Sheet names are made valid, never trusted. | `docgen tools::limits_come_back_as_errors_the_model_can_act_on`, `the_rules_of_the_workspace_hold_for_documents`, `pdf::tests::a_document_stops_at_the_page_limit`, `xlsx::tests::a_workbook_stops_at_its_limits`, `xlsx::tests::sheet_names_are_made_valid_and_distinct` |
+| D6 | One user writing a document into another user's directory | Scope from `tool_context`, calls without one refused, a `scope` argument is an invalid argument | `docgen tools::users_only_write_into_their_own_directory` |
+| D7 | Layout of a large document stalling every other run | Parsing, layout and compression run on the blocking pool | `docgen tools::a_large_document_does_not_block_the_async_worker` |
+| D8 | Text that silently disappears (a script the PDF fonts cannot show, a long number rounded by the spreadsheet) | Replaced characters are counted and reported. Whole numbers above 2^53 are stored as text. Lines are wrapped inside the margins. | `pdf::tests::characters_outside_the_fonts_are_counted_not_dropped`, `xlsx::tests::long_whole_numbers_stay_exact_as_text`, `pdf::tests::lines_never_run_past_the_margin` |
 | I1 | Image bomb: a small file that declares a huge canvas | Header probe refuses the pixel count before any decoder runs (5.5 µs for a 64 megapixel PNG). Decoder limits on width, height and allocation are a second line. | `probe::a_huge_canvas_is_refused_from_the_header_alone`, `tools::bombs_spoofed_files_and_escapes_are_error_results`, `prepare::spoofed_vision_inputs_are_refused` |
 | I2 | Malformed image aimed at a decoder or at our own header parsers | Pure Rust decoders, no `unsafe` in the workspace, checked indexing only, decoding behind a panic boundary on the blocking pool | `probe::truncated_files_fail_cleanly_at_every_length`, `probe::corrupted_files_never_panic_or_exceed_the_limits` |
 | I3 | Image type spoofing (SVG, HTML, HEIC or a program sent as `image/png`) | Only PNG, JPEG, GIF and WebP by magic bytes reach a model or a tool. The media type sent to a provider is the detected one. | `probe::spoofed_and_unsupported_content_is_refused`, `prepare::spoofed_vision_inputs_are_refused`, `nodes::a_spoofed_vision_input_stops_the_node_before_the_model_is_called`, `graphrt-llm` `a_refused_image_fails_the_node_and_is_never_sent_as_it_was`, CLI `image_tools_inspect_and_thumbnail_a_workspace_image` |
@@ -514,6 +559,22 @@ chain and the signer. It stays opt in.
 Against a store in another region every request costs a round trip of tens
 of milliseconds, which makes `files/search` over many files the slow case.
 The windowed reads of `files/read` stay one ranged request per 256 KiB.
+### Documents
+
+`cargo run --release -p graphrt-docgen --example bench`, same machine, one
+core, medians.
+
+| What | Result |
+| --- | --- |
+| Read 29 KiB of Markdown | 0.34 ms |
+| PDF, a one page report | 0.045 ms |
+| PDF, 25 pages | 1.9 ms, 33 KiB |
+| DOCX, the same content | 0.8 ms, 6 KiB |
+| XLSX, 10,000 rows of 5 cells | 22.7 ms, 265 KiB |
+
+The default CLI grows by 318 KiB with the `documents` feature (32,834,544
+to 33,159,792 bytes, release, x86_64 Linux). The budgeted builds do not
+enable it and do not change.
 
 ### What it costs a build that does not use it
 
@@ -557,7 +618,6 @@ is used: nothing is opened, registered or allocated at start without
   agent, `FileTools` and `ImageTools` in the tool registry, a
   `VisionPreparer` in the services, the `files` output for the results), but
   it has to follow the runtime version the app builds against.
-- Creating PDF and Office files. Agents write text formats.
 - Native document blocks (sending a PDF to a provider as a document).
 - Audio and video.
 - A second image generator (Gemini) and image editing.

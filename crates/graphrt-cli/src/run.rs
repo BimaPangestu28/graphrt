@@ -55,6 +55,8 @@ pub fn service_options(args: &ServiceArgs) -> Result<ServiceOptions, CliError> {
             image_tools: args.image_tools,
             #[cfg(feature = "image")]
             image_model: args.image_model.clone(),
+            #[cfg(feature = "documents")]
+            document_tools: args.document_tools,
         }),
         plugins: crate::extensions::PluginOptions {
             allow_private_network: args.allow_private_network,

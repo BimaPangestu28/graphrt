@@ -67,6 +67,9 @@ pub struct WorkspaceOptions {
     /// `--image-model`.
     #[cfg(feature = "image")]
     pub image_model: Option<String>,
+    /// `--document-tools`.
+    #[cfg(feature = "documents")]
+    pub document_tools: bool,
 }
 
 /// Environment variable naming a default providers file.
@@ -357,6 +360,8 @@ fn install_workspace(
     #[cfg(not(feature = "image"))]
     let _ = vars;
     let served = ServedWorkspace { workspace: workspace.clone(), per_user: options.per_user };
+    #[cfg(feature = "documents")]
+    install_document_tools(options, &workspace, tools)?;
     let file_tools = FileTools::new(workspace.clone());
     let (file_tools, resolver) = if options.per_user {
         (file_tools.scoped_by_context(), WorkspaceResolver::across_scopes(workspace))
@@ -418,6 +423,28 @@ fn object_storage_workspace(
             "`--workspace {S3_SCHEME}{location}` requires a build with the `files-s3` feature"
         )))
     }
+}
+
+/// Register the `documents` tool provider over the workspace (`--document-tools`).
+#[cfg(feature = "documents")]
+fn install_document_tools(
+    options: &WorkspaceOptions,
+    workspace: &graphrt_files::Workspace,
+    tools: &mut graphrt_core::tool::ToolRegistry,
+) -> Result<(), CliError> {
+    use graphrt_docgen::{DocumentTools, PROVIDER};
+    if !options.document_tools {
+        return Ok(());
+    }
+    if tools.get(PROVIDER).is_some() {
+        return Err(CliError::usage(format!(
+            "tool provider `{PROVIDER}` is defined by a plugin and by `--document-tools`; rename the plugin's provider"
+        )));
+    }
+    let document_tools = DocumentTools::new(workspace.clone());
+    let document_tools = if options.per_user { document_tools.scoped_by_context() } else { document_tools };
+    tools.add(PROVIDER, Arc::new(document_tools));
+    Ok(())
 }
 
 /// Register the `image` tool provider over the workspace (`--image-tools`),

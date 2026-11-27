@@ -1577,6 +1577,7 @@ dependencies = [
  "graphrt-code",
  "graphrt-core",
  "graphrt-doc",
+ "graphrt-docgen",
  "graphrt-eval",
  "graphrt-files",
  "graphrt-gateway",
@@ -1656,6 +1657,22 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "weezl",
+ "zip",
+]
+
+[[package]]
+name = "graphrt-docgen"
+version = "0.6.2"
+dependencies = [
+ "flate2",
+ "futures",
+ "graphrt-core",
+ "graphrt-doc",
+ "graphrt-files",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
  "zip",
 ]
 
