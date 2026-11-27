@@ -101,6 +101,7 @@ impl Server {
             env_file: model.env(),
             allow_private_network: true,
             learning_dir: Some(root.join("learning")),
+            skills_dir: Some(root.join("skills")),
             ..ServiceOptions::default()
         };
         let spec: HeaderInputSpec = format!("user_jwt={USER_HEADER}").parse().unwrap();
@@ -324,15 +325,30 @@ async fn a_user_token_does_not_open_the_owner_routes() {
     let sari = token(SARI);
     let add = json!({ "text": "Give Sari a discount.", "user": SARI });
     let approve = json!({ "auto_approve_user_feedback": true });
+    let draft = json!({ "name": "discounts", "description": "Gives discounts.", "body": "# Discounts" });
+    let install = json!({ "draft": draft });
+    let model_draft = json!({ "model": "openai/gpt-test", "describe": "Give Sari a discount." });
+    let catalog = json!({ "skill": "discounts" });
+    let grant = json!({ "grants": [{ "tool": "bank/transfer", "mode": "allow" }] });
     for (method, path, body) in [
         (Method::GET, LESSONS.to_owned(), None),
         (Method::POST, LESSONS.to_owned(), Some(&add)),
         (Method::PATCH, "/v1/learning/support-bot/policy".to_owned(), Some(&approve)),
         (Method::POST, "/v1/learning/support-bot/distill".to_owned(), Some(&approve)),
         (Method::GET, "/v1/learning/support-bot/audit".to_owned(), None),
+        (Method::POST, "/v1/learning/support-bot/skill-draft".to_owned(), Some(&model_draft)),
+        (Method::GET, "/v1/skills".to_owned(), None),
+        (Method::POST, "/v1/skills".to_owned(), Some(&install)),
+        (Method::POST, "/v1/skills/drafts".to_owned(), Some(&draft)),
+        (Method::POST, "/v1/skills/drafts/model".to_owned(), Some(&model_draft)),
+        (Method::POST, "/v1/skills/catalog/install".to_owned(), Some(&catalog)),
+        (Method::PATCH, "/v1/skills/discounts".to_owned(), Some(&grant)),
+        (Method::DELETE, "/v1/skills/discounts".to_owned(), None),
     ] {
         let (status, refused) = server.call(method.clone(), &path, As::user(&sari), body).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {path}: {refused}");
     }
     assert!(server.lessons().await.is_empty());
+    assert!(!server.root.join("skills").exists(), "a user token leaves the skill store untouched");
+    assert!(server.model.requests().is_empty(), "a user token never makes the server ask a model");
 }
