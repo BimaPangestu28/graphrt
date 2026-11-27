@@ -12,6 +12,9 @@ use crate::manifest::{BUNDLE_FORMAT_VERSION, BundleManifest, MANIFEST_PATH, SIGN
 use crate::sha256_hex;
 use crate::sign::{BundleSignature, parse_public_key, verify_manifest};
 
+/// Default [`OpenOptions::max_knowledge_bytes`]: 4 GiB.
+pub const DEFAULT_MAX_KNOWLEDGE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
 /// Options for [`Bundle::open`].
 #[derive(Clone, Debug)]
 pub struct OpenOptions {
@@ -19,8 +22,12 @@ pub struct OpenOptions {
     pub max_entries: usize,
     /// Maximum size of one file.
     pub max_file_bytes: u64,
-    /// Maximum total uncompressed size.
+    /// Maximum total uncompressed size, files under `knowledge/` not counted.
     pub max_total_bytes: u64,
+    /// Maximum uncompressed size of the knowledge base files (`knowledge/`): one
+    /// file and all of them together. Passage stores grow with the documents, so
+    /// they get their own, larger limit; the compression-ratio guard still applies.
+    pub max_knowledge_bytes: u64,
     /// Maximum per-file compression ratio (zip-bomb guard).
     pub max_compression_ratio: u64,
     /// Hex Ed25519 public keys allowed to sign. When non-empty, a valid signature
@@ -36,6 +43,7 @@ impl Default for OpenOptions {
             max_entries: 2_000,
             max_file_bytes: 64 * 1024 * 1024,
             max_total_bytes: 256 * 1024 * 1024,
+            max_knowledge_bytes: DEFAULT_MAX_KNOWLEDGE_BYTES,
             max_compression_ratio: 200,
             trusted_keys: Vec::new(),
             require_signature: false,
@@ -113,6 +121,7 @@ impl Bundle {
             max_entries: options.max_entries,
             max_entry_bytes: options.max_file_bytes,
             max_total_bytes: options.max_total_bytes,
+            max_knowledge_bytes: options.max_knowledge_bytes,
             max_ratio: options.max_compression_ratio,
         };
         let mut files = read_zip(bytes, &limits)?;

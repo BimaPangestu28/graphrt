@@ -11,6 +11,9 @@ pub(crate) struct ArchiveLimits {
     pub max_entries: usize,
     pub max_entry_bytes: u64,
     pub max_total_bytes: u64,
+    /// Limit of one entry under `knowledge/` and of all of them together
+    /// (passage stores grow with the documents; counted apart from the rest).
+    pub max_knowledge_bytes: u64,
     /// Maximum uncompressed / compressed ratio per entry (zip-bomb guard).
     pub max_ratio: u64,
 }
@@ -84,6 +87,7 @@ pub(crate) fn read_zip(bytes: &[u8], limits: &ArchiveLimits) -> Result<BTreeMap<
     }
     let mut files = BTreeMap::new();
     let mut total: u64 = 0;
+    let mut knowledge_total: u64 = 0;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(err)?;
         let name = entry.name().map_err(err)?.into_owned();
@@ -98,9 +102,11 @@ pub(crate) fn read_zip(bytes: &[u8], limits: &ArchiveLimits) -> Result<BTreeMap<
         if entry.enclosed_name().is_none() {
             return Err(BundleError::Archive(format!("unsafe path `{name}`")));
         }
+        let is_knowledge = name.starts_with("knowledge/");
+        let entry_limit = if is_knowledge { limits.max_knowledge_bytes } else { limits.max_entry_bytes };
         let declared = entry.size();
-        if declared > limits.max_entry_bytes {
-            return Err(BundleError::Archive(format!("`{name}` is larger than {} bytes", limits.max_entry_bytes)));
+        if declared > entry_limit {
+            return Err(BundleError::Archive(format!("`{name}` is larger than {entry_limit} bytes")));
         }
         let compressed = entry.compressed_size().max(1);
         if declared / compressed > limits.max_ratio {
@@ -109,19 +115,29 @@ pub(crate) fn read_zip(bytes: &[u8], limits: &ArchiveLimits) -> Result<BTreeMap<
         // Never trust the declared size: read at most the limit plus one byte.
         let mut data = Vec::with_capacity(usize::try_from(declared.min(1 << 20)).unwrap_or(0));
         (&mut entry)
-            .take(limits.max_entry_bytes.saturating_add(1))
+            .take(entry_limit.saturating_add(1))
             .read_to_end(&mut data)
             .map_err(|e| BundleError::Archive(format!("`{name}`: {e}")))?;
         let len = u64::try_from(data.len()).unwrap_or(u64::MAX);
-        if len > limits.max_entry_bytes {
-            return Err(BundleError::Archive(format!("`{name}` is larger than {} bytes", limits.max_entry_bytes)));
+        if len > entry_limit {
+            return Err(BundleError::Archive(format!("`{name}` is larger than {entry_limit} bytes")));
         }
-        total = total.saturating_add(len);
-        if total > limits.max_total_bytes {
-            return Err(BundleError::Archive(format!(
-                "bundle content exceeds the limit of {} bytes",
-                limits.max_total_bytes
-            )));
+        if is_knowledge {
+            knowledge_total = knowledge_total.saturating_add(len);
+            if knowledge_total > limits.max_knowledge_bytes {
+                return Err(BundleError::Archive(format!(
+                    "the bundle's knowledge exceeds the limit of {} bytes",
+                    limits.max_knowledge_bytes
+                )));
+            }
+        } else {
+            total = total.saturating_add(len);
+            if total > limits.max_total_bytes {
+                return Err(BundleError::Archive(format!(
+                    "bundle content exceeds the limit of {} bytes",
+                    limits.max_total_bytes
+                )));
+            }
         }
         if files.insert(name.clone(), data).is_some() {
             return Err(BundleError::Archive(format!("duplicate entry `{name}`")));

@@ -8,8 +8,9 @@ use graphrt_provider_api::ProviderErrorKind;
 use serde::Serialize;
 
 use super::machine_config::{
-    META_DIRECT, META_MODE, META_PAUSED, Role, STORE_MACHINE_NAME, machine_name_for, new_machine_config, paused,
-    store_volume_of, validate_request, with_role, workflow_name_of,
+    AgentSource, META_DIRECT, META_MODE, META_PAUSED, Role, STORE_MACHINE_NAME, agent_on_volume, holding_config,
+    machine_config_for, machine_name_for, paused, store_volume_of, validate_request, volume_gb_for, with_role,
+    workflow_name_of,
 };
 use super::serve_options::{STORE_VOLUME_GB, STORE_VOLUME_NAME, StoreSummary};
 use super::status::{
@@ -78,6 +79,16 @@ impl Candidate {
     }
 }
 
+/// ` ; the agent (N MB) was uploaded onto the store volume` or `... was already there`.
+fn upload_note(request: &DeployRequest, uploaded: bool) -> String {
+    let size = format!("{:.1} MB", request.agent.contents.len() as f64 / 1_000_000.0);
+    if uploaded {
+        format!("; the agent ({size}) was uploaded onto the store volume")
+    } else {
+        format!("; the agent ({size}) was already on the store volume")
+    }
+}
+
 /// Whether the Machine mounts the deployment's store volume.
 pub(super) fn mounts_store(machine: &Machine) -> bool {
     store_volume_of(machine.config.as_ref()).is_some()
@@ -125,7 +136,7 @@ impl FlyDirect {
         let fail = |error| DeployFailure { error, api_key: api_key.clone() };
         emit(progress, Step::Starting, StepStatus::Running, format!("Starting version {}", request.version));
         let workflow = workflow_name_of(&request.agent.file_name);
-        let started = self.start_candidate(request, &workflow, secrets_version).await;
+        let started = self.start_candidate(request, &workflow, secrets_version, progress).await;
         let candidate = finish(progress, Step::Starting, started).map_err(fail)?;
         emit(progress, Step::Checking, StepStatus::Running, "Waiting for GET /readyz to pass");
         let promoted = self.promote_and_tidy(&candidate, request).await;
@@ -149,11 +160,22 @@ impl FlyDirect {
         request: &DeployRequest,
     ) -> Result<(Option<StoreSummary>, String), DirectError> {
         let ((), mut message) = self.check_and_promote(candidate, &request.version).await?;
+        if agent_on_volume(&request.agent) {
+            let workflow = workflow_name_of(&request.agent.file_name);
+            let kept = super::upload::volume_agent(request, &workflow);
+            // Only the serving agent stays; older ones are deleted. Best effort: a failure
+            // only leaves an old file on the volume.
+            match self.prune_volume_agents(&candidate.id, &[kept.name.as_str()]).await {
+                Ok(_) => {}
+                Err(error) => message.push_str(&format!("; older agents stay on the volume ({})", error.message)),
+            }
+        }
         if request.drop_store {
             let dropped = self.drop_store().await?;
             message.push_str(if dropped { "; the store volume was deleted" } else { "; there was no store volume" });
         }
-        let store = self.store_summary(request.serve.needs_store()).await?;
+        // The volume is in use when the deploy keeps state on it or serves its agent from it.
+        let store = self.store_summary(request.serve.needs_store() || agent_on_volume(&request.agent)).await?;
         if let Some(kept) = store.as_ref().filter(|store| !store.in_use) {
             message.push_str(&format!(
                 "; store volume {} is kept and still billed (deploy with --drop-store to delete it)",
@@ -179,8 +201,8 @@ impl FlyDirect {
         Ok(self.client.list_volumes().await?.into_iter().find(|volume| volume.name == STORE_VOLUME_NAME))
     }
 
-    /// The store volume, created in `region` when the deployment has none.
-    async fn ensure_store_volume(&self, region: &str) -> Result<Volume, DirectError> {
+    /// The store volume, created in `region` (with `size_gb`) when the deployment has none.
+    async fn ensure_store_volume(&self, region: &str, size_gb: u32) -> Result<Volume, DirectError> {
         if let Some(volume) = self.store_volume().await? {
             return match &volume.attached_machine_id {
                 Some(machine_id) => Err(DirectError::new(
@@ -191,16 +213,19 @@ impl FlyDirect {
                         volume.id
                     ),
                 )),
-                None => Ok(volume),
+                None => {
+                    self.ensure_volume_room(&volume.id, volume.size_gb, size_gb, None).await?;
+                    Ok(volume)
+                }
             };
         }
         if region.is_empty() {
             return Err(DirectError::invalid(
-                "--region is required with --monitor, --devices, --push or --conversations: \
-                 their data is kept on a Fly volume, which lives in one region",
+                "--region is required with --monitor, --devices, --push or --conversations, and for agents larger \
+                 than 1 MiB: they are kept on a Fly volume, which lives in one region",
             ));
         }
-        Ok(self.client.create_volume(STORE_VOLUME_NAME, region, STORE_VOLUME_GB).await?)
+        Ok(self.client.create_volume(STORE_VOLUME_NAME, region, size_gb).await?)
     }
 
     /// Destroys the Machine that mounts the store (never the serving one: a
@@ -430,13 +455,17 @@ impl FlyDirect {
     }
 
     /// Creates the version's Machine (or updates the one it already has) and waits for it to boot.
+    /// An agent too large for the Machine config is first uploaded onto the store volume.
     async fn start_candidate(
         &self,
         request: &DeployRequest,
         workflow: &str,
         secrets_version: Option<u64>,
+        progress: Progress<'_>,
     ) -> Result<(Candidate, String), DirectError> {
-        let wants_store = request.serve.needs_store();
+        let on_volume = agent_on_volume(&request.agent);
+        let wants_store = request.serve.needs_store() || on_volume;
+        let volume_gb = if on_volume { volume_gb_for(request.agent.contents.len()) } else { STORE_VOLUME_GB };
         // The store lives on one volume, and only a new Machine can mount a
         // volume: a deploy that needs the store updates the Machine that has it.
         let existing = self.direct_machines().await?.into_iter().find(|machine| {
@@ -447,13 +476,29 @@ impl FlyDirect {
             }
         });
         let mut note = String::new();
+        let mut report = |message: String| emit(&mut *progress, Step::Starting, StepStatus::Running, message);
         let candidate = match existing {
             Some(machine) => {
                 let volume = store_volume_of(machine.config.as_ref()).map(str::to_owned);
-                let config = new_machine_config(request, workflow, &self.url(), volume.as_deref());
                 let serving = has_role(&machine, Role::Current) && metadata(&machine, META_PAUSED) != Some("1");
                 let restore = machine.config.clone().filter(|_| serving);
-                if !machine.state.is_startable() && machine.state != MachineState::Started {
+                let placed = match (on_volume, volume.as_deref()) {
+                    (true, Some(volume_id)) => {
+                        let size = self.store_volume().await?.map_or(volume_gb, |found| found.size_gb);
+                        self.ensure_volume_room(volume_id, size, volume_gb, Some(&machine.id)).await?;
+                        let (placed, uploaded) = self.upload_agent(&machine.id, request, workflow, &mut report).await?;
+                        note = upload_note(request, uploaded);
+                        Some(placed)
+                    }
+                    _ => None,
+                };
+                let agent = match &placed {
+                    Some(placed) => AgentSource::OnVolume { dir: &placed.dir },
+                    None => AgentSource::Inline(&request.agent),
+                };
+                let config = machine_config_for(request, workflow, &self.url(), volume.as_deref(), agent);
+                let fresh = self.client.get_machine(&machine.id).await?;
+                if !fresh.state.is_startable() && fresh.state != MachineState::Started {
                     self.halt(&machine.id).await?;
                 }
                 let update =
@@ -462,13 +507,21 @@ impl FlyDirect {
                 Candidate { id: machine.id, reused: true, restore }
             }
             None => {
-                let volume = if wants_store { Some(self.ensure_store_volume(&request.region).await?) } else { None };
-                let config = new_machine_config(
-                    request,
-                    workflow,
-                    &self.url(),
-                    volume.as_ref().map(|volume| volume.id.as_str()),
-                );
+                let volume =
+                    if wants_store { Some(self.ensure_store_volume(&request.region, volume_gb).await?) } else { None };
+                let volume_id = volume.as_ref().map(|volume| volume.id.as_str());
+                // A new Machine with an agent on the volume boots without services first,
+                // receives the agent, then gets its real config.
+                let config = match (on_volume, volume_id) {
+                    (true, Some(volume_id)) => holding_config(request, workflow, &self.url(), volume_id),
+                    _ => machine_config_for(
+                        request,
+                        workflow,
+                        &self.url(),
+                        volume_id,
+                        AgentSource::Inline(&request.agent),
+                    ),
+                };
                 let create = CreateMachineRequest {
                     name: if volume.is_some() {
                         STORE_MACHINE_NAME.to_owned()
@@ -483,7 +536,16 @@ impl FlyDirect {
                 };
                 let created = self.create_version_machine(&create).await?;
                 note = created.note();
-                Candidate { id: created.machine.id, reused: false, restore: None }
+                let candidate = Candidate { id: created.machine.id, reused: false, restore: None };
+                if let (true, Some(volume_id)) = (on_volume, volume_id) {
+                    if let Err(error) =
+                        self.place_on_new_machine(&candidate.id, volume_id, request, workflow, &mut report).await
+                    {
+                        return Err(self.discard_candidate(&candidate, error).await);
+                    }
+                    note.push_str(&upload_note(request, true));
+                }
+                candidate
             }
         };
         if let Err(error) = self.wait_started(&candidate.id).await {
@@ -497,6 +559,24 @@ impl FlyDirect {
         let verb = if candidate.reused { "updated" } else { "created" };
         let message = format!("{verb} Machine {} and booted it{note}", candidate.id);
         Ok((candidate, message))
+    }
+
+    /// Uploads the agent into a new (holding) store Machine, then gives it its real config.
+    async fn place_on_new_machine(
+        &self,
+        machine_id: &str,
+        volume_id: &str,
+        request: &DeployRequest,
+        workflow: &str,
+        report: &mut dyn FnMut(String),
+    ) -> Result<(), DirectError> {
+        self.wait_started(machine_id).await?;
+        let (placed, _) = self.upload_agent(machine_id, request, workflow, report).await?;
+        let agent = AgentSource::OnVolume { dir: &placed.dir };
+        let config = machine_config_for(request, workflow, &self.url(), Some(volume_id), agent);
+        self.halt(machine_id).await?;
+        let update = UpdateMachineRequest { config: &config, skip_launch: false, min_secrets_version: None };
+        self.update_and_launch(machine_id, &update).await
     }
 
     /// Waits for health, then makes the candidate current and the rest standby.
@@ -605,7 +685,7 @@ impl FlyDirect {
     }
 
     /// Stops a Machine (SIGTERM, then Fly's grace) unless it is already down.
-    async fn halt(&self, machine_id: &str) -> Result<(), DirectError> {
+    pub(super) async fn halt(&self, machine_id: &str) -> Result<(), DirectError> {
         let machine = self.client.get_machine(machine_id).await?;
         if matches!(machine.state, MachineState::Stopped | MachineState::Created | MachineState::Suspended) {
             return Ok(());
@@ -617,7 +697,7 @@ impl FlyDirect {
     }
 
     /// Waits until the Machine reports `started`, in `/wait` calls of at most 60 s.
-    async fn wait_started(&self, machine_id: &str) -> Result<(), DirectError> {
+    pub(super) async fn wait_started(&self, machine_id: &str) -> Result<(), DirectError> {
         let deadline = Instant::now() + self.settings.start_timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());

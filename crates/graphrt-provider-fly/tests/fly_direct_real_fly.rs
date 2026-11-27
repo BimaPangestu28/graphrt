@@ -44,7 +44,7 @@ fn request(version: &str, now_ms: u64) -> DeployRequest {
         secrets: BTreeMap::new(),
         api_key_candidate: API_KEY.into(),
         rotate_api_key: false,
-        agent: AgentFile { file_name: "support.yaml".into(), contents: format!("# {version}\n").into_bytes() },
+        agent: AgentFile::new("support.yaml", format!("# {version}\n").into_bytes()),
         now_ms,
         serve: ServeOptions::default(),
         drop_store: false,

@@ -175,7 +175,7 @@ impl BundleBuilder {
                     continue;
                 }
                 reject_uncheckpointed_sqlite(store_name, &source)?;
-                let bytes = read_file(&source)?;
+                let bytes = read_file_limited(&source, crate::bundle::DEFAULT_MAX_KNOWLEDGE_BYTES)?;
                 let file_name = source.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
                 let file_name = file_name.trim_start_matches('.');
                 let target = format!("knowledge/{store_name}-{file_name}");
@@ -280,12 +280,19 @@ fn read_plugin_manifest(dir: &Path) -> Result<serde_json::Value, BundleError> {
 }
 
 fn read_file(path: &Path) -> Result<Vec<u8>, BundleError> {
+    read_file_limited(path, MAX_FILE_BYTES)
+}
+
+/// [`read_file`] with its own size limit (knowledge stores: [`OpenOptions::max_knowledge_bytes`]).
+///
+/// [`OpenOptions::max_knowledge_bytes`]: crate::OpenOptions::max_knowledge_bytes
+fn read_file_limited(path: &Path, max_bytes: u64) -> Result<Vec<u8>, BundleError> {
     let meta = std::fs::symlink_metadata(path).map_err(|e| BundleError::io(path, &e))?;
     if !meta.is_file() {
         return Err(BundleError::Build(format!("{}: not a regular file (symlinks are not bundled)", path.display())));
     }
-    if meta.len() > MAX_FILE_BYTES {
-        return Err(BundleError::Build(format!("{}: larger than {MAX_FILE_BYTES} bytes", path.display())));
+    if meta.len() > max_bytes {
+        return Err(BundleError::Build(format!("{}: larger than {max_bytes} bytes", path.display())));
     }
     std::fs::read(path).map_err(|e| BundleError::io(path, &e))
 }

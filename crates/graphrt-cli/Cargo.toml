@@ -77,7 +77,7 @@ plugins = [
 mcp-presets = ["dep:graphrt-plugin", "graphrt-plugin/mcp-presets"]
 wasm = ["dep:graphrt-plugin", "graphrt-plugin/yaml", "dep:graphrt-wasm", "graphrt-wasm/tokio"]
 # Portable bundles (`.grt`): `graphrt bundle`, and running / serving bundles directly.
-bundle = ["wasm", "dep:graphrt-bundle", "graphrt-bundle/wasm"]
+bundle = ["wasm", "dep:graphrt-bundle", "graphrt-bundle/wasm", "dep:sha2"]
 # MCP tool servers (`--mcp`).
 mcp = ["dep:graphrt-mcp"]
 # `kind: replay` model providers in providers files: record responses to

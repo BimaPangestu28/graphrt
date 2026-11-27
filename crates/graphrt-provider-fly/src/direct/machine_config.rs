@@ -11,9 +11,57 @@ use super::{AgentFile, DeployRequest, DirectChannel, DirectError, ServiceMode};
 pub const AGENT_PORT: u16 = 8080;
 /// Directory `graphrt serve` serves; the agent file is written here.
 pub const WORKFLOW_DIR: &str = "/workflows";
-/// Largest agent file shipped through `config.files` (Fly documents no limit;
-/// this keeps the Machine config well below any plausible request cap).
+/// Largest agent file shipped inside the Machine config (`config.files`). Fly
+/// refuses Machine requests of about 2 MiB ("request body too large"), and the
+/// file travels base64-encoded. Larger agents are uploaded onto the store
+/// volume instead ([`AGENTS_DIR`]).
 pub const MAX_AGENT_FILE_BYTES: usize = 1024 * 1024;
+/// Where agents too large for the Machine config live on the store volume, one
+/// directory per agent (named after its SHA-256) that `graphrt serve` serves.
+/// Equal to `graphrt internal store-file`'s default root.
+pub const AGENTS_DIR: &str = "/data/agents";
+/// Bytes of an agent sent in one `exec` call while uploading it (hex-encoded on stdin).
+pub const UPLOAD_PIECE_BYTES: usize = 2 * 1024 * 1024;
+/// What a Machine serves while an agent is being uploaded onto its new volume:
+/// nothing anyone can reach (the Machine has no services meanwhile).
+pub(super) const PLACEHOLDER_WORKFLOW: &str = "version: \"1\"\nname: uploading\ngraph:\n  nodes:\n    - { id: start, type: start }\n    - { id: end, type: end }\n  edges:\n    - { source: start, target: end }\n";
+
+/// Where a Machine finds its agent.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum AgentSource<'a> {
+    /// Written by Fly from the Machine config into [`WORKFLOW_DIR`].
+    Inline(&'a AgentFile),
+    /// Already on the store volume, in this directory (see [`AGENTS_DIR`]).
+    OnVolume { dir: &'a str },
+}
+
+/// Whether the agent is too large for the Machine config and goes onto the store volume.
+pub(super) fn agent_on_volume(agent: &AgentFile) -> bool {
+    agent.contents.len() > MAX_AGENT_FILE_BYTES
+}
+
+/// Memory for a Machine serving `agent`: 256 MB for agents that fit in the
+/// Machine config; knowledge stores are held in memory, so larger agents get
+/// 4 MB per MB they take once unpacked (Fly sizes; at most 2 GB per shared CPU).
+/// Returns `(cpus, memory_mb)`.
+pub(super) fn guest_for(agent: &AgentFile) -> (u32, u32) {
+    if !agent_on_volume(agent) {
+        return (1, 256);
+    }
+    let agent_bytes = agent.unpacked_bytes.max(u64::try_from(agent.contents.len()).unwrap_or(u64::MAX));
+    let agent_mb = u32::try_from(agent_bytes.div_ceil(1024 * 1024)).unwrap_or(u32::MAX);
+    let wanted = 256u32.saturating_add(agent_mb.saturating_mul(4));
+    let memory_mb = [256u32, 512, 1024, 2048, 4096, 8192].into_iter().find(|size| *size >= wanted).unwrap_or(8192);
+    (memory_mb.div_ceil(2048).max(1), memory_mb)
+}
+
+/// Store volume size for an agent of `agent_bytes` on it: room for the agent,
+/// a new version being uploaded next to it, and the store's own files.
+pub(super) fn volume_gb_for(agent_bytes: usize) -> u32 {
+    let gib = 1024 * 1024 * 1024;
+    let needed = u32::try_from(agent_bytes.saturating_mul(3).div_ceil(gib)).unwrap_or(u32::MAX).saturating_add(1);
+    needed.max(super::serve_options::STORE_VOLUME_GB)
+}
 /// SIGTERM → SIGKILL grace (`kill_timeout`); `serve --drain-timeout` stays 5 s below.
 const STOP_GRACE_SECS: u64 = 30;
 
@@ -123,10 +171,10 @@ pub(super) fn validate_request(request: &DeployRequest) -> Result<(), DirectErro
     if request.agent.contents.is_empty() {
         return Err(DirectError::invalid(format!("{} is empty", request.agent.file_name)));
     }
-    if request.agent.contents.len() > MAX_AGENT_FILE_BYTES {
+    if request.drop_store && agent_on_volume(&request.agent) {
         return Err(DirectError::invalid(format!(
-            "{} is {} bytes; direct deploys ship at most {MAX_AGENT_FILE_BYTES} bytes",
-            request.agent.file_name,
+            "--drop-store deletes the store volume, which holds this agent ({} bytes, more than a Machine \
+             config carries): leave out --drop-store",
             request.agent.contents.len()
         )));
     }
@@ -176,17 +224,35 @@ pub(super) fn is_env_name(name: &str) -> bool {
 /// @param workflow - the name the agent is served under (&str)
 /// @param public_url - the deployment's address, for device pairing links (&str)
 /// @param store_volume - the volume to mount as `graphrt serve --store`, if the deploy needs one (Option<&str>)
+#[cfg(test)]
 pub(super) fn new_machine_config(
     request: &DeployRequest,
     workflow: &str,
     public_url: &str,
     store_volume: Option<&str>,
 ) -> Value {
-    let guest_path = format!("{WORKFLOW_DIR}/{}", agent_file_name(&request.agent, workflow));
+    machine_config_for(request, workflow, public_url, store_volume, AgentSource::Inline(&request.agent))
+}
+
+/// [`new_machine_config`] with the agent taken from `agent`.
+pub(super) fn machine_config_for(
+    request: &DeployRequest,
+    workflow: &str,
+    public_url: &str,
+    store_volume: Option<&str>,
+    agent: AgentSource<'_>,
+) -> Value {
     let drain_timeout = format!("{}s", STOP_GRACE_SECS - 5);
-    let mut command: Vec<String> = ["serve", WORKFLOW_DIR, "--addr"].map(str::to_owned).to_vec();
+    let served_dir = match agent {
+        AgentSource::Inline(_) => WORKFLOW_DIR,
+        AgentSource::OnVolume { dir } => dir,
+    };
+    let mut command: Vec<String> = vec!["serve".to_owned(), served_dir.to_owned(), "--addr".to_owned()];
     command.extend([format!("0.0.0.0:{AGENT_PORT}"), "--drain-timeout".to_owned(), drain_timeout]);
-    command.extend(request.serve.serve_flags(workflow, public_url, store_volume.is_some()));
+    // The volume may only hold the agent: `--store` is for deploys that keep state.
+    let with_store = store_volume.is_some() && request.serve.needs_store();
+    command.extend(request.serve.serve_flags(workflow, public_url, with_store));
+    let (cpus, memory_mb) = guest_for(&request.agent);
     let mut config = json!({
         "image": request.image,
         "init": { "cmd": command },
@@ -194,8 +260,7 @@ pub(super) fn new_machine_config(
             "GRAPHRT_DEPLOYMENT": request.deployment,
             "GRAPHRT_DEPLOYMENT_VERSION": request.version,
         },
-        "files": [{ "guest_path": guest_path, "raw_value": base64_encode(&request.agent.contents), "mode": 0o444 }],
-        "guest": { "cpu_kind": "shared", "cpus": 1, "memory_mb": 256 },
+        "guest": { "cpu_kind": "shared", "cpus": cpus, "memory_mb": memory_mb },
         "checks": {
             "readyz": {
                 "type": "http", "port": AGENT_PORT, "method": "GET", "path": "/readyz", "protocol": "http",
@@ -213,10 +278,30 @@ pub(super) fn new_machine_config(
         },
         "auto_destroy": false,
     });
+    if let (AgentSource::Inline(file), Some(object)) = (agent, config.as_object_mut()) {
+        let guest_path = format!("{WORKFLOW_DIR}/{}", agent_file_name(file, workflow));
+        object.insert(
+            "files".to_owned(),
+            json!([{ "guest_path": guest_path, "raw_value": base64_encode(&file.contents), "mode": 0o444 }]),
+        );
+    }
     if let Some(volume) = store_volume {
         mount_store(&mut config, volume);
     }
     with_role(&config, Role::Candidate, Some(request.mode))
+}
+
+/// The config a new store Machine boots with while its agent is uploaded:
+/// a placeholder agent and no services, so nothing reaches it meanwhile.
+pub(super) fn holding_config(request: &DeployRequest, workflow: &str, public_url: &str, volume: &str) -> Value {
+    let placeholder = AgentFile::new(format!("{workflow}.yaml"), PLACEHOLDER_WORKFLOW.as_bytes().to_vec());
+    let config = machine_config_for(request, workflow, public_url, Some(volume), AgentSource::Inline(&placeholder));
+    with_role(&config, Role::Standby, None)
+}
+
+/// File name of the agent inside its directory on the volume (`<workflow>.<ext>`).
+pub(super) fn volume_agent_file_name(agent: &AgentFile, workflow: &str) -> String {
+    agent_file_name(agent, workflow)
 }
 
 /// Mounts `volume` at [`STORE_PATH`]. A new Fly volume belongs to root while
@@ -348,7 +433,7 @@ mod tests {
             secrets: BTreeMap::from([("OPENAI_API_KEY".into(), "sk-secret".into())]),
             api_key_candidate: "grk_x".into(),
             rotate_api_key: false,
-            agent: AgentFile { file_name: "Support Bot.GRT".into(), contents: b"bundle".to_vec() },
+            agent: AgentFile::new("Support Bot.GRT", b"bundle".to_vec()),
             now_ms: 1_700_000_000_000,
             serve: ServeOptions::default(),
             drop_store: false,
@@ -447,10 +532,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_oversized_agents_and_reserved_secrets() {
+    fn sizes_large_agents_and_rejects_reserved_secrets() {
         let mut too_big = request(ServiceMode::AlwaysOn);
+        let sized = |bytes: usize| AgentFile::new("a.grt", vec![0; bytes]);
+        assert_eq!(guest_for(&sized(MAX_AGENT_FILE_BYTES)), (1, 256));
+        assert_eq!(guest_for(&sized(MAX_AGENT_FILE_BYTES + 1)), (1, 512));
+        assert_eq!(guest_for(&sized(2 * 1024 * 1024).unpacked(100 * 1024 * 1024)), (1, 1024), "unpacked size counts");
+        assert_eq!(guest_for(&sized(2 * 1024 * 1024).unpacked(5 * 1024 * 1024 * 1024)), (4, 8192));
+        assert_eq!(volume_gb_for(10 * 1024 * 1024), 2);
+        assert_eq!(volume_gb_for(1024 * 1024 * 1024), 4);
         too_big.agent.contents = vec![0; MAX_AGENT_FILE_BYTES + 1];
-        assert!(validate_request(&too_big).is_err());
+        assert!(validate_request(&too_big).is_ok(), "large agents go onto the store volume");
+        too_big.drop_store = true;
+        assert!(validate_request(&too_big).unwrap_err().message.contains("holds this agent"));
         let mut reserved = request(ServiceMode::AlwaysOn);
         reserved.secrets.insert("GRAPHRT_API_KEY".into(), "x".into());
         assert!(validate_request(&reserved).is_err());

@@ -7,7 +7,9 @@ graphrt gateway: the Fly proxy serves `graphrt serve` straight from a Fly
 Machine. It is what the desktop app's **Put it online** runs. No image is
 built or pushed: every Machine runs the published graphrt image, and the
 agent file (a `.grt` bundle or a workflow `.yaml`/`.json`) is written into
-the Machine by Fly from the Machine config.
+the Machine by Fly from the Machine config. An agent larger than 1 MiB, such as
+a bundle with its knowledge, is uploaded onto a Fly volume instead: see
+[Large agents](#large-agents-and-their-knowledge).
 
 Use the [gateway](gateway.md) with the [Fly provider](gateway-fly.md)
 instead when you need durable runs across restarts, webhooks, cron or many
@@ -168,7 +170,7 @@ before the first step (only the `error` line is printed). `rollback` and
 
 | `code` | Meaning |
 | --- | --- |
-| `invalid_input` | bad flag value, unreadable or invalid agent file, agent > 1 MiB, unset `--secret` variable, `--secret NAME=value` (names only), reserved name |
+| `invalid_input` | bad flag value, unreadable or invalid agent file, an agent > 1 MiB without `--region` or with `--drop-store`, unset `--secret` variable, `--secret NAME=value` (names only), reserved name |
 | `missing_token` | `FLY_API_TOKEN` is unset |
 | `unauthorized` | Fly refused the token (401/403), e.g. an app deploy token used to create an app |
 | `app_name_taken` | another organization owns the app name: choose another `--deployment` (or `--app`) |
@@ -370,6 +372,40 @@ deployment with a store therefore keeps **one Machine**, named
 Turning the store's features **on** for a deployment without one creates the
 `graphrt-store` Machine next to the existing version, which becomes a standby.
 
+### Large agents and their knowledge
+
+Fly refuses a Machine request of about 2 MiB, and the agent file travels
+inside it. An agent file larger than **1 MiB** (typically a `.grt` bundle with
+its knowledge base: passages, vectors and chunking settings) is therefore kept
+on the [store volume](#the-store-volume) and served from there. There is no
+size limit besides the volume and the Machine's memory:
+
+1. The deployment gets the `graphrt-store` Machine and its volume, like a
+   deploy with a store (so `--region` is needed the first time). The volume
+   is sized for the agent: 3 times its size plus 1 GB, at least 1 GB, and is
+   grown (never shrunk) when a larger agent arrives.
+2. The agent is uploaded onto the volume through the Machines API `exec`, in
+   pieces of 2 MiB, by `graphrt internal store-file` inside the Machine (the
+   image has no shell). A piece carries its offset, so a retried call never
+   writes twice, and the file is only used once its SHA-256 matches the one
+   computed before the upload. A new Machine boots without services and with a
+   placeholder agent while it receives the file. The `starting` step reports
+   `Uploading the agent onto the store volume: 12.0 of 52.4 MB`.
+3. Each agent lives in its own directory, `/data/agents/<first 16 hex digits
+   of its SHA-256>/`, which `graphrt serve` serves. The version serving
+   during the upload keeps its file, so a version that does not get healthy is
+   undone as for any store deploy. A redeploy of the same file uploads
+   nothing. After the new version is live, older agents are deleted.
+4. The Machine gets more memory for a large agent, since knowledge stores are
+   held in memory: 256 MB plus 4 MB per MB the agent takes once unpacked (a
+   bundle's knowledge store compresses well), rounded up to 512 MB, 1 GB,
+   2 GB, 4 GB or 8 GB (2 GB per shared CPU).
+
+`--drop-store` is refused for such an agent: the volume holds it. The
+Machine's image must come from this graphrt version or a newer one (the
+default `--image` does); an older image has no `graphrt internal store-file`
+and the deploy fails at the upload with a message saying so.
+
 #### Turning the store off and deleting it
 
 Two steps, so that turning a feature off never loses data by accident:
@@ -565,6 +601,17 @@ and an OpenAI key as a `--secret`:
   redeploy of the `graphrt-store` Machine while the proxy had stopped it, and
   the Machine limit of Fly's Free plan (see [Limits](#limits)). Each of these
   took 10 to 20 s.
+- Large agents, checked on 2026-11-28 with an image built from this change
+  and pushed to the app's `registry.fly.io` repository: a 2.2 MB `.grt`
+  bundle with a 46 MB SQLite knowledge store (9,589 passages, offline `hash`
+  embeddings) was uploaded onto a new 2 GB volume in two pieces while the new
+  `graphrt-store` Machine had no services, then served from
+  `/data/agents/<sha>/` on a 512 MB Machine. A retrieval run over the public
+  address found a sentence that is only in the bundled passages. A redeploy of
+  the same file uploaded nothing; a changed bundle was uploaded next to the
+  serving one, served after its readiness check, and the older agent was
+  deleted from the volume (its SHA-256 on the volume matched the local file).
+  `deploy remove` deleted the app with its volume.
 
 What the real API does that the first fake did not, and graphrt now handles:
 updating a stopped Machine leaves it stopped (graphrt starts it), a Machine

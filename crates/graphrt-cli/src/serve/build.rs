@@ -59,6 +59,7 @@ pub async fn build_state(
         // A bundle that brings its own skills runs on them and on no others.
         #[cfg(feature = "skills")]
         let mut own_skills = None;
+        let mut own_services: Option<Arc<graphrt_core::Services>> = None;
         let graph = if crate::bundle_cmd::is_bundle(path) {
             // Bundled WebAssembly plugins are registered; services come from the host flags.
             let mut bundle_options = options.clone();
@@ -70,6 +71,12 @@ pub async fn build_state(
                 &mut extensions.registry,
                 &options.trust_keys,
             )?;
+            // A bundle that ships its own providers or knowledge config (and the host gave
+            // none) runs on services built from it, so its knowledge-retrieval steps search
+            // the passages that came with it.
+            if bundle_options.knowledge != options.knowledge || bundle_options.providers != options.providers {
+                own_services = Some(Arc::new(setup::services(&bundle_options, extensions.tools.clone()).await?));
+            }
             #[cfg(feature = "skills")]
             {
                 own_skills = bundle_options.skills_dir.map(|dir| Arc::new(graphrt_skill::SkillStore::open(dir)));
@@ -80,17 +87,18 @@ pub async fn build_state(
         };
         let env = setup::workflow_env(&graph, options);
         let engine = Engine::new(graph).with_clock(Arc::new(TokioClock)).with_limits(limits.clone());
+        let workflow_services = own_services.unwrap_or_else(|| Arc::clone(&services));
         #[cfg(feature = "skills")]
         let engine = match own_skills {
             Some(store) => {
-                let engine = engine.with_services(services_with_skills(&services, &store));
+                let engine = engine.with_services(services_with_skills(&workflow_services, &store));
                 bundled_skills.insert(name.clone(), store);
                 engine
             }
-            None => engine.with_shared_services(services.clone()),
+            None => engine.with_shared_services(workflow_services),
         };
         #[cfg(not(feature = "skills"))]
-        let engine = engine.with_shared_services(services.clone());
+        let engine = engine.with_shared_services(workflow_services);
         workflows.insert(name.clone(), ServedWorkflow { engine, env });
     }
     #[allow(unused_mut)]

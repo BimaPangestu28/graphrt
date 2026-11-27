@@ -40,6 +40,7 @@ mod machine_config;
 mod machine_limit;
 mod serve_options;
 mod status;
+mod upload;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -51,7 +52,9 @@ use crate::client::{ClientPolicy, MachinesClient, PUBLIC_API_BASE_URL};
 use crate::token::TokenOrigin;
 
 pub use lifecycle::{DeployFailure, Progress, ServingVersion};
-pub use machine_config::{AGENT_PORT, MAX_AGENT_FILE_BYTES, WORKFLOW_DIR, app_name_for, workflow_name_of};
+pub use machine_config::{
+    AGENT_PORT, AGENTS_DIR, MAX_AGENT_FILE_BYTES, UPLOAD_PIECE_BYTES, WORKFLOW_DIR, app_name_for, workflow_name_of,
+};
 pub use serve_options::{
     ChatAccess, ChatOptions, DirectChannel, STORE_PATH, STORE_VOLUME_GB, STORE_VOLUME_NAME, ServeOptions, ServeSummary,
     StoreSummary,
@@ -98,8 +101,26 @@ pub struct AgentFile {
     /// File name under [`WORKFLOW_DIR`], e.g. `support.grt` or `support.yaml`;
     /// `graphrt serve` names the workflow after its stem.
     pub file_name: String,
-    /// File contents (at most [`MAX_AGENT_FILE_BYTES`]).
+    /// File contents. Above [`MAX_AGENT_FILE_BYTES`] the agent is uploaded onto
+    /// the deployment's store volume instead of travelling in the Machine config.
     pub contents: Vec<u8>,
+    /// Bytes the agent takes once unpacked: a bundle's files (knowledge stores
+    /// compress well), else the file's size. Sizes the Machine's memory.
+    pub unpacked_bytes: u64,
+}
+
+impl AgentFile {
+    /// An agent file whose unpacked size is its own size (see [`AgentFile::unpacked`]).
+    pub fn new(file_name: impl Into<String>, contents: Vec<u8>) -> Self {
+        let unpacked_bytes = u64::try_from(contents.len()).unwrap_or(u64::MAX);
+        Self { file_name: file_name.into(), contents, unpacked_bytes }
+    }
+
+    /// The same file, `bytes` once unpacked (never less than the file itself).
+    pub fn unpacked(mut self, bytes: u64) -> Self {
+        self.unpacked_bytes = bytes.max(self.unpacked_bytes);
+        self
+    }
 }
 
 impl std::fmt::Debug for AgentFile {
@@ -108,6 +129,7 @@ impl std::fmt::Debug for AgentFile {
             .debug_struct("AgentFile")
             .field("file_name", &self.file_name)
             .field("bytes", &self.contents.len())
+            .field("unpacked_bytes", &self.unpacked_bytes)
             .finish()
     }
 }
@@ -411,7 +433,7 @@ mod tests {
             secrets: BTreeMap::from([("OPENAI_API_KEY".into(), "sk-very-secret".into())]),
             api_key_candidate: "grk_candidate_value".into(),
             rotate_api_key: false,
-            agent: AgentFile { file_name: "a.yaml".into(), contents: b"x".to_vec() },
+            agent: AgentFile::new("a.yaml", b"x".to_vec()),
             now_ms: 0,
             serve: ServeOptions::default(),
             drop_store: false,
