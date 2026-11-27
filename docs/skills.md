@@ -72,6 +72,10 @@ graphrt skill draft --model openai/gpt-4.1 \
 graphrt skill draft --model openai/gpt-4.1 --conversation chat.json --tool orders/lookup
 ```
 
+The draft's description says when to use the skill ("Use when a customer asks
+for a refund"), not what to do: an agent sees only that line until it loads the
+skill, and a line that reads like the steps is followed without loading it.
+
 The result is a folder (`<name>/SKILL.md`) to read and edit. It becomes a skill
 only through `graphrt skill install`, so a draft passes the same validation and
 scan as any other skill, and gets no tool unless you grant it.
@@ -274,6 +278,7 @@ services.insert(SkillSet::new(Arc::clone(&store)).into_service());
 | `SkillStore::set_grants`, `set_enabled`, `remove` | Manage |
 | `draft_skill(&model, &DraftRequest)` | A `SkillDraft` (name, description, body, requested tools, findings) from a description or a conversation. `model` is any `graphrt_core::text_model::TextModel`, for example `graphrt_llm::text_model::ChatTextModel` (feature `text-model`) |
 | `SkillDraft::new` | Rebuild a draft after the user edited it. Same validation and scan |
+| `SkillDraft::with_title` | Give a draft a name for people. It is written as `metadata.title` and read back as `SkillEntry::title` |
 | `SkillStore::install_draft` | Install a draft with origin `authored`. `SkillDraft::write_to` writes it as a folder instead |
 | `SkillStore::export` | Every file of an installed skill, checked against its pins, for packaging |
 | `SkillSet::into_service` | The `Skills` service `agent` nodes look up |

@@ -125,6 +125,24 @@ fn a_person_can_edit_a_draft_before_installing_it() {
     ));
 }
 
+#[test]
+fn a_title_given_to_a_draft_is_the_installed_skills_title() {
+    let scratch = Scratch::new();
+    let draft =
+        SkillDraft::new("refund-rules", "Use when a customer asks for money back.", "# Refund\n\n1. Step.", &[])
+            .unwrap()
+            .with_title("Aturan refund toko")
+            .unwrap();
+    let store = scratch.store();
+    let entry = store.install_draft(&draft, InstallOptions::default()).unwrap();
+    assert_eq!((entry.name.as_str(), entry.title.as_deref()), ("refund-rules", Some("Aturan refund toko")));
+    assert_eq!(store.load("refund-rules").unwrap().body, "# Refund\n\n1. Step.", "the title is not part of the text");
+
+    // The folder a host reviews first carries the same title.
+    let dir = draft.write_to(&scratch.0.join("drafts")).unwrap();
+    assert_eq!(store.inspect_dir(&dir).unwrap().entry.title.as_deref(), Some("Aturan refund toko"));
+}
+
 // --- A conversation is untrusted material -------------------------------------------------
 
 #[test]
