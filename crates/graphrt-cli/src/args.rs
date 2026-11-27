@@ -355,6 +355,34 @@ pub enum SkillCommand {
         #[arg(long)]
         replace: bool,
     },
+    /// Write a new skill from a description in plain language or from an
+    /// example conversation, with a model. The result is a folder to read,
+    /// edit and then install with `graphrt skill install`.
+    ///
+    /// Examples:
+    ///   graphrt skill draft --model openai/gpt-4.1 --describe "When a customer asks for a refund, check the order date first"
+    ///   graphrt skill draft --model anthropic/claude-sonnet-4-5 --conversation chat.json --tool orders/lookup
+    #[command(verbatim_doc_comment)]
+    Draft {
+        /// The model that writes the draft (`provider/name`).
+        #[arg(long, value_name = "PROVIDER/NAME")]
+        model: String,
+        /// What the skill should do, in plain language.
+        #[arg(long, value_name = "TEXT", conflicts_with = "conversation", required_unless_present = "conversation")]
+        describe: Option<String>,
+        /// A JSON file with an example conversation: `[{"role": "user", "content": "..."}, ...]`.
+        #[arg(long, value_name = "FILE")]
+        conversation: Option<PathBuf>,
+        /// A tool the skill may ask for (`provider/tool`). Asking grants nothing.
+        #[arg(long = "tool", value_name = "TOOL")]
+        tools: Vec<String>,
+        /// Directory to write `<name>/SKILL.md` into.
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        out: PathBuf,
+        /// Model providers file (YAML or JSON) layered over the environment-based providers.
+        #[arg(long, value_name = "FILE")]
+        providers: Option<PathBuf>,
+    },
     /// Replace the tools granted to an installed skill (no flags: grant nothing).
     Grant {
         /// Skill name.
@@ -549,6 +577,15 @@ pub enum PluginCommand {
         /// path [default: $GRAPHRT_PLUGIN_INDEX, else the graphrt-plugins catalog release].
         #[arg(long, value_name = "URL|PATH")]
         index: Option<String>,
+        /// Minisign public key the catalog index must be signed with, instead
+        /// of the built-in graphrt-plugins catalog key: the base64 key or the
+        /// path of a .pub file [default: $GRAPHRT_PLUGIN_INDEX_KEY].
+        #[arg(long, value_name = "KEY|PATH")]
+        index_key: Option<String>,
+        /// Use a local index file that has no signature (catalog development).
+        /// Refused for https:// indexes.
+        #[arg(long, conflicts_with = "index_key")]
+        allow_unsigned_index: bool,
         /// Install a catalog plugin that is not labelled stable/beta with a
         /// none/low/medium ToS risk: experimental, high-risk, unrecognised or
         /// unlabelled (graphrt has no interactive prompt).
@@ -568,6 +605,15 @@ pub enum PluginCommand {
         /// [default: $GRAPHRT_PLUGIN_INDEX, else the graphrt-plugins catalog release].
         #[arg(long, value_name = "URL|PATH")]
         index: Option<String>,
+        /// Minisign public key the catalog index must be signed with, instead
+        /// of the built-in graphrt-plugins catalog key: the base64 key or the
+        /// path of a .pub file [default: $GRAPHRT_PLUGIN_INDEX_KEY].
+        #[arg(long, value_name = "KEY|PATH")]
+        index_key: Option<String>,
+        /// Use a local index file that has no signature (catalog development).
+        /// Refused for https:// indexes.
+        #[arg(long, conflicts_with = "index_key")]
+        allow_unsigned_index: bool,
     },
     /// Remove an installed plugin.
     Remove {
@@ -657,6 +703,17 @@ pub struct ServiceArgs {
     #[cfg(feature = "files")]
     #[arg(long, requires = "workspace")]
     pub workspace_per_user: bool,
+    /// Add the `image` tools to the workspace: `image/info`, `view` (the model
+    /// sees the image), `resize`, `convert` and `thumbnail`.
+    #[cfg(feature = "image")]
+    #[arg(long, requires = "workspace")]
+    pub image_tools: bool,
+    /// Add `image/generate`, backed by this model of the OpenAI images API
+    /// (for example `gpt-image-2`). Key from `$OPENAI_API_KEY`, endpoint from
+    /// `$OPENAI_BASE_URL` (default https://api.openai.com/v1).
+    #[cfg(feature = "image")]
+    #[arg(long, value_name = "NAME", requires = "image_tools")]
+    pub image_model: Option<String>,
     /// Abort a run after this many milliseconds.
     #[arg(long, value_name = "MS")]
     pub timeout_ms: Option<u64>,

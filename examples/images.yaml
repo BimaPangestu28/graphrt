@@ -1,0 +1,43 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
+# Fully offline: reads the header of an image in the workspace and writes a thumbnail.
+#   mkdir -p workspace && cp photo.jpg workspace/
+#   graphrt run examples/images.yaml --workspace ./workspace --image-tools --input path=photo.jpg
+# The thumbnail is then in ./workspace/photo-thumb.jpg, without the metadata of
+# the original. See docs/files-and-images.md.
+version: "1"
+name: images
+description: Inspects an image in the agent workspace and writes a thumbnail with the image tools.
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: path, type: text-input, required: true, max_length: 256 }
+
+    - id: info
+      type: tool
+      provider_id: image
+      tool_name: info
+      tool_parameters:
+        path: { type: variable, value: [start, path] }
+
+    - id: thumbnail
+      type: tool
+      provider_id: image
+      tool_name: thumbnail
+      tool_parameters:
+        path: { type: variable, value: [start, path] }
+        size: { type: constant, value: 128 }
+        overwrite: { type: constant, value: true }
+
+    - id: end
+      type: end
+      outputs:
+        - { variable: info, value_selector: [info, json] }
+        - { variable: thumbnail, value_selector: [thumbnail, text] }
+        - { variable: files, value_selector: [thumbnail, files] }
+
+  edges:
+    - { source: start, target: info }
+    - { source: info, target: thumbnail }
+    - { source: thumbnail, target: end }

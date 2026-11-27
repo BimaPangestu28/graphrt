@@ -171,10 +171,26 @@ pub fn read_package_with(dir: &Path, limits: PackageLimits) -> Result<SkillPacka
             contents.push(std::mem::take(content));
         }
     }
+    assemble(files, contents)
+}
+
+/// A package that holds a single `SKILL.md` with the given text, as if it had
+/// been read from a directory. For skills written in the host (drafts).
+///
+/// # Errors
+/// [`Error::Format`] for a bad `SKILL.md`.
+pub fn package_from_skill_file(text: &str) -> Result<SkillPackage, Error> {
+    let content = text.as_bytes().to_vec();
+    let file = SkillFile { path: SKILL_FILE.to_owned(), sha256: sha256_hex(&content), bytes: content.len() as u64 };
+    assemble(vec![file], vec![content])
+}
+
+/// Parse, scan and pin files that were read (sorted by path, with their contents).
+fn assemble(files: Vec<SkillFile>, contents: Vec<Vec<u8>>) -> Result<SkillPackage, Error> {
     let entry = files
         .iter()
         .position(|file| file.path == SKILL_FILE)
-        .ok_or_else(|| Error::Format(format!("{} has no {SKILL_FILE}", dir.display())))?;
+        .ok_or_else(|| Error::Format(format!("there is no {SKILL_FILE}")))?;
     let skill_text = contents
         .get(entry)
         .and_then(|bytes| std::str::from_utf8(bytes).ok())

@@ -1,12 +1,15 @@
 //! `graphrt plugin install <name>` and `graphrt plugin search` against a local
 //! catalog: `index.json` and tarballs are written to a scratch directory and
-//! referenced with `file://` URLs, so no test touches the network.
+//! referenced with `file://` URLs, so no test touches the network. Every index
+//! is signed with a throwaway minisign key that the tests name as the trusted
+//! catalog key (`$GRAPHRT_PLUGIN_INDEX_KEY`), unless a test says otherwise.
 #![cfg(feature = "plugins")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
 
@@ -23,13 +26,46 @@ fn graphrt(home: &Path, args: &[&str]) -> Output {
     graphrt_with_env(home, args, &[])
 }
 
+/// The catalog key variable. Tests set it to the test key by default; pass it
+/// as `""` in `env` to run with the built-in graphrt-plugins key instead.
+const INDEX_KEY_ENV: &str = "GRAPHRT_PLUGIN_INDEX_KEY";
+
 fn graphrt_with_env(home: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_graphrt"));
     command.args(args).env("HOME", home).env_remove("GRAPHRT_PLUGIN_PATH").env_remove("GRAPHRT_PLUGIN_INDEX");
+    command.env("USERPROFILE", home).env(INDEX_KEY_ENV, test_public_key());
     for (key, value) in env {
         command.env(key, value);
     }
     command.output().expect("spawn graphrt")
+}
+
+/// The key the test catalogs are signed with, made once per test process.
+fn test_key_pair() -> &'static minisign::KeyPair {
+    static KEY_PAIR: OnceLock<minisign::KeyPair> = OnceLock::new();
+    KEY_PAIR.get_or_init(|| minisign::KeyPair::generate_unencrypted_keypair().expect("test key pair"))
+}
+
+fn test_public_key() -> String {
+    test_key_pair().pk.to_base64()
+}
+
+/// The path of the detached signature of `signed`.
+fn signature_path(signed: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.minisig", signed.display()))
+}
+
+/// Sign `signed` as the graphrt-plugins release does: `<file>.minisig` next to it.
+fn sign_with(key_pair: &minisign::KeyPair, signed: &Path) {
+    let bytes = std::fs::read(signed).expect("read the file to sign");
+    let comment = "graphrt-plugins index.json plugins=0 generated_at=test";
+    let signature = minisign::sign(Some(&key_pair.pk), &key_pair.sk, std::io::Cursor::new(bytes), Some(comment), None)
+        .expect("sign");
+    std::fs::write(signature_path(signed), signature.into_string()).expect("write signature");
+}
+
+fn sign(signed: &Path) {
+    sign_with(test_key_pair(), signed);
 }
 
 fn stdout(output: &Output) -> String {
@@ -195,6 +231,7 @@ fn write_catalog(catalog_dir: &Path, plugins: &[FixturePlugin]) -> PathBuf {
     let index = serde_json::json!({ "schema": 1, "generated_at": "2026-11-19T00:00:00Z", "plugins": entries });
     let index_path = catalog_dir.join("index.json");
     std::fs::write(&index_path, serde_json::to_string_pretty(&index).expect("index json")).expect("write index");
+    sign(&index_path);
     index_path
 }
 
@@ -430,13 +467,27 @@ fn unlabelled_or_unrecognised_labels_need_yes() {
     assert!(stdout(&output).contains("bare 1.0.0: status unknown, ToS risk unknown"), "{}", stdout(&output));
 }
 
-/// Rewrite the entries of a written `index.json` in place.
-fn edit_index(index_path: &Path, edit: impl Fn(&mut serde_json::Value)) {
+/// Rewrite a written `index.json` in place, without signing it again: what
+/// somebody who can replace the file, but has no signing key, can do.
+fn tamper_with_index(index_path: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
     let mut index: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(index_path).unwrap()).unwrap();
-    for entry in index["plugins"].as_array_mut().unwrap() {
-        edit(entry);
-    }
+    edit(&mut index);
     std::fs::write(index_path, index.to_string()).unwrap();
+}
+
+/// Rewrite a written `index.json` in place and sign it again, as its publisher would.
+fn republish_index(index_path: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    tamper_with_index(index_path, edit);
+    sign(index_path);
+}
+
+/// Republish with `edit` applied to every entry.
+fn edit_index(index_path: &Path, edit: impl Fn(&mut serde_json::Value)) {
+    republish_index(index_path, |index| {
+        for entry in index["plugins"].as_array_mut().unwrap() {
+            edit(entry);
+        }
+    });
 }
 
 /// OSC 52 would set the terminal clipboard; CSI 2J clears the screen; U+009B is a C1 CSI.
@@ -462,13 +513,13 @@ fn index_strings_are_printed_without_control_characters() {
             entry["tos_risk"] = format!("low{TERMINAL_ESCAPES}").into();
         }
     });
-    let mut index_value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&index).unwrap()).unwrap();
-    let mut invalid_name = index_value["plugins"][0].clone();
-    invalid_name["name"] = format!("evil{TERMINAL_ESCAPES}").into();
-    let mut invalid_version = index_value["plugins"][0].clone();
-    invalid_version["version"] = format!("9.9.9{TERMINAL_ESCAPES}").into();
-    index_value["plugins"].as_array_mut().unwrap().extend([invalid_name, invalid_version]);
-    std::fs::write(&index, index_value.to_string()).unwrap();
+    republish_index(&index, |index_value| {
+        let mut invalid_name = index_value["plugins"][0].clone();
+        invalid_name["name"] = format!("evil{TERMINAL_ESCAPES}").into();
+        let mut invalid_version = index_value["plugins"][0].clone();
+        invalid_version["version"] = format!("9.9.9{TERMINAL_ESCAPES}").into();
+        index_value["plugins"].as_array_mut().unwrap().extend([invalid_name, invalid_version]);
+    });
 
     let search = graphrt(&home, &["plugin", "search", "--index", index.to_str().unwrap()]);
     assert!(search.status.success(), "{}", stderr(&search));
@@ -509,6 +560,15 @@ fn catalog_flags_only_apply_to_catalog_names() {
     let output = install(&home, local_dir.to_str().unwrap(), &index, &[]);
     assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
     assert!(stderr(&output).contains("`--index` only applies"), "{}", stderr(&output));
+    let install_dir = home.join("installed");
+    for (flag, value) in [("--index-key", Some("some-key")), ("--allow-unsigned-index", None)] {
+        let mut args = vec!["plugin", "install", local_dir.to_str().unwrap(), "--dir", install_dir.to_str().unwrap()];
+        args.push(flag);
+        args.extend(value);
+        let output = graphrt(&home, &args);
+        assert_eq!(output.status.code(), Some(2), "{flag}: {}", stderr(&output));
+        assert!(stderr(&output).contains(&format!("`{flag}` only applies")), "{flag}: {}", stderr(&output));
+    }
 }
 
 #[test]
@@ -586,8 +646,10 @@ fn unreadable_or_unsupported_indexes_fail_clearly() {
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     assert!(stderr(&output).contains("missing.json"), "{}", stderr(&output));
 
+    // A signed index of a newer format (`index-v2.json` served as `index.json`) is not read as schema 1.
     let future = home.join("future.json");
     std::fs::write(&future, r#"{"schema": 2, "plugins": []}"#).unwrap();
+    sign(&future);
     let output = graphrt(&home, &["plugin", "search", "--index", future.to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     assert!(stderr(&output).contains("schema 2"), "{}", stderr(&output));
@@ -637,4 +699,262 @@ fn tarball_strings_are_printed_without_control_characters() {
         assert_no_control_characters(&format!("{name} stderr"), &stderr(&output));
     }
     assert_eq!(installed_files(&home), 0);
+}
+
+/// `plugin search --index <index> [extra...]`.
+fn search(home: &Path, index: &Path, extra: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut args = vec!["plugin", "search", "--index", index.to_str().unwrap()];
+    args.extend(extra);
+    graphrt_with_env(home, &args, env)
+}
+
+/// `plugin install demo` with `env`, into `<home>/installed`.
+fn install_with_env(home: &Path, index: &Path, extra: &[&str], env: &[(&str, &str)]) -> Output {
+    let install_dir = home.join("installed");
+    let mut args = vec!["plugin", "install", "demo", "--index", index.to_str().unwrap()];
+    args.extend(["--dir", install_dir.to_str().unwrap()]);
+    args.extend(extra);
+    graphrt_with_env(home, &args, env)
+}
+
+/// The built-in graphrt-plugins key is the trusted one (no key named).
+const BUILT_IN_KEY: &[(&str, &str)] = &[(INDEX_KEY_ENV, "")];
+
+/// Both commands refuse the index with `message`, and nothing is installed.
+fn assert_index_refused(home: &Path, index: &Path, env: &[(&str, &str)], message: &str) {
+    let output = install_with_env(home, index, &[], env);
+    assert_eq!(output.status.code(), Some(1), "install: {}", stderr(&output));
+    assert!(stderr(&output).contains(message), "install: {}", stderr(&output));
+    assert!(stderr(&output).contains("The index was not used"), "install: {}", stderr(&output));
+    assert!(!stdout(&output).contains("demo"), "nothing of the index is printed: {}", stdout(&output));
+    assert_eq!(installed_files(home), 0);
+    let output = search(home, index, &[], env);
+    assert_eq!(output.status.code(), Some(1), "search: {}", stderr(&output));
+    assert!(stderr(&output).contains(message), "search: {}", stderr(&output));
+    assert_eq!(stdout(&output), "", "nothing of the index is listed");
+}
+
+#[test]
+fn an_index_without_a_signature_is_refused() {
+    let home = scratch("unsigned");
+    let index = write_catalog(&home.join("catalog"), &[FixturePlugin::valid("demo", "1.0.0")]);
+    std::fs::remove_file(signature_path(&index)).unwrap();
+    assert_index_refused(&home, &index, &[], "the plugin catalog signature is missing");
+    assert_index_refused(&home, &index, BUILT_IN_KEY, "the plugin catalog signature is missing");
+    // Not a signature at all, such as the HTML of an error page.
+    std::fs::write(signature_path(&index), "<html>not found</html>").unwrap();
+    assert_index_refused(&home, &index, &[], "the signature cannot be read");
+    std::fs::write(signature_path(&index), [0xff, 0xfe, 0x00]).unwrap();
+    assert_index_refused(&home, &index, &[], "is not text");
+    std::fs::write(signature_path(&index), "x".repeat(8 * 1024)).unwrap();
+    assert_index_refused(&home, &index, &[], "4096-byte limit");
+}
+
+/// The attack this closes: whoever serves the index signs it with a key of their own.
+#[test]
+fn an_index_signed_with_another_key_is_refused() {
+    let home = scratch("other-key");
+    let index = write_catalog(&home.join("catalog"), &[FixturePlugin::valid("demo", "1.0.0")]);
+    // Signed with the test key, but only the built-in graphrt-plugins key is trusted.
+    assert_index_refused(&home, &index, BUILT_IN_KEY, "it was not made with a trusted catalog key");
+    // Signed with a third key, while the test key is the trusted one.
+    let attacker = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    sign_with(&attacker, &index);
+    assert_index_refused(&home, &index, &[], "it was not made with a trusted catalog key");
+    let output = install_with_env(&home, &index, &["--index-key", &test_public_key()], BUILT_IN_KEY);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(stderr(&output).contains("must be signed with the key from `--index-key`"), "{}", stderr(&output));
+    // The same index is fine once its real signer is the trusted key.
+    let output = install_with_env(&home, &index, &["--index-key", &attacker.pk.to_base64()], BUILT_IN_KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
+#[test]
+fn an_index_changed_after_signing_is_refused() {
+    let home = scratch("tampered");
+    let catalog_dir = home.join("catalog");
+    let index = write_catalog(&catalog_dir, &[FixturePlugin::valid("demo", "1.0.0")]);
+    // Point the entry at another tarball, with that tarball's own sha256.
+    let evil_tarball = build_tar_gz(&entries_with_manifest("demo", "1.0.0", |manifest| {
+        manifest["description"] = "not the published plugin".into();
+    }));
+    let evil_path = catalog_dir.join("evil.tar.gz");
+    std::fs::write(&evil_path, &evil_tarball).unwrap();
+    tamper_with_index(&index, |index_value| {
+        let entry = &mut index_value["plugins"][0];
+        entry["tarball_url"] = format!("file://{}", evil_path.display()).into();
+        entry["sha256"] = sha256_hex(&evil_tarball).into();
+        entry["size_bytes"] = evil_tarball.len().into();
+    });
+    assert_index_refused(&home, &index, &[], "the signature does not match the index");
+
+    // The signature is checked before the index is parsed: bytes that are not
+    // even JSON are refused for their signature.
+    std::fs::write(&index, "{ not json").unwrap();
+    assert_index_refused(&home, &index, &[], "the signature does not match the index");
+
+    // One byte appended to the published index.
+    let index = write_catalog(&catalog_dir, &[FixturePlugin::valid("demo", "1.0.0")]);
+    let mut longer = std::fs::read(&index).unwrap();
+    longer.push(b'\n');
+    std::fs::write(&index, longer).unwrap();
+    assert_index_refused(&home, &index, &[], "the signature does not match the index");
+}
+
+/// The signature of one index does not make another index trusted.
+#[test]
+fn a_signature_of_another_index_is_refused() {
+    let home = scratch("swapped");
+    let old = write_catalog(&home.join("old"), &[FixturePlugin::valid("demo", "1.0.0")]);
+    let new = write_catalog(&home.join("new"), &[FixturePlugin::valid("demo", "2.0.0")]);
+    std::fs::copy(signature_path(&old), signature_path(&new)).unwrap();
+    assert_index_refused(&home, &new, &[], "the signature does not match the index");
+}
+
+#[test]
+fn a_tarball_replaced_under_a_verified_index_is_refused() {
+    let home = scratch("swapped-tarball");
+    let catalog_dir = home.join("catalog");
+    let index = write_catalog(&catalog_dir, &[FixturePlugin::valid("demo", "1.0.0")]);
+    // Same size as the published tarball, so only the sha256 can tell.
+    let tarball_path = catalog_dir.join("demo-1.0.0.tar.gz");
+    let mut replaced = std::fs::read(&tarball_path).unwrap();
+    let middle = replaced.len() / 2;
+    replaced[middle] ^= 0x01;
+    std::fs::write(&tarball_path, replaced).unwrap();
+    let output = install(&home, "demo", &index, &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(stderr(&output).contains("sha256 mismatch"), "{}", stderr(&output));
+    assert_eq!(installed_files(&home), 0);
+}
+
+fn set_generated_at(index: &Path, generated_at: &str) {
+    republish_index(index, |index_value| index_value["generated_at"] = generated_at.into());
+}
+
+/// Put the index and signature of `from` where `to` is served: what somebody
+/// who can replace the published files, but cannot sign, can replay.
+fn serve_instead(from: &Path, to: &Path) {
+    std::fs::copy(from, to).unwrap();
+    std::fs::copy(signature_path(from), signature_path(to)).unwrap();
+}
+
+/// A validly signed but older index (with a withdrawn version) is not accepted
+/// once a newer one from the same place and key was used.
+#[test]
+fn an_older_signed_index_is_refused_as_a_rollback() {
+    let home = scratch("rollback");
+    let index = write_catalog(&home.join("catalog"), &[FixturePlugin::valid("demo", "2.0.0")]);
+    set_generated_at(&index, "2026-11-20T10:00:00Z");
+    let output = search(&home, &index, &[], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let state = std::fs::read_to_string(home.join(".graphrt/plugin-catalog-state.json")).unwrap();
+    assert!(state.contains("2026-11-20T10:00:00Z") && state.contains(&test_public_key()), "{state}");
+
+    // The index published a day earlier, with its own valid signature, served in its place.
+    let current = home.join("current.json");
+    serve_instead(&index, &current);
+    let old_index = write_catalog(&home.join("old-catalog"), &[FixturePlugin::valid("demo", "1.0.0")]);
+    set_generated_at(&old_index, "2026-11-19T10:00:00Z");
+    serve_instead(&old_index, &index);
+    for output in [install_with_env(&home, &index, &[], &[]), search(&home, &index, &[], &[])] {
+        assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+        assert!(stderr(&output).contains("refusing a possible rollback"), "{}", stderr(&output));
+        assert!(stderr(&output).contains("2026-11-20T10:00:00Z"), "{}", stderr(&output));
+    }
+    assert_eq!(installed_files(&home), 0);
+    republish_index(&index, |index_value| {
+        index_value.as_object_mut().unwrap().remove("generated_at");
+    });
+    let output = install_with_env(&home, &index, &[], &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(stderr(&output).contains("no usable `generated_at`"), "{}", stderr(&output));
+
+    // An unsigned local index is not tracked.
+    let output = search(&home, &index, &["--allow-unsigned-index"], BUILT_IN_KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    // Another key has its own history, and so has another place (the old catalog where it was written).
+    let other = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    sign_with(&other, &index);
+    let output = search(&home, &index, &["--index-key", &other.pk.to_base64()], BUILT_IN_KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(search(&home, &old_index, &[], &[]).status.success());
+
+    // The index that was used before comes back, then a newer one: both are fine.
+    serve_instead(&current, &index);
+    let output = install_with_env(&home, &index, &[], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("installed demo 2.0.0"), "{}", stdout(&output));
+    set_generated_at(&index, "2026-11-21T10:00:00.5Z");
+    assert!(search(&home, &index, &[], &[]).status.success());
+}
+
+#[test]
+fn a_catalog_of_another_publisher_needs_its_key_named() {
+    let home = scratch("index-key");
+    let index = write_catalog(&home.join("catalog"), &[FixturePlugin::valid("demo", "1.0.0")]);
+    let key = test_public_key();
+    // The base64 key on the command line.
+    let output = install_with_env(&home, &index, &["--index-key", &key], BUILT_IN_KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stderr(&output).contains("is checked against the key from `--index-key`"), "{}", stderr(&output));
+    assert!(stderr(&output).contains(&key), "the key is shown: {}", stderr(&output));
+    // A minisign .pub file.
+    let pub_file = home.join("publisher.pub");
+    std::fs::write(&pub_file, format!("untrusted comment: minisign public key\n{key}\n")).unwrap();
+    let output = search(&home, &index, &["--index-key", pub_file.to_str().unwrap()], BUILT_IN_KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("demo"), "{}", stdout(&output));
+    // The environment variable, named in the note.
+    let output = search(&home, &index, &[], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stderr(&output).contains("the key from $GRAPHRT_PLUGIN_INDEX_KEY"), "{}", stderr(&output));
+    // Something that is not a key is a usage error, not a reason to skip the check.
+    for bad_key in ["not-a-key", "AAAA"] {
+        let output = search(&home, &index, &["--index-key", bad_key], BUILT_IN_KEY);
+        assert_eq!(output.status.code(), Some(2), "{bad_key}: {}", stderr(&output));
+        assert!(stderr(&output).contains("is not a minisign public key"), "{bad_key}: {}", stderr(&output));
+    }
+}
+
+#[test]
+fn an_unsigned_index_needs_the_explicit_flag_and_a_local_file() {
+    let home = scratch("allow-unsigned");
+    let index = write_catalog(&home.join("catalog"), &[FixturePlugin::valid("demo", "1.0.0")]);
+    std::fs::remove_file(signature_path(&index)).unwrap();
+    let output = install_with_env(&home, &index, &["--allow-unsigned-index"], BUILT_IN_KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stderr(&output).contains("without a signature check (--allow-unsigned-index)"), "{}", stderr(&output));
+    assert!(home.join("installed/demo/run.sh").is_file());
+    assert!(!home.join(".graphrt/plugin-catalog-state.json").exists(), "unsigned indexes are not tracked");
+
+    // Never for a catalog on the network, the default one included.
+    let remote: &[&[&str]] = &[
+        &["plugin", "search", "--allow-unsigned-index", "--index", "https://catalog.invalid/index.json"],
+        &["plugin", "search", "--allow-unsigned-index"],
+        &["plugin", "install", "demo", "--allow-unsigned-index"],
+    ];
+    for args in remote {
+        let output = graphrt_with_env(&home, args, BUILT_IN_KEY);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {}", stderr(&output));
+        assert!(stderr(&output).contains("only applies to a local index file"), "{args:?}: {}", stderr(&output));
+    }
+    // Not together with a key, from the flag or from the environment.
+    let output = search(&home, &index, &["--allow-unsigned-index", "--index-key", &test_public_key()], BUILT_IN_KEY);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    let output = search(&home, &index, &["--allow-unsigned-index"], &[]);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    assert!(stderr(&output).contains("cannot be combined with $GRAPHRT_PLUGIN_INDEX_KEY"), "{}", stderr(&output));
+}
+
+/// Installing from a directory never reads a catalog, so it needs no signature.
+#[test]
+fn local_directory_installs_need_no_signature() {
+    let home = scratch("local-dir");
+    let install_dir = home.join("installed");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/examples/python-sentiment");
+    let args = ["plugin", "install", example.to_str().unwrap(), "--dir", install_dir.to_str().unwrap()];
+    let output = graphrt_with_env(&home, &args, BUILT_IN_KEY);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(installed_files(&home), 1);
 }

@@ -198,7 +198,7 @@ nothing more.**
 | Plugins with declared `permissions`, operator trust, checksums verified before every start | `graphrt-plugin`, [plugins.md](plugins.md) | Same model: a package requests, the operator grants. Skill tools are plugin or MCP tools, so their sandbox and limits already apply. |
 | MCP client and MCP presets with `approval.read_only` and `ask_first` | `graphrt-mcp`, [plugin-manifest.md](plugin-manifest.md) | A skill can request MCP tools by name. |
 | Plugin catalog client: index, sha256 per tarball, safe extraction, confirmation for risky entries | `graphrt-cli/src/plugin_catalog` | Skills are published and fetched the same way. |
-| Catalog signature | The graphrt-plugins release workflow signs the index with minisign and the desktop app refuses an index without a valid signature | The same signed index covers skills. See the gap below. |
+| Catalog signature | The graphrt-plugins release workflow signs the index with minisign. The desktop app and `graphrt plugin install <name>` refuse an index without a valid signature (`graphrt_plugin::catalog_signature`) | The same signed index covers skills. |
 | Ed25519 signed bundles | `graphrt-bundle` | A bundle can carry the skills an agent uses, pinned by the bundle manifest. |
 | Knowledge bases | `graphrt-rag`, `/v1/knowledge` | Stay separate. Knowledge answers "what does the company know". Lessons answer "how should this agent behave". |
 | Conversation memory (`memory.window`) | `graphrt-llm/src/nodes/common.rs` | Stays separate. It is history inside one conversation and not learning across runs. |
@@ -216,12 +216,13 @@ Sibling repositories:
   contract that matters most for the desktop UI is therefore a **Rust API**.
   The HTTP API mirrors it for servers.
 
-**Gap found.** The desktop app verifies the catalog signature. The `graphrt`
-CLI does not: `graphrt plugin install <name>` checks each tarball against the
-sha256 in an index it fetched over HTTPS and never checks who signed that
-index. Skills installed from the catalog by the CLI will require a valid
-signature from the start. Bringing plugin installs to the same level is a
-separate change.
+**Gap found and closed.** The desktop app verified the catalog signature and
+the `graphrt` CLI did not: `graphrt plugin install <name>` checked each
+tarball against the sha256 in an index it fetched over HTTPS and never checked
+who signed that index. The CLI now verifies the signature before it parses the
+index, with the shared code in `graphrt_plugin::catalog_signature` (see
+[plugins.md](plugins.md#catalog-signatures)). Skills installed from the
+catalog by the CLI will require a valid signature from the start.
 
 ## 3. Threats and the answer to each
 

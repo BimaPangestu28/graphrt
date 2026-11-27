@@ -11,17 +11,25 @@ use crate::extensions::{Extensions, PluginOptions, PluginSummary};
 pub fn plugin(args: PluginCmdArgs) -> Result<u8, CliError> {
     match args.command {
         PluginCommand::List { json, plugins } => list(&plugins.options(), json),
-        PluginCommand::Install { source, rev, subdir, dir, index, yes } => {
+        PluginCommand::Install { source, rev, subdir, dir, index, index_key, allow_unsigned_index, yes } => {
             let request = InstallSource {
                 source: &source,
                 rev: rev.as_deref(),
                 subdir: subdir.as_deref(),
-                index: index.as_deref(),
+                catalog: CatalogSource {
+                    index: index.as_deref(),
+                    index_key: index_key.as_deref(),
+                    allow_unsigned_index,
+                },
                 assume_yes: yes,
             };
             install(&request, dir)
         }
-        PluginCommand::Search { query, index } => search(query.as_deref(), index.as_deref()),
+        PluginCommand::Search { query, index, index_key, allow_unsigned_index } => {
+            let catalog =
+                CatalogSource { index: index.as_deref(), index_key: index_key.as_deref(), allow_unsigned_index };
+            search(query.as_deref(), catalog)
+        }
         PluginCommand::Remove { name, dir } => remove(&name, dir),
         PluginCommand::Info { name, json, plugins } => info(&name, &plugins.options(), json),
         PluginCommand::New { name, lang, dir } => scaffold(&name, lang, dir),
@@ -85,10 +93,28 @@ struct InstallSource<'a> {
     source: &'a str,
     rev: Option<&'a str>,
     subdir: Option<&'a str>,
-    /// `--index` (catalog names only).
-    index: Option<&'a str>,
+    /// The catalog flags (catalog names only).
+    catalog: CatalogSource<'a>,
     /// `--yes` (catalog names only).
     assume_yes: bool,
+}
+
+/// Which catalog index to read and how it is trusted.
+#[derive(Clone, Copy)]
+struct CatalogSource<'a> {
+    /// `--index`.
+    index: Option<&'a str>,
+    /// `--index-key`.
+    index_key: Option<&'a str>,
+    /// `--allow-unsigned-index`.
+    allow_unsigned_index: bool,
+}
+
+impl CatalogSource<'_> {
+    #[cfg(feature = "plugins")]
+    fn trust(&self) -> crate::plugin_catalog::TrustOptions<'_> {
+        crate::plugin_catalog::TrustOptions { index_key: self.index_key, allow_unsigned: self.allow_unsigned_index }
+    }
 }
 
 fn install(request: &InstallSource<'_>, dir: Option<PathBuf>) -> Result<u8, CliError> {
@@ -133,11 +159,17 @@ fn install_from_source(request: &InstallSource<'_>, root: &Path) -> Result<graph
     )))
 }
 
-/// `--index` and `--yes` only mean something for catalog names, so they are
-/// refused elsewhere rather than silently ignored.
+/// The catalog flags and `--yes` only mean something for catalog names, so
+/// they are refused elsewhere rather than silently ignored.
 fn reject_catalog_flags(request: &InstallSource<'_>) -> Result<(), String> {
-    if request.index.is_some() {
+    if request.catalog.index.is_some() {
         return Err("`--index` only applies to catalog plugin names".to_owned());
+    }
+    if request.catalog.index_key.is_some() {
+        return Err("`--index-key` only applies to catalog plugin names".to_owned());
+    }
+    if request.catalog.allow_unsigned_index {
+        return Err("`--allow-unsigned-index` only applies to catalog plugin names".to_owned());
     }
     if request.assume_yes {
         return Err("`--yes` only applies to catalog plugin names".to_owned());
@@ -181,8 +213,12 @@ fn install_catalog(
     request: &InstallSource<'_>,
     root: &Path,
 ) -> Result<graphrt_plugin::LoadedManifest, CliError> {
-    let catalog_request =
-        crate::plugin_catalog::CatalogInstall { spec, index: request.index, assume_yes: request.assume_yes };
+    let catalog_request = crate::plugin_catalog::CatalogInstall {
+        spec,
+        index: request.catalog.index,
+        trust: request.catalog.trust(),
+        assume_yes: request.assume_yes,
+    };
     crate::plugin_catalog::install_from_catalog(&catalog_request, root, &mut std::io::stdout().lock())
 }
 
@@ -196,13 +232,13 @@ fn install_catalog(
 }
 
 #[cfg(feature = "plugins")]
-fn search(query: Option<&str>, index: Option<&str>) -> Result<u8, CliError> {
-    crate::plugin_catalog::search_catalog(query, index, &mut std::io::stdout().lock())?;
+fn search(query: Option<&str>, catalog: CatalogSource<'_>) -> Result<u8, CliError> {
+    crate::plugin_catalog::search_catalog(query, catalog.index, catalog.trust(), &mut std::io::stdout().lock())?;
     Ok(EXIT_OK)
 }
 
 #[cfg(not(feature = "plugins"))]
-fn search(_query: Option<&str>, _index: Option<&str>) -> Result<u8, CliError> {
+fn search(_query: Option<&str>, _catalog: CatalogSource<'_>) -> Result<u8, CliError> {
     Err(CliError::usage("searching the plugin catalog requires a build with the `plugins` feature"))
 }
 

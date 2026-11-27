@@ -66,6 +66,22 @@ pub trait FileResolver: Send + Sync + fmt::Debug {
     }
 }
 
+/// Turns an image file into a URL a model request can carry.
+///
+/// Nodes with `vision` ask the preparer registered in [`crate::node::Services`]
+/// as `Arc<dyn ImagePreparer>` for every image they send to a model. Without
+/// one, they send the file's own URL untouched. A preparer is where a host
+/// checks what an image really is, bounds its size and pixel count, removes
+/// metadata and downscales it (the `graphrt-image` crate provides one).
+pub trait ImagePreparer: Send + Sync + fmt::Debug {
+    /// A URL for `file`: `https://...` or `data:<media type>;base64,...`.
+    ///
+    /// [`FileError::Unsupported`] means "not mine": the node falls back to
+    /// the file's own URL. Every other error fails the node, so an image that
+    /// was refused is never sent anyway.
+    fn prepare<'a>(&'a self, file: &'a File) -> BoxFuture<'a, Result<String, FileError>>;
+}
+
 /// Resolves `inline` files and any file whose `url` is a `data:` URL.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DataUrlResolver;

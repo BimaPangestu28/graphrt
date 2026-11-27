@@ -7,7 +7,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 - [Workflow format](workflow-format.md): nodes, variables, templates, edges, conversation history
 - [Model providers](providers.md): OpenAI-compatible, Anthropic, Gemini, Bedrock and more; live provider tests
 - [TypeSafe System One (Jev)](typesafe.md): the fast classification model
-- [Files and images](files-and-images.md): agent workspaces, the `files` tools, limits, one workspace per user
+- [Files and images](files-and-images.md): agent workspaces, the `files` tools, limits, one workspace per user, vision input, the `image` tools, image generation
 - [Images in tool results](tool-images.md)
 
 ## Evaluating

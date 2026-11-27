@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The merge queue tests a pull request on top of main and of the ones queued before it.
+  merge_group:
   workflow_dispatch:
 
 # Read-only token: no job here writes to the repository.
@@ -11,7 +13,7 @@ permissions:
   contents: read
 
 # A new push to a pull request cancels the run of its previous push. Every other run
-# (main, manual) gets a group of its own, so it is never cancelled or replaced.
+# (main, merge queue, manual) gets a group of its own, so it is never cancelled or replaced.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -21,22 +23,23 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  # What the pull request changes (.github/path-filters.yml). The jobs that build
-  # release-like binaries skip a pull request that changes only prose, and they
-  # show as skipped. Every other event reports `code: true`.
+  # What the pull request changes (.github/path-filters.yml), also when the merge
+  # queue tests it. The jobs that build release-like binaries skip a pull request
+  # that changes only prose, and they show as skipped. Every other event reports
+  # `code: true`.
   changes:
     name: changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      code: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
+      code: ${{ !(github.event_name == 'pull_request' || github.event_name == 'merge_group') || steps.filter.outputs.code == 'true' }}
     steps:
-      - if: github.event_name == 'pull_request'
+      - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: .github
-      - if: github.event_name == 'pull_request'
+      - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         id: filter
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
@@ -93,7 +96,7 @@ jobs:
       - run: cargo check --workspace --exclude graphrt-cli
       - run: >-
           cargo check -p graphrt-cli --no-default-features --features
-          llm,http,code,python,mcp,doc,files,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly
+          llm,http,code,python,mcp,doc,files,image,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly
 
   minimal-core:
     name: core without default features
@@ -251,3 +254,21 @@ jobs:
       # The features of the chatbot container image.
       - run: cargo build -p graphrt-cli --no-default-features --features llm,serve,jwt,plugins
       - run: examples/supabase-chatbot/tests/run.sh target/debug/graphrt
+
+  # The one check a ruleset requires for this workflow: its name never changes when
+  # a job or a matrix entry is added, renamed or removed. It passes when every job
+  # it needs succeeded or was skipped (by the `changes` job), and fails when one
+  # failed or was cancelled.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [changes, check, release-notes, msrv, minimal-core, minimal-gateway, wasm, size, budgets, chatbot-e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every needed job succeeded or was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null

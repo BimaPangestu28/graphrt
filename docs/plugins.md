@@ -532,8 +532,8 @@ checks. From Rust, the same is `graphrt_plugin::install_from_git_subdir`.
 
 [graphrt-plugins](https://github.com/Graphrt/graphrt-plugins) publishes
 a catalog: its `catalog` release carries `index.json` (every published plugin
-with its version, tarball URL, sha256, size, status and ToS risk) and
-`SHA256SUMS`, and each plugin is released as `<name>-<version>.tar.gz`.
+with its version, tarball URL, sha256, size, status and ToS risk), its
+minisign signature `index.json.minisig` and `SHA256SUMS`, and each plugin is released as `<name>-<version>.tar.gz`.
 `graphrt plugin install <name>` and `<name>@<version>` install from it:
 
 ```sh
@@ -564,9 +564,19 @@ How a name is resolved and installed:
    else `https://github.com/Graphrt/graphrt-plugins/releases/download/catalog/index.json`.
    It may be an `https://` URL, a `file://` URL (`file:///C:/catalog/index.json`
    on Windows) or a local path; plain
-   `http://` is refused because the index carries the checksums. Catalogs with
-   a `schema` other than 1 are refused (upgrade graphrt).
-3. Without a version, the highest version by semver precedence is picked,
+   `http://` is refused because the index carries the checksums.
+3. The signature is read from the same place with `.minisig` appended
+   (`index.json.minisig`, at most 4 KiB) and must be a minisign signature of
+   exactly the index bytes, made with the graphrt-plugins catalog key that is
+   built into `graphrt`. This happens before the index is parsed. Without a
+   valid signature the command stops (exit code 1) and nothing of the index is
+   printed or installed. There is no unverified fallback. See
+   [Catalog signatures](#catalog-signatures) for other publishers and for
+   local catalogs.
+4. Catalogs with a `schema` other than 1 are refused (upgrade graphrt). An
+   index older than the newest one already accepted from the same place and
+   key is refused as a rollback.
+5. Without a version, the highest version by semver precedence is picked,
    skipping prereleases (`1.1.0-rc.1`) unless the plugin has nothing else;
    ask for a prerelease with `name@1.1.0-rc.1`.
    Entries with an invalid plugin name or a non-semver version are skipped,
@@ -575,7 +585,7 @@ How a name is resolved and installed:
    replaced by `?`, as do install errors that quote the tarball (entry paths,
    manifest fields), so a catalog cannot send terminal escape sequences or
    visually reorder a line.
-4. The plugin's `status` and `tos_risk` are printed (trimmed and lowercased;
+6. The plugin's `status` and `tos_risk` are printed (trimmed and lowercased;
    `unknown` when the catalog predates the labels), plus the README warning
    when there is one. The gate fails closed: only status `stable` or `beta`
    with ToS risk `none`, `low` or `medium` installs without `--yes`. Everything
@@ -583,19 +593,20 @@ How a name is resolved and installed:
    does not recognise, and an entry with no labels at all ("this catalog entry
    has no status/ToS label", which is every entry of catalogs published before
    the labels existed). graphrt has no interactive prompt.
-5. The tarball is downloaded over `https://` only (redirects included, at most
+7. The tarball is downloaded over `https://` only (redirects included, at most
    five), with a 300 s timeout and a size cap: the entry's `size_bytes` when
    the catalog declares it, never more than 256 MiB. A `file://` tarball URL is
    accepted only when the index itself is local (mirrors and tests).
-6. Its sha256 must equal the catalog's `sha256`; a mismatch is refused.
-7. It is extracted into a scratch directory under the system temporary
+8. Its sha256 must equal the `sha256` in the verified index. A mismatch is
+   refused.
+9. It is extracted into a scratch directory under the system temporary
    directory (`$TMPDIR`, else `/tmp`), so up to 1 GiB may be written there
    while installing; the directory is removed afterwards. Only regular files and
    directories are accepted: absolute paths, `..`, `:` and reserved Windows
    device names (`CON`, `NUL`, `COM1`...), symlinks and hard links, device
    files, FIFOs and duplicate paths are refused, as are archives over
    1 GiB of contents or 100,000 entries. Files keep only their executable bit.
-8. The tarball's top-level `<name>/` directory, whose manifest must name the
+10. The tarball's top-level `<name>/` directory, whose manifest must name the
    same plugin and version, is installed exactly like `graphrt plugin install
    <dir>`: manifest validation, `checksums` verification, a copy into a
    staging directory next to the target, removal of the previous install and a
@@ -603,26 +614,75 @@ How a name is resolved and installed:
    not atomic: if it is interrupted between the removal and the rename, the
    plugin is left uninstalled (run the install again).
 
-**Trust model.** Installing by name trusts HTTPS and the integrity of the
-GitHub account and releases that publish the catalog. The `catalog` release
-tag is mutable (it is updated in place on every publish), so trust is
-re-established on every install: graphrt keeps no record of what an earlier
-index said. The sha256 in the index guards against corruption in transit and
-against a tarball that does not match what was uploaded with the index; it
-does not protect against a compromised repository or account, which can
-change the index and the tarball together. Catalog entries and tarballs are
-not signed yet; signing (for example with minisign, checked against a key
-shipped with graphrt) is future work. Until then, prefer `--index` pointing at
-a mirror you control, or install from a reviewed directory or git revision,
-when that matters.
+#### Catalog signatures
+
+The graphrt-plugins release workflow signs `index.json` with
+[minisign](https://jedisct1.github.io/minisign/) and uploads the detached
+signature `index.json.minisig` next to it. The public key is committed in that
+repository as `catalog-signing.pub` and is built into `graphrt`
+(`graphrt_plugin::catalog_signature::TRUSTED_CATALOG_PUBLIC_KEYS`, key id
+`CB1AEE339F05C2BD`). The desktop app checks the same signature with the same
+key.
+
+| Index | Used when |
+| --- | --- |
+| The default catalog, or any `--index` / `$GRAPHRT_PLUGIN_INDEX` | `<index>.minisig` is a valid signature of the built in key. A mirror works when it serves `index.json.minisig` too. |
+| With `--index-key <KEY\|PATH>` or `$GRAPHRT_PLUGIN_INDEX_KEY` | The signature is valid for that key, and only that key. A note on stderr names the key. |
+| A local file with `--allow-unsigned-index` | Always, with a warning on stderr. Never for an `https://` index, and not together with an index key. |
+
+What is refused, each with exit code 1 and without printing or installing
+anything from the index:
+
+- an index with no `.minisig` next to it, or one that is not a minisign
+  signature (an error page, a file over 4 KiB)
+- a signature made with any other key, including a key the publisher of a
+  fake index made for it
+- an index that was changed after it was signed, even by one byte, and a
+  signature copied from another index
+- a tarball whose sha256 differs from the one in the verified index
+- an index of a newer format (`index-v2.json`) served as `index.json`
+- a validly signed index that is older than the newest one already accepted
+  from the same place and key (its `generated_at` is earlier or gone). Graphrt
+  remembers the newest `generated_at` per index location and key in
+  `~/.graphrt/plugin-catalog-state.json`. This stops a replay of an old index
+  that still lists a withdrawn plugin version. The first index from a place
+  is accepted as is. If a publisher really went back to an older catalog,
+  remove that file.
+
+A catalog of another publisher needs their minisign public key, named
+explicitly:
+
+```sh
+minisign -G -p acme.pub -s acme.key            # the publisher, once
+minisign -S -s acme.key -m index.json          # writes index.json.minisig
+graphrt plugin install acme-crm --index https://plugins.acme.example/index.json --index-key acme.pub
+```
+
+`--index-key` takes the base64 key or the path of a `.pub` file and replaces
+the built in key for that command. Only prehashed signatures are accepted,
+which is what current minisign writes.
+
+**Trust model.** Installing by name trusts the holder of the catalog signing
+key. Whoever can replace the index or its signature (a mirror, a
+misconfigured proxy, a swapped release asset) cannot make `graphrt` install
+anything the key holder did not publish, because the signature covers the
+index and the index pins every tarball by sha256. The signature does not
+review plugins: a published plugin still runs with the permissions its
+manifest asks for, so the status and ToS labels and the manifest matter as
+before. Installing from a directory or a git URL reads no catalog and is
+trusted like any local file. `--allow-unsigned-index` and `--index-key` change
+who is trusted, so both are explicit flags that print what they do. A
+compromised signing key needs a new `graphrt` release with the new key, and
+the list of built in keys can hold the old and the new key during a rotation.
 
 To test a catalog before publishing it, pack it locally and point `--index` at
 the result (rewrite `tarball_url` to `file://` paths first, since the packed
-index points at release URLs):
+index points at release URLs). A local catalog packed without the signing key
+has no signature, so say so:
 
 ```sh
 node scripts/pack-plugins.mjs open-meteo --out /tmp/catalog   # in graphrt-plugins
-graphrt plugin install open-meteo --index /tmp/catalog/index.json
+graphrt plugin install open-meteo --index /tmp/catalog/index.json --allow-unsigned-index
 ```
 
 A `.wasm` module placed directly in a plugin search path is loaded as a plugin

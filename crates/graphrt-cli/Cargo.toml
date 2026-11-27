@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "files", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -36,6 +36,10 @@ doc = ["dep:graphrt-doc", "graphrt-files?/doc"]
 # File workspaces for agents (`--workspace`): the `files` tools, sandboxed to one
 # directory with quotas. With `doc`, `files/read` also extracts document text.
 files = ["dep:graphrt-files", "graphrt-core/tool-files", "graphrt-llm?/tool-files"]
+# Images: `vision` inputs are checked, stripped of metadata and downscaled before they
+# reach a model, `--image-tools` adds the `image` tools to a workspace and
+# `--image-model` an image generator (OpenAI images API).
+image = ["files", "dep:graphrt-image", "graphrt-llm?/vision-preparer"]
 # knowledge-retrieval node (`--knowledge`): embeddings, vector stores, hybrid search, rerank.
 rag = ["dep:graphrt-rag"]
 # In-process embeddings for knowledge bases (`type: local` embedders): BERT-family
@@ -45,6 +49,7 @@ local-embed = ["rag", "graphrt-rag/local-embed"]
 # installed from a directory, a git URL or the plugin catalog (`graphrt plugin install <name>`).
 plugins = [
     "dep:graphrt-plugin", "graphrt-plugin/process", "graphrt-plugin/http", "graphrt-plugin/yaml", "graphrt-plugin/git",
+    "graphrt-plugin/catalog-signature",
     "dep:reqwest", "dep:rustls", "dep:flate2", "dep:sha2",
 ]
 # Sandboxed WebAssembly plugins (manifests with `runtime: wasm`, or bare `.wasm` files).
@@ -61,7 +66,7 @@ replay = ["llm", "graphrt-llm/replay"]
 # Agent skills (preview, opt-in): `graphrt skill` and the `skills` field of `agent`
 # nodes, served from the skill store in `$GRAPHRT_SKILLS_DIR` or `~/.graphrt/skills`.
 # See docs/skills.md.
-skills = ["llm", "graphrt-llm/skills", "dep:graphrt-skill"]
+skills = ["llm", "graphrt-llm/skills", "graphrt-llm/text-model", "dep:graphrt-skill"]
 # Self learning (preview, opt-in): `graphrt learn` and the `learning` field of
 # `agent` nodes, served from the lesson store in `$GRAPHRT_LEARNING_DIR` or
 # `~/.graphrt/learning`. See docs/learning.md.
@@ -139,6 +144,7 @@ graphrt-code = { workspace = true, optional = true, features = ["js", "tokio"] }
 graphrt-mcp = { workspace = true, optional = true, features = ["stdio", "http"] }
 graphrt-doc = { workspace = true, optional = true, features = ["default", "tokio"] }
 graphrt-files = { workspace = true, optional = true, features = ["tokio"] }
+graphrt-image = { workspace = true, optional = true, features = ["tokio", "process", "tools", "generate-openai"] }
 graphrt-rag = { workspace = true, optional = true, features = ["default"] }
 graphrt-plugin = { workspace = true, optional = true }
 graphrt-skill = { workspace = true, optional = true }
@@ -176,6 +182,8 @@ http-body = { version = "1", optional = true }
 graphrt-provider-fly = { workspace = true, features = ["fake"] }
 # The abstract store conformance suite runs against the memory and directory stores.
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio", "store-conformance"] }
+# Signs the test plugin catalogs with throwaway keys (tests/plugin_catalog.rs).
+minisign = "0.10"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 http-body-util = "0.1"
 jsonschema = { version = "0.63", default-features = false }

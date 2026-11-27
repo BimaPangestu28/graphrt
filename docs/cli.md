@@ -43,6 +43,8 @@ Workflows can be YAML (`.yaml`, `.yml`) or JSON.
 | `--workspace DIR` | Give agents a file workspace in `DIR` (created when missing): registers the `files` tools (`files/list`, `read`, `search`, `write`, `info`, `delete`), which work inside it and nowhere else. See [files and images](files-and-images.md). |
 | `--workspace-read-only` | No `files/write` and no `files/delete`. Needs `--workspace`. |
 | `--workspace-per-user` | One private directory and quota per user: agent nodes must send `tool_context: { files: { scope: ... } }`, and calls without a scope are refused. Needs `--workspace`. |
+| `--image-tools` | Add the `image` tools to the workspace: `image/info`, `view` (the model sees the image), `resize`, `convert`, `thumbnail`. Needs `--workspace`. See [images](files-and-images.md#images). |
+| `--image-model NAME` | Add `image/generate`, backed by this model of the OpenAI images API (for example `gpt-image-2`). Key from `$OPENAI_API_KEY`, endpoint from `$OPENAI_BASE_URL`. Needs `--image-tools`. |
 | `--timeout-ms MS` | Abort the run after this long. |
 | `--max-steps N` | Maximum node executions. |
 | `--resume SNAPSHOT` | Resume a paused run. |
@@ -285,8 +287,8 @@ one broken plugin never blocks unrelated workflows.
 | --- | --- |
 | `graphrt plugin list [--json]` | Every plugin found: name, version, runtime, node kinds, tools, and load errors. |
 | `graphrt plugin install <dir\|git-url> [--rev R] [--subdir P] [--dir D]` | Copy a plugin into `~/.graphrt/plugins/<name>` (or `D`), verify its checksums and check that it loads. Git sources (`https://…`, `git@…`, `*.git`) are cloned with the `git` executable; `--rev` picks a branch or tag. |
-| `graphrt plugin install <name>[@version] [--index I] [--yes] [--dir D]` | Install from the plugin catalog: the latest version, or the exact one. The tarball is downloaded over https, checked against the catalog's sha256, extracted safely and installed like a directory. Plugins not labelled stable/beta with a none/low/medium ToS risk (including unlabelled ones) need `--yes`. |
-| `graphrt plugin search [query] [--index I]` | Catalog plugins whose name or description contains `query`: name, latest version, status and a one-line description. |
+| `graphrt plugin install <name>[@version] [--index I] [--index-key K] [--yes] [--dir D]` | Install from the plugin catalog: the latest version, or the exact one. The index must carry a valid minisign signature of the catalog key. The tarball is downloaded over https, checked against the sha256 in that verified index, extracted safely and installed like a directory. Plugins not labelled stable/beta with a none/low/medium ToS risk (including unlabelled ones) need `--yes`. |
+| `graphrt plugin search [query] [--index I] [--index-key K]` | Catalog plugins whose name or description contains `query`: name, latest version, status and a one-line description. |
 | `graphrt plugin remove <name> [--dir D]` | Delete an installed plugin. |
 | `graphrt plugin info <name> [--json]` | Manifest summary and node descriptors. |
 | `graphrt plugin new <name> --lang python\|typescript\|rust [--dir D]` | Scaffold a working plugin (manifest, code, vendored SDK, `example.yaml`). |
@@ -308,28 +310,39 @@ pointing at `graphrt plugin install` and `--plugins`.
 (`index.json` of its `catalog` release). A source that is not an existing
 directory and looks like `name` or `name@1.2.3` is a catalog name.
 
+The index is used only when its minisign signature (`index.json.minisig`,
+published next to it) verifies against the graphrt-plugins catalog key built
+into `graphrt`. The check runs before the index is parsed. A missing or wrong
+signature is an error (exit code 1) and nothing is listed or installed.
+
 | Option | Description |
 | --- | --- |
 | `--index URL\|PATH` | Catalog index: an `https://` URL, a `file://` URL or a local path. Overrides `$GRAPHRT_PLUGIN_INDEX`; the default is the graphrt-plugins `catalog` release. Plain `http://` is refused. |
+| `--index-key KEY\|PATH` | The minisign public key the index must be signed with, instead of the built in graphrt-plugins key: the base64 key or the path of a `.pub` file. For a catalog of another publisher. Overrides `$GRAPHRT_PLUGIN_INDEX_KEY`. A note on stderr names the key in use. |
+| `--allow-unsigned-index` | Use a local index file that has no signature, with a warning on stderr. For testing a catalog before it is published. Refused for `https://` indexes and together with an index key. |
 | `--yes`, `-y` | Install a plugin that is not labelled status `stable`/`beta` with ToS risk `none`/`low`/`medium`: `experimental`, ToS risk `high`, an unrecognised label, or no label at all. Without it such installs stop with exit code 2 (graphrt has no interactive prompt). |
 
-`--index` and `--yes` only apply to catalog names: with a directory or git
-source they are usage errors (exit code 2) rather than silently ignored.
+`--index`, `--index-key`, `--allow-unsigned-index` and `--yes` only apply to
+catalog names: with a directory or git source they are usage errors (exit code
+2) rather than silently ignored. Installing from a directory or a git URL
+reads no catalog and needs no signature.
 
 ```sh
 graphrt plugin search weather
 graphrt plugin install open-meteo           # latest version
 graphrt plugin install open-meteo@0.1.0     # exact version
 graphrt plugin install whatsapp-web --yes   # experimental, ToS risk high (or unlabelled)
-GRAPHRT_PLUGIN_INDEX=/srv/mirror/index.json graphrt plugin install open-meteo
+GRAPHRT_PLUGIN_INDEX=/srv/mirror/index.json graphrt plugin install open-meteo   # a mirror: index.json.minisig next to it
+graphrt plugin install acme-crm --index https://plugins.acme.example/index.json --index-key acme.pub
+graphrt plugin install open-meteo --index ./dist/index.json --allow-unsigned-index   # a catalog under development
 ```
 
 The plugin's status and ToS risk are printed before anything is downloaded.
 Downloads are https-only with a timeout and a size cap, the tarball must match
-the catalog's sha256, and extraction refuses absolute paths, `..`, links and
+the sha256 in the verified index, and extraction refuses absolute paths, `..`, links and
 device files. See [Installing from the plugin catalog](plugins.md#installing-from-the-plugin-catalog).
-Unknown names and versions are usage errors (exit code 2); download, checksum
-and extraction failures exit with 1.
+Unknown names and versions are usage errors (exit code 2); download, signature,
+rollback, checksum and extraction failures exit with 1.
 
 ## `graphrt skill`
 
@@ -341,6 +354,7 @@ packages an `agent` node loads on demand (`skills: [name]`).
 | `graphrt skill list` | Installed skills. |
 | `graphrt skill inspect <name\|dir>` | A skill before or after installing: tool requests, files, findings. |
 | `graphrt skill install <dir> [--grant T]... [--allow T]... [--accept-findings] [--replace]` | Install a skill directory or the skills of an Agent Plugins package. |
+| `graphrt skill draft --model P/N (--describe TEXT \| --conversation FILE)` | Write a new skill from plain language or an example conversation, as a folder to review and install. |
 | `graphrt skill grant <name> [--grant T]... [--allow T]...` | Replace the tools granted to a skill. |
 | `graphrt skill enable\|disable\|remove <name>` | Manage an installed skill. |
 

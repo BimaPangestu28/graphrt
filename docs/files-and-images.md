@@ -7,7 +7,7 @@ each is off until you turn it on:
 | Capability | Crate | Turn it on | What the agent gets |
 | --- | --- | --- | --- |
 | Files | `graphrt-files` | `--workspace DIR` | The `files` tools, working inside one directory |
-| Images | `graphrt-image` | see [Images](#images) | Vision input that is checked and resized, and the `image` tools |
+| Images | `graphrt-image` | built into the default CLI for `vision`, `--image-tools` for the tools | Vision input that is checked, stripped of metadata and resized, and the `image` tools |
 
 A runtime started without them has no file or image tools, links none of
 their code into the slim builds, and costs nothing at start or at idle.
@@ -237,6 +237,137 @@ weight, which suits phones and small agents.
 
 ## Images
 
-Image support lives in `graphrt-image` and is described in
-[files-and-images-design.md](files-and-images-design.md#images). Images that
-tools return to a model are covered in [tool-images.md](tool-images.md).
+`graphrt-image` puts one gate in front of every image, whether a user
+attached it, an agent found it in the workspace or a generator returned it:
+
+1. **What is it?** Only PNG, JPEG, GIF and WebP pass, judged by their first
+   bytes. An SVG or an HTML page sent as `image/png` is refused, and so is a
+   HEIC photo (convert it to JPEG first).
+2. **How large?** At most 20 MiB, 12,000 pixels per side and 25 megapixels,
+   read from the header. An image that declares more is refused before any
+   decoder runs, so a small file with a huge canvas costs microseconds.
+3. **What else is in it?** EXIF (GPS position, device, time), XMP, IPTC, text
+   chunks, comments and anything appended after the image are removed. The
+   pixels are not touched for this.
+4. **Does it fit a model?** An image above 1,568 pixels on the long side is
+   decoded, turned upright, downscaled and encoded again. That is the size
+   providers scale to anyway, so the model sees the same picture, and a
+   2.5 MiB phone photo travels as about 0.4 MiB.
+
+### Vision
+
+Model nodes take images through `vision`:
+
+```yaml
+- id: describe
+  type: llm
+  model: { provider: anthropic, name: claude-sonnet-4-5 }
+  prompt_template:
+    - { role: user, text: "{{#sys.query#}}" }
+  vision: { enabled: true, variable_selector: [sys, files] }
+```
+
+With the `image` feature (the default CLI has it) every image of `vision`
+goes through the gate:
+
+- Images given inline (`data:` URLs) and images stored in the workspace or in
+  `--files-dir` are read, checked, prepared and sent as base64. Before this,
+  a stored image without a URL could not be sent at all.
+- Images given as `https` URLs are left to the model provider to fetch, as
+  before. The runtime makes no request for them.
+- An image that is refused fails the node with the reason. It is never sent
+  as it was.
+
+The media type sent to the provider is the detected one, whatever the file
+claimed.
+
+### The `image` tools
+
+`--image-tools` (with `--workspace`) adds a second tool provider:
+
+```sh
+graphrt run examples/vision-agent.yaml --workspace ./workspace --image-tools \
+  --input query="What is the total on receipt.jpg? Save a 400 px wide copy."
+```
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `info` | `path` | Format, width, height, size, whether it carries metadata. Reads the header only. |
+| `view` | `path` | The model sees the image (prepared as above), as a tool result image |
+| `resize` | `path`, `max_width?`, `max_height?`, `format?`, `output?`, `overwrite?` | A smaller copy. The shape is kept, an image is never enlarged. |
+| `convert` | `path`, `format`, `output?`, `overwrite?` | A copy as `png`, `jpeg`, `webp` or `gif` |
+| `thumbnail` | `path`, `size?`, `output?`, `overwrite?` | A preview, 256 pixels on the long side by default |
+| `generate` | `prompt`, `size?`, `output?`, `overwrite?` | A new image. Only with `--image-model`. |
+
+Files the tools write are encoded by Graphrt, so they carry no metadata. They
+are named next to the original (`photo-400x300.jpg`, `photo-thumb.jpg`)
+unless `output` says otherwise, and they come back in the `files` output of
+the node like any other file. `--workspace-read-only` leaves `info` and
+`view`. `--workspace-per-user` scopes the tools with
+`tool_context: { image: { scope: ... } }`.
+
+Try it without a model: `examples/images.yaml` reads the header of an image
+and writes a thumbnail.
+
+### Generating images
+
+```sh
+export OPENAI_API_KEY=...
+graphrt run examples/vision-agent.yaml --workspace ./workspace --image-tools \
+  --image-model gpt-image-2 --input query="Draw a logo for a bike shop and save it as logo.png"
+```
+
+`--image-model NAME` adds `image/generate`, which calls the OpenAI images API
+(`POST $OPENAI_BASE_URL/images/generations`, default
+`https://api.openai.com/v1`). Any server that implements that API works.
+What comes back is treated like an upload: it must be a real image within
+the limits, and its metadata is removed before it is stored. An answer that
+holds a URL instead of image data is refused, not fetched.
+
+The generator is a trait, `ImageGenerator`, with one method. Embedders plug
+in another provider with `ImageTools::with_generator`.
+
+### Limits
+
+| Limit | Default | Field of `ImageLimits` |
+| --- | --- | --- |
+| Size of an image file | 20 MiB | `max_input_bytes` |
+| Pixels (width times height) | 25,000,000 | `max_pixels` |
+| Longest side accepted | 12,000 px | `max_dimension` |
+| Longest side sent to a model | 1,568 px | `model_max_edge` |
+| Bytes sent to a model, before base64 | 3.7 MB | `model_max_bytes` |
+| Remove metadata | on | `strip_metadata` |
+| JPEG quality when encoding | 85 | `jpeg_quality` |
+
+Decoding needs about four bytes per pixel, so the pixel limit is also the
+memory limit: 25 megapixels is about 100 MiB while one image is processed.
+Lower it on small devices.
+
+### Images from Rust
+
+```rust
+use std::sync::Arc;
+use graphrt_core::file::{FileResolver, ImagePreparer};
+use graphrt_image::{ImageLimits, ImageTools, VisionPreparer};
+
+// Vision inputs of every model node.
+let preparer: Arc<dyn ImagePreparer> = Arc::new(VisionPreparer::new(Arc::clone(&files), ImageLimits::default()));
+let services = services.with(preparer);
+
+// The tools, over the same workspace as the file tools.
+tools.add("image", Arc::new(ImageTools::new(workspace.clone())));
+```
+
+| Feature of `graphrt-image` | Default | Meaning |
+| --- | --- | --- |
+| `tokio` | on | Decoding, resizing and encoding run on Tokio's blocking pool |
+| `process` | on | Decode, resize and encode (pure Rust PNG, JPEG, GIF, WebP) |
+| `tools` | on | `ImageTools`, over a `graphrt-files` workspace |
+| `generate-openai` | off | `OpenAiImages` |
+
+Without `process` the crate has no dependency beyond `graphrt-core`: it
+still checks types and pixel counts and removes metadata, and it refuses an
+image that would need resizing. That is the build for the smallest devices.
+
+Images that tools return to a model are described in
+[tool-images.md](tool-images.md).

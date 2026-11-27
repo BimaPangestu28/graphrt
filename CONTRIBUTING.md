@@ -26,6 +26,11 @@ features, wasm32 and the min-size build) against your committed `HEAD`:
 scripts/ci-local.sh            # --skip <job> to leave one out, e.g. --skip size
 ```
 
+A pull request is tested on Linux and Windows. The macOS jobs (`test (macOS)`
+and the iOS sample app) run on `main`, every night and on a pull request with
+the `macos` label: ask for the label when your change touches code that is
+specific to Apple systems.
+
 Live tests against real model APIs are opt-in and skipped by default. To run
 them, set `GRAPHRT_LIVE_PROVIDERS=1` and the provider's key (see
 [docs/providers.md](docs/providers.md#live-provider-tests)):
