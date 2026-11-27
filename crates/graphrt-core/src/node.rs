@@ -228,6 +228,16 @@ pub trait Node: Send + Sync + fmt::Debug {
     fn branch_handles(&self) -> Option<Vec<String>> {
         None
     }
+
+    /// Whether the node charges the run's budget itself after each model
+    /// response, with its cost, and may keep checkpoints
+    /// ([`NodeContext::charge`], [`NodeContext::checkpoint`]). The engine then
+    /// charges it nothing when it completes, and gives it a checkpoint that
+    /// lasts across its attempts. Other nodes are charged the tokens of their
+    /// usage when they complete.
+    fn tracks_turns(&self) -> bool {
+        false
+    }
 }
 
 /// Append `new` writes to `acc`, keeping only the latest write per exact selector.
@@ -535,6 +545,10 @@ pub struct NodeContext {
     sink: EventSink,
     /// The run's secret registry, when the engine provides one.
     secret_values: Option<Arc<SecretSet>>,
+    /// The run's token and cost budget, when the engine provides one.
+    budget: Option<Arc<crate::budget::RunBudget>>,
+    /// The checkpoint of this execution (nodes that track their turns).
+    progress: Option<Arc<crate::budget::NodeProgress>>,
 }
 
 impl fmt::Debug for NodeContext {
@@ -596,7 +610,77 @@ impl NodeContext {
             deadline_ms: None,
             sink,
             secret_values: None,
+            budget: None,
+            progress: None,
         }
+    }
+
+    /// Hand the node the run's budget and, for a node that tracks its turns,
+    /// the progress of this execution.
+    pub fn with_budget(
+        mut self,
+        budget: Arc<crate::budget::RunBudget>,
+        progress: Option<Arc<crate::budget::NodeProgress>>,
+    ) -> Self {
+        self.budget = Some(budget);
+        self.progress = progress;
+        self
+    }
+
+    /// The run's token and cost budget, `None` outside the engine.
+    pub fn budget(&self) -> Option<&crate::budget::RunBudget> {
+        self.budget.as_deref()
+    }
+
+    /// Charge one model response to the run's budget: `usage` and its cost in
+    /// micro units. For a node that tracks its turns ([`Node::tracks_turns`]):
+    /// the engine charges any other node's usage itself when it completes, so
+    /// such a node must not call this (its usage would count twice).
+    ///
+    /// @throws NodeError - `limit_exceeded` when a limit is passed: the run stops.
+    pub fn charge(&self, usage: &crate::event::Usage, cost_micros: u64) -> Result<(), NodeError> {
+        match &self.budget {
+            Some(budget) => budget.charge(usage, cost_micros),
+            None => Ok(()),
+        }
+    }
+
+    /// Before a model call: stop the run when its budget is spent.
+    ///
+    /// @throws NodeError - `limit_exceeded`: nothing is left, the run stops.
+    pub fn check_budget(&self) -> Result<(), NodeError> {
+        match &self.budget {
+            Some(budget) => budget.stop_if_spent(),
+            None => Ok(()),
+        }
+    }
+
+    /// Charge the final answer a node made because its budget ran low: it is
+    /// counted, and may pass the limit by this one answer instead of failing it.
+    pub fn charge_final(&self, usage: &crate::event::Usage, cost_micros: u64) {
+        if let Some(budget) = &self.budget {
+            budget.record(usage, cost_micros);
+        }
+    }
+
+    /// Keep `state` as this execution's progress. Its next attempt (a retry,
+    /// or the attempt after the run was preempted and resumed) gets it from
+    /// [`NodeContext::checkpointed`]. Does nothing for a node that does not
+    /// track its turns.
+    pub fn checkpoint(&self, state: serde_json::Value) {
+        if let Some(progress) = &self.progress {
+            progress.set(state);
+        }
+    }
+
+    /// Whether checkpoints are kept for this node (it tracks its turns and runs in an engine).
+    pub fn keeps_checkpoints(&self) -> bool {
+        self.progress.is_some()
+    }
+
+    /// The checkpoint an earlier attempt of this execution kept.
+    pub fn checkpointed(&self) -> Option<serde_json::Value> {
+        self.progress.as_ref().and_then(|progress| progress.get())
     }
 
     /// A context with an empty pool and a no-op sink, for unit tests.

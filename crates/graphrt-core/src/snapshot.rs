@@ -15,7 +15,7 @@ use crate::value::Value;
 pub const SNAPSHOT_FORMAT: u32 = 1;
 
 /// Complete persisted state of a paused run.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub format: u32,
     pub run_id: String,
@@ -25,6 +25,9 @@ pub struct Snapshot {
     pub steps: u64,
     pub usage: Usage,
     pub handled_errors: u32,
+    /// What the run charged against its token and cost budget, and its limits.
+    #[serde(default, skip_serializing_if = "crate::budget::BudgetState::is_empty")]
+    pub budget: crate::budget::BudgetState,
     pub root: FrameSnapshot,
 }
 
@@ -50,11 +53,12 @@ pub struct FrameSnapshot {
 }
 
 /// Lifecycle state of a node inside a frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum NodeStatus {
     /// Ready to run (or was running when the frame paused and must be re-run).
+    #[default]
     Pending,
     /// Paused by the node itself; it will be resumed with its saved state.
     Paused,
@@ -64,7 +68,7 @@ pub enum NodeStatus {
 }
 
 /// Persisted state of one node.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct NodeSnapshot {
     pub status: NodeStatus,
     pub exec_id: String,
@@ -73,6 +77,10 @@ pub struct NodeSnapshot {
     /// or a container holding the snapshots of its child frames).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_state: Option<serde_json::Value>,
+    /// The progress of a node that was running when the run was preempted
+    /// ([`crate::node::NodeContext::checkpoint`]): its next attempt gets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<serde_json::Value>,
 }
 
 /// Traversal state of an edge.

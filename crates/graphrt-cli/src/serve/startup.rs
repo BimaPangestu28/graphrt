@@ -488,7 +488,7 @@ async fn configured_state(
     telemetry: Option<Arc<Telemetry>>,
     verifies_user_tokens: bool,
 ) -> Result<AppState, CliError> {
-    let limits = setup::limits(args.services.timeout_ms, args.services.max_steps);
+    let limits = setup::limits(&args.services);
     let stores = crate::store::open_stores(args.store.as_ref(), args.max_runs)?;
     let webhooks = match &args.webhooks {
         Some(path) => crate::webhooks::Webhooks::load(path, &options.all_vars(), options.allow_private_network)?,

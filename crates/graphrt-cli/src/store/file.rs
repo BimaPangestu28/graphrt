@@ -794,6 +794,7 @@ mod tests {
             usage: graphrt_core::event::Usage::default(),
             handled_errors: 0,
             root: graphrt_core::snapshot::FrameSnapshot::default(),
+            ..Snapshot::default()
         };
         let mut paused = RunRecord::running("f1", "wf", "fp", 1);
         paused.status = RunStatus::Paused;

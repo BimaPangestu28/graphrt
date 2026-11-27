@@ -298,6 +298,12 @@ The host then adds a `context` object to every `tool.call` for that plugin:
   run's variables; secret inputs must be re-supplied as for any resume.
 - Plugins must not log the values or return them in results.
 
+Every `tool.call` from an `agent` node also carries `idempotency_key`
+(`<run_id>:<exec_id>:<turn>:<call id>`), to every plugin. It is the same for every
+attempt of that call: a retry, or the run resumed after a preempt. A plugin
+that charges, sends or writes can keep the keys it handled and do the effect
+once. It is not a secret.
+
 SDKs pass the context as the tool handler's second argument (handlers that
 take only the arguments keep working):
 

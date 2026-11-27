@@ -223,6 +223,7 @@ impl ClassifierNode {
         let model = model_for(&ctx, &cfg.model)?;
         let request = cfg.model.request(messages, pool)?;
         let response = invoke(&ctx, model.as_ref(), request, StreamMode::Off).await?;
+        crate::nodes::common::charge_model(&ctx, &cfg.model, &response.usage)?;
 
         let (index, fallback) = match self.match_class(&response.text) {
             Some(i) => (i, false),
@@ -317,6 +318,8 @@ impl ClassifierNode {
             ctx.require_service::<Arc<SystemOneClient>>("TypeSafe client (graphrt_llm::typesafe::SystemOneClient)")?;
         let request = self.system_one_request(query, &instruction);
         let response = client.ask(&request).await?;
+        // Paid for whatever comes next, an answer it rejects too.
+        ctx.charge(&response.usage.to_usage(), 0)?;
 
         let Some(Answer::Choice { choice, confidence, probabilities }) = response.answer(Self::CHOICE) else {
             return Err(NodeError::new("model_decode", "System One returned no choice answer"));
@@ -407,6 +410,11 @@ impl ClassifierNode {
 impl Node for ClassifierNode {
     fn role(&self) -> NodeRole {
         NodeRole::Branch
+    }
+
+    /// Each model response is charged with its cost as it arrives.
+    fn tracks_turns(&self) -> bool {
+        true
     }
 
     fn run(&self, ctx: NodeContext) -> BoxFuture<'_, NodeResult> {

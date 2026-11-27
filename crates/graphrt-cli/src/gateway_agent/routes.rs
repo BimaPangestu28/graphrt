@@ -277,6 +277,11 @@ fn prepare(state: &AppState, run_id: &str, epoch: u64, mut body: RunBody) -> Res
     input.sys = to_values(body.sys);
     input.conversation = to_values(body.conversation);
     input.env = workflow.env.clone();
+    #[cfg(feature = "llm")]
+    {
+        input.max_total_tokens = body.max_total_tokens;
+        input.max_cost_micros = body.max_cost_micros;
+    }
     if let Some(resume) = body.resume {
         let mut from = ResumeFrom::new(resume.snapshot, to_values(resume.inputs));
         for (selector, secret) in resume.secrets {

@@ -712,6 +712,13 @@
           "minimum": 1,
           "default": 16
         },
+        "retry_safe_tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tools called again when an attempt was cut while they ran (a retry, a resumed preempt): `provider/name`, the name the model sees, `provider/*` or `*`. The recall of the agent's own memory and the skill tools always are. Any other cut call is not repeated: the model reads that its outcome is unknown."
+        },
         "context_window": {
           "description": "What happens when the conversation outgrows the model's context window. `auto` (the default) trims it when the provider refuses a request for its size, or when `max_tokens` is passed, and sends the request again. `summarize` also keeps a rolling summary of what was removed. `off` trims nothing.",
           "oneOf": [

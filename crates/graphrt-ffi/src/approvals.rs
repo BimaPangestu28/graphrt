@@ -379,6 +379,7 @@ mod tests {
             usage: graphrt_core::event::Usage::default(),
             handled_errors: 0,
             root: graphrt_core::snapshot::FrameSnapshot::default(),
+            ..Snapshot::default()
         }
     }
 

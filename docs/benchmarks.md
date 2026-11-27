@@ -220,6 +220,15 @@ an agent turn with 50 calls of a linked two node workflow takes 425 µs, the
 same turn with 50 native tool calls 217 µs, so one child run costs about
 4 µs more than a tool call.
 
+## Budgets and checkpoints
+
+From `cargo run --release -p graphrt-llm --features mock --example checkpoint_bench`:
+one charge of the run budget takes 13.5 ns. An agent loop of 99 tool turns
+whose conversation reaches 200 messages of about 1 KiB takes 39 µs per turn
+when the node runs alone and 327 µs per turn in the engine, which keeps two
+checkpoints (a JSON copy of the loop state) and charges the budget per turn.
+Nodes other than the agent get no checkpoint handle and pay nothing.
+
 ## Gateway targets on Linux
 
 `bench/targets.sh` measures every target of the gateway plan on Linux against

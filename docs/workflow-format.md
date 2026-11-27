@@ -498,6 +498,7 @@ subagents:                # optional: workflows the model may start as tools (ch
   - { workflow: write-report, description: Writes a report from notes., handoff: true }
 max_parallel_subagents: 4   # optional (default 4)
 max_subagent_calls: 16      # optional (default 16 per run of the node)
+retry_safe_tools: [crm/search]   # optional: tools called again when an attempt was cut while they ran
 ```
 
 Runs a tool-calling loop until the model answers without tools (the last
@@ -565,6 +566,29 @@ tools are ordinary tools, so
 needs a host with a memory store (the `memory` cargo feature of the CLI, in
 the default build). With tools that were called the node also outputs
 `turn_digest` (see "Conversation history"). See [memory.md](memory.md).
+
+The loop keeps a checkpoint per turn. When an attempt is cut (a retry after a
+retryable error, a node timeout, a run preempted and resumed), the next attempt
+goes on from the last turn: answered model turns are not asked or paid for
+again, and recorded tool results are not run again. A call that was running
+when the attempt was cut has an unknown outcome. It is called again only when
+it is read only (the recall of the agent's own memory, the skill tools) or
+listed in `retry_safe_tools`. A call that needs approval waits for it
+again. Any other call is not repeated, and the model reads `interrupted: this
+call was started and its outcome is unknown. It was not repeated.` Every call
+also carries an idempotency key (`<run_id>:<exec_id>:<turn>:<call id>`), the same for
+every attempt of that call, which plugins receive as `idempotency_key`.
+
+Each model turn is charged to the run's token and cost budget
+(`max_total_tokens`, `max_cost_micros` of the run, child runs included). When
+what is left does not afford another tool turn and the answer after it, the
+agent makes one last turn without tools and ends with `stopped_reason:
+budget`, and that answer is kept even when it passes the limit by itself. When
+nothing is left, the node fails with `limit_exceeded` and the run stops. The
+`llm`, `question-classifier` and `parameter-extractor` nodes are charged each
+model call with its cost too, a call whose answer then fails included. A model
+without a price in the providers file costs nothing, and a run with a cost
+limit gets a `budget` progress event naming it (`price_missing`).
 
 `subagents` offers each listed workflow to the model as a tool named after
 it (a name of letters, digits, `_` and `-`), with the workflow's start

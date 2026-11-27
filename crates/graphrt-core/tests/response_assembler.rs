@@ -517,7 +517,7 @@ fn edge_id(a: &str, b: &str, id: &str) -> EdgeDoc {
 }
 
 fn node_snap(status: NodeStatus) -> NodeSnapshot {
-    NodeSnapshot { status, exec_id: "x".into(), attempt: 1, resume_state: None }
+    NodeSnapshot { status, exec_id: "x".into(), attempt: 1, resume_state: None, checkpoint: None }
 }
 
 /// start(amount) -> review (pauses) -> answer; a second answer `intro` rendered before the pause.

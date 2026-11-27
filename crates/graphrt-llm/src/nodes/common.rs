@@ -618,6 +618,39 @@ pub async fn invoke(
     Ok(response)
 }
 
+/// The cost of `usage` at the price the providers file gives `model`, in
+/// micro units. Without a price it is 0, and a run with a cost limit is told
+/// (a `budget` progress event with `price_missing`).
+pub(crate) fn cost_of(ctx: &NodeContext, model: &ModelConfig, usage: &Usage) -> u64 {
+    price_of(ctx, model, usage).unwrap_or_else(|| {
+        report_missing_price(ctx, model);
+        0
+    })
+}
+
+/// The cost of `usage` at `model`'s price, `None` without a price.
+pub(crate) fn price_of(ctx: &NodeContext, model: &ModelConfig, usage: &Usage) -> Option<u64> {
+    let registry = ctx.service::<ModelRegistry>()?;
+    Some(registry.price(&model.provider, &model.name)?.cost_micros(usage))
+}
+
+/// Tell a run with a cost limit that `model` has no price. Returns whether it was told.
+pub(crate) fn report_missing_price(ctx: &NodeContext, model: &ModelConfig) -> bool {
+    let limited = ctx.budget().is_some_and(|budget| budget.remaining_cost_micros().is_some());
+    if limited {
+        let named = format!("{}/{}", model.provider, model.name);
+        ctx.progress("budget", Value::from_json(serde_json::json!({ "price_missing": named })));
+    }
+    limited
+}
+
+/// Charge one model response of a node that tracks its turns, at its price.
+///
+/// @throws NodeError - `limit_exceeded` when the run's budget is passed.
+pub(crate) fn charge_model(ctx: &NodeContext, model: &ModelConfig, usage: &Usage) -> Result<(), NodeError> {
+    ctx.charge(usage, cost_of(ctx, model, usage))
+}
+
 /// Finish reasons that mean the model produced a broken turn (worth a retry).
 const MALFORMED_FINISH: &[&str] = &["malformed_function_call", "unexpected_tool_call", "too_many_tool_calls"];
 

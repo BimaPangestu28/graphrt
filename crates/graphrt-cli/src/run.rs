@@ -152,10 +152,8 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
             "an agent lists subagent `{name}`: pass the folder of its workflow with `--workflows DIR`"
         )));
     }
-    let engine = engine
-        .with_services(services)
-        .with_clock(Arc::new(TokioClock))
-        .with_limits(setup::limits(args.services.timeout_ms, args.services.max_steps));
+    let engine =
+        engine.with_services(services).with_clock(Arc::new(TokioClock)).with_limits(setup::limits(&args.services));
 
     let mut assembler = ResponseAssembler::new(&graph);
     if let Some(resume) = &input.resume {

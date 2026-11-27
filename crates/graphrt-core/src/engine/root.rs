@@ -37,6 +37,7 @@ struct RunOrigin {
 #[derive(Default)]
 struct CarriedState {
     steps: u64,
+    budget: crate::budget::BudgetState,
     usage: Usage,
     handled_errors: u32,
     resume_inputs: IndexMap<String, Value>,
@@ -52,6 +53,20 @@ struct HostValues {
     conversation_overrides: IndexMap<String, Value>,
     sys: IndexMap<String, Value>,
     inputs: IndexMap<String, Value>,
+    /// The budget of this run: the engine's limits, lowered by the request's.
+    #[cfg(feature = "budgets")]
+    max_total_tokens: Option<u64>,
+    #[cfg(feature = "budgets")]
+    max_cost_micros: Option<u64>,
+}
+
+/// The lower of two optional limits (`None`: no limit).
+#[cfg(feature = "budgets")]
+fn lower(engine: Option<u64>, request: Option<u64>) -> Option<u64> {
+    match (engine, request) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 /// Drive a whole run, emitting every event through `sink`.
@@ -114,6 +129,18 @@ fn prepare_run(
         conversation_overrides: input.conversation,
         sys: input.sys,
         inputs: input.inputs,
+        // The engine's, a resumed run's own (kept in its snapshot) and this
+        // request's: the lowest applies, so no request raises a limit.
+        #[cfg(feature = "budgets")]
+        max_total_tokens: lower(
+            lower(engine.limits.max_total_tokens, carried.budget.max_total_tokens),
+            input.max_total_tokens,
+        ),
+        #[cfg(feature = "budgets")]
+        max_cost_micros: lower(
+            lower(engine.limits.max_cost_micros, carried.budget.max_cost_micros),
+            input.max_cost_micros,
+        ),
     };
     Ok((origin, host, carried))
 }
@@ -136,6 +163,7 @@ fn resume_origin(engine: &Engine, resume: ResumeFrom) -> Result<(RunOrigin, Carr
     };
     let carried = CarriedState {
         steps: snapshot.steps,
+        budget: snapshot.budget,
         usage: snapshot.usage,
         handled_errors: snapshot.handled_errors,
         resume_inputs: resume.inputs,
@@ -202,7 +230,20 @@ fn share_run(
         .chain(host.inputs.values())
         .chain(host.conversation.iter().map(|(_, v)| v));
     initial.for_each(|value| secret_values.observe(value));
+    #[cfg(feature = "budgets")]
+    let stopper = Arc::clone(control);
+    #[cfg(feature = "budgets")]
+    let budget = Arc::new(crate::budget::RunBudget::new(
+        host.max_total_tokens,
+        host.max_cost_micros,
+        (carried.budget.tokens, carried.budget.cost_micros),
+        Box::new(move |why| stopper.stop(super::control::Stop::Fail(why))),
+    ));
     Arc::new(RunShared {
+        #[cfg(feature = "budgets")]
+        budget,
+        #[cfg(not(feature = "budgets"))]
+        budget: carried.budget,
         graph: engine.graph.clone(),
         services: engine.services.clone(),
         clock: engine.clock.clone(),
@@ -298,6 +339,11 @@ fn terminal_event(shared: &RunShared, outcome: FrameOutcome, run_id: String, ela
                 steps: shared.steps.load(Ordering::Acquire),
                 usage,
                 handled_errors: shared.handled_errors.load(Ordering::Acquire),
+                #[cfg(feature = "budgets")]
+                budget: shared.budget.state(),
+                // Kept as it came: a build without budgets charges nothing.
+                #[cfg(not(feature = "budgets"))]
+                budget: shared.budget,
                 root: *snapshot,
             };
             Event::RunPaused { reasons: pause_reasons(&shared.control), snapshot: Box::new(snapshot) }

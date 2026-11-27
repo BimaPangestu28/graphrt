@@ -207,6 +207,7 @@ response carries `Connection: close` and the client opens a new connection.
 | `session_id`, `user_id` | Optional ids (1-256 bytes) |
 | `tags` | Optional list of strings (at most 32, each 1-256 bytes) |
 | `conversation_id` | Optional id of a conversation the server keeps (`--conversations`): its turns become `sys.history`. See [web.md](web.md#conversations-kept-by-the-server) |
+| `limits` | Optional `{max_total_tokens, max_cost_micros}` for this run, below the server's `--max-tokens-per-run` and `--max-cost-per-run`: the lower applies. The cost is in millionths of the price unit of the providers file |
 | `files` | Optional list of workspace file references (`workspace:...`, at most 16) that become `sys.files`. Needs `--workspace-api`, see [Workspace files API](#workspace-files-api) |
 
 For synchronous calls (blocking or streaming), the run is aborted when the

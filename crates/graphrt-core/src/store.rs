@@ -594,6 +594,7 @@ mod tests {
             steps: 0,
             usage: Usage::default(),
             handled_errors: 0,
+            budget: crate::budget::BudgetState::default(),
             root: crate::snapshot::FrameSnapshot::default(),
         };
         let event = Event::RunPaused { reasons: Vec::new(), snapshot: Box::new(snapshot) };

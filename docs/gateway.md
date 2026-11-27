@@ -165,7 +165,7 @@ can be active at once for rotation (the first signs).
 
 | Method | Path | |
 | --- | --- | --- |
-| POST | `/v1/deployments/{d}/runs` | body as `graphrt serve` (`inputs`, `sys`, `conversation`, `metadata`, `session_id`, `tags`); `"stream": true` → SSE, `"async": true` → `202 {run_id}`, else the final record. `Idempotency-Key` makes retries return the same run |
+| POST | `/v1/deployments/{d}/runs` | body as `graphrt serve` (`inputs`, `sys`, `conversation`, `metadata`, `session_id`, `tags`, `limits`); `"stream": true` → SSE, `"async": true` → `202 {run_id}`, else the final record. `Idempotency-Key` makes retries return the same run |
 | GET | `/v1/deployments/{d}/runs/{id}` | run record |
 | GET | `/v1/deployments/{d}/runs/{id}/events` | SSE replay and live tail; `Last-Event-ID` or `?from=N` |
 | POST | `/v1/deployments/{d}/runs/{id}/resume` | `{inputs, secrets, stream}` for a paused (human-input) run |

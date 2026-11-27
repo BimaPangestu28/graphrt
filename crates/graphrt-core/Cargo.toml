@@ -36,6 +36,11 @@ memory = []
 # Workflows linked to a run that its nodes start as child runs (an agent's
 # `subagents`): `Engine::with_linked`, `NodeContext::children`.
 subagents = []
+# The token and cost budget of a run and the checkpoints of nodes that track
+# their turns (`graphrt_core::budget`): builds with model nodes (graphrt-llm
+# turns it on). Without it limits of tokens and cost are not enforced, and a
+# snapshot's budget passes through unchanged.
+budgets = []
 
 [dependencies]
 futures.workspace = true

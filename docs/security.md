@@ -344,8 +344,10 @@ They honour standard proxy environment variables, except the OTel exporter and
   names its agents' pipes with 128 random bits.
 - **Resume with a client snapshot.** `POST /v1/runs/{id}/resume` accepts a
   client-supplied snapshot. Snapshots are not signed, so a caller holding the
-  API key can forge node state, for example to skip a human-approval step. Every
-  key holder is equally trusted.
+  API key can forge node state, for example to skip a human-approval step, and
+  can lower what the run has charged against `--max-tokens-per-run` and
+  `--max-cost-per-run` (the budget does not hold against a key holder). Every
+  key holder is equally trusted. End users never send snapshots.
 
 ## Plugins, WebAssembly and bundles
 
@@ -501,7 +503,7 @@ See [learning.md](learning.md).
 | End-user JWTs, per-user rate limit | `--verify-jwt`, `--jwt-*`, `--user-rate-limit` | off |
 | Kept runs | `--max-runs`, `--store-ttl-days` | 1,000 in memory / forever on disk |
 | Body and upload size | `--max-body-bytes`, `--max-upload-bytes` | 2 MiB / 16 MiB |
-| Run budget | `--timeout-ms`, `--max-steps`, `Limits` | engine defaults |
+| Run budget | `--timeout-ms`, `--max-steps`, `--max-tokens-per-run`, `--max-cost-per-run`, `Limits` | engine defaults, no token or cost limit |
 | Plugin trust | `--trust-plugin`, `GRAPHRT_TRUSTED_PLUGINS`, manifest `checksums` | untrusted |
 | Bundle signatures | `--trust-key`, `GRAPHRT_TRUSTED_KEYS` | unsigned accepted |
 | OTel content capture | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` (or `GRAPHRT_OTEL_CAPTURE_CONTENT=true`) | off |

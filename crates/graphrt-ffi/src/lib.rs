@@ -221,6 +221,10 @@ struct LimitsConfig {
     max_depth: Option<u32>,
     default_node_timeout_ms: Option<u64>,
     max_concurrency: Option<usize>,
+    /// Token budget of a run, child runs included.
+    max_total_tokens: Option<u64>,
+    /// Cost budget of a run in micro units of the providers' price unit.
+    max_cost_micros: Option<u64>,
 }
 
 impl LimitsConfig {
@@ -241,6 +245,8 @@ impl LimitsConfig {
         if let Some(v) = self.max_concurrency {
             limits.max_concurrency = v.max(1);
         }
+        limits.max_total_tokens = self.max_total_tokens;
+        limits.max_cost_micros = self.max_cost_micros;
         limits
     }
 }

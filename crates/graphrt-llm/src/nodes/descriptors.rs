@@ -367,7 +367,12 @@ pub(crate) fn agent() -> NodeDescriptor {
                 "long_term_memory": long_term_memory(),
                 "subagents": subagents(),
                 "max_parallel_subagents": { "type": "integer", "minimum": 1, "default": 4 },
-                "max_subagent_calls": { "type": "integer", "minimum": 1, "default": 16 }
+                "max_subagent_calls": { "type": "integer", "minimum": 1, "default": 16 },
+                "retry_safe_tools": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Tools called again when an attempt was cut while they ran (a retry, a resumed preempt): `provider/name`, the name the model sees, `provider/*` or `*`. The recall of the agent's own memory and the skill tools always are. Any other cut call is not repeated: the model reads that its outcome is unknown."
+                }
             })),
             &["model"],
         ))

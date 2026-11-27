@@ -56,6 +56,24 @@ pub struct RunRequest {
     /// `sys.history`, and this run's message and answer are added when it succeeds.
     #[serde(default)]
     pub conversation_id: Option<String>,
+    /// A token and cost budget for this run, below the server's
+    /// (`--max-tokens-per-run`, `--max-cost-per-run`): the lower applies.
+    /// Builds with model nodes only.
+    #[cfg(feature = "llm")]
+    #[serde(default)]
+    pub limits: RunLimits,
+}
+
+/// `limits` of a run request.
+#[cfg(feature = "llm")]
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunLimits {
+    #[serde(default)]
+    pub max_total_tokens: Option<u64>,
+    /// In micro units of the price unit of the providers file.
+    #[serde(default)]
+    pub max_cost_micros: Option<u64>,
 }
 
 /// Limits on the caller context of a run request.
@@ -159,6 +177,11 @@ pub(super) async fn start_run(
     }
     input.conversation = to_values(body.conversation);
     input.env = workflow.env.clone();
+    #[cfg(feature = "llm")]
+    {
+        input.max_total_tokens = body.limits.max_total_tokens;
+        input.max_cost_micros = body.limits.max_cost_micros;
+    }
     execute(&state, &workflow.engine, record, input, reply, traceparent(&headers)).await
 }
 
