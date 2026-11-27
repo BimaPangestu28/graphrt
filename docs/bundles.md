@@ -122,3 +122,31 @@ A bundle is a zip archive (deflate) written deterministically: sorted entries,
 fixed timestamps and permissions, so the same inputs produce the same bytes
 (set `$SOURCE_DATE_EPOCH` to pin `created_at`). `format_version` is `1`; hosts
 refuse bundles with a newer format.
+
+## Skills in a bundle (preview)
+
+In a build with the `skills` feature, `graphrt bundle build` packs every skill
+the workflow's `agent` nodes list (`skills: [name]`), taken from the skill
+store with the grants given there:
+
+```text
+skills/index.json            the skills, their grants, whether findings were accepted
+skills/<name>/SKILL.md       the skill's files, exactly as installed
+```
+
+A listed skill that is not installed is an error at build time.
+
+`graphrt run bundle.grt` installs the bundled skills into a new private store
+and uses that store for the run, so the bundle behaves the same on a machine
+that has other skills or none. Each bundled skill goes through the normal
+install: validation, the scan, and the rule that a grant must name a tool the
+skill asks for. A bundle that fails any of them does not run.
+
+The grants travel with the bundle because they are its author's decision, like
+the `tools` an agent lists in the same bundle. The manifest pins the index and
+every skill file, so a signature covers them. Require signatures
+(`GRAPHRT_TRUSTED_KEYS`) for bundles you did not build.
+
+`graphrt serve` does not read bundled skills yet: as with bundled providers and
+knowledge, a served bundle uses the host's services, here the host's skill
+store. See [skills.md](skills.md).

@@ -1,6 +1,6 @@
 //! The skill store end to end, including the attacks it has to stop.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -80,13 +80,19 @@ fn install_then_serve_a_skill_with_a_reference_file() {
     );
     scratch.write("src/refund-policy/references/table.md", "| days | refund |\n| 30 | full |\n");
     let store = scratch.store();
-    let origin =
-        SkillOrigin { kind: OriginKind::Catalog, publisher: Some("Graphrt".into()), verified: true, detail: None };
+    let origin = SkillOrigin {
+        kind: OriginKind::Catalog,
+        publisher: Some("Graphrt".into()),
+        verified: true,
+        version: Some("2.1.0".into()),
+        detail: None,
+    };
     let entry = store.install(&dir, InstallOptions { origin: origin.clone(), ..InstallOptions::default() }).unwrap();
 
     assert!(entry.enabled);
     assert_eq!(entry.version.as_deref(), Some("2.1"));
     assert_eq!(entry.origin, origin);
+    assert_eq!(entry.origin.version.as_deref(), Some("2.1.0"), "the catalog's version, next to the skill's own");
     assert_eq!(entry.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["SKILL.md", "references/table.md"]);
     assert_eq!(store.list().unwrap(), vec![entry.clone()]);
     assert_eq!(store.inspect("refund-policy").unwrap().entry, entry);
@@ -112,6 +118,32 @@ fn install_then_serve_a_skill_with_a_reference_file() {
         json!({"name": "refund-policy", "path": "references/table.md"}),
     );
     assert!(!file.is_error && file.text.contains("| 30 | full |"), "{}", file.text);
+}
+
+#[test]
+fn a_reviewed_directory_says_whether_that_skill_is_installed() {
+    let scratch = Scratch::new();
+    let dir = scratch.skill("notes", "metadata:\n  title: Catatan Rapat\n", "Instructions.");
+    let store = scratch.store();
+
+    let before = store.inspect_dir(&dir).unwrap();
+    assert_eq!((before.installed, before.changes.is_none()), (false, true));
+    assert_eq!(before.entry.title.as_deref(), Some("Catatan Rapat"));
+
+    let entry = store.install(&dir, InstallOptions::default()).unwrap();
+    assert_eq!(entry.title.as_deref(), Some("Catatan Rapat"));
+    let same = store.inspect_dir(&dir).unwrap();
+    assert!(same.installed && same.changes.unwrap().is_empty(), "installed, and the content is the same");
+
+    scratch.skill("notes", "", "New instructions.");
+    let changed = store.inspect_dir(&dir).unwrap();
+    assert!(changed.installed);
+    assert_eq!(changed.changes.unwrap().changed_files, ["SKILL.md"]);
+    assert_eq!(changed.entry.title, None, "the title is optional");
+
+    // The catalog's key wins over the generic one.
+    scratch.skill("notes", "metadata:\n  title: Meeting Notes\n  display_name: Catatan Rapat\n", "Instructions.");
+    assert_eq!(store.inspect_dir(&dir).unwrap().entry.title.as_deref(), Some("Catatan Rapat"));
 }
 
 #[test]
@@ -248,6 +280,28 @@ fn copy_dir(from: &Path, to: &Path) {
             std::fs::copy(entry.path(), target).unwrap();
         }
     }
+}
+
+#[test]
+fn export_returns_every_pinned_file_and_refuses_changed_ones() {
+    let scratch = Scratch::new();
+    let dir = scratch.skill("notes", "", "Instructions.");
+    // Not valid UTF-8, like an image: carried as it is and never read as text.
+    let binary: &[u8] = &[0xFF, 0xFE, 0x00, 0x01, 0x89];
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("assets/logo.bin"), binary).unwrap();
+    let store = scratch.store();
+    install(&store, &dir);
+    store.set_enabled("notes", false).unwrap();
+
+    let files = store.export("notes").unwrap();
+    let paths: Vec<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
+    assert_eq!(paths, ["SKILL.md", "assets/logo.bin"]);
+    assert_eq!(files[1].1, binary);
+
+    std::fs::write(scratch.path("store/skills/notes/assets/logo.bin"), "changed").unwrap();
+    assert!(matches!(store.export("notes"), Err(Error::Tampered { file, .. }) if file == "assets/logo.bin"));
+    assert!(matches!(store.export("nope"), Err(Error::NotFound(_))));
 }
 
 #[test]

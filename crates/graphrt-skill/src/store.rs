@@ -73,6 +73,11 @@ pub struct SkillOrigin {
     /// Whether the host verified a signature covering this content before installing.
     #[serde(default)]
     pub verified: bool,
+    /// The version the source lists for this skill (a catalog entry's
+    /// version), when the host knows one. The skill's own `metadata.version`
+    /// is [`SkillEntry::version`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// How calls of a granted tool are handled.
@@ -115,6 +120,11 @@ pub struct SkillEntry {
     pub name: String,
     /// What it does and when to use it.
     pub description: String,
+    /// A name to show to people, when the skill gives one:
+    /// `metadata.display_name` (what the Graphrt catalog uses), else
+    /// `metadata.title`. `name` stays the identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Where it came from.
     #[serde(default)]
     pub origin: SkillOrigin,
@@ -163,6 +173,10 @@ impl SkillEntry {
         Self {
             name: manifest.name.clone(),
             description: manifest.description.clone(),
+            title: ["display_name", "title"]
+                .iter()
+                .find_map(|key| manifest.metadata.get(*key).filter(|title| !title.is_empty()))
+                .cloned(),
             origin: SkillOrigin::default(),
             installed_at_ms: 0,
             enabled: false,
@@ -257,7 +271,9 @@ impl SkillChanges {
 pub struct SkillDetails {
     /// The installed entry, or the entry an install would create.
     pub entry: SkillEntry,
-    /// Whether `entry` is installed in this store.
+    /// Whether a skill of this name is installed in this store. For a
+    /// directory that is being reviewed, `changes` says how it differs from
+    /// the installed one (empty: the same content).
     pub installed: bool,
     /// Whether an install needs `accept_findings` because the scan found something blocking.
     pub blocked: bool,
@@ -366,7 +382,7 @@ impl SkillStore {
         let installed = self.index()?.skills.get(&entry.name).cloned();
         let changes = installed.as_ref().map(|installed| SkillChanges::between(installed, &entry));
         let blocked = entry.findings.iter().any(Finding::is_blocking);
-        Ok(SkillDetails { entry, installed: false, blocked, changes })
+        Ok(SkillDetails { entry, installed: installed.is_some(), blocked, changes })
     }
 
     /// Install the skill in `dir`.
@@ -489,6 +505,18 @@ impl SkillStore {
     pub fn read_file(&self, name: &str, path: &str) -> Result<String, Error> {
         let entry = self.enabled_entry(name)?;
         self.read_pinned_text(&entry, path)
+    }
+
+    /// Every file of installed skill `name` with its content, each checked
+    /// against its pinned hash, for packaging the skill elsewhere (a bundle).
+    /// Works for a skill that is turned off too.
+    ///
+    /// # Errors
+    /// [`Error::NotFound`], or [`Error::Tampered`] when a file changed since
+    /// the install.
+    pub fn export(&self, name: &str) -> Result<Vec<(String, Vec<u8>)>, Error> {
+        let entry = self.get(name)?;
+        entry.files.iter().map(|file| Ok((file.path.clone(), self.read_pinned(&entry, &file.path)?))).collect()
     }
 
     /// The current index, from memory when the file did not change.
@@ -621,8 +649,14 @@ impl SkillStore {
         Ok(())
     }
 
-    /// Read `path` of an installed skill and check it against its pinned hash.
+    /// Read `path` of an installed skill as text, checked against its pinned hash.
     fn read_pinned_text(&self, entry: &SkillEntry, path: &str) -> Result<String, Error> {
+        let bytes = self.read_pinned(entry, path)?;
+        String::from_utf8(bytes).map_err(|_| Error::NotText { skill: entry.name.clone(), file: path.to_owned() })
+    }
+
+    /// Read `path` of an installed skill and check it against its pinned hash.
+    fn read_pinned(&self, entry: &SkillEntry, path: &str) -> Result<Vec<u8>, Error> {
         let pinned = entry
             .files
             .iter()
@@ -644,7 +678,7 @@ impl SkillStore {
         if sha256_hex(&bytes) != pinned.sha256 {
             return Err(tampered());
         }
-        String::from_utf8(bytes).map_err(|_| Error::NotText { skill: entry.name.clone(), file: pinned.path.clone() })
+        Ok(bytes)
     }
 }
 

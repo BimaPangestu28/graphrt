@@ -9,6 +9,8 @@ pub mod args;
 #[cfg(feature = "serve")]
 pub mod body_drain;
 pub mod bundle_cmd;
+#[cfg(all(feature = "skills", feature = "bundle"))]
+pub mod bundle_skills;
 pub mod catalog;
 #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
 pub mod deploy_cmd;
@@ -43,6 +45,8 @@ pub mod knowledge_api;
 pub mod langfuse;
 #[cfg(feature = "learning")]
 pub mod learn_cmd;
+#[cfg(all(feature = "learning", feature = "serve"))]
+pub mod learning_api;
 #[cfg(feature = "serve")]
 pub mod listen;
 #[cfg(feature = "online-eval")]
@@ -60,6 +64,8 @@ pub mod serve;
 pub mod setup;
 #[cfg(feature = "skills")]
 pub mod skill_cmd;
+#[cfg(all(feature = "skills", feature = "serve"))]
+pub mod skills_api;
 #[cfg(feature = "serve")]
 pub mod sse_ids;
 // Only the gateway starts standby agents, and only of its own binary.

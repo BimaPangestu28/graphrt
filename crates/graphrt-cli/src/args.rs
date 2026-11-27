@@ -342,10 +342,21 @@ pub enum SkillCommand {
     ///   graphrt skill install ./refund-policy
     ///   graphrt skill install ./weekly-report --grant mail/send
     ///   graphrt skill install ./weekly-report --replace
+    ///   graphrt skill install kebijakan-refund          (from the signed catalog)
+    ///   graphrt skill install kebijakan-refund@1.0.0
     #[command(verbatim_doc_comment)]
     Install {
-        /// Directory with a `SKILL.md`, or an Agent Plugins package.
-        path: PathBuf,
+        /// Directory with a `SKILL.md`, an Agent Plugins package, or a catalog
+        /// skill name (`name` or `name@version`). A catalog skill is installed
+        /// only from an index whose signature verifies.
+        source: String,
+        /// Catalog index (https:// URL, file:// URL or path) [default: the graphrt-plugins catalog].
+        #[arg(long, value_name = "URL|PATH")]
+        index: Option<String>,
+        /// Public key the catalog index must be signed with, instead of the
+        /// graphrt-plugins key: a base64 minisign key or a `.pub` file.
+        #[arg(long, value_name = "KEY|FILE")]
+        index_key: Option<String>,
         #[command(flatten)]
         grants: SkillGrantArgs,
         /// Install although the scan found something that needs a decision.
@@ -354,6 +365,16 @@ pub enum SkillCommand {
         /// Replace an installed skill of the same name. Its earlier grants are not kept.
         #[arg(long)]
         replace: bool,
+    },
+    /// List the skills of the signed catalog whose name or description contains QUERY.
+    Search {
+        query: Option<String>,
+        /// Catalog index (https:// URL, file:// URL or path) [default: the graphrt-plugins catalog].
+        #[arg(long, value_name = "URL|PATH")]
+        index: Option<String>,
+        /// Public key the catalog index must be signed with, instead of the graphrt-plugins key.
+        #[arg(long, value_name = "KEY|FILE")]
+        index_key: Option<String>,
     },
     /// Write a new skill from a description in plain language or from an
     /// example conversation, with a model. The result is a folder to read,

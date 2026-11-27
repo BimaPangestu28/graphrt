@@ -66,6 +66,13 @@ pub fn bundle_graph(
     if bundle.providers_config().is_some() || bundle.knowledge_config().is_some() {
         apply_bundle_configs(&bundle, options)?;
     }
+    // A bundle that brings skills runs with those skills and no others.
+    #[cfg(feature = "skills")]
+    if bundle.file(crate::bundle_skills::SKILL_INDEX_PATH).is_some() {
+        let fingerprint = graphrt_bundle::sha256_hex(bundle.manifest_bytes());
+        let dir = create_private_dir(&format!("skills-{}", fingerprint.get(..16).unwrap_or(&fingerprint)))?;
+        options.skills_dir = crate::bundle_skills::install_from_bundle(&bundle, &dir)?;
+    }
     let mut workflow = bundle.workflow(None).map_err(|e| CliError::invalid(format!("{}: {e}", path.display())))?;
     if let Some(raw) = options.model_override.as_deref() {
         let (provider, name) = setup::parse_model_override(raw)?;
@@ -253,6 +260,18 @@ fn build_cmd(args: crate::args::BundleBuildArgs) -> Result<u8, CliError> {
         let prefix = dir.file_name().and_then(|n| n.to_str()).map(|n| format!("assets/{n}")).unwrap_or("assets".into());
         builder = builder.include_dir(dir, &prefix).map_err(invalid)?;
     }
+    // Skills the workflow's agents list travel with the bundle.
+    #[cfg(feature = "skills")]
+    let bundled_skills = crate::bundle_skills::listed_skills(&workflow);
+    #[cfg(feature = "skills")]
+    if !bundled_skills.is_empty() {
+        let root = graphrt_skill::SkillStore::default_root()
+            .ok_or_else(|| CliError::usage("cannot find the skill store; set GRAPHRT_SKILLS_DIR"))?;
+        let store = graphrt_skill::SkillStore::open(root);
+        for (path, content) in crate::bundle_skills::files_for_bundle(&store, &bundled_skills)? {
+            builder = builder.file(&path, content).map_err(invalid)?;
+        }
+    }
 
     let mut bytes = builder.build().map_err(invalid)?;
     if let Some(key) = &args.sign_key {
@@ -265,6 +284,10 @@ fn build_cmd(args: crate::args::BundleBuildArgs) -> Result<u8, CliError> {
     println_out(&format!("built {} ({} bytes{signed})", out.display(), bytes.len()))?;
     for plugin in included {
         println_out(&format!("  plugin: {plugin}"))?;
+    }
+    #[cfg(feature = "skills")]
+    for skill in bundled_skills {
+        println_out(&format!("  skill: {skill}"))?;
     }
     Ok(EXIT_OK)
 }

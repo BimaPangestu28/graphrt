@@ -64,6 +64,7 @@ pub fn service_options(args: &ServiceArgs) -> Result<ServiceOptions, CliError> {
         },
         trust_keys: args.trust_key.clone(),
         capture_content: false,
+        skills_dir: None,
     })
 }
 

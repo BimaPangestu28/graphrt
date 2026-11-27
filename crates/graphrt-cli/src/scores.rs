@@ -348,6 +348,9 @@ pub async fn post_feedback(
     if let Some(refused) = refuse_unowned_run(&caller, &record) {
         return refused;
     }
+    // Only a verified end user is the authenticated author of their own run.
+    #[cfg(feature = "learning")]
+    let authenticated = !matches!(caller, Caller::ApiKey);
     // A verified end user rates as themselves; an API-key caller may name any `user` (a label).
     let author = match caller {
         Caller::ApiKey => body.user,
@@ -359,6 +362,18 @@ pub async fn post_feedback(
     if let Err(e) = state.score_store().put_scores(&run_id, vec![score.clone()]).await {
         return crate::serve::store_error(&e);
     }
+    #[cfg(feature = "learning")]
+    crate::learning_api::capture_feedback(
+        &state,
+        &crate::learning_api::FeedbackSignal {
+            workflow: &record.workflow,
+            run_id: &run_id,
+            value: score.value.as_number(),
+            comment: score.comment.as_deref(),
+            author: score.user.as_deref(),
+            authenticated,
+        },
+    );
     state.score_sinks().publish(&record, &score, None);
     (StatusCode::CREATED, Json(score.to_json())).into_response()
 }

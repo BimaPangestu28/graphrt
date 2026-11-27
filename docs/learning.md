@@ -83,7 +83,8 @@ scan flags it. The check knows English and Indonesian words. It errs towards
 Each reason is a `{code, message}` pair in `risk_reasons`. The message is plain
 English. The code is stable, for hosts that show it in another language:
 `sending`, `money`, `approval`, `changes_records`, `credentials`,
-`tools_or_instructions`, `web_address`, `email_address`, `long_number`, or the
+`tools_or_instructions`, `web_address`, `email_address`, `long_number`,
+`masked_secret` (a value the host already masked, such as `[redacted]`), or the
 code of a skill scan finding (`overrides_instructions`, `hides_from_user`,
 `skips_approval`, `touches_credentials`, `hidden_characters`,
 `download_and_run`).
@@ -115,6 +116,15 @@ not end up in a skill every run can load. The draft is a normal skill draft:
 a person reads it, the same scan runs, and installing grants no tool. See
 [skills.md](skills.md#writing-a-skill-from-plain-language).
 
+A feedback comment that cannot be recorded for now, because too many proposals
+are open or the scope is full, stays in the queue and is tried again on the
+next `distill` (`kept` in the report). A comment that can never be a lesson is
+dropped and listed in `skipped`.
+
+`Lesson::origin_sentence` is an English sentence. Hosts in another language
+build their own from `origin.signal`, `origin.author`, `origin.run_id` and
+`created_at_ms`.
+
 ## `graphrt learn`
 
 Every subcommand takes `--dir <DIR>` (the lesson store), `--json`, and
@@ -139,6 +149,34 @@ Every subcommand takes `--dir <DIR>` (the lesson store), `--json`, and
 The store is `--dir`, else `$GRAPHRT_LEARNING_DIR`, else `~/.graphrt/learning`.
 `graphrt run` and `graphrt serve` read the same default. It is created owner
 only (`0700` directories, `0600` files on Unix). Use one store per tenant.
+
+## HTTP API
+
+`graphrt serve` in a build with the `learning` feature serves the default
+lesson store. Every route needs the API key: these are owner actions. A body
+may carry `actor`, the name recorded in the audit log (default `api`).
+
+| Method | Path | Body or query | Response |
+| --- | --- | --- | --- |
+| GET | `/v1/learning/{agent}/lessons` | `?user=`, `?shared=true`, `?status=` | `{lessons: [...]}`, each with `origin_sentence` |
+| POST | `/v1/learning/{agent}/lessons` | `{text, user?, kind?}` | `201` and the lesson (approved, trust `owner`) |
+| PATCH | `/v1/learning/{agent}/lessons/{id}` | one of `{decision: approve\|reject\|retire}`, `{text}`, `{promote: true}` | The lesson |
+| DELETE | `/v1/learning/{agent}/lessons/{id}` | | `204` |
+| POST | `/v1/learning/{agent}/forget` | `{user}` or `{run_id}` | `{removed}` |
+| POST | `/v1/learning/{agent}/distill` | | `{observations, lessons, skipped, kept}` |
+| GET, PATCH | `/v1/learning/{agent}/policy` | `{auto_approve_user_feedback}` | The policy |
+| GET | `/v1/learning/{agent}/audit` | | `{entries: [...]}` |
+
+**Feedback is captured automatically.** `POST /v1/runs/{id}/feedback` (see
+[serving.md](serving.md)) records a signal for every agent that the run's
+workflow names in `learning.agent`. Nothing is learned at that moment: the
+signal waits for `distill`. Feedback counts as a verified user's own words
+only when it came with that user's token (`--verify-jwt`) for their own run.
+A `user` that an API key caller puts in the body is a label, so such feedback
+is `derived` and always waits for the owner.
+
+`distill` over HTTP calls no model. Use `graphrt learn distill --model` or the
+Rust API for suggestions by a model.
 
 ## Embedding
 
