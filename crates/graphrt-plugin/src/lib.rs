@@ -62,6 +62,7 @@ pub use manifest::{
     HttpRuntime, Limits, LoadedManifest, MANIFEST_FILES, PROTOCOL_VERSION, Permissions, PluginManifest, ProcessRuntime,
     Runtime, TriggerDescriptor, WasmRuntime, is_valid_name, manifest_in,
 };
+pub use manifest::{SERVICE_EVENTS, ServiceDescriptor};
 #[cfg(feature = "mcp-presets")]
 pub use mcp_preset::{McpApproval, McpApprovalDefault, McpAuth, McpServerSpec, McpTransportKind, PluginTemplate};
 #[cfg(feature = "process")]

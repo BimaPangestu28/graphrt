@@ -1,0 +1,30 @@
+# Self hosted collaboration server: one company, its own identity provider.
+# Reference: docs/collab.md. Check it with `graphrt collab check --config collab.yaml`.
+mode: self_hosted
+public_url: https://collab.example.com     # what people type in Graphrt Desktop
+listen: 0.0.0.0:8790
+data_dir: /data
+# TLS is done by the proxy in compose.yaml (Caddy). Without a proxy, serve HTTPS directly:
+# tls: { cert: /etc/graphrt/tls.crt, key: /etc/graphrt/tls.key }
+behind_proxy: true
+
+auth:
+  # Sign in with the company's identity provider (remove the block to use invite codes only).
+  oidc:
+    issuer: https://login.microsoftonline.com/<tenant-id>/v2.0
+    client_id: 00000000-0000-0000-0000-000000000000
+    client_secret_env: GRAPHRT_COLLAB_OIDC_SECRET
+  roles:
+    owners: [it-admin@example.com]           # may create workspaces, always
+    allowed_domains: [example.com]           # who may sign in at all
+    default_role: operator                   # people of those domains may create workspaces
+  # Invite codes make accounts too (for guests without a company account):
+  # invite_accounts: true
+
+audit:
+  retention_days: 365
+
+# Plugin services (docs/collab.md#plugin-services). Off until a workspace owner enables one.
+# plugins:
+#   dirs: [/plugins]
+#   trusted: [collab-webhooks]

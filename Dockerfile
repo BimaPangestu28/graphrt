@@ -12,7 +12,9 @@
 #              does this), or `gateway-all,eval,online-eval,skills,learning,console` (the
 #              `:<version>-gateway` release
 #              image; run it with `gateway --config ...` instead of the default
-#              `serve` command)
+#              `serve` command), or with FEATURES=collab the `:<version>-collab`
+#              image (the collaboration server alone, run it with
+#              `collab serve --config /etc/graphrt/collab.yaml`, see docs/collab.md)
 #   PROFILE    cargo profile (default: min-size)
 #   GRAPHRT_TELEMETRY_URL  opt-in telemetry endpoint baked into the binary (default: none)
 #
@@ -44,10 +46,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     else \
         cargo build -p graphrt-cli --profile "$PROFILE" --locked --features "$EXTRA_FEATURES"; \
     fi; \
-    install -D -m 0755 "target/$PROFILE/graphrt" /out/graphrt
+    install -D -m 0755 "target/$PROFILE/graphrt" /out/graphrt; \
+    mkdir -p /out/data
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /out/graphrt /usr/local/bin/graphrt
+# An empty /data the nonroot user owns, so a fresh volume mounted there is
+# writable (the collaboration server's data_dir, a run store).
+COPY --from=builder --chown=nonroot:nonroot /out/data /data
 USER nonroot:nonroot
 WORKDIR /workflows
 EXPOSE 8080

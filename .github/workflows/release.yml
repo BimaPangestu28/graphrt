@@ -305,7 +305,8 @@ jobs:
       matrix:
         # `agent`: ghcr.io/<owner>/graphrt:<version>, <major.minor>, latest.
         # `gateway`: the same tags with a `-gateway` suffix, plus `gateway`.
-        flavor: [agent, gateway]
+        # `collab`: the collaboration server only (`graphrt collab`), `-collab` suffix, plus `collab`.
+        flavor: [agent, gateway, collab]
     permissions:
       contents: read
       packages: write
@@ -327,12 +328,13 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/graphrt
           flavor: |
             latest=false
-            suffix=${{ matrix.flavor == 'gateway' && '-gateway' || '' }},onlatest=true
+            suffix=${{ matrix.flavor != 'agent' && format('-{0}', matrix.flavor) || '' }},onlatest=true
           tags: |
             type=semver,pattern={{version}},value=${{ needs.tag.outputs.tag }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.tag.outputs.tag }}
             type=raw,value=latest,enable=${{ matrix.flavor == 'agent' }}
             type=raw,value=gateway,suffix=,enable=${{ matrix.flavor == 'gateway' }}
+            type=raw,value=collab,suffix=,enable=${{ matrix.flavor == 'collab' }}
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -343,6 +345,7 @@ jobs:
           build-args: |
             GRAPHRT_TELEMETRY_URL=${{ env.GRAPHRT_TELEMETRY_URL }}
             EXTRA_FEATURES=${{ matrix.flavor == 'gateway' && env.GATEWAY_FEATURES || env.EXTRA_FEATURES }}
+            FEATURES=${{ matrix.flavor == 'collab' && 'collab' || '' }}
           cache-from: type=gha,scope=${{ matrix.flavor }}
           cache-to: type=gha,mode=max,scope=${{ matrix.flavor }}
 

@@ -111,6 +111,8 @@ jobs:
       - run: >-
           cargo check -p graphrt-cli --no-default-features --features
           llm,http,code,python,mcp,doc,files,image,rag,connectors,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,cors,run-follow,conversations,web-chat,devices,approvals,web-push,web-monitor,skills,learning,channel-telegram,channel-whatsapp,context,console
+      # The `:<version>-collab` image: the collaboration server alone.
+      - run: cargo check -p graphrt-cli --no-default-features --features collab
 
   minimal-core:
     name: core without default features
@@ -147,6 +149,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # `gateway --dev` starts agents of the same binary: the smallest gateway build must serve them.
       - run: cargo test -p graphrt-cli --no-default-features --features gateway --test gateway_dev
+      # The collaboration image is built with `collab` alone: it must serve, sign in and speak TLS.
+      - run: cargo test -p graphrt-cli --no-default-features --features collab --test collab_cli
 
   wasm:
     name: core on wasm32

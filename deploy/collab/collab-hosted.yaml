@@ -1,0 +1,23 @@
+# Graphrt's hosted service: many teams, open sign up through the identity provider.
+mode: hosted
+public_url: https://collab.graphrt.dev     # owner decision: the hosted domain
+listen: 0.0.0.0:8790
+data_dir: /data
+behind_proxy: true
+auth:
+  oidc:
+    issuer: https://accounts.google.com     # owner decision: the hosted identity provider
+    client_id: <client-id>
+    client_secret_env: GRAPHRT_COLLAB_OIDC_SECRET
+  access_token_minutes: 10
+  refresh_token_days: 30
+limits:                                      # per plan (owner decision)
+  workspaces_per_account: 3
+  projects_per_workspace: 50
+  members_per_workspace: 20
+  max_doc_bytes: 8388608
+  sessions_per_account: 10
+  requests_per_minute: 300
+plugins:
+  dirs: [/plugins]
+  trusted: [collab-webhooks]

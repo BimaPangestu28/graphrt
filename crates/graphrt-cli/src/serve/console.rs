@@ -283,7 +283,7 @@ fn compile(
 /// ID token signatures, checked with the provider's JWKS (RS256, ES256),
 /// fetched again when a token names a key the set does not have yet.
 #[derive(Debug)]
-struct JwksVerifiers;
+pub(crate) struct JwksVerifiers;
 
 impl VerifierSource for JwksVerifiers {
     fn connect<'a>(&'a self, jwks_uri: &'a str) -> BoxFuture<'a, Result<Arc<dyn IdTokenVerifier>, String>> {

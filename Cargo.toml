@@ -22,6 +22,7 @@ members = [
     "crates/graphrt-eval",
     "crates/graphrt-ui",
     "crates/graphrt-channel",
+    "crates/graphrt-collab",
     "crates/graphrt-provider-api",
     "crates/graphrt-provider-aws",
     "crates/graphrt-gateway",
@@ -73,6 +74,7 @@ graphrt-provider-aws = { path = "crates/graphrt-provider-aws", version = "0.6.2"
 graphrt-gcp = { path = "crates/graphrt-gcp", version = "0.6.2", default-features = false }
 graphrt-provider-azure = { path = "crates/graphrt-provider-azure", version = "0.6.2", default-features = false }
 graphrt-console = { path = "crates/graphrt-console", version = "0.6.2", default-features = false }
+graphrt-collab = { path = "crates/graphrt-collab", version = "0.6.2", default-features = false }
 
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 thiserror = "2"

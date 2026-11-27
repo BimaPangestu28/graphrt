@@ -67,6 +67,52 @@ pub struct PluginManifest {
     /// Events the plugin can start workflows on (see [`TriggerDescriptor`]).
     #[serde(default)]
     pub triggers: Vec<TriggerDescriptor>,
+    /// Server side services a collaboration server may run for a workspace
+    /// (see [`ServiceDescriptor`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<ServiceDescriptor>,
+}
+
+/// Events a collaboration server delivers to services, as written in `events`.
+pub const SERVICE_EVENTS: &[&str] = &["project.changed", "version.saved", "member.joined"];
+
+/// A server side service of a plugin, run by a collaboration server for the
+/// workspaces that enable it (`graphrt collab`, see docs/collab.md).
+///
+/// It declares no new protocol: `tool` names one of the plugin's own tools,
+/// which the server calls with `{"event": ..., "workspace": ..., ...}` for each
+/// event it follows, and with `{"call": <input>, ...}` when a member calls the
+/// service. The plugin runs sandboxed like any other (its process gets no host
+/// environment beyond `permissions.env`), and only the workspace secrets an
+/// owner grants reach it, as the tool call's secrets (trusted plugins only).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceDescriptor {
+    /// `[a-z0-9_-]{1,64}`, unique in the manifest. Shown as `<plugin>/<id>`.
+    pub id: String,
+    /// Short label, e.g. "Send changes to a webhook".
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    /// The tool of this plugin that serves the service; declared in `tools`.
+    pub tool: String,
+    /// The lowest workspace role that may call it: `viewer`, `operator` or `owner`.
+    /// Default `operator`. Events reach it whatever the role of who caused them.
+    #[serde(default = "default_service_access")]
+    pub access: String,
+    /// Events it follows, from [`SERVICE_EVENTS`].
+    #[serde(default)]
+    pub events: Vec<String>,
+    /// Workspace secrets it asks for; an owner grants each one when enabling it.
+    #[serde(default)]
+    pub secrets: Vec<String>,
+    /// Whether it receives the project content with events and calls.
+    #[serde(default)]
+    pub reads_projects: bool,
+}
+
+fn default_service_access() -> String {
+    "operator".into()
 }
 
 /// An event source a host can start workflows on, such as "a meeting was recorded".
@@ -166,6 +212,8 @@ struct RawManifest {
     allow_unprefixed_kinds: bool,
     #[serde(default)]
     triggers: Vec<TriggerDescriptor>,
+    #[serde(default)]
+    services: Vec<ServiceDescriptor>,
 }
 
 impl TryFrom<RawManifest> for PluginManifest {
@@ -251,6 +299,7 @@ impl TryFrom<RawManifest> for PluginManifest {
             #[cfg(feature = "mcp-presets")]
             templates: raw.templates,
             triggers: raw.triggers,
+            services: raw.services,
         })
     }
 }
@@ -525,6 +574,7 @@ impl PluginManifest {
         }?;
         #[cfg(feature = "mcp-presets")]
         let _templates_checked: () = crate::mcp_preset::validate_templates(&self.templates).or_else(bad)?;
+        self.validate_services().or_else(bad)?;
         for path in self.checksums.keys() {
             if !is_inside(path) {
                 return bad(format!("checksum path `{path}` must be relative and inside the plugin directory"));
@@ -544,6 +594,62 @@ impl PluginManifest {
                 if !pinned {
                     return bad(format!("`checksums` must include the entrypoint `{entry}`"));
                 }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_services(&self) -> Result<(), String> {
+        let mut ids = std::collections::HashSet::new();
+        for service in &self.services {
+            if !is_valid_name(&service.id) {
+                return Err(format!(
+                    "service id `{}` must be 1-64 characters of lowercase letters, digits, `-` or `_`",
+                    service.id.escape_debug()
+                ));
+            }
+            if !ids.insert(service.id.as_str()) {
+                return Err(format!("duplicate service id `{}`", service.id));
+            }
+            if service.title.trim().is_empty() || service.title.chars().any(char::is_control) {
+                return Err(format!(
+                    "service `{}`: `title` must be non-blank text without control characters",
+                    service.id
+                ));
+            }
+            if !self.tools.iter().any(|tool| tool.name == service.tool) {
+                return Err(format!(
+                    "service `{}`: `tool` `{}` must be one of the plugin's tools",
+                    service.id,
+                    service.tool.escape_debug()
+                ));
+            }
+            if !matches!(service.access.as_str(), "viewer" | "operator" | "owner") {
+                return Err(format!("service `{}`: `access` must be viewer, operator or owner", service.id));
+            }
+            if let Some(event) = service.events.iter().find(|e| !SERVICE_EVENTS.contains(&e.as_str())) {
+                return Err(format!(
+                    "service `{}`: unknown event `{}` (expected one of {})",
+                    service.id,
+                    event.escape_debug(),
+                    SERVICE_EVENTS.join(", ")
+                ));
+            }
+            let env_name = |n: &str| {
+                !n.is_empty()
+                    && n.len() <= 128
+                    && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && !n.starts_with(|c: char| c.is_ascii_digit())
+            };
+            if let Some(name) = service.secrets.iter().find(|n| !env_name(n)) {
+                return Err(format!(
+                    "service `{}`: secret `{}` is not a variable name",
+                    service.id,
+                    name.escape_debug()
+                ));
+            }
+            if !service.secrets.is_empty() && !self.permissions.secrets {
+                return Err(format!("service `{}` asks for secrets: set `permissions.secrets: true`", service.id));
             }
         }
         Ok(())
@@ -698,6 +804,40 @@ mod tests {
         assert_eq!(m.runtime.name(), "process");
         assert_eq!(m.limits.max_concurrency, DEFAULT_MAX_CONCURRENCY);
         assert_eq!(m.nodes[0].kind, "acme.x");
+    }
+
+    fn with_service(service: serde_json::Value, secrets: bool) -> Result<PluginManifest, PluginError> {
+        let mut v = base();
+        v["tools"] = serde_json::json!([{"name": "hook", "description": "d", "parameters": {"type": "object"}}]);
+        v["permissions"] = serde_json::json!({"secrets": secrets});
+        v["services"] = serde_json::json!([service]);
+        PluginManifest::from_json(&v.to_string())
+    }
+
+    #[test]
+    fn parses_and_checks_services() {
+        let m = with_service(
+            serde_json::json!({"id": "webhook", "title": "Webhook", "tool": "hook", "events": ["project.changed"], "secrets": ["WEBHOOK_URL"]}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(m.services[0].access, "operator");
+        assert!(!m.services[0].reads_projects);
+        // The tool must exist, events must be known, secrets need the permission.
+        assert!(with_service(serde_json::json!({"id": "w", "title": "W", "tool": "nope"}), false).is_err());
+        assert!(
+            with_service(serde_json::json!({"id": "w", "title": "W", "tool": "hook", "events": ["x"]}), false).is_err()
+        );
+        assert!(
+            with_service(serde_json::json!({"id": "w", "title": "W", "tool": "hook", "secrets": ["K"]}), false)
+                .is_err()
+        );
+        assert!(
+            with_service(serde_json::json!({"id": "w", "title": "W", "tool": "hook", "access": "admin"}), false)
+                .is_err()
+        );
+        assert!(with_service(serde_json::json!({"id": "W!", "title": "W", "tool": "hook"}), false).is_err());
+        assert!(with_service(serde_json::json!({"id": "w", "title": "W", "tool": "hook", "extra": 1}), false).is_err());
     }
 
     fn with_trigger(trigger: serde_json::Value) -> Result<PluginManifest, PluginError> {

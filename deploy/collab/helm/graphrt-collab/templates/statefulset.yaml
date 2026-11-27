@@ -1,0 +1,55 @@
+# One replica: a project's live room lives in one process (see docs/design/collab.md).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "graphrt-collab.name" . }}
+  labels: {{- include "graphrt-collab.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ include "graphrt-collab.name" . }}
+  selector:
+    matchLabels: {{- include "graphrt-collab.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "graphrt-collab.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ toYaml .Values.config | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: collab
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["collab", "serve", "--config", "/etc/graphrt/collab.yaml"]
+          envFrom:
+            - secretRef: { name: {{ .Values.existingSecret }} }
+          ports:
+            - { name: http, containerPort: 8790 }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/graphrt, readOnly: true }
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: config
+          configMap: { name: {{ include "graphrt-collab.name" . }} }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass }}
+        {{- end }}
+        resources: { requests: { storage: {{ .Values.persistence.size }} } }

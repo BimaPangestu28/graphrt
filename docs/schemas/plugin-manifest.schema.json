@@ -101,6 +101,12 @@
       "type": "array",
       "items": { "$ref": "#/$defs/trigger" },
       "default": []
+    },
+    "services": {
+      "description": "Server side services a collaboration server (`graphrt collab`) runs for the workspaces that enable them. Each names one of the plugin's tools.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/service" },
+      "default": []
     }
   },
   "allOf": [
@@ -339,6 +345,22 @@
         "watch": { "description": "A node kind declared in `nodes`.", "type": "string" },
         "config": { "description": "Configuration passed to every `watch` call.", "type": "object", "default": {} },
         "outputs": { "description": "Fields of each event.", "type": "array", "items": { "$ref": "#/$defs/output" }, "default": [] }
+      }
+    },
+    "service": {
+      "description": "A server side service. The server calls `tool` with each event it follows and with each call of a member. Unknown keys are errors.",
+      "type": "object",
+      "required": ["id", "title", "tool"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "description": "Unique in the manifest; shown as `<name>/<id>`.", "type": "string", "pattern": "^[a-z0-9_-]{1,64}$" },
+        "title": { "description": "Short label. Not blank.", "type": "string", "pattern": "\\S" },
+        "description": { "type": "string", "default": "" },
+        "tool": { "description": "A tool declared in `tools`.", "type": "string" },
+        "access": { "description": "The lowest workspace role that may call it.", "enum": ["viewer", "operator", "owner"], "default": "operator" },
+        "events": { "description": "Events it follows.", "type": "array", "items": { "enum": ["project.changed", "version.saved", "member.joined"] }, "default": [] },
+        "secrets": { "description": "Workspace secrets it asks for (needs `permissions.secrets`).", "type": "array", "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$" }, "default": [] },
+        "reads_projects": { "description": "Whether project content goes along with events and calls.", "type": "boolean", "default": false }
       }
     },
     "tool": {
