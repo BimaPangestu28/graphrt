@@ -10,6 +10,7 @@
 //! | `graphrt-gateway.lease.lock` | `flock` serialising read-modify-write of the lease (held for one write + fsync + rename: milliseconds) |
 //! | `graphrt-gateway.active.lock` | `flock` held by the active for its whole tenure: the kernel drops it when the process dies, and a dropped [`FileLease`] unlocks it |
 //! | `graphrt-gateway.promote` | manual promotion request (`graphrt gateway ha promote`) |
+//! | `graphrt-gateway.beat` | the active's liveness [`Mark`]: its token, a counter and a checksum (24 bytes), overwritten in place every beat ([`MarkFile`]) |
 //!
 //! A passive ([`Candidate`]) takes the lease when:
 //!
@@ -18,11 +19,19 @@
 //!    is gone, `kill -9` included): at once;
 //! 3. a promotion was requested for it: at once (the holder is killed first
 //!    when it provably still runs on this host);
-//! 4. `takeover: auto` and the holder's heartbeat counter did not move for
-//!    `stale_after` on the *passive's* monotonic clock (frozen or partitioned
-//!    holder; audit D1): same as 3. This also holds when the lease lock
+//! 4. `takeover: auto` and neither the holder's heartbeat counter nor its
+//!    liveness mark moved for `stale_after` on the *passive's* monotonic
+//!    clock (frozen or partitioned holder; audit D1): same as 3. This also holds when the lease lock
 //!    stays taken for `stale_after` (the holder froze inside a heartbeat):
 //!    the passive then decides without the lock.
+//!
+//! Liveness and the durable lease are written apart. Replacing the lease
+//! (create, write, fsync, rename) can stall for seconds on a busy volume or
+//! under a virus scanner, and a holder stuck there is alive: it must not look
+//! frozen. The mark is a fixed size record overwritten in place, with no new
+//! file, no rename and no fsync on the way, so it keeps moving while a lease
+//! write is stuck. A holder that writes no mark (an older version) is judged
+//! by its counter alone, as before.
 //!
 //! Every take bumps the token. The active ([`Holder`]) increments the
 //! heartbeat counter every beat and steps down as soon as the lease names
@@ -42,6 +51,8 @@ pub const MUTEX_FILE: &str = "graphrt-gateway.lease.lock";
 pub const TENURE_FILE: &str = "graphrt-gateway.active.lock";
 /// Manual promotion request file name.
 pub const PROMOTE_FILE: &str = "graphrt-gateway.promote";
+/// Liveness mark file name.
+pub const BEAT_FILE: &str = "graphrt-gateway.beat";
 
 /// Who a gateway process is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +87,8 @@ pub struct LeaseRecord {
 }
 
 impl LeaseRecord {
-    fn is_held_by(&self, identity: &Identity, token: u64) -> bool {
+    /// Whether this lease names `identity` with `token`.
+    pub fn is_held_by(&self, identity: &Identity, token: u64) -> bool {
         self.token == token && self.node == identity.node && self.pid == identity.pid
     }
 }
@@ -114,6 +126,87 @@ pub trait LeaseMedium {
     fn take_promote_request(&mut self, node: &str) -> io::Result<bool>;
     /// Wall clock, informational.
     fn unix_ms(&self) -> u64;
+    /// Reads the holder's liveness mark: `None` when there is none, or when
+    /// the read caught the record mid write.
+    ///
+    /// # Errors
+    /// I/O errors.
+    fn read_mark(&mut self) -> io::Result<Option<Mark>> {
+        Ok(None)
+    }
+}
+
+/// The active's liveness mark: its token and a counter that moves every beat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mark {
+    /// Token of the holder that wrote it.
+    pub token: u64,
+    /// Counter of its beats.
+    pub seq: u64,
+}
+
+/// Bytes of an encoded [`Mark`] (token, counter, checksum, little endian):
+/// always the same, so a write in place replaces the whole record.
+const MARK_LEN: usize = 24;
+
+impl Mark {
+    /// A checksum, so that a read that caught a write halfway is not taken for a mark.
+    fn check(self) -> u64 {
+        (self.token.rotate_left(17) ^ self.seq).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    }
+
+    fn encode(self) -> [u8; MARK_LEN] {
+        let mut bytes = [0; MARK_LEN];
+        for (word, value) in bytes.as_chunks_mut::<8>().0.iter_mut().zip([self.token, self.seq, self.check()]) {
+            *word = value.to_le_bytes();
+        }
+        bytes
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        let ([token, seq, check], []) = bytes.as_chunks::<8>() else { return None };
+        let mark = Self { token: u64::from_le_bytes(*token), seq: u64::from_le_bytes(*seq) };
+        (mark.check() == u64::from_le_bytes(*check)).then_some(mark)
+    }
+}
+
+/// The active's side of the liveness mark: one file, kept open and
+/// overwritten in place.
+#[derive(Debug)]
+pub struct MarkFile {
+    file: File,
+}
+
+impl MarkFile {
+    /// Opens (creating, emptying) the mark file in `dir`.
+    ///
+    /// # Errors
+    /// When it cannot be created.
+    pub fn open(dir: &Path) -> io::Result<Self> {
+        let file = std::fs::OpenOptions::new().create(true).truncate(true).write(true).open(dir.join(BEAT_FILE))?;
+        Ok(Self { file })
+    }
+
+    /// Overwrites the mark. No fsync, so it never waits on the volume: a
+    /// passive on this host (the only one that may kill the holder) reads it
+    /// from the page cache at once, one elsewhere when its view of the volume
+    /// catches up. The lease counter stays the durable signal for those.
+    ///
+    /// # Errors
+    /// I/O errors.
+    pub fn write(&mut self, mark: Mark) -> io::Result<()> {
+        use std::io::{Seek as _, SeekFrom};
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.write_all(&mark.encode())
+    }
+}
+
+fn read_mark(path: &Path) -> io::Result<Option<Mark>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Mark::decode(&bytes)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// When a passive may take over a live-looking holder.
@@ -185,6 +278,8 @@ pub struct Promotion {
 struct Observation {
     token: u64,
     seq: u64,
+    /// The counter of the holder's mark, when it has one of this token.
+    mark: Option<u64>,
     since_ms: u64,
 }
 
@@ -231,6 +326,11 @@ impl Candidate {
         }
         let busy_since = *self.lock_busy_since.get_or_insert(now_ms);
         if now_ms.saturating_sub(busy_since) < self.settings.stale_after_ms {
+            // Keep watching the mark meanwhile: one that moved just before a
+            // freeze must not restart the count when the decision comes.
+            if let Ok(Some(record)) = medium.read() {
+                self.stale_for(medium, &record, now_ms, Some(busy_since));
+            }
             return Ok(None);
         }
         let promotion = self.take_if_due(medium, now_ms, Some(busy_since))?;
@@ -240,14 +340,29 @@ impl Candidate {
         Ok(promotion)
     }
 
-    /// How long the holder's heartbeat has not moved. `quiet_since` is when
-    /// the lease lock became busy: no heartbeat can be written without it.
-    fn stale_for(&mut self, record: &LeaseRecord, now_ms: u64, quiet_since: Option<u64>) -> u64 {
+    /// How long neither the holder's heartbeat counter nor its mark moved.
+    /// `quiet_since` is when the lease lock became busy: no heartbeat counter
+    /// can be written without it.
+    fn stale_for(
+        &mut self,
+        medium: &mut dyn LeaseMedium,
+        record: &LeaseRecord,
+        now_ms: u64,
+        quiet_since: Option<u64>,
+    ) -> u64 {
+        // A mark that cannot be read, or of another token, says nothing.
+        let mark = medium.read_mark().ok().flatten().filter(|mark| mark.token == record.token).map(|mark| mark.seq);
         match self.observed {
-            Some(seen) if seen.token == record.token && seen.seq == record.seq => now_ms.saturating_sub(seen.since_ms),
+            // No mark (vanished, or caught mid write) is no news: the clock runs on.
+            Some(seen)
+                if seen.token == record.token && seen.seq == record.seq && (mark.is_none() || seen.mark == mark) =>
+            {
+                now_ms.saturating_sub(seen.since_ms)
+            }
             _ => {
-                let since_ms = quiet_since.unwrap_or(now_ms);
-                self.observed = Some(Observation { token: record.token, seq: record.seq, since_ms });
+                // The mark moves while the lock is busy: the holder is alive, only its lease write is slow.
+                let since_ms = if mark.is_some() { now_ms } else { quiet_since.unwrap_or(now_ms) };
+                self.observed = Some(Observation { token: record.token, seq: record.seq, mark, since_ms });
                 now_ms.saturating_sub(since_ms)
             }
         }
@@ -267,7 +382,7 @@ impl Candidate {
         if record.tenure && medium.try_tenure()? {
             return Ok(Some((TakeReason::HolderExited, true)));
         }
-        let stale_for = self.stale_for(record, now_ms, quiet_since);
+        let stale_for = self.stale_for(medium, record, now_ms, quiet_since);
         if medium.take_promote_request(&self.identity.node)? {
             return Ok(Some((TakeReason::Requested, false)));
         }
@@ -364,6 +479,11 @@ impl Holder {
     /// Whether the tenure lock is held.
     pub fn has_tenure(&self) -> bool {
         self.tenure
+    }
+
+    /// Who holds the lease.
+    pub fn identity(&self) -> &Identity {
+        &self.identity
     }
 
     fn record(&self, medium: &dyn LeaseMedium, released: bool) -> LeaseRecord {
@@ -609,6 +729,10 @@ impl LeaseMedium for FileLease {
     fn unix_ms(&self) -> u64 {
         graphrt_core::store::now_ms()
     }
+
+    fn read_mark(&mut self) -> io::Result<Option<Mark>> {
+        read_mark(&self.dir.join(BEAT_FILE))
+    }
 }
 
 /// Unlocks instead of leaving it to the close of the lock files. A `flock`
@@ -715,6 +839,95 @@ mod tests {
         FileLease::request_promotion(&dir, Some("c")).unwrap();
         let requested = manual.step(&mut medium, 60_001).unwrap().unwrap();
         assert_eq!((requested.token, requested.reason), (3, TakeReason::Requested));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_mark_reads_back_and_a_torn_one_is_no_mark() {
+        let mark = Mark { token: 7, seq: 123_456 };
+        let bytes = mark.encode();
+        assert_eq!(bytes.len(), MARK_LEN);
+        assert_eq!(Mark::decode(&bytes), Some(mark));
+        assert_eq!(Mark::decode(&bytes[..16]), None, "cut short");
+        assert_eq!(Mark::decode(&[bytes.as_slice(), &[0]].concat()), None, "too long");
+        let mut torn = bytes;
+        torn[..8].copy_from_slice(&Mark { token: 8, seq: 1 }.encode()[..8]);
+        assert_eq!(Mark::decode(&torn), None, "half of a newer mark");
+        assert_eq!(Mark::decode(b""), None);
+    }
+
+    /// The failure seen on Windows CI: the active's lease write stalled for
+    /// seconds inside the lease lock while the process was alive and serving,
+    /// and a passive took it for frozen and killed it.
+    #[test]
+    fn a_holder_stuck_in_a_lease_write_keeps_the_lease_while_its_mark_moves() {
+        let dir = temp_dir("slow-write");
+        let mut holder_medium = FileLease::open(&dir, "a").unwrap();
+        let promotion =
+            Candidate::new(identity("a", 1), settings(Takeover::Auto)).step(&mut holder_medium, 0).unwrap().unwrap();
+        let mut holder = Holder::new(identity("a", 1), &promotion);
+        assert_eq!(holder.beat(&mut holder_medium), Beat::Confirmed);
+        let mut mark = MarkFile::open(&dir).unwrap();
+        mark.write(Mark { token: promotion.token, seq: 1 }).unwrap();
+
+        let mut medium = FileLease::open(&dir, "b").unwrap();
+        let mut auto = Candidate::new(identity("b", 2), settings(Takeover::Auto));
+        assert_eq!(auto.step(&mut medium, 0).unwrap(), None);
+        // The lease write is stuck: the lock stays taken and the counter does not move.
+        assert!(holder_medium.try_lock_mutex().unwrap());
+        for (seq, now) in (2..).zip((500..=20_000).step_by(500)) {
+            mark.write(Mark { token: promotion.token, seq }).unwrap();
+            assert_eq!(auto.step(&mut medium, now).unwrap(), None, "a live holder at {now} ms");
+        }
+        // Then the holder freezes for real: the mark stops too, and it is displaced.
+        assert_eq!(auto.step(&mut medium, 24_999).unwrap(), None);
+        let stolen = auto.step(&mut medium, 25_000).unwrap().unwrap();
+        assert_eq!((stolen.token, stolen.reason, stolen.kill), (2, TakeReason::Stale, Some(1)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A holder that moved its mark and then froze inside the lease lock is
+    /// displaced `stale_after` after the freeze, not twice that.
+    #[test]
+    fn a_mark_moved_just_before_a_freeze_in_the_lock_does_not_delay_the_takeover() {
+        let dir = temp_dir("mark-then-freeze");
+        let mut holder_medium = FileLease::open(&dir, "a").unwrap();
+        let promotion =
+            Candidate::new(identity("a", 1), settings(Takeover::Auto)).step(&mut holder_medium, 0).unwrap().unwrap();
+        let mut mark = MarkFile::open(&dir).unwrap();
+        mark.write(Mark { token: promotion.token, seq: 1 }).unwrap();
+        let mut medium = FileLease::open(&dir, "b").unwrap();
+        let mut auto = Candidate::new(identity("b", 2), settings(Takeover::Auto));
+        assert_eq!(auto.step(&mut medium, 0).unwrap(), None);
+        // The last mark, then the freeze inside a heartbeat.
+        mark.write(Mark { token: promotion.token, seq: 2 }).unwrap();
+        assert!(holder_medium.try_lock_mutex().unwrap());
+        for now in (500..5_500).step_by(500) {
+            assert_eq!(auto.step(&mut medium, now).unwrap(), None);
+        }
+        let stolen = auto.step(&mut medium, 5_500).unwrap().unwrap();
+        assert_eq!((stolen.reason, stolen.kill), (TakeReason::Stale, Some(1)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_mark_of_another_token_or_a_torn_one_does_not_keep_a_holder() {
+        let dir = temp_dir("old-mark");
+        let mut holder_medium = FileLease::open(&dir, "a").unwrap();
+        let promotion =
+            Candidate::new(identity("a", 1), settings(Takeover::Auto)).step(&mut holder_medium, 0).unwrap().unwrap();
+        let mut mark = MarkFile::open(&dir).unwrap();
+        let mut medium = FileLease::open(&dir, "b").unwrap();
+        let mut auto = Candidate::new(identity("b", 2), settings(Takeover::Auto));
+        assert_eq!(auto.step(&mut medium, 0).unwrap(), None);
+        // A resumed old holder writes marks of its old token: they say nothing of this one.
+        for (seq, now) in (1..).zip((1_000..=4_000).step_by(1_000)) {
+            mark.write(Mark { token: promotion.token + 5, seq }).unwrap();
+            assert_eq!(auto.step(&mut medium, now).unwrap(), None);
+        }
+        std::fs::write(dir.join(BEAT_FILE), b"garbage").unwrap();
+        let stolen = auto.step(&mut medium, 5_000).unwrap().unwrap();
+        assert_eq!(stolen.reason, TakeReason::Stale);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

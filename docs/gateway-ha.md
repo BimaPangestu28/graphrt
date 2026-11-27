@@ -16,7 +16,8 @@ over; the old active can never write again.
 | --- | --- | --- |
 | `kill -9` / crash of the active | the kernel drops its `active.lock`; the passive sees it at its next poll and takes over | 73 ms to the first `200 /healthz` with the default `poll_ms: 200`; 41–53 ms with `poll_ms: 50` |
 | A run executing at that moment | its agent notices the lost stream, waits its reattach window, preempts and holds the orphan; the new active polls it, re-dispatches, the run finishes | finished 3.1 s after the kill (an 800 ms tool call, re-executed once) |
-| Active frozen (`SIGSTOP`, VM pause, I/O stall) | after `stale_after_ms` without a heartbeat the passive steals the lease, `SIGKILL`s the frozen holder when it runs on the same host. Also when it froze *inside* a heartbeat, with `lease.lock` taken: after `stale_after_ms` of a busy lock the passive decides without it | `stale_after_ms` + 25–50 ms (1.53 s with 1500 ms); frozen inside the lock 1.56–1.89 s (13 runs at load average 59–126) |
+| Active frozen (`SIGSTOP`, VM pause) | after `stale_after_ms` without a heartbeat the passive steals the lease, `SIGKILL`s the frozen holder when it runs on the same host. Also when it froze *inside* a heartbeat, with `lease.lock` taken: after `stale_after_ms` of a busy lock the passive decides without it | `stale_after_ms` + 25–50 ms (1.53 s with 1500 ms); frozen inside the lock 1.56–1.89 s (13 runs at load average 59–126) |
+| Active alive, lease write slow (busy volume, virus scanner) | its liveness mark keeps moving, so it stays active and keeps serving; once the write returns it is logged (`lease write took N ms`) | – |
 | Planned restart / upgrade (`SIGTERM`) | the active stops listening, releases the lease; the passive takes over at its next poll | 26–78 ms |
 | Active loses the volume | it cannot confirm its heartbeat, stops writing after `stale_after_ms − heartbeat_ms`, exits after `stale_after_ms`; the passive steals | ≈ `stale_after_ms` |
 | Old active comes back | its first write or heartbeat sees a newer token, it exits; the supervisor restarts it as a passive | – |
@@ -40,12 +41,22 @@ Files in `ha.lease_dir` (default: the store's directory):
 | `graphrt-gateway.lease.lock` | `flock` around each read-modify-write of the lease (write + fsync + rename: 4 ms p50, 8 ms max on macOS APFS, where fsync is `F_FULLFSYNC`) |
 | `graphrt-gateway.active.lock` | `flock` held by the active for its whole tenure |
 | `graphrt-gateway.promote` | a manual promotion request |
+| `graphrt-gateway.beat` | the active's liveness mark: its token, a counter and a checksum (24 bytes), overwritten in place every heartbeat (no new file, no rename, no fsync) |
 
 - **Liveness** is the lease. A passive takes it when there is none, when it
   was released, when the holder's `active.lock` is free (the holder process is
   gone), on `graphrt gateway ha promote`, or with `takeover: auto` when the
   heartbeat counter did not move for `stale_after_ms` *measured on the
-  passive's own monotonic clock* (wall clocks are never compared). A
+  passive's own monotonic clock* (wall clocks are never compared), nor the
+  liveness mark in `graphrt-gateway.beat`. The two are written apart: the
+  counter goes through write, fsync and rename, which can stall for seconds
+  on a busy volume or under a virus scanner while the process is alive, and
+  the mark does not, so a slow lease write no longer makes a live active look
+  frozen. Up to 0.6.2 it did, and a passive on the same host killed it. The
+  mark is not fsynced: a passive on the active's host (the only one that may
+  kill it) sees it at once, and for the others the counter stays the durable
+  signal. An active of an older version writes no mark and is judged by its
+  counter alone. A
   `lease.lock` still taken after `stale_after_ms` means its holder froze
   inside a read-modify-write and keeps the lock until it dies: the passive
   then applies the same rules without the lock (the lease file is replaced
