@@ -13,7 +13,7 @@ use graphrt_core::store::{RunFilter, RunRecord, RunStatus, StoreError, now_ms};
 use indexmap::IndexMap;
 use serde::Deserialize;
 
-use super::delivery::{Delivery, EventScope, Reply};
+use super::delivery::{Delivery, Reply};
 use super::errors::{error_response, store_error};
 use super::execute::{execute, launch, to_values, traceparent};
 use super::state::{AppState, ServedWorkflow};
@@ -48,9 +48,14 @@ pub struct ResumeRequest {
 pub(super) async fn resume_run(
     State(state): State<Arc<AppState>>,
     UrlPath(run_id): UrlPath<String>,
+    user: Option<axum::Extension<super::auth::AuthenticatedUser>>,
     headers: axum::http::HeaderMap,
     JsonBody(body): JsonBody<ResumeRequest>,
 ) -> Response {
+    // A snapshot is the whole state of a run: only the API key may supply one.
+    if user.is_some() && body.snapshot.is_some() {
+        return error_response(StatusCode::BAD_REQUEST, "`snapshot` cannot be sent with a user token");
+    }
     if let Some(refused) = refuse_resume(&state, &run_id, body.snapshot.as_ref()) {
         return refused;
     }
@@ -66,8 +71,8 @@ pub(super) async fn resume_run(
             return refused;
         }
     };
-    // Resume takes the API key only, so its caller gets every event.
-    let reply = Reply { delivery, scope: EventScope::Full };
+    // A user who resumes their own run (`--user-resume`) sees what they saw of its start.
+    let reply = Reply { delivery, scope: state.event_scope(user.is_some()) };
     execute(&state, &workflow.engine, record, input, reply, traceparent(&headers)).await
 }
 

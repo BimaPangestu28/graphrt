@@ -12,6 +12,8 @@ pub mod bundle_cmd;
 #[cfg(all(feature = "skills", feature = "bundle"))]
 pub mod bundle_skills;
 pub mod catalog;
+#[cfg(feature = "conversations")]
+pub mod conversations;
 #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
 pub mod deploy_cmd;
 pub mod diagnostics;

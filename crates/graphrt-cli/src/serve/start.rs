@@ -52,6 +52,10 @@ pub struct RunRequest {
     #[cfg(feature = "files")]
     #[serde(default)]
     pub files: Vec<String>,
+    /// A conversation the server keeps (`--conversations`): its turns become
+    /// `sys.history`, and this run's message and answer are added when it succeeds.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
 }
 
 /// Limits on the caller context of a run request.
@@ -99,7 +103,7 @@ pub(super) async fn start_run(
     UrlPath(name): UrlPath<String>,
     user: Option<axum::Extension<AuthenticatedUser>>,
     headers: axum::http::HeaderMap,
-    JsonBody(body): JsonBody<RunRequest>,
+    JsonBody(mut body): JsonBody<RunRequest>,
 ) -> Response {
     let Some(workflow) = state.workflows.get(&name) else {
         return error_response(StatusCode::NOT_FOUND, &format!("unknown workflow `{name}`"));
@@ -113,13 +117,17 @@ pub(super) async fn start_run(
     if let Err(message) = body.apply_context(&mut record) {
         return error_response(StatusCode::BAD_REQUEST, &message);
     }
-    let mut inputs = to_values(body.inputs);
+    let verified_user = user.map(|axum::Extension(AuthenticatedUser(subject))| subject);
+    if let Err(refused) = join_conversation(&state, &name, &run_id, verified_user.as_deref(), &mut body).await {
+        return refused;
+    }
+    record.session_id.clone_from(&body.session_id);
+    let mut inputs = to_values(std::mem::take(&mut body.inputs));
     if let Some(bindings) = state.header_inputs.get(&name)
         && let Err(refused) = bindings.apply_to_inputs(&headers, &mut inputs)
     {
         return refused.into_response();
     }
-    let verified_user = user.map(|axum::Extension(AuthenticatedUser(subject))| subject);
     #[cfg(feature = "files")]
     let attached = match attached_files(&state, &body.files, verified_user.as_deref()).await {
         Ok(attached) => attached,
@@ -148,6 +156,33 @@ pub(super) async fn start_run(
     input.conversation = to_values(body.conversation);
     input.env = workflow.env.clone();
     execute(&state, &workflow.engine, record, input, reply, traceparent(&headers)).await
+}
+
+/// Join the run to the conversation its request names (`conversation_id`).
+///
+/// @throws Response - See [`crate::conversations::join_run`]; `400` when this
+///   build keeps no conversations.
+#[allow(clippy::result_large_err)]
+async fn join_conversation(
+    state: &AppState,
+    workflow: &str,
+    run_id: &str,
+    user: Option<&str>,
+    body: &mut RunRequest,
+) -> Result<(), Response> {
+    #[cfg(feature = "conversations")]
+    return crate::conversations::join_run(state, workflow, run_id, user, body).await;
+    #[cfg(not(feature = "conversations"))]
+    {
+        let _ = (state, workflow, run_id, user);
+        match body.conversation_id {
+            Some(_) => Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "`conversation_id` is not supported by this build (cargo feature `conversations`)",
+            )),
+            None => Ok(()),
+        }
+    }
 }
 
 /// The file values of the workspace files a run request attached, checked

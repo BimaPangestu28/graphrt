@@ -9,7 +9,7 @@ use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 
-use super::auth::{authorize_start, require_auth};
+use super::auth::{authorize_run, authorize_start, require_auth};
 use super::events::run_events;
 use super::resume::resume_run;
 use super::runs::{abort_run, delete_run, get_run, list_runs};
@@ -64,10 +64,7 @@ fn key_only_routes(max_upload_bytes: usize) -> Router<Arc<AppState>> {
     let api = Router::new()
         .route("/v1/workflows", get(list_workflows))
         .route("/v1/runs", get(list_runs))
-        .route("/v1/runs/{run_id}", get(get_run).merge(delete(delete_run)))
-        .route("/v1/runs/{run_id}/events", get(run_events))
-        .route("/v1/runs/{run_id}/abort", post(abort_run))
-        .route("/v1/runs/{run_id}/resume", post(resume_run))
+        .route("/v1/runs/{run_id}", delete(delete_run))
         .route("/v1/nodes", get(list_nodes))
         .route("/v1/validate", post(validate_workflow));
     #[cfg(feature = "rag")]
@@ -136,9 +133,22 @@ fn self_authenticating_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     let start = Router::new()
         .route("/v1/workflows/{name}/runs", post(start_run))
         .layer(middleware::from_fn_with_state(Arc::clone(state), authorize_start));
+    // One run: the API key, or a verified user for a run they started.
+    let run = Router::new()
+        .route("/v1/runs/{run_id}", get(get_run))
+        .route("/v1/runs/{run_id}/events", get(run_events))
+        .route("/v1/runs/{run_id}/abort", post(abort_run))
+        .route("/v1/runs/{run_id}/resume", post(resume_run))
+        .layer(middleware::from_fn_with_state(Arc::clone(state), authorize_run));
     // Webhook deliveries authenticate themselves (signature, else the bearer key).
     let hooks = Router::new().route("/v1/hooks/{hook}", post(crate::webhooks::receive));
-    let routes = start.merge(hooks);
+    let routes = start.merge(run).merge(hooks);
+    // Conversations authorize themselves: the key, or a verified user for their own.
+    #[cfg(feature = "conversations")]
+    let routes = if state.conversations.is_some() { routes.merge(crate::conversations::routes()) } else { routes };
+    // The chat page, its config and guest sessions are public.
+    #[cfg(feature = "web-chat")]
+    let routes = if state.chat.is_some() { routes.merge(super::chat::routes()) } else { routes };
     // Feedback authorizes itself: a verified end-user JWT for the user's own runs, else the key.
     #[cfg(feature = "scores")]
     let routes = routes.route("/v1/runs/{run_id}/feedback", post(crate::scores::post_feedback));

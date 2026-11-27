@@ -44,6 +44,48 @@ pub(crate) fn result(mut body: serde_json::Value) -> serde_json::Value {
     body
 }
 
+/// Fields of a run record (`GET /v1/runs/{id}`) a user receives of their own run.
+const RECORD_FIELDS: &[&str] = &[
+    "run_id",
+    "workflow",
+    "status",
+    "created_ms",
+    "updated_ms",
+    "outputs",
+    "answer",
+    "usage",
+    "error_type",
+    "event_count",
+    "active",
+    "pause_reasons",
+    "resume_inputs",
+    "session_id",
+];
+
+/// Names of the stored events a user receives.
+const RUN_EVENTS: &[&str] = &["run_started", "run_succeeded", "run_failed", "run_aborted", "run_paused"];
+
+/// A run record restricted to what a user receives: no error text, inputs,
+/// trace ids or metadata.
+pub(crate) fn record(mut body: serde_json::Value) -> serde_json::Value {
+    if let Some(object) = body.as_object_mut() {
+        object.retain(|key, _| RECORD_FIELDS.contains(&key.as_str()));
+    }
+    body
+}
+
+/// A stored event as a user receives it (its name and JSON), or `None` for an
+/// internal event. Stored events never hold the pause snapshot.
+pub(crate) fn stored_event(event: &graphrt_core::store::StoredEvent) -> Option<(&'static str, serde_json::Value)> {
+    let kind = graphrt_core::store::stored_event_type(event)?;
+    let name = RUN_EVENTS.iter().copied().find(|name| *name == kind)?;
+    let mut json: serde_json::Value = serde_json::from_str(event.get()).ok()?;
+    if let Some(object) = json.as_object_mut() {
+        object.remove("error");
+    }
+    Some((name, json))
+}
+
 /// SSE name of the run-level events a user receives.
 fn run_event_name(event: &Event) -> Option<&'static str> {
     Some(match event {
@@ -82,6 +124,22 @@ mod tests {
         };
         assert!(run_event_name(&failed).is_some());
         assert!(sse_event(&failed).is_some());
+    }
+
+    #[test]
+    fn stored_events_and_records_are_cut_down_the_same_way() {
+        let raw = |text: &str| serde_json::value::RawValue::from_string(text.to_owned()).unwrap();
+        let failed = raw(r#"{"type":"run_failed","error":"http 500 from http://internal:9000","error_type":"http"}"#);
+        let (name, json) = stored_event(&failed).unwrap();
+        assert_eq!(name, "run_failed");
+        assert_eq!(json, json!({ "type": "run_failed", "error_type": "http" }));
+        assert!(stored_event(&raw(r#"{"type":"node_succeeded","outputs":{"secret":"x"}}"#)).is_none());
+        assert!(stored_event(&raw("[]")).is_none());
+        let kept = record(json!({
+            "run_id": "r", "status": "failed", "error": "internal detail", "error_type": "http",
+            "inputs": {"q": "x"}, "metadata": {"tenant": "acme"}, "trace_id": "t", "user_id": "u",
+        }));
+        assert_eq!(kept, json!({ "run_id": "r", "status": "failed", "error_type": "http" }));
     }
 
     #[test]

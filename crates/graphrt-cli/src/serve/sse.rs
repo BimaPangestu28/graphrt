@@ -104,9 +104,30 @@ fn response_sse(chunk: &ResponseChunk, index: u64, k: usize) -> SseEvent {
     SseEvent::default().event("response").id(chunk_id(index, k)).data(data.to_string())
 }
 
+/// The SSE message for a stored event (at `index`) within `scope`; `None` when
+/// the caller does not see it.
+pub(super) fn scoped_stored_sse(event: &StoredEvent, index: u64, scope: EventScope) -> Option<SseEvent> {
+    match scope {
+        EventScope::Full => Some(stored_sse(event, index)),
+        #[cfg(feature = "jwt")]
+        EventScope::Answer => {
+            let (name, json) = crate::user_auth::events::stored_event(event)?;
+            Some(SseEvent::default().event(name).id(event_id(index)).data(json.to_string()))
+        }
+    }
+}
+
+/// A `response` SSE message that carries the whole stored answer of a run that
+/// is not executing, sent just before its last event (at `index`).
+#[cfg(feature = "run-follow")]
+pub(super) fn stored_answer_sse(answer: &str, index: u64) -> SseEvent {
+    let data = serde_json::json!({ "node_id": "", "text": answer, "is_final": true });
+    SseEvent::default().event("response").id(chunk_id(index, 0)).data(data.to_string())
+}
+
 /// The SSE message for `event` (at `index`) within `scope`; `None` when the
 /// caller does not see it.
-fn scoped_sse_event(event: &Event, index: u64, scope: EventScope) -> Option<SseEvent> {
+pub(super) fn scoped_sse_event(event: &Event, index: u64, scope: EventScope) -> Option<SseEvent> {
     match scope {
         EventScope::Full => Some(sse_event(event, index)),
         #[cfg(feature = "jwt")]

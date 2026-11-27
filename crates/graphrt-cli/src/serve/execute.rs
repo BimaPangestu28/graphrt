@@ -123,15 +123,31 @@ pub(super) fn launch(
         start_node: state.store_inputs.then(|| root_start_node(engine.graph())).flatten(),
         #[cfg(feature = "online-eval")]
         online: state.online.as_ref().filter(|online| online.covers(&record.workflow)).cloned(),
+        #[cfg(feature = "conversations")]
+        conversation: state
+            .conversations
+            .as_ref()
+            .zip(record.session_id.as_deref())
+            .map(|(conversations, session)| crate::conversations::Turn::of(conversations, session)),
     };
     let assembler = new_assembler(engine, &input);
+    #[cfg(feature = "run-follow")]
+    let seed = live::AssemblerSeed {
+        graph: Arc::clone(engine.graph()),
+        sys: input.sys.clone(),
+        resumed: input.resume.as_ref().map(|resume| resume.snapshot.root.clone()),
+    };
     let run = engine.run(input);
     // Tracked before the driver starts: a run that ends at once must not be
     // untracked first and then left in the active set for good.
     let tracked = Arc::clone(state);
     let weak = Arc::downgrade(state);
     let tracking = live::Tracking {
-        on_start: Box::new(move |active| tracked.track(Arc::clone(active))),
+        on_start: Box::new(move |active| {
+            #[cfg(feature = "run-follow")]
+            active.set_assembler_seed(seed);
+            tracked.track(Arc::clone(active));
+        }),
         on_finish: Box::new(move |id| {
             if let Some(state) = weak.upgrade() {
                 state.untrack(id);

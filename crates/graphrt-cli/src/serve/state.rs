@@ -80,6 +80,15 @@ pub struct AppState {
     /// End-user JWT verification of run starts (`--verify-jwt`).
     #[cfg(feature = "jwt")]
     pub(super) user_auth: Option<Arc<crate::user_auth::UserAuth>>,
+    /// Whether users may resume their own paused runs (`--user-resume`).
+    #[cfg(feature = "jwt")]
+    pub(super) user_resume: bool,
+    /// Conversations kept by the server (`--conversations`).
+    #[cfg(feature = "conversations")]
+    pub(super) conversations: Option<Arc<crate::conversations::Conversations>>,
+    /// The chat page and widget (`--chat`).
+    #[cfg(feature = "web-chat")]
+    pub(super) chat: Option<Arc<super::chat::Chat>>,
     /// Host services of the served workflows, for judge workflows of online evaluators.
     #[cfg(feature = "online-eval")]
     pub(super) services: Option<Arc<graphrt_core::Services>>,
@@ -132,6 +141,12 @@ impl AppState {
             store_inputs: false,
             #[cfg(feature = "jwt")]
             user_auth: None,
+            #[cfg(feature = "jwt")]
+            user_resume: false,
+            #[cfg(feature = "conversations")]
+            conversations: None,
+            #[cfg(feature = "web-chat")]
+            chat: None,
             #[cfg(feature = "online-eval")]
             services: None,
             #[cfg(feature = "online-eval")]
@@ -303,6 +318,59 @@ impl AppState {
         self.online.as_ref()
     }
 
+    /// Let users resume their own paused runs (`--user-resume`).
+    #[cfg(feature = "jwt")]
+    pub fn with_user_resume(mut self, user_resume: bool) -> Self {
+        self.user_resume = user_resume;
+        self
+    }
+
+    /// Keep conversations on the server (`--conversations`).
+    #[cfg(feature = "conversations")]
+    pub fn with_conversations(mut self, conversations: Option<crate::conversations::Conversations>) -> Self {
+        self.conversations = conversations.map(Arc::new);
+        self
+    }
+
+    /// The conversations kept by the server, when it keeps any.
+    #[cfg(feature = "conversations")]
+    pub fn conversations(&self) -> Option<&Arc<crate::conversations::Conversations>> {
+        self.conversations.as_ref()
+    }
+
+    /// Whether `/v1/conversations` is served.
+    #[cfg(feature = "web-chat")]
+    pub(super) fn keeps_conversations(&self) -> bool {
+        #[cfg(feature = "conversations")]
+        return self.conversations.is_some();
+        #[cfg(not(feature = "conversations"))]
+        false
+    }
+
+    /// Serve the chat page and widget (`--chat`).
+    #[cfg(feature = "web-chat")]
+    pub fn with_chat(mut self, chat: Option<super::chat::Chat>) -> Self {
+        self.chat = chat.map(Arc::new);
+        self
+    }
+
+    /// The declared start inputs of the served workflow `name` (`None` when it is not served).
+    #[cfg(any(feature = "web-chat", feature = "conversations"))]
+    pub(crate) fn start_inputs(&self, name: &str) -> Option<Vec<String>> {
+        let workflow = self.workflows.get(name)?;
+        let declared = workflow
+            .engine
+            .graph()
+            .workflow()
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "start")
+            .find_map(|node| node.config.get("variables").and_then(serde_json::Value::as_array).cloned())
+            .unwrap_or_default();
+        Some(declared.iter().filter_map(|variable| variable["variable"].as_str().map(str::to_owned)).collect())
+    }
+
     /// Let a verified end-user JWT authorize run starts (`--verify-jwt`).
     #[cfg(feature = "jwt")]
     pub fn with_user_auth(mut self, user_auth: Option<crate::user_auth::UserAuth>) -> Self {
@@ -361,7 +429,8 @@ impl AppState {
     /// verified user token and `--user-events` is `answer` (the default).
     pub(super) fn event_scope(&self, user_token: bool) -> EventScope {
         #[cfg(feature = "jwt")]
-        if user_token && self.user_auth.as_ref().is_some_and(|auth| auth.events() == crate::args::UserEvents::Answer) {
+        // A chat guest is a user without `--verify-jwt`: the least trusted caller sees the answer only.
+        if user_token && self.user_auth.as_ref().is_none_or(|auth| auth.events() == crate::args::UserEvents::Answer) {
             return EventScope::Answer;
         }
         let _ = user_token;

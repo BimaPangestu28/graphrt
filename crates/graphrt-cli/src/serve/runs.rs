@@ -71,9 +71,21 @@ pub(super) async fn list_runs(State(state): State<Arc<AppState>>, RawQuery(raw):
     }
 }
 
-pub(super) async fn get_run(State(state): State<Arc<AppState>>, UrlPath(run_id): UrlPath<String>) -> Response {
+pub(super) async fn get_run(
+    State(state): State<Arc<AppState>>,
+    UrlPath(run_id): UrlPath<String>,
+    user: Option<axum::Extension<super::auth::AuthenticatedUser>>,
+) -> Response {
     match state.store.get(&run_id).await {
-        Ok(Some(record)) => Json(record_json(&state, &record)).into_response(),
+        Ok(Some(record)) => {
+            let json = record_json(&state, &record);
+            // A user reads their own run as they saw it run (`--user-events`).
+            match state.event_scope(user.is_some()) {
+                super::delivery::EventScope::Full => Json(json).into_response(),
+                #[cfg(feature = "jwt")]
+                super::delivery::EventScope::Answer => Json(crate::user_auth::events::record(json)).into_response(),
+            }
+        }
         Ok(None) => error_response(StatusCode::NOT_FOUND, "unknown run"),
         Err(e) => store_error(&e),
     }

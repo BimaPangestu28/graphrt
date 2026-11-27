@@ -1,6 +1,7 @@
 //! Bearer authentication of the API: the API key (`--api-key-env`) and, with
-//! `--verify-jwt`, end-user tokens on the routes end users may call (run
-//! starts and feedback).
+//! `--verify-jwt` or chat guests, user tokens on the routes users may call:
+//! run starts, feedback, their own runs ([`authorize_run`]) and their own
+//! conversations.
 
 use std::sync::Arc;
 
@@ -26,19 +27,79 @@ pub(crate) enum Caller {
     User(String),
 }
 
+impl Caller {
+    /// The verified end user, if the caller is one.
+    #[cfg(feature = "conversations")]
+    pub(crate) fn user(&self) -> Option<&str> {
+        match self {
+            Caller::ApiKey => None,
+            #[cfg(feature = "jwt")]
+            Caller::User(subject) => Some(subject),
+        }
+    }
+}
+
+/// Whether the user `subject` of a verified token owns `record`'s run: the run
+/// was started with that user's token. A `user_id` an API-key caller put in the
+/// request body is only a label, so it never makes a run that user's.
+#[cfg(feature = "jwt")]
+pub(crate) fn owns_run(record: &graphrt_core::store::RunRecord, subject: &str) -> bool {
+    record.user_verified && record.user_id.as_deref() == Some(subject)
+}
+
+/// The bearer token of `Authorization`, or `""`.
+fn bearer(headers: &HeaderMap) -> &str {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or_default()
+}
+
 impl AppState {
     /// Authenticate a request that accepts an end-user token in place of the
-    /// API key: a verified token (`--verify-jwt`), else the API key. A present
-    /// but invalid token is refused even next to a valid key, so a bad token
-    /// never reaches a tool through the key's broader access.
+    /// API key: a verified token (`--verify-jwt`, or a chat guest's), else the
+    /// API key. A present but invalid token is refused even next to a valid
+    /// key, so a bad token never reaches a tool through the key's broader
+    /// access. The request counts against the user's rate limit: use it for
+    /// requests that start or continue a run.
     ///
     /// @throws Response - `401` for an invalid token or key, `429` over the user's rate limit.
     pub(crate) async fn authenticate_user_or_key(&self, headers: &HeaderMap) -> Result<Caller, Response> {
-        #[cfg(feature = "jwt")]
-        if let Some(user_auth) = &self.user_auth
-            && let crate::user_auth::Admission::User(user) = user_auth.admit(headers).await?
+        self.authenticate(headers, true).await
+    }
+
+    /// [`Self::authenticate_user_or_key`] without counting the request against
+    /// the user's rate limit, which is a limit on runs: for requests that only
+    /// read or stop what the user already started.
+    ///
+    /// @throws Response - `401` for an invalid token or key.
+    pub(crate) async fn authenticate_user_or_key_unmetered(&self, headers: &HeaderMap) -> Result<Caller, Response> {
+        self.authenticate(headers, false).await
+    }
+
+    async fn authenticate(&self, headers: &HeaderMap, metered: bool) -> Result<Caller, Response> {
+        #[cfg(not(feature = "jwt"))]
+        let _ = metered;
+        #[cfg(feature = "web-chat")]
+        if let Some(guests) = self.chat.as_deref().and_then(super::chat::Chat::guests)
+            && super::guests::is_guest_token(bearer(headers))
         {
-            return Ok(Caller::User(user.subject));
+            return guests.admit(bearer(headers), metered).map(Caller::User);
+        }
+        #[cfg(feature = "jwt")]
+        if let Some(user_auth) = &self.user_auth {
+            let admission =
+                if metered { user_auth.admit(headers).await? } else { user_auth.admit_unmetered(headers).await? };
+            if let crate::user_auth::Admission::User(user) = admission {
+                #[cfg(feature = "web-chat")]
+                if super::guests::is_guest_subject(&user.subject) {
+                    // Guest subjects are minted here only: a token of the identity
+                    // provider must not name one.
+                    return Err(error_response(StatusCode::UNAUTHORIZED, "the token's `sub` is reserved"));
+                }
+                return Ok(Caller::User(user.subject));
+            }
         }
         match self.refuse_without_api_key(headers) {
             Some(refused) => Err(refused),
@@ -49,22 +110,44 @@ impl AppState {
     /// `401` unless `headers` carry the API key (`None` too when no key is set).
     pub(crate) fn refuse_without_api_key(&self, headers: &HeaderMap) -> Option<Response> {
         let expected = self.api_key.as_ref()?;
-        let provided = headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .unwrap_or_default();
+        let provided = bearer(headers);
         if constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
             return None;
         }
         Some(error_response(StatusCode::UNAUTHORIZED, "missing or invalid bearer token"))
     }
 
+    /// `404` for a workflow that is not served, `403` for one `user` (a verified
+    /// end user, `None` for the API key) may not start.
+    #[cfg(feature = "conversations")]
+    pub(crate) fn refuse_workflow_to(&self, name: &str, user: Option<&str>) -> Option<Response> {
+        if !self.workflows.contains_key(name) {
+            return Some(error_response(StatusCode::NOT_FOUND, &format!("unknown workflow `{name}`")));
+        }
+        #[cfg(feature = "jwt")]
+        if let Some(subject) = user {
+            return self.refuse_user_token(name, subject);
+        }
+        #[cfg(not(feature = "jwt"))]
+        let _ = user;
+        None
+    }
+
     /// `403` unless workflow `name` is built for end users. A user token starts
     /// only workflows that take the verified token as an input (`--verify-jwt
     /// INPUT` mapped by `--input-header`), so internal workflows stay key-only.
     #[cfg(feature = "jwt")]
-    fn refuse_user_token(&self, name: &str) -> Option<Response> {
+    fn refuse_user_token(&self, name: &str, subject: &str) -> Option<Response> {
+        #[cfg(feature = "web-chat")]
+        if super::guests::is_guest_subject(subject) {
+            // A guest starts only the workflows the chat page offers.
+            let offered = self.chat.as_deref().is_some_and(|chat| chat.offers(name));
+            return (!offered).then(|| {
+                error_response(StatusCode::FORBIDDEN, &format!("workflow `{name}` is not offered to chat guests"))
+            });
+        }
+        #[cfg(not(feature = "web-chat"))]
+        let _ = subject;
         let input = self.user_auth.as_ref()?.input();
         if self.takes_header_input(name, input) {
             return None;
@@ -91,12 +174,55 @@ pub(super) async fn authorize_start(
         Ok(Caller::ApiKey) => next.run(request).await,
         #[cfg(feature = "jwt")]
         Ok(Caller::User(subject)) => {
-            if let Some(refused) = state.refuse_user_token(&name) {
+            if let Some(refused) = state.refuse_user_token(&name, &subject) {
                 return refused;
             }
             let mut request = request;
             request.extensions_mut().insert(AuthenticatedUser(subject));
             next.run(request).await
+        }
+    }
+}
+
+/// Authorize the routes of one run (`GET /v1/runs/{run_id}`, its events, abort
+/// and resume): the API key for any run, or a verified user for a run they
+/// started. A run of someone else answers `404`, as an unknown one does, so ids
+/// cannot be probed. Reading and stopping are not counted against the user's
+/// rate limit; a resume, which executes the run again, is.
+pub(super) async fn authorize_run(
+    State(state): State<Arc<AppState>>,
+    UrlPath(run_id): UrlPath<String>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let resumes = request.uri().path().ends_with("/resume");
+    let caller = if resumes {
+        state.authenticate_user_or_key(request.headers()).await
+    } else {
+        state.authenticate_user_or_key_unmetered(request.headers()).await
+    };
+    #[cfg(not(feature = "jwt"))]
+    let _ = run_id;
+    match caller {
+        Err(refused) => refused,
+        Ok(Caller::ApiKey) => next.run(request).await,
+        #[cfg(feature = "jwt")]
+        Ok(Caller::User(subject)) => {
+            if resumes && !state.user_resume {
+                return error_response(
+                    StatusCode::FORBIDDEN,
+                    "users cannot resume runs on this server (the operator has not set --user-resume)",
+                );
+            }
+            match state.store.get(&run_id).await {
+                Ok(Some(record)) if owns_run(&record, &subject) => {
+                    let mut request = request;
+                    request.extensions_mut().insert(AuthenticatedUser(subject));
+                    next.run(request).await
+                }
+                Ok(_) => error_response(StatusCode::NOT_FOUND, "unknown run"),
+                Err(e) => super::errors::store_error(&e),
+            }
         }
     }
 }

@@ -42,12 +42,18 @@
 
 mod auth;
 mod build;
+#[cfg(feature = "web-chat")]
+mod chat;
+#[cfg(feature = "cors")]
+mod cors;
 mod delivery;
 mod errors;
 mod events;
 mod execute;
 #[cfg(feature = "files")]
 mod files_api;
+#[cfg(feature = "web-chat")]
+mod guests;
 mod local_host;
 mod resume;
 mod router;
@@ -63,6 +69,10 @@ pub use auth::AuthenticatedUser;
 pub(crate) use auth::Caller;
 pub(crate) use auth::constant_time_eq;
 pub use build::{build_state, discover};
+#[cfg(feature = "web-chat")]
+pub use chat::{Chat, ChatContext, ChatWorkflow};
+#[cfg(feature = "cors")]
+pub use cors::Cors;
 #[cfg(feature = "trust-gateway")]
 pub(crate) use delivery::{EventScope, StreamGuard};
 pub(crate) use errors::error_response;
@@ -72,6 +82,8 @@ pub use events::EventsQuery;
 #[cfg(feature = "trust-gateway")]
 pub(crate) use execute::to_values;
 pub(crate) use execute::{Launch, launch_detached, traceparent};
+#[cfg(feature = "web-chat")]
+pub use guests::{GuestTokenError, Guests, IssuedToken};
 pub use resume::{ResumeRequest, resume_drained_runs};
 pub use router::{DEFAULT_MAX_UPLOAD_BYTES, router, router_with_uploads};
 pub use runs::ListQuery;
