@@ -11,8 +11,10 @@ Verified on real accounts on 2026-11-27 with graphrt 0.6.2 and
 conversations surviving three redeploys, and a `/readyz` probe every second
 during each redeploy (0 failed probes out of about 350 on each cloud).
 
-For Fly.io, `graphrt deploy --target fly --direct` does all of this in one
-command ([deploy-direct.md](deploy-direct.md)). Use the gateway with its
+`graphrt deploy --target cloud-run --direct` does the Cloud Run part in one
+command ([deploy-cloud-run.md](deploy-cloud-run.md)), and
+`graphrt deploy --target fly --direct` the same on Fly.io
+([deploy-direct.md](deploy-direct.md)). Use the gateway with its
 [Cloud Run](gateway-cloud-run.md) or [ECS](gateway-aws.md) provider instead
 when you need durable runs across many deployments, webhooks or cron.
 

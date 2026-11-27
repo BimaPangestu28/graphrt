@@ -26,7 +26,7 @@ case "$version_output" in
 esac
 
 # Release builds add the opt-in features in release.yml's EXTRA_FEATURES.
-default_features="eval online-eval skills learning deploy-fly"
+default_features="eval online-eval skills learning deploy-fly deploy-cloud-run"
 required_features=${SMOKE_REQUIRED_FEATURES-$default_features}
 features_output=$("$binary" version | tr -d '\r') || fail "\`version\` exited with $?"
 for feature in $required_features; do

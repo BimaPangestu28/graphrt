@@ -13,6 +13,12 @@
 //!   half (driver, Secret Manager) is the separate feature **`deploy-cloud-run`**,
 //!   so the gateway build links only the run-time provider.
 //!
+//! - **`direct-cloud-run`** ([`direct`]): `graphrt deploy --target cloud-run
+//!   --direct`, one agent served straight by Cloud Run with no gateway: the
+//!   agent file in a Cloud Storage bucket mounted by the revision, the published
+//!   image through an Artifact Registry remote repository, secrets in Secret
+//!   Manager, rollback by traffic tags, pause and removal.
+//!
 //! Every endpoint (metadata server, token endpoint, Admin API, Secret Manager)
 //! comes from the gateway operator's configuration, never from a deployment
 //! spec, so a tenant cannot point the gateway's credentials at another host.
@@ -21,6 +27,8 @@
 pub mod auth;
 #[cfg(feature = "provider-cloud-run")]
 pub mod cloud_run;
+#[cfg(feature = "direct-cloud-run")]
+pub mod direct;
 #[cfg(feature = "auth-gcp")]
 mod http_client;
 #[cfg(feature = "provider-cloud-run")]

@@ -22,7 +22,7 @@ deploy = []
 # with the agent bundle in `config.files` (or, above 1 MiB, uploaded onto the
 # store volume), health-checked promotion, rollback,
 # pause/resume and removal.
-direct = ["dep:sha2"]
+direct = ["dep:sha2", "graphrt-provider-api/direct"]
 # The stateful fake Machines API (`fake::FakeFly`) for tests of this crate and
 # of the CLI. Never in a binary.
 fake = ["graphrt-provider-api/conformance", "dep:sha2"]

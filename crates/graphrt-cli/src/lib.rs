@@ -20,12 +20,12 @@ pub mod channels;
 pub mod collab_cmd;
 #[cfg(feature = "conversations")]
 pub mod conversations;
-#[cfg(any(feature = "gateway", feature = "deploy-fly"))]
+#[cfg(any(feature = "gateway", feature = "deploy-fly", feature = "deploy-cloud-run"))]
 pub mod deploy_cmd;
 #[cfg(feature = "devices")]
 pub mod devices;
 pub mod diagnostics;
-#[cfg(feature = "deploy-fly")]
+#[cfg(any(feature = "deploy-fly", feature = "deploy-cloud-run"))]
 pub mod direct_cmd;
 #[cfg(feature = "serve")]
 pub mod drain;
@@ -183,6 +183,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "deploy-fly") {
         features.push("deploy-fly");
     }
+    if cfg!(feature = "deploy-cloud-run") {
+        features.push("deploy-cloud-run");
+    }
     if cfg!(feature = "mimalloc") {
         features.push("mimalloc");
     }
@@ -247,7 +250,7 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         Command::Gateway(args) => gateway_cmd::gateway(*args),
         #[cfg(feature = "collab")]
         Command::Collab(args) => collab_cmd::collab(args),
-        #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
+        #[cfg(any(feature = "gateway", feature = "deploy-fly", feature = "deploy-cloud-run"))]
         Command::Deploy(args) => deploy_cmd::deploy(*args),
         #[cfg(feature = "serve")]
         Command::Serve(args) => block_on_serve(serve_from(Some(args))),

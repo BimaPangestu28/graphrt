@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "connectors", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor", "channel-telegram", "channel-whatsapp", "channel-slack", "channel-teams", "context", "memory", "memory-graph"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "connectors", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "deploy-cloud-run", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor", "channel-telegram", "channel-whatsapp", "channel-slack", "channel-teams", "context", "memory", "memory-graph"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # `context_window` of the `llm` and `agent` nodes: a conversation that outgrows the
@@ -218,7 +218,10 @@ gateway-all = ["gateway-k8s", "gateway-cloud-run", "gateway-ecs", "gateway-lambd
 # pause|resume|remove`): an agent served by the Fly proxy at https://<app>.fly.dev,
 # no gateway. A small Machines REST client over the reqwest + rustls `http` already
 # links; see docs/deploy-direct.md.
-deploy-fly = ["dep:graphrt-provider-fly", "graphrt-provider-fly/direct", "dep:reqwest", "dep:rustls", "dep:getrandom"]
+deploy-fly = ["dep:graphrt-provider-fly", "graphrt-provider-fly/direct", "dep:graphrt-provider-api", "graphrt-provider-api/direct", "dep:reqwest", "dep:rustls", "dep:getrandom"]
+# `graphrt deploy --target cloud-run --direct`: one agent served straight by
+# Google Cloud Run, no gateway (docs/deploy-cloud-run.md).
+deploy-cloud-run = ["dep:graphrt-gcp", "graphrt-gcp/direct-cloud-run", "dep:graphrt-provider-api", "graphrt-provider-api/direct", "dep:reqwest", "dep:rustls", "dep:getrandom"]
 # Opt-in anonymous usage telemetry of the CLI binary (`graphrt telemetry`). Off
 # by default and inert unless an endpoint is configured; see docs/telemetry.md.
 telemetry = ["http", "dep:getrandom"]
@@ -249,6 +252,7 @@ graphrt-ui = { workspace = true, optional = true }
 graphrt-gateway = { workspace = true, optional = true }
 graphrt-provider-api = { workspace = true, optional = true }
 graphrt-provider-fly = { workspace = true, optional = true }
+graphrt-gcp = { workspace = true, optional = true }
 graphrt-console = { workspace = true, optional = true }
 graphrt-collab = { workspace = true, optional = true }
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
@@ -275,6 +279,8 @@ http-body = { version = "1", optional = true }
 [dev-dependencies]
 # The fake Fly Machines API for the `graphrt deploy --direct` contract tests.
 graphrt-provider-fly = { workspace = true, features = ["fake"] }
+# The fake Google APIs for the `graphrt deploy --target cloud-run --direct` contract tests.
+graphrt-gcp = { workspace = true, features = ["fake"] }
 # The abstract store conformance suite runs against the memory and directory stores.
 graphrt-core = { workspace = true, features = ["yaml", "jinja", "tokio", "store-conformance"] }
 # Signs the test plugin catalogs with throwaway keys (tests/plugin_catalog.rs).

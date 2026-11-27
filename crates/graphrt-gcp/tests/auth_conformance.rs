@@ -143,3 +143,68 @@ async fn c08_key_file_round_trip() {
     assert_eq!(key.project_id(), Some(support::PROJECT));
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+/// A person's Google sign in: the refresh token is exchanged at the token
+/// endpoint, the access token cached, and an ID token refused with the reason.
+#[tokio::test]
+async fn user_credentials_refresh_and_cache_access_tokens() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU32;
+
+    use graphrt_gcp::auth::{CredentialKind, UserCredentials};
+    use graphrt_provider_api::conformance::{FakeHandler, FakeServer, RecordedRequest};
+
+    let calls = Arc::new(AtomicU32::new(0));
+    let counter = calls.clone();
+    let handler: FakeHandler = Arc::new(move |request: &RecordedRequest| {
+        let form = request.body_text();
+        if !form.contains("grant_type=refresh_token") || !form.contains("refresh_token=1%2F%2Frefresh") {
+            return FakeResponse::json(
+                400,
+                &serde_json::json!({"error": "invalid_grant", "error_description": "Bad Request"}),
+            );
+        }
+        let number = counter.fetch_add(1, Ordering::SeqCst) + 1;
+        FakeResponse::json(200, &serde_json::json!({"access_token": format!("ya29.user-{number}"), "expires_in": 3599}))
+    });
+    let server = FakeServer::start(handler).await.unwrap();
+    let file = serde_json::json!({
+        "type": "authorized_user", "client_id": "123-abc.apps.googleusercontent.com",
+        "client_secret": "client-secret-value", "refresh_token": "1//refresh", "account": "someone@example.com",
+    });
+    let auth = GcpAuthBuilder::from_credentials_json(&file.to_string())
+        .unwrap()
+        .token_endpoint(format!("{}/token", server.base_url()))
+        .build()
+        .unwrap();
+    assert_eq!(auth.kind(), CredentialKind::User);
+    assert!(auth.kind().bills_quota_to_caller());
+    assert_eq!(auth.principal(), "user someone@example.com");
+    let tokens = auth.access_tokens();
+    let first = tokens.token(false).await.unwrap();
+    assert_eq!(first.expose(), "ya29.user-1");
+    assert_eq!(tokens.token(false).await.unwrap(), first, "cached");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let error = auth.id_tokens("https://a.run.app").token(false).await.unwrap_err();
+    assert!(error.message.contains("service account"), "{error}");
+
+    let revoked = UserCredentials::new("c", "s", "1//other").with_token_uri(format!("{}/token", server.base_url()));
+    let error = GcpAuthBuilder::user(revoked).build().unwrap().access_tokens().token(false).await.unwrap_err();
+    assert!(error.message.contains("sign in again") && !error.message.contains("1//other"), "{error}");
+}
+
+#[tokio::test]
+async fn tokens_of_the_caller_are_used_as_given() {
+    use std::sync::Arc;
+
+    use graphrt_gcp::auth::CredentialKind;
+    use graphrt_provider_api::http::{SecretString, StaticToken, TokenSource};
+
+    let source: Arc<dyn TokenSource> = Arc::new(StaticToken(SecretString::new("ya29.from-the-app")));
+    let auth = GcpAuthBuilder::token_source(source, "Google sign in of the app").build().unwrap();
+    assert_eq!(auth.kind(), CredentialKind::External);
+    assert_eq!(auth.access_tokens().token(false).await.unwrap().expose(), "ya29.from-the-app");
+    assert!(format!("{auth:?}").contains("Google sign in of the app"));
+    let error = GcpAuthBuilder::from_credentials_json(r#"{"type":"external_account"}"#).unwrap_err();
+    assert!(error.message.contains("GOOGLE_OAUTH_ACCESS_TOKEN"), "{error}");
+}

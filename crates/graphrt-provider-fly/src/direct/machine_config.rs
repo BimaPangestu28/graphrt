@@ -122,17 +122,6 @@ pub fn app_name_for(deployment: &str) -> Result<String, DirectError> {
     Ok(slug)
 }
 
-/// Workflow name `graphrt serve` gives an agent file (its stem, sanitised).
-pub fn workflow_name_of(file_name: &str) -> String {
-    let stem = file_name.rsplit_once('.').map_or(file_name, |(stem, _)| stem);
-    let slug: String = stem
-        .chars()
-        .map(|character| if character.is_ascii_alphanumeric() || character == '_' { character } else { '-' })
-        .collect();
-    let slug = slug.trim_matches('-').to_owned();
-    if slug.is_empty() { "agent".to_owned() } else { slug }
-}
-
 /// Lowercase `[a-z0-9-]`, no leading/trailing/double dashes, at most `max_len` bytes.
 fn slugify(text: &str, max_len: usize) -> String {
     let mut slug = String::with_capacity(text.len().min(max_len));
@@ -181,7 +170,7 @@ pub(super) fn validate_request(request: &DeployRequest) -> Result<(), DirectErro
     if let Some(bad) = request.secrets.keys().find(|name| !is_env_name(name)) {
         return Err(DirectError::invalid(format!("secret name {bad:?} is not a valid environment variable name")));
     }
-    request.serve.validate()?;
+    request.serve.validate().map_err(DirectError::invalid)?;
     if request.drop_store && request.serve.needs_store() {
         return Err(DirectError::invalid(
             "--drop-store deletes the store this deploy needs: leave out --monitor, --devices, --push, \
@@ -455,7 +444,6 @@ mod tests {
         assert_eq!(app_name_for(&"a".repeat(100)).unwrap().len(), 63);
         assert_ne!(machine_name_for("v1.0"), machine_name_for("v1-0"));
         assert!(machine_name_for("V 1.0").starts_with("graphrt-v-1-0-"));
-        assert_eq!(workflow_name_of("Support Bot.GRT"), "Support-Bot");
     }
 
     #[test]

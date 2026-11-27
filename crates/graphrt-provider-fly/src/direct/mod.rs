@@ -51,9 +51,10 @@ use serde::Serialize;
 use crate::client::{ClientPolicy, MachinesClient, PUBLIC_API_BASE_URL};
 use crate::token::TokenOrigin;
 
+pub use graphrt_provider_api::direct::{AgentFile, ServiceMode, Step, StepEvent, StepStatus, workflow_name_of};
 pub use lifecycle::{DeployFailure, Progress, ServingVersion};
 pub use machine_config::{
-    AGENT_PORT, AGENTS_DIR, MAX_AGENT_FILE_BYTES, UPLOAD_PIECE_BYTES, WORKFLOW_DIR, app_name_for, workflow_name_of,
+    AGENT_PORT, AGENTS_DIR, MAX_AGENT_FILE_BYTES, UPLOAD_PIECE_BYTES, WORKFLOW_DIR, app_name_for,
 };
 pub use serve_options::{
     ChatAccess, ChatOptions, DirectChannel, STORE_PATH, STORE_VOLUME_GB, STORE_VOLUME_NAME, ServeOptions, ServeSummary,
@@ -65,74 +66,6 @@ pub use status::{DeploymentState, DeploymentStatus, MachineSummary, VersionSumma
 pub const API_KEY_SECRET: &str = "GRAPHRT_API_KEY";
 /// Standby versions kept for rollback; older ones are destroyed after a deploy.
 pub const DEFAULT_KEEP_VERSIONS: usize = 5;
-
-/// How the deployment's Machine runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ServiceMode {
-    /// One Machine always running (`autostop = off`, `min_machines_running = 1`).
-    AlwaysOn,
-    /// Fly proxy stops the Machine when idle and starts it on the next request.
-    ScaleToZero,
-}
-
-impl ServiceMode {
-    /// The name used on the command line and in metadata.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::AlwaysOn => "always-on",
-            Self::ScaleToZero => "scale-to-zero",
-        }
-    }
-
-    /// Parses [`ServiceMode::as_str`].
-    pub fn parse(text: &str) -> Option<Self> {
-        match text {
-            "always-on" => Some(Self::AlwaysOn),
-            "scale-to-zero" => Some(Self::ScaleToZero),
-            _ => None,
-        }
-    }
-}
-
-/// The agent shipped to the Machine.
-#[derive(Clone)]
-pub struct AgentFile {
-    /// File name under [`WORKFLOW_DIR`], e.g. `support.grt` or `support.yaml`;
-    /// `graphrt serve` names the workflow after its stem.
-    pub file_name: String,
-    /// File contents. Above [`MAX_AGENT_FILE_BYTES`] the agent is uploaded onto
-    /// the deployment's store volume instead of travelling in the Machine config.
-    pub contents: Vec<u8>,
-    /// Bytes the agent takes once unpacked: a bundle's files (knowledge stores
-    /// compress well), else the file's size. Sizes the Machine's memory.
-    pub unpacked_bytes: u64,
-}
-
-impl AgentFile {
-    /// An agent file whose unpacked size is its own size (see [`AgentFile::unpacked`]).
-    pub fn new(file_name: impl Into<String>, contents: Vec<u8>) -> Self {
-        let unpacked_bytes = u64::try_from(contents.len()).unwrap_or(u64::MAX);
-        Self { file_name: file_name.into(), contents, unpacked_bytes }
-    }
-
-    /// The same file, `bytes` once unpacked (never less than the file itself).
-    pub fn unpacked(mut self, bytes: u64) -> Self {
-        self.unpacked_bytes = bytes.max(self.unpacked_bytes);
-        self
-    }
-}
-
-impl std::fmt::Debug for AgentFile {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("AgentFile")
-            .field("file_name", &self.file_name)
-            .field("bytes", &self.contents.len())
-            .field("unpacked_bytes", &self.unpacked_bytes)
-            .finish()
-    }
-}
 
 /// One `graphrt deploy --direct` call.
 #[derive(Clone)]
@@ -209,37 +142,6 @@ impl std::fmt::Debug for DeployOutcome {
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .finish_non_exhaustive()
     }
-}
-
-/// The phases a deploy reports progress for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Step {
-    /// Input checks, the app and its public IPs.
-    Preparing,
-    /// Fly secrets and the API key.
-    Secrets,
-    /// Creating or updating the version's Machine and booting it.
-    Starting,
-    /// Waiting for `/readyz`, then promoting the version.
-    Checking,
-}
-
-/// State of a step in a progress event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StepStatus {
-    Running,
-    Done,
-    Failed,
-}
-
-/// One progress event.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct StepEvent {
-    pub step: Step,
-    pub status: StepStatus,
-    pub message: String,
 }
 
 /// Stable error codes of the direct deployer (the `code` of a JSON `error` line).
@@ -405,14 +307,6 @@ pub fn public_url(app_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn modes_round_trip() {
-        for mode in [ServiceMode::AlwaysOn, ServiceMode::ScaleToZero] {
-            assert_eq!(ServiceMode::parse(mode.as_str()), Some(mode));
-        }
-        assert_eq!(ServiceMode::parse("sometimes"), None);
-    }
 
     #[test]
     fn provider_errors_map_to_stable_codes() {
