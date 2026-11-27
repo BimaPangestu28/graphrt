@@ -85,9 +85,10 @@ impl LoopbackLogin {
         })
     }
 
-    /// Where to open the browser.
-    pub fn url(&self, api: &Api, device: &str) -> ClientResult<String> {
-        api.login_url(&self.redirect_uri, &self.state, &self.pkce, device)
+    /// Where to open the browser, to sign in with `provider` (an id of
+    /// [`SignIn::providers`](api::SignIn::providers), `None` for the server's first).
+    pub fn url(&self, api: &Api, device: &str, provider: Option<&str>) -> ClientResult<String> {
+        api.login_url(&self.redirect_uri, &self.state, &self.pkce, device, provider)
     }
 
     /// Wait for the browser to come back (at most `timeout`), then trade the code for tokens.

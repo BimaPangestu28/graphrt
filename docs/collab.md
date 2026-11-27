@@ -74,12 +74,13 @@ auth:
     client_id: 00000000-0000-0000-0000-000000000000
     client_secret_env: GRAPHRT_COLLAB_OIDC_SECRET
     groups_claim: groups
+  providers: []                         # or several providers, each a sign in button (below)
   roles:                                # the console's role rules
     owners: [it-admin@example.com]
     groups: { graphrt-builders: operator }
     allowed_domains: [example.com]
     default_role: viewer
-  invite_accounts: false                # invite codes make accounts (default: on without oidc)
+  invite_accounts: false                # invite codes make accounts (default: on without a provider)
   access_token_minutes: 10
   refresh_token_days: 30
   signing_key_env: GRAPHRT_COLLAB_SIGNING_KEY
@@ -112,6 +113,8 @@ Keys, from the environment (never in the config file):
 | `GRAPHRT_COLLAB_SIGNING_KEY` | signs access tokens (32 bytes, hex or base64) | a key generated in `data_dir/signing.key` |
 | `GRAPHRT_COLLAB_SECRETS_KEY` | encrypts workspace secrets (AES-256-GCM) | secrets cannot be set |
 | `oidc.client_secret_env` | the identity provider's client secret | a public client (PKCE only) |
+| `providers[].client_id_env` | a provider's client id | that provider is off (the server starts without it and says so) |
+| `providers[].client_secret_env` | a provider's client secret | the server does not start while the client id is set |
 
 `graphrt collab key` prints a new random key.
 
@@ -123,7 +126,45 @@ opens the browser, the person signs in at the provider, and the browser goes
 back to Desktop on a loopback address (`http://127.0.0.1:<port>/callback`, as
 native apps do). Desktop never sees the password.
 
-**With invite codes only.** Without `oidc` (or with `invite_accounts: true`),
+**With several providers.** `auth.providers` lists them, and Desktop shows
+one button each ("Sign in with Google", "Sign in with Microsoft"). All of
+them use the same redirect URI. An account is the provider's issuer plus the
+person's subject, so the same person at two providers has two accounts.
+
+```yaml
+auth:
+  providers:
+    - id: google                        # a to z, 0 to 9, -: what the app sends
+      name: Google                      # the button (default: from the issuer)
+      issuer: https://accounts.google.com
+      client_id_env: GRAPHRT_COLLAB_GOOGLE_CLIENT_ID
+      client_secret_env: GRAPHRT_COLLAB_GOOGLE_CLIENT_SECRET
+      auth_params: { prompt: select_account }
+    - id: microsoft
+      name: Microsoft
+      issuer: https://login.microsoftonline.com/common/v2.0   # work, school and personal accounts
+      client_id_env: GRAPHRT_COLLAB_MICROSOFT_CLIENT_ID
+      client_secret_env: GRAPHRT_COLLAB_MICROSOFT_CLIENT_SECRET
+      email_verified_claim: xms_edov    # only emails Microsoft vouches for
+```
+
+Each entry also takes `client_id` (instead of `client_id_env`), `scopes`
+(default `openid email profile`), `groups_claim` and `auth_params`, as `oidc`
+does. A provider whose `client_id_env` is empty is off until it is set, so a
+server can go live before every provider is registered. `GET /v1/info` lists
+the providers that are on, and `GET /v1/auth/login?provider=<id>` picks one
+(the first without it).
+
+Microsoft's `common`, `organizations` and `consumers` issuers are multi
+tenant: the server checks each ID token against the issuer of the tenant it
+names (`tid`). Entra ID does not say whether an email is verified, and a
+tenant admin can set any email on an account, so `email_verified_claim:
+xms_edov` keeps an email only when Microsoft says the domain owner verified
+it (add the optional claims `email` and `xms_edov` to the ID token in the app
+registration). Without a verified email the person still signs in, but
+invites sent to an email address and `allowed_domains` do not match them.
+
+**With invite codes only.** Without a provider (or with `invite_accounts: true`),
 an invite link alone makes an account with the name the person types. This
 fits small teams and guests. The first owner of a new server joins with:
 
@@ -197,8 +238,25 @@ system's trust store).
 
 ### Hosted service
 
-`deploy/collab/collab-hosted.yaml` is the config of a hosted server: `mode:
-hosted`, open sign up through Graphrt's identity provider, quotas per plan.
+`deploy/collab/collab-hosted.yaml` is the config of Graphrt's hosted server
+at `https://collab.graphrt.com`: `mode: hosted`, open sign up with Google or
+Microsoft, invite codes for people without either, and the free plan's
+quotas:
+
+| Limit | Free plan | Self hosted default |
+| --- | --- | --- |
+| `workspaces_per_account` | 2 | 5 |
+| `projects_per_workspace` | 10 | 200 |
+| `members_per_workspace` | 5 | 100 |
+| `max_doc_bytes` (one project) | 2 MiB | 8 MiB |
+| `max_message_bytes` | 512 KiB | 1 MiB |
+| `sessions_per_account` | 5 | 20 |
+| `messages_per_second` (per session) | 30 | 60 |
+| `requests_per_minute` | 120 | 300 |
+| `auto_versions` (per project) | 30 | 100 |
+
+They are config, so a plan change is a config change and a restart. A
+person over a quota gets an error that names the limit.
 
 ## Plugin services
 

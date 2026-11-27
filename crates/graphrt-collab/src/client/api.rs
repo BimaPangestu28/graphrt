@@ -25,8 +25,21 @@ pub struct SignIn {
     pub oidc: bool,
     #[serde(default)]
     pub provider: Option<String>,
+    /// The identity providers, each a sign in button (servers before 0.6.4 list none:
+    /// sign in without picking one).
+    #[serde(default)]
+    pub providers: Vec<SignInProvider>,
     /// With an invite code alone.
     pub invite_codes: bool,
+}
+
+/// An identity provider of a server.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct SignInProvider {
+    /// What [`Api::login_url`] takes to pick it.
+    pub id: String,
+    /// The name on the button, e.g. `Google`.
+    pub name: String,
 }
 
 /// Tokens of a sign in.
@@ -165,14 +178,25 @@ impl Api {
     /// Where to send the browser to sign in, for an app listening on `redirect_uri` (loopback).
     ///
     /// @throws ClientError::Address - When the address cannot be built.
-    pub fn login_url(&self, redirect_uri: &str, state: &str, pkce: &Pkce, device: &str) -> ClientResult<String> {
-        let params = [
+    /// `provider` is the id of one of [`SignIn::providers`], `None` for the server's first.
+    pub fn login_url(
+        &self,
+        redirect_uri: &str,
+        state: &str,
+        pkce: &Pkce,
+        device: &str,
+        provider: Option<&str>,
+    ) -> ClientResult<String> {
+        let mut params = vec![
             ("redirect_uri", redirect_uri),
             ("state", state),
             ("code_challenge", pkce.challenge.as_str()),
             ("code_challenge_method", "S256"),
             ("device", device),
         ];
+        if let Some(provider) = provider {
+            params.push(("provider", provider));
+        }
         reqwest::Url::parse_with_params(&format!("{}/v1/auth/login", self.base), params)
             .map(String::from)
             .map_err(|error| ClientError::Address(error.to_string()))

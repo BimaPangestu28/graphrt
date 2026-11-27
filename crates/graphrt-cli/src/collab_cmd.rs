@@ -99,19 +99,31 @@ fn open(path: &std::path::Path, listen: Option<std::net::SocketAddr>) -> Result<
             None => None,
         },
     };
-    let client_secret =
-        match config.auth.oidc.as_ref().and_then(|o| o.client_secret_env.clone()) {
-            Some(name) => Some(env_value(&name).ok_or_else(|| {
-                CliError::usage(format!("collab: the OIDC client secret variable ${name} is not set"))
-            })?),
-            None => None,
+    // A provider whose client id variable is empty is off; one with a client id
+    // needs the secret its config names.
+    let mut client_ids = std::collections::BTreeMap::new();
+    let mut client_secrets = std::collections::BTreeMap::new();
+    for provider in config.auth.all_providers() {
+        let client_id = match &provider.client_id_env {
+            Some(name) => env_value(name),
+            None => provider.client_id.clone(),
         };
+        let Some(client_id) = client_id else { continue };
+        if let Some(name) = &provider.client_secret_env {
+            let secret = env_value(name).ok_or_else(|| {
+                CliError::usage(format!("collab: the client secret variable ${name} of `{}` is not set", provider.id))
+            })?;
+            client_secrets.insert(provider.id.clone(), secret);
+        }
+        client_ids.insert(provider.id, client_id);
+    }
     let signing_key = env_value(&config.auth.signing_key_env);
     Server::open(Options {
         config,
         signing_key,
         secrets_key,
-        client_secret,
+        client_ids,
+        client_secrets,
         verifiers: Some(Arc::new(crate::serve::console::JwksVerifiers)),
     })
     .map_err(usage)

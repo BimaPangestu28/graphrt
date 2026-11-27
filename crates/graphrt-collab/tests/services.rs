@@ -81,7 +81,8 @@ async fn services_get_events_and_calls() {
         config,
         signing_key: None,
         secrets_key: Some(SECRETS_KEY.into()),
-        client_secret: None,
+        client_ids: Default::default(),
+        client_secrets: Default::default(),
         verifiers: None,
     })
     .unwrap();

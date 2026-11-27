@@ -207,6 +207,8 @@ fn graphrt(args: &[&str]) -> std::process::Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_graphrt"))
         .args(args)
         .env("GRAPHRT_TEST_OIDC_SECRET", CLIENT_SECRET)
+        .env("GRAPHRT_TEST_OIDC_ID", "graphrt-desktop")
+        .env_remove("GRAPHRT_TEST_UNSET_ID")
         .env_remove("GRAPHRT_COLLAB_CONFIG")
         .output()
         .unwrap()
@@ -224,6 +226,8 @@ async fn start_server(dir: &Path, extra: &str, scheme: &str) -> Server {
     let child = std::process::Command::new(env!("CARGO_BIN_EXE_graphrt"))
         .args(["collab", "serve", "--config", config.to_str().unwrap()])
         .env("GRAPHRT_TEST_OIDC_SECRET", CLIENT_SECRET)
+        .env("GRAPHRT_TEST_OIDC_ID", "graphrt-desktop")
+        .env_remove("GRAPHRT_TEST_UNSET_ID")
         .env_remove("GRAPHRT_COLLAB_SIGNING_KEY")
         .stdout(std::process::Stdio::null())
         .stderr(std::fs::File::create(&log).unwrap())
@@ -243,13 +247,21 @@ async fn start_server(dir: &Path, extra: &str, scheme: &str) -> Server {
 ///
 /// @returns The token answer, or where the browser was sent with an error.
 fn desktop_sign_in(server: &Server, idp: &Idp, claims: Value) -> Result<Value, String> {
+    sign_in_with(server, idp, None, claims)
+}
+
+/// [`desktop_sign_in`] with the provider the app picked (`None`: the server's first).
+fn sign_in_with(server: &Server, idp: &Idp, provider: Option<&str>, claims: Value) -> Result<Value, String> {
     let verifier = "desktop-verifier-0123456789-0123456789-0123456789";
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let redirect = "http://127.0.0.1:53123/callback";
-    let path = format!(
+    let mut path = format!(
         "/v1/auth/login?redirect_uri={}&state=app-state&code_challenge={challenge}&code_challenge_method=S256&device=test",
         url_encode(redirect)
     );
+    if let Some(provider) = provider {
+        path.push_str(&format!("&provider={provider}"));
+    }
     let login = request(&server.addr, "GET", &path, &[], b"");
     assert_eq!(login.status, 303, "{:?}", login.json());
     let location = login.header("location").unwrap().to_owned();
@@ -383,6 +395,58 @@ async fn desktop_signs_in_with_the_company_provider() {
     let code = stdout.lines().find_map(|l| l.strip_prefix("code:")).unwrap().trim().to_owned();
     let anonymous = json_post(&server.addr, "/v1/invites/redeem", &json!({"code": code, "name": "Guest"}), None);
     assert_eq!(anonymous.status, 401);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hosted_server_with_two_providers() {
+    let dir = TempDir::new("providers");
+    let google = start_idp().await;
+    let microsoft = start_idp().await;
+    let extra = format!(
+        "mode: hosted\nauth:\n  providers:\n\
+         \x20   - {{id: google, name: Google, issuer: '{}', client_id_env: GRAPHRT_TEST_OIDC_ID, client_secret_env: GRAPHRT_TEST_OIDC_SECRET}}\n\
+         \x20   - {{id: microsoft, name: Microsoft, issuer: '{}', client_id: graphrt-desktop, client_secret_env: GRAPHRT_TEST_OIDC_SECRET, email_verified_claim: xms_edov}}\n\
+         \x20   - {{id: later, issuer: 'https://later.example', client_id_env: GRAPHRT_TEST_UNSET_ID}}\n",
+        google.issuer, microsoft.issuer
+    );
+    let server = start_server(&dir.0, &extra, "http").await;
+
+    // The provider without a client id yet is off, the others are buttons.
+    let info = request(&server.addr, "GET", "/v1/info", &[], b"").json();
+    assert_eq!(info["sign_in"]["oidc"], true);
+    assert_eq!(
+        info["sign_in"]["providers"],
+        json!([{"id": "google", "name": "Google"}, {"id": "microsoft", "name": "Microsoft"}])
+    );
+    let out = graphrt(&["collab", "check", "--config", server.config.to_str().unwrap()]);
+    let banner = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(banner.contains("sign in with Google, Microsoft") && banner.contains("later is off"), "{banner}");
+
+    // Each provider signs in its own people: the first is the default.
+    let ana =
+        desktop_sign_in(&server, &google, json!({"sub": "same", "email": "ana@example.com", "name": "Ana"})).unwrap();
+    assert_eq!(ana["account"]["email"], "ana@example.com");
+    let bo = sign_in_with(
+        &server,
+        &microsoft,
+        Some("microsoft"),
+        json!({"sub": "same", "email": "bo@example.com", "name": "Bo", "xms_edov": true}),
+    )
+    .unwrap();
+    assert_eq!(bo["account"]["email"], "bo@example.com");
+    // The same subject at two providers is two accounts.
+    assert_ne!(ana["account"]["id"], bo["account"]["id"]);
+    // An email Microsoft does not vouch for is not used.
+    let cy =
+        sign_in_with(&server, &microsoft, Some("microsoft"), json!({"sub": "cy", "email": "ana@example.com"})).unwrap();
+    assert!(cy["account"]["email"].is_null(), "{cy}");
+    // A provider the server does not have.
+    let path = format!(
+        "/v1/auth/login?redirect_uri={}&state=s&code_challenge={}&provider=later",
+        url_encode("http://127.0.0.1:9/cb"),
+        "a".repeat(43)
+    );
+    assert_eq!(request(&server.addr, "GET", &path, &[], b"").status, 404);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
