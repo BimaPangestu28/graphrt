@@ -1595,6 +1595,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphrt-channel"
+version = "0.6.2"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "graphrt-cli"
 version = "0.6.2"
 dependencies = [
