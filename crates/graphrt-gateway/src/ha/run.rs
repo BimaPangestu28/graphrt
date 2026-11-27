@@ -310,18 +310,27 @@ fn spawn_marker(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use std::sync::Mutex;
     use std::sync::atomic::AtomicU64;
     use std::time::Instant;
 
     use super::*;
     use crate::ha::lease::{Identity, LeaseRecord, LeaseSettings, Takeover};
 
-    /// A lease volume whose writes stall while `stall_ms` is set: the
-    /// heartbeat's write then sits inside the lease lock, as it did on
+    /// No write took the stall yet.
+    const NOT_STALLED: u64 = u64::MAX;
+
+    /// A lease volume whose next write stalls for `stall_ms` once it is set:
+    /// the heartbeat's write then sits inside the lease lock, as it did on
     /// Windows CI for about three seconds.
     struct SlowVolume {
         inner: FileLease,
         stall_ms: Arc<AtomicU64>,
+        /// The heartbeat counter of the write that took the stall.
+        stalled_seq: Arc<AtomicU64>,
+        /// Every write: counter, ms since the test began, ms it took.
+        writes: Arc<Mutex<Vec<(u64, u128, u128)>>>,
+        began: Instant,
     }
 
     impl LeaseMedium for SlowVolume {
@@ -335,9 +344,16 @@ mod tests {
             self.inner.read()
         }
         fn write(&mut self, record: &LeaseRecord) -> std::io::Result<()> {
+            let started = Instant::now();
             let stall = self.stall_ms.swap(0, Ordering::SeqCst);
+            if stall > 0 {
+                self.stalled_seq.store(record.seq, Ordering::SeqCst);
+            }
             std::thread::sleep(Duration::from_millis(stall));
-            self.inner.write(record)
+            let written = self.inner.write(record);
+            let entry = (record.seq, (started - self.began).as_millis(), started.elapsed().as_millis());
+            self.writes.lock().unwrap().push(entry);
+            written
         }
         fn try_tenure(&mut self) -> std::io::Result<bool> {
             self.inner.try_tenure()
@@ -365,34 +381,58 @@ mod tests {
         let settings = LeaseSettings { takeover: Takeover::Auto, stale_after_ms: 600, kill_stale_holder: true };
         let clock = monotonic_clock();
 
-        let mut volume = SlowVolume { inner: FileLease::open(&dir, "a").unwrap(), stall_ms: Arc::default() };
+        let began = Instant::now();
+        let mut volume = SlowVolume {
+            inner: FileLease::open(&dir, "a").unwrap(),
+            stall_ms: Arc::default(),
+            stalled_seq: Arc::new(AtomicU64::new(NOT_STALLED)),
+            writes: Arc::default(),
+            began,
+        };
         let promotion = Candidate::new(identity("a", 1), settings).step(&mut volume, clock()).unwrap().unwrap();
         let holder = Holder::new(identity("a", 1), &promotion);
         let fence = Arc::new(Fence::new(promotion.token, ha.self_fence_window_ms(), clock.clone()));
         fence.confirm();
-        let stall = Arc::clone(&volume.stall_ms);
+        let (stall, stalled_seq, writes) =
+            (Arc::clone(&volume.stall_ms), Arc::clone(&volume.stalled_seq), Arc::clone(&volume.writes));
         let heartbeat = spawn_heartbeat(volume, dir.clone(), holder, Arc::clone(&fence), &ha, clock.clone());
 
         // A passive on the same host polls while the active's next lease write stalls for 3 s,
-        // five times `stale_after`.
+        // five times `stale_after`. It watches until a write after the stalled one landed: the
+        // volume's own writes can take seconds more on a busy runner (Windows), so no fixed
+        // window says when that is. The deadline only turns a heartbeat that never comes back
+        // into a failure instead of a hang.
         std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
         stall.store(3_000, Ordering::SeqCst);
         let mut medium = FileLease::open(&dir, "b").unwrap();
         let mut passive = Candidate::new(identity("b", 2), settings);
-        let started = Instant::now();
+        let deadline = Duration::from_secs(60);
         let mut lock_was_busy = false;
-        while started.elapsed() < Duration::from_millis(4_000) {
+        loop {
             lock_was_busy |= !medium.try_lock_mutex().unwrap();
             medium.unlock_mutex();
             let promotion = passive.step(&mut medium, clock()).unwrap();
             assert_eq!(promotion, None, "the passive took a live active at {:?}", started.elapsed());
             assert!(fence.check_local().is_ok(), "the active fenced itself off at {:?}", started.elapsed());
+            let stalled = stalled_seq.load(Ordering::SeqCst);
+            let landed = FileLease::peek(&dir).ok().flatten().map(|record| record.seq);
+            if stalled != NOT_STALLED && landed.is_some_and(|seq| seq > stalled) {
+                break;
+            }
+            assert!(
+                started.elapsed() < deadline,
+                "no lease write landed after the stalled one (seq {stalled}) in {deadline:?}; \
+                 writes (seq, at ms, took ms): {:?}",
+                writes.lock().unwrap()
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(3_000), "the passive watched for the whole stall, not {waited:?}");
         assert!(lock_was_busy, "the stall held the lease lock, as a slow write does");
-        assert_eq!(stall.load(Ordering::SeqCst), 0, "the stalled write happened");
-        assert!(FileLease::peek(&dir).unwrap().unwrap().seq > 3, "lease writes went on after the stall");
         assert!(!fence.is_tripped());
+        eprintln!("writes (seq, at ms, took ms): {:?}", writes.lock().unwrap());
 
         // A graceful stop still releases the lease: the passive takes it at once.
         assert!(heartbeat.stop());
