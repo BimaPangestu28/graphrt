@@ -302,7 +302,9 @@ pub async fn serve_agent(world: Arc<AgentWorld>, id: &str) -> (SocketAddr, tokio
         .route("/internal/v1/warm", post(warm))
         .route("/internal/v1/orphans", get(orphans))
         .route("/internal/v1/orphans/{run_id}", axum::routing::delete(release_orphan))
-        // Platform readiness probes (Cloud Run wake) hit the agent's /healthz.
+        // Platform probes: the Cloud Run wake asks /readyz (Cloud Run's front
+        // end keeps /healthz for itself), other platforms /healthz.
+        .route("/readyz", get(|| async { "ready" }))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
