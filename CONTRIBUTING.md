@@ -10,16 +10,28 @@ Install a stable Rust toolchain (MSRV 1.89 for every crate). Then:
 cargo test --workspace
 ```
 
-## Before opening a pull request
+## Before you push
+
+Run the local check before every push. It is required:
 
 ```sh
-cargo fmt --all
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
-cargo test -p graphrt-core --no-default-features
+scripts/check.sh
 ```
 
-Or run every CI job at once (fmt, clippy, test, MSRV, core without default
+It runs the same three commands as the `fmt + clippy + test` job of CI, with
+warnings as errors:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features
+cargo test --workspace --all-features
+```
+
+A failure found by CI costs a full run, and in the merge queue it also holds up
+the pull requests behind yours. The script builds into `target/check`, so it does not rebuild what
+`cargo build` and `cargo test` keep in `target/debug`.
+
+To run every CI job at once (the three above plus MSRV, core without default
 features, wasm32 and the min-size build) against your committed `HEAD`:
 
 ```sh
