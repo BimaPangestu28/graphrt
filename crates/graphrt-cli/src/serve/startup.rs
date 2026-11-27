@@ -332,7 +332,10 @@ fn conversations_from_args(args: &ServeArgs) -> Result<Option<crate::conversatio
 #[cfg(feature = "channels")]
 fn channels_from_args(state: AppState, args: &ServeArgs, options: &ServiceOptions) -> Result<AppState, CliError> {
     let flags = &args.channels;
-    let defaults = crate::channels::Defaults { rate_limit: flags.channel_rate_limit, budget: flags.channel_budget };
+    let language = crate::channels::config::Language::parse(&flags.channel_language)
+        .ok_or_else(|| CliError::usage(format!("--channel-language `{}`: use `en` or `id`", flags.channel_language)))?;
+    let defaults =
+        crate::channels::Defaults { rate_limit: flags.channel_rate_limit, budget: flags.channel_budget, language };
     let lookup = |name: &str| lookup_env(options, name);
     let configs = crate::channels::config::load(&flags.channel, flags.channels.as_deref(), defaults, &lookup)?;
     #[cfg(feature = "devices")]
@@ -345,7 +348,8 @@ fn channels_from_args(state: AppState, args: &ServeArgs, options: &ServiceOption
         .map(|url| url.trim().trim_end_matches('/').to_owned());
     #[cfg(not(feature = "devices"))]
     let public_url = None;
-    let channels = crate::channels::Channels::new(configs, |name| state.serves(name), public_url, args.user_resume)?;
+    let channels =
+        crate::channels::Channels::new(configs, |name| state.channel_start_inputs(name), public_url, args.user_resume)?;
     if let Some(channels) = &channels {
         for line in channels.describe() {
             eprintln!("  {line}");

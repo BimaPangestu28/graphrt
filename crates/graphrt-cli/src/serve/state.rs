@@ -612,6 +612,41 @@ impl AppState {
         Some(declared.iter().filter_map(|variable| variable["variable"].as_str().map(str::to_owned)).collect())
     }
 
+    /// The start inputs of workflow `name` for a channel: all of them, and those a run
+    /// cannot start without. `None` when it is not served.
+    #[cfg(feature = "channels")]
+    pub fn channel_start_inputs(&self, name: &str) -> Option<crate::channels::StartInputs> {
+        Some(crate::channels::StartInputs {
+            declared: self.start_inputs(name)?,
+            required: self.required_start_inputs(name)?,
+        })
+    }
+
+    /// The start inputs of workflow `name` a run cannot start without: required, and
+    /// without a default. `None` when it is not served.
+    #[cfg(feature = "channels")]
+    fn required_start_inputs(&self, name: &str) -> Option<Vec<String>> {
+        let workflow = self.workflows.get(name)?;
+        let declared = workflow
+            .engine
+            .graph()
+            .workflow()
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "start")
+            .find_map(|node| node.config.get("variables").and_then(serde_json::Value::as_array).cloned())
+            .unwrap_or_default();
+        Some(
+            declared
+                .iter()
+                .filter(|variable| variable["required"].as_bool() == Some(true))
+                .filter(|variable| variable.get("default").is_none_or(serde_json::Value::is_null))
+                .filter_map(|variable| variable["variable"].as_str().map(str::to_owned))
+                .collect(),
+        )
+    }
+
     /// Let a verified end-user JWT authorize run starts (`--verify-jwt`).
     #[cfg(feature = "jwt")]
     pub fn with_user_auth(mut self, user_auth: Option<crate::user_auth::UserAuth>) -> Self {

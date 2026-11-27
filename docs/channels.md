@@ -138,7 +138,13 @@ A message starts a run like a request of the chat page would:
 | `sys.channel` | `telegram` or `whatsapp` |
 
 A workflow that takes the message as a start input names it:
-`--channel telegram=support=message`.
+`--channel telegram=support=message`. Without a name, a workflow whose start
+requires exactly one input (no default) gets the message there, and the
+startup line says so (`message into `message``); this is how a workflow made in
+the Desktop app, which asks for `message`, works with `--channel
+telegram=support`. A workflow whose start requires inputs a message cannot fill
+is refused at startup with the inputs named, instead of answering every
+customer "something went wrong".
 
 The conversation is in the server's conversation store, so `--channel` turns
 `--conversations` on. `GET /v1/conversations` lists channel conversations with
@@ -293,6 +299,7 @@ channels:
     rate_limit: 10              # messages a minute of one customer (0 = unlimited)
     budget: 120                 # messages a minute of all customers (0 = unlimited)
     max_file_mb: 10             # largest file taken or sent, 1 to 50
+    language: id                # en or id: the server's own sentences. Default: --channel-language
     messages:
       welcome: "Halo! Ada yang bisa kami bantu?"
 
@@ -309,8 +316,10 @@ channels:
 Two channels of one kind need different names. A channel named `shop` takes
 deliveries at `/v1/channels/shop/webhook`.
 
-`messages` are the few sentences the server itself says. Set them in your
-customers' language:
+`messages` are the few sentences the server itself says. They come in English
+and Indonesian: `language: id` in the channels file (or `--channel-language id`
+for every channel) picks Indonesian, and single `messages` replace single
+sentences in either language. The table shows the English ones:
 
 | Key | When | Default |
 | --- | --- | --- |

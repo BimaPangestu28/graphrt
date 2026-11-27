@@ -38,7 +38,16 @@ use graphrt_core::Value;
 use graphrt_core::store::{RunRecord, RunStatus, now_ms};
 use sha2::{Digest, Sha256};
 
-pub use config::{ChannelConfig, Credentials, Defaults, Mode};
+pub use config::{ChannelConfig, Credentials, Defaults, Language, Mode};
+
+/// The start inputs of a served workflow, as a channel needs them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StartInputs {
+    /// Every start input.
+    pub declared: Vec<String>,
+    /// Those a run cannot start without (required, no default).
+    pub required: Vec<String>,
+}
 pub(crate) use routes::routes;
 
 use crate::approvals::{Request, requests_of};
@@ -257,7 +266,7 @@ impl Channels {
     /// @throws CliError (usage) - A channel of a workflow that is not served, or unusable credentials.
     pub fn new(
         configs: Vec<ChannelConfig>,
-        serves: impl Fn(&str) -> bool,
+        start_inputs: impl Fn(&str) -> Option<StartInputs>,
         public_url: Option<String>,
         customer_answers: bool,
     ) -> Result<Option<Self>, CliError> {
@@ -266,13 +275,14 @@ impl Channels {
         }
         let http = http_client()?;
         let mut bots = Vec::with_capacity(configs.len());
-        for config in configs {
-            if !serves(&config.workflow) {
+        for mut config in configs {
+            let Some(inputs) = start_inputs(&config.workflow) else {
                 return Err(CliError::usage(format!(
                     "channel `{}` names workflow `{}`, which is not served",
                     config.name, config.workflow
                 )));
-            }
+            };
+            config.input = config::message_input(&config, &inputs.required, Some(inputs.declared))?;
             bots.push(Arc::new(connect(config, &http)?));
         }
         Ok(Some(Self {
@@ -301,7 +311,9 @@ impl Channels {
                 } else {
                     format!(", {} allowed sender(s)", config.allow.len())
                 };
-                format!("channel `{}` ({}) -> {} ({how}{who})", config.name, config.kind, config.workflow)
+                let input =
+                    config.input.as_deref().map(|input| format!(", message into `{input}`")).unwrap_or_default();
+                format!("channel `{}` ({}) -> {} ({how}{who}{input})", config.name, config.kind, config.workflow)
             })
             .collect()
     }

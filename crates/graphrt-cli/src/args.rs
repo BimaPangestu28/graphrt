@@ -1094,6 +1094,11 @@ pub struct ChannelArgs {
     /// model spend of a channel.
     #[arg(long, value_name = "N", default_value_t = crate::channels::config::DEFAULT_BUDGET)]
     pub channel_budget: u32,
+    /// The language of what the server itself says on a channel (welcome, "something
+    /// went wrong", "one moment please"...): `en` or `id`. A channels file can set
+    /// `language` and single `messages` per channel.
+    #[arg(long, value_name = "LANG", default_value = "en")]
+    pub channel_language: String,
 }
 
 /// Monitoring a served agent from another device (see docs/monitoring.md).
