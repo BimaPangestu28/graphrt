@@ -1,6 +1,6 @@
 # Self learning
 
-**Availability.** From the release after 0.6.2, self learning is in the
+**Availability.** From 0.6.3, self learning is in the
 release binaries, the Homebrew formula and the container image (agent and
 gateway builds). A build from source needs the `learning` cargo feature
 (`cargo install graphrt-cli --features learning`), and Rust hosts add the
