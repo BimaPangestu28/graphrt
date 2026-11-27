@@ -60,7 +60,8 @@ pub const CSRF_HEADER: &str = "x-graphrt-csrf";
 /// The prefix of device tokens of `graphrt serve --devices`.
 const DEVICE_TOKEN_PREFIX: &str = "grd1.";
 /// The policy of the console's own HTML (the sign in messages and the page).
-const PAGE_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
+/// Images also from `https` and `data:`: what the UI blocks of runs may show.
+const PAGE_POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; \
      connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 /// Who makes a request that the gate let through.
@@ -367,6 +368,7 @@ pub fn routes<S: Clone + Send + Sync + 'static>(console: &Arc<Console>, max_uplo
     Router::new()
         .route("/console", get(redirect_to_page))
         .route("/console/", get(page))
+        .route("/console/console.js", get(page_script))
         .route("/console/login", get(login))
         .route("/console/callback", get(callback))
         .route("/v1/console/session", get(session))
@@ -392,34 +394,51 @@ pub fn routes<S: Clone + Send + Sync + 'static>(console: &Arc<Console>, max_uplo
 
 // ---- pages and sign in ---------------------------------------------------------------
 
-/// The console page the host serves at `/console/`, when it has one.
-#[derive(Debug, Clone)]
-pub struct Page {
-    pub html: &'static [u8],
-}
-
-const DEFAULT_PAGE: &str = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
-<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Graphrt console</title></head>\
-<body><main><h1>Graphrt console</h1><p><a href=\"login\">Sign in</a></p>\
-<p>The console API is under <code>/v1/console/</code>; see docs/console.md.</p></main></body></html>";
+/// The console page, built from `web/packages/console` (`npm run build` in `web/`).
+const PAGE: &[u8] = include_bytes!("../assets/console/index.html");
+const PAGE_SCRIPT: &[u8] = include_bytes!("../assets/console/console.js");
 
 async fn redirect_to_page(State(console): State<Arc<Console>>) -> Response {
     let location = format!("{}/console/", console.public().prefix);
     (StatusCode::PERMANENT_REDIRECT, [(LOCATION, location)]).into_response()
 }
 
-async fn page() -> Response {
-    html(StatusCode::OK, DEFAULT_PAGE.to_owned())
+async fn page(headers: HeaderMap) -> Response {
+    asset(&headers, PAGE, "text/html; charset=utf-8")
+}
+
+async fn page_script(headers: HeaderMap) -> Response {
+    asset(&headers, PAGE_SCRIPT, "text/javascript; charset=utf-8")
+}
+
+/// A file of the page, with a strong validator (it changes only with the binary).
+fn asset(request: &HeaderMap, bytes: &'static [u8], content_type: &'static str) -> Response {
+    let etag = format!("\"{}\"", sha256_hex(bytes).get(..24).unwrap_or_default());
+    let not_modified = request.get(axum::http::header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) == Some(&etag);
+    let mut response =
+        if not_modified { StatusCode::NOT_MODIFIED.into_response() } else { Body::from(bytes).into_response() };
+    let headers = response.headers_mut();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    if let Ok(etag) = HeaderValue::from_str(&etag) {
+        headers.insert(axum::http::header::ETAG, etag);
+    }
+    secure_page_headers(headers);
+    response
+}
+
+fn secure_page_headers(headers: &mut HeaderMap) {
+    headers.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(PAGE_POLICY));
+    headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
 }
 
 fn html(status: StatusCode, body: String) -> Response {
     let mut response = no_store((status, body).into_response());
     let headers = response.headers_mut();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
-    headers.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(PAGE_POLICY));
-    headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
-    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
-    headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    secure_page_headers(headers);
     response
 }
 

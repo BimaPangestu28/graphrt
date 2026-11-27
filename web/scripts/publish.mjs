@@ -29,9 +29,9 @@ const repoRoot = resolve(root, "..");
 const packageDir = join(root, "packages", "graphrt");
 const packRoot = join(root, ".pack");
 const stageDir = join(packRoot, "node_modules", "graphrt");
-const PARTS = ["client", "ui", "chat", "monitor"];
+const PARTS = ["client", "ui", "chat", "monitor", "console"];
 // Scripts of the embedded pages: they run on import, so they must never ship.
-const PAGE_SCRIPTS = ["chat/page", "chat/embed", "monitor/page", "monitor/sw"];
+const PAGE_SCRIPTS = ["chat/page", "chat/embed", "monitor/page", "monitor/sw", "console/page"];
 
 function fail(message) {
   console.error(`publish: ${message}`);

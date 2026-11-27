@@ -1,10 +1,11 @@
 // Builds what `graphrt serve` serves itself, bundled from the sources of the
 // `graphrt` package
-// (packages/graphrt/src) into crates/graphrt-cli/assets, where the Rust build
+// (packages/graphrt/src) into the assets of the crates, where the Rust build
 // embeds them:
 //
-//   assets/chat      the chat page and the widget script (`--chat`)
-//   assets/monitor   the monitoring page, its service worker, manifest and icons (`--monitor`)
+//   graphrt-cli/assets/chat          the chat page and the widget script (`--chat`)
+//   graphrt-cli/assets/monitor       the monitoring page, its service worker, manifest and icons (`--monitor`)
+//   graphrt-console/assets/console   the admin console page (`--console`)
 //
 // The results are committed, so building graphrt needs no Node.js.
 //
@@ -18,6 +19,7 @@ import { encodePng, iconPixels, pngHolds } from "./icons.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const assets = resolve(root, "..", "crates", "graphrt-cli", "assets");
+const consoleAssets = resolve(root, "..", "crates", "graphrt-console", "assets");
 const check = process.argv.includes("--check");
 
 const banner = (what) =>
@@ -96,6 +98,24 @@ const manifest = `${JSON.stringify(
   2,
 )}\n`;
 
+const consolePage = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#257de0">
+<meta name="robots" content="noindex">
+<title>Graphrt console</title>
+<link rel="icon" href="data:,">
+<script type="module" src="console.js"></script>
+</head>
+<body>
+<noscript>The console needs JavaScript.</noscript>
+</body>
+</html>
+`;
+
 async function bundle(part, entry, format, what) {
   const result = await build({
     ...common,
@@ -133,11 +153,18 @@ const outputs = {
     // iOS puts the icon on its own background and rounds the corners itself.
     "apple-touch-icon.png": icon(180, true),
   },
+  console: {
+    "index.html": consolePage,
+    "console.js": await bundle("console", "page.ts", "esm", "console"),
+  },
 };
+
+/** The directory each folder of `outputs` is written to. */
+const folderDir = (folder) => (folder === "console" ? join(consoleAssets, folder) : join(assets, folder));
 
 let stale = false;
 for (const [folder, files] of Object.entries(outputs)) {
-  const outDir = join(assets, folder);
+  const outDir = folderDir(folder);
   mkdirSync(outDir, { recursive: true });
   for (const [name, content] of Object.entries(files)) {
     const path = join(outDir, name);

@@ -2,7 +2,7 @@
   "name": "graphrt",
   "version": "0.0.0",
   "private": true,
-  "description": "Browser side of graphrt serve: a typed client, web components for UI blocks, the chat widget and the monitoring view.",
+  "description": "Browser side of graphrt serve: a typed client, web components for UI blocks, the chat widget, the monitoring view and the admin console.",
   "keywords": [
     "graphrt",
     "agent",
@@ -13,7 +13,8 @@
     "widget",
     "web-components",
     "adaptive-cards",
-    "monitoring"
+    "monitoring",
+    "admin"
   ],
   "license": "Apache-2.0",
   "homepage": "https://github.com/Graphrt/graphrt/tree/main/web",
@@ -46,6 +47,11 @@
       "types": "./dist/monitor/index.d.ts",
       "default": "./dist/monitor/index.js"
     },
+    "./console": {
+      "source": "./src/console/index.ts",
+      "types": "./dist/console/index.d.ts",
+      "default": "./dist/console/index.js"
+    },
     "./package.json": "./package.json"
   },
   "typesVersions": {
@@ -61,6 +67,9 @@
       ],
       "monitor": [
         "./dist/monitor/index.d.ts"
+      ],
+      "console": [
+        "./dist/console/index.d.ts"
       ]
     }
   },

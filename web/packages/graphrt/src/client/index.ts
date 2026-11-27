@@ -23,6 +23,28 @@ export {
   type TerminalEvent,
   type TokenSource,
 } from "./client.ts";
+export {
+  type AuditEntry,
+  type AuditPage,
+  type AuditQuery,
+  type AuditVerification,
+  ConsoleApi,
+  type ConsoleRole,
+  type ConsoleSession,
+  CSRF_HEADER,
+  type Deployment,
+  type Member,
+  type MembersView,
+  type RegistryWorkflow,
+  type SecretsView,
+  type ServedWorkflow,
+  type SessionInfo,
+  sessionFetch,
+  type UploadOptions,
+  type VersionChange,
+  type WorkflowsView,
+  type WorkflowVersion,
+} from "./console.ts";
 export { Approvals, Devices, type PairDeviceRequest, Push, type PushSubscriptionKeys } from "./monitoring.ts";
 export type {
   AcceptedRun,

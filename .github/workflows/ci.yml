@@ -304,9 +304,9 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      # The tests start this binary: the client, the chat and the widget run
-      # against a real server, not a mock.
-      - run: cargo build -p graphrt-cli
+      # The tests start this binary: the client, the chat, the widget and the
+      # console run against a real server, not a mock.
+      - run: cargo build -p graphrt-cli --features console
       - run: npm ci
         working-directory: web
       # Types, lint, tests, that crates/graphrt-cli/assets is what the sources

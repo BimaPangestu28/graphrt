@@ -415,6 +415,7 @@ npm install graphrt
 | `graphrt/ui` | The web components that draw UI blocks |
 | `graphrt/chat` | The chat component and the widget |
 | `graphrt/monitor` | The [monitoring](monitoring.md) view |
+| `graphrt/console` | The [admin console](console.md) |
 
 One package, ES modules with type declarations. Each import pulls only its own
 part (and the parts it is built on: the chat uses the client and the UI blocks),

@@ -5,6 +5,7 @@
  * Node.js 18+, Deno, Bun and workers. Tokens travel in headers, never in URLs.
  */
 import type * as z from "zod/mini";
+import { ConsoleApi } from "./console.ts";
 import { Approvals, Devices, Push } from "./monitoring.ts";
 import {
   type AcceptedRun,
@@ -283,6 +284,8 @@ export class Conversations {
 
 interface RequestOptions {
   body?: unknown;
+  /** A body sent as it is (a file), instead of `body` as JSON. */
+  raw?: Blob | ArrayBuffer | Uint8Array | string;
   query?: Record<string, string | number | boolean | undefined>;
   signal?: AbortSignal | undefined;
   headers?: Record<string, string>;
@@ -313,6 +316,8 @@ export class GraphrtClient {
   readonly devices: Devices;
   /** Push notifications (`serve --push`). */
   readonly push: Push;
+  /** The admin console (`serve --console`). */
+  readonly console: ConsoleApi;
 
   constructor(options: ClientOptions = {}) {
     this.#baseUrl = (options.baseUrl ?? "").replace(/\/+$/, "");
@@ -325,6 +330,7 @@ export class GraphrtClient {
     this.approvals = new Approvals(this);
     this.devices = new Devices(this);
     this.push = new Push(this);
+    this.console = new ConsoleApi(this);
   }
 
   /**
@@ -625,7 +631,10 @@ export class GraphrtClient {
       headers.set(name, value);
     }
     const init: RequestInit = { method, headers };
-    if (options.body !== undefined) {
+    if (options.raw !== undefined) {
+      headers.set("Content-Type", "application/octet-stream");
+      init.body = options.raw as BodyInit;
+    } else if (options.body !== undefined) {
       headers.set("Content-Type", "application/json");
       init.body = JSON.stringify(options.body);
     }
