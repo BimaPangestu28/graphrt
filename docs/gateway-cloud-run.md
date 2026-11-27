@@ -119,7 +119,7 @@ checks that the new revision is the latest ready one.
 | Spec field | Cloud Run |
 | --- | --- |
 | `name` | service id `graphrt-<name>` (DNS label, ≤ 40 chars) |
-| `version` | revision `<service>-<tag>` and traffic tag `<tag>` (`v7`, ≤ 20 chars) |
+| `version` | revision `<service>-<tag>` and traffic tag `<tag>` (`v12`; 3 to 20 chars, a shorter one gets the prefix `ver-`: `v7` → `ver-v7`) |
 | `image`, `command` | `containers[0].image`, `command` = first word, `args` = the rest; port 8080 (`http1`) |
 | `env` | plain `env` values |
 | `secrets` | `valueSource.secretKeyRef {secret, version}`; only `projects/<p>/secrets/<s>[/versions/<v>]` references are accepted |
@@ -166,15 +166,42 @@ reference (C10).
 | `graphrt deploy` / CI | `roles/iam.serviceAccountUser` on the agent's runtime service account | deploying a revision that runs as it (`actAs`) |
 | `graphrt deploy` / CI | `roles/secretmanager.admin` (or `roles/secretmanager.secretVersionAdder` on pre-created secrets) | `secrets.create`, `secrets.addVersion` |
 | Agent runtime service account | `roles/secretmanager.secretAccessor` on its secrets | Cloud Run resolves `secretKeyRef` at instance start |
+| `graphrt deploy` / CI | `roles/artifactregistry.reader` on the image's repository | Cloud Run checks that the caller of `services.patch` may read the image (`artifactregistry.repositories.downloadArtifacts`), also in the same project |
 | Cloud Run service agent | `roles/artifactregistry.reader` (only for an image in another project) | image pull |
 | Operator, once | `roles/run.admin` (or `run.services.setIamPolicy`) | granting the gateway `run.invoker` with `gcloud run services add-iam-policy-binding` |
 
 The gateway never holds deploy-time roles and never sees a secret value.
 
-## Not yet verified on real GCP
+## Verified on real GCP (2026-11-27)
 
-Cloud Run support is in preview. These need a real sandbox project (nightly)
-before the provider is marked stable (how the provider tests run is in
+A gateway on a Compute Engine VM (`e2-small`, `asia-southeast1`, its attached
+service account through the metadata server) and `graphrt deploy --target
+cloud-run` run on the same VM, with the roles of the table above
+(`run.viewer`, `run.invoker`, `run.developer`, `iam.serviceAccountUser` on the
+agent's account, `artifactregistry.reader` on the repository):
+
+- `services.patch?allowMissing=true` creates the service, the operation
+  resolves, revisions are named `<service>-<tag>`; a second version moves 100 %
+  of traffic and keeps the old tag at 0 % with its own URL (items 3 to 5).
+- Wakes and runs go to the tag URL with an ID token for the custom audience in
+  `X-Serverless-Authorization`; the service answers `403` without one
+  (items 1 and 2). Blocking, streaming (SSE) and async runs succeed.
+- `secretKeyRef` with pinned versions resolves for the agent's runtime account
+  (item 12).
+- Found and fixed there: Cloud Run reserves `/healthz` (wakes probe `/readyz`),
+  traffic tags need 3 characters or more (`v1` → `ver-v1`), and the deployer
+  needs read access to the image.
+
+Organizations created since 2024 enforce
+`iam.disableServiceAccountKeyCreation`, so `GOOGLE_APPLICATION_CREDENTIALS`
+key files are often unavailable: run the gateway and `graphrt deploy` where a
+metadata server hands out the attached account's tokens (Compute Engine,
+Cloud Run, GKE workload identity).
+
+## Still to verify on real GCP
+
+Cloud Run support is in preview. The items not covered above need a real
+sandbox project (nightly) before the provider is marked stable (how the provider tests run is in
 [CONTRIBUTING.md](../CONTRIBUTING.md#provider-conformance-tests)):
 
 1. Cloud Run accepts ID tokens whose `aud` is the **custom audience**

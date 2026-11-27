@@ -342,6 +342,18 @@ fn admin_response(state: &Mutex<GoogleState>, request: &RecordedRequest, name: &
         },
         "PATCH" => {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
+            // Like the real Admin API: "traffic[0].tag: length must be between 3 and 47 characters".
+            let short_tag =
+                body["traffic"].as_array().into_iter().flatten().filter_map(|target| target["tag"].as_str());
+            if let Some(tag) = short_tag.into_iter().find(|tag| !(3..=47).contains(&tag.len())) {
+                let message = format!(
+                    "Violation in UpdateServiceRequest.service.traffic.tag `{tag}`: length must be between 3 and 47 characters."
+                );
+                return FakeResponse::json(
+                    400,
+                    &json!({"error": {"code": 400, "status": "INVALID_ARGUMENT", "message": message}}),
+                );
+            }
             let instance_url = state.instance_url.clone();
             let existing = state.services.get(name).cloned();
             let traffic_only = request.path.contains("updateMask=traffic");

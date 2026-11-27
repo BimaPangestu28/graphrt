@@ -145,6 +145,9 @@ pub struct LiveRun {
     /// Created by this request with no event anywhere yet: until the ring has
     /// frames, nothing is in the store either.
     new_run: std::sync::atomic::AtomicBool,
+    /// Id (`N.k`) of the last `response` chunk added to the record's answer, so a
+    /// re-dispatched execution that repeats chunks does not add them twice.
+    answer_cursor: Mutex<Option<(u64, u64)>>,
 }
 
 impl std::fmt::Debug for LiveRun {
@@ -175,7 +178,27 @@ impl LiveRun {
             current: Mutex::new(None),
             callback,
             new_run: std::sync::atomic::AtomicBool::new(false),
+            answer_cursor: Mutex::new(None),
         })
+    }
+
+    /// Adds the text of a `response` chunk to `answer` unless an earlier stream
+    /// already delivered that chunk (ids `N.k` grow within a run).
+    fn take_answer_chunk(&self, frame: &Frame, answer: &mut String) {
+        let Some((index, chunk)) = frame.id.as_deref().and_then(answer_chunk_id) else { return };
+        let mut cursor = self.answer_cursor.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cursor.is_some_and(|seen| (index, chunk) <= seen) {
+            return;
+        }
+        *cursor = Some((index, chunk));
+        if let Some(text) = serde_json::from_str::<Json>(&frame.data)
+            .ok()
+            .as_ref()
+            .and_then(|data| data.get("text"))
+            .and_then(Json::as_str)
+        {
+            answer.push_str(text);
+        }
     }
 
     /// Appends `frame` to the ring and broadcasts it; `true` when a client
@@ -370,6 +393,12 @@ fn event_type(data: &str) -> Option<String> {
 
 fn is_terminal_type(kind: &str) -> bool {
     matches!(kind, "run_succeeded" | "run_failed" | "run_aborted" | "run_paused")
+}
+
+/// `N.k` of a response chunk's SSE id.
+fn answer_chunk_id(id: &str) -> Option<(u64, u64)> {
+    let (index, chunk) = id.split_once('.')?;
+    Some((index.parse().ok()?, chunk.parse().ok()?))
 }
 
 /// The stored form of an agent event: the JSON as sent, without the inline
@@ -780,6 +809,11 @@ impl Gateway {
                 continue;
             }
             let Some(index) = frame.event_index() else {
+                // Response text chunks are not engine events: the record keeps
+                // their text as the run's answer, as `graphrt serve` does.
+                if frame.event == "response" {
+                    run.take_answer_chunk(&frame, &mut record.answer);
+                }
                 if run.publish(frame) {
                     stream.handed_to_clients();
                 }

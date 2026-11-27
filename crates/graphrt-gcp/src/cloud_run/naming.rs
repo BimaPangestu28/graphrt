@@ -8,6 +8,8 @@
 const MAX_SERVICE_ID_CHARS: usize = 40;
 /// Longest traffic tag graphrt creates.
 const MAX_TAG_CHARS: usize = 20;
+/// Shortest traffic tag Cloud Run accepts ("length must be between 3 and 47").
+const MIN_TAG_CHARS: usize = 3;
 /// Longest label value Cloud Run accepts.
 #[cfg(feature = "deploy-cloud-run")]
 const MAX_LABEL_CHARS: usize = 63;
@@ -17,9 +19,13 @@ pub fn service_id(prefix: &str, deployment: &str) -> String {
     dns_label(&format!("{prefix}{deployment}"), MAX_SERVICE_ID_CHARS, 's')
 }
 
-/// Traffic tag of a version (`v7` → `v7`, `2026.11.22` → `v2026-11-22`).
+/// Traffic tag of a version (`v12` → `v12`, `2026.11.22` → `v2026-11-22`).
+///
+/// Cloud Run refuses tags shorter than 3 characters, so a short one gets the
+/// prefix `ver-` (`v7` → `ver-v7`, `7` → `ver-v7`).
 pub fn version_tag(version: &str) -> String {
-    dns_label(version, MAX_TAG_CHARS, 'v')
+    let tag = dns_label(version, MAX_TAG_CHARS, 'v');
+    if tag.len() < MIN_TAG_CHARS { format!("ver-{tag}") } else { tag }
 }
 
 #[cfg(feature = "deploy-cloud-run")]
@@ -88,7 +94,9 @@ mod tests {
     #[cfg(feature = "deploy-cloud-run")]
     #[test]
     fn tags_and_revisions_fit_63_chars() {
-        assert_eq!(version_tag("v7"), "v7");
+        assert_eq!(version_tag("v12"), "v12");
+        assert_eq!(version_tag("v7"), "ver-v7", "Cloud Run needs 3 characters or more");
+        assert_eq!(version_tag("7"), "ver-v7");
         assert_eq!(version_tag("2026.11.22"), "v2026-11-22");
         let tag = version_tag("sha256:0123456789abcdef0123456789abcdef");
         assert!(tag.len() <= MAX_TAG_CHARS, "{tag}");

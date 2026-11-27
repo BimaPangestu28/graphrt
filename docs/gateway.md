@@ -401,9 +401,13 @@ crash, `stale_after_ms` after a freeze). See [gateway-ha.md](gateway-ha.md).
 
 ## Measured so far
 
-Local measurements, `--profile min-size`. Only local processes and a local
-Kubernetes cluster have run for real. Cloud Run, Container Apps, ECS, Lambda
-and Fly are in preview: they have not been verified on real cloud accounts yet.
+Local measurements, `--profile min-size`, unless the row says otherwise.
+Local processes, a local Kubernetes cluster, Cloud Run and ECS Fargate have
+run for real (Cloud Run and ECS on 2026-11-27, see the
+[Cloud Run](gateway-cloud-run.md#verified-on-real-gcp-2026-11-27) and
+[AWS](gateway-aws.md#verified-on-real-aws-2026-11-27) guides). Container Apps,
+Lambda and Fly are in preview: they have not been verified on real cloud
+accounts yet.
 
 | What | Measured | Where |
 | --- | --- | --- |
@@ -417,9 +421,17 @@ and Fly are in preview: they have not been verified on real cloud accounts yet.
 | Binary: every provider and deploy driver (`--no-default-features --features gateway-all`) | macOS arm64 6.68 MiB (7,008,368 B), static musl x86_64 8.89 MiB (9,324,616 B), aarch64 7.57 MiB (7,938,112 B) | 2026-11-23, `gateway-all` in [bench/budgets.toml](../bench/budgets.toml) |
 | Binary: agent behind a gateway (`serve,llm,plugins,trust-gateway`) | ≈ 6.2 MiB (agent-slim 6.16 MiB + 73.3 KiB) | static musl, Linux arm64 ([bench/budgets.toml](../bench/budgets.toml)) |
 
-Not measured yet: Linux gateway RSS, cold starts on any real
-cloud platform (Fargate, Cloud Run, Lambda, Fly, Container Apps) and on
-managed Kubernetes (GKE, EKS, AKS).
+Real clouds (one run each, `examples/chatbot.yaml` with `gpt-4o-mini`, gateway
+in the same region, 2026-11-27):
+
+| What | Measured | Where |
+| --- | --- | --- |
+| Cloud Run: run after 20 idle minutes (a new instance starts) vs warm | 1.66 s vs 0.56 s, so about 1.1 s of wake | `asia-southeast1`, gateway on an `e2-small` VM |
+| ECS Fargate: run that starts a task from zero vs warm | 14.7 s and 17.6 s vs 0.8 s | `ap-southeast-1`, 0.5 vCPU / 1 GiB, gateway on a `t3.micro` |
+
+Not measured yet: Linux gateway RSS, cold start percentiles on real clouds
+(n ≥ 50), Lambda, Fly and Container Apps, and managed Kubernetes (GKE, EKS,
+AKS).
 
 ## Security notes
 
