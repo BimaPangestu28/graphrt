@@ -46,6 +46,12 @@ pub struct RunRequest {
     /// Tags (`langfuse.trace.tags`).
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Workspace files attached to the run, by the `reference` an upload
+    /// returned (`workspace:...`). They become `sys.files`, as file values a
+    /// model node can take as vision input. Needs `--workspace-api`.
+    #[cfg(feature = "files")]
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 /// Limits on the caller context of a run request.
@@ -114,6 +120,11 @@ pub(super) async fn start_run(
         return refused.into_response();
     }
     let verified_user = user.map(|axum::Extension(AuthenticatedUser(subject))| subject);
+    #[cfg(feature = "files")]
+    let attached = match attached_files(&state, &body.files, verified_user.as_deref()).await {
+        Ok(attached) => attached,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
+    };
     if let Some(subject) = &verified_user {
         // A verified end user (`--verify-jwt`) is the run's user, whatever the body said.
         record.user_id = Some(subject.clone());
@@ -130,9 +141,40 @@ pub(super) async fn start_run(
     input.run_id = Some(run_id);
     input.inputs = inputs;
     input.sys = run_sys(body.sys, verified_user);
+    #[cfg(feature = "files")]
+    if let Some(files) = attached {
+        input.sys.insert("files".to_owned(), files);
+    }
     input.conversation = to_values(body.conversation);
     input.env = workflow.env.clone();
     execute(&state, &workflow.engine, record, input, reply, traceparent(&headers)).await
+}
+
+/// The file values of the workspace files a run request attached, checked
+/// against what its caller may reach: a verified end user only their own
+/// directory. `None` when the request attached nothing.
+///
+/// @throws String - A message for a `400` response.
+#[cfg(feature = "files")]
+async fn attached_files(
+    state: &AppState,
+    references: &[String],
+    verified_user: Option<&str>,
+) -> Result<Option<Value>, String> {
+    if references.is_empty() {
+        return Ok(None);
+    }
+    let Some(api) = state.file_api.as_deref() else {
+        return Err("`files` needs the workspace API (`--workspace-api`)".to_owned());
+    };
+    let caller = match verified_user {
+        #[cfg(feature = "jwt")]
+        Some(subject) => super::auth::Caller::User(subject.to_owned()),
+        #[cfg(not(feature = "jwt"))]
+        Some(_) => super::auth::Caller::ApiKey,
+        None => super::auth::Caller::ApiKey,
+    };
+    api.attachments(&caller, references).await.map(Some)
 }
 
 /// The run's `sys` values: the caller's, with a verified end user's `sub` as

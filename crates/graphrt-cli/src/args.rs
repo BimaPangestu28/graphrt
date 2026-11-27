@@ -825,6 +825,16 @@ pub struct EvalArgs {
     pub services: ServiceArgs,
 }
 
+/// Who may use the workspace routes of `graphrt serve` (`--workspace-api`).
+#[cfg(all(feature = "serve", feature = "files"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum WorkspaceApi {
+    /// Holders of the API key.
+    Key,
+    /// Holders of the API key, and verified end users inside their own directory.
+    Users,
+}
+
 #[cfg(feature = "serve")]
 #[derive(Debug, Args)]
 pub struct ServeArgs {
@@ -846,6 +856,13 @@ pub struct ServeArgs {
     /// (`PUT /v1/knowledge/datasets/{dataset}/documents/{document}/file`).
     #[arg(long, default_value_t = 16 * 1024 * 1024)]
     pub max_upload_bytes: usize,
+    /// Serve the workspace over HTTP under `/v1/files` (list, upload, download,
+    /// delete). `key`: for the API key. `users`: also for verified end users
+    /// (`--verify-jwt`), each inside their own directory (`--workspace-per-user`).
+    /// Off unless given. Uploads are limited by `--max-upload-bytes`.
+    #[cfg(feature = "files")]
+    #[arg(long, value_enum, value_name = "WHO", requires = "workspace")]
+    pub workspace_api: Option<WorkspaceApi>,
     /// Directory for durable run records, events and snapshots (paused runs survive
     /// restarts and can be resumed by id). Defaults to `$GRAPHRT_STORE`, else in memory.
     #[arg(long, value_name = "DIR")]

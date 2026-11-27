@@ -92,6 +92,12 @@ pub struct AppState {
     /// The gateway this agent trusts (`--trust-gateway`): `/internal/v1`.
     #[cfg(feature = "trust-gateway")]
     pub(super) gateway_agent: Option<Arc<crate::gateway_agent::GatewayAgent>>,
+    /// The agents' workspace (`--workspace`), shared with the `files` tools.
+    #[cfg(feature = "files")]
+    pub(super) workspace: Option<crate::setup::ServedWorkspace>,
+    /// The workspace routes under `/v1/files` (`--workspace-api`).
+    #[cfg(feature = "files")]
+    pub(super) file_api: Option<Arc<super::files_api::FileApi>>,
 }
 
 impl AppState {
@@ -128,7 +134,48 @@ impl AppState {
             langfuse: None,
             #[cfg(feature = "trust-gateway")]
             gateway_agent: None,
+            #[cfg(feature = "files")]
+            workspace: None,
+            #[cfg(feature = "files")]
+            file_api: None,
         }
+    }
+
+    /// The workspace the served agents use, which [`AppState::with_workspace_api`] can serve.
+    #[cfg(feature = "files")]
+    pub fn with_workspace(mut self, workspace: Option<crate::setup::ServedWorkspace>) -> Self {
+        self.workspace = workspace;
+        self
+    }
+
+    /// Serve the workspace under `/v1/files` (`--workspace-api`), with uploads
+    /// of at most `max_upload_bytes`. Call after [`AppState::with_user_auth`]:
+    /// `users` needs verified user tokens.
+    ///
+    /// @throws CliError (usage) - Without a workspace, or `users` without `--workspace-per-user` and `--verify-jwt`.
+    #[cfg(feature = "files")]
+    pub fn with_workspace_api(
+        mut self,
+        who: Option<crate::args::WorkspaceApi>,
+        max_upload_bytes: usize,
+    ) -> Result<Self, CliError> {
+        let Some(who) = who else { return Ok(self) };
+        let served = self.workspace.clone().ok_or_else(|| {
+            CliError::usage("`--workspace-api` needs `--workspace DIR`: there is no workspace to serve")
+        })?;
+        #[cfg(feature = "jwt")]
+        let verifies_user_tokens = self.user_auth.is_some();
+        #[cfg(not(feature = "jwt"))]
+        let verifies_user_tokens = false;
+        let api = super::files_api::FileApi::new(served, who, verifies_user_tokens, max_upload_bytes)?;
+        self.file_api = Some(Arc::new(api));
+        Ok(self)
+    }
+
+    /// The banner line of the workspace routes, when they are served.
+    #[cfg(feature = "files")]
+    pub(super) fn file_api_line(&self) -> Option<String> {
+        self.file_api.as_deref().map(super::files_api::FileApi::describe)
     }
 
     /// Upload every stored score to Langfuse (`--langfuse-scores`). Call before

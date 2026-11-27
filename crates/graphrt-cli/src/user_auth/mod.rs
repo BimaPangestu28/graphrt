@@ -23,6 +23,8 @@
 //! - A user-token request sees only the answer stream, the final result and
 //!   pause prompts of its run ([`events`]); `--user-events all` shows every
 //!   engine event, as API-key callers get.
+//! - With `--workspace-api users` (feature `files`), the `/v1/files` routes accept
+//!   the token for the directory of its `sub` only.
 //! - Every other endpoint (run lists, events, scores, resume, knowledge...) still
 //!   needs the API key, so users cannot read each other's runs. The server
 //!   refuses to start with `--verify-jwt` unless an API key is set
@@ -196,16 +198,27 @@ impl UserAuth {
     /// @throws Response (401) - The header holds a token that does not verify.
     /// @throws Response (429) - The user is over `--user-rate-limit`.
     pub async fn admit(&self, headers: &HeaderMap) -> Result<Admission, Response> {
+        let admission = self.admit_unmetered(headers).await?;
+        if let Admission::User(verified) = &admission
+            && let Some(limiter) = &self.limiter
+            && let Err(wait) = limiter.check(&verified.subject, Instant::now())
+        {
+            return Err(too_many_requests(wait.as_secs() + 1));
+        }
+        Ok(admission)
+    }
+
+    /// Check the token in `headers` without counting the request against the
+    /// user's rate limit, which is a limit on runs. For requests that start
+    /// none (the workspace routes).
+    ///
+    /// @throws Response (401) - The header holds a token that does not verify.
+    pub async fn admit_unmetered(&self, headers: &HeaderMap) -> Result<Admission, Response> {
         let token = headers.get(&self.header).and_then(|v| v.to_str().ok()).map(strip_bearer).unwrap_or_default();
         if token.is_empty() {
             return Ok(Admission::NoToken);
         }
         let verified = self.verify(token).await.map_err(|e| unauthorized(&self.header, &e))?;
-        if let Some(limiter) = &self.limiter
-            && let Err(wait) = limiter.check(&verified.subject, Instant::now())
-        {
-            return Err(too_many_requests(wait.as_secs() + 1));
-        }
         Ok(Admission::User(verified))
     }
 

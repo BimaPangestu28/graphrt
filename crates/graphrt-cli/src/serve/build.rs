@@ -74,6 +74,9 @@ pub async fn build_state(
     {
         state.services = Some(Arc::clone(&services));
     }
+    // The same workspace the `files` tools use, so `/v1/files` shares its quota.
+    #[cfg(feature = "files")]
+    let state = state.with_workspace(services.get::<setup::ServedWorkspace>().cloned());
     // The same knowledge base the workflows use, so documents added over the API
     // are searchable by running workflows right away.
     #[cfg(feature = "rag")]

@@ -35,7 +35,7 @@ python = ["code", "graphrt-code/python"]
 doc = ["dep:graphrt-doc", "graphrt-files?/doc"]
 # File workspaces for agents (`--workspace`): the `files` tools, sandboxed to one
 # directory with quotas. With `doc`, `files/read` also extracts document text.
-files = ["dep:graphrt-files", "graphrt-core/tool-files", "graphrt-llm?/tool-files"]
+files = ["dep:graphrt-files", "dep:thiserror", "graphrt-core/tool-files", "graphrt-llm?/tool-files"]
 # Images: `vision` inputs are checked, stripped of metadata and downscaled before they
 # reach a model, `--image-tools` adds the `image` tools to a workspace and
 # `--image-model` an image generator (OpenAI images API).

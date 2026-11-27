@@ -46,6 +46,8 @@ mod delivery;
 mod errors;
 mod events;
 mod execute;
+#[cfg(feature = "files")]
+mod files_api;
 mod local_host;
 mod resume;
 mod router;
