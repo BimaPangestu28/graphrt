@@ -46,6 +46,9 @@ pub enum Error {
     /// The change is not possible in the lesson's current state.
     #[error("{0}")]
     NotAllowed(String),
+    /// A skill could not be drafted from lessons.
+    #[error("{0}")]
+    SkillDraft(String),
     /// A store file cannot be understood.
     #[error("the lesson store is damaged: {0}")]
     Damaged(String),

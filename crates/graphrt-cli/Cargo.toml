@@ -70,7 +70,7 @@ skills = ["llm", "graphrt-llm/skills", "graphrt-llm/text-model", "dep:graphrt-sk
 # Self learning (preview, opt-in): `graphrt learn` and the `learning` field of
 # `agent` nodes, served from the lesson store in `$GRAPHRT_LEARNING_DIR` or
 # `~/.graphrt/learning`. See docs/learning.md.
-learning = ["llm", "graphrt-llm/learning", "dep:graphrt-learn"]
+learning = ["llm", "graphrt-llm/learning", "graphrt-llm/text-model", "dep:graphrt-learn", "dep:graphrt-skill"]
 # `graphrt eval`: run a workflow against test cases with assertions and a CI
 # gate (JSON and JUnit reports). Pulls in `replay`. Opt-in (`--features eval`):
 # the release binaries and the GHCR image are built with it.

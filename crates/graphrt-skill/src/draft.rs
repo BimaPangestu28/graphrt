@@ -167,14 +167,18 @@ impl SkillDraft {
 
 impl SkillStore {
     /// Install a draft. Exactly [`SkillStore::install`] for a skill with one
-    /// file, with the origin set to [`OriginKind::Authored`]: the same
-    /// validation and scan, and only the grants in `options`.
+    /// file: the same validation and scan, and only the grants in `options`.
+    /// The origin is [`OriginKind::Authored`], or [`OriginKind::Learned`] when
+    /// `options` says the draft was written from lessons. It is never marked
+    /// as verified or as coming from a catalog.
     ///
     /// # Errors
     /// As [`SkillStore::install`].
     pub fn install_draft(&self, draft: &SkillDraft, mut options: InstallOptions) -> Result<SkillEntry, Error> {
         let package = package_from_skill_file(&draft.skill_file())?;
-        options.origin.kind = OriginKind::Authored;
+        if options.origin.kind != OriginKind::Learned {
+            options.origin.kind = OriginKind::Authored;
+        }
         options.origin.verified = false;
         self.install_package(&package, options)
     }
