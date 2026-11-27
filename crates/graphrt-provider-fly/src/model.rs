@@ -353,3 +353,40 @@ mod tests {
         assert!(!machine.state.is_startable());
     }
 }
+
+/// Body of `POST /apps/{app}/machines/{id}/exec`.
+#[derive(Debug, Serialize)]
+pub struct ExecRequest<'a> {
+    /// Program and arguments (no shell).
+    pub command: &'a [String],
+    /// Text written to the command's standard input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdin: Option<&'a str>,
+    /// Seconds Fly lets the command run.
+    pub timeout: u64,
+}
+
+/// Answer of `POST /apps/{app}/machines/{id}/exec`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct ExecResponse {
+    #[serde(default)]
+    pub stdout: String,
+    #[serde(default)]
+    pub stderr: String,
+    #[serde(default)]
+    pub exit_code: i64,
+}
+
+/// Body of `PUT /apps/{app}/volumes/{id}/extend`.
+#[derive(Debug, Serialize)]
+pub struct ExtendVolumeRequest {
+    pub size_gb: u32,
+}
+
+/// Answer of `PUT /apps/{app}/volumes/{id}/extend`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct ExtendVolumeResponse {
+    /// The Machine must restart before its filesystem sees the new size.
+    #[serde(default)]
+    pub needs_restart: bool,
+}

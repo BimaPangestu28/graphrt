@@ -126,6 +126,11 @@ pub struct FakeFlyState {
     replacing: BTreeMap<String, (u32, Value)>,
     /// Calls per `METHOD /path-suffix` (e.g. `POST suspend`).
     pub calls: BTreeMap<String, u32>,
+    /// Files on each volume (by volume id), written through `exec` of
+    /// `graphrt internal store-file`, by path relative to `/data/agents`.
+    pub volume_files: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
+    /// Every `exec` command, in order.
+    pub exec_commands: Vec<Vec<String>>,
     next_id: u32,
 }
 
@@ -285,6 +290,8 @@ fn handle(state: &Mutex<FakeFlyState>, request: &RecordedRequest) -> FakeRespons
         }
         ("POST", ["apps", _, "volumes"]) => create_volume(&mut state, &body),
         ("DELETE", ["apps", _, "volumes", id]) => delete_volume(&mut state, id),
+        ("PUT", ["apps", _, "volumes", id, "extend"]) => extend_volume(&mut state, id, &body),
+        ("POST", ["apps", _, "machines", id, "exec"]) => exec_machine(&mut state, id, &body),
         ("GET", ["apps", _, "secrets"]) => {
             let names: Vec<Value> = state.secrets.keys().map(|name| json!({"name": name, "digest": "d"})).collect();
             FakeResponse::json(200, &json!({ "secrets": names }))
@@ -341,6 +348,93 @@ fn create_volume(state: &mut FakeFlyState, body: &Value) -> FakeResponse {
     };
     state.volumes.push(volume.clone());
     FakeResponse::json(200, &volume.to_json())
+}
+
+fn extend_volume(state: &mut FakeFlyState, id: &str, body: &Value) -> FakeResponse {
+    let size_gb = body["size_gb"].as_u64().unwrap_or(0);
+    let machines = state.machines.clone();
+    let Some(volume) = state.volumes.iter_mut().find(|volume| volume.id == id) else {
+        return error(404, "volume not found");
+    };
+    if size_gb <= volume.size_gb {
+        return error(400, "new size must be larger than the current size");
+    }
+    volume.size_gb = size_gb;
+    let needs_restart = volume
+        .attached_machine_id
+        .as_ref()
+        .and_then(|machine_id| machines.iter().find(|machine| &machine.id == machine_id))
+        .is_some_and(|machine| machine.state == "started");
+    let volume_json = volume.to_json();
+    FakeResponse::json(200, &json!({ "needs_restart": needs_restart, "volume": volume_json }))
+}
+
+/// `exec` of `graphrt internal store-file` against the files of the Machine's volume.
+fn exec_machine(state: &mut FakeFlyState, id: &str, body: &Value) -> FakeResponse {
+    use sha2::{Digest, Sha256};
+    let command: Vec<String> =
+        body["command"].as_array().into_iter().flatten().filter_map(|part| part.as_str().map(str::to_owned)).collect();
+    state.exec_commands.push(command.clone());
+    let Some(machine) = state.machine(id).cloned() else { return error(404, "machine not found") };
+    if machine.state != "started" {
+        return error(412, "machine is not running");
+    }
+    let answer = |stdout: String, stderr: &str, exit_code: i64| {
+        FakeResponse::json(200, &json!({ "stdout": stdout, "stderr": stderr, "exit_code": exit_code }))
+    };
+    let Some(volume) = mounted_volumes(&machine.config).into_iter().next() else {
+        return answer(String::new(), "no volume mounted", 1);
+    };
+    let args: Vec<&str> = command.iter().map(String::as_str).collect();
+    let files = state.volume_files.entry(volume).or_default();
+    let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    match args.as_slice() {
+        ["graphrt", "internal", "store-file", "hash", path] => match files.get(*path) {
+            Some(bytes) => answer(format!("{}\n", hex(&Sha256::digest(bytes))), "", 0),
+            None => answer("missing\n".to_owned(), "", 0),
+        },
+        ["graphrt", "internal", "store-file", "begin", path] => {
+            files.insert(format!("{path}.part"), Vec::new());
+            answer("ok 0\n".to_owned(), "", 0)
+        }
+        ["graphrt", "internal", "store-file", "append", path, "--at", at] => {
+            let stdin = body["stdin"].as_str().unwrap_or_default();
+            let bytes: Option<Vec<u8>> = (0..stdin.len())
+                .step_by(2)
+                .map(|index| stdin.get(index..index + 2).and_then(|pair| u8::from_str_radix(pair, 16).ok()))
+                .collect();
+            let (Some(bytes), Some(part)) = (bytes, files.get_mut(&format!("{path}.part"))) else {
+                return answer(String::new(), "bad piece or no begin", 1);
+            };
+            let at: usize = at.parse().unwrap_or(usize::MAX);
+            if part.len() == at + bytes.len() {
+                return answer(format!("{}\n", part.len()), "", 0);
+            }
+            if part.len() != at {
+                return answer(String::new(), "wrong offset", 1);
+            }
+            part.extend_from_slice(&bytes);
+            answer(format!("{}\n", part.len()), "", 0)
+        }
+        ["graphrt", "internal", "store-file", "commit", path, sha256] => {
+            let Some(part) = files.remove(&format!("{path}.part")) else {
+                return answer(String::new(), "no part", 1);
+            };
+            if hex(&Sha256::digest(&part)) != *sha256 {
+                return answer(String::new(), "incomplete or damaged", 1);
+            }
+            let size = part.len();
+            files.insert((*path).to_owned(), part);
+            answer(format!("ok {size}\n"), "", 0)
+        }
+        ["graphrt", "internal", "store-file", "prune", keep @ ..] => {
+            let kept: Vec<&str> = keep.chunks(2).filter_map(|pair| pair.get(1).copied()).collect();
+            let before = files.len();
+            files.retain(|path, _| path.split('/').next().is_some_and(|dir| kept.contains(&dir)));
+            answer(format!("ok {}\n", before - files.len()), "", 0)
+        }
+        _ => answer(String::new(), "unknown command", 127),
+    }
 }
 
 fn delete_volume(state: &mut FakeFlyState, id: &str) -> FakeResponse {

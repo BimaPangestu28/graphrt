@@ -21,10 +21,10 @@ use serde::Serialize;
 
 use crate::error::{classify_fly_response, decode_error};
 use crate::model::{
-    AssignIpRequest, CreateAppRequest, CreateMachineRequest, CreateVolumeRequest, IpAssignment,
-    ListIpAssignmentsResponse, ListSecretsResponse, METADATA_DEPLOYMENT, METADATA_POOL, METADATA_VERSION, Machine,
-    MachineState, SetMetadataRequest, StopMachineRequest, UpdateMachineRequest, UpdateSecretsRequest,
-    UpdateSecretsResponse, Volume,
+    AssignIpRequest, CreateAppRequest, CreateMachineRequest, CreateVolumeRequest, ExecRequest, ExecResponse,
+    ExtendVolumeRequest, ExtendVolumeResponse, IpAssignment, ListIpAssignmentsResponse, ListSecretsResponse,
+    METADATA_DEPLOYMENT, METADATA_POOL, METADATA_VERSION, Machine, MachineState, SetMetadataRequest,
+    StopMachineRequest, UpdateMachineRequest, UpdateSecretsRequest, UpdateSecretsResponse, Volume,
 };
 use crate::token::{FlyToken, TokenOrigin};
 
@@ -292,11 +292,39 @@ impl MachinesClient {
         serde_json::from_slice(&body).map_err(|error| decode_error("created volume", &error))
     }
 
+    /// `PUT /apps/{app}/volumes/{id}/extend`: grows a volume (never shrinks).
+    ///
+    /// @returns Whether the Machine that mounts it must restart to see the new size
+    pub async fn extend_volume(&self, volume_id: &str, size_gb: u32) -> Result<bool, ProviderError> {
+        validate_volume_id(volume_id)?;
+        let path = format!("/v1/apps/{}/volumes/{volume_id}/extend", self.app_name);
+        let body = self.send(reqwest::Method::PUT, &path, Some(encode(&ExtendVolumeRequest { size_gb })?)).await?;
+        let answer: ExtendVolumeResponse =
+            serde_json::from_slice(&body).map_err(|error| decode_error("extended volume", &error))?;
+        Ok(answer.needs_restart)
+    }
+
+    /// `POST /apps/{app}/machines/{id}/exec`: runs `command` (no shell) in a started Machine.
+    ///
+    /// @param stdin - text for the command's standard input (Option<&str>)
+    /// @param timeout_secs - how long Fly lets the command run (u64)
+    /// @returns Its output and exit code; a non-zero exit code is not an error here
+    pub async fn exec_machine(
+        &self,
+        machine_id: &str,
+        command: &[String],
+        stdin: Option<&str>,
+        timeout_secs: u64,
+    ) -> Result<ExecResponse, ProviderError> {
+        let path = self.machine_path(machine_id, "/exec")?;
+        let request = ExecRequest { command, stdin, timeout: timeout_secs };
+        let body = self.send(reqwest::Method::POST, &path, Some(encode(&request)?)).await?;
+        serde_json::from_slice(&body).map_err(|error| decode_error("exec result", &error))
+    }
+
     /// `DELETE /apps/{app}/volumes/{id}`: deletes a volume and what is on it.
     pub async fn delete_volume(&self, volume_id: &str) -> Result<(), ProviderError> {
-        if volume_id.is_empty() || !volume_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') {
-            return Err(ProviderError::fatal(format!("invalid Fly volume id {volume_id:?}")));
-        }
+        validate_volume_id(volume_id)?;
         let path = format!("/v1/apps/{}/volumes/{volume_id}", self.app_name);
         self.send(reqwest::Method::DELETE, &path, None).await.map(drop)
     }
@@ -391,6 +419,13 @@ fn wait_timeout_secs(timeout: Duration) -> u64 {
 
 fn encode(body: &impl Serialize) -> Result<Vec<u8>, ProviderError> {
     serde_json::to_vec(body).map_err(|error| ProviderError::fatal(format!("encoding a Fly request: {error}")))
+}
+
+fn validate_volume_id(volume_id: &str) -> Result<(), ProviderError> {
+    if volume_id.is_empty() || !volume_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') {
+        return Err(ProviderError::fatal(format!("invalid Fly volume id {volume_id:?}")));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

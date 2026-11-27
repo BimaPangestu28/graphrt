@@ -73,6 +73,10 @@ pub enum Command {
     #[cfg(feature = "gateway")]
     #[command(name = "agent-standby", hide = true)]
     AgentStandby,
+    /// Internal: tooling run inside a deployed Machine (e.g. writing an agent onto its volume).
+    #[cfg(feature = "bundle")]
+    #[command(name = "internal", hide = true, subcommand)]
+    Internal(crate::store_file::InternalCommand),
 }
 
 /// Options of `graphrt telemetry`.

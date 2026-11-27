@@ -559,3 +559,109 @@ async fn removing_the_deployment_removes_the_volume_with_the_app() {
 
     assert!(fake.state().volumes.is_empty(), "deleting a Fly app deletes its volumes");
 }
+
+/// A bundle too large for the Machine config: random-ish bytes of `size`.
+fn large_agent(version: &str, size: usize, seed: u8) -> DeployRequest {
+    let mut request = request(version, 10_000);
+    let mut state = u32::from(seed).wrapping_mul(2_654_435_761).wrapping_add(1);
+    let contents = (0..size)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect();
+    request.agent = AgentFile { file_name: "support.grt".into(), contents };
+    request
+}
+
+fn exec_steps(fake: &FakeFly) -> Vec<String> {
+    fake.state().exec_commands.iter().map(|command| command.get(3).cloned().unwrap_or_default()).collect()
+}
+
+#[tokio::test]
+async fn an_agent_larger_than_a_machine_config_is_uploaded_onto_the_store_volume() {
+    let fake = FakeFly::start_empty().await;
+    let direct = direct(&fake);
+    let first = large_agent("v1", 5 * 1024 * 1024 + 123, 1);
+    let mut events = Vec::new();
+    let outcome = direct.deploy(&first, &mut |event| events.push(event)).await.unwrap();
+    assert_eq!(outcome.version, "v1");
+
+    let state = fake.state();
+    let volume = state.volume_named("graphrt_store").expect("a store volume").clone();
+    assert_eq!(volume.size_gb, 2, "room for the agent and the next one");
+    let machine = state.machine_named("graphrt-store").expect("the store Machine").clone();
+    assert_eq!(machine.metadata("graphrt_role"), Some("current"));
+    assert!(machine.config.get("files").is_none(), "the agent is not in the Machine config");
+    assert_eq!(machine.config.pointer("/guest/memory_mb").and_then(|value| value.as_u64()), Some(512));
+    let command = command_of(&machine);
+    assert!(command[1].starts_with("/data/agents/"), "{command:?}");
+    assert!(!command.contains(&"--store".to_owned()), "the volume only holds the agent: {command:?}");
+    let files = state.volume_files.get(&volume.id).expect("files on the volume");
+    let dir = command[1].trim_start_matches("/data/agents/");
+    assert_eq!(files.get(&format!("{dir}/support.grt")), Some(&first.agent.contents), "byte for byte");
+    let steps: Vec<String> = state.exec_commands.iter().map(|command| command[3].clone()).collect();
+    // hash, begin, 3 pieces of 2 MiB, commit, then prune after promotion.
+    assert_eq!(steps, ["hash", "begin", "append", "append", "append", "commit", "prune"]);
+    drop(state);
+    let uploading = events.iter().filter(|event| event.message.starts_with("Uploading the agent")).count();
+    assert_eq!(uploading, 3, "one progress line per piece");
+    let started = events.iter().find(|event| event.step == Step::Starting && event.status == StepStatus::Done).unwrap();
+    assert!(started.message.contains("uploaded onto the store volume"), "{}", started.message);
+
+    // The same agent again (a new version label): nothing is uploaded.
+    fake.state().exec_commands.clear();
+    let again = large_agent("v2", 5 * 1024 * 1024 + 123, 1);
+    direct.deploy(&again, &mut |_| {}).await.unwrap();
+    assert_eq!(exec_steps(&fake), ["hash", "prune"]);
+
+    // A changed agent goes into a new directory; the old one is pruned after promotion.
+    fake.state().exec_commands.clear();
+    let changed = large_agent("v3", 3 * 1024 * 1024, 2);
+    direct.deploy(&changed, &mut |_| {}).await.unwrap();
+    let state = fake.state();
+    let files = state.volume_files.get(&volume.id).unwrap();
+    assert_eq!(files.len(), 1, "only the serving agent stays: {:?}", files.keys().collect::<Vec<_>>());
+    assert_eq!(files.values().next(), Some(&changed.agent.contents));
+    let machine = state.machine_named("graphrt-store").unwrap();
+    assert!(command_of(machine)[1].ends_with(files.keys().next().unwrap().split('/').next().unwrap()));
+}
+
+#[tokio::test]
+async fn a_large_agent_grows_the_store_volume_and_an_unhealthy_one_puts_the_previous_version_back() {
+    let fake = FakeFly::start_empty().await;
+    let direct = direct(&fake);
+    direct.deploy(&monitored("v1", 1_000), &mut |_| {}).await.unwrap();
+    assert_eq!(fake.state().volume_named("graphrt_store").unwrap().size_gb, 1);
+    let old_command = command_of(fake.state().machine_named("graphrt-store").unwrap());
+    assert_eq!(old_command[1], "/workflows");
+
+    // A large agent on the same store Machine, whose version never gets healthy.
+    fake.state().failing_checks = true;
+    let mut big = large_agent("v2", 2 * 1024 * 1024, 4);
+    big.serve = monitored("v2", 2_000).serve;
+    let (_, result) = deploy(&direct, &big).await;
+    assert_eq!(result, Err(ErrorCode::HealthCheckFailed));
+    let state = fake.state();
+    let volume = state.volume_named("graphrt_store").unwrap().clone();
+    assert_eq!(volume.size_gb, 2, "grown for the agent");
+    assert_eq!(state.count("PUT extend"), 1);
+    let machine = state.machine_named("graphrt-store").unwrap();
+    assert_eq!(command_of(machine), old_command, "the previous version serves again");
+    assert!(state.volume_files[&volume.id].values().any(|file| file == &big.agent.contents), "uploaded intact");
+}
+
+#[tokio::test]
+async fn a_large_agent_needs_a_region_and_keeps_its_volume() {
+    let fake = FakeFly::start_empty().await;
+    let direct = direct(&fake);
+    let mut no_region = large_agent("v1", 2 * 1024 * 1024, 5);
+    no_region.region = String::new();
+    let (_, result) = deploy(&direct, &no_region).await;
+    assert_eq!(result, Err(ErrorCode::InvalidInput));
+    let mut dropping = large_agent("v1", 2 * 1024 * 1024, 5);
+    dropping.drop_store = true;
+    let (_, result) = deploy(&direct, &dropping).await;
+    assert_eq!(result, Err(ErrorCode::InvalidInput));
+    assert!(fake.state().volumes.is_empty());
+}

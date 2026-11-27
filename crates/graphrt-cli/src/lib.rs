@@ -89,6 +89,8 @@ pub mod sse_ids;
 pub mod standby;
 #[cfg(feature = "serve")]
 pub mod store;
+#[cfg(feature = "bundle")]
+pub mod store_file;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 #[cfg(feature = "jwt")]
@@ -236,6 +238,8 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         Command::Serve(args) => block_on_serve(serve_from(Some(args))),
         #[cfg(feature = "gateway")]
         Command::AgentStandby => block_on_serve(serve_from(None)),
+        #[cfg(feature = "bundle")]
+        Command::Internal(command) => store_file::internal(command),
     }
 }
 

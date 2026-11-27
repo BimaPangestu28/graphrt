@@ -40,6 +40,7 @@ mod machine_config;
 mod machine_limit;
 mod serve_options;
 mod status;
+mod upload;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -51,7 +52,9 @@ use crate::client::{ClientPolicy, MachinesClient, PUBLIC_API_BASE_URL};
 use crate::token::TokenOrigin;
 
 pub use lifecycle::{DeployFailure, Progress, ServingVersion};
-pub use machine_config::{AGENT_PORT, MAX_AGENT_FILE_BYTES, WORKFLOW_DIR, app_name_for, workflow_name_of};
+pub use machine_config::{
+    AGENT_PORT, AGENTS_DIR, MAX_AGENT_FILE_BYTES, UPLOAD_PIECE_BYTES, WORKFLOW_DIR, app_name_for, workflow_name_of,
+};
 pub use serve_options::{
     ChatAccess, ChatOptions, DirectChannel, STORE_PATH, STORE_VOLUME_GB, STORE_VOLUME_NAME, ServeOptions, ServeSummary,
     StoreSummary,
@@ -98,7 +101,8 @@ pub struct AgentFile {
     /// File name under [`WORKFLOW_DIR`], e.g. `support.grt` or `support.yaml`;
     /// `graphrt serve` names the workflow after its stem.
     pub file_name: String,
-    /// File contents (at most [`MAX_AGENT_FILE_BYTES`]).
+    /// File contents. Above [`MAX_AGENT_FILE_BYTES`] the agent is uploaded onto
+    /// the deployment's store volume instead of travelling in the Machine config.
     pub contents: Vec<u8>,
 }
 

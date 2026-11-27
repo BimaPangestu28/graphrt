@@ -19,12 +19,13 @@ default = ["deploy"]
 deploy = []
 # `FlyDirect` (`graphrt deploy --target fly --direct`): an app served straight
 # by the Fly proxy, no gateway: public IPs, Fly secrets, per-version Machines
-# with the agent bundle in `config.files`, health-checked promotion, rollback,
+# with the agent bundle in `config.files` (or, above 1 MiB, uploaded onto the
+# store volume), health-checked promotion, rollback,
 # pause/resume and removal.
-direct = []
+direct = ["dep:sha2"]
 # The stateful fake Machines API (`fake::FakeFly`) for tests of this crate and
 # of the CLI. Never in a binary.
-fake = ["graphrt-provider-api/conformance"]
+fake = ["graphrt-provider-api/conformance", "dep:sha2"]
 
 [dependencies]
 graphrt-provider-api = { workspace = true, features = ["http"] }
@@ -33,6 +34,8 @@ graphrt-provider-api = { workspace = true, features = ["http"] }
 reqwest = { workspace = true, features = ["rustls-no-provider"] }
 serde.workspace = true
 serde_json.workspace = true
+# SHA-256 of an agent uploaded onto the store volume (feature `direct`).
+sha2 = { version = "0.11", optional = true, default-features = false }
 tokio = { workspace = true, features = ["time", "sync"] }
 
 [dev-dependencies]
