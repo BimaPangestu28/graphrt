@@ -111,5 +111,9 @@ fn self_authenticating_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // Feedback authorizes itself: a verified end-user JWT for the user's own runs, else the key.
     #[cfg(feature = "scores")]
     let routes = routes.route("/v1/runs/{run_id}/feedback", post(crate::scores::post_feedback));
+    // The workspace routes exist only with `--workspace-api`, and authorize themselves:
+    // the API key, or a verified end user inside their own directory.
+    #[cfg(feature = "files")]
+    let routes = if state.file_api.is_some() { routes.merge(super::files_api::routes()) } else { routes };
     routes
 }

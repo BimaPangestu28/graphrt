@@ -118,6 +118,13 @@ They are off without the flag.
 - **Per user.** With `--workspace-per-user` every call needs a scope from the
   agent's `tool_context`, which the model cannot see or change. Each scope is
   its own directory and quota.
+- **Over HTTP only when asked.** `serve --workspace-api` adds `/v1/files`.
+  Paths from clients are checked like paths from a model, a verified end
+  user reaches only the directory of their own `sub`, uploads stop at
+  `--max-upload-bytes`, and every download is sent with `nosniff` and a
+  sandboxing `Content-Security-Policy`. HTML, SVG and programs are always
+  `application/octet-stream` attachments. The server refuses to start with
+  the routes on an address other hosts can reach unless an API key is set.
 - **File content is data.** `read` frames content between boundaries that
   change on every call. That lowers the odds of a prompt injection, it does
   not remove them: put destructive and outbound tools under
@@ -248,6 +255,8 @@ They honour standard proxy environment variables, except the OTel exporter and
 - **Limits.**
   - Request bodies: 2 MiB (`--max-body-bytes`).
   - Knowledge uploads: 16 MiB (`--max-upload-bytes`), one ingest at a time.
+  - Workspace uploads (`--workspace-api`): the same limit, four held in
+    memory at once, dropped after 30 seconds without data.
   - Executing runs: at most 256 at once (`--max-active-runs`); further starts
     and resumes get `429`.
   - Stored runs: `--max-runs` keeps 1,000 in memory; with `--store`, use
@@ -386,6 +395,7 @@ See [learning.md](learning.md).
 | Code limits ceiling | register a `CodeLimits` service (embedders) | 10 s / 64 MiB / 1 MiB stack / 4 MiB result |
 | Python subprocess | `--allow-python-subprocess` | off |
 | Agent file workspace | `--workspace`, `--workspace-read-only`, `--workspace-per-user` | off |
+| Workspace over HTTP | `--workspace-api key\|users` | off |
 | Image tools and generation | `--image-tools`, `--image-model` | off |
 | Image limits | `ImageLimits` (embedders) | 20 MiB, 25 megapixels, 1,568 px to models, metadata removed |
 | Concurrent runs | `--max-active-runs` | 256 |

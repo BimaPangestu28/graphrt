@@ -249,6 +249,24 @@ collect files from tool results are behind the `tool-files` feature of
 `graphrt-core` and `graphrt-llm`. See
 [What it costs a build that does not use it](#what-it-costs-a-build-that-does-not-use-it).
 
+### 12. HTTP routes over the same workspace
+
+Added 2026-11-27. A chat client needs to hand files to an agent and fetch
+results, and until now a host had to write into the directory itself.
+
+| Question | Options | Decision |
+| --- | --- | --- |
+| Where does the path travel? | URL path (`/v1/files/a/b.csv`) or query (`?path=a/b.csv`) | Query. Clients and proxies normalise `..` in URL paths, which would turn a refused path into a different file. In the query the text arrives as sent and `WorkspacePath` refuses it. |
+| Upload format | `multipart/form-data` or the raw body | Raw body with `PUT`. No multipart parser to feed with untrusted input, no new dependency, and the size is known from one header. |
+| On by default? | With `--workspace`, or with its own flag | Own flag, `--workspace-api`. A server that already runs with `--workspace` does not grow a way to read and replace its files by being upgraded. |
+| End users | Never, always, or opt in | `--workspace-api users`, which needs `--workspace-per-user` and `--verify-jwt`. The directory is chosen by the verified `sub`, never by the request. |
+| How is an upload bounded? | Buffer then check, or count while reading | Counted per piece against the smaller of `--max-upload-bytes` and the file limit, with an idle and a total time limit and four uploads in memory at once. `FileStore::write` takes whole buffers, so the memory an upload needs is its size. Four at 16 MiB is 64 MiB at worst. |
+| How is a download made safe? | Trust the stored type, or decide per class | Per class of the sniffed type. Active content and programs lose their type and are attachments whatever the client asks. Only raster images and text can be inline, text always as `text/plain`. `nosniff` and `Content-Security-Policy: sandbox` on everything. |
+| How does a client name a result? | By path only, or also by reference | Both. A file value carries `reference` and not the path a user sees, so `?ref=` takes it as it is. One download route serves chat attachments, agent results and whatever a UI block links to. |
+| How does an upload reach a model? | The client sends file JSON, or the server makes the file value | The run request takes `files: [reference]` and the server builds the file values after checking each against what the caller may reach. Untrusted JSON still never becomes a file value. |
+
+Range requests and resumable uploads are left out. Files are at most 32 MiB.
+
 ## Threat model
 
 Who is trusted: the operator (who starts the runtime, picks the workspace
@@ -274,6 +292,17 @@ the host file system goes.
 | F14 | Forged file references (a model or a plugin returns `{"$file": true, "reference": ...}`) | Untrusted JSON never becomes a file value. `workspace:` references are parsed as workspace paths and checked against the resolver's own view. | `graphrt-core` `tool::collect_files` doc test, `resolver::tests::reads_workspace_references_and_ignores_others` |
 | F15 | A crash that leaves half a file | Writes go to a hidden temporary file that is renamed into place | `dir_store::writes_leave_no_temporary_files_and_hashes_stream`, `concurrent_writers_never_tear_a_file` |
 | F16 | Heavy file work stalling every other run | Disk I/O, hashing and extraction run on the blocking pool | `dir_store::heavy_file_work_does_not_block_the_async_worker` |
+| H1 | Path traversal through the HTTP routes (`../`, encoded dots, absolute paths, backslashes, NUL, hidden names, the scopes directory, forged references) | The path is a query value parsed by `WorkspacePath`. References are parsed the same way and looked up inside the caller's view. | CLI `serve_files::a_path_from_a_client_never_leaves_the_workspace`, `a_link_planted_in_the_workspace_is_not_served` |
+| H2 | Calling the routes without permission, or on a server that never asked for them | Off without `--workspace-api`. The API key on every route, checked before the body is read. No start on a reachable address without a key. A user token opens nothing in `key` mode, and an invalid token is refused next to a valid key. | `serve_files::the_routes_do_not_exist_unless_the_api_is_turned_on`, `every_route_needs_the_api_key`, `an_invalid_user_token_opens_nothing_even_next_to_the_key`, `opening_the_api_to_users_needs_a_directory_per_user` |
+| H3 | One end user reading, replacing or deleting another user's files over HTTP | The directory comes from the verified `sub`. A user token cannot send `scope`. A reference of another scope answers `404`. | `serve_files::users_only_reach_their_own_directory` |
+| H4 | Stored XSS: an uploaded or generated HTML or SVG file opened from the server's origin | Type from content. Active content is `application/octet-stream` and `attachment` even with `inline=true`. `nosniff`, `Content-Security-Policy: sandbox; default-src 'none'`, `Cross-Origin-Resource-Policy: same-origin` on every download. Text is inline only as `text/plain`. | `serve_files::active_content_is_a_download_and_never_a_page`, `files_api::tests::active_content_is_never_delivered_inline_or_with_its_type`, `only_images_and_plain_text_are_shown_inline` |
+| H5 | Header injection through a file name (`"`, `;`, CR LF, non ASCII) in `Content-Disposition` | ASCII fallback with every other character replaced, and the exact name percent encoded in `filename*` | `files_api::tests::a_file_name_cannot_break_out_of_the_disposition_header` |
+| H6 | Memory or disk exhaustion by uploads: a huge body, a body without a length, many at once | Refused from `Content-Length`, counted while it arrives, four in memory at once, then the workspace quota | `serve_files::an_upload_over_the_limit_is_refused_and_nothing_is_stored`, `files_api::tests::an_upload_stops_at_the_limit_without_buffering_the_rest` |
+| H7 | Slow upload that holds a slot forever | 30 seconds without data or 10 minutes in total ends the upload with `408` | `files_api::tests::an_upload_that_stalls_is_dropped` |
+| H8 | Uploading a program under a harmless name | The same content check as `files/write` | `serve_files::programs_cannot_be_uploaded_whatever_they_are_called` |
+| H9 | Attaching another user's file to a run, or forging a file value in the request | References are resolved inside the caller's view, at most 16 per run. File JSON in `inputs` and `sys` stays plain data. | `serve_files::a_run_cannot_attach_another_users_file_or_forge_one`, `an_attached_upload_reaches_the_run_as_a_file_value` |
+| H10 | Changing a read only workspace over HTTP | `--workspace-read-only` refuses uploads and deletes with `403` | `serve_files::a_read_only_workspace_serves_files_and_refuses_changes` |
+| H11 | File routes eating the run budget of a user, or bypassing it | Token verification without the run rate limiter. Storage is bounded by the quota of the user's directory. | `serve_files::file_requests_do_not_spend_the_run_rate_limit` |
 | I1 | Image bomb: a small file that declares a huge canvas | Header probe refuses the pixel count before any decoder runs (5.5 µs for a 64 megapixel PNG). Decoder limits on width, height and allocation are a second line. | `probe::a_huge_canvas_is_refused_from_the_header_alone`, `tools::bombs_spoofed_files_and_escapes_are_error_results`, `prepare::spoofed_vision_inputs_are_refused` |
 | I2 | Malformed image aimed at a decoder or at our own header parsers | Pure Rust decoders, no `unsafe` in the workspace, checked indexing only, decoding behind a panic boundary on the blocking pool | `probe::truncated_files_fail_cleanly_at_every_length`, `probe::corrupted_files_never_panic_or_exceed_the_limits` |
 | I3 | Image type spoofing (SVG, HTML, HEIC or a program sent as `image/png`) | Only PNG, JPEG, GIF and WebP by magic bytes reach a model or a tool. The media type sent to a provider is the detected one. | `probe::spoofed_and_unsupported_content_is_refused`, `prepare::spoofed_vision_inputs_are_refused`, `nodes::a_spoofed_vision_input_stops_the_node_before_the_model_is_called`, `graphrt-llm` `a_refused_image_fails_the_node_and_is_never_sent_as_it_was`, CLI `image_tools_inspect_and_thumbnail_a_workspace_image` |
@@ -300,6 +329,11 @@ the host file system goes.
 - **Quota drift.** The usage of a workspace is counted once and then kept by
   the writes that go through it. Files changed behind its back are counted
   again on the next start (`Workspace::recount`).
+- **Request rate on the file routes.** They are bounded in size and in
+  memory, not in requests per second. Put a rate limit in the proxy in front
+  of a public server.
+- **Cookies.** The routes take bearer credentials only. A host that puts a
+  cookie based login in front of them must add its own CSRF protection.
 - **CPU time of document extraction.** Bounded by size limits, not by a
   timer. Run agents with a node or run timeout.
 
@@ -359,6 +393,23 @@ machine, one core.
 - Sending 0.39 MiB instead of 2.5 MiB is the larger gain: less upload, and
   no tokens spent on pixels the provider would scale away.
 
+### HTTP routes
+
+`graphrt serve --workspace-api key`, release build, loopback, same machine,
+`curl`, medians of three.
+
+| What | Result |
+| --- | --- |
+| Upload 32 MiB (random bytes) | 26 ms |
+| Download 32 MiB | 15 ms |
+| Download a 16 byte file | 0.2 ms |
+| Peak memory of the server during five 32 MiB downloads | 2.3 MiB above idle |
+| Peak memory during one 32 MiB upload | 34 MiB above idle, released after |
+
+The routes are behind the `files` feature of the CLI, which the budgeted
+builds (`agent-minimal`, `agent-slim`) do not enable, so their binaries do
+not change by a byte.
+
 ### What it costs a build that does not use it
 
 Nothing, and that took a decision. The first version added the `files`
@@ -401,8 +452,6 @@ is used: nothing is opened, registered or allocated at start without
   agent, `FileTools` and `ImageTools` in the tool registry, a
   `VisionPreparer` in the services, the `files` output for the results), but
   it has to follow the runtime version the app builds against.
-- HTTP routes to upload to and download from a workspace on `graphrt serve`.
-  Today a host puts files in the directory or uses the crate.
 - Creating PDF and Office files. Agents write text formats.
 - Searching inside documents, and regular expression search.
 - Object storage backends in the repository. The trait is ready for them.

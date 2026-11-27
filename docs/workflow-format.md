@@ -665,8 +665,11 @@ render: an object whose `"$ui"` key names its kind.
 The engine passes blocks through as ordinary values;
 `graphrt_core::ui::collect_ui_blocks` finds them in an output (the value
 itself, or up to three levels down in arrays and objects). Kinds, JSON Schemas
-and validation (`adaptive_card`, `chart`, `table`, `stats`) are in the
+and validation (`adaptive_card`, `chart`, `table`, `stats`, `diagram`) are in the
 `graphrt-ui` crate: hosts validate every block there before rendering it and
 show nothing for blocks that fail. Blocks reach the host as node outputs, the
-`agent` node's `ui` output, and the `human-input` node's `card`.
+`agent` node's `ui` output, and the `human-input` node's `card`. A host that
+cannot draw blocks (a WhatsApp or SMS channel) sends
+`graphrt_ui::fallback::to_text` instead: text, with a card's submit buttons as
+numbered choices.
 

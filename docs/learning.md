@@ -98,6 +98,23 @@ The risk check is a set of pattern checks and can be evaded by rewording. That
 is why it never decides alone: it can only send a lesson to the owner, and the
 rule about derived content does not depend on it.
 
+## From lessons to a skill
+
+Lessons suit a preference or a fact. When three or more approved lessons
+describe how to do a task (kinds `procedure` and `correction`), a model can
+write them up as one skill the agent loads when that task comes up:
+
+```sh
+graphrt learn skill support-bot --model openai/gpt-4.1 --out drafts
+graphrt skill install drafts/<name>
+```
+
+Only lessons that are approved and apply to every run are used. A proposal is
+not trusted yet, and one user's lesson may hold that user's data, which must
+not end up in a skill every run can load. The draft is a normal skill draft:
+a person reads it, the same scan runs, and installing grants no tool. See
+[skills.md](skills.md#writing-a-skill-from-plain-language).
+
 ## `graphrt learn`
 
 Every subcommand takes `--dir <DIR>` (the lesson store), `--json`, and
@@ -114,7 +131,8 @@ Every subcommand takes `--dir <DIR>` (the lesson store), `--json`, and
 | `graphrt learn delete AGENT ID` | Delete a lesson for good. |
 | `graphrt learn forget AGENT --user U` / `--run R` | Delete everything a user taught and everything about them, or everything from one run. |
 | `graphrt learn feedback AGENT --run R --comment "<text>" [--user U [--authenticated]]` | Record feedback. Nothing is learned yet. |
-| `graphrt learn distill AGENT` | Turn recorded feedback into proposals. |
+| `graphrt learn distill AGENT [--model P/N] [--providers FILE]` | Turn recorded feedback into proposals. With `--model`, a model also suggests lessons from the recorded runs. Those are `derived` and always wait for approval. |
+| `graphrt learn skill AGENT --model P/N [--tool T]... [--out DIR]` | Write a skill draft from the procedures the agent learned. Review it, then `graphrt skill install`. |
 | `graphrt learn policy AGENT [--auto-approve BOOL]` | Show or change the policy. |
 | `graphrt learn audit AGENT` | The history of changes. |
 
@@ -142,8 +160,10 @@ learner.observe(Observation {
     at_ms: 0,
 })?;
 
-// Later, when idle: propose. Pass a `Distiller` to let a model suggest lessons too.
-let report = learner.distill("support-bot", None).await?;
+// Later, when idle: propose. A `ModelDistiller` lets a model suggest lessons too
+// (any `graphrt_core::text_model::TextModel`, e.g. `graphrt_llm::text_model::ChatTextModel`).
+let distiller = ModelDistiller::new(Arc::new(ChatTextModel::new(chat_model, "gpt-4.1")));
+let report = learner.distill("support-bot", Some(&distiller)).await?;
 
 // The review screen.
 let waiting = store.list("support-bot", &LessonFilter { status: Some(LessonStatus::Proposed), ..Default::default() })?;
@@ -157,10 +177,17 @@ store.decide("support-bot", &waiting[0].id, Decision::Approve, "dewi")?;
 | `LessonStore::decide`, `edit`, `promote`, `delete`, `forget` | Approve, correct, widen, remove |
 | `LessonStore::policy`, `set_policy`, `audit` | Settings and history |
 | `Learner::observe`, `pending`, `distill` | Capture and propose |
+| `ModelDistiller::new` | A model that suggests lessons, for `Learner::distill` |
+| `draft_skill_from_lessons`, `procedure_lessons` | A skill draft from learned procedures. Install it with `SkillStore::install_draft` and origin `learned` |
 | `LessonStore::into_service` | The `Lessons` service `agent` nodes look up |
 
 `Lesson`, `AuditEntry` and `LearningPolicy` serialize to JSON with stable field
 names, and the CLI prints the same shapes with `--json`.
+
+The model behind a `ModelDistiller` reads run excerpts, which can hold planted
+text. It gets them as a quoted block, and whatever it answers becomes a
+`derived` proposal tied to the user of the run it names. No answer can make a
+lesson approve itself or apply to everyone.
 
 Things a host must do itself:
 

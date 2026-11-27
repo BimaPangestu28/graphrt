@@ -40,6 +40,17 @@ pub struct ServiceOptions {
     pub capture_content: bool,
 }
 
+/// The workspace the agents use (`--workspace`), kept in the host services so
+/// other parts of the host (the `/v1/files` routes of `serve`) share its quota.
+#[cfg(feature = "files")]
+#[derive(Clone, Debug)]
+pub struct ServedWorkspace {
+    /// The unscoped workspace.
+    pub workspace: graphrt_files::Workspace,
+    /// `--workspace-per-user`: every user has a directory of their own.
+    pub per_user: bool,
+}
+
 /// `--workspace` and its modifiers.
 #[cfg(feature = "files")]
 #[derive(Clone, Debug, Default)]
@@ -251,7 +262,10 @@ pub async fn services(
     #[cfg(feature = "files")]
     if let Some(workspace) = &options.workspace {
         // Before `--files-dir`, which would look for a `workspace:` reference on disk.
-        files = files.then(install_workspace(workspace, &options.all_vars(), &mut plugin_tools)?);
+        let (served, resolver) = install_workspace(workspace, &options.all_vars(), &mut plugin_tools)?;
+        files = files.then(resolver);
+        // `graphrt serve --workspace-api` serves the same workspace, so the quota counts once.
+        services.insert(served);
     }
     if let Some(dir) = &options.files_dir {
         if !dir.is_dir() {
@@ -325,7 +339,7 @@ fn install_workspace(
     options: &WorkspaceOptions,
     vars: &[(String, String)],
     tools: &mut graphrt_core::tool::ToolRegistry,
-) -> Result<Arc<dyn graphrt_core::file::FileResolver>, CliError> {
+) -> Result<(ServedWorkspace, Arc<dyn graphrt_core::file::FileResolver>), CliError> {
     use graphrt_files::{FileTools, PROVIDER, Workspace, WorkspaceLimits, WorkspaceResolver};
     let limits = WorkspaceLimits { read_only: options.read_only, ..WorkspaceLimits::default() };
     let workspace = Workspace::dir(&options.dir, limits)
@@ -339,6 +353,7 @@ fn install_workspace(
     install_image_tools(options, vars, &workspace, tools)?;
     #[cfg(not(feature = "image"))]
     let _ = vars;
+    let served = ServedWorkspace { workspace: workspace.clone(), per_user: options.per_user };
     let file_tools = FileTools::new(workspace.clone());
     let (file_tools, resolver) = if options.per_user {
         (file_tools.scoped_by_context(), WorkspaceResolver::across_scopes(workspace))
@@ -346,7 +361,7 @@ fn install_workspace(
         (file_tools, WorkspaceResolver::new(workspace))
     };
     tools.add(PROVIDER, Arc::new(file_tools));
-    Ok(Arc::new(resolver))
+    Ok((served, Arc::new(resolver)))
 }
 
 /// Register the `image` tool provider over the workspace (`--image-tools`),

@@ -509,8 +509,36 @@ pub enum LearnCommand {
         #[arg(long, requires = "user")]
         authenticated: bool,
     },
-    /// Turn recorded feedback into lesson proposals.
-    Distill { agent: String },
+    /// Turn recorded feedback into lesson proposals. With `--model`, a model
+    /// also suggests lessons from the recorded runs. Those always wait for
+    /// approval.
+    Distill {
+        agent: String,
+        /// A model that suggests lessons (`provider/name`).
+        #[arg(long, value_name = "PROVIDER/NAME")]
+        model: Option<String>,
+        /// Model providers file (YAML or JSON) layered over the environment-based providers.
+        #[arg(long, value_name = "FILE", requires = "model")]
+        providers: Option<PathBuf>,
+    },
+    /// Write a skill draft from the procedures the agent learned (approved
+    /// lessons that apply to every run). The folder is then reviewed and
+    /// installed with `graphrt skill install`.
+    Skill {
+        agent: String,
+        /// The model that writes the draft (`provider/name`).
+        #[arg(long, value_name = "PROVIDER/NAME")]
+        model: String,
+        /// A tool the skill may ask for (`provider/tool`). Asking grants nothing.
+        #[arg(long = "tool", value_name = "TOOL")]
+        tools: Vec<String>,
+        /// Directory to write `<name>/SKILL.md` into.
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        out: PathBuf,
+        /// Model providers file (YAML or JSON) layered over the environment-based providers.
+        #[arg(long, value_name = "FILE")]
+        providers: Option<PathBuf>,
+    },
     /// Show the agent's learning policy, or change automatic approval.
     Policy {
         agent: String,
@@ -825,6 +853,16 @@ pub struct EvalArgs {
     pub services: ServiceArgs,
 }
 
+/// Who may use the workspace routes of `graphrt serve` (`--workspace-api`).
+#[cfg(all(feature = "serve", feature = "files"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum WorkspaceApi {
+    /// Holders of the API key.
+    Key,
+    /// Holders of the API key, and verified end users inside their own directory.
+    Users,
+}
+
 #[cfg(feature = "serve")]
 #[derive(Debug, Args)]
 pub struct ServeArgs {
@@ -846,6 +884,13 @@ pub struct ServeArgs {
     /// (`PUT /v1/knowledge/datasets/{dataset}/documents/{document}/file`).
     #[arg(long, default_value_t = 16 * 1024 * 1024)]
     pub max_upload_bytes: usize,
+    /// Serve the workspace over HTTP under `/v1/files` (list, upload, download,
+    /// delete). `key`: for the API key. `users`: also for verified end users
+    /// (`--verify-jwt`), each inside their own directory (`--workspace-per-user`).
+    /// Off unless given. Uploads are limited by `--max-upload-bytes`.
+    #[cfg(feature = "files")]
+    #[arg(long, value_enum, value_name = "WHO", requires = "workspace")]
+    pub workspace_api: Option<WorkspaceApi>,
     /// Directory for durable run records, events and snapshots (paused runs survive
     /// restarts and can be resumed by id). Defaults to `$GRAPHRT_STORE`, else in memory.
     #[arg(long, value_name = "DIR")]
