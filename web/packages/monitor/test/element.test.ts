@@ -174,6 +174,10 @@ test("a paired device opens the link and sees only what it may do", async () => 
       ["Settings", false],
     ],
   );
+  // It has no inbox: asking for it shows the runs.
+  monitor.show({ view: "approvals" });
+  assert.equal(view(root, 1).hidden, true);
+  assert.equal(view(root, 0).hidden, false);
   monitor.show({ view: "settings" });
   const settings = view(root, 3);
   assert.ok(settings.textContent.includes('Paired as "wall display"'));

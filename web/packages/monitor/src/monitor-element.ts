@@ -379,6 +379,19 @@ export class GraphrtMonitorElement extends BaseElement {
       return;
     }
     const session = this.#session;
+    // A view the person may not use (a device that only reads runs has no
+    // inbox) gives way to one they may.
+    if (session !== undefined) {
+      const inRuns = view === "runs" || view === "run";
+      if (view === "approvals" && !session.canResolve) {
+        this.#go({ view: session.canReadRuns ? "runs" : "settings" }, true);
+        return;
+      }
+      if (inRuns && !session.canReadRuns) {
+        this.#go({ view: session.canResolve ? "approvals" : "settings" }, true);
+        return;
+      }
+    }
     for (const [name, tab] of Object.entries(parts.tabs)) {
       const current = name === view || (name === "runs" && view === "run");
       if (current) {
