@@ -23,6 +23,13 @@
 //! # }
 //! ```
 
+/// Keeping a conversation inside the model's context window (feature `context`).
+///
+/// Public only for the benchmark in `examples/context_bench.rs`, not a stable
+/// API: workflows use the `context_window` key of the `agent` and `llm` nodes.
+#[cfg(feature = "context")]
+#[doc(hidden)]
+pub mod context;
 pub mod credential_config;
 pub mod credentials;
 pub mod error;

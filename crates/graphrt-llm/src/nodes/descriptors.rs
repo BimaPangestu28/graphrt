@@ -56,7 +56,7 @@ pub(crate) fn llm() -> NodeDescriptor {
              conversation memory and structured (JSON Schema) output. Streams `text` and `reasoning`.",
         )
         .schema(object(
-            json!({
+            with_context_window(json!({
                 "model": model(),
                 "prompt_template": {
                     "oneOf": [ { "type": "array", "items": prompt_message() }, prompt_message() ]
@@ -68,7 +68,7 @@ pub(crate) fn llm() -> NodeDescriptor {
                 "structured_output_enabled": { "type": "boolean" },
                 "structured_output_switch_on": { "type": "boolean" },
                 "reasoning_format": { "type": "string", "enum": ["tagged", "separated"], "default": "tagged" }
-            }),
+            })),
             &["model"],
         ))
         .output(OutputDescriptor::new("text", ValueType::String).streaming())
@@ -76,6 +76,48 @@ pub(crate) fn llm() -> NodeDescriptor {
         .output(usage_output())
         .output(OutputDescriptor::new("finish_reason", ValueType::String))
         .output(OutputDescriptor::new("structured_output", ValueType::Object).describe("Parsed JSON when structured output is enabled"))
+}
+
+/// `properties` with the `context_window` setting of the `llm` and `agent`
+/// nodes (see `crate::context`).
+fn with_context_window(mut properties: Json) -> Json {
+    if let Some(fields) = properties.as_object_mut() {
+        fields.insert("context_window".to_owned(), context_window());
+    }
+    properties
+}
+
+/// Builds without the guard accept the key, so that a document can say `off`
+/// everywhere. The node refuses any other value when it is built.
+#[cfg(not(feature = "context"))]
+fn context_window() -> Json {
+    json!({ "description": "Needs a build with the context guard, unless it is `off`." })
+}
+
+/// The schema of `context_window`.
+#[cfg(feature = "context")]
+fn context_window() -> Json {
+    json!({
+        "description": "What happens when the conversation outgrows the model's context window. `auto` (the \
+                        default) trims it when the provider refuses a request for its size, or when `max_tokens` \
+                        is passed, and sends the request again. `summarize` also keeps a rolling summary of what \
+                        was removed. `off` trims nothing.",
+        "oneOf": [
+            { "type": "string", "enum": ["auto", "summarize", "off"] },
+            { "type": "boolean" },
+            nested(
+                json!({
+                    "max_tokens": { "type": "integer", "minimum": 1, "description": "Input tokens allowed" },
+                    "keep_tool_results": { "type": "integer", "minimum": 0, "default": 4 },
+                    "keep_turns": { "type": "integer", "minimum": 0, "default": 2, "description": "0 is treated as 1" },
+                    "summarize": {
+                        "oneOf": [ { "type": "boolean" }, nested(json!({ "model": model() }), &[]) ]
+                    }
+                }),
+                &[]
+            )
+        ]
+    })
 }
 
 pub(crate) fn question_classifier() -> NodeDescriptor {
@@ -225,7 +267,7 @@ pub(crate) fn agent() -> NodeDescriptor {
              human approval (the run pauses). Streams the final answer as `text`.",
         )
         .schema(object(
-            json!({
+            with_context_window(json!({
                 "model": model(),
                 "instruction": template("System prompt"),
                 "query": template("User turn (default `{{#sys.query#}}`)"),
@@ -261,7 +303,7 @@ pub(crate) fn agent() -> NodeDescriptor {
                     }),
                     &["agent"]
                 )
-            }),
+            })),
             &["model"],
         ))
         .output(OutputDescriptor::new("text", ValueType::String).streaming().describe("Final answer"))
@@ -278,6 +320,11 @@ pub(crate) fn agent() -> NodeDescriptor {
         OutputDescriptor::new("files", ValueType::ArrayFile)
             .describe("Files returned by the tools the agent called (for example files it wrote)"),
     );
+    #[cfg(feature = "context")]
+    let descriptor =
+        descriptor.output(OutputDescriptor::new("context", ValueType::Object).describe(
+            "Only when the conversation was trimmed to fit the context window: {removed_messages, placeholders, cut_results, summarized, unsummarized_messages}",
+        ));
     descriptor
         .output(OutputDescriptor::new("iterations", ValueType::Integer))
         .output(

@@ -150,6 +150,36 @@ stripped, unwinding kept):
 | default (LLM, HTTP, JS code, Python runner, MCP, documents, RAG, plugins, WASM, server) | 12.51 MiB |
 | container image (`Dockerfile`, distroless static, default features) | 24.36 MiB |
 
+## Context guard
+
+What `context_window` (cargo feature `context`) costs, from
+`cargo run --release -p graphrt-llm --features context,mock --example context_bench`
+(fastest of several rounds, same machine, 2026-11-27):
+
+| What | Time |
+| --- | ---: |
+| Estimate of 202 messages, 976 KiB of text | 141 µs |
+| Trim of 1 002 messages to a third | 392 µs |
+| Agent loop, 10 tool turns of 4.8 KiB: `off` / `auto` / a limit never reached | 62.7 / 63.3 / 102.7 µs |
+| Agent loop, 50 tool turns of 4.8 KiB: `off` / `auto` / a limit never reached | 630 / 620 / 1 540 µs |
+
+`auto` without a known limit costs nothing measurable: nothing is estimated
+until a provider refused once. With a limit that is never reached the guard
+estimates every request, about 18 µs per turn at 50 turns.
+
+Binary size, `cargo build -p graphrt-cli --profile min-size --no-default-features --features <build>`, x86_64 Linux:
+
+| Build | `main` | With the guard | Change |
+| --- | ---: | ---: | ---: |
+| `agent-minimal` (`serve`) | 4 405 992 B | 4 405 992 B | 0 |
+| `agent-slim` (`serve,llm,plugins`) | 7 718 616 B | 7 722 320 B | +3.6 KiB |
+| default without `context` | 22 151 384 B | 22 154 840 B | +3.4 KiB |
+| default (with `context`) | | 22 233 688 B | +77 KiB for the feature |
+
+The slim builds grow by the check that refuses a document asking for the
+guard in a build that does not have it, and the schema of the key. The guard
+itself is not in them.
+
 ## Gateway targets on Linux
 
 `bench/targets.sh` measures every target of the gateway plan on Linux against

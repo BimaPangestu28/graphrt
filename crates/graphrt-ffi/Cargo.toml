@@ -24,7 +24,9 @@ required-features = ["bindgen-cli"]
 
 [features]
 # Every feature here is safe on iOS / Android: nothing spawns processes.
-default = ["code-js", "mcp-http", "doc", "rag"]
+default = ["code-js", "mcp-http", "doc", "rag", "context"]
+# `context_window` of the `llm` and `agent` nodes (see graphrt-llm's `context`).
+context = ["graphrt-llm/context"]
 # JavaScript code node (QuickJS, compiled from C).
 code-js = ["dep:graphrt-code"]
 # Generate QuickJS bindings at build time. Required for Android and iOS targets,

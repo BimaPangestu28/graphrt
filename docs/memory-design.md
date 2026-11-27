@@ -179,7 +179,7 @@ context_window: auto        # the default when the key is absent
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `max_tokens` | none | Estimated input tokens allowed. Without it the guard only acts after the provider refused once. |
+| `max_tokens` | none | Input tokens allowed (the estimate, corrected with the provider's counts). Without it the guard only acts after the provider refused once. |
 | `keep_tool_results` | 4 | The newest tool results that are never replaced by a placeholder. |
 | `keep_turns` | 2 | The newest groups (a model turn with its tool results, or a user message with its answer) that are never removed. |
 | `summarize` | `false` | `true`, or `{model: {provider, name}}` to use another model for the summary. |
@@ -199,17 +199,26 @@ stale, and a wrong entry would trim a prompt the model could have taken.
   character, 4 per message, 1 000 per image, plus the tool definitions as JSON.
   It runs over the messages without allocating.
 - **Calibrate.** Every response reports `prompt_tokens`. The ratio between that
-  and the estimate of the same request corrects the next estimates (kept within
-  0.5 and 2). After the first turn the estimate follows the provider's count.
-- **Learn the limit.** When a provider answers `model_context_length`, the
-  numbers in its message give the limit and the size it counted (the common
-  shapes: "maximum context length is N", "N tokens > M maximum"). Without
-  numbers the limit is taken as 70 % of the estimate of the refused request.
-  The learned limit is kept in the node state for the rest of the run and in a
-  process wide table per provider and model, so later runs of a server trim
-  before sending.
-- **Reserve.** The budget for input is the limit minus the output the request
-  asks for (`max_tokens` of the model parameters, else 4 096) minus 5 %.
+  and the estimate of the same request corrects the next estimates. A ratio
+  outside 0.6 to 2.5 is not believed (a provider that reports nothing, a
+  cached prompt). After the first turn the estimate follows the provider's
+  count.
+- **Learn the limit.** When a provider answers `model_context_length`, its
+  message may name the window ("maximum context length is N", "N tokens > M
+  maximum", "exceeds the maximum number of tokens allowed (N)"). It is
+  accepted only when the message is about tokens and the number stands right
+  after `>`, right before "maximum" or "limit", or first after one of them,
+  (within 48 bytes and the same sentence), and is at least 1 000. Text the
+  provider quotes back (a URL, a parameter name) is not read. An HTML error
+  page, a request id, a size in bytes or a rate limit teaches nothing. Without a window the limit is taken
+  as 70 % of the estimate of the refused request, for that run only. A window
+  that was named is kept in the node state for the rest of the run and in a
+  table of the host per provider and model (256 entries, each for half an
+  hour), so later runs trim before sending and a wrong entry goes away by
+  itself.
+- **Reserve.** The budget for input is the window minus the output the request
+  asks for (`max_tokens` of the model parameters, else 4 096, never more than
+  half the window) minus 5 %.
 
 So the default acts in exactly one situation: the provider said no. The request
 is trimmed and sent once more. A second refusal fails the node with the
@@ -217,31 +226,62 @@ original error kind and a message that says what was tried.
 
 ### Trimming
 
-A pure function over the messages, in tiers. It stops as soon as the estimate
-is under 75 % of the budget, so it does not run again on the next turn (trimming
-changes the start of the prompt, which also empties the provider's prompt
-cache, so it should be rare and in large steps).
+A pure function over the messages, in steps. Each step runs only while the
+estimate is still too large, and the whole stops under 75 % of the budget, so
+it does not run again on the next turn (trimming changes the start of the
+prompt, which also empties the provider's prompt cache, so it should be rare
+and in large steps).
 
 1. **Placeholders for old tool results.** Oldest first, skipping the newest
-   `keep_tool_results` and results under 200 characters. The message stays, with
-   its `tool_call_id`, and its text becomes
+   `keep_tool_results`, every result of the newest `keep_turns` groups (the
+   model may not have read it yet) and results under 200 bytes. The message
+   stays, with its `tool_call_id`, and its text becomes
    `[tool result removed to save context: 18 204 characters]`.
-2. **Remove the oldest groups.** A group is a user message with the answer
-   that follows it, or an assistant message with tool calls together with every
-   result of those calls. Groups are removed whole, so a tool call and its
-   result never part. Never removed: system messages, the last user message
-   (the request of this run), the newest `keep_turns` groups, and a group with
-   calls that wait for approval.
-3. **Summary** (`summarize` only). Before tier 2 removes groups, they are
-   rendered as text (each tool result cut to 2 000 characters) and the model
-   rewrites them, together with the previous summary, into a new one of at most
-   8 000 characters. If that call fails, the groups are removed without a
-   summary and the event says so. The usage of the call is added to the node's
-   usage.
-4. **Last resort.** When only protected messages remain and they still do not
-   fit, the largest remaining tool results are cut in the middle (head and tail
-   kept). If the system prompt and the request alone are too large, the node
-   fails with `model_context_length`: nothing safe is left to remove.
+2. **Remove the oldest model turns that called tools.** A group is an
+   assistant message with tool calls together with every result of those
+   calls, or a user message with the answer that follows it. Groups are removed
+   whole, so a tool call and its result never part.
+3. **Cap oversized results.** A tool result that alone takes more than a
+   quarter of the room is cut in the middle to that size (counted in tokens,
+   so it holds for any script).
+4. **Cut what is left.** When the estimate is still above the limit, the
+   largest remaining tool results are cut in the middle (head and tail kept,
+   400 characters at least), to a tenth under the limit.
+5. **Remove the oldest turns of the conversation.** Only when the estimate is
+   still above the limit. They go last because they hold what the user asked
+   for and the limits the user set: a flood of large tool results costs tool
+   output first. If the system prompt and the request alone are too large,
+   the node fails with `model_context_length`: nothing safe is left to remove.
+
+Never removed: system messages, the last user message (the request of this
+run), the newest `keep_turns` groups (which hold any call that waits for
+approval), the results of `load_skill` (the skill's tools stay on offer, so
+its instructions must stay too. They are found by call id and text together,
+because some providers number the calls of every response from zero) and, in
+the `llm` node, every message of the prompt template. There only the history
+is removable.
+
+**Summary** (`summarize` only). What the model can no longer read, the
+removed groups and the results that became placeholders, is rendered as text
+and the model rewrites it, together with the previous summary, into a new one
+of at most 2 500 tokens. Each message keeps its start and its end (a tool
+result up to 2 000 characters). When the whole is too long for the summarizing
+model, every message is shortened by the same factor, so none is dropped.
+Lines inside a message are indented so tool output cannot pass for another
+speaker. The summary is stripped of square brackets and their look alikes,
+which frame the note, and the words "context note" in it are reworded (any
+case, any spacing). That last step is only an extra: look alike letters of
+other scripts pass it, and the brackets are what keep the frame closed. A summary read back from a snapshot is cleaned the
+same way, and a stored window, ratio or cap out of range is dropped. A
+call that fails for a passing reason (a server error, an empty or filtered
+answer) costs that one summary: the trim happens anyway, the event names the
+kind of error and the note says how many messages the summary does not cover.
+A setting that cannot work (an unknown provider, refused credentials, a
+parameter that does not resolve) fails the node. A request the provider
+calls malformed is not counted as one: several providers answer that way for
+a transcript that is too long. The tokens of a summary call that was
+answered but gave no summary (filtered, empty) still count in the node's
+usage. One run makes at most 16 summary calls.
 
 What was removed is told to the model in a note that is added to the first
 user message of the request (not stored in it, and not a system message):
@@ -257,14 +297,20 @@ is framed as data and placed in a user message. It never enters the system
 prompt.
 
 Each trim emits a progress event `context_trimmed` with the reason
-(`provider_limit` or `budget`), estimated tokens before and after, placeholders
-written, messages removed and whether a summary was made. Nothing is trimmed
-silently.
+(`provider_limit` or `budget`), the budget, estimated tokens before and after,
+placeholders written, results cut, messages removed, whether a summary was
+made and whether the result fits. The node also says it in its result (the
+`context` output of an `agent`, a warning of an `llm` node). Nothing is
+trimmed silently.
+
+A refusal for size is assumed to arrive before any text of the answer, which
+is how the providers behave. A provider that streamed text and then refused
+would have that text streamed again by the second attempt.
 
 The `llm` node uses the same function on its one request: history turns are
 the groups, the system messages and the last user message are protected.
 
-### Tool activity of earlier turns
+### Tool activity of earlier turns (delivered with stage 2)
 
 Today a conversation stores the user message and the final answer. What the
 agent did in between is lost on the next turn. The fix keeps a digest, not the
@@ -559,12 +605,25 @@ user removes the graph, and every change is in the audit log.
 | A saved note acts as an instruction when recalled | Notes are delivered as a delimited data block with a random boundary, never in the system prompt. Instruction like text is pending. | A note containing a closing delimiter or role markers stays inside the block. |
 | Flooding: filling memory to push real notes out, or to fill the disk | Size, count, bytes per scope and writes per run. | The eleventh write of a run is refused. A full scope retires by use, and the audit log shows it. |
 | The summary of stage 1 carries injected text into later turns | The summary is a user message framed as data. It never becomes system text. | The request after a summary has the same system messages as before. |
-| Trimming hides a pending approval or breaks a tool call | Groups are atomic and a group with pending calls is protected. | Pair invariant test, and approval after a trim. |
+| Trimming hides a pending approval or breaks a tool call | Groups are atomic and the newest group, which holds any pending call, is protected. | Pair invariant test, a call without all its results, and approval after a trim. |
+| A flood of large tool results makes the agent forget what the user asked for | Tool traffic goes first, oversized results are capped, turns of the conversation go last. With `summarize` they survive in the summary. | Step order tests. |
+| A wrong number in an error message becomes the window of a model for every later run | Only a window named in tokens next to "maximum" or "limit" is learned, at least 1 000, never from quoted text, and half the window always stays for input. An entry lasts half an hour. | Refusal table, proxy error page, echoed URL, window under the output reserve, expiry. |
+| A model is tricked into writing a summary that ends the note and continues as instructions | The summary loses its square brackets and their look alikes. Tool output, tool arguments and the previous summary are indented in the transcript, for every kind of line break. | Frame tests, speaker test. |
+| A loaded skill loses its instructions while its tools stay on offer | Results of `load_skill` are pinned, one per skill text, by call id and text. | Pinned results tests, repeating call ids. |
 | A person asks for their data or its removal | Export and erase per user, for the owner and for the verified user. Audit lines hold no text. | After erase: no file of the user remains, recall is empty, the audit log has one erase line. |
 | Somebody denies having written a note | Audit line per change with actor, run and text hash. | Every write, approval, removal and erase adds one line. |
 | Path traversal through agent or user names | Agent names are checked against the rule lessons use. User and conversation ids are hashed. | Names with `..`, separators and NUL are refused or hashed. |
 
-Known limits, stated plainly: the origin check compares words, so a model that
+Known limits of stage 1, stated plainly: the frame of the context note is
+fixed text, not a random boundary (requests have to stay the same for
+recorded runs), so the defence is that a summary cannot contain brackets, not
+that the frame is unguessable. A learned window that is wrong but plausible
+(a provider that words another limit like a context window) is used for up to
+half an hour. Tool output that fills the newest turns can still push out
+older tool output and, when even cutting it to 400 characters per result is
+not enough, older turns of the conversation. `summarize` keeps their content.
+
+Known limits of stage 2, stated plainly: the origin check compares words, so a model that
 rewrites a tool result in its own words gets `model_inferred`, which is still
 pending under `guarded` because outside content was present. The instruction
 detector is a list of phrases and is the weakest layer. It is there to send
@@ -577,23 +636,24 @@ stage's pull request reports the measured numbers next to these.
 
 | What | Target |
 | --- | --- |
-| Estimate of 200 messages, 1 MB of text | under 100 µs, no allocation |
-| Trim of 1 000 messages (tiers 1 and 2) | under 2 ms |
-| Overhead per agent turn when nothing is trimmed | under 1 % of a mock model turn |
+| Estimate of 200 messages, 1 MB of text | under 500 µs, no allocation (measured 130 to 380 µs) |
+| Trim of 1 000 messages (tiers 1 and 2) | under 2 ms (measured 0.45 ms) |
+| Overhead per agent turn with `auto` and no known limit | none: nothing is estimated (measured: equal to `off`) |
+| Overhead per agent turn with a known limit that is not reached | under 100 µs for a 240 KiB conversation (measured about 30 µs) |
 | `recall` by keyword at 500 notes, scope cached | under 1 ms |
 | First load of a scope of 500 notes | under 10 ms |
 | `remember` with fsync | under 20 ms at the 95th percentile |
 | Graph search, 2 hops, 2 000 entities and 10 000 relations | under 5 ms |
 | Idle memory of a server that has the features and uses none | no change |
-| Binary size, default build | `context` under 60 KiB, `memory` under 300 KiB, `memory-graph` under 200 KiB |
-| Binary size, `agent-slim` and `agent-minimal` | no change |
+| Binary size, default build | `context` under 100 KiB (measured 77 KiB), `memory` under 300 KiB, `memory-graph` under 200 KiB |
+| Binary size, `agent-slim` and `agent-minimal` | no change beyond the check that refuses a key the build cannot honour (measured: minimal 0, slim +3.6 KiB for stage 1) |
 
 ## What each stage delivers
 
 | Audit point | Before | Closed by |
 | --- | --- | --- |
 | 1a. Conversation larger than the window | The run fails | Stage 1: the guard |
-| 1b. Memory between turns | User message and final answer only | Stage 1: `turn_digest` |
+| 1b. Memory between turns | User message and final answer only | Stage 2 pull request: `turn_digest` (it touches the conversation store, like the rest of stage 2) |
 | 1b. Memory between runs | Lessons, read only, feature off by default | Stage 2 and 3: notes and graph, written by the agent, in the default build |
 | 2a. An agent calls another agent or workflow | Not possible | Stage 4, see [orchestration-design.md](orchestration-design.md) |
 | 2b. The model decides how many and which | Count only, through `iteration` | Stage 4 |

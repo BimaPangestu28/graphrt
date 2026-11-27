@@ -23,6 +23,10 @@ pub struct ModelRegistry {
     aliases: IndexMap<String, String>,
     /// Why a well-known provider was not registered (shown in "unknown provider" errors).
     hints: IndexMap<String, String>,
+    /// Context windows that providers stated when they refused a request, by
+    /// provider and model. Shared by clones of the registry.
+    #[cfg(feature = "context")]
+    context_windows: Arc<std::sync::Mutex<std::collections::HashMap<(String, String), LearnedWindow>>>,
 }
 
 impl fmt::Debug for ModelRegistry {
@@ -34,9 +38,54 @@ impl fmt::Debug for ModelRegistry {
     }
 }
 
+/// A context window with the time it was learned.
+#[cfg(feature = "context")]
+type LearnedWindow = (u64, std::time::Instant);
+
+/// How long a learned context window is used. A provider that still means it
+/// says it again at the next refusal, and a wrong one (a misread message, a
+/// model whose window was raised) goes away by itself.
+#[cfg(feature = "context")]
+const CONTEXT_WINDOW_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Context windows remembered per registry. Beyond it the table starts over:
+/// it is a cache of what providers said, and they will say it again.
+#[cfg(feature = "context")]
+const MAX_CONTEXT_WINDOWS: usize = 256;
+
 impl ModelRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The context window of `model` at `provider` in tokens, when that
+    /// provider stated it in a refusal within the last half hour.
+    #[cfg(feature = "context")]
+    pub fn context_window(&self, provider: &str, model: &str) -> Option<u64> {
+        let windows = self.context_windows.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (tokens, learned) = windows.get(&(provider.to_owned(), model.to_owned()))?;
+        (learned.elapsed() < CONTEXT_WINDOW_TTL).then_some(*tokens)
+    }
+
+    /// Remember the context window a provider stated for `model`, for half an
+    /// hour. A value under 1 000 tokens is ignored: no model has such a
+    /// window, and a wrong entry trims every run of that model while it lasts.
+    #[cfg(feature = "context")]
+    pub fn learn_context_window(&self, provider: &str, model: &str, tokens: u64) {
+        self.learn_context_window_at(provider, model, tokens, std::time::Instant::now());
+    }
+
+    #[cfg(feature = "context")]
+    pub(crate) fn learn_context_window_at(&self, provider: &str, model: &str, tokens: u64, at: std::time::Instant) {
+        if tokens < 1_000 {
+            return;
+        }
+        let key = (provider.to_owned(), model.to_owned());
+        let mut windows = self.context_windows.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if windows.len() >= MAX_CONTEXT_WINDOWS && !windows.contains_key(&key) {
+            windows.clear();
+        }
+        windows.insert(key, (tokens, at));
     }
 
     /// Register a provider, replacing any provider already registered under

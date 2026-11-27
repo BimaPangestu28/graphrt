@@ -586,6 +586,84 @@
           "required": [
             "agent"
           ]
+        },
+        "context_window": {
+          "description": "What happens when the conversation outgrows the model's context window. `auto` (the default) trims it when the provider refuses a request for its size, or when `max_tokens` is passed, and sends the request again. `summarize` also keeps a rolling summary of what was removed. `off` trims nothing.",
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "summarize",
+                "off"
+              ]
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "max_tokens": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Input tokens allowed"
+                },
+                "keep_tool_results": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 4
+                },
+                "keep_turns": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 2,
+                  "description": "0 is treated as 1"
+                },
+                "summarize": {
+                  "oneOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "model": {
+                          "type": "object",
+                          "properties": {
+                            "provider": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "mode": {
+                              "type": "string",
+                              "enum": [
+                                "chat",
+                                "completion"
+                              ]
+                            },
+                            "completion_params": {
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "provider",
+                            "name"
+                          ]
+                        }
+                      },
+                      "required": []
+                    }
+                  ]
+                }
+              },
+              "required": []
+            }
+          ]
         }
       },
       "required": [
@@ -3306,6 +3384,84 @@
             "separated"
           ],
           "default": "tagged"
+        },
+        "context_window": {
+          "description": "What happens when the conversation outgrows the model's context window. `auto` (the default) trims it when the provider refuses a request for its size, or when `max_tokens` is passed, and sends the request again. `summarize` also keeps a rolling summary of what was removed. `off` trims nothing.",
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "summarize",
+                "off"
+              ]
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "max_tokens": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Input tokens allowed"
+                },
+                "keep_tool_results": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 4
+                },
+                "keep_turns": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 2,
+                  "description": "0 is treated as 1"
+                },
+                "summarize": {
+                  "oneOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "model": {
+                          "type": "object",
+                          "properties": {
+                            "provider": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "mode": {
+                              "type": "string",
+                              "enum": [
+                                "chat",
+                                "completion"
+                              ]
+                            },
+                            "completion_params": {
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "provider",
+                            "name"
+                          ]
+                        }
+                      },
+                      "required": []
+                    }
+                  ]
+                }
+              },
+              "required": []
+            }
+          ]
         }
       },
       "required": [
