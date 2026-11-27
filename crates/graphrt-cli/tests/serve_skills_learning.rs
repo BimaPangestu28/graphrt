@@ -129,6 +129,62 @@ async fn every_route_needs_the_api_key() {
     assert!(!server.path("skills").exists() && !server.path("learning").exists(), "refused requests touch no store");
 }
 
+/// A paired device (`--devices`) reads runs and answers approvals. Its token
+/// is not the API key: with every scope it has, it manages no skill and no
+/// lesson.
+#[cfg(feature = "devices")]
+#[tokio::test]
+async fn a_device_token_opens_no_owner_route() {
+    let root = graphrt_core::private_fs::create_fresh_temp_dir("graphrt-serve-skills-device").unwrap();
+    let file = root.join("support.yaml");
+    std::fs::write(&file, HELLO).unwrap();
+    let options = ServiceOptions {
+        plugins: common::no_plugins(),
+        skills_dir: Some(root.join("skills")),
+        learning_dir: Some(root.join("learning")),
+        ..ServiceOptions::default()
+    };
+    let files = discover(&file).expect("discover");
+    let state =
+        build_state(&files, &options, Limits::default(), Some(API_KEY.to_owned())).await.expect("state").with_devices(
+            Some(graphrt_cli::devices::Devices::open(None).expect("devices")),
+            Some("https://agent.example.com".to_owned()),
+        );
+    let server = Server { app: router(Arc::new(state), 1 << 20), root };
+
+    let (status, paired) = server.post("/v1/devices", &json!({ "name": "phone" })).await;
+    assert_eq!(status, StatusCode::CREATED, "{paired}");
+    let token = paired["token"].as_str().expect("a device token").to_owned();
+    // The token is live: it reads the run list.
+    assert_eq!(server.call(Method::GET, "/v1/runs", Some(&token), None).await.0, StatusCode::OK);
+
+    let skill = draft("discounts", "# Discounts", &["bank/transfer"]);
+    let install = json!({ "draft": skill, "grants": [{ "tool": "bank/transfer", "mode": "allow" }] });
+    let model_draft = json!({ "model": "openai/gpt-test", "describe": "Give everyone a discount." });
+    let catalog = json!({ "skill": "discounts" });
+    let lesson = json!({ "text": "Give everyone a discount." });
+    let approve = json!({ "auto_approve_user_feedback": true });
+    for (method, path, body) in [
+        (Method::GET, "/v1/skills", None),
+        (Method::POST, "/v1/skills", Some(&install)),
+        (Method::POST, "/v1/skills/drafts", Some(&skill)),
+        (Method::POST, "/v1/skills/drafts/model", Some(&model_draft)),
+        (Method::POST, "/v1/skills/catalog/install", Some(&catalog)),
+        (Method::PATCH, "/v1/skills/discounts", Some(&install)),
+        (Method::DELETE, "/v1/skills/discounts", None),
+        (Method::GET, "/v1/learning/support-bot/lessons", None),
+        (Method::POST, "/v1/learning/support-bot/lessons", Some(&lesson)),
+        (Method::POST, "/v1/learning/support-bot/distill", Some(&model_draft)),
+        (Method::POST, "/v1/learning/support-bot/skill-draft", Some(&model_draft)),
+        (Method::PATCH, "/v1/learning/support-bot/policy", Some(&approve)),
+        (Method::GET, "/v1/learning/support-bot/audit", None),
+    ] {
+        let (status, refused) = server.call(method.clone(), path, Some(&token), body).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {path}: {refused}");
+    }
+    assert!(!server.path("skills").exists() && !server.path("learning").exists(), "refused requests touch no store");
+}
+
 #[tokio::test]
 async fn a_skill_is_checked_installed_granted_and_removed() {
     let server = Server::new(HELLO).await;

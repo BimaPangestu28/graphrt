@@ -413,8 +413,8 @@ A skill is treated as untrusted content that the owner chose to install.
   and are printed at startup. A bundle that fails the install gate is not
   served.
 - **Managing skills is an owner action.** `/v1/skills` needs the API key. A
-  user token is not accepted, and a server that listens on a network address
-  without a key refuses these routes.
+  user token or a device token (`--devices`) is not accepted, and a server
+  that listens on a network address without a key refuses these routes.
 - **The scan is advisory.** It reports common hostile patterns before an
   install and can be evaded by rewording. The points above do not rely on it.
 - **Not covered.** A skill's instructions can still mislead a model within the
@@ -450,8 +450,8 @@ What an agent learned is treated as untrusted until a person approved it.
   proposal with trust `derived`. A skill drafted from lessons installs
   nothing.
 - **Managing lessons is an owner action.** `/v1/learning` needs the API key. A
-  user token is not accepted, and a server that listens on a network address
-  without a key refuses these routes.
+  user token or a device token (`--devices`) is not accepted, and a server
+  that listens on a network address without a key refuses these routes.
 - **Removal.** Lessons can be retired, deleted, or forgotten by user or by
   run. Every change is appended to an audit log.
 - **Not covered.** The owner can approve a harmful lesson. The risk label and

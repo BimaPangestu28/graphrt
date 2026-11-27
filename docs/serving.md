@@ -691,8 +691,8 @@ The release binaries, and builds with the cargo features `skills` and
 feedback posted to `POST /v1/runs/{id}/feedback` as a learning signal.
 
 - `/v1/skills` and `/v1/learning` are owner routes: they need the API key, a
-  user token is not accepted, and a server that listens on a network address
-  without a key answers `403` on them.
+  user token or a device token (`--devices`) is not accepted, and a server
+  that listens on a network address without a key answers `403` on them.
 - Feedback sent with a verified user token on that user's own run counts as
   the user's own words. Feedback sent with the API key is a proposal that
   waits for the owner.
