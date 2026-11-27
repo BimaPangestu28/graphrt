@@ -5,6 +5,7 @@
  * Node.js 18+, Deno, Bun and workers. Tokens travel in headers, never in URLs.
  */
 import type * as z from "zod/mini";
+import { Approvals, Devices, Push } from "./monitoring.ts";
 import {
   type AcceptedRun,
   abortedSchema,
@@ -23,6 +24,8 @@ import {
   guestSessionSchema,
   type Json,
   laggedSchema,
+  type MonitorConfig,
+  monitorConfigSchema,
   type ResponseChunk,
   type RunPage,
   type RunRecord,
@@ -39,6 +42,7 @@ import {
   runSucceededSchema,
   type Score,
   scoreSchema,
+  storedEventsSchema,
 } from "./schemas.ts";
 import { readSse, type SseMessage } from "./sse.ts";
 
@@ -303,6 +307,12 @@ export class GraphrtClient {
   readonly #fetch: typeof fetch;
   /** Conversations kept by the server. */
   readonly conversations: Conversations;
+  /** The runs that wait for a person (`serve --approvals`). */
+  readonly approvals: Approvals;
+  /** Paired monitoring devices (`serve --devices`). */
+  readonly devices: Devices;
+  /** Push notifications (`serve --push`). */
+  readonly push: Push;
 
   constructor(options: ClientOptions = {}) {
     this.#baseUrl = (options.baseUrl ?? "").replace(/\/+$/, "");
@@ -312,6 +322,9 @@ export class GraphrtClient {
     // Bound late: a page may replace `fetch` after the client was created.
     this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     this.conversations = new Conversations(this);
+    this.approvals = new Approvals(this);
+    this.devices = new Devices(this);
+    this.push = new Push(this);
   }
 
   /**
@@ -393,6 +406,20 @@ export class GraphrtClient {
       }
       await sleep(Math.min(firstDelay * 2 ** (failures - 1), MAX_RETRY_DELAY_MS), options.signal);
     }
+  }
+
+  /**
+   * The stored events of a run as they are, from index `from` on: every
+   * execution of it, a pause and what came after a resume included. Unlike
+   * {@link GraphrtClient.events} it does not wait for a run that still executes.
+   *
+   * @throws GraphrtError - `404` for an unknown run (or one of another user).
+   */
+  listEvents(runId: string, options: { from?: number } & CallOptions = {}): Promise<Record<string, Json>[]> {
+    return this.request("GET", `/v1/runs/${encodeURIComponent(runId)}/events`, storedEventsSchema, {
+      query: { stream: false, from: options.from },
+      signal: options.signal,
+    });
   }
 
   /**
@@ -497,6 +524,18 @@ export class GraphrtClient {
    */
   chatConfig(options: CallOptions = {}): Promise<ChatConfig> {
     return this.request("GET", "/v1/chat/config", chatConfigSchema, {
+      signal: options.signal,
+      anonymous: true,
+    });
+  }
+
+  /**
+   * What the server's monitoring page offers. Needs no credentials.
+   *
+   * @throws GraphrtError - `404` when the server has no monitoring page (`serve --monitor`).
+   */
+  monitorConfig(options: CallOptions = {}): Promise<MonitorConfig> {
+    return this.request("GET", "/v1/monitor/config", monitorConfigSchema, {
       signal: options.signal,
       anonymous: true,
     });

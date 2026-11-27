@@ -290,6 +290,10 @@ links here.
 | `/v1/files` (with `--workspace-api users`) | Allowed inside the directory of the token's `sub` only. `scope` cannot be sent, and files of other users answer `404`. See [the workspace over HTTP](files-and-images.md#who-may-call-it) |
 | Every other endpoint | API key only: run lists, scores, delete, nodes, validate, hooks and knowledge. Webhook deliveries take their signature or the API key |
 
+A third kind of credential, the device token of `--devices`, reads runs and
+resolves approvals and nothing else. Its rules are in
+[monitoring.md](monitoring.md#devices-a-token-for-a-phone).
+
 - **An API key is required.** The server refuses to start with `--verify-jwt`
   unless the API key is set, also on a loopback address: without a key, every
   endpoint in the last row would be public (a reverse proxy on the same host
@@ -535,6 +539,10 @@ of a pause succeeds: a concurrent or repeated resume gets `409 Conflict`.
 or resume has `first_event`, the index of the execution's first event: follow
 a resumed run with `/events?from=<first_event>`. Clients that keep snapshots
 themselves may still send `snapshot` in the body.
+
+`GET /v1/approvals` (with `--approvals`) lists every paused run that waits for
+a person, across workflows, and `POST /v1/approvals/{run_id}` answers one. See
+[monitoring.md](monitoring.md#the-approvals-inbox).
 
 ## Webhooks
 

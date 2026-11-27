@@ -291,7 +291,7 @@ pub(crate) fn human_input() -> NodeDescriptor {
                 "actions": { "type": "array", "items": action, "description": "Defaults to a single `submit` action" },
                 "expire_after_ms": { "type": "integer", "minimum": 0, "description": "How long the host should wait for a response (reported as `timeout_ms` in the pause data)" },
                 "on_expire": {
-                    "description": "What the host does when the request expires: `stop` (default) or answer with one of the actions (reported as `on_expire` in the pause data; graphrt does not act on it)",
+                    "description": "What the host does when the request expires: `stop` (default) or answer with one of the actions (reported as `on_expire` in the pause data; `graphrt serve --expire-approvals` carries it out, the engine itself does not)",
                     "oneOf": [
                         { "const": "stop" },
                         nested(json!({ "action": { "type": "string", "minLength": 1 } }), &["action"])

@@ -18,6 +18,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 
 - [The `graphrt` CLI](cli.md): every command and flag
 - [Serving workflows](serving.md): HTTP API, SSE, run store, per-user tokens (`--verify-jwt`), webhooks, knowledge base
+- [Monitoring and approving from a phone](monitoring.md): monitoring page (installable), device tokens, approvals inbox, requests that expire, push notifications
 - [Using a served agent from a browser](web.md): chat page, chat widget, guests, CORS, conversations on the server, browser client, UI blocks renderer
 - [Deploying graphrt](deploy.md): container, Fly.io, Cloud Run, systemd
 - [Direct deploys to Fly.io](deploy-direct.md) (preview): `graphrt deploy --target fly --direct`, no gateway; JSON Lines contract for apps (status, versions, rollback, pause/resume, remove), API key, least-privilege tokens

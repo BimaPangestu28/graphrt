@@ -2,7 +2,7 @@
  * `<graphrt-block>`: a custom element that draws one UI block.
  *
  * @example
- * import { defineGraphrtUi } from "graphrt-ui";
+ * import { defineGraphrtUi } from "@graphrt/ui";
  * defineGraphrtUi();
  * const element = document.createElement("graphrt-block");
  * element.block = run.outputs.report;
@@ -138,7 +138,10 @@ export class GraphrtBlockElement extends BaseElement {
       this.#root = this.attachShadow({ mode: "open" });
       adoptStyles(this.#root, BLOCK_CSS);
     }
-    this.#render();
+    // Moved within the page, it keeps what it shows: a form half filled in stays so.
+    if (this.#content === undefined) {
+      this.#render();
+    }
   }
 
   attributeChangedCallback(name: string, _old: string | null, value: string | null): void {

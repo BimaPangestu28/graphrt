@@ -1,23 +1,42 @@
 {
-  "name": "graphrt-chat",
+  "name": "@graphrt/chat",
   "version": "0.1.0",
   "description": "Chat web component and embeddable widget for agents served by graphrt serve.",
-  "license": "Apache-2.0",
-  "type": "module",
-  "exports": {
-    ".": "./src/index.ts"
-  },
-  "files": [
-    "src",
-    "README.md"
+  "keywords": [
+    "graphrt",
+    "agent",
+    "workflow",
+    "chat",
+    "widget",
+    "web-components"
   ],
-  "dependencies": {
-    "graphrt-client": "0.1.0",
-    "graphrt-ui": "0.1.0"
-  },
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/Graphrt/graphrt/tree/main/web/packages/chat",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Graphrt/graphrt.git",
     "directory": "web/packages/chat"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "dependencies": {
+    "@graphrt/client": "0.1.0",
+    "@graphrt/ui": "0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

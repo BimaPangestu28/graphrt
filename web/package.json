@@ -14,7 +14,9 @@
     "test": "node scripts/test.mjs",
     "build": "node scripts/build.mjs",
     "check-assets": "node scripts/build.mjs --check",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run check-assets"
+    "check": "npm run typecheck && npm run lint && npm run test && npm run check-assets && npm run check-packages",
+    "build:packages": "node scripts/publish.mjs --build",
+    "check-packages": "node scripts/publish.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -22,8 +24,10 @@
   "devDependencies": {
     "@biomejs/biome": "2.6.9",
     "@types/node": "^22.18.0",
+    "@types/qrcode": "1.5.5",
     "esbuild": "0.28.2",
     "happy-dom": "21.0.4",
+    "qrcode": "1.5.4",
     "typescript": "~5.9.3"
   }
 }

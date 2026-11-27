@@ -1,10 +1,10 @@
-# graphrt-client
+# @graphrt/client
 
 A typed client of [`graphrt serve`](../../../docs/serving.md) for browsers.
 It uses `fetch` only, so it also runs in Node.js 18+, Deno, Bun and workers.
 
 ```ts
-import { GraphrtClient } from "graphrt-client";
+import { GraphrtClient } from "@graphrt/client";
 
 const client = new GraphrtClient({ baseUrl: "https://agent.example.com", token });
 

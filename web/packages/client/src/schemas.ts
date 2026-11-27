@@ -169,6 +169,88 @@ export const guestSessionSchema = z.looseObject({
 });
 export type GuestSession = z.infer<typeof guestSessionSchema>;
 
+/** The stored events of a run (`GET /v1/runs/{id}/events?stream=false`). */
+export const storedEventsSchema = z.array(jsonObject);
+
+/** What the monitoring page of a server offers (`GET /v1/monitor/config`). */
+export const monitorConfigSchema = z.looseObject({
+  /** `key`: the page needs the API key or a device token. `open`: the server has no key. */
+  access: z.enum(["key", "open"]),
+  /** Whether devices can be paired (`/v1/devices`). */
+  devices: z.boolean(),
+  /** Whether the approvals inbox is served (`/v1/approvals`). */
+  approvals: z.boolean(),
+  /** Whether the server carries out `on_expire` of requests past their time limit (`--expire-approvals`). */
+  expire_approvals: z.optional(z.boolean()),
+  /** Whether the server sends push notifications (`/v1/push`). */
+  push: z.boolean(),
+});
+export type MonitorConfig = z.infer<typeof monitorConfigSchema>;
+
+/** One node of a paused run that waits for a person. */
+export const approvalRequestSchema = z.looseObject({
+  /** The key to answer under in `inputs`. */
+  key: z.string(),
+  node_id: z.string(),
+  /** `human_input`, `tool_approval`, or the kind of another pausing node. */
+  kind: z.string(),
+  data: z.optional(json),
+  /** When the request's time limit passes, if it has one. */
+  expires_ms: z.optional(z.nullable(z.number())),
+});
+export type ApprovalRequest = z.infer<typeof approvalRequestSchema>;
+
+/** A run that waits for a person (`GET /v1/approvals`). */
+export const approvalSchema = z.looseObject({
+  run_id: z.string(),
+  workflow: z.string(),
+  paused_ms: z.number(),
+  user_id: z.optional(z.nullable(z.string())),
+  session_id: z.optional(z.nullable(z.string())),
+  requests: z.array(approvalRequestSchema),
+});
+export type Approval = z.infer<typeof approvalSchema>;
+
+export const approvalPageSchema = z.looseObject({
+  approvals: z.array(approvalSchema),
+  next_cursor: z.optional(z.nullable(z.string())),
+  /** Whether the server carries out `on_expire` when a request's `expires_ms` passes. */
+  expiry_enforced: z.optional(z.boolean()),
+});
+export type ApprovalPage = z.infer<typeof approvalPageSchema>;
+
+export const deviceScopeSchema = z.enum(["runs:read", "approvals:resolve"]);
+export type DeviceScope = z.infer<typeof deviceScopeSchema>;
+
+/** A paired device (`GET /v1/devices`). Its token is never listed. */
+export const deviceSchema = z.looseObject({
+  id: z.string(),
+  name: z.string(),
+  /** What its token may do. A newer server may know more scopes. */
+  scopes: z.array(z.string()),
+  created_ms: z.number(),
+  expires_ms: z.optional(z.nullable(z.number())),
+  last_used_ms: z.optional(z.nullable(z.number())),
+});
+export type Device = z.infer<typeof deviceSchema>;
+
+export const deviceListSchema = z.looseObject({ devices: z.array(deviceSchema) });
+
+/** A device that was just paired (`POST /v1/devices`): the only time its token is shown. */
+export const pairedDeviceSchema = z.looseObject({
+  device: deviceSchema,
+  token: z.string(),
+  /** What the device needs to reach the server: show it as a QR code. */
+  pairing: z.looseObject({ v: z.number(), url: z.string(), token: z.string() }),
+  /** Opens the monitoring page already paired, when the server serves one. */
+  link: z.optional(z.nullable(z.string())),
+});
+export type PairedDevice = z.infer<typeof pairedDeviceSchema>;
+
+/** What a browser subscribes to push notifications with (`GET /v1/push`). */
+export const pushInfoSchema = z.looseObject({ public_key: z.string() });
+export type PushInfo = z.infer<typeof pushInfoSchema>;
+
 export const errorBodySchema = z.looseObject({ error: z.string() });
 
 /** The data of a `response` event: a piece of the ordered answer text. */

@@ -337,10 +337,12 @@ Expiry is up to the host. The pause data reports the time limit as
 `on_expire`: `{"kind": "stop"}` (the default, also written `on_expire: stop`)
 or `{"kind": "answer", "action": "reject"}`, meaning: resume with that action
 and the fields' defaults, as a person picking it would. `on_expire` must name
-one of the node's actions (`submit` when it sets none). graphrt itself never
-expires a request: `graphrt run` and `graphrt serve` keep the run paused until
-someone resumes it, and the gateway does the same. An embedding host that
-enforces deadlines (such as graphrt Desktop) carries `on_expire` out.
+one of the node's actions (`submit` when it sets none). The engine itself never
+expires a request: `graphrt run`, the gateway and a plain `graphrt serve` keep
+the run paused until someone resumes it. `graphrt serve --expire-approvals`
+carries `on_expire` out (see [monitoring](monitoring.md#requests-that-expire)),
+and so does an embedding host that enforces deadlines (such as graphrt
+Desktop).
 
 With `card`, the pause data also has `card`: the UI block itself (inline or the
 referenced value; `null` when it is not a block). Hosts that render it answer

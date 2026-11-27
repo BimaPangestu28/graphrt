@@ -274,6 +274,21 @@ They honour standard proxy environment variables, except the OTel exporter and
   those, as a guest with a signed, stateless token, within
   `--chat-guest-rate-limit` and `--chat-guest-budget`. See
   [web.md](web.md#guests).
+- **Device tokens.** `--devices` pairs a device with a token that lists and
+  reads runs and resolves approvals, and nothing else: it starts, stops and
+  deletes nothing and pairs no device. Tokens are 256 random bits, stored as
+  their SHA-256, shown once, and end when their device is removed. See
+  [monitoring.md](monitoring.md#devices-a-token-for-a-phone).
+- **Monitoring page.** `--monitor` serves a page whose
+  `Content-Security-Policy` allows scripts, workers and connections of its own
+  origin only and forbids framing. It holds no data: what it shows comes from
+  the API with the key or device token the person entered. A pairing link
+  carries the token in the URL fragment, which is never sent to a server.
+- **Push notifications.** `--push` sends requests to the push services of
+  subscribed browsers, through the egress policy (`https`, no private
+  addresses, no redirects). Messages are encrypted for the browser, and the
+  server's signing key and the subscriptions stay in the store directory.
+  See [monitoring.md](monitoring.md#notifications).
 - **Conversations.** `--conversations` keeps chat turns in the run store,
   scoped to the verified user, with limits and retention. They hold what
   people wrote: protect the store directory like run records.

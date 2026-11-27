@@ -143,7 +143,7 @@ its styles do not leak into your page. If your site has a
 (and `img-src data:` for [diagrams](#diagrams-in-the-chat)).
 
 To place the chat inside your layout instead of in a bubble, use the component
-of the [`graphrt-chat`](../web/packages/chat) package: `<graphrt-chat
+of the [`@graphrt/chat`](../web/packages/chat) package: `<graphrt-chat
 server="https://agent.example.com" workflow="support">`.
 
 ### Signed in users
@@ -315,11 +315,11 @@ the execution's first event. Follow a resumed run from there
 ## The browser client
 
 [`web/packages/client`](../web/packages/client) is a typed client for browsers
-(`graphrt-client`). It uses `fetch` only, so it also runs in Node.js 18+, Deno,
+(`@graphrt/client`). It uses `fetch` only, so it also runs in Node.js 18+, Deno,
 Bun and workers.
 
 ```ts
-import { GraphrtClient } from "graphrt-client";
+import { GraphrtClient } from "@graphrt/client";
 
 const client = new GraphrtClient({ baseUrl: "https://agent.example.com", token });
 
@@ -352,11 +352,11 @@ every run. Use guests or user tokens there.
 
 ## Drawing UI blocks
 
-[`web/packages/ui`](../web/packages/ui) (`graphrt-ui`) draws
+[`web/packages/ui`](../web/packages/ui) (`@graphrt/ui`) draws
 [UI blocks](workflow-format.md#ui-blocks) as a web component:
 
 ```ts
-import { collectUiBlocks, defineGraphrtUi } from "graphrt-ui";
+import { collectUiBlocks, defineGraphrtUi } from "@graphrt/ui";
 
 defineGraphrtUi();
 for (const block of collectUiBlocks(result.outputs)) {
@@ -408,3 +408,8 @@ cd web && npm ci
 npm run check                     # types, lint, tests, and that the embedded page is up to date
 npm run build                     # after a change to the packages: rebuild the embedded page
 ```
+
+On npm the packages are `@graphrt/client`, `@graphrt/ui`, `@graphrt/chat` and
+`@graphrt/monitor` (`npm install @graphrt/client`). They are published by the
+release workflow with npm trusted publishing and a provenance statement, see
+[web/README.md](../web/README.md#publishing).

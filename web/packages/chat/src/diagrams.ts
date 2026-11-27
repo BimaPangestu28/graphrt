@@ -4,7 +4,7 @@
  * copy at `/chat/mermaid.js`, and the chat loads it when a diagram first
  * shows. It comes from the chat's own server, never from another host.
  */
-import { type MermaidLike, mermaidRenderer, setDiagramRenderer } from "graphrt-ui";
+import { type MermaidLike, mermaidRenderer, setDiagramRenderer } from "@graphrt/ui";
 
 /** Loads a classic script into the page. Rejects when it cannot be loaded. */
 export type ScriptLoader = (url: string) => Promise<void>;

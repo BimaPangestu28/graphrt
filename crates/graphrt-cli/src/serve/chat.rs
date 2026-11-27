@@ -30,17 +30,13 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
-use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, State};
-use axum::http::header::{
-    CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, ETAG, IF_NONE_MATCH, LOCATION, REFERRER_POLICY,
-    X_CONTENT_TYPE_OPTIONS,
-};
+use axum::http::header::{CACHE_CONTROL, LOCATION};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use sha2::{Digest, Sha256};
 
+use super::assets::{Asset, SCRIPT_TYPE};
 use super::errors::error_response;
 use super::guests::{Guests, is_guest_token};
 use super::state::AppState;
@@ -50,7 +46,6 @@ use crate::error::CliError;
 const PAGE: &[u8] = include_bytes!("../../assets/chat/index.html");
 const PAGE_SCRIPT: &[u8] = include_bytes!("../../assets/chat/chat.js");
 const WIDGET_SCRIPT: &[u8] = include_bytes!("../../assets/chat/embed.js");
-const SCRIPT_TYPE: &str = "text/javascript; charset=utf-8";
 /// The largest `--chat-mermaid` file. Mermaid 11 is about 3 MiB.
 const MAX_MERMAID_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -75,40 +70,6 @@ impl ChatWorkflow {
             return Err(format!("--chat `{spec}`: expected WORKFLOW or WORKFLOW=INPUT"));
         }
         Ok(Self { name: name.to_owned(), input: input.map(str::to_owned) })
-    }
-}
-
-/// One file of the page with its headers.
-#[derive(Debug)]
-struct Asset {
-    bytes: Bytes,
-    content_type: &'static str,
-    /// A strong validator: the page changes only with the binary.
-    etag: HeaderValue,
-}
-
-impl Asset {
-    fn new(bytes: impl Into<Bytes>, content_type: &'static str) -> Self {
-        let bytes = bytes.into();
-        let digest = Sha256::digest(&bytes);
-        let tag = format!("\"{}\"", crate::hex::to_hex(digest.get(..12).unwrap_or_default()));
-        let etag = HeaderValue::from_str(&tag).unwrap_or_else(|_| HeaderValue::from_static("\"0\""));
-        Self { bytes, content_type, etag }
-    }
-
-    /// The file, or `304` when the client already has it.
-    fn response(&self, request: &HeaderMap) -> Response {
-        let headers = [
-            (CONTENT_TYPE, HeaderValue::from_static(self.content_type)),
-            (ETAG, self.etag.clone()),
-            // Revalidated on every load: an upgraded server serves its own page at once.
-            (CACHE_CONTROL, HeaderValue::from_static("no-cache")),
-            (X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")),
-        ];
-        if request.get(IF_NONE_MATCH) == Some(&self.etag) {
-            return (StatusCode::NOT_MODIFIED, headers).into_response();
-        }
-        (headers, self.bytes.clone()).into_response()
     }
 }
 
@@ -194,7 +155,7 @@ impl Chat {
             guests,
             has_api_key: context.api_key.is_some(),
             user_token_header: context.user_token_header.filter(|_| args.chat_access == ChatAccess::Users),
-            page: Asset::new(PAGE, "text/html; charset=utf-8"),
+            page: Asset::new(PAGE, super::assets::HTML_TYPE),
             page_script: Asset::new(PAGE_SCRIPT, SCRIPT_TYPE),
             widget_script: Asset::new(WIDGET_SCRIPT, SCRIPT_TYPE),
             mermaid,
@@ -339,11 +300,7 @@ async fn workflow_page(
 }
 
 fn html(chat: &Chat, request: &HeaderMap) -> Response {
-    let mut response = chat.page.response(request);
-    let headers = response.headers_mut();
-    headers.insert(CONTENT_SECURITY_POLICY, chat.page_policy.clone());
-    headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
-    response
+    chat.page.page_response(request, &chat.page_policy)
 }
 
 async fn page_script(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
@@ -460,15 +417,5 @@ mod tests {
         assert!(policy.contains("connect-src 'self';"));
         assert!(policy.ends_with("frame-ancestors 'self' https://app.example.com"));
         assert!(!policy.contains("unsafe"));
-    }
-
-    #[test]
-    fn an_asset_is_not_sent_again_to_a_client_that_has_it() {
-        let asset = Asset::new(&b"console.log(1)"[..], SCRIPT_TYPE);
-        let first = asset.response(&HeaderMap::new());
-        assert_eq!(first.status(), StatusCode::OK);
-        let mut request = HeaderMap::new();
-        request.insert(IF_NONE_MATCH, first.headers().get(ETAG).unwrap().clone());
-        assert_eq!(asset.response(&request).status(), StatusCode::NOT_MODIFIED);
     }
 }

@@ -1,19 +1,38 @@
 {
-  "name": "graphrt-ui",
+  "name": "@graphrt/ui",
   "version": "0.1.0",
   "description": "Web components that render graphrt UI blocks: Adaptive Cards, charts, tables, stat tiles and diagrams.",
-  "license": "Apache-2.0",
-  "type": "module",
-  "exports": {
-    ".": "./src/index.ts"
-  },
-  "files": [
-    "src",
-    "README.md"
+  "keywords": [
+    "graphrt",
+    "agent",
+    "workflow",
+    "web-components",
+    "adaptive-cards",
+    "charts"
   ],
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/Graphrt/graphrt/tree/main/web/packages/ui",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Graphrt/graphrt.git",
     "directory": "web/packages/ui"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

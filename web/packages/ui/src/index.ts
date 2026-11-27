@@ -1,5 +1,5 @@
 /**
- * `graphrt-ui`: web components that draw graphrt UI blocks (Adaptive Cards,
+ * `@graphrt/ui`: web components that draw graphrt UI blocks (Adaptive Cards,
  * charts, tables, stat tiles and diagrams), light and dark.
  *
  * Blocks come from models and tools, so they are untrusted: every block is

@@ -6,8 +6,8 @@
  * `theme` (passed on to the chat), `position` (`right`, the default, or
  * `left`) and `open`.
  */
-import type { TokenSource } from "graphrt-client";
-import { adoptStyles } from "graphrt-ui";
+import type { TokenSource } from "@graphrt/client";
+import { adoptStyles } from "@graphrt/ui";
 import { defineGraphrtChat, type GraphrtChatElement } from "./chat-element.ts";
 import { WIDGET_CSS } from "./styles.ts";
 

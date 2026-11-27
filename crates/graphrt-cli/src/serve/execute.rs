@@ -132,6 +132,8 @@ pub(super) fn launch(
             .as_ref()
             .zip(record.session_id.as_deref())
             .map(|(conversations, session)| crate::conversations::Turn::of(conversations, session)),
+        #[cfg(feature = "notify")]
+        notify: state.notifications.clone(),
     };
     let assembler = new_assembler(engine, &input);
     #[cfg(feature = "run-follow")]
