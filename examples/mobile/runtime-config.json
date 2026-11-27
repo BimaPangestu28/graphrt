@@ -1,0 +1,9 @@
+{
+  "scripted_models": {
+    "demo": [
+      { "tool_calls": [{ "id": "battery", "name": "battery_level", "arguments": {} }] },
+      { "tool_calls": [{ "id": "message", "name": "send_message", "arguments": { "to": "Ada", "text": "Battery is fine." } }] },
+      { "text": "Done: {tool_result}" }
+    ]
+  }
+}

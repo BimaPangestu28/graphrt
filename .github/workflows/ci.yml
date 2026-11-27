@@ -77,6 +77,19 @@ jobs:
       - run: scripts/test-release-notes.sh
       - run: scripts/test-changelog.sh
 
+  # The Kotlin and Swift examples of docs/mobile.md are regions of the SDK test
+  # sources, which the `sdk` job of mobile.yml compiles and runs. Here only: they
+  # are still the same text (also when only the guide changed).
+  doc-snippets:
+    name: mobile guide snippets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 scripts/check-doc-snippets.py
+
   msrv:
     name: MSRV (1.89, every crate)
     runs-on: ubuntu-latest
@@ -305,7 +318,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, check, release-notes, msrv, minimal-core, minimal-gateway, wasm, size, budgets, chatbot-e2e, web]
+    needs: [changes, check, release-notes, doc-snippets, msrv, minimal-core, minimal-gateway, wasm, size, budgets, chatbot-e2e, web]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

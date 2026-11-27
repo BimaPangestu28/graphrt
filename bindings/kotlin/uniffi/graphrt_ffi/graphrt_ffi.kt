@@ -31,6 +31,13 @@ import java.nio.charset.CodingErrorAction
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 // This is a helper for safely working with byte buffers returned from the Rust code.
 // A rust-owned buffer is represented by its capacity, its current length, and a
@@ -665,6 +672,12 @@ internal interface UniffiCallbackInterfaceCredentialProviderMethod0 : com.sun.jn
 internal interface UniffiCallbackInterfaceCredentialProviderMethod1 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`provider`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
+internal interface UniffiCallbackInterfaceRunListenerMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`event`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+internal interface UniffiCallbackInterfaceToolProviderMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`call`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteRustBuffer,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
+}
 @Structure.FieldOrder("uniffiFree", "uniffiClone", "onEvent", "onAnswerChunk", "onFinish")
 internal open class UniffiVTableCallbackInterfaceEventListener(
     @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
@@ -712,6 +725,44 @@ internal open class UniffiVTableCallbackInterfaceCredentialProvider(
     }
 
 }
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "onEvent")
+internal open class UniffiVTableCallbackInterfaceRunListener(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `onEvent`: UniffiCallbackInterfaceRunListenerMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `onEvent`: UniffiCallbackInterfaceRunListenerMethod0? = null,
+    ): UniffiVTableCallbackInterfaceRunListener(`uniffiFree`,`uniffiClone`,`onEvent`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceRunListener) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `onEvent` = other.`onEvent`
+    }
+
+}
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "callTool")
+internal open class UniffiVTableCallbackInterfaceToolProvider(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `callTool`: UniffiCallbackInterfaceToolProviderMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `callTool`: UniffiCallbackInterfaceToolProviderMethod0? = null,
+    ): UniffiVTableCallbackInterfaceToolProvider(`uniffiFree`,`uniffiClone`,`callTool`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceToolProvider) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `callTool` = other.`callTool`
+    }
+
+}
 
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
@@ -739,6 +790,8 @@ internal object IntegrityCheckingUniffiLib {
     internal fun ensureInitialized() = Unit
     external fun uniffi_graphrt_ffi_checksum_func_graphrt_version(
     ): Int
+    external fun uniffi_graphrt_ffi_checksum_func_validate_ui_block(
+    ): Int
     external fun uniffi_graphrt_ffi_checksum_method_eventlistener_on_event(
     ): Int
     external fun uniffi_graphrt_ffi_checksum_method_eventlistener_on_answer_chunk(
@@ -765,9 +818,31 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_graphrt_ffi_checksum_method_runtime_load_workflow(
     ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runtime_register_tool_provider(
+    ): Int
     external fun uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin(
     ): Int
     external fun uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runtime_tool_providers(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runtime_add_lesson(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runtime_decide_lesson(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runtime_delete_lesson(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runtime_list_lessons(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runtime_propose_lesson(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runtime_install_skill(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runtime_list_skills(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runtime_remove_skill(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runtime_set_skill_enabled(
     ): Int
     external fun uniffi_graphrt_ffi_checksum_method_workflowhandle_catalog_json(
     ): Int
@@ -777,15 +852,47 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_graphrt_ffi_checksum_method_workflowhandle_resume(
     ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_workflowhandle_resume_paused(
+    ): Int
     external fun uniffi_graphrt_ffi_checksum_method_workflowhandle_run(
     ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_workflowhandle_start(
+    ): Int
     external fun uniffi_graphrt_ffi_checksum_method_workflowhandle_warnings(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_pausedrun_answer(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_pausedrun_approve(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_pausedrun_decide_tool_call(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_pausedrun_inputs_json(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_pausedrun_reject(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_pausedrun_requests(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_pausedrun_run_id(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_pausedrun_set_input(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_pausedrun_snapshot_json(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_pausedrun_to_json(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_pausedrun_unanswered(
     ): Int
     external fun uniffi_graphrt_ffi_checksum_method_credentialprovider_get_credential(
     ): Int
     external fun uniffi_graphrt_ffi_checksum_method_credentialprovider_invalidate(
     ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_runlistener_on_event(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_method_toolprovider_call_tool(
+    ): Int
     external fun uniffi_graphrt_ffi_checksum_constructor_runtime_new(
+    ): Int
+    external fun uniffi_graphrt_ffi_checksum_constructor_pausedrun_from_json(
     ): Int
     external fun ffi_graphrt_ffi_uniffi_contract_version(
     ): Int
@@ -805,6 +912,8 @@ internal object UniffiLib {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "graphrt_ffi"))
         uniffiCallbackInterfaceCredentialProvider.register(this)
         uniffiCallbackInterfaceEventListener.register(this)
+        uniffiCallbackInterfaceRunListener.register(this)
+        uniffiCallbackInterfaceToolProvider.register(this)
         
     }
 
@@ -851,10 +960,32 @@ internal object UniffiLib {
     ): Long
     external fun uniffi_graphrt_ffi_fn_method_runtime_load_workflow(`ptr`: Long,`document`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
+    external fun uniffi_graphrt_ffi_fn_method_runtime_register_tool_provider(`ptr`: Long,`name`: RustBuffer.ByValue,`tools`: RustBuffer.ByValue,`provider`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_graphrt_ffi_fn_method_runtime_register_wasm_plugin(`ptr`: Long,`wasm`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_graphrt_ffi_fn_method_runtime_set_credential_provider(`ptr`: Long,`provider`: RustBuffer.ByValue,`callback`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_graphrt_ffi_fn_method_runtime_tool_providers(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_method_runtime_add_lesson(`ptr`: Long,`agent`: RustBuffer.ByValue,`user`: RustBuffer.ByValue,`kind`: RustBuffer.ByValue,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_method_runtime_decide_lesson(`ptr`: Long,`agent`: RustBuffer.ByValue,`id`: RustBuffer.ByValue,`decision`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_method_runtime_delete_lesson(`ptr`: Long,`agent`: RustBuffer.ByValue,`id`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_graphrt_ffi_fn_method_runtime_list_lessons(`ptr`: Long,`agent`: RustBuffer.ByValue,`status`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_method_runtime_propose_lesson(`ptr`: Long,`proposal`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_method_runtime_install_skill(`ptr`: Long,`request`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_method_runtime_list_skills(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_method_runtime_remove_skill(`ptr`: Long,`name`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_graphrt_ffi_fn_method_runtime_set_skill_enabled(`ptr`: Long,`name`: RustBuffer.ByValue,`enabled`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_graphrt_ffi_fn_clone_workflowhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
     external fun uniffi_graphrt_ffi_fn_free_workflowhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -867,9 +998,41 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_graphrt_ffi_fn_method_workflowhandle_resume(`ptr`: Long,`snapshotJson`: RustBuffer.ByValue,`inputsJson`: RustBuffer.ByValue,`secretsJson`: RustBuffer.ByValue,`listener`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
+    external fun uniffi_graphrt_ffi_fn_method_workflowhandle_resume_paused(`ptr`: Long,`paused`: Long,`secretsJson`: RustBuffer.ByValue,`listener`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
     external fun uniffi_graphrt_ffi_fn_method_workflowhandle_run(`ptr`: Long,`inputsJson`: RustBuffer.ByValue,`sysJson`: RustBuffer.ByValue,`listener`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
+    external fun uniffi_graphrt_ffi_fn_method_workflowhandle_start(`ptr`: Long,`inputsJson`: RustBuffer.ByValue,`sysJson`: RustBuffer.ByValue,`listener`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
     external fun uniffi_graphrt_ffi_fn_method_workflowhandle_warnings(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_clone_pausedrun(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_graphrt_ffi_fn_free_pausedrun(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_graphrt_ffi_fn_constructor_pausedrun_from_json(`json`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_graphrt_ffi_fn_method_pausedrun_answer(`ptr`: Long,`key`: RustBuffer.ByValue,`action`: RustBuffer.ByValue,`valuesJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_graphrt_ffi_fn_method_pausedrun_approve(`ptr`: Long,`key`: RustBuffer.ByValue,`reason`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_graphrt_ffi_fn_method_pausedrun_decide_tool_call(`ptr`: Long,`key`: RustBuffer.ByValue,`callId`: RustBuffer.ByValue,`approved`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_graphrt_ffi_fn_method_pausedrun_inputs_json(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_method_pausedrun_reject(`ptr`: Long,`key`: RustBuffer.ByValue,`reason`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_graphrt_ffi_fn_method_pausedrun_requests(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_method_pausedrun_run_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_method_pausedrun_set_input(`ptr`: Long,`key`: RustBuffer.ByValue,`inputJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_graphrt_ffi_fn_method_pausedrun_snapshot_json(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_method_pausedrun_to_json(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_method_pausedrun_unanswered(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_graphrt_ffi_fn_clone_credentialprovider(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
@@ -881,7 +1044,25 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_graphrt_ffi_fn_method_credentialprovider_invalidate(`ptr`: Long,`provider`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_graphrt_ffi_fn_clone_runlistener(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_graphrt_ffi_fn_free_runlistener(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_graphrt_ffi_fn_init_callback_vtable_runlistener(`vtable`: UniffiVTableCallbackInterfaceRunListener,
+    ): Unit
+    external fun uniffi_graphrt_ffi_fn_method_runlistener_on_event(`ptr`: Long,`event`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_graphrt_ffi_fn_clone_toolprovider(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_graphrt_ffi_fn_free_toolprovider(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_graphrt_ffi_fn_init_callback_vtable_toolprovider(`vtable`: UniffiVTableCallbackInterfaceToolProvider,
+    ): Unit
+    external fun uniffi_graphrt_ffi_fn_method_toolprovider_call_tool(`ptr`: Long,`call`: RustBuffer.ByValue,
+    ): Long
     external fun uniffi_graphrt_ffi_fn_func_graphrt_version(uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_graphrt_ffi_fn_func_validate_ui_block(`blockJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun ffi_graphrt_ffi_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -1005,6 +1186,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_graphrt_ffi_checksum_func_graphrt_version() and 0xFFFF) != 60389) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_graphrt_ffi_checksum_func_validate_ui_block() and 0xFFFF) != 38956) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_graphrt_ffi_checksum_method_eventlistener_on_event() and 0xFFFF) != 49206) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1044,10 +1228,43 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_load_workflow() and 0xFFFF) != 197) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_register_tool_provider() and 0xFFFF) != 56384) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin() and 0xFFFF) != 10329) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider() and 0xFFFF) != 21006) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_tool_providers() and 0xFFFF) != 15986) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_add_lesson() and 0xFFFF) != 51044) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_decide_lesson() and 0xFFFF) != 28116) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_delete_lesson() and 0xFFFF) != 55609) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_list_lessons() and 0xFFFF) != 58828) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_propose_lesson() and 0xFFFF) != 56492) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_install_skill() and 0xFFFF) != 51605) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_list_skills() and 0xFFFF) != 44629) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_remove_skill() and 0xFFFF) != 20220) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runtime_set_skill_enabled() and 0xFFFF) != 14364) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_graphrt_ffi_checksum_method_workflowhandle_catalog_json() and 0xFFFF) != 16429) {
@@ -1062,10 +1279,49 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_graphrt_ffi_checksum_method_workflowhandle_resume() and 0xFFFF) != 30149) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_workflowhandle_resume_paused() and 0xFFFF) != 36973) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_graphrt_ffi_checksum_method_workflowhandle_run() and 0xFFFF) != 11872) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_workflowhandle_start() and 0xFFFF) != 13979) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_graphrt_ffi_checksum_method_workflowhandle_warnings() and 0xFFFF) != 34745) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_pausedrun_answer() and 0xFFFF) != 9534) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_pausedrun_approve() and 0xFFFF) != 47138) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_pausedrun_decide_tool_call() and 0xFFFF) != 56145) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_pausedrun_inputs_json() and 0xFFFF) != 42785) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_pausedrun_reject() and 0xFFFF) != 40632) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_pausedrun_requests() and 0xFFFF) != 10434) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_pausedrun_run_id() and 0xFFFF) != 14380) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_pausedrun_set_input() and 0xFFFF) != 16492) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_pausedrun_snapshot_json() and 0xFFFF) != 29003) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_pausedrun_to_json() and 0xFFFF) != 28957) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_pausedrun_unanswered() and 0xFFFF) != 14270) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_graphrt_ffi_checksum_method_credentialprovider_get_credential() and 0xFFFF) != 19341) {
@@ -1074,7 +1330,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_graphrt_ffi_checksum_method_credentialprovider_invalidate() and 0xFFFF) != 49006) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_runlistener_on_event() and 0xFFFF) != 15799) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_method_toolprovider_call_tool() and 0xFFFF) != 10940) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_graphrt_ffi_checksum_constructor_runtime_new() and 0xFFFF) != 50642) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_graphrt_ffi_checksum_constructor_pausedrun_from_json() and 0xFFFF) != 59822) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -1090,6 +1355,135 @@ public fun uniffiEnsureInitialized() {
 }
 
 // Async support
+// Async return type handlers
+
+internal const val UNIFFI_RUST_FUTURE_POLL_READY = 0.toByte()
+internal const val UNIFFI_RUST_FUTURE_POLL_WAKE = 1.toByte()
+
+internal val uniffiContinuationHandleMap = UniffiHandleMap<CancellableContinuation<Byte>>()
+
+// FFI type for Rust future continuations
+internal object uniffiRustFutureContinuationCallbackImpl: UniffiRustFutureContinuationCallback {
+    override fun callback(data: Long, pollResult: Byte) {
+        uniffiContinuationHandleMap.remove(data).resume(pollResult)
+    }
+}
+
+internal suspend fun<T, F, E: kotlin.Exception> uniffiRustCallAsync(
+    rustFuture: Long,
+    pollFunc: (Long, UniffiRustFutureContinuationCallback, Long) -> Unit,
+    completeFunc: (Long, UniffiRustCallStatus) -> F,
+    freeFunc: (Long) -> Unit,
+    liftFunc: (F) -> T,
+    errorHandler: UniffiRustCallStatusErrorHandler<E>
+): T {
+    try {
+        do {
+            val pollResult = suspendCancellableCoroutine<Byte> { continuation ->
+                pollFunc(
+                    rustFuture,
+                    uniffiRustFutureContinuationCallbackImpl,
+                    uniffiContinuationHandleMap.insert(continuation)
+                )
+            }
+        } while (pollResult != UNIFFI_RUST_FUTURE_POLL_READY);
+
+        return liftFunc(
+            uniffiRustCallWithError(errorHandler, { status -> completeFunc(rustFuture, status) })
+        )
+    } finally {
+        freeFunc(rustFuture)
+    }
+}
+internal inline fun<T> uniffiTraitInterfaceCallAsync(
+    crossinline makeCall: suspend () -> T,
+    crossinline handleSuccess: (T) -> Unit,
+    crossinline handleError: (UniffiRustCallStatus.ByValue) -> Unit,
+    uniffiOutDroppedCallback: UniffiForeignFutureDroppedCallbackStruct,
+) {
+    // Using `GlobalScope` is labeled as a "delicate API" and generally discouraged in Kotlin programs, since it breaks structured concurrency.
+    // However, our parent task is a Rust future, so we're going to need to break structure concurrency in any case.
+    //
+    // Uniffi does its best to support structured concurrency across the FFI.
+    // If the Rust future is dropped, `uniffiForeignFutureDroppedCallbackImpl` is called, which will cancel the Kotlin coroutine if it's still running.
+    @OptIn(DelicateCoroutinesApi::class)
+    val job = GlobalScope.launch coroutineBlock@ {
+        // Note: it's important we call either `handleSuccess` or `handleError` exactly once.  Each
+        // call consumes an Arc reference, which means there should be no possibility of a double
+        // call.  The following code is structured so that will will never call both `handleSuccess`
+        // and `handleError`, even in the face of weird exceptions.
+        //
+        // In extreme circumstances we may not call either, for example if we fail to make the JNA
+        // call to `handleSuccess`.  This means we will leak the Arc reference, which is better than
+        // double-freeing it.
+        val callResult = try {
+            makeCall()
+        } catch(e: kotlin.Exception) {
+            handleError(
+                UniffiRustCallStatus.create(
+                    UNIFFI_CALL_UNEXPECTED_ERROR,
+                    FfiConverterString.lower(e.toString()),
+                )
+            )
+            return@coroutineBlock
+        }
+        handleSuccess(callResult)
+    }
+    val handle = uniffiForeignFutureHandleMap.insert(job)
+    uniffiOutDroppedCallback.uniffiSetValue(UniffiForeignFutureDroppedCallbackStruct(handle, uniffiForeignFutureDroppedCallbackImpl))
+}
+
+internal inline fun<T, reified E: Throwable> uniffiTraitInterfaceCallAsyncWithError(
+    crossinline makeCall: suspend () -> T,
+    crossinline handleSuccess: (T) -> Unit,
+    crossinline handleError: (UniffiRustCallStatus.ByValue) -> Unit,
+    crossinline lowerError: (E) -> RustBuffer.ByValue,
+    uniffiOutDroppedCallback: UniffiForeignFutureDroppedCallbackStruct,
+) {
+    // See uniffiTraitInterfaceCallAsync for details on `DelicateCoroutinesApi`
+    @OptIn(DelicateCoroutinesApi::class)
+    val job = GlobalScope.launch coroutineBlock@ {
+        // See the note in uniffiTraitInterfaceCallAsync for details on `handleSuccess` and
+        // `handleError`.
+        val callResult = try {
+            makeCall()
+        } catch(e: kotlin.Exception) {
+            if (e is E) {
+                handleError(
+                    UniffiRustCallStatus.create(
+                        UNIFFI_CALL_ERROR,
+                        lowerError(e),
+                    )
+                )
+            } else {
+                handleError(
+                    UniffiRustCallStatus.create(
+                        UNIFFI_CALL_UNEXPECTED_ERROR,
+                        FfiConverterString.lower(e.toString()),
+                    )
+                )
+            }
+            return@coroutineBlock
+        }
+        handleSuccess(callResult)
+    }
+    val handle = uniffiForeignFutureHandleMap.insert(job)
+    uniffiOutDroppedCallback.uniffiSetValue(UniffiForeignFutureDroppedCallbackStruct(handle, uniffiForeignFutureDroppedCallbackImpl))
+}
+
+internal val uniffiForeignFutureHandleMap = UniffiHandleMap<Job>()
+
+internal object uniffiForeignFutureDroppedCallbackImpl: UniffiForeignFutureDroppedCallback {
+    override fun callback(handle: Long) {
+        val job = uniffiForeignFutureHandleMap.remove(handle)
+        if (!job.isCompleted) {
+            job.cancel()
+        }
+    }
+}
+
+// For testing
+public fun uniffiForeignFutureHandleCount() = uniffiForeignFutureHandleMap.size
 
 // Public interface members begin here.
 
@@ -2259,6 +2653,527 @@ public object FfiConverterTypeEventListener: FfiConverter<EventListener, Long> {
 
 
 /**
+ * A paused run: its requests, the answers given so far and its snapshot.
+ */
+public interface PausedRunInterface {
+    
+    /**
+     * Answer the form of request `key` with `action` (one of its actions) and
+     * field values as a JSON object; fields left out get their defaults.
+     */
+    fun `answer`(`key`: kotlin.String, `action`: kotlin.String, `valuesJson`: kotlin.String)
+    
+    /**
+     * Approve request `key`: every held tool call runs, or a form is answered
+     * with its `approve` action and the fields' defaults.
+     */
+    fun `approve`(`key`: kotlin.String, `reason`: kotlin.String?)
+    
+    /**
+     * Approve or reject one held tool call of request `key`. Calls without a
+     * decision keep the node paused.
+     */
+    fun `decideToolCall`(`key`: kotlin.String, `callId`: kotlin.String, `approved`: kotlin.Boolean)
+    
+    /**
+     * The resume inputs collected so far, as JSON (what `WorkflowHandle.resume` takes).
+     */
+    fun `inputsJson`(): kotlin.String
+    
+    /**
+     * Reject request `key`: the model is told the calls were not approved (and
+     * why, with `reason`), or a form is answered with its `reject` action.
+     */
+    fun `reject`(`key`: kotlin.String, `reason`: kotlin.String?)
+    
+    /**
+     * Every request of the run, in the order the nodes paused.
+     */
+    fun `requests`(): List<ApprovalRequest>
+    
+    /**
+     * Run id of the paused run.
+     */
+    fun `runId`(): kotlin.String
+    
+    /**
+     * Set the resume input of request `key` as raw JSON, for pause kinds the
+     * helpers above do not cover.
+     */
+    fun `setInput`(`key`: kotlin.String, `inputJson`: kotlin.String)
+    
+    /**
+     * The snapshot alone, for `WorkflowHandle.resume`.
+     */
+    fun `snapshotJson`(): kotlin.String
+    
+    /**
+     * The paused run as JSON (requests and snapshot, not the answers), to store
+     * and read back with [`PausedRun::from_json`]. It holds the run's variables
+     * (never secrets): keep it in the app's private storage.
+     */
+    fun `toJson`(): kotlin.String
+    
+    /**
+     * Keys of the requests that have no answer yet. Resuming with requests
+     * unanswered keeps those nodes paused.
+     */
+    fun `unanswered`(): List<kotlin.String>
+    
+    companion object
+}
+
+/**
+ * A paused run: its requests, the answers given so far and its snapshot.
+ */
+open class PausedRun: Disposable, AutoCloseable, PausedRunInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_graphrt_ffi_fn_free_pausedrun(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_graphrt_ffi_fn_clone_pausedrun(handle, status)
+        }
+    }
+
+    
+    /**
+     * Answer the form of request `key` with `action` (one of its actions) and
+     * field values as a JSON object; fields left out get their defaults.
+     */
+    @Throws(GraphrtException::class)override fun `answer`(`key`: kotlin.String, `action`: kotlin.String, `valuesJson`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_answer(
+        it,
+        
+        FfiConverterString.lower(`key`),
+        FfiConverterString.lower(`action`),
+        FfiConverterString.lower(`valuesJson`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Approve request `key`: every held tool call runs, or a form is answered
+     * with its `approve` action and the fields' defaults.
+     */
+    @Throws(GraphrtException::class)override fun `approve`(`key`: kotlin.String, `reason`: kotlin.String?)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_approve(
+        it,
+        
+        FfiConverterString.lower(`key`),
+        FfiConverterOptionalString.lower(`reason`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Approve or reject one held tool call of request `key`. Calls without a
+     * decision keep the node paused.
+     */
+    @Throws(GraphrtException::class)override fun `decideToolCall`(`key`: kotlin.String, `callId`: kotlin.String, `approved`: kotlin.Boolean)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_decide_tool_call(
+        it,
+        
+        FfiConverterString.lower(`key`),
+        FfiConverterString.lower(`callId`),
+        FfiConverterBoolean.lower(`approved`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * The resume inputs collected so far, as JSON (what `WorkflowHandle.resume` takes).
+     */override fun `inputsJson`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_inputs_json(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Reject request `key`: the model is told the calls were not approved (and
+     * why, with `reason`), or a form is answered with its `reject` action.
+     */
+    @Throws(GraphrtException::class)override fun `reject`(`key`: kotlin.String, `reason`: kotlin.String?)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_reject(
+        it,
+        
+        FfiConverterString.lower(`key`),
+        FfiConverterOptionalString.lower(`reason`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Every request of the run, in the order the nodes paused.
+     */override fun `requests`(): List<ApprovalRequest> {
+            return FfiConverterSequenceTypeApprovalRequest.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_requests(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Run id of the paused run.
+     */override fun `runId`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_run_id(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Set the resume input of request `key` as raw JSON, for pause kinds the
+     * helpers above do not cover.
+     */
+    @Throws(GraphrtException::class)override fun `setInput`(`key`: kotlin.String, `inputJson`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_set_input(
+        it,
+        
+        FfiConverterString.lower(`key`),
+        FfiConverterString.lower(`inputJson`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * The snapshot alone, for `WorkflowHandle.resume`.
+     */override fun `snapshotJson`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_snapshot_json(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The paused run as JSON (requests and snapshot, not the answers), to store
+     * and read back with [`PausedRun::from_json`]. It holds the run's variables
+     * (never secrets): keep it in the app's private storage.
+     */override fun `toJson`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_to_json(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Keys of the requests that have no answer yet. Resuming with requests
+     * unanswered keeps those nodes paused.
+     */override fun `unanswered`(): List<kotlin.String> {
+            return FfiConverterSequenceString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_pausedrun_unanswered(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+
+    
+
+
+    
+    companion object {
+        
+    /**
+     * A paused run from the result JSON of a run that ended with status
+     * `paused` (what `RunHandle.waitJson` and `EventListener.onFinish` return),
+     * or from what [`PausedRun::to_json`] returned.
+     */
+    @Throws(GraphrtException::class) fun `fromJson`(`json`: kotlin.String): PausedRun {
+            return FfiConverterTypePausedRun.lift(
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_constructor_pausedrun_from_json(
+    
+        
+        FfiConverterString.lower(`json`),_status)
+}
+    )
+    }
+    
+
+        
+    }
+    
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePausedRun: FfiConverter<PausedRun, Long> {
+    override fun lower(value: PausedRun): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): PausedRun {
+        return PausedRun(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): PausedRun {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: PausedRun) = 8UL
+
+    override fun write(value: PausedRun, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
  * Controls one run.
  */
 public interface RunHandleInterface {
@@ -2611,6 +3526,329 @@ public object FfiConverterTypeRunHandle: FfiConverter<RunHandle, Long> {
 
 
 /**
+ * Receives the typed events of one run. Implemented in the host language.
+ *
+ * Called on a background thread, in order; marshal to the UI thread yourself.
+ * Exceptions thrown here are swallowed so they cannot break the run.
+ */
+public interface RunListener {
+    
+    fun `onEvent`(`event`: RunEvent)
+    
+    companion object
+}
+
+/**
+ * Receives the typed events of one run. Implemented in the host language.
+ *
+ * Called on a background thread, in order; marshal to the UI thread yourself.
+ * Exceptions thrown here are swallowed so they cannot break the run.
+ */
+open class RunListenerImpl: Disposable, AutoCloseable, RunListener
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_graphrt_ffi_fn_free_runlistener(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_graphrt_ffi_fn_clone_runlistener(handle, status)
+        }
+    }
+
+    override fun `onEvent`(`event`: RunEvent)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runlistener_on_event(
+        it,
+        
+        FfiConverterTypeRunEvent.lower(`event`),_status)
+}
+    }
+    
+    
+
+    
+
+    
+
+
+    
+    
+    /**
+     * @suppress
+     */
+    companion object
+    
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceRunListener {
+    internal object `onEvent`: UniffiCallbackInterfaceRunListenerMethod0 {
+        override fun callback(`uniffiHandle`: Long,`event`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeRunListener.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`onEvent`(
+                    FfiConverterTypeRunEvent.lift(`event`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeRunListener.handleMap.remove(handle)
+        }
+    }
+
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeRunListener.handleMap.clone(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceRunListener.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
+        `onEvent`,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_graphrt_ffi_fn_init_callback_vtable_runlistener(vtable)
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRunListener: FfiConverter<RunListener, Long> {
+    internal val handleMap = UniffiHandleMap<RunListener>()
+
+    override fun lower(value: RunListener): Long {
+        if (value is RunListenerImpl) {
+             // Rust-implemented object.  Clone the handle and return it
+            return value.uniffiCloneHandle()
+         } else {
+            // Kotlin object, generate a new vtable handle and return that.
+            return handleMap.insert(value)
+         }
+    }
+
+    override fun lift(value: Long): RunListener {
+        if ((value and 1.toLong()) == 0.toLong()) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return RunListenerImpl(UniffiWithHandle, value)
+        } else {
+            // Kotlin-generated handle, get the object from the handle map
+            return handleMap.remove(value)
+        }
+    }
+
+    override fun read(buf: ByteBuffer): RunListener {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: RunListener) = 8UL
+
+    override fun write(value: RunListener, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
  * A configured runtime: node registry, host services and a thread pool.
  * Create one per app and share it.
  */
@@ -2648,6 +3886,16 @@ public interface RuntimeInterface {
     fun `loadWorkflow`(`document`: kotlin.String): WorkflowHandle
     
     /**
+     * Register native tools implemented by the app under provider `name`.
+     * Agents list them in `tools` as `<name>/<tool>`, or all of them with a `*` as the tool; `require_approval`
+     * of an `agent` node can hold their calls for approval. Workflows loaded
+     * after this call see the tools. Fails when the name is taken (by an MCP
+     * server, the `files` workspace or an earlier provider) or a declaration
+     * is invalid.
+     */
+    fun `registerToolProvider`(`name`: kotlin.String, `tools`: List<HostToolSpec>, `provider`: ToolProvider)
+    
+    /**
      * Load a sandboxed WebAssembly plugin; its node kinds become available to
      * workflows loaded afterwards. Returns the registered kinds.
      */
@@ -2660,6 +3908,57 @@ public interface RuntimeInterface {
      * requests made after the call (e.g. a different user signed in).
      */
     fun `setCredentialProvider`(`provider`: kotlin.String, `callback`: CredentialProvider)
+    
+    /**
+     * Names of the registered tool providers (MCP servers, `files`, the app's own).
+     */
+    fun `toolProviders`(): List<kotlin.String>
+    
+    /**
+     * A lesson the owner wrote; it is approved at once.
+     */
+    fun `addLesson`(`agent`: kotlin.String, `user`: kotlin.String?, `kind`: LessonKind, `text`: kotlin.String): LessonInfo
+    
+    /**
+     * Approve, reject or retire a lesson.
+     */
+    fun `decideLesson`(`agent`: kotlin.String, `id`: kotlin.String, `decision`: LessonDecision): LessonInfo
+    
+    /**
+     * Delete a lesson for good.
+     */
+    fun `deleteLesson`(`agent`: kotlin.String, `id`: kotlin.String)
+    
+    /**
+     * The lessons of `agent`, optionally only those in `status`.
+     */
+    fun `listLessons`(`agent`: kotlin.String, `status`: LessonStatus?): List<LessonInfo>
+    
+    /**
+     * Propose a lesson from feedback on a run. It waits for the owner's decision
+     * ([`Runtime::decide_lesson`]) before any run uses it.
+     */
+    fun `proposeLesson`(`proposal`: LessonProposal): LessonInfo
+    
+    /**
+     * Install a skill from its `SKILL.md`. It is enabled once installed.
+     */
+    fun `installSkill`(`request`: SkillInstall): SkillInfo
+    
+    /**
+     * Every installed skill.
+     */
+    fun `listSkills`(): List<SkillInfo>
+    
+    /**
+     * Remove an installed skill.
+     */
+    fun `removeSkill`(`name`: kotlin.String)
+    
+    /**
+     * Turn a skill on or off for every agent.
+     */
+    fun `setSkillEnabled`(`name`: kotlin.String, `enabled`: kotlin.Boolean): SkillInfo
     
     companion object
 }
@@ -2874,6 +4173,30 @@ open class Runtime: Disposable, AutoCloseable, RuntimeInterface
 
     
     /**
+     * Register native tools implemented by the app under provider `name`.
+     * Agents list them in `tools` as `<name>/<tool>`, or all of them with a `*` as the tool; `require_approval`
+     * of an `agent` node can hold their calls for approval. Workflows loaded
+     * after this call see the tools. Fails when the name is taken (by an MCP
+     * server, the `files` workspace or an earlier provider) or a declaration
+     * is invalid.
+     */
+    @Throws(GraphrtException::class)override fun `registerToolProvider`(`name`: kotlin.String, `tools`: List<HostToolSpec>, `provider`: ToolProvider)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_register_tool_provider(
+        it,
+        
+        FfiConverterString.lower(`name`),
+        FfiConverterSequenceTypeHostToolSpec.lower(`tools`),
+        FfiConverterTypeToolProvider.lower(`provider`),_status)
+}
+    }
+    
+    
+
+    
+    /**
      * Load a sandboxed WebAssembly plugin; its node kinds become available to
      * workflows loaded afterwards. Returns the registered kinds.
      */
@@ -2909,6 +4232,190 @@ open class Runtime: Disposable, AutoCloseable, RuntimeInterface
 }
     }
     
+    
+
+    
+    /**
+     * Names of the registered tool providers (MCP servers, `files`, the app's own).
+     */override fun `toolProviders`(): List<kotlin.String> {
+            return FfiConverterSequenceString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_tool_providers(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * A lesson the owner wrote; it is approved at once.
+     */
+    @Throws(GraphrtException::class)override fun `addLesson`(`agent`: kotlin.String, `user`: kotlin.String?, `kind`: LessonKind, `text`: kotlin.String): LessonInfo {
+            return FfiConverterTypeLessonInfo.lift(
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_add_lesson(
+        it,
+        
+        FfiConverterString.lower(`agent`),
+        FfiConverterOptionalString.lower(`user`),
+        FfiConverterTypeLessonKind.lower(`kind`),
+        FfiConverterString.lower(`text`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Approve, reject or retire a lesson.
+     */
+    @Throws(GraphrtException::class)override fun `decideLesson`(`agent`: kotlin.String, `id`: kotlin.String, `decision`: LessonDecision): LessonInfo {
+            return FfiConverterTypeLessonInfo.lift(
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_decide_lesson(
+        it,
+        
+        FfiConverterString.lower(`agent`),
+        FfiConverterString.lower(`id`),
+        FfiConverterTypeLessonDecision.lower(`decision`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Delete a lesson for good.
+     */
+    @Throws(GraphrtException::class)override fun `deleteLesson`(`agent`: kotlin.String, `id`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_delete_lesson(
+        it,
+        
+        FfiConverterString.lower(`agent`),
+        FfiConverterString.lower(`id`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * The lessons of `agent`, optionally only those in `status`.
+     */
+    @Throws(GraphrtException::class)override fun `listLessons`(`agent`: kotlin.String, `status`: LessonStatus?): List<LessonInfo> {
+            return FfiConverterSequenceTypeLessonInfo.lift(
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_list_lessons(
+        it,
+        
+        FfiConverterString.lower(`agent`),
+        FfiConverterOptionalTypeLessonStatus.lower(`status`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Propose a lesson from feedback on a run. It waits for the owner's decision
+     * ([`Runtime::decide_lesson`]) before any run uses it.
+     */
+    @Throws(GraphrtException::class)override fun `proposeLesson`(`proposal`: LessonProposal): LessonInfo {
+            return FfiConverterTypeLessonInfo.lift(
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_propose_lesson(
+        it,
+        
+        FfiConverterTypeLessonProposal.lower(`proposal`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Install a skill from its `SKILL.md`. It is enabled once installed.
+     */
+    @Throws(GraphrtException::class)override fun `installSkill`(`request`: SkillInstall): SkillInfo {
+            return FfiConverterTypeSkillInfo.lift(
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_install_skill(
+        it,
+        
+        FfiConverterTypeSkillInstall.lower(`request`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Every installed skill.
+     */
+    @Throws(GraphrtException::class)override fun `listSkills`(): List<SkillInfo> {
+            return FfiConverterSequenceTypeSkillInfo.lift(
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_list_skills(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Remove an installed skill.
+     */
+    @Throws(GraphrtException::class)override fun `removeSkill`(`name`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_remove_skill(
+        it,
+        
+        FfiConverterString.lower(`name`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Turn a skill on or off for every agent.
+     */
+    @Throws(GraphrtException::class)override fun `setSkillEnabled`(`name`: kotlin.String, `enabled`: kotlin.Boolean): SkillInfo {
+            return FfiConverterTypeSkillInfo.lift(
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_runtime_set_skill_enabled(
+        it,
+        
+        FfiConverterString.lower(`name`),
+        FfiConverterBoolean.lower(`enabled`),_status)
+}
+    }
+    )
+    }
     
 
     
@@ -3046,6 +4553,368 @@ public object FfiConverterTypeRuntime: FfiConverter<Runtime, Long> {
 
 
 /**
+ * Native tools implemented by the app.
+ *
+ * `call_tool` is a `suspend fun` in Kotlin and an `async throws` function in
+ * Swift. It is called from the runtime's threads, possibly for several calls
+ * at once; it is cancelled when its time limit passes or the run is aborted.
+ */
+public interface ToolProvider {
+    
+    /**
+     * Run one tool call. Throw [`ToolCallError::Failed`] to tell the model why it failed.
+     */
+    suspend fun `callTool`(`call`: HostToolCall): HostToolResult
+    
+    companion object
+}
+
+/**
+ * Native tools implemented by the app.
+ *
+ * `call_tool` is a `suspend fun` in Kotlin and an `async throws` function in
+ * Swift. It is called from the runtime's threads, possibly for several calls
+ * at once; it is cancelled when its time limit passes or the run is aborted.
+ */
+open class ToolProviderImpl: Disposable, AutoCloseable, ToolProvider
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    /**
+     * Whether the current object has been destroyed and its reference is gone in the Rust side.
+     */
+    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_graphrt_ffi_fn_free_toolprovider(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_graphrt_ffi_fn_clone_toolprovider(handle, status)
+        }
+    }
+
+    
+    /**
+     * Run one tool call. Throw [`ToolCallError::Failed`] to tell the model why it failed.
+     */
+    @Throws(ToolCallException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `callTool`(`call`: HostToolCall) : HostToolResult {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_graphrt_ffi_fn_method_toolprovider_call_tool(
+                uniffiHandle,
+                
+        FfiConverterTypeHostToolCall.lower(`call`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_graphrt_ffi_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_graphrt_ffi_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.ffi_graphrt_ffi_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeHostToolResult.lift(it) },
+        // Error FFI converter
+        ToolCallException.ErrorHandler,
+    )
+    }
+
+    
+
+    
+
+
+    
+    
+    /**
+     * @suppress
+     */
+    companion object
+    
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceToolProvider {
+    internal object `callTool`: UniffiCallbackInterfaceToolProviderMethod0 {
+        override fun callback(`uniffiHandle`: Long,`call`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteRustBuffer,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,) {
+            val uniffiObj = FfiConverterTypeToolProvider.handleMap.get(uniffiHandle)
+            val makeCall = suspend { ->
+                uniffiObj.`callTool`(
+                    FfiConverterTypeHostToolCall.lift(`call`),
+                )
+            }
+            val uniffiHandleSuccess = { returnValue: HostToolResult ->
+                val uniffiResult = UniffiForeignFutureResultRustBuffer.UniffiByValue(
+                    FfiConverterTypeHostToolResult.lower(returnValue),
+                    UniffiRustCallStatus.ByValue()
+                )
+                uniffiResult.write()
+                uniffiFutureCallback.callback(uniffiCallbackData, uniffiResult)
+            }
+            val uniffiHandleError = { callStatus: UniffiRustCallStatus.ByValue ->
+                uniffiFutureCallback.callback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultRustBuffer.UniffiByValue(
+                        RustBuffer.ByValue(),
+                        callStatus,
+                    ),
+                )
+            }
+            uniffiTraitInterfaceCallAsyncWithError(
+                makeCall,
+                uniffiHandleSuccess,
+                uniffiHandleError,
+                { e: ToolCallException -> FfiConverterTypeToolCallError.lower(e) },
+                uniffiOutDroppedCallback
+            )
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeToolProvider.handleMap.remove(handle)
+        }
+    }
+
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeToolProvider.handleMap.clone(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceToolProvider.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
+        `callTool`,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_graphrt_ffi_fn_init_callback_vtable_toolprovider(vtable)
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeToolProvider: FfiConverter<ToolProvider, Long> {
+    internal val handleMap = UniffiHandleMap<ToolProvider>()
+
+    override fun lower(value: ToolProvider): Long {
+        if (value is ToolProviderImpl) {
+             // Rust-implemented object.  Clone the handle and return it
+            return value.uniffiCloneHandle()
+         } else {
+            // Kotlin object, generate a new vtable handle and return that.
+            return handleMap.insert(value)
+         }
+    }
+
+    override fun lift(value: Long): ToolProvider {
+        if ((value and 1.toLong()) == 0.toLong()) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return ToolProviderImpl(UniffiWithHandle, value)
+        } else {
+            // Kotlin-generated handle, get the object from the handle map
+            return handleMap.remove(value)
+        }
+    }
+
+    override fun read(buf: ByteBuffer): ToolProvider {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: ToolProvider) = 8UL
+
+    override fun write(value: ToolProvider, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
  * A compiled workflow, ready to run any number of times concurrently.
  */
 public interface WorkflowHandleInterface {
@@ -3074,9 +4943,22 @@ public interface WorkflowHandleInterface {
     fun `resume`(`snapshotJson`: kotlin.String, `inputsJson`: kotlin.String, `secretsJson`: kotlin.String, `listener`: EventListener): RunHandle
     
     /**
+     * Resume a paused run with the answers given on `paused`
+     * ([`PausedRun::approve`], [`PausedRun::answer`]...). `secrets_json`
+     * re-supplies non-env secrets as `{"namespace.name": "value"}`.
+     */
+    fun `resumePaused`(`paused`: PausedRun, `secretsJson`: kotlin.String, `listener`: RunListener): RunHandle
+    
+    /**
      * Start a run. `inputs_json` / `sys_json` are JSON objects (`"{}"` when empty).
      */
     fun `run`(`inputsJson`: kotlin.String, `sysJson`: kotlin.String, `listener`: EventListener): RunHandle
+    
+    /**
+     * Start a run whose events arrive typed ([`RunEvent`]). It ends with
+     * [`RunEvent::Paused`] or [`RunEvent::Finished`].
+     */
+    fun `start`(`inputsJson`: kotlin.String, `sysJson`: kotlin.String, `listener`: RunListener): RunHandle
     
     /**
      * Non-fatal findings from compilation (e.g. unreachable nodes).
@@ -3264,6 +5146,28 @@ open class WorkflowHandle: Disposable, AutoCloseable, WorkflowHandleInterface
 
     
     /**
+     * Resume a paused run with the answers given on `paused`
+     * ([`PausedRun::approve`], [`PausedRun::answer`]...). `secrets_json`
+     * re-supplies non-env secrets as `{"namespace.name": "value"}`.
+     */
+    @Throws(GraphrtException::class)override fun `resumePaused`(`paused`: PausedRun, `secretsJson`: kotlin.String, `listener`: RunListener): RunHandle {
+            return FfiConverterTypeRunHandle.lift(
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_resume_paused(
+        it,
+        
+        FfiConverterTypePausedRun.lower(`paused`),
+        FfiConverterString.lower(`secretsJson`),
+        FfiConverterTypeRunListener.lower(`listener`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Start a run. `inputs_json` / `sys_json` are JSON objects (`"{}"` when empty).
      */
     @Throws(GraphrtException::class)override fun `run`(`inputsJson`: kotlin.String, `sysJson`: kotlin.String, `listener`: EventListener): RunHandle {
@@ -3276,6 +5180,27 @@ open class WorkflowHandle: Disposable, AutoCloseable, WorkflowHandleInterface
         FfiConverterString.lower(`inputsJson`),
         FfiConverterString.lower(`sysJson`),
         FfiConverterTypeEventListener.lower(`listener`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Start a run whose events arrive typed ([`RunEvent`]). It ends with
+     * [`RunEvent::Paused`] or [`RunEvent::Finished`].
+     */
+    @Throws(GraphrtException::class)override fun `start`(`inputsJson`: kotlin.String, `sysJson`: kotlin.String, `listener`: RunListener): RunHandle {
+            return FfiConverterTypeRunHandle.lift(
+    callWithHandle {
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_method_workflowhandle_start(
+        it,
+        
+        FfiConverterString.lower(`inputsJson`),
+        FfiConverterString.lower(`sysJson`),
+        FfiConverterTypeRunListener.lower(`listener`),_status)
 }
     }
     )
@@ -3333,6 +5258,111 @@ public object FfiConverterTypeWorkflowHandle: FfiConverter<WorkflowHandle, Long>
 
     override fun write(value: WorkflowHandle, buf: ByteBuffer) {
         buf.putLong(lower(value))
+    }
+}
+
+
+
+/**
+ * One node of a paused run that waits for an answer.
+ */
+data class ApprovalRequest (
+    /**
+     * The key to answer under: the node id, or `<frame>/<node_id>` inside containers.
+     */
+    var `key`: kotlin.String
+    , 
+    var `nodeId`: kotlin.String
+    , 
+    var `kind`: RequestKind
+    , 
+    /**
+     * The text shown to the person (human input).
+     */
+    var `prompt`: kotlin.String?
+    , 
+    /**
+     * Form fields (human input).
+     */
+    var `fields`: List<FormField>
+    , 
+    /**
+     * Form buttons (human input).
+     */
+    var `actions`: List<FormAction>
+    , 
+    /**
+     * Calls waiting for approval (tool approval).
+     */
+    var `toolCalls`: List<PendingToolCall>
+    , 
+    /**
+     * How long the request may wait, when the node sets a limit.
+     */
+    var `timeoutMs`: kotlin.ULong?
+    , 
+    /**
+     * A UI card to show with the request, as JSON, when the node has one.
+     */
+    var `cardJson`: kotlin.String?
+    , 
+    /**
+     * The raw pause data, for kinds this record does not model.
+     */
+    var `dataJson`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeApprovalRequest: FfiConverterRustBuffer<ApprovalRequest> {
+    override fun read(buf: ByteBuffer): ApprovalRequest {
+        return ApprovalRequest(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeRequestKind.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterSequenceTypeFormField.read(buf),
+            FfiConverterSequenceTypeFormAction.read(buf),
+            FfiConverterSequenceTypePendingToolCall.read(buf),
+            FfiConverterOptionalULong.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ApprovalRequest) = (
+            FfiConverterString.allocationSize(value.`key`) +
+            FfiConverterString.allocationSize(value.`nodeId`) +
+            FfiConverterTypeRequestKind.allocationSize(value.`kind`) +
+            FfiConverterOptionalString.allocationSize(value.`prompt`) +
+            FfiConverterSequenceTypeFormField.allocationSize(value.`fields`) +
+            FfiConverterSequenceTypeFormAction.allocationSize(value.`actions`) +
+            FfiConverterSequenceTypePendingToolCall.allocationSize(value.`toolCalls`) +
+            FfiConverterOptionalULong.allocationSize(value.`timeoutMs`) +
+            FfiConverterOptionalString.allocationSize(value.`cardJson`) +
+            FfiConverterString.allocationSize(value.`dataJson`)
+    )
+
+    override fun write(value: ApprovalRequest, buf: ByteBuffer) {
+            FfiConverterString.write(value.`key`, buf)
+            FfiConverterString.write(value.`nodeId`, buf)
+            FfiConverterTypeRequestKind.write(value.`kind`, buf)
+            FfiConverterOptionalString.write(value.`prompt`, buf)
+            FfiConverterSequenceTypeFormField.write(value.`fields`, buf)
+            FfiConverterSequenceTypeFormAction.write(value.`actions`, buf)
+            FfiConverterSequenceTypePendingToolCall.write(value.`toolCalls`, buf)
+            FfiConverterOptionalULong.write(value.`timeoutMs`, buf)
+            FfiConverterOptionalString.write(value.`cardJson`, buf)
+            FfiConverterString.write(value.`dataJson`, buf)
     }
 }
 
@@ -3401,6 +5431,829 @@ public object FfiConverterTypeCredentialRecord: FfiConverterRustBuffer<Credentia
 
 
 
+/**
+ * A button of a `human-input` form.
+ */
+data class FormAction (
+    var `id`: kotlin.String
+    , 
+    var `title`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeFormAction: FfiConverterRustBuffer<FormAction> {
+    override fun read(buf: ByteBuffer): FormAction {
+        return FormAction(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: FormAction) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`title`)
+    )
+
+    override fun write(value: FormAction, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`title`, buf)
+    }
+}
+
+
+
+/**
+ * A field of a `human-input` form.
+ */
+data class FormField (
+    var `name`: kotlin.String
+    , 
+    var `label`: kotlin.String
+    , 
+    /**
+     * `text`, `paragraph`, `number`, `select`, `file`... as the node declares it.
+     */
+    var `fieldType`: kotlin.String
+    , 
+    var `required`: kotlin.Boolean
+    , 
+    /**
+     * The default value as JSON, if any.
+     */
+    var `defaultJson`: kotlin.String?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeFormField: FfiConverterRustBuffer<FormField> {
+    override fun read(buf: ByteBuffer): FormField {
+        return FormField(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: FormField) = (
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`label`) +
+            FfiConverterString.allocationSize(value.`fieldType`) +
+            FfiConverterBoolean.allocationSize(value.`required`) +
+            FfiConverterOptionalString.allocationSize(value.`defaultJson`)
+    )
+
+    override fun write(value: FormField, buf: ByteBuffer) {
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`label`, buf)
+            FfiConverterString.write(value.`fieldType`, buf)
+            FfiConverterBoolean.write(value.`required`, buf)
+            FfiConverterOptionalString.write(value.`defaultJson`, buf)
+    }
+}
+
+
+
+/**
+ * One call of a tool, as the app receives it.
+ */
+data class HostToolCall (
+    /**
+     * The provider the tool was registered under.
+     */
+    var `provider`: kotlin.String
+    , 
+    /**
+     * The tool's name.
+     */
+    var `name`: kotlin.String
+    , 
+    /**
+     * The arguments, a JSON object that matches the tool's schema.
+     */
+    var `argumentsJson`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHostToolCall: FfiConverterRustBuffer<HostToolCall> {
+    override fun read(buf: ByteBuffer): HostToolCall {
+        return HostToolCall(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: HostToolCall) = (
+            FfiConverterString.allocationSize(value.`provider`) +
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`argumentsJson`)
+    )
+
+    override fun write(value: HostToolCall, buf: ByteBuffer) {
+            FfiConverterString.write(value.`provider`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`argumentsJson`, buf)
+    }
+}
+
+
+
+/**
+ * What a tool returns.
+ */
+data class HostToolResult (
+    /**
+     * Text handed to the model.
+     */
+    var `text`: kotlin.String
+    , 
+    /**
+     * Structured result as JSON, if any. UI blocks (`{"$ui": "card", ...}`) in it
+     * reach the app as `RunEvent.Ui` events.
+     */
+    var `dataJson`: kotlin.String? = null 
+    , 
+    /**
+     * The tool did not do what was asked; the model sees `text` as an error.
+     */
+    var `isError`: kotlin.Boolean = false 
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHostToolResult: FfiConverterRustBuffer<HostToolResult> {
+    override fun read(buf: ByteBuffer): HostToolResult {
+        return HostToolResult(
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: HostToolResult) = (
+            FfiConverterString.allocationSize(value.`text`) +
+            FfiConverterOptionalString.allocationSize(value.`dataJson`) +
+            FfiConverterBoolean.allocationSize(value.`isError`)
+    )
+
+    override fun write(value: HostToolResult, buf: ByteBuffer) {
+            FfiConverterString.write(value.`text`, buf)
+            FfiConverterOptionalString.write(value.`dataJson`, buf)
+            FfiConverterBoolean.write(value.`isError`, buf)
+    }
+}
+
+
+
+/**
+ * A tool the app offers to agents.
+ */
+data class HostToolSpec (
+    /**
+     * Name within the provider: letters, digits, `_` and `-`, at most 64 characters.
+     */
+    var `name`: kotlin.String
+    , 
+    /**
+     * What the tool does and when to use it, for the model.
+     */
+    var `description`: kotlin.String
+    , 
+    /**
+     * JSON Schema of the arguments object, e.g.
+     * `{"type":"object","properties":{"to":{"type":"string"}},"required":["to"]}`.
+     */
+    var `parametersJson`: kotlin.String
+    , 
+    /**
+     * Time limit of one call in milliseconds (default 30 000, at most 600 000).
+     */
+    var `timeoutMs`: kotlin.ULong? = null 
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeHostToolSpec: FfiConverterRustBuffer<HostToolSpec> {
+    override fun read(buf: ByteBuffer): HostToolSpec {
+        return HostToolSpec(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: HostToolSpec) = (
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`description`) +
+            FfiConverterString.allocationSize(value.`parametersJson`) +
+            FfiConverterOptionalULong.allocationSize(value.`timeoutMs`)
+    )
+
+    override fun write(value: HostToolSpec, buf: ByteBuffer) {
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`description`, buf)
+            FfiConverterString.write(value.`parametersJson`, buf)
+            FfiConverterOptionalULong.write(value.`timeoutMs`, buf)
+    }
+}
+
+
+
+/**
+ * A lesson of an agent.
+ */
+data class LessonInfo (
+    var `id`: kotlin.String
+    , 
+    var `agent`: kotlin.String
+    , 
+    /**
+     * The one user it applies to; `None` for every run of the agent.
+     */
+    var `user`: kotlin.String?
+    , 
+    var `kind`: LessonKind
+    , 
+    var `text`: kotlin.String
+    , 
+    var `status`: LessonStatus
+    , 
+    /**
+     * It could change what the agent does to the outside world (sending,
+     * money, credentials...): show it to the owner with care.
+     */
+    var `highRisk`: kotlin.Boolean
+    , 
+    /**
+     * Where it came from, as one English sentence.
+     */
+    var `origin`: kotlin.String
+    , 
+    var `createdAtMs`: kotlin.ULong
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLessonInfo: FfiConverterRustBuffer<LessonInfo> {
+    override fun read(buf: ByteBuffer): LessonInfo {
+        return LessonInfo(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterTypeLessonKind.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeLessonStatus.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: LessonInfo) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`agent`) +
+            FfiConverterOptionalString.allocationSize(value.`user`) +
+            FfiConverterTypeLessonKind.allocationSize(value.`kind`) +
+            FfiConverterString.allocationSize(value.`text`) +
+            FfiConverterTypeLessonStatus.allocationSize(value.`status`) +
+            FfiConverterBoolean.allocationSize(value.`highRisk`) +
+            FfiConverterString.allocationSize(value.`origin`) +
+            FfiConverterULong.allocationSize(value.`createdAtMs`)
+    )
+
+    override fun write(value: LessonInfo, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`agent`, buf)
+            FfiConverterOptionalString.write(value.`user`, buf)
+            FfiConverterTypeLessonKind.write(value.`kind`, buf)
+            FfiConverterString.write(value.`text`, buf)
+            FfiConverterTypeLessonStatus.write(value.`status`, buf)
+            FfiConverterBoolean.write(value.`highRisk`, buf)
+            FfiConverterString.write(value.`origin`, buf)
+            FfiConverterULong.write(value.`createdAtMs`, buf)
+    }
+}
+
+
+
+/**
+ * A lesson proposed from feedback on a run.
+ */
+data class LessonProposal (
+    /**
+     * The agent (the `learning.agent` of its node).
+     */
+    var `agent`: kotlin.String
+    , 
+    /**
+     * The user of the run; the lesson applies to this user only.
+     */
+    var `user`: kotlin.String? = null 
+    , 
+    var `kind`: LessonKind
+    , 
+    var `text`: kotlin.String
+    , 
+    /**
+     * The run the feedback is about.
+     */
+    var `runId`: kotlin.String? = null 
+    , 
+    /**
+     * Who gave the feedback, and whether the app verified it is them (signed in).
+     */
+    var `author`: kotlin.String? = null 
+    , 
+    var `authorAuthenticated`: kotlin.Boolean = false 
+    , 
+    /**
+     * A short excerpt that shows why (mask secrets first).
+     */
+    var `evidence`: kotlin.String? = null 
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLessonProposal: FfiConverterRustBuffer<LessonProposal> {
+    override fun read(buf: ByteBuffer): LessonProposal {
+        return LessonProposal(
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterTypeLessonKind.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: LessonProposal) = (
+            FfiConverterString.allocationSize(value.`agent`) +
+            FfiConverterOptionalString.allocationSize(value.`user`) +
+            FfiConverterTypeLessonKind.allocationSize(value.`kind`) +
+            FfiConverterString.allocationSize(value.`text`) +
+            FfiConverterOptionalString.allocationSize(value.`runId`) +
+            FfiConverterOptionalString.allocationSize(value.`author`) +
+            FfiConverterBoolean.allocationSize(value.`authorAuthenticated`) +
+            FfiConverterOptionalString.allocationSize(value.`evidence`)
+    )
+
+    override fun write(value: LessonProposal, buf: ByteBuffer) {
+            FfiConverterString.write(value.`agent`, buf)
+            FfiConverterOptionalString.write(value.`user`, buf)
+            FfiConverterTypeLessonKind.write(value.`kind`, buf)
+            FfiConverterString.write(value.`text`, buf)
+            FfiConverterOptionalString.write(value.`runId`, buf)
+            FfiConverterOptionalString.write(value.`author`, buf)
+            FfiConverterBoolean.write(value.`authorAuthenticated`, buf)
+            FfiConverterOptionalString.write(value.`evidence`, buf)
+    }
+}
+
+
+
+/**
+ * A tool call waiting for approval.
+ */
+data class PendingToolCall (
+    /**
+     * The call's id, for [`PausedRun::decide_tool_call`].
+     */
+    var `id`: kotlin.String
+    , 
+    /**
+     * The tool as the model sees it.
+     */
+    var `name`: kotlin.String
+    , 
+    /**
+     * The arguments, as JSON (secret values masked).
+     */
+    var `argumentsJson`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePendingToolCall: FfiConverterRustBuffer<PendingToolCall> {
+    override fun read(buf: ByteBuffer): PendingToolCall {
+        return PendingToolCall(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PendingToolCall) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`argumentsJson`)
+    )
+
+    override fun write(value: PendingToolCall, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`argumentsJson`, buf)
+    }
+}
+
+
+
+/**
+ * The result of a run that did not pause.
+ */
+data class RunResult (
+    var `status`: RunStatus
+    , 
+    /**
+     * The whole answer text (what the `AnswerChunk` events carried).
+     */
+    var `answer`: kotlin.String
+    , 
+    /**
+     * The run's outputs (`end` node), as a JSON object.
+     */
+    var `outputsJson`: kotlin.String
+    , 
+    /**
+     * Why the run failed or was aborted.
+     */
+    var `error`: kotlin.String?
+    , 
+    /**
+     * Machine readable category of a failure (`timeout`, `model`, `limit_exceeded`...).
+     */
+    var `errorType`: kotlin.String?
+    , 
+    /**
+     * The same result as `RunHandle.waitJson` returns it.
+     */
+    var `resultJson`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRunResult: FfiConverterRustBuffer<RunResult> {
+    override fun read(buf: ByteBuffer): RunResult {
+        return RunResult(
+            FfiConverterTypeRunStatus.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: RunResult) = (
+            FfiConverterTypeRunStatus.allocationSize(value.`status`) +
+            FfiConverterString.allocationSize(value.`answer`) +
+            FfiConverterString.allocationSize(value.`outputsJson`) +
+            FfiConverterOptionalString.allocationSize(value.`error`) +
+            FfiConverterOptionalString.allocationSize(value.`errorType`) +
+            FfiConverterString.allocationSize(value.`resultJson`)
+    )
+
+    override fun write(value: RunResult, buf: ByteBuffer) {
+            FfiConverterTypeRunStatus.write(value.`status`, buf)
+            FfiConverterString.write(value.`answer`, buf)
+            FfiConverterString.write(value.`outputsJson`, buf)
+            FfiConverterOptionalString.write(value.`error`, buf)
+            FfiConverterOptionalString.write(value.`errorType`, buf)
+            FfiConverterString.write(value.`resultJson`, buf)
+    }
+}
+
+
+
+/**
+ * A tool granted to a skill.
+ */
+data class SkillGrant (
+    /**
+     * `provider/tool`, or `*` as the tool for every tool of the provider, exactly as the skill asks for it.
+     */
+    var `tool`: kotlin.String
+    , 
+    /**
+     * Calls run without asking; otherwise every call waits for approval.
+     */
+    var `allow`: kotlin.Boolean
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeSkillGrant: FfiConverterRustBuffer<SkillGrant> {
+    override fun read(buf: ByteBuffer): SkillGrant {
+        return SkillGrant(
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: SkillGrant) = (
+            FfiConverterString.allocationSize(value.`tool`) +
+            FfiConverterBoolean.allocationSize(value.`allow`)
+    )
+
+    override fun write(value: SkillGrant, buf: ByteBuffer) {
+            FfiConverterString.write(value.`tool`, buf)
+            FfiConverterBoolean.write(value.`allow`, buf)
+    }
+}
+
+
+
+/**
+ * An installed skill.
+ */
+data class SkillInfo (
+    var `name`: kotlin.String
+    , 
+    var `description`: kotlin.String
+    , 
+    var `title`: kotlin.String?
+    , 
+    var `enabled`: kotlin.Boolean
+    , 
+    /**
+     * Tools the skill asks for.
+     */
+    var `requestedTools`: List<kotlin.String>
+    , 
+    /**
+     * Tools granted to it.
+     */
+    var `grants`: List<SkillGrant>
+    , 
+    /**
+     * What the scan found, one line each (`severity code: message`).
+     */
+    var `findings`: List<kotlin.String>
+    , 
+    var `version`: kotlin.String?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeSkillInfo: FfiConverterRustBuffer<SkillInfo> {
+    override fun read(buf: ByteBuffer): SkillInfo {
+        return SkillInfo(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterSequenceString.read(buf),
+            FfiConverterSequenceTypeSkillGrant.read(buf),
+            FfiConverterSequenceString.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: SkillInfo) = (
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`description`) +
+            FfiConverterOptionalString.allocationSize(value.`title`) +
+            FfiConverterBoolean.allocationSize(value.`enabled`) +
+            FfiConverterSequenceString.allocationSize(value.`requestedTools`) +
+            FfiConverterSequenceTypeSkillGrant.allocationSize(value.`grants`) +
+            FfiConverterSequenceString.allocationSize(value.`findings`) +
+            FfiConverterOptionalString.allocationSize(value.`version`)
+    )
+
+    override fun write(value: SkillInfo, buf: ByteBuffer) {
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`description`, buf)
+            FfiConverterOptionalString.write(value.`title`, buf)
+            FfiConverterBoolean.write(value.`enabled`, buf)
+            FfiConverterSequenceString.write(value.`requestedTools`, buf)
+            FfiConverterSequenceTypeSkillGrant.write(value.`grants`, buf)
+            FfiConverterSequenceString.write(value.`findings`, buf)
+            FfiConverterOptionalString.write(value.`version`, buf)
+    }
+}
+
+
+
+/**
+ * What to install.
+ */
+data class SkillInstall (
+    /**
+     * The whole `SKILL.md` (front matter and instructions).
+     */
+    var `skillMd`: kotlin.String
+    , 
+    /**
+     * Tools to grant; each must be one the skill asks for in `allowed-tools`.
+     */
+    var `grants`: List<SkillGrant> = listOf() 
+    , 
+    /**
+     * Replace an installed skill of the same name.
+     */
+    var `replace`: kotlin.Boolean = false 
+    , 
+    /**
+     * Install although the scan found something blocking.
+     */
+    var `acceptFindings`: kotlin.Boolean = false 
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeSkillInstall: FfiConverterRustBuffer<SkillInstall> {
+    override fun read(buf: ByteBuffer): SkillInstall {
+        return SkillInstall(
+            FfiConverterString.read(buf),
+            FfiConverterSequenceTypeSkillGrant.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: SkillInstall) = (
+            FfiConverterString.allocationSize(value.`skillMd`) +
+            FfiConverterSequenceTypeSkillGrant.allocationSize(value.`grants`) +
+            FfiConverterBoolean.allocationSize(value.`replace`) +
+            FfiConverterBoolean.allocationSize(value.`acceptFindings`)
+    )
+
+    override fun write(value: SkillInstall, buf: ByteBuffer) {
+            FfiConverterString.write(value.`skillMd`, buf)
+            FfiConverterSequenceTypeSkillGrant.write(value.`grants`, buf)
+            FfiConverterBoolean.write(value.`replace`, buf)
+            FfiConverterBoolean.write(value.`acceptFindings`, buf)
+    }
+}
+
+
+
+/**
+ * A UI block an agent produced, checked against its schema.
+ */
+data class UiBlock (
+    /**
+     * `adaptive_card`, `chart`, `table`, `stats` or `diagram`.
+     */
+    var `kind`: kotlin.String
+    , 
+    var `title`: kotlin.String?
+    , 
+    /**
+     * The block as JSON (`{"$ui": "...", "version": 1, ...}`).
+     */
+    var `json`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeUiBlock: FfiConverterRustBuffer<UiBlock> {
+    override fun read(buf: ByteBuffer): UiBlock {
+        return UiBlock(
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: UiBlock) = (
+            FfiConverterString.allocationSize(value.`kind`) +
+            FfiConverterOptionalString.allocationSize(value.`title`) +
+            FfiConverterString.allocationSize(value.`json`)
+    )
+
+    override fun write(value: UiBlock, buf: ByteBuffer) {
+            FfiConverterString.write(value.`kind`, buf)
+            FfiConverterOptionalString.write(value.`title`, buf)
+            FfiConverterString.write(value.`json`, buf)
+    }
+}
+
+
+
 
 
 /**
@@ -3463,6 +6316,17 @@ sealed class GraphrtException: kotlin.Exception() {
             get() = "detail=${ `detail` }"
     }
     
+    /**
+     * The capability is not compiled into this build, or not configured.
+     */
+    class Unsupported(
+        
+        val `detail`: kotlin.String
+        ) : GraphrtException() {
+        override val message
+            get() = "detail=${ `detail` }"
+    }
+    
 
     
 
@@ -3497,6 +6361,9 @@ public object FfiConverterTypeGraphrtError : FfiConverterRustBuffer<GraphrtExcep
             5 -> GraphrtException.Runtime(
                 FfiConverterString.read(buf),
                 )
+            6 -> GraphrtException.Unsupported(
+                FfiConverterString.read(buf),
+                )
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -3524,6 +6391,11 @@ public object FfiConverterTypeGraphrtError : FfiConverterRustBuffer<GraphrtExcep
                 + FfiConverterString.allocationSize(value.`detail`)
             )
             is GraphrtException.Runtime -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`detail`)
+            )
+            is GraphrtException.Unsupported -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterString.allocationSize(value.`detail`)
@@ -3556,6 +6428,882 @@ public object FfiConverterTypeGraphrtError : FfiConverterRustBuffer<GraphrtExcep
             is GraphrtException.Runtime -> {
                 buf.putInt(5)
                 FfiConverterString.write(value.`detail`, buf)
+                Unit
+            }
+            is GraphrtException.Unsupported -> {
+                buf.putInt(6)
+                FfiConverterString.write(value.`detail`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+
+}
+
+
+
+/**
+ * A decision about a lesson.
+ */
+
+enum class LessonDecision {
+    
+    /**
+     * Use it in runs.
+     */
+    APPROVE,
+    /**
+     * Decline it; the same text is not proposed again.
+     */
+    REJECT,
+    /**
+     * Stop using an approved lesson, keeping it on record.
+     */
+    RETIRE;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLessonDecision: FfiConverterRustBuffer<LessonDecision> {
+    override fun read(buf: ByteBuffer) = try {
+        LessonDecision.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: LessonDecision) = 4UL
+
+    override fun write(value: LessonDecision, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * What kind of thing a lesson is.
+ */
+
+enum class LessonKind {
+    
+    /**
+     * How someone likes things done ("answer in Indonesian").
+     */
+    PREFERENCE,
+    /**
+     * Something that is true ("invoices go to finance").
+     */
+    FACT,
+    /**
+     * How to do something ("check stock before quoting").
+     */
+    PROCEDURE,
+    /**
+     * A mistake not to repeat.
+     */
+    CORRECTION;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLessonKind: FfiConverterRustBuffer<LessonKind> {
+    override fun read(buf: ByteBuffer) = try {
+        LessonKind.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: LessonKind) = 4UL
+
+    override fun write(value: LessonKind, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * Where a lesson is in its life.
+ */
+
+enum class LessonStatus {
+    
+    PROPOSED,
+    APPROVED,
+    REJECTED,
+    RETIRED;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLessonStatus: FfiConverterRustBuffer<LessonStatus> {
+    override fun read(buf: ByteBuffer) = try {
+        LessonStatus.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: LessonStatus) = 4UL
+
+    override fun write(value: LessonStatus, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * What a request asks for.
+ */
+sealed class RequestKind {
+    
+    /**
+     * An `agent` node holds tool calls until someone approves or rejects them.
+     */
+    object ToolApproval : RequestKind()
+    
+    
+    /**
+     * A `human-input` node waits for a form: an action and field values.
+     */
+    object HumanInput : RequestKind()
+    
+    
+    /**
+     * A pause of another kind (`data_json` holds the details).
+     */
+    data class Other(
+        val `name`: kotlin.String) : RequestKind()
+        
+    {
+        
+
+        companion object
+    }
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRequestKind : FfiConverterRustBuffer<RequestKind>{
+    override fun read(buf: ByteBuffer): RequestKind {
+        return when(buf.getInt()) {
+            1 -> RequestKind.ToolApproval
+            2 -> RequestKind.HumanInput
+            3 -> RequestKind.Other(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: RequestKind): ULong = when(value) {
+        is RequestKind.ToolApproval -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is RequestKind.HumanInput -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is RequestKind.Other -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`name`)
+            )
+        }
+    }
+
+    override fun write(value: RequestKind, buf: ByteBuffer) {
+        when(value) {
+            is RequestKind.ToolApproval -> {
+                buf.putInt(1)
+                Unit
+            }
+            is RequestKind.HumanInput -> {
+                buf.putInt(2)
+                Unit
+            }
+            is RequestKind.Other -> {
+                buf.putInt(3)
+                FfiConverterString.write(value.`name`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+/**
+ * An event of a run.
+ */
+sealed class RunEvent: Disposable  {
+    
+    data class Started(
+        val `runId`: kotlin.String, 
+        val `resumed`: kotlin.Boolean) : RunEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class NodeStarted(
+        val `nodeId`: kotlin.String, 
+        val `kind`: kotlin.String, 
+        val `title`: kotlin.String) : RunEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
+    data class NodeSucceeded(
+        val `nodeId`: kotlin.String, 
+        val `elapsedMs`: kotlin.ULong) : RunEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * A node failed; with `handled` its error strategy kept the run going.
+     */
+    data class NodeFailed(
+        val `nodeId`: kotlin.String, 
+        val `error`: kotlin.String, 
+        val `errorType`: kotlin.String, 
+        val `handled`: kotlin.Boolean) : RunEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * An agent called a tool.
+     */
+    data class ToolCalled(
+        val `nodeId`: kotlin.String, 
+        val `callId`: kotlin.String, 
+        val `name`: kotlin.String, 
+        val `argumentsJson`: kotlin.String) : RunEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * A tool call finished.
+     */
+    data class ToolFinished(
+        val `nodeId`: kotlin.String, 
+        val `callId`: kotlin.String, 
+        val `name`: kotlin.String, 
+        val `isError`: kotlin.Boolean) : RunEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * A held tool call was not approved.
+     */
+    data class ToolDenied(
+        val `nodeId`: kotlin.String, 
+        val `callId`: kotlin.String, 
+        val `name`: kotlin.String) : RunEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * User facing answer text, in order, as it is produced.
+     */
+    data class AnswerChunk(
+        val `text`: kotlin.String) : RunEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * A UI block in a node's outputs that passed validation (feature `ui`).
+     */
+    data class Ui(
+        val `nodeId`: kotlin.String, 
+        val `block`: uniffi.graphrt_ffi.UiBlock) : RunEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * A UI block that failed validation and must not be shown.
+     */
+    data class UiRejected(
+        val `nodeId`: kotlin.String, 
+        val `error`: kotlin.String) : RunEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * The run paused and waits for answers. Terminal.
+     */
+    data class Paused(
+        val `run`: uniffi.graphrt_ffi.PausedRun) : RunEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * The run ended. Terminal.
+     */
+    data class Finished(
+        val `result`: uniffi.graphrt_ffi.RunResult) : RunEvent()
+        
+    {
+        
+
+        companion object
+    }
+    
+
+    
+    @Suppress("UNNECESSARY_SAFE_CALL") // codegen is much simpler if we unconditionally emit safe calls here
+    override fun destroy() {
+        when(this) {
+            is RunEvent.Started -> {
+                
+    Disposable.destroy(
+        this.`runId`,
+        this.`resumed`
+    )
+                
+            }
+            is RunEvent.NodeStarted -> {
+                
+    Disposable.destroy(
+        this.`nodeId`,
+        this.`kind`,
+        this.`title`
+    )
+                
+            }
+            is RunEvent.NodeSucceeded -> {
+                
+    Disposable.destroy(
+        this.`nodeId`,
+        this.`elapsedMs`
+    )
+                
+            }
+            is RunEvent.NodeFailed -> {
+                
+    Disposable.destroy(
+        this.`nodeId`,
+        this.`error`,
+        this.`errorType`,
+        this.`handled`
+    )
+                
+            }
+            is RunEvent.ToolCalled -> {
+                
+    Disposable.destroy(
+        this.`nodeId`,
+        this.`callId`,
+        this.`name`,
+        this.`argumentsJson`
+    )
+                
+            }
+            is RunEvent.ToolFinished -> {
+                
+    Disposable.destroy(
+        this.`nodeId`,
+        this.`callId`,
+        this.`name`,
+        this.`isError`
+    )
+                
+            }
+            is RunEvent.ToolDenied -> {
+                
+    Disposable.destroy(
+        this.`nodeId`,
+        this.`callId`,
+        this.`name`
+    )
+                
+            }
+            is RunEvent.AnswerChunk -> {
+                
+    Disposable.destroy(
+        this.`text`
+    )
+                
+            }
+            is RunEvent.Ui -> {
+                
+    Disposable.destroy(
+        this.`nodeId`,
+        this.`block`
+    )
+                
+            }
+            is RunEvent.UiRejected -> {
+                
+    Disposable.destroy(
+        this.`nodeId`,
+        this.`error`
+    )
+                
+            }
+            is RunEvent.Paused -> {
+                
+    Disposable.destroy(
+        this.`run`
+    )
+                
+            }
+            is RunEvent.Finished -> {
+                
+    Disposable.destroy(
+        this.`result`
+    )
+                
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRunEvent : FfiConverterRustBuffer<RunEvent>{
+    override fun read(buf: ByteBuffer): RunEvent {
+        return when(buf.getInt()) {
+            1 -> RunEvent.Started(
+                FfiConverterString.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            2 -> RunEvent.NodeStarted(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            3 -> RunEvent.NodeSucceeded(
+                FfiConverterString.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            4 -> RunEvent.NodeFailed(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            5 -> RunEvent.ToolCalled(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            6 -> RunEvent.ToolFinished(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterBoolean.read(buf),
+                )
+            7 -> RunEvent.ToolDenied(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            8 -> RunEvent.AnswerChunk(
+                FfiConverterString.read(buf),
+                )
+            9 -> RunEvent.Ui(
+                FfiConverterString.read(buf),
+                FfiConverterTypeUiBlock.read(buf),
+                )
+            10 -> RunEvent.UiRejected(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            11 -> RunEvent.Paused(
+                FfiConverterTypePausedRun.read(buf),
+                )
+            12 -> RunEvent.Finished(
+                FfiConverterTypeRunResult.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: RunEvent): ULong = when(value) {
+        is RunEvent.Started -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`runId`)
+                + FfiConverterBoolean.allocationSize(value.`resumed`)
+            )
+        }
+        is RunEvent.NodeStarted -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nodeId`)
+                + FfiConverterString.allocationSize(value.`kind`)
+                + FfiConverterString.allocationSize(value.`title`)
+            )
+        }
+        is RunEvent.NodeSucceeded -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nodeId`)
+                + FfiConverterULong.allocationSize(value.`elapsedMs`)
+            )
+        }
+        is RunEvent.NodeFailed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nodeId`)
+                + FfiConverterString.allocationSize(value.`error`)
+                + FfiConverterString.allocationSize(value.`errorType`)
+                + FfiConverterBoolean.allocationSize(value.`handled`)
+            )
+        }
+        is RunEvent.ToolCalled -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nodeId`)
+                + FfiConverterString.allocationSize(value.`callId`)
+                + FfiConverterString.allocationSize(value.`name`)
+                + FfiConverterString.allocationSize(value.`argumentsJson`)
+            )
+        }
+        is RunEvent.ToolFinished -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nodeId`)
+                + FfiConverterString.allocationSize(value.`callId`)
+                + FfiConverterString.allocationSize(value.`name`)
+                + FfiConverterBoolean.allocationSize(value.`isError`)
+            )
+        }
+        is RunEvent.ToolDenied -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nodeId`)
+                + FfiConverterString.allocationSize(value.`callId`)
+                + FfiConverterString.allocationSize(value.`name`)
+            )
+        }
+        is RunEvent.AnswerChunk -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`text`)
+            )
+        }
+        is RunEvent.Ui -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nodeId`)
+                + FfiConverterTypeUiBlock.allocationSize(value.`block`)
+            )
+        }
+        is RunEvent.UiRejected -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nodeId`)
+                + FfiConverterString.allocationSize(value.`error`)
+            )
+        }
+        is RunEvent.Paused -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypePausedRun.allocationSize(value.`run`)
+            )
+        }
+        is RunEvent.Finished -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeRunResult.allocationSize(value.`result`)
+            )
+        }
+    }
+
+    override fun write(value: RunEvent, buf: ByteBuffer) {
+        when(value) {
+            is RunEvent.Started -> {
+                buf.putInt(1)
+                FfiConverterString.write(value.`runId`, buf)
+                FfiConverterBoolean.write(value.`resumed`, buf)
+                Unit
+            }
+            is RunEvent.NodeStarted -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`nodeId`, buf)
+                FfiConverterString.write(value.`kind`, buf)
+                FfiConverterString.write(value.`title`, buf)
+                Unit
+            }
+            is RunEvent.NodeSucceeded -> {
+                buf.putInt(3)
+                FfiConverterString.write(value.`nodeId`, buf)
+                FfiConverterULong.write(value.`elapsedMs`, buf)
+                Unit
+            }
+            is RunEvent.NodeFailed -> {
+                buf.putInt(4)
+                FfiConverterString.write(value.`nodeId`, buf)
+                FfiConverterString.write(value.`error`, buf)
+                FfiConverterString.write(value.`errorType`, buf)
+                FfiConverterBoolean.write(value.`handled`, buf)
+                Unit
+            }
+            is RunEvent.ToolCalled -> {
+                buf.putInt(5)
+                FfiConverterString.write(value.`nodeId`, buf)
+                FfiConverterString.write(value.`callId`, buf)
+                FfiConverterString.write(value.`name`, buf)
+                FfiConverterString.write(value.`argumentsJson`, buf)
+                Unit
+            }
+            is RunEvent.ToolFinished -> {
+                buf.putInt(6)
+                FfiConverterString.write(value.`nodeId`, buf)
+                FfiConverterString.write(value.`callId`, buf)
+                FfiConverterString.write(value.`name`, buf)
+                FfiConverterBoolean.write(value.`isError`, buf)
+                Unit
+            }
+            is RunEvent.ToolDenied -> {
+                buf.putInt(7)
+                FfiConverterString.write(value.`nodeId`, buf)
+                FfiConverterString.write(value.`callId`, buf)
+                FfiConverterString.write(value.`name`, buf)
+                Unit
+            }
+            is RunEvent.AnswerChunk -> {
+                buf.putInt(8)
+                FfiConverterString.write(value.`text`, buf)
+                Unit
+            }
+            is RunEvent.Ui -> {
+                buf.putInt(9)
+                FfiConverterString.write(value.`nodeId`, buf)
+                FfiConverterTypeUiBlock.write(value.`block`, buf)
+                Unit
+            }
+            is RunEvent.UiRejected -> {
+                buf.putInt(10)
+                FfiConverterString.write(value.`nodeId`, buf)
+                FfiConverterString.write(value.`error`, buf)
+                Unit
+            }
+            is RunEvent.Paused -> {
+                buf.putInt(11)
+                FfiConverterTypePausedRun.write(value.`run`, buf)
+                Unit
+            }
+            is RunEvent.Finished -> {
+                buf.putInt(12)
+                FfiConverterTypeRunResult.write(value.`result`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+/**
+ * How a run ended.
+ */
+
+enum class RunStatus {
+    
+    SUCCEEDED,
+    FAILED,
+    ABORTED,
+    PAUSED;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRunStatus: FfiConverterRustBuffer<RunStatus> {
+    override fun read(buf: ByteBuffer) = try {
+        RunStatus.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: RunStatus) = 4UL
+
+    override fun write(value: RunStatus, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
+
+/**
+ * An error a tool reports. The model receives `reason` and may try again.
+ */
+sealed class ToolCallException: kotlin.Exception() {
+    
+    /**
+     * The tool could not do what was asked.
+     */
+    class Failed(
+        
+        val `reason`: kotlin.String
+        ) : ToolCallException() {
+        override val message
+            get() = "reason=${ `reason` }"
+    }
+    
+
+    
+
+
+    companion object ErrorHandler : UniffiRustCallStatusErrorHandler<ToolCallException> {
+        override fun lift(error_buf: RustBuffer.ByValue): ToolCallException = FfiConverterTypeToolCallError.lift(error_buf)
+    }
+
+    
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeToolCallError : FfiConverterRustBuffer<ToolCallException> {
+    override fun read(buf: ByteBuffer): ToolCallException {
+        
+
+        return when(buf.getInt()) {
+            1 -> ToolCallException.Failed(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: ToolCallException): ULong {
+        return when(value) {
+            is ToolCallException.Failed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
+        }
+    }
+
+    override fun write(value: ToolCallException, buf: ByteBuffer) {
+        when(value) {
+            is ToolCallException.Failed -> {
+                buf.putInt(1)
+                FfiConverterString.write(value.`reason`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -3633,6 +7381,38 @@ public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?>
 /**
  * @suppress
  */
+public object FfiConverterOptionalTypeLessonStatus: FfiConverterRustBuffer<LessonStatus?> {
+    override fun read(buf: ByteBuffer): LessonStatus? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeLessonStatus.read(buf)
+    }
+
+    override fun allocationSize(value: LessonStatus?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeLessonStatus.allocationSize(value)
+        }
+    }
+
+    override fun write(value: LessonStatus?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeLessonStatus.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.String>> {
     override fun read(buf: ByteBuffer): List<kotlin.String> {
         val len = buf.getInt()
@@ -3654,6 +7434,238 @@ public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.Str
         }
     }
 }
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeApprovalRequest: FfiConverterRustBuffer<List<ApprovalRequest>> {
+    override fun read(buf: ByteBuffer): List<ApprovalRequest> {
+        val len = buf.getInt()
+        return List<ApprovalRequest>(len) {
+            FfiConverterTypeApprovalRequest.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<ApprovalRequest>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeApprovalRequest.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<ApprovalRequest>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeApprovalRequest.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeFormAction: FfiConverterRustBuffer<List<FormAction>> {
+    override fun read(buf: ByteBuffer): List<FormAction> {
+        val len = buf.getInt()
+        return List<FormAction>(len) {
+            FfiConverterTypeFormAction.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<FormAction>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeFormAction.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<FormAction>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeFormAction.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeFormField: FfiConverterRustBuffer<List<FormField>> {
+    override fun read(buf: ByteBuffer): List<FormField> {
+        val len = buf.getInt()
+        return List<FormField>(len) {
+            FfiConverterTypeFormField.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<FormField>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeFormField.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<FormField>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeFormField.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeHostToolSpec: FfiConverterRustBuffer<List<HostToolSpec>> {
+    override fun read(buf: ByteBuffer): List<HostToolSpec> {
+        val len = buf.getInt()
+        return List<HostToolSpec>(len) {
+            FfiConverterTypeHostToolSpec.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<HostToolSpec>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeHostToolSpec.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<HostToolSpec>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeHostToolSpec.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeLessonInfo: FfiConverterRustBuffer<List<LessonInfo>> {
+    override fun read(buf: ByteBuffer): List<LessonInfo> {
+        val len = buf.getInt()
+        return List<LessonInfo>(len) {
+            FfiConverterTypeLessonInfo.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<LessonInfo>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeLessonInfo.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<LessonInfo>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeLessonInfo.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypePendingToolCall: FfiConverterRustBuffer<List<PendingToolCall>> {
+    override fun read(buf: ByteBuffer): List<PendingToolCall> {
+        val len = buf.getInt()
+        return List<PendingToolCall>(len) {
+            FfiConverterTypePendingToolCall.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<PendingToolCall>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypePendingToolCall.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<PendingToolCall>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypePendingToolCall.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeSkillGrant: FfiConverterRustBuffer<List<SkillGrant>> {
+    override fun read(buf: ByteBuffer): List<SkillGrant> {
+        val len = buf.getInt()
+        return List<SkillGrant>(len) {
+            FfiConverterTypeSkillGrant.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<SkillGrant>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeSkillGrant.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<SkillGrant>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeSkillGrant.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeSkillInfo: FfiConverterRustBuffer<List<SkillInfo>> {
+    override fun read(buf: ByteBuffer): List<SkillInfo> {
+        val len = buf.getInt()
+        return List<SkillInfo>(len) {
+            FfiConverterTypeSkillInfo.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<SkillInfo>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeSkillInfo.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<SkillInfo>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeSkillInfo.write(it, buf)
+        }
+    }
+}
+
+
+
+
+
+
+
+
         /**
          * Version of the embedded runtime.
          */ fun `graphrtVersion`(): kotlin.String {
@@ -3662,6 +7674,22 @@ public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.Str
     UniffiLib.uniffi_graphrt_ffi_fn_func_graphrt_version(
     
         _status)
+}
+    )
+    }
+    
+
+        /**
+         * Check a UI block (`{"$ui": "chart", "version": 1, ...}`) against its schema,
+         * for blocks an app receives outside a run (stored messages, a server).
+         */
+    @Throws(GraphrtException::class) fun `validateUiBlock`(`blockJson`: kotlin.String): UiBlock {
+            return FfiConverterTypeUiBlock.lift(
+    uniffiRustCallWithError(GraphrtException) { _status ->
+    UniffiLib.uniffi_graphrt_ffi_fn_func_validate_ui_block(
+    
+        
+        FfiConverterString.lower(`blockJson`),_status)
 }
     )
     }

@@ -1,17 +1,24 @@
 name: Mobile
 
-# Builds graphrt-ffi for Android and iOS, builds the sample apps in
-# examples/mobile and runs the offline hello workflow through the Kotlin
-# binding in an Android emulator and through the Swift binding in an iOS
-# simulator (examples/mobile/*/scripts/smoke-test.sh). The same scripts run
+# Builds graphrt-ffi for Android and iOS with the SDK's features, builds the
+# sample apps in examples/mobile and runs the offline hello workflow and the
+# phone assistant (examples/mobile/agent.yaml: a scripted model, native tools
+# through the host callback, a pause for approval, the resume and the streamed
+# answer) through the Kotlin SDK in an Android emulator and through the Swift
+# SDK in an iOS simulator (examples/mobile/*/scripts/smoke-test.sh). The `sdk`
+# job checks that the bindings match the API and runs the Kotlin and Swift
+# tests, docs/mobile.md snippets included, on Linux. The same scripts run
 # locally; see docs/mobile.md#testing-on-devices for physical devices.
 on:
   push:
     branches: [main]
     paths:
       - "crates/**"
-      - "bindings/kotlin/**"
-      - "bindings/swift/**"
+      - "bindings/**"
+      - "sdk/android/**"
+      - "sdk/swift/**"
+      - "scripts/generate-bindings.sh"
+      - "scripts/check-doc-snippets.py"
       - "examples/hello.yaml"
       - "examples/mobile/**"
       - "Cargo.toml"
@@ -65,6 +72,41 @@ jobs:
           filters: .github/path-filters.yml
           predicate-quantifier: some-with-excludes
 
+  sdk:
+    name: SDK (bindings, Kotlin and Swift tests on Linux)
+    needs: changes
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: sdk
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: The bindings match the API
+        run: scripts/generate-bindings.sh --check
+      - name: The guide's snippets are the tested code
+        run: python3 scripts/check-doc-snippets.py
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - name: Kotlin tests and snippets on the JVM
+        run: sdk/android/scripts/test-jvm.sh
+      - name: Swift tests and snippets on Linux
+        # The swift image matches the runner (Ubuntu 24.04), so the host library loads in it.
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD:$PWD" -w "$PWD/sdk/swift" -e LD_LIBRARY_PATH="$PWD/target/debug" \
+            swift:6.1-noble swift test --scratch-path /tmp/swift-build -Xlinker -L"$PWD/target/debug"
+
   android:
     name: Android (arm64-v8a + x86_64, emulator smoke test)
     needs: changes
@@ -88,16 +130,21 @@ jobs:
       - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: cargo-ndk
-      - name: Build libgraphrt_ffi.so (aarch64-linux-android, x86_64-linux-android)
-        # The runner image ships the NDK; use its newest one (r27+).
+      - name: Build libgraphrt_ffi.so with the SDK's features (aarch64-linux-android, x86_64-linux-android)
+        # The runner image ships the NDK; use its newest one (r27+). The armeabi-v7a
+        # library of the release AAR is checked here, not built.
         run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" examples/mobile/android/scripts/build-rust.sh
+      - name: Check armv7-linux-androideabi
+        run: |
+          rustup target add armv7-linux-androideabi
+          ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" cargo ndk -t armeabi-v7a check -p graphrt-ffi --lib --features sdk
 
       - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
-      - name: Build the sample APK
+      - name: Build the sample APK (with the SDK module sdk/android/graphrt)
         working-directory: examples/mobile/android
         run: ./gradlew assembleDebug
 
@@ -150,7 +197,8 @@ jobs:
     # x86_64, so the xcframework gets an x86_64 simulator slice and the app is built
     # for x86_64. main, nightly and manual runs keep arm64 (macos-15).
     runs-on: ${{ github.event_name == 'pull_request' && 'macos-15-intel' || 'macos-15' }}
-    timeout-minutes: 45
+    # The SDK's features for three Apple targets plus the macOS slice of the Swift tests.
+    timeout-minutes: 75
     env:
       IPHONEOS_DEPLOYMENT_TARGET: "16.0"
       # Simulator architecture of the runner, its Rust target, and the other simulator target (checked only).
@@ -177,7 +225,15 @@ jobs:
       - name: Build GraphrtFFI.xcframework (aarch64-apple-ios + ${{ env.SIMULATOR_TARGET }})
         run: GRAPHRT_TARGETS="aarch64-apple-ios $SIMULATOR_TARGET" examples/mobile/ios/scripts/build-xcframework.sh
       - name: Check the other simulator target (${{ env.OTHER_SIMULATOR_TARGET }})
-        run: cargo check -p graphrt-ffi --lib --no-default-features --target "$OTHER_SIMULATOR_TARGET"
+        run: |
+          rustup target add "$OTHER_SIMULATOR_TARGET"
+          LIBCLANG_PATH="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib" \
+            cargo check -p graphrt-ffi --lib --features sdk --target "$OTHER_SIMULATOR_TARGET"
+      - name: Swift package tests and snippets on macOS
+        # A macOS slice of the runner's architecture is enough for `swift test`.
+        run: |
+          GRAPHRT_TARGETS="$(uname -m | sed 's/arm64/aarch64/')-apple-darwin" sdk/swift/scripts/build-xcframework.sh
+          cd sdk/swift && swift test
 
       - name: Build the sample app for the simulator
         working-directory: examples/mobile/ios
@@ -208,7 +264,7 @@ jobs:
   mobile-ok:
     name: mobile-ok
     if: always()
-    needs: [changes, android]
+    needs: [changes, sdk, android]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

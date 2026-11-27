@@ -1,124 +1,471 @@
-# Running graphrt on phones and desktops
+# Graphrt in a mobile app
 
-`crates/graphrt-ffi` exposes graphrt to Kotlin (Android), Swift (iOS, macOS),
-Python and other languages through [UniFFI](https://mozilla.github.io/uniffi-rs/)
-0.32. Workflows built on a platform run inside the app itself, offline-capable
-except for the model / API calls they make.
+Graphrt runs inside an Android or iOS app: the agent, its tools, approvals and
+streamed answers all happen on the phone, with no server of your own. Only the
+model calls (or your proxy) leave the device. This guide shows how to add the
+SDK to an app, give an agent native tools, ask the person before a tool acts,
+and ship it.
 
-## Sample apps
+The SDK has three layers, all generated from one Rust crate
+(`crates/graphrt-ffi`, [UniFFI](https://mozilla.github.io/uniffi-rs/) 0.32):
 
-Two minimal apps run the offline [`hello`](../examples/hello.yaml) workflow
-on the device, with a name field, a **Run** button and a **Stream events**
-button. Each comes with a script that builds the native library:
-
-| App | Build script | Native artifact |
+| Layer | Android | iOS / macOS |
 | --- | --- | --- |
-| [Android (Kotlin, Views)](../examples/mobile/android/README.md) | `examples/mobile/android/scripts/build-rust.sh` | `libgraphrt_ffi.so`, arm64-v8a 8.5 MB / x86_64 10.2 MB |
-| [iOS (SwiftUI)](../examples/mobile/ios/README.md) | `examples/mobile/ios/scripts/build-xcframework.sh` | `GraphrtFFI.xcframework`; the Release device app binary is 13.7 MB |
+| Native library | `libgraphrt_ffi.so` per ABI, in the AAR | `GraphrtFFI.xcframework` (device, simulator, macOS) |
+| Generated binding | package `uniffi.graphrt_ffi` | the `Graphrt` module |
+| Helpers | package `com.graphrt`: `Flow` of events, `registerTools { }` | `AsyncThrowingStream` of events, `registerTools { }` |
 
-Both build graphrt with `--no-default-features` (engine, templates, LLM and
-HTTP nodes; no JavaScript, MCP, document or RAG nodes) and the `min-size`
-profile. Start from them when embedding graphrt in your own app.
+Every Kotlin and Swift example in this guide is compiled and run by the SDK's
+tests (`sdk/android/graphrt-jvm` and `sdk/swift/Tests`), so the examples work
+with the release they come from.
 
-Each app also has a `scripts/smoke-test.sh` that installs it on a running
-emulator, simulator or device, runs the workflow with autorun, and fails unless
-both the waited result and the streamed events report `Hello, Grace.`. CI runs
-these scripts (see [CI](#ci-github-actions)); you can run them locally too.
+## Install
 
-## What runs on mobile
+### Android
 
-Everything in the embedded build avoids spawning processes (forbidden on iOS):
+Each [GitHub release](https://github.com/Graphrt/graphrt/releases) has
+`graphrt-android-<version>.aar` (arm64-v8a, armeabi-v7a, x86_64, Android 8.0 /
+API 26 and newer). Put it in `app/libs/` and add:
 
-| Feature | Android | iOS | Notes |
-| --- | --- | --- | --- |
-| Engine, all control nodes, templates, pause/resume | yes | yes | pure Rust |
-| `llm`, `agent`, `question-classifier`, `parameter-extractor` | yes | yes | OpenAI-compatible + Anthropic over rustls |
-| `http-request` | yes | yes | SSRF guard on by default |
-| `code` (JavaScript) | yes | yes | QuickJS interpreter, no JIT (App Store friendly) |
-| `document-extractor`, `knowledge-retrieval` | yes | yes | memory / SQLite / Qdrant / HTTP retrievers (SQLite verified on Android arm64; iOS not yet built) |
-| WebAssembly plugins | yes | yes | wasmi interpreter, no JIT |
-| MCP tools over HTTP | yes | yes | stdio MCP servers are rejected |
-| Python code, process plugins, stdio MCP | no | no | need child processes |
-
-## API
-
-The surface is JSON-string based so it stays stable across languages:
-
-```text
-Runtime(configJson)                              // one per app
-  .registerWasmPlugin(bytes) -> [kinds]
-  .catalogJson()                                 // node catalog for builders
-  .loadWorkflow(yamlOrJson) -> WorkflowHandle    // throws GraphrtException.InvalidWorkflow
-WorkflowHandle
-  .run(inputsJson, sysJson, listener) -> RunHandle
-  .resume(snapshotJson, inputsJson, secretsJson, listener) -> RunHandle
-  .catalogJson() / .warnings() / .name()
-Runtime.setCredentialProvider(provider, callback) // keys from Keychain / Keystore / your backend
-Runtime.clearCredentialProvider(provider)
-RunHandle
-  .abort(reason) / .pause(reason) / .updateVariable(selector, valueJson)
-  .isFinished() / .waitJson(timeoutMs)           // waitJson blocks: never on the UI thread
-EventListener (you implement)
-  onEvent(eventJson)          // every raw event, e.g. {"type":"node_chunk",...}
-  onAnswerChunk(text)         // ordered answer text, streamed
-  onFinish(resultJson)        // once: {"status":"succeeded"|"failed"|"aborted"|"paused", "answer", ...}
+```kotlin
+// app/build.gradle.kts
+dependencies {
+    implementation(files("libs/graphrt-android-0.6.2.aar"))
+    // What the AAR needs (a Maven Central release declares these itself):
+    implementation("net.java.dev.jna:jna:5.17.0@aar")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+}
 ```
 
-Errors are `GraphrtException` subclasses in Kotlin and `GraphrtError` cases in
-Swift. Each carries the error text in a field, called `detail` in Kotlin (where
-`message` would clash with `Throwable.message`) and `message` in Swift and
-Python.
+The AAR carries R8 rules for JNA and the binding, so minified release builds
+keep working. A Maven Central artifact (`com.graphrt:graphrt-android`) is
+prepared but not published yet (see [Publishing](#publishing)).
 
-A paused result (`"status": "paused"`, e.g. human approval) carries a
-`snapshot`; store it and pass it to `resume` later, even after an app restart.
+### iOS
 
-Config JSON (all keys optional):
+Each release has `graphrt-swift-<version>.zip`, a Swift package whose
+`Package.swift` points at the release's `GraphrtFFI.xcframework.zip` by URL and
+checksum. Unzip it next to your project (or push it to a git repository of
+your own) and add it in Xcode with **File > Add Package Dependencies > Add
+Local**, then `import Graphrt`. iOS 16 and macOS 13 are the minimum.
+
+### From this repository
+
+```sh
+sdk/android/scripts/build-native.sh       # .so files into sdk/android/graphrt
+(cd sdk/android && ./gradlew :graphrt:assembleRelease)
+sdk/swift/scripts/build-xcframework.sh    # sdk/swift/GraphrtFFI.xcframework (macOS with Xcode)
+```
+
+A Gradle build can include `sdk/android/graphrt` as a module, as
+[the Android sample](../examples/mobile/android/settings.gradle.kts) does, and
+Xcode can add `sdk/swift` as a local package.
+
+## Quick start
+
+The examples use the agent of the sample apps,
+[`examples/mobile/agent.yaml`](../examples/mobile/agent.yaml): an `agent` node
+with the tools `device/battery_level` and `device/send_message`, where
+`send_message` is listed in `require_approval`, and an `answer` node that
+streams the agent's text.
+
+### 1. A runtime with native tools
+
+Create one runtime per app, off the main thread, and register the app's tools
+before loading the workflows that use them. A tool is a name, a description
+for the model, a JSON Schema of its arguments and a suspend (Kotlin) or async
+(Swift) function.
+
+<!-- snippet: kotlin-runtime -->
+```kotlin
+// Off the main thread: creating a runtime may connect to MCP servers.
+val runtime = Runtime(configJson)
+runtime.registerTools("device") {
+    tool("battery_level", "The battery level of the phone, in percent.") {
+        toolResult("${phone.batteryPercent()} %")
+    }
+    tool(
+        name = "send_message",
+        description = "Send a text message.",
+        parametersJson = """
+            {"type": "object",
+             "properties": {"to": {"type": "string"}, "text": {"type": "string"}},
+             "required": ["to", "text"]}
+        """,
+        timeoutMs = 10_000u,
+    ) { argumentsJson ->
+        val args = Json.parseObject(argumentsJson)
+        if (!phone.sendSms(args.getValue("to"), args.getValue("text"))) {
+            throw ToolCallException.Failed("the SMS could not be sent")
+        }
+        toolResult("sent to ${args.getValue("to")}")
+    }
+}
+```
+
+<!-- snippet: swift-runtime -->
+```swift
+// Off the main actor: creating a runtime may connect to MCP servers.
+let runtime = try Runtime(configJson: configJson)
+try runtime.registerTools(provider: "device") { tools in
+    tools.tool("battery_level", description: "The battery level of the phone, in percent.") { _ in
+        toolResult("\(phone.batteryPercent()) %")
+    }
+    tools.tool(
+        "send_message",
+        description: "Send a text message.",
+        parametersJson: """
+            {"type": "object",
+             "properties": {"to": {"type": "string"}, "text": {"type": "string"}},
+             "required": ["to", "text"]}
+            """,
+        timeoutMs: 10_000
+    ) { argumentsJson in
+        let args = try JSONDecoder().decode([String: String].self, from: Data(argumentsJson.utf8))
+        guard let to = args["to"], phone.sendSms(to: to, text: args["text"] ?? "") else {
+            throw ToolCallError.Failed(reason: "the SMS could not be sent")
+        }
+        return toolResult("sent to \(to)")
+    }
+}
+```
+
+The runtime takes care of everything around a call:
+
+- The arguments are checked against the schema (`type`, `required`,
+  `properties`, `enum`, `items`, `additionalProperties: false`) before your
+  function runs. A call that does not match goes back to the model as an error,
+  so it can fix the call, and your function never sees it.
+- Every call has a time limit (`timeoutMs`, 30 s by default, at most 10
+  minutes). When it passes, or the run is aborted, the call is cancelled: the
+  Kotlin coroutine or the Swift task receives a cancellation.
+- `ToolCallException.Failed` (Kotlin) or `ToolCallError.Failed` (Swift)
+  becomes an error result the model reads, with your reason. Any other
+  exception becomes the same, with its text. Neither crashes the run.
+- `text` and `dataJson` are limited to 1 MiB each. UI blocks in `dataJson`
+  (`{"$ui": "stats", ...}`) reach the app checked, as `RunEvent.Ui`.
+
+Agents list the tools as `device/battery_level`, or `device/*` for all of
+them. A provider name is unique per runtime: it cannot reuse the name of an MCP
+server, of the `files` workspace or of another provider.
+
+### 2. Run, ask the person, resume
+
+`events` starts a run and returns its typed events as a `Flow` (Kotlin) or an
+`AsyncThrowingStream` (Swift). The stream ends with `Paused` or `Finished`.
+Cancelling the collector, for example when the screen goes away, aborts the
+run.
+
+<!-- snippet: kotlin-run -->
+```kotlin
+var events = workflow.events("""{"query": "Tell Ada my battery level"}""")
+while (true) {
+    var paused: PausedRun? = null
+    events.collect { event ->
+        when (event) {
+            is RunEvent.AnswerChunk -> screen.appendAnswer(event.text)
+            is RunEvent.ToolCalled -> screen.showToolActivity(event.name)
+            is RunEvent.Ui -> screen.showBlock(event.block)
+            is RunEvent.Paused -> paused = event.run
+            is RunEvent.Finished -> event.result.error?.let(screen::showError)
+            else -> {}
+        }
+    }
+    val run = paused ?: return RunStatus.SUCCEEDED
+    // The run waits for a person: ask, answer every request, resume.
+    for (request in run.requests()) {
+        if (request.kind != RequestKind.ToolApproval) continue
+        val call = request.toolCalls.first()
+        if (screen.askToApprove(call.name, call.argumentsJson)) {
+            run.approve(request.key, null)
+        } else {
+            run.reject(request.key, "The user said no.")
+        }
+    }
+    events = workflow.resumeEvents(run)
+}
+```
+
+<!-- snippet: swift-run -->
+```swift
+var events = workflow.events(inputsJson: #"{"query": "Tell Ada my battery level"}"#)
+while true {
+    var paused: PausedRun?
+    for try await event in events {
+        switch event {
+        case .answerChunk(let text): screen.appendAnswer(text)
+        case .toolCalled(_, _, let name, _): screen.showToolActivity(name)
+        case .ui(_, let block): screen.showBlock(block)
+        case .paused(let run): paused = run
+        case .finished(let result): if let error = result.error { screen.showError(error) }
+        default: break
+        }
+    }
+    guard let run = paused else { return .succeeded }
+    // The run waits for a person: ask, answer every request, resume.
+    for request in run.requests() where request.kind == .toolApproval {
+        guard let call = request.toolCalls.first else { continue }
+        if await screen.askToApprove(toolName: call.name, argumentsJson: call.argumentsJson) {
+            try run.approve(key: request.key, reason: nil)
+        } else {
+            try run.reject(key: request.key, reason: "The user said no.")
+        }
+    }
+    events = workflow.resumeEvents(paused: run)
+}
+```
+
+The events:
+
+| Event | When |
+| --- | --- |
+| `Started` | the run started (`resumed` after a resume) |
+| `NodeStarted`, `NodeSucceeded`, `NodeFailed` | a node's progress, for a progress view |
+| `ToolCalled`, `ToolFinished`, `ToolDenied` | an agent called a tool, it finished (`isError`), or a held call was rejected |
+| `AnswerChunk` | the next piece of the answer, in order |
+| `Ui` / `UiRejected` | a UI block of a node's outputs that passed validation, or one that did not (never render that one) |
+| `Paused` | the run waits for answers: a `PausedRun`. Terminal |
+| `Finished` | a `RunResult`: `status`, `answer`, `outputsJson`, `error`, `errorType`. Terminal |
+
+A `PausedRun` lists its `requests()`. Each has a `key` to answer under and a
+`kind`:
+
+| Kind | What it holds | How to answer |
+| --- | --- | --- |
+| `ToolApproval` | `toolCalls`: id, name and arguments of each held call | `approve(key, reason)`, `reject(key, reason)`, or `decideToolCall(key, callId, approved)` per call |
+| `HumanInput` (a `human-input` node) | `prompt`, `fields`, `actions`, `timeoutMs`, `cardJson` | `answer(key, action, valuesJson)`, or `approve` / `reject` for forms with those actions |
+| `Other` | `dataJson` | `setInput(key, inputJson)` |
+
+A rejected call never reaches your function. The model is told the person did
+not approve it, with your reason, and continues. Requests left unanswered keep
+their nodes paused after the resume.
+
+### 3. Keep a paused run
+
+A paused run can wait for hours, for instance until a push notification
+brings the person back. Store it and restore it, even after the app was
+killed:
+
+<!-- snippet: kotlin-persist -->
+```kotlin
+// Keep the paused run in the app's private storage, for instance until a
+// push notification brings the person back.
+storage["paused:${paused.runId()}"] = paused.toJson()
+
+// Later, even after the app was restarted:
+val restored = PausedRun.fromJson(storage.getValue("paused:${paused.runId()}"))
+```
+
+<!-- snippet: swift-persist -->
+```swift
+// Keep the paused run in the app's private storage, for instance until a
+// push notification brings the person back.
+storage["paused:\(paused.runId())"] = paused.toJson()
+
+// Later, even after the app was restarted:
+let restored = try PausedRun.fromJson(json: storage["paused:\(paused.runId())"] ?? "")
+```
+
+The stored text holds the run's variables (never secrets): keep it in the
+app's private storage. Load the same workflow document before resuming, the
+snapshot is checked against it.
+
+## Capabilities
+
+The runtime config (a JSON object, every key optional) switches on what a
+workflow may use:
 
 ```json
 {
   "credentials": { "openai": { "source": "external" } },
-  "providers": { "OLLAMA_HOST": "http://10.0.2.2:11434" },
   "env": { "CRM_TOKEN": "..." },
   "limits": { "max_steps": 10000, "max_duration_ms": 120000, "default_node_timeout_ms": 60000 },
   "allow_private_network": false,
-  "knowledge": { "...": "datasets, see graphrt-rag KnowledgeConfig" },
   "mcp_servers": { "mcpServers": { "docs": { "url": "https://mcp.example.com/mcp" } } },
+  "knowledge": { "...": "datasets, see graphrt-rag KnowledgeConfig" },
+  "skills_dir": "<app files>/graphrt/skills",
+  "learning_dir": "<app files>/graphrt/learning",
+  "workspace": { "dir": "<app files>/graphrt/workspace", "read_only": false, "max_total_bytes": 104857600 },
+  "scripted_models": { "demo": [{ "text": "Hello from a scripted model." }] },
   "wasm": { "fuel": 1000000000, "memory_bytes": 67108864 }
 }
 ```
 
-Listener callbacks run on graphrt's worker threads. Exceptions thrown inside a
-callback are swallowed so they cannot break the run.
+Use `context.filesDir` (Android) or the Application Support directory (iOS)
+for the directories. Unknown keys are refused, so a typo fails at start.
 
-`providers` takes environment-style keys (`OPENAI_API_KEY`...). That is fine for
-desktop tools and tests, but **never ship a provider key in a mobile app**:
-anything in an APK/IPA can be extracted. Use `credentials` instead.
+### Skills and learning
+
+With `skills_dir`, an `agent` node's `skills` field loads skills you install
+from their `SKILL.md` text (instructions only: no code of a skill ever runs).
+With `learning_dir`, a node's `learning` field adds approved lessons to the
+system prompt. Lessons come from what people say about a run and are used only
+once the owner approved them.
+
+<!-- snippet: kotlin-skills-learning -->
+```kotlin
+// Needs `skills_dir` and `learning_dir` in the runtime config.
+runtime.installSkill(
+    SkillInstall(
+        skillMd = """
+            ---
+            name: trip-planner
+            description: Use when someone plans a trip.
+            ---
+            Ask for the dates and the budget before suggesting anything.
+        """.trimIndent(),
+    ),
+)
+
+// A person corrected the agent: propose a lesson, the owner decides.
+val lesson = runtime.proposeLesson(
+    LessonProposal(
+        agent = "assistant",
+        user = "ada",
+        kind = LessonKind.PREFERENCE,
+        text = "Answer in Indonesian.",
+        authorAuthenticated = true,
+    ),
+)
+runtime.decideLesson("assistant", lesson.id, LessonDecision.APPROVE)
+val approved = runtime.listLessons("assistant", LessonStatus.APPROVED).map { it.text }
+```
+
+<!-- snippet: swift-skills-learning -->
+```swift
+// Needs `skills_dir` and `learning_dir` in the runtime config.
+_ = try runtime.installSkill(request: SkillInstall(skillMd: """
+    ---
+    name: trip-planner
+    description: Use when someone plans a trip.
+    ---
+    Ask for the dates and the budget before suggesting anything.
+    """))
+
+// A person corrected the agent: propose a lesson, the owner decides.
+let lesson = try runtime.proposeLesson(proposal: LessonProposal(
+    agent: "assistant",
+    user: "ada",
+    kind: .preference,
+    text: "Answer in Indonesian.",
+    authorAuthenticated: true
+))
+_ = try runtime.decideLesson(agent: "assistant", id: lesson.id, decision: .approve)
+let approved = try runtime.listLessons(agent: "assistant", status: .approved).map(\.text)
+```
+
+`listSkills`, `setSkillEnabled`, `removeSkill`, `listLessons`, `addLesson`
+(the owner's own, approved at once) and `deleteLesson` complete the set. See
+[skills.md](skills.md) and [learning.md](learning.md) for the formats.
+
+### Files
+
+`workspace` gives agents the `files` tools (`files/list`, `files/read`,
+`files/write`, `files/search`...) inside that one directory, with quotas (32 MiB
+per file, 512 MiB and 5,000 files in total by default) and no executables. With
+`read_only` agents can only read. See [files-and-images.md](files-and-images.md).
+
+### Images
+
+Photos a model node sends (`vision` inputs) are checked first: the real type
+must be an image, size and pixels are bounded, EXIF data (GPS position, device,
+time) is removed and large photos are scaled down. Nothing to configure.
+
+### UI blocks
+
+UI blocks in a run (cards, charts, tables, stat tiles, diagrams) arrive
+checked as `RunEvent.Ui`. Check blocks from anywhere else before rendering
+them:
+
+<!-- snippet: kotlin-ui -->
+```kotlin
+// Blocks inside a run arrive checked as RunEvent.Ui. Check blocks from
+// anywhere else (a server, stored messages) before rendering them:
+val block = try {
+    validateUiBlock(json)
+} catch (e: Exception) {
+    null // never render a block that failed validation
+}
+```
+
+<!-- snippet: swift-ui -->
+```swift
+// Blocks inside a run arrive checked as RunEvent.ui. Check blocks from
+// anywhere else (a server, stored messages) before rendering them:
+let block = try? validateUiBlock(blockJson: json) // nil: never render it
+```
+
+### Scripted models
+
+`scripted_models` registers model providers that answer from a script, with
+no network and no key: for UI tests, previews and demos. A request gets the
+step with the number of assistant turns since the last user message, so the
+same script plays out the same way for every conversation, across pauses. A
+step is `{"text": "..."}` (streamed word by word, `{tool_result}` is replaced
+with the latest tool result) or `{"tool_calls": [{"name": "...", "arguments":
+{...}}]}`. [`examples/mobile/runtime-config.json`](../examples/mobile/runtime-config.json)
+is the script of the samples.
+
+### Cargo features
+
+Every function and type of the binding exists in every build. A capability
+that is compiled out fails with `GraphrtException.Unsupported` /
+`GraphrtError.Unsupported`, so one binding fits every build. The release
+artifacts are built with `sdk`:
+
+| Feature | Adds | In `sdk` |
+| --- | --- | --- |
+| `code-js` + `mobile-js` | the JavaScript `code` node (QuickJS, an interpreter, no JIT) | yes |
+| `mcp-http` | MCP tool servers over streamable HTTP | yes |
+| `doc` | the `document-extractor` node (PDF, Office, EPUB, email) | yes |
+| `rag` | the `knowledge-retrieval` node (memory, SQLite, Qdrant, HTTP) | yes |
+| `skills` | `skills_dir`, `installSkill`... | yes |
+| `learning` | `learning_dir`, `proposeLesson`... | yes |
+| `files` | `workspace` and the `files` tools | yes |
+| `image` | the photo checks above | yes |
+| `ui` | `validateUiBlock` and `RunEvent.Ui` | yes |
+| `scripted-llm` | `scripted_models` | yes |
+
+The engine, every control node, templates, pause and resume, the `llm`,
+`agent`, `question-classifier`, `parameter-extractor` and `http-request` nodes
+(with the SSRF guard on), WebAssembly plugins (the wasmi interpreter) and
+credentials are always in.
+
+### What stays on desktops and servers
+
+| Capability | Why not in an app |
+| --- | --- |
+| Process plugins, `code` in Python | they start child processes, which iOS forbids and Android kills in the background |
+| MCP servers over stdio | the same: a stdio server is a child process. Use MCP over HTTP |
+| Schedules, triggers and webhooks | an app is suspended in the background, so a timer cannot be relied on. Run scheduled agents with `graphrt serve` and send the phone a push notification |
+| `graphrt serve`, the gateway, deployments | they listen on ports for other clients. To use a deployed agent from a phone, see [web.md](web.md) |
+| Bundles with process or HTTP plugins | `loadBundle` refuses them for the reasons above. WebAssembly plugins load |
 
 ## Credentials
 
-Declare providers in `credentials` and supply keys at run time (full guide:
-[credentials.md](credentials.md)):
+Never ship a provider key in an app: anything in an APK or IPA can be
+extracted. Declare providers in `credentials` and supply keys at run time (full
+guide: [credentials.md](credentials.md)):
 
 | Pattern | Config entry | The app's `CredentialProvider` returns |
 | --- | --- | --- |
 | Bring your own key | `"openai": {"source": "external"}` | the user's key from Keychain / Keystore |
 | Thin proxy | `"proxy": {"source": "external", "kind": "openai", "base_url": "https://llm-proxy.example.com/v1"}` | the user's session token (verified by your proxy) |
-| Token broker | `"proxy": {"source": "token_broker", "url": "https://llm-proxy.example.com/token", "app_auth": "external", "kind": "openai", "base_url": "https://llm-proxy.example.com/v1"}` | the session token, asked as provider `token_broker`; graphrt fetches and refreshes short-lived model tokens itself |
+| Token broker | `"proxy": {"source": "token_broker", "url": "https://llm-proxy.example.com/token", "app_auth": "external", "kind": "openai", "base_url": "https://llm-proxy.example.com/v1"}` | the session token, asked as provider `token_broker`. Graphrt fetches and refreshes short lived model tokens itself |
 
-`get_credential` runs on a background thread and may block (Keychain, IPC,
+`getCredential` runs on a background thread and may block (Keychain, IPC,
 network). Results are cached until `expiresAtMs` minus 60 s, or until the
-provider answers 401/403: then `invalidate` is called and `get_credential` is
-asked once more. Errors and exceptions from the callback fail only that model
-call, never the app.
+provider answers 401 or 403: then `invalidate` is called and `getCredential` is
+asked once more. Errors from the callback fail only that model call.
 
-### Android: Keystore-backed storage
+### Android: Keystore backed storage
 
 ```kotlin
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import uniffi.graphrt_ffi.*
 
-/** Bring-your-own-key: the user's key, encrypted with a Keystore-held master key. */
+/** Bring your own key: the user's key, encrypted with a Keystore held master key. */
 class KeystoreCredentials(context: Context) : CredentialProvider {
     private val prefs = EncryptedSharedPreferences.create(
         context, "llm_keys",
@@ -148,7 +495,7 @@ runtime.setCredentialProvider("*", KeystoreCredentials(applicationContext))
 ```swift
 import Security
 
-/// Bring-your-own-key from the Keychain. For a token broker, return the user's
+/// Bring your own key from the Keychain. For a token broker, return the user's
 /// session token when `provider == "token_broker"` instead.
 final class KeychainCredentials: CredentialProvider {
     func getCredential(provider: String) throws -> CredentialRecord {
@@ -167,7 +514,7 @@ final class KeychainCredentials: CredentialProvider {
     }
 
     func invalidate(provider: String) {
-        // The provider rejected the key; prompt the user on the main actor.
+        // The provider rejected the key: prompt the user on the main actor.
     }
 }
 
@@ -175,276 +522,125 @@ let runtime = try Runtime(configJson: #"{"credentials": {"openai": {"source": "e
 runtime.setCredentialProvider(provider: "*", callback: KeychainCredentials())
 ```
 
-### Token broker with your sign-in
+Server examples for the proxy and the broker: [`examples/proxy/`](../examples/proxy/).
 
-```kotlin
-// Config: graphrt asks your backend for short-lived tokens and refreshes them itself.
-val runtime = Runtime("""
-  {"credentials": {"proxy": {
-     "source": "token_broker", "url": "https://llm-proxy.example.com/token",
-     "app_auth": "external", "kind": "openai", "base_url": "https://llm-proxy.example.com/v1"}}}
-""")
-runtime.setCredentialProvider("token_broker", object : CredentialProvider {
-    override fun getCredential(provider: String) =
-        CredentialRecord(secret = auth.currentSessionToken(), expiresAtMs = null, headersJson = null, baseUrl = null)
-    override fun invalidate(provider: String) { auth.refreshSession() }
-})
-// Workflows use: model: { provider: proxy, name: gpt-4o-mini }
+## Threads and errors
+
+- `Runtime(...)`, `loadWorkflow` and `waitJson` may block: call them off the
+  main thread. `events` and `resumeEvents` return at once.
+- Listeners and tools are called on Graphrt's threads. The `Flow` and the
+  stream deliver events on the collector's context, so collect on the main
+  dispatcher (or hop to the main actor) to touch the UI.
+- Errors are `GraphrtException` subclasses in Kotlin and `GraphrtError` cases
+  in Swift: `InvalidConfig`, `InvalidWorkflow`, `InvalidInput`, `Plugin`,
+  `Runtime`, `Unsupported`. The text is in `detail` in Kotlin (`message` would
+  clash with `Throwable.message`) and in `message` in Swift and Python.
+
+## Lower level API
+
+The helpers wrap the generated binding, which stays available:
+
+```text
+Runtime(configJson)
+  .registerToolProvider(name, [HostToolSpec], ToolProvider)
+  .registerWasmPlugin(bytes) / .loadBundle(bytes, trustedKeys)
+  .loadWorkflow(yamlOrJson) -> WorkflowHandle
+  .setCredentialProvider(provider, callback) / .clearCredentialProvider / .clearCredentialCache
+  .catalogJson() / .toolProviders()
+WorkflowHandle
+  .start(inputsJson, sysJson, RunListener) -> RunHandle             typed events
+  .resumePaused(PausedRun, secretsJson, RunListener) -> RunHandle
+  .run(inputsJson, sysJson, EventListener) -> RunHandle             raw JSON events
+  .resume(snapshotJson, inputsJson, secretsJson, EventListener) -> RunHandle
+RunHandle
+  .abort(reason) / .pause(reason) / .updateVariable(selector, valueJson)
+  .isFinished() / .waitJson(timeoutMs)
+PausedRun.fromJson(json)                                            also reads a waitJson result
+validateUiBlock(json) / graphrtVersion()
 ```
 
-Server examples for the proxy and broker: [`examples/proxy/`](../examples/proxy/).
+`EventListener` (`onEvent(eventJson)`, `onAnswerChunk(text)`,
+`onFinish(resultJson)`) is the JSON based listener of earlier releases. It
+keeps working.
 
-## Android (Kotlin)
+## Sample apps
 
-```kotlin
-import uniffi.graphrt_ffi.*
+[`examples/mobile/android`](../examples/mobile/android/README.md) (Kotlin,
+Views) and [`examples/mobile/ios`](../examples/mobile/ios/README.md)
+(SwiftUI) run the offline [`hello`](../examples/hello.yaml) workflow and the
+phone assistant above with its scripted model: **Ask the assistant** calls
+`battery_level`, asks before `send_message` and streams `Done: sent to Ada`.
+Each has `scripts/smoke-test.sh`, which installs the app on a running
+emulator, simulator or device, presses every button with autorun (approving
+the request) and fails unless every step shows up in the log.
 
-class ChatListener(private val onText: (String) -> Unit) : EventListener {
-    override fun onEvent(eventJson: String) {}
-    override fun onAnswerChunk(text: String) = onText(text)
-    override fun onFinish(resultJson: String) { Log.i("graphrt", resultJson) }
-}
+## Sizes
 
-// Off the main thread (Runtime() may perform MCP handshakes):
-val runtime = Runtime("""{"credentials": {"openai": {"source": "external"}}}""")
-runtime.setCredentialProvider("*", KeystoreCredentials(applicationContext)) // see Credentials
-val workflow = runtime.loadWorkflow(assets.open("chatbot.yaml").bufferedReader().readText())
+`libgraphrt_ffi.so` with the `sdk` features, `min-size` profile, NDK r27b,
+stripped: arm64-v8a **17.4 MB**, armeabi-v7a **11.2 MB**, x86_64 **20.2 MB**.
+The AAR with all three is 22.4 MB (compressed). Google Play delivers one ABI
+per phone. A build with fewer features is smaller: drop `doc`, `rag` or
+`code-js` (for example `GRAPHRT_FEATURES="--no-default-features --features
+skills,learning,ui"`) and rebuild the AAR.
 
-val run = workflow.run("{}", """{"query": "What is a DAG?"}""", ChatListener { chunk ->
-    mainHandler.post { answerView.append(chunk) }
-})
-// later: run.abort("user cancelled")
-```
+## Testing
 
-Gradle: copy `bindings/kotlin/uniffi/graphrt_ffi/graphrt_ffi.kt` into your
-module, put the `.so` files under `src/main/jniLibs/<abi>/`, and add
-`implementation("net.java.dev.jna:jna:5.17.0@aar")` (UniFFI's Kotlin bindings
-use JNA). [`examples/mobile/android`](../examples/mobile/android/) shows
-the whole setup.
+| What | Where | Runs |
+| --- | --- | --- |
+| Rust API tests | `crates/graphrt-ffi/tests` | `cargo test -p graphrt-ffi --features sdk` |
+| Kotlin SDK tests and the Kotlin snippets of this guide, on the JVM | `sdk/android/graphrt-jvm` | `sdk/android/scripts/test-jvm.sh` |
+| Swift SDK tests and the Swift snippets | `sdk/swift/Tests` | `swift test` in `sdk/swift` on a Mac (after `build-xcframework.sh`), or on Linux against the host library, as CI does |
+| The guide's snippets are the tested code | `scripts/check-doc-snippets.py` | `python3 scripts/check-doc-snippets.py` |
+| The bindings match the API | `scripts/generate-bindings.sh --check` | after a change to `graphrt-ffi`, run it without `--check` and commit `bindings/` |
+| The samples in an emulator or simulator | `examples/mobile/*/scripts/smoke-test.sh` | see the samples' READMEs |
 
-## iOS (SwiftUI)
+In CI ([`mobile.yml`](../.github/workflows/mobile.yml)) the `sdk` job runs the
+bindings check, the snippet check and the Kotlin and Swift tests on Linux, and
+the `android` job runs the Android sample in an API 34 x86_64 emulator, on
+every pull request that touches the crates, the bindings, the SDKs or the
+samples. The `ios` job builds the XCFramework, runs `swift test` on macOS and
+the iOS sample in an iOS 18.5 simulator on `main`, every night and on pull
+requests with the `macos` label.
 
-```swift
-import SwiftUI
+### Testing on devices
 
-final class Listener: EventListener {
-    let onText: (String) -> Void
-    init(onText: @escaping (String) -> Void) { self.onText = onText }
-    func onEvent(eventJson: String) {}
-    func onAnswerChunk(text: String) { onText(text) }
-    func onFinish(resultJson: String) { print(resultJson) }
-}
+CI covers emulators and simulators only. Before a release, run the samples on
+real hardware:
 
-@MainActor final class ChatModel: ObservableObject {
-    @Published var answer = ""
-    private var workflow: WorkflowHandle?
+**Android** (an arm64 phone, Android 8.0 or newer): turn on USB debugging,
+run `examples/mobile/android/scripts/build-rust.sh`, `./gradlew assembleDebug`
+in `examples/mobile/android`, then `scripts/smoke-test.sh` (set
+`ANDROID_SERIAL` when an emulator also runs). Then tap **Ask the assistant**
+by hand, answer the dialog both ways, rotate the phone and leave and reopen the
+app during a run.
 
-    func load(yaml: String) async throws {
-        workflow = try await Task.detached {
-            let runtime = try Runtime(configJson: #"{"credentials": {"openai": {"source": "external"}}}"#)
-            runtime.setCredentialProvider(provider: "*", callback: KeychainCredentials()) // see Credentials
-            return try runtime.loadWorkflow(document: yaml)
-        }.value
-    }
+**iOS** (an iPhone with iOS 16 or newer, Developer Mode on): build the device
+slice and a signed app as in
+[the iOS sample](../examples/mobile/ios/README.md#run-on-an-iphone), install
+with `xcrun devicectl device install app`, launch with `xcrun devicectl device
+process launch --console --device <id> dev.graphrt.sample -- -name Grace
+-autorun YES` and check the same lines as the smoke test.
 
-    func ask(_ query: String) throws {
-        answer = ""
-        let sys = try String(data: JSONEncoder().encode(["query": query]), encoding: .utf8) ?? "{}"
-        _ = try workflow?.run(inputsJson: "{}", sysJson: sys, listener: Listener { chunk in
-            Task { @MainActor in self.answer += chunk }
-        })
-    }
-}
-```
+## Publishing
 
-Add `bindings/swift/graphrt_ffi.swift` to the app target and link the
-XCFramework built below (it contains `graphrt_ffiFFI.h` and the module map).
-[`examples/mobile/ios`](../examples/mobile/ios/) shows the whole setup.
+The release workflow ([`release.yml`](../.github/workflows/release.yml))
+attaches `graphrt-android-<version>.aar`, `GraphrtFFI.xcframework.zip` and
+`graphrt-swift-<version>.zip` to every GitHub release, with SHA256SUMS.
 
-## Building
+The `maven-central` job is off until the owner sets it up:
 
-### Android
+1. A Central Portal account at <https://central.sonatype.com> and the
+   namespace `com.graphrt`, verified with the DNS TXT record the portal shows,
+   added to `graphrt.com` (its DNS is at Cloudflare). The artifact is then
+   `com.graphrt:graphrt-android`.
+2. A PGP key for signing, its public key on `keys.openpgp.org` or another key
+   server Central reads.
+3. Repository secrets `MAVEN_CENTRAL_USERNAME` and `MAVEN_CENTRAL_PASSWORD` (a
+   Central Portal user token), `SIGNING_KEY` (the ASCII armored private key)
+   and `SIGNING_PASSWORD`, in a `maven-central` environment.
+4. The repository variable `PUBLISH_MAVEN=true`.
 
-Requirements: Android NDK r27+ and `cargo-ndk`, plus `libclang` on the build
-host (QuickJS bindings are generated at build time for mobile targets).
-
-```sh
-rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
-cargo install cargo-ndk
-export ANDROID_NDK_HOME=/path/to/android-ndk-r28c
-cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o app/src/main/jniLibs \
-  build -p graphrt-ffi --profile min-size --features mobile-js
-```
-
-Measured sizes of `libgraphrt_ffi.so` (`min-size` profile, all default
-features + `mobile-js`, NDK r28c): arm64-v8a **12.6 MB**, armeabi-v7a
-**8.0 MB**, x86_64 **14.6 MB** (`release` arm64-v8a: 14.8 MB). Disable
-`doc` / `rag` / `code-js` for a smaller library.
-
-### iOS
-
-Requirements: macOS with Xcode (the C code in `ring` and QuickJS needs the
-Apple SDK; it cannot be cross-compiled from Linux).
-
-```sh
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim
-cargo build -p graphrt-ffi --profile min-size --features mobile-js --target aarch64-apple-ios
-cargo build -p graphrt-ffi --profile min-size --features mobile-js --target aarch64-apple-ios-sim
-xcodebuild -create-xcframework \
-  -library target/aarch64-apple-ios/min-size/libgraphrt_ffi.a -headers bindings/swift/headers \
-  -library target/aarch64-apple-ios-sim/min-size/libgraphrt_ffi.a -headers bindings/swift/headers \
-  -output GraphrtFFI.xcframework
-```
-
-(`bindings/swift/headers` = `graphrt_ffiFFI.h` + `module.modulemap`, the
-latter being `graphrt_ffiFFI.modulemap` renamed.)
-
-### Regenerating bindings
-
-Bindings are generated from an unstripped library (the `release` and
-`min-size` profiles strip the UniFFI metadata), so use a debug build. The
-library is `libgraphrt_ffi.so` on Linux and `libgraphrt_ffi.dylib` on macOS:
-
-```sh
-cargo build -p graphrt-ffi
-lib=target/debug/libgraphrt_ffi.so   # macOS: target/debug/libgraphrt_ffi.dylib
-for lang in kotlin swift python; do
-  cargo run -p graphrt-ffi --features bindgen-cli --bin uniffi-bindgen -- \
-    generate --library $lib --language $lang --out-dir bindings/$lang
-done
-```
-
-The generator reads `crates/graphrt-ffi/uniffi.toml` (Kotlin renames).
-Features do not change the exported API, so a `--no-default-features` build
-produces the same bindings.
-
-### CI (GitHub Actions)
-
-graphrt's own [`mobile.yml`](../.github/workflows/mobile.yml) workflow runs on
-pull requests that touch the crates, the Kotlin / Swift bindings or
-`examples/mobile`, and on `main`:
-
-| Job | Runner | Builds | Runs |
-| --- | --- | --- | --- |
-| `android` | `ubuntu-24.04` | `aarch64-linux-android` + `x86_64-linux-android` with `cargo-ndk` (runner NDK), then the debug APK with Gradle | the APK in an API 34 x86_64 emulator (KVM, cached AVD snapshot) via `android-emulator-runner` |
-| `ios` | `macos-15` | XCFramework for `aarch64-apple-ios` + `aarch64-apple-ios-sim`, `cargo check` for `x86_64-apple-ios`, the sample app for the simulator | the app in a fresh iOS 18.5 iPhone 16 simulator (Xcode 16.4, both pinned) via `xcrun simctl`, booted by `boot-simulator.sh`, which waits until the simulator launches apps and retries a stalled boot on a fresh device |
-
-On a pull request the `ios` job runs only with the `macos` label. It always
-runs on `main` and every night.
-
-Both jobs build with `--no-default-features`, the `min-size` profile and
-`-D warnings`, cache Rust builds with `rust-cache` (Gradle with
-`setup-gradle`), and run the `smoke-test.sh` script of each sample app. The
-arm64 Android library is built but only runs on arm64 hardware (an Apple
-Silicon emulator or a phone, see [Testing on devices](#testing-on-devices)).
-
-To produce the same artifacts in your own app's CI, with the default
-features plus `mobile-js`:
-
-```yaml
-jobs:
-  ios:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "aarch64-apple-ios,aarch64-apple-ios-sim" }
-      - run: |
-          for t in aarch64-apple-ios aarch64-apple-ios-sim; do
-            cargo build -p graphrt-ffi --profile min-size --features mobile-js --target $t
-          done
-          mkdir -p headers
-          cp bindings/swift/graphrt_ffiFFI.h headers/
-          cp bindings/swift/graphrt_ffiFFI.modulemap headers/module.modulemap
-          xcodebuild -create-xcframework \
-            -library target/aarch64-apple-ios/min-size/libgraphrt_ffi.a -headers headers \
-            -library target/aarch64-apple-ios-sim/min-size/libgraphrt_ffi.a -headers headers \
-            -output GraphrtFFI.xcframework
-      - uses: actions/upload-artifact@v4
-        with: { name: GraphrtFFI.xcframework, path: GraphrtFFI.xcframework }
-
-  android:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: "aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android" }
-      - uses: nttld/setup-ndk@v1
-        id: ndk
-        with: { ndk-version: r28c }
-      - run: cargo install cargo-ndk
-      - run: cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o jniLibs build -p graphrt-ffi --profile min-size --features mobile-js
-        env: { ANDROID_NDK_HOME: "${{ steps.ndk.outputs.ndk-path }}" }
-      - uses: actions/upload-artifact@v4
-        with: { name: jniLibs, path: jniLibs }
-```
-
-## Testing on devices
-
-CI covers emulators and simulators only. Before a release, or after a change to
-`graphrt-ffi`, the bindings or the build scripts, run the sample apps on real
-hardware and record the result under [Verification status](#verification-status).
-
-**Android** (any arm64 phone, Android 8.0 / API 26 or newer):
-
-1. Turn on Developer options and USB debugging; connect the phone and accept
-   the RSA prompt. `adb devices` lists it as `device`.
-2. Build: `examples/mobile/android/scripts/build-rust.sh`, then
-   `./gradlew assembleDebug` in `examples/mobile/android`.
-3. Run `examples/mobile/android/scripts/smoke-test.sh` (set `ANDROID_SERIAL`
-   when an emulator is also running). It must print `smoke test passed`.
-4. Open the app by hand, change the name, tick **excited**, tap **Run** and
-   **Stream events**: the greeting ends in `!!!` and no event is missing.
-5. Rotate the phone and leave and reopen the app during a run: no crash
-   (`adb logcat -s GraphrtSample AndroidRuntime:E`).
-6. Note the phone model, Android version, ABI (`adb shell getprop
-   ro.product.cpu.abi`), NDK and Rust versions, and the APK size.
-
-**iOS** (any iPhone with iOS 16 or newer, Developer Mode on):
-
-1. Build the device slice and a signed app as in
-   [the iOS sample](../examples/mobile/ios/README.md#run-on-an-iphone)
-   (`GRAPHRT_TARGETS=aarch64-apple-ios`, your `DEVELOPMENT_TEAM`).
-2. Install with `xcrun devicectl device install app` and launch with
-   `xcrun devicectl device process launch --console --device <id>
-   dev.graphrt.sample -- -name Grace -autorun YES`. The console must show
-   `[GraphrtSample] result:` with `"status":"succeeded"` and
-   `"greeting":"Hello, Grace."`, every event through `run_succeeded`, and
-   `[GraphrtSample] finish:`.
-3. Repeat step 4 and 5 of the Android list by hand (excited greeting,
-   background and foreground during a run).
-4. Build Release once and check the app binary size against the number in
-   the sample's README.
-5. Note the iPhone model, iOS version, Xcode and Rust versions.
-
-A feature set other than `--no-default-features` (for example
-`GRAPHRT_FEATURES="--features mobile-js"`) needs the same checklist before it
-counts as verified on devices.
-
-## Verification status
-
-- Rust API tests (`cargo test -p graphrt-ffi`): runs, streaming callbacks,
-  typed errors, pause/resume through JSON, abort, panicking listeners, WASM
-  plugin registration.
-- Real FFI boundary: the generated Python bindings were exercised against the
-  Linux `cdylib` (callbacks and typed exceptions), including a foreign
-  `CredentialProvider` supplying the key for an LLM call to a local server.
-- Credentials (`crates/graphrt-ffi/tests/credentials.rs`): host keys used per
-  request, 401 -> `invalidate` -> one retry, caching, failing / panicking
-  callbacks, config without any provider key. The Kotlin / Swift snippets above
-  are checked against the generated bindings' signatures but not compiled.
-- Android: all three ABIs compile and link with NDK r28c. The
-  [sample app](../examples/mobile/android/) (`--no-default-features`, NDK 28.2)
-  ran the hello workflow on an API 36 arm64-v8a emulator, covering
-  `waitJson` and streamed events; `smoke-test.sh` passed there (Rust 1.95,
-  NDK 28.2). The x86_64 library has not been run yet: the `android` CI job
-  runs it in an API 34 x86_64 emulator, but GitHub Actions has not run on this
-  repository so far. No physical Android device has been tested.
-- iOS: the [sample app](../examples/mobile/ios/) (`--no-default-features`)
-  ran the hello workflow on an iOS 26.5 simulator (arm64), covering `waitJson`
-  and streamed events, and on a physical iPhone 14 Pro Max (iOS 18.3, arm64,
-  signed Debug build installed with `devicectl`); `smoke-test.sh` passed on
-  the iOS 26.5 simulator (Xcode 26.6). `x86_64-apple-ios` passes `cargo check`
-  but has not been linked into an app. The `ios` CI job (macos-15) has not run
-  on GitHub yet. The default feature set (`mobile-js`, `doc`, `rag`) has not
-  been built for iOS yet.
+The upload is user managed: it waits in the Central Portal until someone
+presses **Publish**. A Swift package registry or a separate `graphrt-swift`
+repository (so apps can add the package by git URL) are possible later steps
+and need no change to the artifacts.

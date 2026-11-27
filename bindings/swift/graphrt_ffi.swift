@@ -1141,6 +1141,342 @@ public func FfiConverterTypeEventListener_lower(_ value: EventListener) -> UInt6
 
 
 /**
+ * A paused run: its requests, the answers given so far and its snapshot.
+ */
+public protocol PausedRunProtocol: AnyObject, Sendable {
+    
+    /**
+     * Answer the form of request `key` with `action` (one of its actions) and
+     * field values as a JSON object; fields left out get their defaults.
+     */
+    func answer(key: String, action: String, valuesJson: String) throws 
+    
+    /**
+     * Approve request `key`: every held tool call runs, or a form is answered
+     * with its `approve` action and the fields' defaults.
+     */
+    func approve(key: String, reason: String?) throws 
+    
+    /**
+     * Approve or reject one held tool call of request `key`. Calls without a
+     * decision keep the node paused.
+     */
+    func decideToolCall(key: String, callId: String, approved: Bool) throws 
+    
+    /**
+     * The resume inputs collected so far, as JSON (what `WorkflowHandle.resume` takes).
+     */
+    func inputsJson()  -> String
+    
+    /**
+     * Reject request `key`: the model is told the calls were not approved (and
+     * why, with `reason`), or a form is answered with its `reject` action.
+     */
+    func reject(key: String, reason: String?) throws 
+    
+    /**
+     * Every request of the run, in the order the nodes paused.
+     */
+    func requests()  -> [ApprovalRequest]
+    
+    /**
+     * Run id of the paused run.
+     */
+    func runId()  -> String
+    
+    /**
+     * Set the resume input of request `key` as raw JSON, for pause kinds the
+     * helpers above do not cover.
+     */
+    func setInput(key: String, inputJson: String) throws 
+    
+    /**
+     * The snapshot alone, for `WorkflowHandle.resume`.
+     */
+    func snapshotJson()  -> String
+    
+    /**
+     * The paused run as JSON (requests and snapshot, not the answers), to store
+     * and read back with [`PausedRun::from_json`]. It holds the run's variables
+     * (never secrets): keep it in the app's private storage.
+     */
+    func toJson()  -> String
+    
+    /**
+     * Keys of the requests that have no answer yet. Resuming with requests
+     * unanswered keeps those nodes paused.
+     */
+    func unanswered()  -> [String]
+    
+}
+/**
+ * A paused run: its requests, the answers given so far and its snapshot.
+ */
+open class PausedRun: PausedRunProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_graphrt_ffi_fn_clone_pausedrun(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_graphrt_ffi_fn_free_pausedrun(handle, $0) }
+    }
+
+    
+    /**
+     * A paused run from the result JSON of a run that ended with status
+     * `paused` (what `RunHandle.waitJson` and `EventListener.onFinish` return),
+     * or from what [`PausedRun::to_json`] returned.
+     */
+public static func fromJson(json: String)throws  -> PausedRun  {
+    return try  FfiConverterTypePausedRun_lift(try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_constructor_pausedrun_from_json(
+        FfiConverterString.lower(json),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+    /**
+     * Answer the form of request `key` with `action` (one of its actions) and
+     * field values as a JSON object; fields left out get their defaults.
+     */
+open func answer(key: String, action: String, valuesJson: String)throws   {try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_pausedrun_answer(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(key),
+        FfiConverterString.lower(action),
+        FfiConverterString.lower(valuesJson),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Approve request `key`: every held tool call runs, or a form is answered
+     * with its `approve` action and the fields' defaults.
+     */
+open func approve(key: String, reason: String?)throws   {try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_pausedrun_approve(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(key),
+        FfiConverterOptionString.lower(reason),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Approve or reject one held tool call of request `key`. Calls without a
+     * decision keep the node paused.
+     */
+open func decideToolCall(key: String, callId: String, approved: Bool)throws   {try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_pausedrun_decide_tool_call(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(key),
+        FfiConverterString.lower(callId),
+        FfiConverterBool.lower(approved),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The resume inputs collected so far, as JSON (what `WorkflowHandle.resume` takes).
+     */
+open func inputsJson() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_pausedrun_inputs_json(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Reject request `key`: the model is told the calls were not approved (and
+     * why, with `reason`), or a form is answered with its `reject` action.
+     */
+open func reject(key: String, reason: String?)throws   {try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_pausedrun_reject(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(key),
+        FfiConverterOptionString.lower(reason),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Every request of the run, in the order the nodes paused.
+     */
+open func requests() -> [ApprovalRequest]  {
+    return try!  FfiConverterSequenceTypeApprovalRequest.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_pausedrun_requests(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Run id of the paused run.
+     */
+open func runId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_pausedrun_run_id(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Set the resume input of request `key` as raw JSON, for pause kinds the
+     * helpers above do not cover.
+     */
+open func setInput(key: String, inputJson: String)throws   {try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_pausedrun_set_input(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(key),
+        FfiConverterString.lower(inputJson),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The snapshot alone, for `WorkflowHandle.resume`.
+     */
+open func snapshotJson() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_pausedrun_snapshot_json(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The paused run as JSON (requests and snapshot, not the answers), to store
+     * and read back with [`PausedRun::from_json`]. It holds the run's variables
+     * (never secrets): keep it in the app's private storage.
+     */
+open func toJson() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_pausedrun_to_json(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Keys of the requests that have no answer yet. Resuming with requests
+     * unanswered keeps those nodes paused.
+     */
+open func unanswered() -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_pausedrun_unanswered(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePausedRun: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = PausedRun
+
+    public static func lift(_ handle: UInt64) throws -> PausedRun {
+        return PausedRun(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: PausedRun) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PausedRun {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: PausedRun, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePausedRun_lift(_ handle: UInt64) throws -> PausedRun {
+    return try FfiConverterTypePausedRun.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePausedRun_lower(_ value: PausedRun) -> UInt64 {
+    return FfiConverterTypePausedRun.lower(value)
+}
+
+
+
+
+
+
+/**
  * Controls one run.
  */
 public protocol RunHandleProtocol: AnyObject, Sendable {
@@ -1338,6 +1674,216 @@ public func FfiConverterTypeRunHandle_lower(_ value: RunHandle) -> UInt64 {
 
 
 /**
+ * Receives the typed events of one run. Implemented in the host language.
+ *
+ * Called on a background thread, in order; marshal to the UI thread yourself.
+ * Exceptions thrown here are swallowed so they cannot break the run.
+ */
+public protocol RunListener: AnyObject, Sendable {
+    
+    func onEvent(event: RunEvent) 
+    
+}
+/**
+ * Receives the typed events of one run. Implemented in the host language.
+ *
+ * Called on a background thread, in order; marshal to the UI thread yourself.
+ * Exceptions thrown here are swallowed so they cannot break the run.
+ */
+open class RunListenerImpl: RunListener, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_graphrt_ffi_fn_clone_runlistener(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_graphrt_ffi_fn_free_runlistener(handle, $0) }
+    }
+
+    
+
+    
+open func onEvent(event: RunEvent)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runlistener_on_event(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRunEvent_lower(event),uniffiCallStatus
+    )
+}
+}
+    
+
+    
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceRunListener {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceRunListener = UniffiVTableCallbackInterfaceRunListener(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeRunListener.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface RunListener: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeRunListener.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface RunListener: handle missing in uniffiClone")
+            }
+        },
+        onEvent: { (
+            uniffiHandle: UInt64,
+            event: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeRunListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onEvent(
+                     event: try FfiConverterTypeRunEvent_lift(event)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceRunListener> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceRunListener>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitRunListener() {
+    uniffi_graphrt_ffi_fn_init_callback_vtable_runlistener(UniffiCallbackInterfaceRunListener.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRunListener: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<RunListener>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = RunListener
+
+    public static func lift(_ handle: UInt64) throws -> RunListener {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return RunListenerImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: RunListener) -> UInt64 {
+         if let rustImpl = value as? RunListenerImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RunListener {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: RunListener, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRunListener_lift(_ handle: UInt64) throws -> RunListener {
+    return try FfiConverterTypeRunListener.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRunListener_lower(_ value: RunListener) -> UInt64 {
+    return FfiConverterTypeRunListener.lower(value)
+}
+
+
+
+
+
+
+/**
  * A configured runtime: node registry, host services and a thread pool.
  * Create one per app and share it.
  */
@@ -1375,6 +1921,16 @@ public protocol RuntimeProtocol: AnyObject, Sendable {
     func loadWorkflow(document: String) throws  -> WorkflowHandle
     
     /**
+     * Register native tools implemented by the app under provider `name`.
+     * Agents list them in `tools` as `<name>/<tool>`, or all of them with a `*` as the tool; `require_approval`
+     * of an `agent` node can hold their calls for approval. Workflows loaded
+     * after this call see the tools. Fails when the name is taken (by an MCP
+     * server, the `files` workspace or an earlier provider) or a declaration
+     * is invalid.
+     */
+    func registerToolProvider(name: String, tools: [HostToolSpec], provider: ToolProvider) throws 
+    
+    /**
      * Load a sandboxed WebAssembly plugin; its node kinds become available to
      * workflows loaded afterwards. Returns the registered kinds.
      */
@@ -1387,6 +1943,57 @@ public protocol RuntimeProtocol: AnyObject, Sendable {
      * requests made after the call (e.g. a different user signed in).
      */
     func setCredentialProvider(provider: String, callback: CredentialProvider) 
+    
+    /**
+     * Names of the registered tool providers (MCP servers, `files`, the app's own).
+     */
+    func toolProviders()  -> [String]
+    
+    /**
+     * A lesson the owner wrote; it is approved at once.
+     */
+    func addLesson(agent: String, user: String?, kind: LessonKind, text: String) throws  -> LessonInfo
+    
+    /**
+     * Approve, reject or retire a lesson.
+     */
+    func decideLesson(agent: String, id: String, decision: LessonDecision) throws  -> LessonInfo
+    
+    /**
+     * Delete a lesson for good.
+     */
+    func deleteLesson(agent: String, id: String) throws 
+    
+    /**
+     * The lessons of `agent`, optionally only those in `status`.
+     */
+    func listLessons(agent: String, status: LessonStatus?) throws  -> [LessonInfo]
+    
+    /**
+     * Propose a lesson from feedback on a run. It waits for the owner's decision
+     * ([`Runtime::decide_lesson`]) before any run uses it.
+     */
+    func proposeLesson(proposal: LessonProposal) throws  -> LessonInfo
+    
+    /**
+     * Install a skill from its `SKILL.md`. It is enabled once installed.
+     */
+    func installSkill(request: SkillInstall) throws  -> SkillInfo
+    
+    /**
+     * Every installed skill.
+     */
+    func listSkills() throws  -> [SkillInfo]
+    
+    /**
+     * Remove an installed skill.
+     */
+    func removeSkill(name: String) throws 
+    
+    /**
+     * Turn a skill on or off for every agent.
+     */
+    func setSkillEnabled(name: String, enabled: Bool) throws  -> SkillInfo
     
 }
 /**
@@ -1528,6 +2135,25 @@ open func loadWorkflow(document: String)throws  -> WorkflowHandle  {
 }
     
     /**
+     * Register native tools implemented by the app under provider `name`.
+     * Agents list them in `tools` as `<name>/<tool>`, or all of them with a `*` as the tool; `require_approval`
+     * of an `agent` node can hold their calls for approval. Workflows loaded
+     * after this call see the tools. Fails when the name is taken (by an MCP
+     * server, the `files` workspace or an earlier provider) or a declaration
+     * is invalid.
+     */
+open func registerToolProvider(name: String, tools: [HostToolSpec], provider: ToolProvider)throws   {try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_register_tool_provider(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),
+        FfiConverterSequenceTypeHostToolSpec.lower(tools),
+        FfiConverterTypeToolProvider_lower(provider),uniffiCallStatus
+    )
+}
+}
+    
+    /**
      * Load a sandboxed WebAssembly plugin; its node kinds become available to
      * workflows loaded afterwards. Returns the registered kinds.
      */
@@ -1555,6 +2181,141 @@ open func setCredentialProvider(provider: String, callback: CredentialProvider) 
         FfiConverterTypeCredentialProvider_lower(callback),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * Names of the registered tool providers (MCP servers, `files`, the app's own).
+     */
+open func toolProviders() -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_tool_providers(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * A lesson the owner wrote; it is approved at once.
+     */
+open func addLesson(agent: String, user: String?, kind: LessonKind, text: String)throws  -> LessonInfo  {
+    return try  FfiConverterTypeLessonInfo_lift(try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_add_lesson(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(agent),
+        FfiConverterOptionString.lower(user),
+        FfiConverterTypeLessonKind_lower(kind),
+        FfiConverterString.lower(text),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Approve, reject or retire a lesson.
+     */
+open func decideLesson(agent: String, id: String, decision: LessonDecision)throws  -> LessonInfo  {
+    return try  FfiConverterTypeLessonInfo_lift(try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_decide_lesson(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(agent),
+        FfiConverterString.lower(id),
+        FfiConverterTypeLessonDecision_lower(decision),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Delete a lesson for good.
+     */
+open func deleteLesson(agent: String, id: String)throws   {try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_delete_lesson(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(agent),
+        FfiConverterString.lower(id),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The lessons of `agent`, optionally only those in `status`.
+     */
+open func listLessons(agent: String, status: LessonStatus?)throws  -> [LessonInfo]  {
+    return try  FfiConverterSequenceTypeLessonInfo.lift(try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_list_lessons(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(agent),
+        FfiConverterOptionTypeLessonStatus.lower(status),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Propose a lesson from feedback on a run. It waits for the owner's decision
+     * ([`Runtime::decide_lesson`]) before any run uses it.
+     */
+open func proposeLesson(proposal: LessonProposal)throws  -> LessonInfo  {
+    return try  FfiConverterTypeLessonInfo_lift(try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_propose_lesson(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeLessonProposal_lower(proposal),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Install a skill from its `SKILL.md`. It is enabled once installed.
+     */
+open func installSkill(request: SkillInstall)throws  -> SkillInfo  {
+    return try  FfiConverterTypeSkillInfo_lift(try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_install_skill(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeSkillInstall_lower(request),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Every installed skill.
+     */
+open func listSkills()throws  -> [SkillInfo]  {
+    return try  FfiConverterSequenceTypeSkillInfo.lift(try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_list_skills(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Remove an installed skill.
+     */
+open func removeSkill(name: String)throws   {try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_remove_skill(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Turn a skill on or off for every agent.
+     */
+open func setSkillEnabled(name: String, enabled: Bool)throws  -> SkillInfo  {
+    return try  FfiConverterTypeSkillInfo_lift(try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_runtime_set_skill_enabled(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),
+        FfiConverterBool.lower(enabled),uniffiCallStatus
+    )
+})
 }
     
 
@@ -1608,6 +2369,250 @@ public func FfiConverterTypeRuntime_lower(_ value: Runtime) -> UInt64 {
 
 
 /**
+ * Native tools implemented by the app.
+ *
+ * `call_tool` is a `suspend fun` in Kotlin and an `async throws` function in
+ * Swift. It is called from the runtime's threads, possibly for several calls
+ * at once; it is cancelled when its time limit passes or the run is aborted.
+ */
+public protocol ToolProvider: AnyObject, Sendable {
+    
+    /**
+     * Run one tool call. Throw [`ToolCallError::Failed`] to tell the model why it failed.
+     */
+    func callTool(call: HostToolCall) async throws  -> HostToolResult
+    
+}
+/**
+ * Native tools implemented by the app.
+ *
+ * `call_tool` is a `suspend fun` in Kotlin and an `async throws` function in
+ * Swift. It is called from the runtime's threads, possibly for several calls
+ * at once; it is cancelled when its time limit passes or the run is aborted.
+ */
+open class ToolProviderImpl: ToolProvider, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_graphrt_ffi_fn_clone_toolprovider(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_graphrt_ffi_fn_free_toolprovider(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Run one tool call. Throw [`ToolCallError::Failed`] to tell the model why it failed.
+     */
+open func callTool(call: HostToolCall)async throws  -> HostToolResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_graphrt_ffi_fn_method_toolprovider_call_tool(
+                        self.uniffiCloneHandle(),FfiConverterTypeHostToolCall_lower(call)
+                )
+            },
+            pollFunc: ffi_graphrt_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_graphrt_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_graphrt_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeHostToolResult_lift,
+            errorHandler: FfiConverterTypeToolCallError_lift
+        )
+}
+    
+
+    
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceToolProvider {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceToolProvider = UniffiVTableCallbackInterfaceToolProvider(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeToolProvider.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface ToolProvider: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeToolProvider.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface ToolProvider: handle missing in uniffiClone")
+            }
+        },
+        callTool: { (
+            uniffiHandle: UInt64,
+            call: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteRustBuffer,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> HostToolResult in
+                guard let uniffiObj = try? FfiConverterTypeToolProvider.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try await uniffiObj.callTool(
+                     call: try FfiConverterTypeHostToolCall_lift(call)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: HostToolResult) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultRustBuffer(
+                        returnValue: FfiConverterTypeHostToolResult_lower(returnValue),
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultRustBuffer(
+                        returnValue: RustBuffer.empty(),
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsyncWithError(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                lowerError: FfiConverterTypeToolCallError_lower,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceToolProvider> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceToolProvider>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitToolProvider() {
+    uniffi_graphrt_ffi_fn_init_callback_vtable_toolprovider(UniffiCallbackInterfaceToolProvider.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeToolProvider: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<ToolProvider>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = ToolProvider
+
+    public static func lift(_ handle: UInt64) throws -> ToolProvider {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return ToolProviderImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: ToolProvider) -> UInt64 {
+         if let rustImpl = value as? ToolProviderImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ToolProvider {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: ToolProvider, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeToolProvider_lift(_ handle: UInt64) throws -> ToolProvider {
+    return try FfiConverterTypeToolProvider.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeToolProvider_lower(_ value: ToolProvider) -> UInt64 {
+    return FfiConverterTypeToolProvider.lower(value)
+}
+
+
+
+
+
+
+/**
  * A compiled workflow, ready to run any number of times concurrently.
  */
 public protocol WorkflowHandleProtocol: AnyObject, Sendable {
@@ -1636,9 +2641,22 @@ public protocol WorkflowHandleProtocol: AnyObject, Sendable {
     func resume(snapshotJson: String, inputsJson: String, secretsJson: String, listener: EventListener) throws  -> RunHandle
     
     /**
+     * Resume a paused run with the answers given on `paused`
+     * ([`PausedRun::approve`], [`PausedRun::answer`]...). `secrets_json`
+     * re-supplies non-env secrets as `{"namespace.name": "value"}`.
+     */
+    func resumePaused(paused: PausedRun, secretsJson: String, listener: RunListener) throws  -> RunHandle
+    
+    /**
      * Start a run. `inputs_json` / `sys_json` are JSON objects (`"{}"` when empty).
      */
     func run(inputsJson: String, sysJson: String, listener: EventListener) throws  -> RunHandle
+    
+    /**
+     * Start a run whose events arrive typed ([`RunEvent`]). It ends with
+     * [`RunEvent::Paused`] or [`RunEvent::Finished`].
+     */
+    func start(inputsJson: String, sysJson: String, listener: RunListener) throws  -> RunHandle
     
     /**
      * Non-fatal findings from compilation (e.g. unreachable nodes).
@@ -1758,6 +2776,23 @@ open func resume(snapshotJson: String, inputsJson: String, secretsJson: String, 
 }
     
     /**
+     * Resume a paused run with the answers given on `paused`
+     * ([`PausedRun::approve`], [`PausedRun::answer`]...). `secrets_json`
+     * re-supplies non-env secrets as `{"namespace.name": "value"}`.
+     */
+open func resumePaused(paused: PausedRun, secretsJson: String, listener: RunListener)throws  -> RunHandle  {
+    return try  FfiConverterTypeRunHandle_lift(try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_workflowhandle_resume_paused(
+            self.uniffiCloneHandle(),
+        FfiConverterTypePausedRun_lower(paused),
+        FfiConverterString.lower(secretsJson),
+        FfiConverterTypeRunListener_lower(listener),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Start a run. `inputs_json` / `sys_json` are JSON objects (`"{}"` when empty).
      */
 open func run(inputsJson: String, sysJson: String, listener: EventListener)throws  -> RunHandle  {
@@ -1768,6 +2803,22 @@ open func run(inputsJson: String, sysJson: String, listener: EventListener)throw
         FfiConverterString.lower(inputsJson),
         FfiConverterString.lower(sysJson),
         FfiConverterTypeEventListener_lower(listener),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Start a run whose events arrive typed ([`RunEvent`]). It ends with
+     * [`RunEvent::Paused`] or [`RunEvent::Finished`].
+     */
+open func start(inputsJson: String, sysJson: String, listener: RunListener)throws  -> RunHandle  {
+    return try  FfiConverterTypeRunHandle_lift(try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_method_workflowhandle_start(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(inputsJson),
+        FfiConverterString.lower(sysJson),
+        FfiConverterTypeRunListener_lower(listener),uniffiCallStatus
     )
 })
 }
@@ -1830,6 +2881,143 @@ public func FfiConverterTypeWorkflowHandle_lower(_ value: WorkflowHandle) -> UIn
 }
 
 
+
+
+/**
+ * One node of a paused run that waits for an answer.
+ */
+public struct ApprovalRequest: Equatable, Hashable {
+    /**
+     * The key to answer under: the node id, or `<frame>/<node_id>` inside containers.
+     */
+    public var key: String
+    public var nodeId: String
+    public var kind: RequestKind
+    /**
+     * The text shown to the person (human input).
+     */
+    public var prompt: String?
+    /**
+     * Form fields (human input).
+     */
+    public var fields: [FormField]
+    /**
+     * Form buttons (human input).
+     */
+    public var actions: [FormAction]
+    /**
+     * Calls waiting for approval (tool approval).
+     */
+    public var toolCalls: [PendingToolCall]
+    /**
+     * How long the request may wait, when the node sets a limit.
+     */
+    public var timeoutMs: UInt64?
+    /**
+     * A UI card to show with the request, as JSON, when the node has one.
+     */
+    public var cardJson: String?
+    /**
+     * The raw pause data, for kinds this record does not model.
+     */
+    public var dataJson: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The key to answer under: the node id, or `<frame>/<node_id>` inside containers.
+         */key: String, nodeId: String, kind: RequestKind, 
+        /**
+         * The text shown to the person (human input).
+         */prompt: String?, 
+        /**
+         * Form fields (human input).
+         */fields: [FormField], 
+        /**
+         * Form buttons (human input).
+         */actions: [FormAction], 
+        /**
+         * Calls waiting for approval (tool approval).
+         */toolCalls: [PendingToolCall], 
+        /**
+         * How long the request may wait, when the node sets a limit.
+         */timeoutMs: UInt64?, 
+        /**
+         * A UI card to show with the request, as JSON, when the node has one.
+         */cardJson: String?, 
+        /**
+         * The raw pause data, for kinds this record does not model.
+         */dataJson: String) {
+        self.key = key
+        self.nodeId = nodeId
+        self.kind = kind
+        self.prompt = prompt
+        self.fields = fields
+        self.actions = actions
+        self.toolCalls = toolCalls
+        self.timeoutMs = timeoutMs
+        self.cardJson = cardJson
+        self.dataJson = dataJson
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ApprovalRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeApprovalRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ApprovalRequest {
+        return
+            try ApprovalRequest(
+                key: FfiConverterString.read(from: &buf), 
+                nodeId: FfiConverterString.read(from: &buf), 
+                kind: FfiConverterTypeRequestKind.read(from: &buf), 
+                prompt: FfiConverterOptionString.read(from: &buf), 
+                fields: FfiConverterSequenceTypeFormField.read(from: &buf), 
+                actions: FfiConverterSequenceTypeFormAction.read(from: &buf), 
+                toolCalls: FfiConverterSequenceTypePendingToolCall.read(from: &buf), 
+                timeoutMs: FfiConverterOptionUInt64.read(from: &buf), 
+                cardJson: FfiConverterOptionString.read(from: &buf), 
+                dataJson: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ApprovalRequest, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.key, into: &buf)
+        FfiConverterString.write(value.nodeId, into: &buf)
+        FfiConverterTypeRequestKind.write(value.kind, into: &buf)
+        FfiConverterOptionString.write(value.prompt, into: &buf)
+        FfiConverterSequenceTypeFormField.write(value.fields, into: &buf)
+        FfiConverterSequenceTypeFormAction.write(value.actions, into: &buf)
+        FfiConverterSequenceTypePendingToolCall.write(value.toolCalls, into: &buf)
+        FfiConverterOptionUInt64.write(value.timeoutMs, into: &buf)
+        FfiConverterOptionString.write(value.cardJson, into: &buf)
+        FfiConverterString.write(value.dataJson, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeApprovalRequest_lift(_ buf: RustBuffer) throws -> ApprovalRequest {
+    return try FfiConverterTypeApprovalRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeApprovalRequest_lower(_ value: ApprovalRequest) -> RustBuffer {
+    return FfiConverterTypeApprovalRequest.lower(value)
+}
 
 
 /**
@@ -1922,6 +3110,1123 @@ public func FfiConverterTypeCredentialRecord_lower(_ value: CredentialRecord) ->
 
 
 /**
+ * A button of a `human-input` form.
+ */
+public struct FormAction: Equatable, Hashable {
+    public var id: String
+    public var title: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, title: String) {
+        self.id = id
+        self.title = title
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FormAction: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFormAction: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FormAction {
+        return
+            try FormAction(
+                id: FfiConverterString.read(from: &buf), 
+                title: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FormAction, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.title, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFormAction_lift(_ buf: RustBuffer) throws -> FormAction {
+    return try FfiConverterTypeFormAction.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFormAction_lower(_ value: FormAction) -> RustBuffer {
+    return FfiConverterTypeFormAction.lower(value)
+}
+
+
+/**
+ * A field of a `human-input` form.
+ */
+public struct FormField: Equatable, Hashable {
+    public var name: String
+    public var label: String
+    /**
+     * `text`, `paragraph`, `number`, `select`, `file`... as the node declares it.
+     */
+    public var fieldType: String
+    public var required: Bool
+    /**
+     * The default value as JSON, if any.
+     */
+    public var defaultJson: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, label: String, 
+        /**
+         * `text`, `paragraph`, `number`, `select`, `file`... as the node declares it.
+         */fieldType: String, required: Bool, 
+        /**
+         * The default value as JSON, if any.
+         */defaultJson: String?) {
+        self.name = name
+        self.label = label
+        self.fieldType = fieldType
+        self.required = required
+        self.defaultJson = defaultJson
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FormField: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFormField: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FormField {
+        return
+            try FormField(
+                name: FfiConverterString.read(from: &buf), 
+                label: FfiConverterString.read(from: &buf), 
+                fieldType: FfiConverterString.read(from: &buf), 
+                required: FfiConverterBool.read(from: &buf), 
+                defaultJson: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FormField, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.label, into: &buf)
+        FfiConverterString.write(value.fieldType, into: &buf)
+        FfiConverterBool.write(value.required, into: &buf)
+        FfiConverterOptionString.write(value.defaultJson, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFormField_lift(_ buf: RustBuffer) throws -> FormField {
+    return try FfiConverterTypeFormField.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFormField_lower(_ value: FormField) -> RustBuffer {
+    return FfiConverterTypeFormField.lower(value)
+}
+
+
+/**
+ * One call of a tool, as the app receives it.
+ */
+public struct HostToolCall: Equatable, Hashable {
+    /**
+     * The provider the tool was registered under.
+     */
+    public var provider: String
+    /**
+     * The tool's name.
+     */
+    public var name: String
+    /**
+     * The arguments, a JSON object that matches the tool's schema.
+     */
+    public var argumentsJson: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The provider the tool was registered under.
+         */provider: String, 
+        /**
+         * The tool's name.
+         */name: String, 
+        /**
+         * The arguments, a JSON object that matches the tool's schema.
+         */argumentsJson: String) {
+        self.provider = provider
+        self.name = name
+        self.argumentsJson = argumentsJson
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension HostToolCall: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostToolCall: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostToolCall {
+        return
+            try HostToolCall(
+                provider: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                argumentsJson: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HostToolCall, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.provider, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.argumentsJson, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostToolCall_lift(_ buf: RustBuffer) throws -> HostToolCall {
+    return try FfiConverterTypeHostToolCall.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostToolCall_lower(_ value: HostToolCall) -> RustBuffer {
+    return FfiConverterTypeHostToolCall.lower(value)
+}
+
+
+/**
+ * What a tool returns.
+ */
+public struct HostToolResult: Equatable, Hashable {
+    /**
+     * Text handed to the model.
+     */
+    public var text: String
+    /**
+     * Structured result as JSON, if any. UI blocks (`{"$ui": "card", ...}`) in it
+     * reach the app as `RunEvent.Ui` events.
+     */
+    public var dataJson: String?
+    /**
+     * The tool did not do what was asked; the model sees `text` as an error.
+     */
+    public var isError: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Text handed to the model.
+         */text: String, 
+        /**
+         * Structured result as JSON, if any. UI blocks (`{"$ui": "card", ...}`) in it
+         * reach the app as `RunEvent.Ui` events.
+         */dataJson: String? = nil, 
+        /**
+         * The tool did not do what was asked; the model sees `text` as an error.
+         */isError: Bool = false) {
+        self.text = text
+        self.dataJson = dataJson
+        self.isError = isError
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension HostToolResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostToolResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostToolResult {
+        return
+            try HostToolResult(
+                text: FfiConverterString.read(from: &buf), 
+                dataJson: FfiConverterOptionString.read(from: &buf), 
+                isError: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HostToolResult, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.text, into: &buf)
+        FfiConverterOptionString.write(value.dataJson, into: &buf)
+        FfiConverterBool.write(value.isError, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostToolResult_lift(_ buf: RustBuffer) throws -> HostToolResult {
+    return try FfiConverterTypeHostToolResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostToolResult_lower(_ value: HostToolResult) -> RustBuffer {
+    return FfiConverterTypeHostToolResult.lower(value)
+}
+
+
+/**
+ * A tool the app offers to agents.
+ */
+public struct HostToolSpec: Equatable, Hashable {
+    /**
+     * Name within the provider: letters, digits, `_` and `-`, at most 64 characters.
+     */
+    public var name: String
+    /**
+     * What the tool does and when to use it, for the model.
+     */
+    public var description: String
+    /**
+     * JSON Schema of the arguments object, e.g.
+     * `{"type":"object","properties":{"to":{"type":"string"}},"required":["to"]}`.
+     */
+    public var parametersJson: String
+    /**
+     * Time limit of one call in milliseconds (default 30 000, at most 600 000).
+     */
+    public var timeoutMs: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Name within the provider: letters, digits, `_` and `-`, at most 64 characters.
+         */name: String, 
+        /**
+         * What the tool does and when to use it, for the model.
+         */description: String, 
+        /**
+         * JSON Schema of the arguments object, e.g.
+         * `{"type":"object","properties":{"to":{"type":"string"}},"required":["to"]}`.
+         */parametersJson: String, 
+        /**
+         * Time limit of one call in milliseconds (default 30 000, at most 600 000).
+         */timeoutMs: UInt64? = nil) {
+        self.name = name
+        self.description = description
+        self.parametersJson = parametersJson
+        self.timeoutMs = timeoutMs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension HostToolSpec: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostToolSpec: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostToolSpec {
+        return
+            try HostToolSpec(
+                name: FfiConverterString.read(from: &buf), 
+                description: FfiConverterString.read(from: &buf), 
+                parametersJson: FfiConverterString.read(from: &buf), 
+                timeoutMs: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HostToolSpec, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.description, into: &buf)
+        FfiConverterString.write(value.parametersJson, into: &buf)
+        FfiConverterOptionUInt64.write(value.timeoutMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostToolSpec_lift(_ buf: RustBuffer) throws -> HostToolSpec {
+    return try FfiConverterTypeHostToolSpec.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostToolSpec_lower(_ value: HostToolSpec) -> RustBuffer {
+    return FfiConverterTypeHostToolSpec.lower(value)
+}
+
+
+/**
+ * A lesson of an agent.
+ */
+public struct LessonInfo: Equatable, Hashable {
+    public var id: String
+    public var agent: String
+    /**
+     * The one user it applies to; `None` for every run of the agent.
+     */
+    public var user: String?
+    public var kind: LessonKind
+    public var text: String
+    public var status: LessonStatus
+    /**
+     * It could change what the agent does to the outside world (sending,
+     * money, credentials...): show it to the owner with care.
+     */
+    public var highRisk: Bool
+    /**
+     * Where it came from, as one English sentence.
+     */
+    public var origin: String
+    public var createdAtMs: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, agent: String, 
+        /**
+         * The one user it applies to; `None` for every run of the agent.
+         */user: String?, kind: LessonKind, text: String, status: LessonStatus, 
+        /**
+         * It could change what the agent does to the outside world (sending,
+         * money, credentials...): show it to the owner with care.
+         */highRisk: Bool, 
+        /**
+         * Where it came from, as one English sentence.
+         */origin: String, createdAtMs: UInt64) {
+        self.id = id
+        self.agent = agent
+        self.user = user
+        self.kind = kind
+        self.text = text
+        self.status = status
+        self.highRisk = highRisk
+        self.origin = origin
+        self.createdAtMs = createdAtMs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension LessonInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLessonInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LessonInfo {
+        return
+            try LessonInfo(
+                id: FfiConverterString.read(from: &buf), 
+                agent: FfiConverterString.read(from: &buf), 
+                user: FfiConverterOptionString.read(from: &buf), 
+                kind: FfiConverterTypeLessonKind.read(from: &buf), 
+                text: FfiConverterString.read(from: &buf), 
+                status: FfiConverterTypeLessonStatus.read(from: &buf), 
+                highRisk: FfiConverterBool.read(from: &buf), 
+                origin: FfiConverterString.read(from: &buf), 
+                createdAtMs: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LessonInfo, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.agent, into: &buf)
+        FfiConverterOptionString.write(value.user, into: &buf)
+        FfiConverterTypeLessonKind.write(value.kind, into: &buf)
+        FfiConverterString.write(value.text, into: &buf)
+        FfiConverterTypeLessonStatus.write(value.status, into: &buf)
+        FfiConverterBool.write(value.highRisk, into: &buf)
+        FfiConverterString.write(value.origin, into: &buf)
+        FfiConverterUInt64.write(value.createdAtMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLessonInfo_lift(_ buf: RustBuffer) throws -> LessonInfo {
+    return try FfiConverterTypeLessonInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLessonInfo_lower(_ value: LessonInfo) -> RustBuffer {
+    return FfiConverterTypeLessonInfo.lower(value)
+}
+
+
+/**
+ * A lesson proposed from feedback on a run.
+ */
+public struct LessonProposal: Equatable, Hashable {
+    /**
+     * The agent (the `learning.agent` of its node).
+     */
+    public var agent: String
+    /**
+     * The user of the run; the lesson applies to this user only.
+     */
+    public var user: String?
+    public var kind: LessonKind
+    public var text: String
+    /**
+     * The run the feedback is about.
+     */
+    public var runId: String?
+    /**
+     * Who gave the feedback, and whether the app verified it is them (signed in).
+     */
+    public var author: String?
+    public var authorAuthenticated: Bool
+    /**
+     * A short excerpt that shows why (mask secrets first).
+     */
+    public var evidence: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The agent (the `learning.agent` of its node).
+         */agent: String, 
+        /**
+         * The user of the run; the lesson applies to this user only.
+         */user: String? = nil, kind: LessonKind, text: String, 
+        /**
+         * The run the feedback is about.
+         */runId: String? = nil, 
+        /**
+         * Who gave the feedback, and whether the app verified it is them (signed in).
+         */author: String? = nil, authorAuthenticated: Bool = false, 
+        /**
+         * A short excerpt that shows why (mask secrets first).
+         */evidence: String? = nil) {
+        self.agent = agent
+        self.user = user
+        self.kind = kind
+        self.text = text
+        self.runId = runId
+        self.author = author
+        self.authorAuthenticated = authorAuthenticated
+        self.evidence = evidence
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension LessonProposal: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLessonProposal: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LessonProposal {
+        return
+            try LessonProposal(
+                agent: FfiConverterString.read(from: &buf), 
+                user: FfiConverterOptionString.read(from: &buf), 
+                kind: FfiConverterTypeLessonKind.read(from: &buf), 
+                text: FfiConverterString.read(from: &buf), 
+                runId: FfiConverterOptionString.read(from: &buf), 
+                author: FfiConverterOptionString.read(from: &buf), 
+                authorAuthenticated: FfiConverterBool.read(from: &buf), 
+                evidence: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LessonProposal, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.agent, into: &buf)
+        FfiConverterOptionString.write(value.user, into: &buf)
+        FfiConverterTypeLessonKind.write(value.kind, into: &buf)
+        FfiConverterString.write(value.text, into: &buf)
+        FfiConverterOptionString.write(value.runId, into: &buf)
+        FfiConverterOptionString.write(value.author, into: &buf)
+        FfiConverterBool.write(value.authorAuthenticated, into: &buf)
+        FfiConverterOptionString.write(value.evidence, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLessonProposal_lift(_ buf: RustBuffer) throws -> LessonProposal {
+    return try FfiConverterTypeLessonProposal.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLessonProposal_lower(_ value: LessonProposal) -> RustBuffer {
+    return FfiConverterTypeLessonProposal.lower(value)
+}
+
+
+/**
+ * A tool call waiting for approval.
+ */
+public struct PendingToolCall: Equatable, Hashable {
+    /**
+     * The call's id, for [`PausedRun::decide_tool_call`].
+     */
+    public var id: String
+    /**
+     * The tool as the model sees it.
+     */
+    public var name: String
+    /**
+     * The arguments, as JSON (secret values masked).
+     */
+    public var argumentsJson: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The call's id, for [`PausedRun::decide_tool_call`].
+         */id: String, 
+        /**
+         * The tool as the model sees it.
+         */name: String, 
+        /**
+         * The arguments, as JSON (secret values masked).
+         */argumentsJson: String) {
+        self.id = id
+        self.name = name
+        self.argumentsJson = argumentsJson
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PendingToolCall: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePendingToolCall: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PendingToolCall {
+        return
+            try PendingToolCall(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                argumentsJson: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PendingToolCall, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.argumentsJson, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePendingToolCall_lift(_ buf: RustBuffer) throws -> PendingToolCall {
+    return try FfiConverterTypePendingToolCall.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePendingToolCall_lower(_ value: PendingToolCall) -> RustBuffer {
+    return FfiConverterTypePendingToolCall.lower(value)
+}
+
+
+/**
+ * The result of a run that did not pause.
+ */
+public struct RunResult: Equatable, Hashable {
+    public var status: RunStatus
+    /**
+     * The whole answer text (what the `AnswerChunk` events carried).
+     */
+    public var answer: String
+    /**
+     * The run's outputs (`end` node), as a JSON object.
+     */
+    public var outputsJson: String
+    /**
+     * Why the run failed or was aborted.
+     */
+    public var error: String?
+    /**
+     * Machine readable category of a failure (`timeout`, `model`, `limit_exceeded`...).
+     */
+    public var errorType: String?
+    /**
+     * The same result as `RunHandle.waitJson` returns it.
+     */
+    public var resultJson: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(status: RunStatus, 
+        /**
+         * The whole answer text (what the `AnswerChunk` events carried).
+         */answer: String, 
+        /**
+         * The run's outputs (`end` node), as a JSON object.
+         */outputsJson: String, 
+        /**
+         * Why the run failed or was aborted.
+         */error: String?, 
+        /**
+         * Machine readable category of a failure (`timeout`, `model`, `limit_exceeded`...).
+         */errorType: String?, 
+        /**
+         * The same result as `RunHandle.waitJson` returns it.
+         */resultJson: String) {
+        self.status = status
+        self.answer = answer
+        self.outputsJson = outputsJson
+        self.error = error
+        self.errorType = errorType
+        self.resultJson = resultJson
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RunResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRunResult: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RunResult {
+        return
+            try RunResult(
+                status: FfiConverterTypeRunStatus.read(from: &buf), 
+                answer: FfiConverterString.read(from: &buf), 
+                outputsJson: FfiConverterString.read(from: &buf), 
+                error: FfiConverterOptionString.read(from: &buf), 
+                errorType: FfiConverterOptionString.read(from: &buf), 
+                resultJson: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RunResult, into buf: inout [UInt8]) {
+        FfiConverterTypeRunStatus.write(value.status, into: &buf)
+        FfiConverterString.write(value.answer, into: &buf)
+        FfiConverterString.write(value.outputsJson, into: &buf)
+        FfiConverterOptionString.write(value.error, into: &buf)
+        FfiConverterOptionString.write(value.errorType, into: &buf)
+        FfiConverterString.write(value.resultJson, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRunResult_lift(_ buf: RustBuffer) throws -> RunResult {
+    return try FfiConverterTypeRunResult.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRunResult_lower(_ value: RunResult) -> RustBuffer {
+    return FfiConverterTypeRunResult.lower(value)
+}
+
+
+/**
+ * A tool granted to a skill.
+ */
+public struct SkillGrant: Equatable, Hashable {
+    /**
+     * `provider/tool`, or `*` as the tool for every tool of the provider, exactly as the skill asks for it.
+     */
+    public var tool: String
+    /**
+     * Calls run without asking; otherwise every call waits for approval.
+     */
+    public var allow: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `provider/tool`, or `*` as the tool for every tool of the provider, exactly as the skill asks for it.
+         */tool: String, 
+        /**
+         * Calls run without asking; otherwise every call waits for approval.
+         */allow: Bool) {
+        self.tool = tool
+        self.allow = allow
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SkillGrant: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSkillGrant: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SkillGrant {
+        return
+            try SkillGrant(
+                tool: FfiConverterString.read(from: &buf), 
+                allow: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SkillGrant, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.tool, into: &buf)
+        FfiConverterBool.write(value.allow, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSkillGrant_lift(_ buf: RustBuffer) throws -> SkillGrant {
+    return try FfiConverterTypeSkillGrant.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSkillGrant_lower(_ value: SkillGrant) -> RustBuffer {
+    return FfiConverterTypeSkillGrant.lower(value)
+}
+
+
+/**
+ * An installed skill.
+ */
+public struct SkillInfo: Equatable, Hashable {
+    public var name: String
+    public var description: String
+    public var title: String?
+    public var enabled: Bool
+    /**
+     * Tools the skill asks for.
+     */
+    public var requestedTools: [String]
+    /**
+     * Tools granted to it.
+     */
+    public var grants: [SkillGrant]
+    /**
+     * What the scan found, one line each (`severity code: message`).
+     */
+    public var findings: [String]
+    public var version: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, description: String, title: String?, enabled: Bool, 
+        /**
+         * Tools the skill asks for.
+         */requestedTools: [String], 
+        /**
+         * Tools granted to it.
+         */grants: [SkillGrant], 
+        /**
+         * What the scan found, one line each (`severity code: message`).
+         */findings: [String], version: String?) {
+        self.name = name
+        self.description = description
+        self.title = title
+        self.enabled = enabled
+        self.requestedTools = requestedTools
+        self.grants = grants
+        self.findings = findings
+        self.version = version
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SkillInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSkillInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SkillInfo {
+        return
+            try SkillInfo(
+                name: FfiConverterString.read(from: &buf), 
+                description: FfiConverterString.read(from: &buf), 
+                title: FfiConverterOptionString.read(from: &buf), 
+                enabled: FfiConverterBool.read(from: &buf), 
+                requestedTools: FfiConverterSequenceString.read(from: &buf), 
+                grants: FfiConverterSequenceTypeSkillGrant.read(from: &buf), 
+                findings: FfiConverterSequenceString.read(from: &buf), 
+                version: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SkillInfo, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.description, into: &buf)
+        FfiConverterOptionString.write(value.title, into: &buf)
+        FfiConverterBool.write(value.enabled, into: &buf)
+        FfiConverterSequenceString.write(value.requestedTools, into: &buf)
+        FfiConverterSequenceTypeSkillGrant.write(value.grants, into: &buf)
+        FfiConverterSequenceString.write(value.findings, into: &buf)
+        FfiConverterOptionString.write(value.version, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSkillInfo_lift(_ buf: RustBuffer) throws -> SkillInfo {
+    return try FfiConverterTypeSkillInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSkillInfo_lower(_ value: SkillInfo) -> RustBuffer {
+    return FfiConverterTypeSkillInfo.lower(value)
+}
+
+
+/**
+ * What to install.
+ */
+public struct SkillInstall: Equatable, Hashable {
+    /**
+     * The whole `SKILL.md` (front matter and instructions).
+     */
+    public var skillMd: String
+    /**
+     * Tools to grant; each must be one the skill asks for in `allowed-tools`.
+     */
+    public var grants: [SkillGrant]
+    /**
+     * Replace an installed skill of the same name.
+     */
+    public var replace: Bool
+    /**
+     * Install although the scan found something blocking.
+     */
+    public var acceptFindings: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The whole `SKILL.md` (front matter and instructions).
+         */skillMd: String, 
+        /**
+         * Tools to grant; each must be one the skill asks for in `allowed-tools`.
+         */grants: [SkillGrant] = [], 
+        /**
+         * Replace an installed skill of the same name.
+         */replace: Bool = false, 
+        /**
+         * Install although the scan found something blocking.
+         */acceptFindings: Bool = false) {
+        self.skillMd = skillMd
+        self.grants = grants
+        self.replace = replace
+        self.acceptFindings = acceptFindings
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SkillInstall: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSkillInstall: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SkillInstall {
+        return
+            try SkillInstall(
+                skillMd: FfiConverterString.read(from: &buf), 
+                grants: FfiConverterSequenceTypeSkillGrant.read(from: &buf), 
+                replace: FfiConverterBool.read(from: &buf), 
+                acceptFindings: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SkillInstall, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.skillMd, into: &buf)
+        FfiConverterSequenceTypeSkillGrant.write(value.grants, into: &buf)
+        FfiConverterBool.write(value.replace, into: &buf)
+        FfiConverterBool.write(value.acceptFindings, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSkillInstall_lift(_ buf: RustBuffer) throws -> SkillInstall {
+    return try FfiConverterTypeSkillInstall.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSkillInstall_lower(_ value: SkillInstall) -> RustBuffer {
+    return FfiConverterTypeSkillInstall.lower(value)
+}
+
+
+/**
+ * A UI block an agent produced, checked against its schema.
+ */
+public struct UiBlock: Equatable, Hashable {
+    /**
+     * `adaptive_card`, `chart`, `table`, `stats` or `diagram`.
+     */
+    public var kind: String
+    public var title: String?
+    /**
+     * The block as JSON (`{"$ui": "...", "version": 1, ...}`).
+     */
+    public var json: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `adaptive_card`, `chart`, `table`, `stats` or `diagram`.
+         */kind: String, title: String?, 
+        /**
+         * The block as JSON (`{"$ui": "...", "version": 1, ...}`).
+         */json: String) {
+        self.kind = kind
+        self.title = title
+        self.json = json
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UiBlock: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUiBlock: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UiBlock {
+        return
+            try UiBlock(
+                kind: FfiConverterString.read(from: &buf), 
+                title: FfiConverterOptionString.read(from: &buf), 
+                json: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UiBlock, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.kind, into: &buf)
+        FfiConverterOptionString.write(value.title, into: &buf)
+        FfiConverterString.write(value.json, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUiBlock_lift(_ buf: RustBuffer) throws -> UiBlock {
+    return try FfiConverterTypeUiBlock.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUiBlock_lower(_ value: UiBlock) -> RustBuffer {
+    return FfiConverterTypeUiBlock.lower(value)
+}
+
+
+/**
  * Errors surfaced to foreign code as exceptions.
  */
 public 
@@ -1953,6 +4258,11 @@ enum GraphrtError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      * Internal failure (runtime could not start, lock poisoned...).
      */
     case Runtime(message: String
+    )
+    /**
+     * The capability is not compiled into this build, or not configured.
+     */
+    case Unsupported(message: String
     )
 
     
@@ -1998,6 +4308,9 @@ public struct FfiConverterTypeGraphrtError: FfiConverterRustBuffer {
         case 5: return .Runtime(
             message: try FfiConverterString.read(from: &buf)
             )
+        case 6: return .Unsupported(
+            message: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -2034,6 +4347,11 @@ public struct FfiConverterTypeGraphrtError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(5))
             FfiConverterString.write(message, into: &buf)
             
+        
+        case let .Unsupported(message):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(message, into: &buf)
+            
         }
     }
 }
@@ -2051,6 +4369,740 @@ public func FfiConverterTypeGraphrtError_lift(_ buf: RustBuffer) throws -> Graph
 #endif
 public func FfiConverterTypeGraphrtError_lower(_ value: GraphrtError) -> RustBuffer {
     return FfiConverterTypeGraphrtError.lower(value)
+}
+
+
+/**
+ * A decision about a lesson.
+ */
+
+public enum LessonDecision: Equatable, Hashable {
+    
+    /**
+     * Use it in runs.
+     */
+    case approve
+    /**
+     * Decline it; the same text is not proposed again.
+     */
+    case reject
+    /**
+     * Stop using an approved lesson, keeping it on record.
+     */
+    case retire
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension LessonDecision: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLessonDecision: FfiConverterRustBuffer {
+    typealias SwiftType = LessonDecision
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LessonDecision {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .approve
+        
+        case 2: return .reject
+        
+        case 3: return .retire
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LessonDecision, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .approve:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .reject:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .retire:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLessonDecision_lift(_ buf: RustBuffer) throws -> LessonDecision {
+    return try FfiConverterTypeLessonDecision.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLessonDecision_lower(_ value: LessonDecision) -> RustBuffer {
+    return FfiConverterTypeLessonDecision.lower(value)
+}
+
+
+
+/**
+ * What kind of thing a lesson is.
+ */
+
+public enum LessonKind: Equatable, Hashable {
+    
+    /**
+     * How someone likes things done ("answer in Indonesian").
+     */
+    case preference
+    /**
+     * Something that is true ("invoices go to finance").
+     */
+    case fact
+    /**
+     * How to do something ("check stock before quoting").
+     */
+    case procedure
+    /**
+     * A mistake not to repeat.
+     */
+    case correction
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension LessonKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLessonKind: FfiConverterRustBuffer {
+    typealias SwiftType = LessonKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LessonKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .preference
+        
+        case 2: return .fact
+        
+        case 3: return .procedure
+        
+        case 4: return .correction
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LessonKind, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .preference:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .fact:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .procedure:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .correction:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLessonKind_lift(_ buf: RustBuffer) throws -> LessonKind {
+    return try FfiConverterTypeLessonKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLessonKind_lower(_ value: LessonKind) -> RustBuffer {
+    return FfiConverterTypeLessonKind.lower(value)
+}
+
+
+
+/**
+ * Where a lesson is in its life.
+ */
+
+public enum LessonStatus: Equatable, Hashable {
+    
+    case proposed
+    case approved
+    case rejected
+    case retired
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension LessonStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLessonStatus: FfiConverterRustBuffer {
+    typealias SwiftType = LessonStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LessonStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .proposed
+        
+        case 2: return .approved
+        
+        case 3: return .rejected
+        
+        case 4: return .retired
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LessonStatus, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .proposed:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .approved:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .rejected:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .retired:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLessonStatus_lift(_ buf: RustBuffer) throws -> LessonStatus {
+    return try FfiConverterTypeLessonStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLessonStatus_lower(_ value: LessonStatus) -> RustBuffer {
+    return FfiConverterTypeLessonStatus.lower(value)
+}
+
+
+
+/**
+ * What a request asks for.
+ */
+
+public enum RequestKind: Equatable, Hashable {
+    
+    /**
+     * An `agent` node holds tool calls until someone approves or rejects them.
+     */
+    case toolApproval
+    /**
+     * A `human-input` node waits for a form: an action and field values.
+     */
+    case humanInput
+    /**
+     * A pause of another kind (`data_json` holds the details).
+     */
+    case other(name: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RequestKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRequestKind: FfiConverterRustBuffer {
+    typealias SwiftType = RequestKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RequestKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .toolApproval
+        
+        case 2: return .humanInput
+        
+        case 3: return .other(name: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RequestKind, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .toolApproval:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .humanInput:
+            writeInt(&buf, Int32(2))
+        
+        
+        case let .other(name):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(name, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRequestKind_lift(_ buf: RustBuffer) throws -> RequestKind {
+    return try FfiConverterTypeRequestKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRequestKind_lower(_ value: RequestKind) -> RustBuffer {
+    return FfiConverterTypeRequestKind.lower(value)
+}
+
+
+
+/**
+ * An event of a run.
+ */
+
+public enum RunEvent {
+    
+    case started(runId: String, resumed: Bool
+    )
+    case nodeStarted(nodeId: String, kind: String, title: String
+    )
+    case nodeSucceeded(nodeId: String, elapsedMs: UInt64
+    )
+    /**
+     * A node failed; with `handled` its error strategy kept the run going.
+     */
+    case nodeFailed(nodeId: String, error: String, errorType: String, handled: Bool
+    )
+    /**
+     * An agent called a tool.
+     */
+    case toolCalled(nodeId: String, callId: String, name: String, argumentsJson: String
+    )
+    /**
+     * A tool call finished.
+     */
+    case toolFinished(nodeId: String, callId: String, name: String, isError: Bool
+    )
+    /**
+     * A held tool call was not approved.
+     */
+    case toolDenied(nodeId: String, callId: String, name: String
+    )
+    /**
+     * User facing answer text, in order, as it is produced.
+     */
+    case answerChunk(text: String
+    )
+    /**
+     * A UI block in a node's outputs that passed validation (feature `ui`).
+     */
+    case ui(nodeId: String, block: UiBlock
+    )
+    /**
+     * A UI block that failed validation and must not be shown.
+     */
+    case uiRejected(nodeId: String, error: String
+    )
+    /**
+     * The run paused and waits for answers. Terminal.
+     */
+    case paused(run: PausedRun
+    )
+    /**
+     * The run ended. Terminal.
+     */
+    case finished(result: RunResult
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RunEvent: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRunEvent: FfiConverterRustBuffer {
+    typealias SwiftType = RunEvent
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RunEvent {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .started(runId: try FfiConverterString.read(from: &buf), resumed: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 2: return .nodeStarted(nodeId: try FfiConverterString.read(from: &buf), kind: try FfiConverterString.read(from: &buf), title: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 3: return .nodeSucceeded(nodeId: try FfiConverterString.read(from: &buf), elapsedMs: try FfiConverterUInt64.read(from: &buf)
+        )
+        
+        case 4: return .nodeFailed(nodeId: try FfiConverterString.read(from: &buf), error: try FfiConverterString.read(from: &buf), errorType: try FfiConverterString.read(from: &buf), handled: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 5: return .toolCalled(nodeId: try FfiConverterString.read(from: &buf), callId: try FfiConverterString.read(from: &buf), name: try FfiConverterString.read(from: &buf), argumentsJson: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 6: return .toolFinished(nodeId: try FfiConverterString.read(from: &buf), callId: try FfiConverterString.read(from: &buf), name: try FfiConverterString.read(from: &buf), isError: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 7: return .toolDenied(nodeId: try FfiConverterString.read(from: &buf), callId: try FfiConverterString.read(from: &buf), name: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 8: return .answerChunk(text: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 9: return .ui(nodeId: try FfiConverterString.read(from: &buf), block: try FfiConverterTypeUiBlock.read(from: &buf)
+        )
+        
+        case 10: return .uiRejected(nodeId: try FfiConverterString.read(from: &buf), error: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 11: return .paused(run: try FfiConverterTypePausedRun.read(from: &buf)
+        )
+        
+        case 12: return .finished(result: try FfiConverterTypeRunResult.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RunEvent, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .started(runId,resumed):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(runId, into: &buf)
+            FfiConverterBool.write(resumed, into: &buf)
+            
+        
+        case let .nodeStarted(nodeId,kind,title):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(nodeId, into: &buf)
+            FfiConverterString.write(kind, into: &buf)
+            FfiConverterString.write(title, into: &buf)
+            
+        
+        case let .nodeSucceeded(nodeId,elapsedMs):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(nodeId, into: &buf)
+            FfiConverterUInt64.write(elapsedMs, into: &buf)
+            
+        
+        case let .nodeFailed(nodeId,error,errorType,handled):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(nodeId, into: &buf)
+            FfiConverterString.write(error, into: &buf)
+            FfiConverterString.write(errorType, into: &buf)
+            FfiConverterBool.write(handled, into: &buf)
+            
+        
+        case let .toolCalled(nodeId,callId,name,argumentsJson):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(nodeId, into: &buf)
+            FfiConverterString.write(callId, into: &buf)
+            FfiConverterString.write(name, into: &buf)
+            FfiConverterString.write(argumentsJson, into: &buf)
+            
+        
+        case let .toolFinished(nodeId,callId,name,isError):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(nodeId, into: &buf)
+            FfiConverterString.write(callId, into: &buf)
+            FfiConverterString.write(name, into: &buf)
+            FfiConverterBool.write(isError, into: &buf)
+            
+        
+        case let .toolDenied(nodeId,callId,name):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(nodeId, into: &buf)
+            FfiConverterString.write(callId, into: &buf)
+            FfiConverterString.write(name, into: &buf)
+            
+        
+        case let .answerChunk(text):
+            writeInt(&buf, Int32(8))
+            FfiConverterString.write(text, into: &buf)
+            
+        
+        case let .ui(nodeId,block):
+            writeInt(&buf, Int32(9))
+            FfiConverterString.write(nodeId, into: &buf)
+            FfiConverterTypeUiBlock.write(block, into: &buf)
+            
+        
+        case let .uiRejected(nodeId,error):
+            writeInt(&buf, Int32(10))
+            FfiConverterString.write(nodeId, into: &buf)
+            FfiConverterString.write(error, into: &buf)
+            
+        
+        case let .paused(run):
+            writeInt(&buf, Int32(11))
+            FfiConverterTypePausedRun.write(run, into: &buf)
+            
+        
+        case let .finished(result):
+            writeInt(&buf, Int32(12))
+            FfiConverterTypeRunResult.write(result, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRunEvent_lift(_ buf: RustBuffer) throws -> RunEvent {
+    return try FfiConverterTypeRunEvent.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRunEvent_lower(_ value: RunEvent) -> RustBuffer {
+    return FfiConverterTypeRunEvent.lower(value)
+}
+
+
+
+/**
+ * How a run ended.
+ */
+
+public enum RunStatus: Equatable, Hashable {
+    
+    case succeeded
+    case failed
+    case aborted
+    case paused
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RunStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRunStatus: FfiConverterRustBuffer {
+    typealias SwiftType = RunStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RunStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .succeeded
+        
+        case 2: return .failed
+        
+        case 3: return .aborted
+        
+        case 4: return .paused
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RunStatus, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .succeeded:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .failed:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .aborted:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .paused:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRunStatus_lift(_ buf: RustBuffer) throws -> RunStatus {
+    return try FfiConverterTypeRunStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRunStatus_lower(_ value: RunStatus) -> RustBuffer {
+    return FfiConverterTypeRunStatus.lower(value)
+}
+
+
+
+/**
+ * An error a tool reports. The model receives `reason` and may try again.
+ */
+public 
+enum ToolCallError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    /**
+     * The tool could not do what was asked.
+     */
+    case Failed(reason: String
+    )
+
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension ToolCallError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeToolCallError: FfiConverterRustBuffer {
+    typealias SwiftType = ToolCallError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ToolCallError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .Failed(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ToolCallError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .Failed(reason):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(reason, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeToolCallError_lift(_ buf: RustBuffer) throws -> ToolCallError {
+    return try FfiConverterTypeToolCallError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeToolCallError_lower(_ value: ToolCallError) -> RustBuffer {
+    return FfiConverterTypeToolCallError.lower(value)
 }
 
 #if swift(>=5.8)
@@ -2104,6 +5156,30 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeLessonStatus: FfiConverterRustBuffer {
+    typealias SwiftType = LessonStatus?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeLessonStatus.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeLessonStatus.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -2125,6 +5201,344 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeApprovalRequest: FfiConverterRustBuffer {
+    typealias SwiftType = [ApprovalRequest]
+
+    public static func write(_ value: [ApprovalRequest], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeApprovalRequest.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ApprovalRequest] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ApprovalRequest]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeApprovalRequest.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeFormAction: FfiConverterRustBuffer {
+    typealias SwiftType = [FormAction]
+
+    public static func write(_ value: [FormAction], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFormAction.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FormAction] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FormAction]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFormAction.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeFormField: FfiConverterRustBuffer {
+    typealias SwiftType = [FormField]
+
+    public static func write(_ value: [FormField], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeFormField.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [FormField] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [FormField]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeFormField.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeHostToolSpec: FfiConverterRustBuffer {
+    typealias SwiftType = [HostToolSpec]
+
+    public static func write(_ value: [HostToolSpec], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeHostToolSpec.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [HostToolSpec] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [HostToolSpec]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeHostToolSpec.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeLessonInfo: FfiConverterRustBuffer {
+    typealias SwiftType = [LessonInfo]
+
+    public static func write(_ value: [LessonInfo], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeLessonInfo.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [LessonInfo] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [LessonInfo]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeLessonInfo.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypePendingToolCall: FfiConverterRustBuffer {
+    typealias SwiftType = [PendingToolCall]
+
+    public static func write(_ value: [PendingToolCall], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypePendingToolCall.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [PendingToolCall] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [PendingToolCall]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypePendingToolCall.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeSkillGrant: FfiConverterRustBuffer {
+    typealias SwiftType = [SkillGrant]
+
+    public static func write(_ value: [SkillGrant], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSkillGrant.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SkillGrant] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SkillGrant]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSkillGrant.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeSkillInfo: FfiConverterRustBuffer {
+    typealias SwiftType = [SkillInfo]
+
+    public static func write(_ value: [SkillInfo], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSkillInfo.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SkillInfo] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SkillInfo]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSkillInfo.read(from: &buf))
+        }
+        return seq
+    }
+}
+private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
+private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
+
+fileprivate let uniffiContinuationHandleMap = UniffiHandleMap<UnsafeContinuation<Int8, Never>>()
+
+fileprivate func uniffiRustCallAsync<F, T>(
+    rustFutureFunc: () -> UInt64,
+    pollFunc: (UInt64, @escaping UniffiRustFutureContinuationCallback, UInt64) -> (),
+    completeFunc: (UInt64, UnsafeMutablePointer<RustCallStatus>) -> F,
+    freeFunc: (UInt64) -> (),
+    liftFunc: (F) throws -> T,
+    errorHandler: ((RustBuffer) throws -> Swift.Error)?
+) async throws -> T {
+    // Make sure to call the ensure init function since future creation doesn't have a
+    // RustCallStatus param, so doesn't use makeRustCall()
+    uniffiEnsureGraphrtFfiInitialized()
+    let rustFuture = rustFutureFunc()
+    defer {
+        freeFunc(rustFuture)
+    }
+    var pollResult: Int8;
+    repeat {
+        pollResult = await withUnsafeContinuation {
+            pollFunc(
+                rustFuture,
+                { handle, pollResult in
+                    uniffiFutureContinuationCallback(handle: handle, pollResult: pollResult)
+                },
+                uniffiContinuationHandleMap.insert(obj: $0)
+            )
+        }
+    } while pollResult != UNIFFI_RUST_FUTURE_POLL_READY
+
+    return try liftFunc(makeRustCall(
+        { completeFunc(rustFuture, $0) },
+        errorHandler: errorHandler
+    ))
+}
+
+// Callback handlers for an async calls.  These are invoked by Rust when the future is ready.  They
+// lift the return value or error and resume the suspended function.
+fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: Int8) {
+    if let continuation = try? uniffiContinuationHandleMap.remove(handle: handle) {
+        continuation.resume(returning: pollResult)
+    } else {
+        print("uniffiFutureContinuationCallback invalid handle")
+    }
+}
+private func uniffiTraitInterfaceCallAsync<T>(
+    makeCall: @escaping () async throws -> T,
+    handleSuccess: @escaping (T) -> (),
+    handleError: @escaping (Int8, RustBuffer) -> (),
+    droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+) {
+    let task = Task {
+        // Note: it's important we call either `handleSuccess` or `handleError` exactly once.  Each
+        // call consumes an Arc reference, which means there should be no possibility of a double
+        // call.  The following code is structured so that will will never call both `handleSuccess`
+        // and `handleError`, even in the face of weird errors.
+        //
+        // On platforms that need extra machinery to make C-ABI calls, like JNA or ctypes, it's
+        // possible that we fail to make either call.  However, it doesn't seem like this is
+        // possible on Swift since swift can just make the C call directly.
+        var callResult: T
+        do {
+            callResult = try await makeCall()
+        } catch {
+            handleError(CALL_UNEXPECTED_ERROR, FfiConverterString.lower(String(describing: error)))
+            return
+        }
+        handleSuccess(callResult)
+    }
+    let handle = UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert(obj: task)
+    droppedCallback.pointee = UniffiForeignFutureDroppedCallbackStruct(
+        handle: handle,
+        free: uniffiForeignFutureDroppedCallback
+    )
+}
+
+private func uniffiTraitInterfaceCallAsyncWithError<T, E>(
+    makeCall: @escaping () async throws -> T,
+    handleSuccess: @escaping (T) -> (),
+    handleError: @escaping (Int8, RustBuffer) -> (),
+    lowerError: @escaping (E) -> RustBuffer,
+    droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+) {
+    let task = Task {
+        // See the note in uniffiTraitInterfaceCallAsync for details on `handleSuccess` and
+        // `handleError`.
+        var callResult: T
+        do {
+            callResult = try await makeCall()
+        } catch let error as E {
+            handleError(CALL_ERROR, lowerError(error))
+            return
+        } catch {
+            handleError(CALL_UNEXPECTED_ERROR, FfiConverterString.lower(String(describing: error)))
+            return
+        }
+        handleSuccess(callResult)
+    }
+    let handle = UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert(obj: task)
+    droppedCallback.pointee = UniffiForeignFutureDroppedCallbackStruct(
+        handle: handle,
+        free: uniffiForeignFutureDroppedCallback
+    )
+}
+
+// Borrow the callback handle map implementation to store foreign future handles
+// TODO: consolidate the handle-map code (https://github.com/mozilla/uniffi-rs/pull/1823)
+fileprivate let UNIFFI_FOREIGN_FUTURE_HANDLE_MAP = UniffiHandleMap<UniffiForeignFutureTask>()
+
+// Protocol for tasks that handle foreign futures.
+//
+// Defining a protocol allows all tasks to be stored in the same handle map.  This can't be done
+// with the task object itself, since has generic parameters.
+fileprivate protocol UniffiForeignFutureTask {
+    func cancel()
+}
+
+extension Task: UniffiForeignFutureTask {}
+
+private func uniffiForeignFutureDroppedCallback(handle: UInt64) {
+    do {
+        let task = try UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.remove(handle: handle)
+        // Set the cancellation flag on the task.  If it's still running, the code can check the
+        // cancellation flag or call `Task.checkCancellation()`.  If the task has completed, this is
+        // a no-op.
+        task.cancel()
+    } catch {
+        print("uniffiForeignFutureDroppedCallback: handle missing from handlemap")
+    }
+}
+
+// For testing
+public func uniffiForeignFutureHandleCountGraphrtFfi() -> Int {
+    UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.count
+}
 /**
  * Version of the embedded runtime.
  */
@@ -2132,6 +5546,18 @@ public func graphrtVersion() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_graphrt_ffi_fn_func_graphrt_version(uniffiCallStatus
+    )
+})
+}
+/**
+ * Check a UI block (`{"$ui": "chart", "version": 1, ...}`) against its schema,
+ * for blocks an app receives outside a run (stored messages, a server).
+ */
+public func validateUiBlock(blockJson: String)throws  -> UiBlock  {
+    return try  FfiConverterTypeUiBlock_lift(try rustCallWithError(FfiConverterTypeGraphrtError_lift) {
+        uniffiCallStatus in
+    uniffi_graphrt_ffi_fn_func_validate_ui_block(
+        FfiConverterString.lower(blockJson),uniffiCallStatus
     )
 })
 }
@@ -2152,6 +5578,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.contractVersionMismatch
     }
     if (uniffi_graphrt_ffi_checksum_func_graphrt_version() != 60389) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_func_validate_ui_block() != 38956) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_graphrt_ffi_checksum_method_eventlistener_on_event() != 49206) {
@@ -2193,10 +5622,43 @@ private let initializationResult: InitializationResult = {
     if (uniffi_graphrt_ffi_checksum_method_runtime_load_workflow() != 197) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_register_tool_provider() != 56384) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin() != 10329) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider() != 21006) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_tool_providers() != 15986) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_add_lesson() != 51044) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_decide_lesson() != 28116) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_delete_lesson() != 55609) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_list_lessons() != 58828) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_propose_lesson() != 56492) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_install_skill() != 51605) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_list_skills() != 44629) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_remove_skill() != 20220) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_runtime_set_skill_enabled() != 14364) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_graphrt_ffi_checksum_method_workflowhandle_catalog_json() != 16429) {
@@ -2211,10 +5673,49 @@ private let initializationResult: InitializationResult = {
     if (uniffi_graphrt_ffi_checksum_method_workflowhandle_resume() != 30149) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_graphrt_ffi_checksum_method_workflowhandle_resume_paused() != 36973) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_graphrt_ffi_checksum_method_workflowhandle_run() != 11872) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_graphrt_ffi_checksum_method_workflowhandle_start() != 13979) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_graphrt_ffi_checksum_method_workflowhandle_warnings() != 34745) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_pausedrun_answer() != 9534) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_pausedrun_approve() != 47138) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_pausedrun_decide_tool_call() != 56145) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_pausedrun_inputs_json() != 42785) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_pausedrun_reject() != 40632) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_pausedrun_requests() != 10434) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_pausedrun_run_id() != 14380) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_pausedrun_set_input() != 16492) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_pausedrun_snapshot_json() != 29003) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_pausedrun_to_json() != 28957) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_pausedrun_unanswered() != 14270) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_graphrt_ffi_checksum_method_credentialprovider_get_credential() != 19341) {
@@ -2223,12 +5724,23 @@ private let initializationResult: InitializationResult = {
     if (uniffi_graphrt_ffi_checksum_method_credentialprovider_invalidate() != 49006) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_graphrt_ffi_checksum_method_runlistener_on_event() != 15799) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_method_toolprovider_call_tool() != 10940) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_graphrt_ffi_checksum_constructor_runtime_new() != 50642) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_graphrt_ffi_checksum_constructor_pausedrun_from_json() != 59822) {
         return InitializationResult.apiChecksumMismatch
     }
 
     uniffiCallbackInitCredentialProvider()
     uniffiCallbackInitEventListener()
+    uniffiCallbackInitRunListener()
+    uniffiCallbackInitToolProvider()
     return InitializationResult.ok
 }()
 

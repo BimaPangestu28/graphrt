@@ -1,0 +1,5 @@
+# Built by scripts/build-xcframework.sh and swift build
+GraphrtFFI.xcframework/
+.build/
+.swiftpm/
+dist/

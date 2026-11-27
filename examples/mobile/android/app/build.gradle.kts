@@ -5,14 +5,16 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// The sample reuses the repository's files instead of keeping copies:
-// the generated UniFFI Kotlin binding and the offline hello workflow.
+// The sample uses the SDK module (sdk/android/graphrt: binding, helpers and the
+// native libraries) and the repository's workflows instead of keeping copies.
 val repoRoot = rootProject.layout.projectDirectory.dir("../../..")
 val workflowAssetsDir = layout.buildDirectory.dir("generated/workflowAssets")
 
 val copyWorkflowAssets by tasks.registering(Sync::class) {
-    description = "Bundles examples/hello.yaml as an app asset."
+    description = "Bundles the offline workflows and the agent's runtime config as app assets."
     from(repoRoot.file("examples/hello.yaml"))
+    from(repoRoot.file("examples/mobile/agent.yaml"))
+    from(repoRoot.file("examples/mobile/runtime-config.json"))
     into(workflowAssetsDir)
 }
 
@@ -31,9 +33,7 @@ android {
     }
 
     sourceSets["main"].apply {
-        java.srcDir(repoRoot.dir("bindings/kotlin"))
         assets.srcDir(workflowAssetsDir)
-        // jniLibs/ (the default location) is filled by scripts/build-rust.sh.
     }
 
     buildTypes {
@@ -61,23 +61,8 @@ kotlin {
 
 tasks.named("preBuild") { dependsOn(copyWorkflowAssets) }
 
-// Fail early with a clear message instead of a runtime UnsatisfiedLinkError.
-val checkNativeLibraries by tasks.registering {
-    val jniLibsDir = layout.projectDirectory.dir("src/main/jniLibs")
-    doLast {
-        val missing = listOf("arm64-v8a", "x86_64").filterNot { abi ->
-            jniLibsDir.file("$abi/libgraphrt_ffi.so").asFile.exists()
-        }
-        if (missing.isNotEmpty()) {
-            throw GradleException(
-                "libgraphrt_ffi.so missing for $missing. Run examples/mobile/android/scripts/build-rust.sh first.",
-            )
-        }
-    }
-}
-tasks.named("preBuild") { dependsOn(checkNativeLibraries) }
-
 dependencies {
-    // UniFFI's Kotlin bindings call into the native library through JNA.
-    implementation("net.java.dev.jna:jna:5.17.0@aar")
+    // The Graphrt SDK (sdk/android): an app outside this repository uses the AAR
+    // of a release instead (see docs/mobile.md).
+    implementation(project(":graphrt"))
 }

@@ -1,0 +1,8 @@
+// Linux only: the C interface of libgraphrt_ffi as a system library, for the
+// tests and the doc snippets (swift test -Xlinker -L<dir of libgraphrt_ffi.so>).
+// Apple platforms use the XCFramework, which carries its own module map.
+module graphrt_ffiFFI {
+    header "graphrt_ffiFFI.h"
+    link "graphrt_ffi"
+    export *
+}

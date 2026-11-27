@@ -278,6 +278,19 @@ typedef void (*UniffiCallbackInterfaceCredentialProviderMethod1)(uint64_t, RustB
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_RUN_LISTENER_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_RUN_LISTENER_METHOD0
+typedef void (*UniffiCallbackInterfaceRunListenerMethod0)(uint64_t, RustBuffer, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_TOOL_PROVIDER_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_TOOL_PROVIDER_METHOD0
+typedef void (*UniffiCallbackInterfaceToolProviderMethod0)(uint64_t, RustBuffer, UniffiForeignFutureCompleteRustBuffer _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_EVENT_LISTENER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_EVENT_LISTENER
 typedef struct UniffiVTableCallbackInterfaceEventListener {
@@ -297,6 +310,24 @@ typedef struct UniffiVTableCallbackInterfaceCredentialProvider {
     UniffiCallbackInterfaceCredentialProviderMethod0 _Nonnull getCredential;
     UniffiCallbackInterfaceCredentialProviderMethod1 _Nonnull invalidate;
 } UniffiVTableCallbackInterfaceCredentialProvider;
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_RUN_LISTENER
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_RUN_LISTENER
+typedef struct UniffiVTableCallbackInterfaceRunListener {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceRunListenerMethod0 _Nonnull onEvent;
+} UniffiVTableCallbackInterfaceRunListener;
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_TOOL_PROVIDER
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_TOOL_PROVIDER
+typedef struct UniffiVTableCallbackInterfaceToolProvider {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceToolProviderMethod0 _Nonnull callTool;
+} UniffiVTableCallbackInterfaceToolProvider;
 
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CLONE_EVENTLISTENER
@@ -404,6 +435,11 @@ uint64_t uniffi_graphrt_ffi_fn_method_runtime_load_bundle(uint64_t ptr, RustBuff
 uint64_t uniffi_graphrt_ffi_fn_method_runtime_load_workflow(uint64_t ptr, RustBuffer document, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_REGISTER_TOOL_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_REGISTER_TOOL_PROVIDER
+void uniffi_graphrt_ffi_fn_method_runtime_register_tool_provider(uint64_t ptr, RustBuffer name, RustBuffer tools, uint64_t provider, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_REGISTER_WASM_PLUGIN
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_REGISTER_WASM_PLUGIN
 RustBuffer uniffi_graphrt_ffi_fn_method_runtime_register_wasm_plugin(uint64_t ptr, RustBuffer wasm, RustCallStatus *_Nonnull out_status
@@ -412,6 +448,56 @@ RustBuffer uniffi_graphrt_ffi_fn_method_runtime_register_wasm_plugin(uint64_t pt
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_SET_CREDENTIAL_PROVIDER
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_SET_CREDENTIAL_PROVIDER
 void uniffi_graphrt_ffi_fn_method_runtime_set_credential_provider(uint64_t ptr, RustBuffer provider, uint64_t callback, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_TOOL_PROVIDERS
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_TOOL_PROVIDERS
+RustBuffer uniffi_graphrt_ffi_fn_method_runtime_tool_providers(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_ADD_LESSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_ADD_LESSON
+RustBuffer uniffi_graphrt_ffi_fn_method_runtime_add_lesson(uint64_t ptr, RustBuffer agent, RustBuffer user, RustBuffer kind, RustBuffer text, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_DECIDE_LESSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_DECIDE_LESSON
+RustBuffer uniffi_graphrt_ffi_fn_method_runtime_decide_lesson(uint64_t ptr, RustBuffer agent, RustBuffer id, RustBuffer decision, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_DELETE_LESSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_DELETE_LESSON
+void uniffi_graphrt_ffi_fn_method_runtime_delete_lesson(uint64_t ptr, RustBuffer agent, RustBuffer id, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_LIST_LESSONS
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_LIST_LESSONS
+RustBuffer uniffi_graphrt_ffi_fn_method_runtime_list_lessons(uint64_t ptr, RustBuffer agent, RustBuffer status, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_PROPOSE_LESSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_PROPOSE_LESSON
+RustBuffer uniffi_graphrt_ffi_fn_method_runtime_propose_lesson(uint64_t ptr, RustBuffer proposal, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_INSTALL_SKILL
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_INSTALL_SKILL
+RustBuffer uniffi_graphrt_ffi_fn_method_runtime_install_skill(uint64_t ptr, RustBuffer request, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_LIST_SKILLS
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_LIST_SKILLS
+RustBuffer uniffi_graphrt_ffi_fn_method_runtime_list_skills(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_REMOVE_SKILL
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_REMOVE_SKILL
+void uniffi_graphrt_ffi_fn_method_runtime_remove_skill(uint64_t ptr, RustBuffer name, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_SET_SKILL_ENABLED
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNTIME_SET_SKILL_ENABLED
+RustBuffer uniffi_graphrt_ffi_fn_method_runtime_set_skill_enabled(uint64_t ptr, RustBuffer name, int8_t enabled, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CLONE_WORKFLOWHANDLE
@@ -444,14 +530,94 @@ RustBuffer uniffi_graphrt_ffi_fn_method_workflowhandle_name(uint64_t ptr, RustCa
 uint64_t uniffi_graphrt_ffi_fn_method_workflowhandle_resume(uint64_t ptr, RustBuffer snapshot_json, RustBuffer inputs_json, RustBuffer secrets_json, uint64_t listener, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_WORKFLOWHANDLE_RESUME_PAUSED
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_WORKFLOWHANDLE_RESUME_PAUSED
+uint64_t uniffi_graphrt_ffi_fn_method_workflowhandle_resume_paused(uint64_t ptr, uint64_t paused, RustBuffer secrets_json, uint64_t listener, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_WORKFLOWHANDLE_RUN
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_WORKFLOWHANDLE_RUN
 uint64_t uniffi_graphrt_ffi_fn_method_workflowhandle_run(uint64_t ptr, RustBuffer inputs_json, RustBuffer sys_json, uint64_t listener, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_WORKFLOWHANDLE_START
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_WORKFLOWHANDLE_START
+uint64_t uniffi_graphrt_ffi_fn_method_workflowhandle_start(uint64_t ptr, RustBuffer inputs_json, RustBuffer sys_json, uint64_t listener, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_WORKFLOWHANDLE_WARNINGS
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_WORKFLOWHANDLE_WARNINGS
 RustBuffer uniffi_graphrt_ffi_fn_method_workflowhandle_warnings(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CLONE_PAUSEDRUN
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CLONE_PAUSEDRUN
+uint64_t uniffi_graphrt_ffi_fn_clone_pausedrun(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_FREE_PAUSEDRUN
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_FREE_PAUSEDRUN
+void uniffi_graphrt_ffi_fn_free_pausedrun(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CONSTRUCTOR_PAUSEDRUN_FROM_JSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CONSTRUCTOR_PAUSEDRUN_FROM_JSON
+uint64_t uniffi_graphrt_ffi_fn_constructor_pausedrun_from_json(RustBuffer json, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_ANSWER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_ANSWER
+void uniffi_graphrt_ffi_fn_method_pausedrun_answer(uint64_t ptr, RustBuffer key, RustBuffer action, RustBuffer values_json, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_APPROVE
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_APPROVE
+void uniffi_graphrt_ffi_fn_method_pausedrun_approve(uint64_t ptr, RustBuffer key, RustBuffer reason, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_DECIDE_TOOL_CALL
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_DECIDE_TOOL_CALL
+void uniffi_graphrt_ffi_fn_method_pausedrun_decide_tool_call(uint64_t ptr, RustBuffer key, RustBuffer call_id, int8_t approved, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_INPUTS_JSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_INPUTS_JSON
+RustBuffer uniffi_graphrt_ffi_fn_method_pausedrun_inputs_json(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_REJECT
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_REJECT
+void uniffi_graphrt_ffi_fn_method_pausedrun_reject(uint64_t ptr, RustBuffer key, RustBuffer reason, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_REQUESTS
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_REQUESTS
+RustBuffer uniffi_graphrt_ffi_fn_method_pausedrun_requests(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_RUN_ID
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_RUN_ID
+RustBuffer uniffi_graphrt_ffi_fn_method_pausedrun_run_id(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_SET_INPUT
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_SET_INPUT
+void uniffi_graphrt_ffi_fn_method_pausedrun_set_input(uint64_t ptr, RustBuffer key, RustBuffer input_json, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_SNAPSHOT_JSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_SNAPSHOT_JSON
+RustBuffer uniffi_graphrt_ffi_fn_method_pausedrun_snapshot_json(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_TO_JSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_TO_JSON
+RustBuffer uniffi_graphrt_ffi_fn_method_pausedrun_to_json(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_UNANSWERED
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_PAUSEDRUN_UNANSWERED
+RustBuffer uniffi_graphrt_ffi_fn_method_pausedrun_unanswered(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CLONE_CREDENTIALPROVIDER
@@ -479,10 +645,55 @@ RustBuffer uniffi_graphrt_ffi_fn_method_credentialprovider_get_credential(uint64
 void uniffi_graphrt_ffi_fn_method_credentialprovider_invalidate(uint64_t ptr, RustBuffer provider, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CLONE_RUNLISTENER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CLONE_RUNLISTENER
+uint64_t uniffi_graphrt_ffi_fn_clone_runlistener(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_FREE_RUNLISTENER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_FREE_RUNLISTENER
+void uniffi_graphrt_ffi_fn_free_runlistener(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_INIT_CALLBACK_VTABLE_RUNLISTENER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_INIT_CALLBACK_VTABLE_RUNLISTENER
+void uniffi_graphrt_ffi_fn_init_callback_vtable_runlistener(const UniffiVTableCallbackInterfaceRunListener* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNLISTENER_ON_EVENT
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_RUNLISTENER_ON_EVENT
+void uniffi_graphrt_ffi_fn_method_runlistener_on_event(uint64_t ptr, RustBuffer event, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CLONE_TOOLPROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_CLONE_TOOLPROVIDER
+uint64_t uniffi_graphrt_ffi_fn_clone_toolprovider(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_FREE_TOOLPROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_FREE_TOOLPROVIDER
+void uniffi_graphrt_ffi_fn_free_toolprovider(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_INIT_CALLBACK_VTABLE_TOOLPROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_INIT_CALLBACK_VTABLE_TOOLPROVIDER
+void uniffi_graphrt_ffi_fn_init_callback_vtable_toolprovider(const UniffiVTableCallbackInterfaceToolProvider* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_TOOLPROVIDER_CALL_TOOL
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_METHOD_TOOLPROVIDER_CALL_TOOL
+uint64_t uniffi_graphrt_ffi_fn_method_toolprovider_call_tool(uint64_t ptr, RustBuffer call
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_FUNC_GRAPHRT_VERSION
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_FUNC_GRAPHRT_VERSION
 RustBuffer uniffi_graphrt_ffi_fn_func_graphrt_version(RustCallStatus *_Nonnull out_status
     
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_FUNC_VALIDATE_UI_BLOCK
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_FN_FUNC_VALIDATE_UI_BLOCK
+RustBuffer uniffi_graphrt_ffi_fn_func_validate_ui_block(RustBuffer block_json, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_GRAPHRT_FFI_RUSTBUFFER_ALLOC
@@ -751,6 +962,12 @@ uint16_t uniffi_graphrt_ffi_checksum_func_graphrt_version(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_FUNC_VALIDATE_UI_BLOCK
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_FUNC_VALIDATE_UI_BLOCK
+uint16_t uniffi_graphrt_ffi_checksum_func_validate_ui_block(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_EVENTLISTENER_ON_EVENT
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_EVENTLISTENER_ON_EVENT
 uint16_t uniffi_graphrt_ffi_checksum_method_eventlistener_on_event(void
@@ -829,6 +1046,12 @@ uint16_t uniffi_graphrt_ffi_checksum_method_runtime_load_workflow(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_REGISTER_TOOL_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_REGISTER_TOOL_PROVIDER
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_register_tool_provider(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_REGISTER_WASM_PLUGIN
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_REGISTER_WASM_PLUGIN
 uint16_t uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin(void
@@ -838,6 +1061,66 @@ uint16_t uniffi_graphrt_ffi_checksum_method_runtime_register_wasm_plugin(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_SET_CREDENTIAL_PROVIDER
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_SET_CREDENTIAL_PROVIDER
 uint16_t uniffi_graphrt_ffi_checksum_method_runtime_set_credential_provider(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_TOOL_PROVIDERS
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_TOOL_PROVIDERS
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_tool_providers(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_ADD_LESSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_ADD_LESSON
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_add_lesson(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_DECIDE_LESSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_DECIDE_LESSON
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_decide_lesson(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_DELETE_LESSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_DELETE_LESSON
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_delete_lesson(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_LIST_LESSONS
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_LIST_LESSONS
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_list_lessons(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_PROPOSE_LESSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_PROPOSE_LESSON
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_propose_lesson(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_INSTALL_SKILL
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_INSTALL_SKILL
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_install_skill(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_LIST_SKILLS
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_LIST_SKILLS
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_list_skills(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_REMOVE_SKILL
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_REMOVE_SKILL
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_remove_skill(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_SET_SKILL_ENABLED
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNTIME_SET_SKILL_ENABLED
+uint16_t uniffi_graphrt_ffi_checksum_method_runtime_set_skill_enabled(void
     
 );
 #endif
@@ -865,15 +1148,93 @@ uint16_t uniffi_graphrt_ffi_checksum_method_workflowhandle_resume(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_WORKFLOWHANDLE_RESUME_PAUSED
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_WORKFLOWHANDLE_RESUME_PAUSED
+uint16_t uniffi_graphrt_ffi_checksum_method_workflowhandle_resume_paused(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_WORKFLOWHANDLE_RUN
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_WORKFLOWHANDLE_RUN
 uint16_t uniffi_graphrt_ffi_checksum_method_workflowhandle_run(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_WORKFLOWHANDLE_START
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_WORKFLOWHANDLE_START
+uint16_t uniffi_graphrt_ffi_checksum_method_workflowhandle_start(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_WORKFLOWHANDLE_WARNINGS
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_WORKFLOWHANDLE_WARNINGS
 uint16_t uniffi_graphrt_ffi_checksum_method_workflowhandle_warnings(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_ANSWER
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_ANSWER
+uint16_t uniffi_graphrt_ffi_checksum_method_pausedrun_answer(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_APPROVE
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_APPROVE
+uint16_t uniffi_graphrt_ffi_checksum_method_pausedrun_approve(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_DECIDE_TOOL_CALL
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_DECIDE_TOOL_CALL
+uint16_t uniffi_graphrt_ffi_checksum_method_pausedrun_decide_tool_call(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_INPUTS_JSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_INPUTS_JSON
+uint16_t uniffi_graphrt_ffi_checksum_method_pausedrun_inputs_json(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_REJECT
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_REJECT
+uint16_t uniffi_graphrt_ffi_checksum_method_pausedrun_reject(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_REQUESTS
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_REQUESTS
+uint16_t uniffi_graphrt_ffi_checksum_method_pausedrun_requests(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_RUN_ID
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_RUN_ID
+uint16_t uniffi_graphrt_ffi_checksum_method_pausedrun_run_id(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_SET_INPUT
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_SET_INPUT
+uint16_t uniffi_graphrt_ffi_checksum_method_pausedrun_set_input(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_SNAPSHOT_JSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_SNAPSHOT_JSON
+uint16_t uniffi_graphrt_ffi_checksum_method_pausedrun_snapshot_json(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_TO_JSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_TO_JSON
+uint16_t uniffi_graphrt_ffi_checksum_method_pausedrun_to_json(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_UNANSWERED
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_PAUSEDRUN_UNANSWERED
+uint16_t uniffi_graphrt_ffi_checksum_method_pausedrun_unanswered(void
     
 );
 #endif
@@ -889,9 +1250,27 @@ uint16_t uniffi_graphrt_ffi_checksum_method_credentialprovider_invalidate(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNLISTENER_ON_EVENT
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_RUNLISTENER_ON_EVENT
+uint16_t uniffi_graphrt_ffi_checksum_method_runlistener_on_event(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_TOOLPROVIDER_CALL_TOOL
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_METHOD_TOOLPROVIDER_CALL_TOOL
+uint16_t uniffi_graphrt_ffi_checksum_method_toolprovider_call_tool(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_CONSTRUCTOR_RUNTIME_NEW
 #define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_CONSTRUCTOR_RUNTIME_NEW
 uint16_t uniffi_graphrt_ffi_checksum_constructor_runtime_new(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_CONSTRUCTOR_PAUSEDRUN_FROM_JSON
+#define UNIFFI_FFIDEF_UNIFFI_GRAPHRT_FFI_CHECKSUM_CONSTRUCTOR_PAUSEDRUN_FROM_JSON
+uint16_t uniffi_graphrt_ffi_checksum_constructor_pausedrun_from_json(void
     
 );
 #endif
