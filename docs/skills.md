@@ -73,8 +73,9 @@ graphrt skill draft --model openai/gpt-4.1 --conversation chat.json --tool order
 ```
 
 The draft's description says when to use the skill ("Use when a customer asks
-for a refund"), not what to do: an agent sees only that line until it loads the
-skill, and a line that reads like the steps is followed without loading it.
+for a refund") and nothing about what to do: an agent sees only that line until
+it loads the skill, and a line that names a step is followed without loading
+it.
 
 The result is a folder (`<name>/SKILL.md`) to read and edit. It becomes a skill
 only through `graphrt skill install`, so a draft passes the same validation and
