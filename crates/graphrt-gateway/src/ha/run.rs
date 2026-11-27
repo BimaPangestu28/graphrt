@@ -241,9 +241,10 @@ fn spawn_heartbeat<M: LeaseMedium + Send + 'static>(
             }
             let started = clock();
             let beat = holder.beat(&mut medium);
-            let took = clock().saturating_sub(started);
+            let now = clock();
+            let took = now.saturating_sub(started);
             if took > fail_after {
-                eprintln!("gateway: ha: a lease write took {took} ms; the liveness mark kept this gateway active");
+                eprintln!("gateway: ha: lease write took {took} ms");
             }
             match beat {
                 Beat::Confirmed => {
@@ -251,7 +252,6 @@ fn spawn_heartbeat<M: LeaseMedium + Send + 'static>(
                     unconfirmed_since = None;
                 }
                 Beat::Unconfirmed(error) => {
-                    let now = clock();
                     let since = *unconfirmed_since.get_or_insert(now);
                     if now == since {
                         eprintln!("gateway: ha: heartbeat not confirmed: {error}");
@@ -286,9 +286,7 @@ fn spawn_marker(
     marking: &Arc<AtomicBool>,
     period: Duration,
 ) -> Option<std::thread::JoinHandle<bool>> {
-    let mut mark = MarkFile::open(lease_dir)
-        .map_err(|error| eprintln!("gateway: ha: cannot open the liveness mark: {error}"))
-        .ok()?;
+    let mut mark = MarkFile::open(lease_dir).map_err(|error| eprintln!("gateway: ha: liveness mark: {error}")).ok()?;
     // Token and pid name the holder: a token is never taken twice.
     let (dir, pid, token) = (lease_dir.to_path_buf(), holder.identity().pid, holder.token());
     let (fence, marking) = (fence.clone(), marking.clone());
