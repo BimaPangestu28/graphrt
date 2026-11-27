@@ -242,7 +242,7 @@ its agents read (`$GRAPHRT_SKILLS_DIR`, else `~/.graphrt/skills`).
 | --- | --- | --- | --- |
 | GET | `/v1/skills` | | `{skills: [...]}`, plus `bundled` when a served bundle brought skills |
 | GET | `/v1/skills/{name}` | | The skill with its tool requests, grants, files and findings |
-| POST | `/v1/skills/drafts` | `{name, description, body, requested_tools?}` | The draft, checked and scanned. Nothing is installed |
+| POST | `/v1/skills/drafts` | `{name, description, body, requested_tools?, title?}` | The draft, checked and scanned. Nothing is installed |
 | POST | `/v1/skills/drafts/model` | `{model, describe}` or `{model, conversation}`, `tools?` | A draft written by a model. Nothing is installed |
 | POST | `/v1/skills` | `{draft: {...}, grants?, accept_findings?, replace?}` | `201` and the installed skill (origin `authored`) |
 | POST | `/v1/skills/catalog/install` | `{skill, grants?, accept_findings?, replace?}` | `201` and the installed skill (origin `catalog`, verified) |
@@ -260,6 +260,8 @@ skill reaches in every later run.
 **Writing a skill.** A skill is sent as text and passes the same validation,
 scan and grant rules as one installed from a directory. `409` with the
 `findings` means the scan found something that needs `accept_findings`.
+`title` is a name to show to people (`SkillEntry.title` once installed). A
+draft can be posted back exactly as a route returned it.
 
 **Drafting with a model.** `POST /v1/skills/drafts/model` is
 `graphrt skill draft` over HTTP. `model` is `provider/name` of a provider this

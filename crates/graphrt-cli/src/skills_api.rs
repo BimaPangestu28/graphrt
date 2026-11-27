@@ -7,7 +7,7 @@
 //! | --- | --- | --- | --- |
 //! | GET | `/v1/skills` | – | `{skills: [SkillEntry]}`, plus `bundled` when a served bundle brought skills |
 //! | GET | `/v1/skills/{name}` | – | `SkillDetails` |
-//! | POST | `/v1/skills/drafts` | `{name, description, body, requested_tools?}` | `SkillDraft`, checked and scanned, nothing installed |
+//! | POST | `/v1/skills/drafts` | `{name, description, body, requested_tools?, title?}` | `SkillDraft`, checked and scanned, nothing installed |
 //! | POST | `/v1/skills/drafts/model` | `{model, describe? \| conversation?, tools?}` | `SkillDraft` written by a model, nothing installed |
 //! | POST | `/v1/skills` | `{draft: {...}, grants?, accept_findings?, replace?}` | `201` + `SkillEntry` (origin `authored`) |
 //! | POST | `/v1/skills/catalog/install` | `{skill, grants?, accept_findings?, replace?}` | `201` + `SkillEntry` (origin `catalog`, verified) |
@@ -62,6 +62,8 @@ pub struct DraftBody {
     body: String,
     #[serde(default)]
     requested_tools: Vec<String>,
+    /// A name to show to people. The `name` stays the identifier.
+    title: Option<String>,
     /// What an earlier check found. Accepted so that a draft can be posted
     /// back as it was returned, and ignored: the scan runs again.
     #[serde(default, rename = "findings")]
@@ -158,7 +160,12 @@ fn skill_error(error: &SkillError) -> Response {
 }
 
 fn draft_of(body: &DraftBody) -> Result<SkillDraft, Response> {
-    SkillDraft::new(&body.name, &body.description, &body.body, &body.requested_tools).map_err(|e| skill_error(&e))
+    let draft = SkillDraft::new(&body.name, &body.description, &body.body, &body.requested_tools);
+    let titled = match &body.title {
+        Some(title) => draft.and_then(|draft| draft.with_title(title)),
+        None => draft,
+    };
+    titled.map_err(|error| skill_error(&error))
 }
 
 /// `GET /v1/skills`: this server's skills, and read only, the skills each

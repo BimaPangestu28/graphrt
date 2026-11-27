@@ -10,3 +10,6 @@
 - `ServiceOptions::learning_dir` and `ServiceOptions::skills_dir` name the
   stores the served agents read. `build_state` serves `/v1/learning` and
   `/v1/skills` from the same ones.
+- `graphrt serve`: a skill draft takes a `title` (`POST /v1/skills/drafts`,
+  `POST /v1/skills`), and a draft is accepted as a route returned it, with its
+  `findings` and `title`.
