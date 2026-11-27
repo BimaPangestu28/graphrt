@@ -63,10 +63,12 @@ async fn readiness(State(state): State<Arc<AppState>>) -> Response {
 fn key_only_routes(max_upload_bytes: usize) -> Router<Arc<AppState>> {
     let api = Router::new()
         .route("/v1/workflows", get(list_workflows))
-        .route("/v1/runs", get(list_runs))
         .route("/v1/runs/{run_id}", delete(delete_run))
         .route("/v1/nodes", get(list_nodes))
         .route("/v1/validate", post(validate_workflow));
+    // With device tokens the run list authorizes itself (see `self_authenticating_routes`).
+    #[cfg(not(feature = "devices"))]
+    let api = api.route("/v1/runs", get(list_runs));
     #[cfg(feature = "rag")]
     let api = with_knowledge_routes(api, max_upload_bytes);
     #[cfg(not(feature = "rag"))]
@@ -143,6 +145,26 @@ fn self_authenticating_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // Webhook deliveries authenticate themselves (signature, else the bearer key).
     let hooks = Router::new().route("/v1/hooks/{hook}", post(crate::webhooks::receive));
     let routes = start.merge(run).merge(hooks);
+    // The run list: the API key, or a paired device that reads runs.
+    #[cfg(feature = "devices")]
+    let routes = routes.merge(
+        Router::new()
+            .route("/v1/runs", get(list_runs))
+            // `route_layer`: a path that does not exist stays a `404`, whoever asks.
+            .route_layer(middleware::from_fn_with_state(Arc::clone(state), super::auth::authorize_reader)),
+    );
+    // Device pairing takes the API key; a device asks about itself with its token.
+    #[cfg(feature = "devices")]
+    let routes = if state.devices.is_some() { routes.merge(crate::devices::api::routes(state)) } else { routes };
+    // The approvals inbox: the API key, or a paired device that resolves approvals.
+    #[cfg(feature = "approvals")]
+    let routes = if state.approvals.is_some() { routes.merge(crate::approvals::routes(state)) } else { routes };
+    // Web Push subscriptions: the API key, or a paired device.
+    #[cfg(feature = "web-push")]
+    let routes = if state.push.is_some() { routes.merge(crate::notify::push_api::routes(state)) } else { routes };
+    // The monitoring page and its config are public: what they call is the API above.
+    #[cfg(feature = "web-monitor")]
+    let routes = if state.monitor.is_some() { routes.merge(super::monitor::routes()) } else { routes };
     // Conversations authorize themselves: the key, or a verified user for their own.
     #[cfg(feature = "conversations")]
     let routes = if state.conversations.is_some() { routes.merge(crate::conversations::routes()) } else { routes };

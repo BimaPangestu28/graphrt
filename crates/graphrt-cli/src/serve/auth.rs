@@ -1,7 +1,8 @@
 //! Bearer authentication of the API: the API key (`--api-key-env`) and, with
 //! `--verify-jwt` or chat guests, user tokens on the routes users may call:
 //! run starts, feedback, their own runs ([`authorize_run`]) and their own
-//! conversations.
+//! conversations. With `--devices`, a device token reads runs and resolves
+//! approvals ([`Operator`]).
 
 use std::sync::Arc;
 
@@ -37,6 +38,16 @@ impl Caller {
             Caller::User(subject) => Some(subject),
         }
     }
+}
+
+/// Who makes an operator request: reading runs, resolving approvals.
+#[cfg(feature = "devices")]
+#[derive(Debug)]
+pub(crate) enum Operator {
+    /// The holder of the API key (anyone, when no key is set).
+    ApiKey,
+    /// A paired device (`--devices`), within its scopes.
+    Device(crate::devices::DeviceAccess),
 }
 
 /// Whether the user `subject` of a verified token owns `record`'s run: the run
@@ -105,6 +116,40 @@ impl AppState {
             Some(refused) => Err(refused),
             None => Ok(Caller::ApiKey),
         }
+    }
+
+    /// Authenticate a request that a paired device may make in place of the
+    /// API key holder: a valid device token that has `scope` (any scope with
+    /// `None`), else the API key. A device token is never tried as the key.
+    ///
+    /// @throws Response - `401` for an invalid token or key, `403` for a device without `scope`.
+    #[cfg(feature = "devices")]
+    pub(crate) fn authenticate_operator(
+        &self,
+        headers: &HeaderMap,
+        scope: Option<crate::devices::Scope>,
+    ) -> Result<Operator, Response> {
+        let token = bearer(headers);
+        if !crate::devices::is_device_token(token) {
+            return match self.refuse_without_api_key(headers) {
+                Some(refused) => Err(refused),
+                None => Ok(Operator::ApiKey),
+            };
+        }
+        let Some(devices) = &self.devices else {
+            return Err(error_response(StatusCode::UNAUTHORIZED, "this server pairs no devices"));
+        };
+        let device =
+            devices.verify(token).map_err(|error| error_response(StatusCode::UNAUTHORIZED, &error.to_string()))?;
+        if let Some(scope) = scope
+            && !device.allows(scope)
+        {
+            return Err(error_response(
+                StatusCode::FORBIDDEN,
+                &format!("this device token lacks the scope `{}`", scope.name()),
+            ));
+        }
+        Ok(Operator::Device(device))
     }
 
     /// `401` unless `headers` carry the API key (`None` too when no key is set).
@@ -195,6 +240,21 @@ pub(super) async fn authorize_run(
     request: Request,
     next: Next,
 ) -> Response {
+    // A paired device reads any run, and changes none here: approvals are
+    // resolved under `/v1/approvals`.
+    #[cfg(feature = "devices")]
+    if crate::devices::is_device_token(bearer(request.headers())) {
+        if request.method() != axum::http::Method::GET {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "a device token reads runs: it cannot stop or resume one here (approvals: /v1/approvals)",
+            );
+        }
+        return match state.authenticate_operator(request.headers(), Some(crate::devices::Scope::RunsRead)) {
+            Ok(_) => next.run(request).await,
+            Err(refused) => refused,
+        };
+    }
     let resumes = request.uri().path().ends_with("/resume");
     let caller = if resumes {
         state.authenticate_user_or_key(request.headers()).await
@@ -224,6 +284,15 @@ pub(super) async fn authorize_run(
                 Err(e) => super::errors::store_error(&e),
             }
         }
+    }
+}
+
+/// Authorize `GET /v1/runs`: the API key, or a device token that reads runs.
+#[cfg(feature = "devices")]
+pub(super) async fn authorize_reader(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
+    match state.authenticate_operator(request.headers(), Some(crate::devices::Scope::RunsRead)) {
+        Ok(_) => next.run(request).await,
+        Err(refused) => refused,
     }
 }
 

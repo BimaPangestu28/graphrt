@@ -5,6 +5,8 @@
 // size lint would only add an allocation on the refusal path.
 #![allow(clippy::result_large_err)]
 
+#[cfg(feature = "approvals")]
+pub mod approvals;
 pub mod args;
 #[cfg(feature = "serve")]
 pub mod body_drain;
@@ -16,6 +18,8 @@ pub mod catalog;
 pub mod conversations;
 #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
 pub mod deploy_cmd;
+#[cfg(feature = "devices")]
+pub mod devices;
 pub mod diagnostics;
 #[cfg(feature = "deploy-fly")]
 pub mod direct_cmd;
@@ -51,6 +55,8 @@ pub mod learn_cmd;
 pub mod learning_api;
 #[cfg(feature = "serve")]
 pub mod listen;
+#[cfg(feature = "notify")]
+pub mod notify;
 #[cfg(feature = "online-eval")]
 pub mod online_eval;
 pub mod otel;
@@ -64,6 +70,8 @@ pub mod scores;
 #[cfg(feature = "serve")]
 pub mod serve;
 pub mod setup;
+#[cfg(feature = "devices")]
+pub(crate) mod shared_file;
 #[cfg(feature = "skills")]
 pub mod skill_cmd;
 #[cfg(all(feature = "skills", feature = "serve"))]

@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "cors", "run-follow", "conversations", "web-chat"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -125,6 +125,23 @@ conversations = ["serve", "dep:thiserror"]
 # (off unless given), with guest sessions (`--chat-access guests`). The page is
 # built from `web/` and embedded in the binary (about 100 KiB).
 web-chat = ["jwt", "run-follow"]
+# Access tokens for monitoring devices (`serve --devices`, off unless given):
+# scoped to reading runs and resolving approvals, listed, revocable, stored hashed.
+devices = ["jwt"]
+# The approvals inbox (`serve --approvals`, off unless given): every run that
+# waits for a person, and a way to answer; `--expire-approvals` carries out
+# `on_expire` of `human-input` nodes.
+approvals = ["devices"]
+# Notifications when a run fails or waits for a person: the `Notifier` trait
+# and its dispatcher. Web Push below is the one notifier shipped.
+notify = ["serve", "dep:thiserror"]
+# Web Push notifications (`serve --push CONTACT`, off unless given): VAPID and
+# message encryption with `ring`, requests through the egress policy of `http`.
+web-push = ["notify", "devices", "http"]
+# The monitoring page served by `serve --monitor` (off unless given): runs, run
+# details and the approvals inbox, installable as a web app. Built from `web/`
+# and embedded in the binary.
+web-monitor = ["approvals", "run-follow"]
 # Evaluation scores of served runs: `GET /v1/runs/{id}/scores` and human
 # feedback (`POST /v1/runs/{id}/feedback`), kept next to each run in the store.
 scores = ["serve"]

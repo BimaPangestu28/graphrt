@@ -89,6 +89,24 @@ pub struct AppState {
     /// The chat page and widget (`--chat`).
     #[cfg(feature = "web-chat")]
     pub(super) chat: Option<Arc<super::chat::Chat>>,
+    /// Paired monitoring devices (`--devices`).
+    #[cfg(feature = "devices")]
+    pub(super) devices: Option<Arc<crate::devices::Devices>>,
+    /// The address clients reach this server at (`--public-url`), without a trailing slash.
+    #[cfg(feature = "devices")]
+    pub(super) public_url: Option<String>,
+    /// The approvals inbox (`--approvals`).
+    #[cfg(feature = "approvals")]
+    pub(super) approvals: Option<crate::approvals::Approvals>,
+    /// Who hears when a run fails or waits for a person.
+    #[cfg(feature = "notify")]
+    pub(super) notifications: Option<Arc<crate::notify::Notifications>>,
+    /// Web Push (`--push`), one of the notifiers.
+    #[cfg(feature = "web-push")]
+    pub(super) push: Option<Arc<crate::notify::webpush::WebPush>>,
+    /// The monitoring page (`--monitor`).
+    #[cfg(feature = "web-monitor")]
+    pub(super) monitor: Option<Arc<super::monitor::Monitor>>,
     /// Host services of the served workflows, for judge workflows of online evaluators.
     #[cfg(feature = "online-eval")]
     pub(super) services: Option<Arc<graphrt_core::Services>>,
@@ -147,6 +165,18 @@ impl AppState {
             conversations: None,
             #[cfg(feature = "web-chat")]
             chat: None,
+            #[cfg(feature = "devices")]
+            devices: None,
+            #[cfg(feature = "devices")]
+            public_url: None,
+            #[cfg(feature = "approvals")]
+            approvals: None,
+            #[cfg(feature = "notify")]
+            notifications: None,
+            #[cfg(feature = "web-push")]
+            push: None,
+            #[cfg(feature = "web-monitor")]
+            monitor: None,
             #[cfg(feature = "online-eval")]
             services: None,
             #[cfg(feature = "online-eval")]
@@ -352,6 +382,87 @@ impl AppState {
     pub fn with_chat(mut self, chat: Option<super::chat::Chat>) -> Self {
         self.chat = chat.map(Arc::new);
         self
+    }
+
+    /// Pair monitoring devices (`--devices`). `public_url` is the address they
+    /// reach this server at (`--public-url`), for pairing links.
+    #[cfg(feature = "devices")]
+    pub fn with_devices(mut self, devices: Option<crate::devices::Devices>, public_url: Option<String>) -> Self {
+        self.devices = devices.map(Arc::new);
+        self.public_url = public_url;
+        self
+    }
+
+    /// The paired devices, when the server pairs any.
+    #[cfg(feature = "devices")]
+    pub fn devices(&self) -> Option<&Arc<crate::devices::Devices>> {
+        self.devices.as_ref()
+    }
+
+    /// The address clients reach this server at, when the operator named it.
+    #[cfg(feature = "devices")]
+    pub(crate) fn public_url(&self) -> Option<&str> {
+        self.public_url.as_deref()
+    }
+
+    /// Whether the monitoring page is served, so a pairing can link to it.
+    #[cfg(feature = "devices")]
+    pub(crate) fn serves_monitor_page(&self) -> bool {
+        #[cfg(feature = "web-monitor")]
+        return self.monitor.is_some();
+        #[cfg(not(feature = "web-monitor"))]
+        false
+    }
+
+    /// Drop what a revoked device left behind: its push subscriptions.
+    #[cfg(feature = "devices")]
+    pub(crate) fn forget_device(&self, id: &str) {
+        #[cfg(feature = "web-push")]
+        if let Some(push) = &self.push {
+            push.forget_device(id);
+        }
+        #[cfg(not(feature = "web-push"))]
+        let _ = id;
+    }
+
+    /// Tell `notifications` when a run fails or waits for a person.
+    #[cfg(feature = "notify")]
+    pub fn with_notifications(mut self, notifications: Option<crate::notify::Notifications>) -> Self {
+        self.notifications = notifications.filter(|notifications| !notifications.is_empty()).map(Arc::new);
+        self
+    }
+
+    /// Serve the Web Push API (`--push`). The caller also adds it to the notifiers.
+    #[cfg(feature = "web-push")]
+    pub fn with_push(mut self, push: Option<Arc<crate::notify::webpush::WebPush>>) -> Self {
+        self.push = push;
+        self
+    }
+
+    /// Web Push, when the server sends push notifications.
+    #[cfg(feature = "web-push")]
+    pub fn push(&self) -> Option<&Arc<crate::notify::webpush::WebPush>> {
+        self.push.as_ref()
+    }
+
+    /// Serve the monitoring page (`--monitor`).
+    #[cfg(feature = "web-monitor")]
+    pub fn with_monitor(mut self, monitor: Option<super::monitor::Monitor>) -> Self {
+        self.monitor = monitor.map(Arc::new);
+        self
+    }
+
+    /// Serve the approvals inbox (`--approvals`).
+    #[cfg(feature = "approvals")]
+    pub fn with_approvals(mut self, approvals: Option<crate::approvals::Approvals>) -> Self {
+        self.approvals = approvals;
+        self
+    }
+
+    /// The approvals inbox, when the server has one.
+    #[cfg(feature = "approvals")]
+    pub fn approvals(&self) -> Option<crate::approvals::Approvals> {
+        self.approvals
     }
 
     /// The declared start inputs of the served workflow `name` (`None` when it is not served).

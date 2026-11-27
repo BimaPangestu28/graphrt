@@ -56,24 +56,67 @@ pub(super) async fn resume_run(
     if user.is_some() && body.snapshot.is_some() {
         return error_response(StatusCode::BAD_REQUEST, "`snapshot` cannot be sent with a user token");
     }
-    if let Some(refused) = refuse_resume(&state, &run_id, body.snapshot.as_ref()) {
+    // A user who resumes their own run (`--user-resume`) sees what they saw of its start.
+    let scope = state.event_scope(user.is_some());
+    resume_with(&state, &run_id, body, &headers, scope).await
+}
+
+/// Claim `run_id` and continue it as `body` asks, answering in `scope`.
+async fn resume_with(
+    state: &Arc<AppState>,
+    run_id: &str,
+    body: ResumeRequest,
+    headers: &axum::http::HeaderMap,
+    scope: super::delivery::EventScope,
+) -> Response {
+    if let Some(refused) = refuse_resume(state, run_id, body.snapshot.as_ref()) {
         return refused;
     }
-    let record = match claim_run(&state, &run_id, body.snapshot.as_ref()).await {
+    let record = match claim_run(state, run_id, body.snapshot.as_ref()).await {
         Ok(record) => record,
         Err(refused) => return refused,
     };
     let delivery = Delivery::of(body.stream, body.run_async);
-    let (workflow, input) = match prepare_resume(&state, &record, body, &headers).await {
+    let (workflow, input) = match prepare_resume(state, &record, body, headers).await {
         Ok(prepared) => prepared,
         Err(refused) => {
-            release_claim(&state, record).await;
+            release_claim(state, record).await;
             return refused;
         }
     };
-    // A user who resumes their own run (`--user-resume`) sees what they saw of its start.
-    let reply = Reply { delivery, scope: state.event_scope(user.is_some()) };
-    execute(&state, &workflow.engine, record, input, reply, traceparent(&headers)).await
+    execute(state, &workflow.engine, record, input, Reply { delivery, scope }, traceparent(headers)).await
+}
+
+/// Continue the paused run `run_id` in the background with `inputs`, from the
+/// snapshot the server stored: what the approvals inbox does. The answer is
+/// the `202` of an async resume, or why the run did not continue.
+#[cfg(feature = "approvals")]
+pub(crate) async fn resume_detached(
+    state: &Arc<AppState>,
+    run_id: &str,
+    inputs: serde_json::Map<String, serde_json::Value>,
+) -> Response {
+    let body = ResumeRequest { snapshot: None, inputs, secrets: IndexMap::new(), stream: false, run_async: true };
+    resume_with(state, run_id, body, &axum::http::HeaderMap::new(), super::delivery::EventScope::Full).await
+}
+
+/// End the paused run `run_id` as aborted for `reason`, with a `run_aborted`
+/// event after its stored ones. Like a resume, it claims the run first, so it
+/// never ends a run that someone just answered.
+///
+/// @throws StoreError - `Conflict` when the run is not paused (any more), or the store's error.
+#[cfg(feature = "approvals")]
+pub(crate) async fn stop_paused(state: &AppState, run_id: &str, reason: &str) -> Result<(), StoreError> {
+    let mut record = state.store.claim_resume(run_id, now_ms()).await?;
+    let event = graphrt_core::Event::RunAborted { reason: reason.to_owned(), elapsed_ms: 0 };
+    let stored = [graphrt_core::store::event_to_stored(&event)];
+    if let Err(error) = state.store.append_events(run_id, record.event_count, &stored).await {
+        release_claim(state, record).await;
+        return Err(error);
+    }
+    record.apply_terminal(&event, now_ms());
+    let epoch = record.epoch;
+    state.store.put_if(record, epoch).await
 }
 
 /// Refusals that need no store access: the run executes already, the server

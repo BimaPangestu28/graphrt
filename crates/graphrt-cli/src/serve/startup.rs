@@ -102,7 +102,13 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     };
     #[cfg(feature = "jwt")]
     let state = with_user_resume(state, &args, verifies_user_tokens)?;
+    #[cfg(feature = "devices")]
+    let state = monitoring_from_args(state, &args, &options, api_key.is_some())?;
     let state = Arc::new(state);
+    #[cfg(feature = "approvals")]
+    if state.approvals().is_some_and(|approvals| approvals.expire) {
+        crate::approvals::spawn_expiry(&state);
+    }
     #[cfg(feature = "conversations")]
     if let Some(conversations) = state.conversations() {
         conversations.spawn_retention();
@@ -183,6 +189,86 @@ fn cors_from_args(
     Ok(super::cors::Cors::new(&origins, mapped, has_api_key)?.map(Arc::new))
 }
 
+/// The run store directory: `--store`, else `$GRAPHRT_STORE`.
+#[cfg(any(feature = "conversations", feature = "devices"))]
+fn store_dir(args: &ServeArgs) -> Option<PathBuf> {
+    let env_dir = std::env::var(crate::store::STORE_ENV).ok().filter(|dir| !dir.is_empty()).map(PathBuf::from);
+    args.store.clone().or(env_dir)
+}
+
+/// What `--monitor`, `--devices`, `--approvals`, `--expire-approvals` and
+/// `--push` turn on. Their files live in the run store directory, or in memory
+/// without one.
+///
+/// @throws CliError (usage) - A `--public-url` that is not an address, a `--push`
+///   contact of another form, or files that cannot be read or created.
+#[cfg(feature = "devices")]
+fn monitoring_from_args(
+    state: AppState,
+    args: &ServeArgs,
+    options: &ServiceOptions,
+    has_api_key: bool,
+) -> Result<AppState, CliError> {
+    let flags = &args.monitor;
+    let dir = store_dir(args);
+    #[cfg(feature = "web-monitor")]
+    let page = flags.monitor;
+    #[cfg(not(feature = "web-monitor"))]
+    let page = false;
+    let public_url = flags
+        .public_url
+        .clone()
+        .or_else(|| lookup_env(options, "GRAPHRT_PUBLIC_URL"))
+        .filter(|url| !url.trim().is_empty())
+        .map(|url| {
+            crate::devices::api::server_url(&url).map_err(|why| CliError::usage(format!("--public-url `{url}`: {why}")))
+        })
+        .transpose()?;
+    let devices = if flags.devices || page { Some(crate::devices::Devices::open(dir.as_deref())?) } else { None };
+    if let Some(devices) = &devices {
+        eprintln!("  {}", devices.describe());
+    }
+    let state = state.with_devices(devices, public_url);
+    #[cfg(feature = "approvals")]
+    let state = {
+        let on = flags.approvals || flags.expire_approvals || page;
+        let approvals = on.then_some(crate::approvals::Approvals { expire: flags.expire_approvals });
+        if let Some(approvals) = &approvals {
+            eprintln!("  {}", approvals.describe());
+        }
+        state.with_approvals(approvals)
+    };
+    #[cfg(feature = "web-push")]
+    let state = {
+        use crate::notify::{Notifications, Notifier, webpush::WebPush};
+        let push = flags
+            .push
+            .as_deref()
+            .map(|contact| WebPush::open(dir.as_deref(), contact, options.allow_private_network))
+            .transpose()?
+            .map(Arc::new);
+        if let Some(push) = &push {
+            eprintln!("  {}", push.describe());
+        }
+        let notifiers: Vec<Arc<dyn Notifier>> = push.iter().map(|push| Arc::clone(push) as Arc<dyn Notifier>).collect();
+        // With `--user-resume`, a pause of a user's own run is a question to that user.
+        state.with_push(push).with_notifications(Some(Notifications::new(notifiers, args.user_resume)))
+    };
+    #[cfg(feature = "web-monitor")]
+    let state = {
+        let monitor = page.then(|| super::monitor::Monitor::new(has_api_key));
+        if let Some(monitor) = &monitor {
+            eprintln!("  {}", monitor.describe());
+        }
+        state.with_monitor(monitor)
+    };
+    #[cfg(not(feature = "web-monitor"))]
+    let _ = has_api_key;
+    #[cfg(not(feature = "web-push"))]
+    let _ = options;
+    Ok(state)
+}
+
 /// The conversations of `--conversations`, kept in the run store directory
 /// (`--store`, else `$GRAPHRT_STORE`) or in memory without one.
 ///
@@ -193,8 +279,7 @@ fn conversations_from_args(args: &ServeArgs) -> Result<Option<crate::conversatio
     if !flags.conversations {
         return Ok(None);
     }
-    let env_dir = std::env::var(crate::store::STORE_ENV).ok().filter(|dir| !dir.is_empty()).map(PathBuf::from);
-    let dir = args.store.clone().or(env_dir);
+    let dir = store_dir(args);
     let limits = crate::conversations::Limits {
         max_messages: flags.conversation_max_messages,
         per_user: flags.conversations_per_user,

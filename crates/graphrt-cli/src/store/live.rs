@@ -257,6 +257,9 @@ pub struct Capture {
     /// keeps conversations: it gets the run's turn when the run succeeds.
     #[cfg(feature = "conversations")]
     pub conversation: Option<crate::conversations::Turn>,
+    /// Who hears when the run fails or waits for a person.
+    #[cfg(feature = "notify")]
+    pub notify: Option<Arc<crate::notify::Notifications>>,
 }
 
 /// Called when an execution ends (to drop it from the active set).
@@ -430,6 +433,11 @@ async fn drive(
         }
         if terminal {
             store_final_state(&*store, &mut record, &event, assembler.text_so_far()).await;
+            // After the state is stored: whoever follows the notice finds it.
+            #[cfg(feature = "notify")]
+            if let Some(notifications) = &recorder.capture.notify {
+                notifications.run_ended(&record);
+            }
         }
     }
     writer.write(&run_id, pending).await;

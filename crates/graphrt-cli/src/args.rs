@@ -999,6 +999,9 @@ pub struct ServeArgs {
     #[cfg(feature = "web-chat")]
     #[command(flatten)]
     pub chat: ChatArgs,
+    #[cfg(feature = "devices")]
+    #[command(flatten)]
+    pub monitor: MonitorArgs,
     /// Online evaluation: an evaluator config (YAML or JSON) that scores a deterministic
     /// sample of finished runs with judge workflows, regexes, JSON schemas, budgets or
     /// trajectory checks, in a bounded background pool. Scores are stored with each run
@@ -1051,6 +1054,45 @@ pub struct ConversationArgs {
     /// Delete conversations not used for this many days (0 = keep them).
     #[arg(long, value_name = "DAYS", default_value_t = 30, requires = "conversations")]
     pub conversation_ttl_days: u64,
+}
+
+/// Monitoring a served agent from another device (see docs/monitoring.md).
+#[cfg(feature = "devices")]
+#[derive(Debug, Args)]
+pub struct MonitorArgs {
+    /// Serve the monitoring page at `/monitor/`: the runs, what each did, and the
+    /// requests that wait for a person, for a phone or a desktop. It can be
+    /// installed as an app. Turns on `--devices` and `--approvals`. Off unless given.
+    #[cfg(feature = "web-monitor")]
+    #[arg(long)]
+    pub monitor: bool,
+    /// Pair monitoring devices: `POST /v1/devices` (with the API key) gives a
+    /// device its own token, which only reads runs and resolves approvals and
+    /// can be revoked. Kept in `--store` (in memory without one), hashed.
+    #[arg(long)]
+    pub devices: bool,
+    /// Serve the approvals inbox: `GET /v1/approvals` lists every run that waits
+    /// for a person, `POST /v1/approvals/{run_id}` answers one.
+    #[cfg(feature = "approvals")]
+    #[arg(long)]
+    pub approvals: bool,
+    /// Carry out `on_expire` of `human-input` requests whose time limit passed:
+    /// answer with the named action, or stop the run. Without it a request waits
+    /// until someone answers. Turns on `--approvals`.
+    #[cfg(feature = "approvals")]
+    #[arg(long)]
+    pub expire_approvals: bool,
+    /// Send a push notification to subscribed browsers when a run fails or waits
+    /// for a person (Web Push). CONTACT is an address push services may write to
+    /// about this server, e.g. `mailto:you@example.com`. Off unless given.
+    #[cfg(feature = "web-push")]
+    #[arg(long, value_name = "CONTACT")]
+    pub push: Option<String>,
+    /// The address clients reach this server at, e.g. `https://agent.example.com`
+    /// [env: GRAPHRT_PUBLIC_URL]. Used in the pairing link of a new device.
+    /// Without it the link names the host of the pairing request.
+    #[arg(long, value_name = "URL")]
+    pub public_url: Option<String>,
 }
 
 /// Who may use the chat page of `graphrt serve` (`--chat-access`).
