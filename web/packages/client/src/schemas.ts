@@ -157,6 +157,8 @@ export const chatConfigSchema = z.looseObject({
   /** Whether a user may answer the questions of their own paused runs. */
   resume: z.boolean(),
   feedback: z.boolean(),
+  /** Whether the server serves Mermaid at `/chat/mermaid.js` to draw `diagram` blocks. */
+  diagrams: z.optional(z.boolean()),
 });
 export type ChatConfig = z.infer<typeof chatConfigSchema>;
 

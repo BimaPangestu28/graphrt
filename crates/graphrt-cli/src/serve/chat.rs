@@ -7,6 +7,7 @@
 //! | GET | `/chat/{workflow}` | the chat page of that workflow |
 //! | GET | `/chat/chat.js` | the page's script (client, UI blocks renderer and chat component) |
 //! | GET | `/chat/embed.js` | the widget: one script tag on any site adds a chat bubble |
+//! | GET | `/chat/mermaid.js` | the Mermaid build of `--chat-mermaid FILE`, which draws `diagram` blocks |
 //! | GET | `/v1/chat/config` | what the page offers (title, workflows, who may chat); public |
 //! | POST | `/v1/chat/guest` | a guest session (`--chat-access guests` only); public |
 //!
@@ -16,16 +17,20 @@
 //! The page and scripts are built from `web/` and embedded in the binary
 //! (`crates/graphrt-cli/assets/chat`). They load nothing from other hosts:
 //! the page's `Content-Security-Policy` allows scripts and connections of its
-//! own origin only.
+//! own origin only. Mermaid (about 3 MB) is not embedded: an operator who wants
+//! diagrams drawn names a copy with `--chat-mermaid`, and the server serves it
+//! from the same origin.
 //!
 //! Who may chat is `--chat-access`: `key` (the page asks for the API key once),
 //! `users` (the embedding page hands the widget a token that `--verify-jwt`
 //! verifies) or `guests` (anyone, see [`super::guests`]).
 
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
+use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, State};
 use axum::http::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, ETAG, IF_NONE_MATCH, LOCATION, REFERRER_POLICY,
@@ -45,6 +50,9 @@ use crate::error::CliError;
 const PAGE: &[u8] = include_bytes!("../../assets/chat/index.html");
 const PAGE_SCRIPT: &[u8] = include_bytes!("../../assets/chat/chat.js");
 const WIDGET_SCRIPT: &[u8] = include_bytes!("../../assets/chat/embed.js");
+const SCRIPT_TYPE: &str = "text/javascript; charset=utf-8";
+/// The largest `--chat-mermaid` file. Mermaid 11 is about 3 MiB.
+const MAX_MERMAID_BYTES: u64 = 16 * 1024 * 1024;
 
 /// A workflow the chat page offers.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,18 +78,19 @@ impl ChatWorkflow {
     }
 }
 
-/// One embedded file with its headers.
+/// One file of the page with its headers.
 #[derive(Debug)]
 struct Asset {
-    bytes: &'static [u8],
+    bytes: Bytes,
     content_type: &'static str,
     /// A strong validator: the page changes only with the binary.
     etag: HeaderValue,
 }
 
 impl Asset {
-    fn new(bytes: &'static [u8], content_type: &'static str) -> Self {
-        let digest = Sha256::digest(bytes);
+    fn new(bytes: impl Into<Bytes>, content_type: &'static str) -> Self {
+        let bytes = bytes.into();
+        let digest = Sha256::digest(&bytes);
         let tag = format!("\"{}\"", crate::hex::to_hex(digest.get(..12).unwrap_or_default()));
         let etag = HeaderValue::from_str(&tag).unwrap_or_else(|_| HeaderValue::from_static("\"0\""));
         Self { bytes, content_type, etag }
@@ -99,7 +108,7 @@ impl Asset {
         if request.get(IF_NONE_MATCH) == Some(&self.etag) {
             return (StatusCode::NOT_MODIFIED, headers).into_response();
         }
-        (headers, self.bytes).into_response()
+        (headers, self.bytes.clone()).into_response()
     }
 }
 
@@ -116,6 +125,8 @@ pub struct Chat {
     page: Asset,
     page_script: Asset,
     widget_script: Asset,
+    /// The Mermaid build of `--chat-mermaid`, which draws `diagram` blocks.
+    mermaid: Option<Asset>,
     /// The page's `Content-Security-Policy`.
     page_policy: HeaderValue,
 }
@@ -135,7 +146,8 @@ impl Chat {
     ///
     /// @param start_inputs - The declared start inputs of a served workflow, `None` for one not served.
     /// @throws CliError (usage) - A workflow that is not served, an input it does not declare,
-    ///   `--chat-access users` without `--verify-jwt`, or `guests` behind user tokens.
+    ///   `--chat-access users` without `--verify-jwt`, `guests` behind user tokens, or a
+    ///   `--chat-mermaid` file that cannot be read.
     pub fn new(
         args: &ChatArgs,
         context: ChatContext<'_>,
@@ -173,6 +185,7 @@ impl Chat {
             }
             ChatAccess::Key | ChatAccess::Users => None,
         };
+        let mermaid = args.chat_mermaid.as_deref().map(read_mermaid).transpose()?;
         let page_policy = page_policy(&context.frame_origins)?;
         Ok(Some(Self {
             workflows,
@@ -182,8 +195,9 @@ impl Chat {
             has_api_key: context.api_key.is_some(),
             user_token_header: context.user_token_header.filter(|_| args.chat_access == ChatAccess::Users),
             page: Asset::new(PAGE, "text/html; charset=utf-8"),
-            page_script: Asset::new(PAGE_SCRIPT, "text/javascript; charset=utf-8"),
-            widget_script: Asset::new(WIDGET_SCRIPT, "text/javascript; charset=utf-8"),
+            page_script: Asset::new(PAGE_SCRIPT, SCRIPT_TYPE),
+            widget_script: Asset::new(WIDGET_SCRIPT, SCRIPT_TYPE),
+            mermaid,
             page_policy,
         }))
     }
@@ -213,6 +227,9 @@ impl Chat {
         let mut lines: Vec<String> =
             self.workflows.iter().map(|workflow| format!("GET  /chat/{} (chat page)", workflow.name)).collect();
         lines.push(format!("chat page and widget (/chat/embed.js) for {who}"));
+        if self.mermaid.is_some() {
+            lines.push("GET  /chat/mermaid.js (draws diagram blocks)".to_owned());
+        }
         lines
     }
 
@@ -239,8 +256,25 @@ impl Chat {
             "conversations": state.keeps_conversations(),
             "resume": state.user_resume || matches!(self.access, ChatAccess::Key),
             "feedback": cfg!(feature = "scores"),
+            "diagrams": self.mermaid.is_some(),
         })
     }
+}
+
+/// Read the Mermaid build an operator named with `--chat-mermaid`.
+///
+/// @throws CliError (usage) - When the file cannot be read, is empty or larger than [`MAX_MERMAID_BYTES`].
+fn read_mermaid(path: &Path) -> Result<Asset, CliError> {
+    let refuse = |reason: String| CliError::usage(format!("--chat-mermaid `{}`: {reason}", path.display()));
+    let size = std::fs::metadata(path).map_err(|error| refuse(error.to_string()))?.len();
+    if size == 0 {
+        return Err(refuse("the file is empty".to_owned()));
+    }
+    if size > MAX_MERMAID_BYTES {
+        return Err(refuse(format!("the file has {size} bytes, more than the {MAX_MERMAID_BYTES} allowed")));
+    }
+    let bytes = std::fs::read(path).map_err(|error| refuse(error.to_string()))?;
+    Ok(Asset::new(bytes, SCRIPT_TYPE))
 }
 
 /// The policy of the page: scripts, styles and connections of its own origin
@@ -269,6 +303,7 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         .route("/chat/", get(page))
         .route("/chat/chat.js", get(page_script))
         .route("/chat/embed.js", get(widget_script))
+        .route("/chat/mermaid.js", get(mermaid_script))
         .route("/chat/{workflow}", get(workflow_page))
         .route("/v1/chat/config", get(config))
         .route("/v1/chat/guest", post(guest_session))
@@ -325,6 +360,14 @@ async fn widget_script(State(state): State<Arc<AppState>>, headers: HeaderMap) -
     }
 }
 
+async fn mermaid_script(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    match chat_of(&state).map(|chat| chat.mermaid.as_ref()) {
+        Ok(Some(mermaid)) => mermaid.response(&headers),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "this server draws no diagrams (--chat-mermaid)"),
+        Err(refused) => refused,
+    }
+}
+
 /// `GET /v1/chat/config`.
 async fn config(State(state): State<Arc<AppState>>) -> Response {
     match chat_of(&state) {
@@ -373,6 +416,7 @@ mod tests {
             chat_title: None,
             chat_guest_rate_limit: 10,
             chat_guest_budget: 120,
+            chat_mermaid: None,
         }
     }
 
@@ -420,7 +464,7 @@ mod tests {
 
     #[test]
     fn an_asset_is_not_sent_again_to_a_client_that_has_it() {
-        let asset = Asset::new(b"console.log(1)", "text/javascript; charset=utf-8");
+        let asset = Asset::new(&b"console.log(1)"[..], SCRIPT_TYPE);
         let first = asset.response(&HeaderMap::new());
         assert_eq!(first.status(), StatusCode::OK);
         let mut request = HeaderMap::new();

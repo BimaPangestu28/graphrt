@@ -157,11 +157,11 @@ async fn stored_answer(state: &AppState, run_id: &str) -> Option<String> {
 }
 
 /// A stored event as JSON within `scope`; `None` when the caller does not see it.
-fn scoped_json(event: StoredEvent, scope: EventScope) -> Option<serde_json::Value> {
+fn scoped_json(event: &StoredEvent, scope: EventScope) -> Option<serde_json::Value> {
     match scope {
         EventScope::Full => serde_json::from_str(event.get()).ok(),
         #[cfg(feature = "jwt")]
-        EventScope::Answer => crate::user_auth::events::stored_event(&event).map(|(_, json)| json),
+        EventScope::Answer => crate::user_auth::events::stored_event(event).map(|(_, json)| json),
     }
 }
 
@@ -176,7 +176,7 @@ fn events_json(mut stored: Vec<StoredEvent>, tail: Option<LiveTail>, from: u64, 
         // The stored JSON texts as they are: nothing is parsed.
         return Json(stored).into_response();
     }
-    let visible: Vec<serde_json::Value> = stored.into_iter().filter_map(|event| scoped_json(event, scope)).collect();
+    let visible: Vec<serde_json::Value> = stored.iter().filter_map(|event| scoped_json(event, scope)).collect();
     Json(visible).into_response()
 }
 

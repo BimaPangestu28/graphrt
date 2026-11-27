@@ -1093,6 +1093,11 @@ pub struct ChatArgs {
     /// bounds the model spend of a public page.
     #[arg(long, value_name = "N", default_value_t = 120, requires = "chat")]
     pub chat_guest_budget: u32,
+    /// Draw `diagram` UI blocks as pictures in the chat: the path of a Mermaid
+    /// build (`mermaid.min.js`), served at `/chat/mermaid.js` and loaded by the
+    /// chat when a diagram first shows. Without it diagrams show as text.
+    #[arg(long, value_name = "FILE", requires = "chat")]
+    pub chat_mermaid: Option<PathBuf>,
 }
 
 /// Running behind a graphrt gateway (`graphrt serve --trust-gateway`, see

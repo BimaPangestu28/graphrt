@@ -3,23 +3,44 @@
  */
 import "../../../test-support/dom.ts";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { runInThisContext } from "node:vm";
 import { startServer, type TestServer } from "../../../test-support/server.ts";
 import {
   defineGraphrtChatWidget,
   type GraphrtChatElement,
   type GraphrtChatWidgetElement,
+  loadDiagrams,
   richText,
+  type ScriptLoader,
 } from "../src/index.ts";
 
+/** What stands in for Mermaid: the same global, a picture that tells the source's length. */
+const FAKE_MERMAID = `globalThis.mermaid = {
+  initialize() {},
+  render(id, source) {
+    return Promise.resolve({ svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>' + source.length + "</text></svg>" });
+  },
+};`;
+
 let server: TestServer;
+let assets: string;
 
 before(async () => {
+  assets = await mkdtemp(join(tmpdir(), "graphrt-chat-assets-"));
+  await writeFile(join(assets, "mermaid.min.js"), FAKE_MERMAID);
   server = await startServer([
     "--chat",
     "confirm",
     "--chat",
     "report",
+    "--chat",
+    "diagram",
+    "--chat-mermaid",
+    join(assets, "mermaid.min.js"),
     "--chat-access",
     "guests",
     "--user-resume",
@@ -27,7 +48,10 @@ before(async () => {
   defineGraphrtChatWidget();
 });
 
-after(() => server.stop());
+after(async () => {
+  await server.stop();
+  await rm(assets, { recursive: true, force: true });
+});
 
 async function until(what: string, condition: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -68,6 +92,11 @@ test("a message is sent and its answer and UI blocks are drawn", async () => {
   assert.equal((root.querySelector("textarea") as HTMLTextAreaElement).value, "", "the composer is cleared");
   assert.equal(root.querySelectorAll('.tools button[aria-label="Helpful"]').length, 1);
   assert.equal(root.querySelector("h1")?.textContent, "confirm", "the title the server configured");
+  // A theme set later reaches the blocks already drawn.
+  chat.setAttribute("theme", "dark");
+  assert.equal(block?.getAttribute("theme"), "dark");
+  chat.removeAttribute("theme");
+  assert.equal(block?.hasAttribute("theme"), false);
   chat.remove();
 });
 
@@ -138,4 +167,33 @@ test("answer text keeps code and safe links, and nothing else", () => {
   assert.ok(links.every((link) => link.rel === "noopener noreferrer" && link.target === "_blank"));
   assert.equal(holder.querySelectorAll("img, b, script").length, 0);
   assert.ok(holder.textContent.includes("<img src=x onerror=alert(1)>"));
+});
+
+test("a diagram is text while the server's Mermaid loads, then a picture", async () => {
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((done) => {
+    release = done;
+  });
+  // What a script element does in a browser: fetch the server's file and run it.
+  const loader: ScriptLoader = async (url) => {
+    await held;
+    const response = await fetch(url);
+    assert.equal(response.status, 200);
+    runInThisContext(await response.text());
+  };
+  const loaded = loadDiagrams(server.url, loader);
+  const { chat, root } = mountChat("diagram");
+  await send(root, "draw it");
+  await until("the answer", () => chat.session?.state.messages.at(-1)?.state === "done");
+  const block = root.querySelector("graphrt-block")?.shadowRoot;
+  assert.ok(block);
+  assert.ok(block.querySelector(".diagram pre")?.textContent.includes("flowchart TD"));
+  assert.equal(block.querySelector("img"), null);
+  release();
+  assert.equal(await loaded, true);
+  await until("the picture", () => block.querySelector(".diagram img") !== null);
+  const source = block.querySelector("img")?.getAttribute("src") ?? "";
+  assert.match(source, /^data:image\/svg\+xml;charset=utf-8,/);
+  assert.equal(block.querySelector("svg"), null, "the picture is an image, never markup of the page");
+  chat.remove();
 });

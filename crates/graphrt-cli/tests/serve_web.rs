@@ -134,6 +134,8 @@ struct Setup {
     conversations: Option<Limits>,
     chat: Option<ChatAccess>,
     guest_rate_limit: u32,
+    /// A file for `--chat-mermaid`.
+    mermaid: Option<PathBuf>,
 }
 
 async fn app(dir: &TempDir, setup: Setup) -> axum::Router {
@@ -159,6 +161,7 @@ async fn app(dir: &TempDir, setup: Setup) -> axum::Router {
             chat_title: Some("Support".to_owned()),
             chat_guest_rate_limit: setup.guest_rate_limit,
             chat_guest_budget: 0,
+            chat_mermaid: setup.mermaid.clone(),
         };
         let context = ChatContext {
             api_key: Some(API_KEY),
@@ -562,8 +565,31 @@ async fn the_chat_page_is_served_with_a_strict_policy() {
         json!({
             "title": "Support", "workflows": [{ "name": "support", "input": "message" }], "access": "guests",
             "user_token_header": null, "conversations": false, "resume": false, "feedback": true,
+            "diagrams": false,
         })
     );
+    // Without `--chat-mermaid` there is no Mermaid to serve.
+    assert_eq!(send(&app, request("GET", "/chat/mermaid.js", As::Nobody, None)).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_mermaid_build_named_by_the_operator_is_served_from_the_same_origin() {
+    let dir = TempDir::new("chat-mermaid");
+    let file = dir.path().join("mermaid.min.js");
+    std::fs::write(&file, "globalThis.mermaid = {};").unwrap();
+    let setup = Setup { chat: Some(ChatAccess::Guests), mermaid: Some(file), ..Setup::default() };
+    let app = app(&dir, setup).await;
+    let (status, headers, body) = send(&app, request("GET", "/chat/mermaid.js", As::Nobody, None)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers["content-type"].to_str().unwrap().starts_with("text/javascript"));
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+    assert_eq!(body, "globalThis.mermaid = {};");
+    let (_, config) = call(&app, "GET", "/v1/chat/config", As::Nobody, None).await;
+    assert_eq!(config["diagrams"], true);
+    // The page's policy stays as strict: Mermaid is a script of its own origin.
+    let (_, headers, _) = send(&app, request("GET", "/chat/", As::Nobody, None)).await;
+    let policy = headers["content-security-policy"].to_str().unwrap();
+    assert!(policy.contains("script-src 'self';") && !policy.contains("unsafe"), "{policy}");
 }
 
 #[tokio::test]

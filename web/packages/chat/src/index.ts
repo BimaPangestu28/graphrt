@@ -9,6 +9,7 @@
  * `/chat/` and the one script tag `/chat/embed.js`.
  */
 export { defineGraphrtChat, GraphrtChatElement } from "./chat-element.ts";
+export { loadDiagrams, type ScriptLoader } from "./diagrams.ts";
 export {
   type ChatMessage,
   ChatSession,

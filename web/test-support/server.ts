@@ -121,6 +121,32 @@ graph:
     - { source: blocks, target: say }
     - { source: say, target: end }
 `,
+  // Returns a diagram block.
+  diagram: `version: "1"
+name: diagram
+graph:
+  nodes:
+    - { id: start, type: start }
+    - id: blocks
+      type: code
+      code_language: javascript
+      code: |
+        function main() {
+          return { flow: { "$ui": "diagram", version: 1, title: "Order flow", syntax: "mermaid",
+            source: "flowchart TD\\n  A[Ask] --> B[Answer]" } };
+        }
+      outputs:
+        flow: { type: object }
+    - { id: say, type: answer, answer: "Here is the flow." }
+    - id: end
+      type: end
+      outputs:
+        - { variable: flow, value_selector: [blocks, flow] }
+  edges:
+    - { source: start, target: blocks }
+    - { source: blocks, target: say }
+    - { source: say, target: end }
+`,
 };
 
 export const API_KEY = "test-api-key";

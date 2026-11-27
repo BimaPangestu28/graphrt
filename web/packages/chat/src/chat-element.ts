@@ -13,7 +13,14 @@
  * with `--chat-access users`) and `apiKey`.
  */
 import type { TokenSource } from "graphrt-client";
-import { adoptStyles, type BlockAction, defineGraphrtUi, type GraphrtBlockElement } from "graphrt-ui";
+import {
+  adoptStyles,
+  type BlockAction,
+  defineGraphrtUi,
+  type GraphrtBlockElement,
+  uiBlockKind,
+} from "graphrt-ui";
+import { loadDiagrams } from "./diagrams.ts";
 import { type ChatMessage, ChatSession, type ChatState, type KeyValueStore } from "./session.ts";
 import { CHAT_CSS } from "./styles.ts";
 import { richText } from "./text.ts";
@@ -110,7 +117,17 @@ export class GraphrtChatElement extends BaseElement {
     this.#parts?.list.replaceChildren(this.#parts.empty);
   }
 
-  attributeChangedCallback(): void {
+  attributeChangedCallback(name: string, _old: string | null, value: string | null): void {
+    if (name === "theme") {
+      // Blocks already drawn follow the chat's theme too.
+      for (const block of this.#parts?.list.querySelectorAll("graphrt-block") ?? []) {
+        if (value === null) {
+          block.removeAttribute("theme");
+        } else {
+          block.setAttribute("theme", value);
+        }
+      }
+    }
     if (this.#session !== undefined) {
       this.#render(this.#session.state);
     }
@@ -326,6 +343,9 @@ export class GraphrtChatElement extends BaseElement {
     for (const value of message.blocks) {
       extras.push(block(value));
     }
+    if (state.config?.diagrams && message.blocks.some((value) => uiBlockKind(value) === "diagram")) {
+      void this.#drawDiagrams();
+    }
     for (const question of message.questions) {
       const element = block(question.block);
       element.addEventListener("graphrt-action", (event) => {
@@ -372,6 +392,27 @@ export class GraphrtChatElement extends BaseElement {
     }
     view.extras.replaceChildren(...extras);
     view.extras.hidden = extras.length === 0;
+  }
+
+  /**
+   * Load the server's Mermaid (once per page), then draw again the diagrams
+   * that were shown as text while it loaded.
+   */
+  async #drawDiagrams(): Promise<void> {
+    const server = this.getAttribute("server") ?? location.origin;
+    if (!(await loadDiagrams(server))) {
+      return;
+    }
+    for (const view of this.#views.values()) {
+      for (const element of view.extras.querySelectorAll<GraphrtBlockElement>("graphrt-block")) {
+        const shown: unknown = element.block;
+        const drawnAsText = element.shadowRoot?.querySelector(".diagram pre") != null;
+        if (uiBlockKind(shown) === "diagram" && drawnAsText) {
+          // Setting the block draws it again, now with the renderer.
+          element.block = shown;
+        }
+      }
+    }
   }
 }
 
