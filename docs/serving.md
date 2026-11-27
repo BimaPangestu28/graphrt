@@ -481,6 +481,10 @@ reconnects: `N` resumes after event `N`, `N.k` (the client saw part of event
 `?from=` wins. A client that reconnects after any event gets exactly the rest
 of the run, without gaps or duplicates.
 
+From a web page or Node.js, the client of the npm package `graphrt` does this
+for you: `client.events(runId)` of `graphrt/client` reopens a broken stream
+after the last event received (see [web.md](web.md#the-browser-client)).
+
 A listener that falls behind the live tail (a slow client of a fast run) is
 refilled from the run's in-memory feed, so it skips nothing. Only when it falls
 behind further than the feed keeps (the first 10,000 events of a run) does it

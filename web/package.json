@@ -1,7 +1,7 @@
 {
   "name": "graphrt-web",
   "private": true,
-  "description": "Browser packages of graphrt: the HTTP client, the UI blocks renderer and the chat widget.",
+  "description": "Workspace of the graphrt npm package: the HTTP client, the UI blocks renderer, the chat widget and the monitoring view.",
   "license": "Apache-2.0",
   "type": "module",
   "workspaces": [
@@ -14,9 +14,10 @@
     "test": "node scripts/test.mjs",
     "build": "node scripts/build.mjs",
     "check-assets": "node scripts/build.mjs --check",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run check-assets && npm run check-packages",
-    "build:packages": "node scripts/publish.mjs --build",
-    "check-packages": "node scripts/publish.mjs"
+    "check": "npm run typecheck && npm run lint && npm run test && npm run check-assets && npm run check-package",
+    "build:package": "node scripts/publish.mjs --build",
+    "check-package": "node scripts/publish.mjs",
+    "pack-package": "node scripts/publish.mjs --pack"
   },
   "engines": {
     "node": ">=20"

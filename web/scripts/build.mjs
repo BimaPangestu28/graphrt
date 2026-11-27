@@ -1,5 +1,7 @@
-// Builds what `graphrt serve` serves itself, bundled from the packages here
-// into crates/graphrt-cli/assets, where the Rust build embeds them:
+// Builds what `graphrt serve` serves itself, bundled from the sources of the
+// `graphrt` package
+// (packages/graphrt/src) into crates/graphrt-cli/assets, where the Rust build
+// embeds them:
 //
 //   assets/chat      the chat page and the widget script (`--chat`)
 //   assets/monitor   the monitoring page, its service worker, manifest and icons (`--monitor`)
@@ -23,7 +25,7 @@ const banner = (what) =>
 
 const common = {
   bundle: true,
-  // The packages of this workspace are bundled from their sources, not from `dist`.
+  // Bundled from the sources, not from `dist`.
   conditions: ["source"],
   minify: true,
   write: false,
@@ -94,11 +96,11 @@ const manifest = `${JSON.stringify(
   2,
 )}\n`;
 
-async function bundle(packageName, entry, format, what) {
+async function bundle(part, entry, format, what) {
   const result = await build({
     ...common,
     banner: { js: banner(what) },
-    entryPoints: [join(root, "packages", packageName, "src", entry)],
+    entryPoints: [join(root, "packages", "graphrt", "src", part, entry)],
     format,
   });
   const [file] = result.outputFiles;
