@@ -20,6 +20,8 @@ use crate::util::{MS_PER_DAY, ensure_dir, now_ms, sha256_hex, utc_date};
 pub const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 /// The most entries one query answers.
 pub const MAX_PAGE: usize = 1_000;
+/// The file whose lock serializes appends across processes.
+const LOCK_FILE: &str = "append.lock";
 /// The longest line read back (a longer one is not an entry of this log).
 const MAX_LINE_BYTES: usize = 64 * 1024;
 
@@ -244,8 +246,12 @@ impl AuditLog {
         let _one_at_a_time = self.appending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = self.dir.join(format!("{}.jsonl", utc_date(at_ms)));
         let io = |error: std::io::Error| ConsoleError::Io(format!("cannot write {}: {error}", path.display()));
-        let mut file = graphrt_core::private_fs::append_file(&path).map_err(io)?;
-        file.lock().map_err(io)?;
+        // The lock is on a file of its own: Windows locks are mandatory, and a
+        // locked day file could not be read, by this append or by a query.
+        let lock_path = self.dir.join(LOCK_FILE);
+        let lock = graphrt_core::private_fs::append_file(&lock_path)
+            .map_err(|error| ConsoleError::Io(format!("cannot open {}: {error}", lock_path.display())))?;
+        lock.lock().map_err(|error| ConsoleError::Io(format!("cannot lock {}: {error}", lock_path.display())))?;
         let written = (|| {
             let last = match last_entry(&path)? {
                 Some(last) => Some(last),
@@ -256,11 +262,12 @@ impl AuditLog {
             entry.hash = entry.computed_hash()?;
             let mut line = serde_json::to_vec(&entry).map_err(|error| ConsoleError::Io(error.to_string()))?;
             line.push(b'\n');
+            let mut file = graphrt_core::private_fs::append_file(&path).map_err(io)?;
             file.write_all(&line).map_err(io)?;
             file.sync_data().map_err(io)?;
             Ok(entry)
         })();
-        let _unlocked = file.unlock();
+        let _unlocked = lock.unlock();
         written
     }
 
