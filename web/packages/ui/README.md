@@ -1,10 +1,10 @@
-# graphrt-ui (web)
+# @graphrt/ui
 
 Web components that draw graphrt [UI blocks](../../../docs/workflow-format.md#ui-blocks):
 Adaptive Cards, charts, tables, stat tiles and diagrams. No dependencies.
 
 ```ts
-import { defineGraphrtUi } from "graphrt-ui";
+import { defineGraphrtUi } from "@graphrt/ui";
 
 defineGraphrtUi();
 const element = document.createElement("graphrt-block");

@@ -16,8 +16,8 @@ import {
   type RunEvent,
   type RunRequest,
   type TokenSource,
-} from "graphrt-client";
-import { collectUiBlocks } from "graphrt-ui";
+} from "@graphrt/client";
+import { collectUiBlocks } from "@graphrt/ui";
 
 /** Where a session keeps what must survive a reload. `localStorage` fits. */
 export interface KeyValueStore {

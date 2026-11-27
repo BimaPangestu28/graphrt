@@ -42,12 +42,15 @@ await build({
   outbase: join(root, "packages"),
   outExtension: { ".js": ".mjs" },
   bundle: true,
+  // The packages of this workspace are bundled from their sources, not from `dist`.
+  conditions: ["source"],
   platform: "node",
   format: "esm",
   target: "node20",
   sourcemap: "inline",
-  // Resolved by Node at run time: it reads its own files next to its code.
-  external: ["happy-dom"],
+  // Resolved by Node at run time: happy-dom reads its own files next to its
+  // code, and qrcode (the reference of the QR tests) is CommonJS.
+  external: ["happy-dom", "qrcode"],
   logLevel: "warning",
 });
 

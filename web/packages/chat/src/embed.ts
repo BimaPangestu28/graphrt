@@ -12,7 +12,7 @@
  * `window.GraphrtChat` then has `open()`, `close()`, `toggle()` and
  * `setUserToken(token)` for servers that verify end-user tokens.
  */
-import type { TokenSource } from "graphrt-client";
+import type { TokenSource } from "@graphrt/client";
 import { defineGraphrtChatWidget, type GraphrtChatWidgetElement } from "./widget.ts";
 
 const OPTIONS = ["workflow", "heading", "greeting", "placeholder", "theme", "position"];

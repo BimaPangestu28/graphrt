@@ -1,4 +1,4 @@
-# graphrt-chat
+# @graphrt/chat
 
 A chat for agents served by `graphrt serve --chat`, as web components.
 
@@ -7,7 +7,7 @@ A chat for agents served by `graphrt serve --chat`, as web components.
 ```
 
 ```ts
-import { defineGraphrtChat } from "graphrt-chat";
+import { defineGraphrtChat } from "@graphrt/chat";
 
 defineGraphrtChat();
 ```

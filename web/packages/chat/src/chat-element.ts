@@ -12,14 +12,14 @@
  * Properties: `userToken` (a token or a function returning one, for servers
  * with `--chat-access users`) and `apiKey`.
  */
-import type { TokenSource } from "graphrt-client";
+import type { TokenSource } from "@graphrt/client";
 import {
   adoptStyles,
   type BlockAction,
   defineGraphrtUi,
   type GraphrtBlockElement,
   uiBlockKind,
-} from "graphrt-ui";
+} from "@graphrt/ui";
 import { loadDiagrams } from "./diagrams.ts";
 import { type ChatMessage, ChatSession, type ChatState, type KeyValueStore } from "./session.ts";
 import { CHAT_CSS } from "./styles.ts";

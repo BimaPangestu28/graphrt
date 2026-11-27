@@ -3,6 +3,7 @@
   "files": {
     "includes": [
       "packages/**/*.ts",
+      "!packages/*/dist",
       "test-support/**/*.ts",
       "scripts/**/*.mjs",
       "*.json",

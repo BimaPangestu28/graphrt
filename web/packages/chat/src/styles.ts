@@ -1,5 +1,5 @@
-/** Styles of the chat view. Colours are the tokens of `graphrt-ui`. */
-import { TOKENS_CSS } from "graphrt-ui";
+/** Styles of the chat view. Colours are the tokens of `@graphrt/ui`. */
+import { TOKENS_CSS } from "@graphrt/ui";
 
 export const CHAT_CSS = `
 ${TOKENS_CSS}
