@@ -157,6 +157,7 @@ response carries `Connection: close` and the client opens a new connection.
 | `metadata` | Optional string map (at most 64 entries, keys up to 256 bytes, values up to 2 KB) |
 | `session_id`, `user_id` | Optional ids (1-256 bytes) |
 | `tags` | Optional list of strings (at most 32, each 1-256 bytes) |
+| `conversation_id` | Optional id of a conversation the server keeps (`--conversations`): its turns become `sys.history`. See [web.md](web.md#conversations-kept-by-the-server) |
 | `files` | Optional list of workspace file references (`workspace:...`, at most 16) that become `sys.files`. Needs `--workspace-api`, see [Workspace files API](#workspace-files-api) |
 
 For synchronous calls (blocking or streaming), the run is aborted when the
@@ -282,9 +283,12 @@ links here.
 | Endpoint | With a verified user token |
 | --- | --- |
 | `POST /v1/workflows/{name}/runs` | Allowed for workflows whose start node declares the verified input. Others answer `403`, so internal workflows served next to the chat stay key-only |
+| `GET /v1/runs/{id}`, `GET /v1/runs/{id}/events`, `POST /v1/runs/{id}/abort` | Allowed on the user's **own** runs (as for feedback below), filtered like their stream: the record has no error text, inputs, metadata or trace ids, and the events are the run-level ones plus the answer text. Other runs answer `404`, like unknown ones |
+| `POST /v1/runs/{id}/resume` | Only with `--user-resume`, and only the user's own runs (`403` without the flag). A `snapshot` in the body is refused. Off by default because a paused run can be an approval that someone else has to give |
+| `/v1/conversations` (with `--conversations`) | The user's own conversations only. See [web.md](web.md#conversations-kept-by-the-server) |
 | `POST /v1/runs/{id}/feedback` | Allowed only on the user's **own** runs: those started with a token of the same `sub` (the record has `user_verified: true`). Other runs answer `403`, including runs started with the API key whose body set `user_id`: that is a label, not proof of who the user is. The score's `user` is the token's `sub`, whatever the body says |
 | `/v1/files` (with `--workspace-api users`) | Allowed inside the directory of the token's `sub` only. `scope` cannot be sent, and files of other users answer `404`. See [the workspace over HTTP](files-and-images.md#who-may-call-it) |
-| Every other endpoint | API key only: run lists, run records, events, scores, resume, abort, delete, nodes, validate, hooks and knowledge. Webhook deliveries take their signature or the API key |
+| Every other endpoint | API key only: run lists, scores, delete, nodes, validate, hooks and knowledge. Webhook deliveries take their signature or the API key |
 
 - **An API key is required.** The server refuses to start with `--verify-jwt`
   unless the API key is set, also on a loopback address: without a key, every
@@ -302,9 +306,13 @@ links here.
   outputs, retrieved documents, tool results, rendered prompts) never reach
   the client. `--user-events all` restores the full stream and result for
   trusted clients. Requests authorized by the API key always get everything.
-- **Invalid tokens** are `401` on both routes, even next to a valid API key.
-- **Rate limit.** Run starts and feedback with a user token both count against
-  the user's `--user-rate-limit`.
+- **Invalid tokens** are `401` on every route that takes one, even next to a valid API key.
+- **Chat guests** (`--chat-access guests`, see [web.md](web.md#guests)) are
+  users too, with the id `guest:<random>`. A token of the identity provider
+  whose `sub` starts with `guest:` is refused while guests are on.
+- **Rate limit.** Run starts, resumes and feedback with a user token count
+  against the user's `--user-rate-limit`. Reading, following and stopping the
+  user's own runs do not.
 
 ## Streaming (SSE)
 
@@ -396,6 +404,7 @@ turn it on to build evaluation datasets from production runs.
 | `GET /v1/runs/{id}` | The run record, plus `active` and, for paused runs, `resume_inputs` |
 | `GET /v1/runs/{id}/events` | SSE replay of stored events, then a live tail while the run executes |
 | `GET /v1/runs/{id}/events?stream=false&from=N` | Stored events as a JSON array, starting at index `N` |
+| `GET /v1/runs/{id}/events?responses=true` | The SSE stream with the answer text as `response` events too. See [following a run](web.md#following-a-run) |
 | `POST /v1/runs/{id}/abort` | `202` when the run is executing |
 | `DELETE /v1/runs/{id}` | `204`; `409` while the run executes |
 
@@ -522,7 +531,9 @@ A score may arrive before its trace; Langfuse links them when the trace does.
 
 The server loads the snapshot it stored when the run paused. Exactly one resume
 of a pause succeeds: a concurrent or repeated resume gets `409 Conflict`.
-`stream` and `async` work as for new runs. Clients that keep snapshots
+`stream` and `async` work as for new runs. The `202` answer of an async start
+or resume has `first_event`, the index of the execution's first event: follow
+a resumed run with `/events?from=<first_event>`. Clients that keep snapshots
 themselves may still send `snapshot` in the body.
 
 ## Webhooks

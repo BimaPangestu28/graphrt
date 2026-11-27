@@ -6,4 +6,4 @@ examples/rag/.store.db*
 __pycache__/
 *.pyc
 node_modules/
-.test-build/
+web/.test-build/

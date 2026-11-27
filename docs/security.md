@@ -248,14 +248,38 @@ They honour standard proxy environment variables, except the OTel exporter and
   image binds `0.0.0.0`, so always set a key there.
 - **End-user JWTs.** With `--verify-jwt`, a request whose mapped header holds a
   valid JWT (JWKS or HS256 signature, `exp`, optional `iss` / `aud`, a `sub`)
-  replaces the API key on two routes only: run starts of workflows that
-  declare the verified input, and feedback on the user's own runs. The server
+  replaces the API key for run starts of workflows that declare the verified
+  input, and for the user's own runs (feedback, reading, following, stopping)
+  and conversations. The server
   refuses `--verify-jwt` without an API key, the responses are filtered
   (`--user-events`), and `--user-rate-limit` caps requests per `sub`. The
   rules are in
   [serving.md](serving.md#what-a-user-token-may-do).
-- **CORS.** None. Browsers get no `Access-Control-Allow-Origin`, and JSON
-  bodies force a preflight.
+- **CORS.** None unless `--cors-origin` lists origins: then only those get
+  `Access-Control-Allow-Origin` (matched exactly, echoed, with `Vary: Origin`),
+  preflights are answered before authentication, and
+  `Access-Control-Allow-Credentials` is never sent, so cookies and other
+  ambient credentials of a browser are never accepted from another origin.
+  `*` needs an API key. Tokens travel in headers only, which is why the API
+  needs no CSRF token. See [web.md](web.md#cross-origin-requests-cors).
+- **A user's own runs.** A verified user (or a chat guest) reads, follows and
+  stops the runs they started, filtered like their stream. Runs of others
+  answer `404`. Resuming needs `--user-resume`, because a pause can be an
+  approval that someone else has to give.
+- **Chat page and guests.** `--chat` serves a page whose
+  `Content-Security-Policy` allows scripts, styles and connections of its own
+  origin only and framing by its own origin and the `--cors-origin` list
+  (Mermaid of `--chat-mermaid` is a file you name, served from that origin).
+  `--chat-access guests` lets anyone start the `--chat` workflows, and only
+  those, as a guest with a signed, stateless token, within
+  `--chat-guest-rate-limit` and `--chat-guest-budget`. See
+  [web.md](web.md#guests).
+- **Conversations.** `--conversations` keeps chat turns in the run store,
+  scoped to the verified user, with limits and retention. They hold what
+  people wrote: protect the store directory like run records.
+- **UI blocks in a browser.** Blocks come from models and tools. The web
+  renderer validates each block before drawing, builds the page without
+  markup strings, and loads no code. See [web.md](web.md#drawing-ui-blocks).
 - **Limits.**
   - Request bodies: 2 MiB (`--max-body-bytes`).
   - Knowledge uploads: 16 MiB (`--max-upload-bytes`), one ingest at a time.

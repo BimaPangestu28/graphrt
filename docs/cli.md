@@ -171,6 +171,16 @@ answer, the final result and pause prompts; `--user-events all` streams every
 event. See
 [serving.md](serving.md#verifying-end-user-jwts).
 
+For browsers: `--cors-origin ORIGIN` (repeatable) lets pages of that origin
+call the API, `--chat WORKFLOW[=INPUT]` serves a chat page at `/chat/` and the
+widget script `/chat/embed.js` (`--chat-access key|users|guests`,
+`--chat-title`, `--chat-guest-rate-limit`, `--chat-guest-budget`, and
+`--chat-mermaid FILE` to draw diagrams),
+`--conversations` keeps chat history on the server
+(`--conversation-max-messages`, `--conversations-per-user`,
+`--conversation-ttl-days`), and `--user-resume` lets users answer the questions
+of their own paused runs. All are off unless given. See [web.md](web.md).
+
 `--deployment NAME` (or `$GRAPHRT_DEPLOYMENT`) names the deployment the server
 belongs to: webhook idempotency run ids include it, as a graphrt gateway derives
 them (see [serving.md](serving.md#idempotency)), and `--trust-gateway` requires

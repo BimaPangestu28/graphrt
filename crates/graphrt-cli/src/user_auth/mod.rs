@@ -25,7 +25,10 @@
 //!   engine event, as API-key callers get.
 //! - With `--workspace-api users` (feature `files`), the `/v1/files` routes accept
 //!   the token for the directory of its `sub` only.
-//! - Every other endpoint (run lists, events, scores, resume, knowledge...) still
+//! - A user reads, follows and stops the runs they started (`GET /v1/runs/{id}`,
+//!   its events, abort), filtered like their stream, and resumes them only with
+//!   `--user-resume`. Runs of other users answer `404`.
+//! - Every other endpoint (run lists, scores, deletes, knowledge...) still
 //!   needs the API key, so users cannot read each other's runs. The server
 //!   refuses to start with `--verify-jwt` unless an API key is set
 //!   ([`require_api_key`]).
