@@ -91,14 +91,17 @@ pub async fn build_state(
         #[cfg(feature = "skills")]
         let engine = match own_skills {
             Some(store) => {
-                let engine = engine.with_services(services_with_skills(&workflow_services, &store));
+                #[allow(unused_mut)]
+                let mut own = services_with_skills(&workflow_services, &store);
+                #[cfg(feature = "memory")]
+                setup::with_memory_defaults(&mut own, options, name);
                 bundled_skills.insert(name.clone(), store);
-                engine
+                engine.with_services(own)
             }
-            None => engine.with_shared_services(workflow_services),
+            None => with_workflow_services(engine, &workflow_services, options, name),
         };
         #[cfg(not(feature = "skills"))]
-        let engine = engine.with_shared_services(workflow_services);
+        let engine = with_workflow_services(engine, &workflow_services, options, name);
         workflows.insert(name.clone(), ServedWorkflow { engine, env });
     }
     #[allow(unused_mut)]
@@ -123,6 +126,10 @@ pub async fn build_state(
         Some(dir) => state.with_lesson_store(Some(Arc::new(graphrt_learn::LessonStore::open(dir)))),
         None => state,
     };
+    // `/v1/memory` manages the store the served agents use.
+    #[cfg(feature = "memory")]
+    let state =
+        state.with_memory(services.get::<graphrt_memory::MemoryStore>().cloned(), options.memory_tenant.clone());
     // The same workspace the `files` tools use, so `/v1/files` shares its quota.
     #[cfg(feature = "files")]
     let state = state.with_workspace(services.get::<setup::ServedWorkspace>().cloned());
@@ -138,6 +145,27 @@ pub async fn build_state(
         &options.all_vars(),
     )?;
     Ok(state)
+}
+
+/// `engine` with the host services, and what only this workflow's runs get:
+/// the defaults of its memory scopes. Without memory the services are shared.
+fn with_workflow_services(
+    engine: Engine,
+    services: &Arc<graphrt_core::Services>,
+    options: &ServiceOptions,
+    name: &str,
+) -> Engine {
+    #[cfg(feature = "memory")]
+    {
+        let mut own = (**services).clone();
+        setup::with_memory_defaults(&mut own, options, name);
+        engine.with_services(own)
+    }
+    #[cfg(not(feature = "memory"))]
+    {
+        let _ = (options, name);
+        engine.with_shared_services(Arc::clone(services))
+    }
 }
 
 /// The host services with the skill source replaced by `store`, for the engine

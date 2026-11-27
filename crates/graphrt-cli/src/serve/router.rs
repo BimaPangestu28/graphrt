@@ -77,9 +77,9 @@ fn key_only_routes(state: &Arc<AppState>, max_upload_bytes: usize) -> Router<Arc
     let _ = max_upload_bytes;
     #[cfg(feature = "scores")]
     let api = api.route("/v1/runs/{run_id}/scores", get(crate::scores::get_scores));
-    #[cfg(any(feature = "skills", feature = "learning"))]
+    #[cfg(any(feature = "skills", feature = "learning", feature = "memory"))]
     let api = api.merge(owner_routes(state));
-    #[cfg(not(any(feature = "skills", feature = "learning")))]
+    #[cfg(not(any(feature = "skills", feature = "learning", feature = "memory")))]
     let _ = state;
     api.route("/v1/hooks", get(crate::webhooks::list_hooks))
 }
@@ -88,13 +88,15 @@ fn key_only_routes(state: &Arc<AppState>, max_upload_bytes: usize) -> Router<Arc
 /// (`/v1/skills`, `/v1/learning`). They take the API key like the routes
 /// around them, and are refused altogether by a server that has no key and
 /// listens beyond loopback.
-#[cfg(any(feature = "skills", feature = "learning"))]
+#[cfg(any(feature = "skills", feature = "learning", feature = "memory"))]
 fn owner_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     let owner = Router::new();
     #[cfg(feature = "skills")]
     let owner = with_skill_routes(owner);
     #[cfg(feature = "learning")]
     let owner = with_learning_routes(owner);
+    #[cfg(feature = "memory")]
+    let owner = crate::memory_api::owner_routes(owner);
     owner.layer(middleware::from_fn_with_state(Arc::clone(state), super::auth::refuse_closed_owner_api))
 }
 
@@ -208,6 +210,9 @@ fn self_authenticating_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // Channel webhooks authenticate by their secret or signature, the rest by the key.
     #[cfg(feature = "channels")]
     let routes = if state.channels.is_some() { routes.merge(crate::channels::routes()) } else { routes };
+    // A verified user's own memory: the routes check the user token themselves.
+    #[cfg(feature = "memory")]
+    let routes = if state.memory.is_some() { routes.merge(crate::memory_api::me_routes()) } else { routes };
     // The chat page, its config and guest sessions are public.
     #[cfg(feature = "web-chat")]
     let routes = if state.chat.is_some() { routes.merge(super::chat::routes()) } else { routes };

@@ -53,6 +53,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 - [WebAssembly plugins](wasm-plugins.md)
 - [Skills](skills.md): `SKILL.md` packages loaded on demand, tool grants, pinned content, `graphrt skill`
 - [Self learning](learning.md): lessons with provenance, approval, isolation per agent and user, `graphrt learn`
+- [Long term memory](memory.md): notes an agent saves per user, the write gate, `/v1/memory`, `/v1/me/memory`, `graphrt memory`
 
 ## Internals and security
 

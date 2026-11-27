@@ -228,6 +228,12 @@ pub struct AgentConfig {
     /// JSON, like `learning`.
     #[serde(default)]
     pub context_window: Option<Json>,
+    /// Notes the agent saves and finds again in later runs: `auto`, `off` or
+    /// `{agent, user, recall, write}` (see `crate::memory`). Needs the cargo
+    /// feature `memory` and a `graphrt_core::memory::Memories` service. Kept as
+    /// raw JSON, like `learning`.
+    #[serde(default)]
+    pub long_term_memory: Option<Json>,
 }
 
 /// `learning` of the `agent` node: whose lessons a run reads.
@@ -331,6 +337,16 @@ impl BoundTool {
     fn asks_first(&self) -> bool {
         false
     }
+}
+
+/// The tools of one run, with what came with them.
+#[derive(Default)]
+struct BoundTools {
+    tools: Vec<BoundTool>,
+    /// The skill catalog for the system prompt (empty without skills).
+    catalog: String,
+    #[cfg(feature = "memory")]
+    memory: crate::memory::RunMemory,
 }
 
 /// Where a tool being bound comes from.
@@ -469,6 +485,10 @@ struct AgentState {
     #[cfg(feature = "context")]
     #[serde(default, skip_serializing_if = "ContextState::is_empty")]
     context: ContextState,
+    /// The memory of this node run: attached again on resume, never saved.
+    #[cfg(feature = "memory")]
+    #[serde(skip)]
+    memory: crate::memory::RunMemory,
 }
 
 /// Why the loop ended.
@@ -508,6 +528,9 @@ pub struct AgentNode {
     /// Parsed `context_window`.
     #[cfg(feature = "context")]
     context: ContextWindow,
+    /// Parsed `long_term_memory`.
+    #[cfg(feature = "memory")]
+    memory: Option<crate::memory::LongTermMemory>,
 }
 
 /// Whether `context_window` asks for the guard, which this build does not have.
@@ -591,6 +614,24 @@ impl AgentNode {
         }
         #[cfg(feature = "context")]
         let context = ContextWindow::parse(doc, config.context_window.as_ref())?;
+        #[cfg(not(feature = "memory"))]
+        if !matches!(config.long_term_memory, None | Some(Json::Null | Json::Bool(false)))
+            && config.long_term_memory.as_ref().and_then(Json::as_str) != Some("off")
+        {
+            return Err(ConfigError::new(
+                doc,
+                "`long_term_memory` needs a build with memory support (cargo feature `memory`)",
+            ));
+        }
+        #[cfg(feature = "memory")]
+        let memory = crate::memory::parse(doc, config.long_term_memory.as_ref())?;
+        #[cfg(feature = "memory")]
+        if memory.is_some() && refs.iter().any(|(provider, _)| provider == crate::memory::MEMORY_PROVIDER) {
+            return Err(ConfigError::new(
+                doc,
+                "an agent with `long_term_memory` cannot also list tools of a provider named `memory`",
+            ));
+        }
         Ok(Self {
             config,
             refs,
@@ -599,15 +640,21 @@ impl AgentNode {
             learning,
             #[cfg(feature = "context")]
             context,
+            #[cfg(feature = "memory")]
+            memory,
         })
     }
 
     /// Resolve tool references against the registry and attach the agent's
     /// skills, assigning unique exposed names. Returns the tools and the skill
     /// catalog for the system prompt (empty without skills).
-    async fn bind_tools(&self, ctx: &NodeContext) -> Result<(Vec<BoundTool>, String), NodeError> {
-        if self.refs.is_empty() && self.config.skills.is_empty() {
-            return Ok((Vec::new(), String::new()));
+    async fn bind_tools(&self, ctx: &NodeContext) -> Result<BoundTools, NodeError> {
+        #[cfg(feature = "memory")]
+        let with_memory = self.memory.is_some();
+        #[cfg(not(feature = "memory"))]
+        let with_memory = false;
+        if self.refs.is_empty() && self.config.skills.is_empty() && !with_memory {
+            return Ok(BoundTools::default());
         }
         let mut binder = Binder::default();
         if !self.refs.is_empty() {
@@ -624,9 +671,35 @@ impl AgentNode {
         let catalog = self.attach_skills(ctx, &mut binder).await?;
         #[cfg(not(feature = "skills"))]
         let catalog = String::new();
+        #[cfg(feature = "memory")]
+        let memory = match &self.memory {
+            Some(config) => {
+                let (memory, runtime) = crate::memory::RunMemory::attach(ctx, config)?;
+                let specs = runtime.list().await.map_err(|e| NodeError::new("tool", e.to_string()))?;
+                binder.bind_specs(crate::memory::MEMORY_PROVIDER, "*", &specs, &runtime, Origin::Agent)?;
+                memory
+            }
+            None => crate::memory::RunMemory::default(),
+        };
         let mut bound = binder.bound;
         self.attach_tool_context(ctx, &mut bound)?;
-        Ok((bound, catalog))
+        #[cfg(feature = "memory")]
+        {
+            let names: Vec<(String, String)> = bound
+                .iter()
+                .filter(|b| b.provider == crate::memory::MEMORY_PROVIDER)
+                .map(|b| (b.exposed.clone(), b.name.clone()))
+                .collect();
+            let secrets: Vec<String> =
+                bound.iter().filter_map(|b| b.context.as_ref()).flat_map(|c| c.secrets.values().cloned()).collect();
+            memory.bound(names, secrets);
+        }
+        Ok(BoundTools {
+            tools: bound,
+            catalog,
+            #[cfg(feature = "memory")]
+            memory,
+        })
     }
 
     /// Attach the skills of `skills`: bind the skill tools and the tools the
@@ -796,12 +869,19 @@ impl AgentNode {
     }
 
     async fn execute(&self, ctx: NodeContext) -> NodeResult {
-        let (tools, skill_catalog) = self.bind_tools(&ctx).await?;
+        let bound = self.bind_tools(&ctx).await?;
+        let (tools, skill_catalog) = (bound.tools, bound.catalog);
         let model = model_for(&ctx, &self.config.model)?;
         let mut state = match &ctx.resume {
             Some(resume) => {
                 let mut state: AgentState = serde_json::from_value(resume.state.clone())
                     .map_err(|e| NodeError::fatal("invalid_resume_state", e.to_string()))?;
+                #[cfg(feature = "memory")]
+                {
+                    bound.memory.count_writes(memory_writes(&state.log));
+                    state.memory = bound.memory.clone();
+                    state.memory.read_all(&state.messages);
+                }
                 let undecided = self.apply_decisions(&ctx, &mut state, &tools, resume.input.as_ref()).await;
                 if !undecided.is_empty() {
                     state.pending = undecided;
@@ -824,6 +904,14 @@ impl AgentNode {
                 {
                     state.has_notes = !notes.is_empty();
                 }
+                #[cfg(feature = "memory")]
+                if bound.memory.is_attached() {
+                    if self.memory.as_ref().is_some_and(crate::memory::LongTermMemory::recalls) {
+                        bound.memory.recall_into(&ctx, &mut state.messages).await?;
+                    }
+                    state.memory = bound.memory.clone();
+                    state.memory.read_all(&state.messages);
+                }
                 state
             }
         };
@@ -843,7 +931,17 @@ impl AgentNode {
                 return self.pause(&state, &tools);
             }
         };
-        Ok(agent_outputs(state, final_text, &stop))
+        #[cfg(feature = "memory")]
+        let digest = turn_digest(&state.log, ctx.secret_values().as_deref());
+        let outcome = agent_outputs(state, final_text, &stop);
+        #[cfg(feature = "memory")]
+        let outcome = match (outcome, digest) {
+            (NodeOutcome::Completed(output), Some(digest)) => {
+                NodeOutcome::Completed(output.with("turn_digest", digest))
+            }
+            (outcome, _) => outcome,
+        };
+        Ok(outcome)
     }
 
     /// Ask the model for the next turn (streaming per `stream_tool_turns`) and
@@ -1096,6 +1194,9 @@ impl AgentNode {
         if calls.is_empty() {
             return;
         }
+        // What the model read before these calls decides where a saved note came from.
+        #[cfg(feature = "memory")]
+        state.memory.observe(&state.messages, &calls);
         for call in &calls {
             ctx.progress(
                 "tool_call",
@@ -1116,6 +1217,8 @@ impl AgentNode {
             ctx.progress("tool_result", Value::from_json(data));
             push_result(state, tools, call, result);
         }
+        #[cfg(feature = "memory")]
+        state.memory.flush_events(ctx);
     }
 
     /// Run `calls` concurrently or one after another, per `parallel_tool_calls`.
@@ -1146,6 +1249,9 @@ struct VisibleResult {
 /// Append a visible tool result to the conversation and the log.
 fn push_result(state: &mut AgentState, tools: &[BoundTool], call: &ToolCall, result: VisibleResult) {
     let bound = bound_tool(tools, call);
+    // Read now, before a trim can replace it: where a later note came from depends on it.
+    #[cfg(feature = "memory")]
+    state.memory.read_result(bound.is_some_and(|b| b.provider == crate::memory::MEMORY_PROVIDER), &result.text);
     #[allow(unused_mut)]
     let mut shown = result.text.clone();
     #[cfg(feature = "skills")]
@@ -1230,6 +1336,63 @@ fn replayable_message(response: &ChatResponse) -> Message {
         }
     }
     assistant
+}
+
+/// Characters of a tool call's arguments and result in a [`turn_digest`].
+#[cfg(feature = "memory")]
+const DIGEST_ARGUMENTS_CHARS: usize = 200;
+#[cfg(feature = "memory")]
+const DIGEST_RESULT_CHARS: usize = 300;
+/// Characters of a whole [`turn_digest`].
+#[cfg(feature = "memory")]
+const DIGEST_CHARS: usize = 2_000;
+
+/// What the tools did in this run, short enough to send with the next turn
+/// of a conversation (output `turn_digest`): per call the tool, its
+/// arguments and the start of its result, from what the model saw, with the
+/// run's secrets masked. Memory tools are left out: what they return is
+/// recalled again when it matters. `None` when no tool was called.
+#[cfg(feature = "memory")]
+fn turn_digest(log: &[ToolLogEntry], secrets: Option<&graphrt_core::redact::SecretSet>) -> Option<String> {
+    // Secrets are masked before anything is cut, so no part of one survives a cut.
+    let scrub = |text: &str| -> String {
+        match secrets {
+            Some(secrets) => secrets.scrub(text).into_owned(),
+            None => text.to_owned(),
+        }
+    };
+    let cut = |text: &str, max: usize| -> String {
+        let text = scrub(text);
+        let flat: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        match flat.char_indices().nth(max) {
+            Some((at, _)) => format!("{}...", flat.get(..at).unwrap_or_default()),
+            None => flat,
+        }
+    };
+    let mut digest = String::new();
+    for entry in log.iter().filter(|e| e.provider != crate::memory::MEMORY_PROVIDER) {
+        let arguments = cut(&entry.arguments.to_string(), DIGEST_ARGUMENTS_CHARS);
+        let line = match entry.is_error {
+            true => format!("- {}({arguments}) failed: {}\n", entry.name, cut(&entry.result, DIGEST_RESULT_CHARS)),
+            false => format!("- {}({arguments}) returned: {}\n", entry.name, cut(&entry.result, DIGEST_RESULT_CHARS)),
+        };
+        if digest.chars().count() + line.chars().count() > DIGEST_CHARS {
+            digest.push_str("- (more calls left out)\n");
+            break;
+        }
+        digest.push_str(&line);
+    }
+    if digest.is_empty() {
+        return None;
+    }
+    // Once more over the whole: a secret could also be split across a name and its arguments.
+    Some(scrub(digest.trim_end()))
+}
+
+/// Notes saved earlier in this node run, from its tool log.
+#[cfg(feature = "memory")]
+fn memory_writes(log: &[ToolLogEntry]) -> usize {
+    log.iter().filter(|e| e.provider == crate::memory::MEMORY_PROVIDER && e.tool == "remember" && !e.is_error).count()
 }
 
 /// The tool results the context guard must leave alone, as the id of the
@@ -2765,6 +2928,33 @@ mod tests {
         let request = s3.model.requests().pop().unwrap();
         let user = request.messages.iter().find(|m| m.role == Role::User).unwrap().text();
         assert_eq!(user.matches("Pages one to four were about lorem.").count(), 1);
+    }
+
+    #[cfg(feature = "memory")]
+    #[test]
+    fn the_turn_digest_masks_a_secret_even_where_a_result_is_cut() {
+        let secret = "s3cr3t-0123456789abcdef";
+        let secrets = graphrt_core::redact::SecretSet::new();
+        secrets.observe_plaintext(secret);
+        // The secret starts just before the cut of 300 characters.
+        let result = format!("{}{secret} and more", "x".repeat(290));
+        let entry = |provider: &str| ToolLogEntry {
+            id: "c1".into(),
+            name: "fetch".into(),
+            provider: provider.into(),
+            tool: "fetch".into(),
+            arguments: json!({"token": secret}),
+            result: result.clone(),
+            is_error: false,
+            images: 0,
+            ui: Vec::new(),
+            #[cfg(feature = "tool-files")]
+            files: Vec::new(),
+        };
+        let digest = turn_digest(&[entry("web"), entry(crate::memory::MEMORY_PROVIDER)], Some(&secrets)).unwrap();
+        assert!(!digest.contains(&secret[..8]), "{digest}");
+        assert_eq!(digest.lines().count(), 1, "memory tools are left out: {digest}");
+        assert!(turn_digest(&[], Some(&secrets)).is_none());
     }
 
     #[cfg(all(feature = "context", feature = "skills"))]

@@ -158,8 +158,10 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let loopback = listener.is_local();
     #[cfg(feature = "files")]
     refuse_open_workspace_api(&state, api_key.is_some(), loopback, &args.api_key_env)?;
+    #[cfg(feature = "memory")]
+    refuse_open_memory(&state, api_key.is_some(), loopback, &args.api_key_env)?;
     // Granting tools to skills and approving lessons outlive a run: not for anyone who reaches the port.
-    #[cfg(any(feature = "skills", feature = "learning"))]
+    #[cfg(any(feature = "skills", feature = "learning", feature = "memory"))]
     if api_key.is_none() && !loopback {
         state.close_owner_api();
     }
@@ -206,6 +208,22 @@ fn refuse_open_workspace_api(
     }
     Err(CliError::usage(format!(
         "`--workspace-api` on an address other hosts can reach needs an API key: set ${api_key_env}"
+    )))
+}
+
+/// A server any host can reach without a key, whose agents remember users
+/// and that does not verify who the user is, would let every caller read
+/// any user's memory by naming them in `sys.user_id`.
+///
+/// @throws CliError (usage) - in that case.
+#[cfg(feature = "memory")]
+fn refuse_open_memory(state: &AppState, has_api_key: bool, loopback: bool, api_key_env: &str) -> Result<(), CliError> {
+    if has_api_key || loopback || state.verifies_user_tokens() || state.memory_agents().is_empty() {
+        return Ok(());
+    }
+    Err(CliError::usage(format!(
+        "workflows with `long_term_memory` on an address other hosts can reach need an API key (set ${api_key_env}) \
+         or verified user tokens (--verify-jwt): otherwise any caller could read any user's memory"
     )))
 }
 
@@ -606,9 +624,11 @@ fn print_startup(state: &AppState, report: &StartupReport<'_>) {
     }
     #[cfg(feature = "skills")]
     print_bundled_skills(state);
-    #[cfg(any(feature = "skills", feature = "learning"))]
+    #[cfg(any(feature = "skills", feature = "learning", feature = "memory"))]
     if !report.has_api_key && !report.loopback {
         eprintln!("  /v1/skills and /v1/learning are refused: they need an API key on a network address");
+        #[cfg(feature = "memory")]
+        eprintln!("  /v1/memory is refused too, for the same reason");
     }
     if !report.has_api_key {
         print_keyless_warnings(report);

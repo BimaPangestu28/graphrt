@@ -45,6 +45,18 @@ pub struct ServiceOptions {
     /// one. `graphrt serve` manages the same store under `/v1/learning`.
     /// Builds with `learning`.
     pub learning_dir: Option<std::path::PathBuf>,
+    /// Memory store for `agent` nodes with `long_term_memory`, instead of
+    /// `$GRAPHRT_MEMORY_DIR` or `~/.graphrt/memory`. Builds with `memory`
+    /// (left out of the others, so the gateway and slim builds stay as small).
+    #[cfg(feature = "memory")]
+    pub memory_dir: Option<std::path::PathBuf>,
+    /// The tenant of every memory scope (`serve --memory-tenant`): one
+    /// directory per tenant, erased by removing it. Builds with `memory`.
+    #[cfg(feature = "memory")]
+    pub memory_tenant: Option<String>,
+    /// `--memory-embedder`: `openai/MODEL` or `local`. Builds with `memory`.
+    #[cfg(feature = "memory")]
+    pub memory_embedder: Option<String>,
 }
 
 /// The workspace the agents use (`--workspace`), kept in the host services so
@@ -262,6 +274,20 @@ pub async fn services(
     #[cfg(feature = "learning")]
     if let Some(root) = options.learning_dir.clone().or_else(graphrt_learn::LessonStore::default_root) {
         services.insert(Arc::new(graphrt_learn::LessonStore::open(root)).into_service());
+    }
+    // Long term memory: opening the store does no I/O, so this costs nothing
+    // until an `agent` node has `long_term_memory`.
+    #[cfg(feature = "memory")]
+    {
+        let store = graphrt_memory::MemoryStore::open(
+            options.memory_dir.clone().unwrap_or_else(graphrt_memory::MemoryStore::default_root),
+        );
+        let store = match &options.memory_embedder {
+            Some(spec) => store.with_embedder(memory_embedder(spec, &options.all_vars())?),
+            None => store,
+        };
+        services.insert(store.clone().into_service());
+        services.insert(store);
     }
     #[allow(unused_mut)]
     let mut plugin_tools = plugin_tools;
@@ -664,6 +690,58 @@ pub fn save_runtime_datasets(config: &Path, kb: &graphrt_rag::KnowledgeBase) -> 
         let _cleanup = std::fs::remove_file(&temp);
         io(&path, e)
     })
+}
+
+/// What a workflow's memory scopes take from the host: the tenant of the
+/// process and the workflow's name as the default agent name.
+#[cfg(feature = "memory")]
+pub fn with_memory_defaults(services: &mut graphrt_core::Services, options: &ServiceOptions, workflow: &str) {
+    services.insert(graphrt_core::memory::MemoryDefaults {
+        tenant: options.memory_tenant.clone(),
+        agent: Some(workflow.to_owned()),
+    });
+}
+
+/// The embedder of `--memory-embedder`.
+///
+/// @throws CliError - a spec this build cannot serve, or an `openai` model
+///   without `OPENAI_API_KEY`.
+#[cfg(feature = "memory")]
+fn memory_embedder(spec: &str, vars: &[(String, String)]) -> Result<Arc<dyn graphrt_memory::Embedder>, CliError> {
+    let var = |name: &str| {
+        vars.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v.clone()).or_else(|| std::env::var(name).ok())
+    };
+    if spec == "local" {
+        #[cfg(feature = "local-embed")]
+        {
+            let embedder = graphrt_rag::LocalEmbedder::new(graphrt_rag::LocalEmbedderConfig::default())
+                .map_err(|e| CliError::usage(format!("--memory-embedder local: {e}")))?;
+            return Ok(Arc::new(embedder));
+        }
+        #[cfg(not(feature = "local-embed"))]
+        return Err(CliError::usage("--memory-embedder local needs a build with the `local-embed` feature"));
+    }
+    if let Some(model) = spec.strip_prefix("openai/").filter(|m| !m.is_empty()) {
+        #[cfg(feature = "rag")]
+        {
+            let key = var("OPENAI_API_KEY")
+                .filter(|k| !k.is_empty())
+                .ok_or_else(|| CliError::usage("--memory-embedder openai/...: OPENAI_API_KEY is not set"))?;
+            let base =
+                var("OPENAI_BASE_URL").filter(|b| !b.is_empty()).unwrap_or_else(|| "https://api.openai.com/v1".into());
+            let config = graphrt_rag::OpenAiEmbedderConfig::new(base, model).api_key(key);
+            let embedder = graphrt_rag::OpenAiEmbedder::new(config)
+                .map_err(|e| CliError::usage(format!("--memory-embedder {spec}: {e}")))?;
+            return Ok(Arc::new(embedder));
+        }
+        #[cfg(not(feature = "rag"))]
+        {
+            let _ = model;
+            return Err(CliError::usage("--memory-embedder openai/...: needs a build with the `rag` feature"));
+        }
+    }
+    let _ = var;
+    Err(CliError::usage(format!("--memory-embedder `{spec}`: expected `openai/MODEL` or `local`")))
 }
 
 #[cfg(test)]

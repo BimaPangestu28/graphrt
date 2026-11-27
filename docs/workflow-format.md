@@ -128,6 +128,12 @@ read them. The contract:
   `context_window` (see below) in builds that have it.
 - `memory.variable_selector` reads the history from another variable (default
   `[sys, history]`).
+- An `assistant` item may carry `tool_digest`: what the tools of that turn
+  did, as text (the `turn_digest` output of an `agent`). `graphrt serve
+  --conversations` stores it and sends it back. In builds with the `memory`
+  feature it is put in front of the answer as a framed record written by the
+  runtime (data, not instructions, at most 2 000 characters), so the next turn
+  knows what was looked up or changed. Builds without the feature ignore it.
 - `llm`: the history goes after the system prompt, then the current query as a
   user message (`memory.query_prompt_template`, default `{{#sys.query#}}`; not
   added again when a prompt message already references `sys.query`). `agent`:
@@ -486,6 +492,7 @@ learning:                 # optional: read approved lessons into the system prom
   agent: support-bot
   user: "{{#sys.user_id#}}"
 context_window: auto      # optional (default auto): see "Context window"
+long_term_memory: auto    # optional: notes the agent saves and finds again in later runs
 ```
 
 Runs a tool-calling loop until the model answers without tools (the last
@@ -536,6 +543,20 @@ feature of the CLI). See [skills.md](skills.md).
 given, to the system prompt after the instruction. The node only reads lessons.
 It needs a host with a lesson store (the `learning` cargo feature of the CLI).
 See [learning.md](learning.md).
+
+`long_term_memory` gives the agent the tools `memory/remember`,
+`memory/recall` and `memory/forget` over notes kept per user, and with
+`recall: auto` (the default) adds matching notes to the request when a run
+starts, as data in the user message. `auto` is the same as
+`{agent: <workflow name>, user: "{{#sys.user_id#}}", recall: auto, write:
+guarded}`. `write: review` sends every note to review, `open` uses every note
+at once except text that reads like an instruction, `off` only reads. Notes
+built from tool results wait for review under `guarded`. A run without a user
+only proposes notes for the agent as a whole. The tools are ordinary tools, so
+`require_approval: [memory/remember]` makes every write wait for a person. It
+needs a host with a memory store (the `memory` cargo feature of the CLI, in
+the default build). With tools that were called the node also outputs
+`turn_digest` (see "Conversation history"). See [memory.md](memory.md).
 
 ### `question-classifier` (branch)
 

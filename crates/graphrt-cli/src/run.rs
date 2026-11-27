@@ -66,6 +66,20 @@ pub fn service_options(args: &ServiceArgs) -> Result<ServiceOptions, CliError> {
         capture_content: false,
         skills_dir: None,
         learning_dir: None,
+        #[cfg(feature = "memory")]
+        memory_dir: args.memory_dir.clone(),
+        #[cfg(feature = "memory")]
+        memory_tenant: match &args.memory_tenant {
+            Some(tenant) => {
+                graphrt_memory::check_name("tenant", tenant)
+                    .map_err(|e| CliError::usage(format!("--memory-tenant: {e}")))?;
+                Some(tenant.clone())
+            }
+            None => None,
+        },
+
+        #[cfg(feature = "memory")]
+        memory_embedder: args.memory_embedder.clone(),
     })
 }
 
@@ -98,7 +112,14 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
 
     let telemetry = crate::otel::Telemetry::from_args(&args.services, &options.all_vars())?;
     options.capture_content = crate::otel::captures_content(telemetry.as_ref());
-    let services = setup::services(&options, extensions.tools.clone()).await?;
+    #[allow(unused_mut)]
+    let mut services = setup::services(&options, extensions.tools.clone()).await?;
+    #[cfg(feature = "memory")]
+    {
+        let stem = args.workflow.file_stem().and_then(|s| s.to_str()).unwrap_or("workflow").to_owned();
+        let name = graph.workflow().name.clone().unwrap_or(stem);
+        setup::with_memory_defaults(&mut services, &options, &name);
+    }
     let engine = Engine::new(graph.clone())
         .with_services(services)
         .with_clock(Arc::new(TokioClock))

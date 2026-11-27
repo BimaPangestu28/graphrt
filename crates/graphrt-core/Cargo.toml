@@ -30,6 +30,9 @@ store-conformance = []
 # Cron expressions and time zones (`graphrt_core::cron`), for schedules: the
 # gateway's cron triggers and the sync schedules of knowledge sources.
 cron = []
+# The memory contract (`graphrt_core::memory`): notes an agent saves and finds
+# again in later runs. Left out of builds without long term memory.
+memory = []
 
 [dependencies]
 futures.workspace = true

@@ -111,18 +111,19 @@ pub struct MemoryScope {
     pub agent: String,
     /// The user the run is for. `None` addresses the agent's own memory.
     pub user: Option<String>,
-    /// The conversation. `Some` addresses notes that live with one conversation.
-    pub conversation: Option<String>,
 }
 
 pub trait MemoryBank: Send + Sync + fmt::Debug {
     fn remember<'a>(&'a self, scope: &'a MemoryScope, note: NewMemory) -> BoxFuture<'a, Result<MemoryRecord, MemoryError>>;
     fn recall<'a>(&'a self, scope: &'a MemoryScope, query: &'a MemoryQuery) -> BoxFuture<'a, Result<Vec<MemoryHit>, MemoryError>>;
-    fn forget<'a>(&'a self, scope: &'a MemoryScope, target: &'a ForgetTarget) -> BoxFuture<'a, Result<usize, MemoryError>>;
+    fn forget<'a>(&'a self, scope: &'a MemoryScope, target: &'a ForgetTarget, source: &'a MemorySource) -> BoxFuture<'a, Result<usize, MemoryError>>;
 }
 
 /// Service registered in `Services`.
 pub struct Memories(pub Arc<dyn MemoryBank>);
+
+/// Service the host registers per workflow: what a node cannot know.
+pub struct MemoryDefaults { pub tenant: Option<String>, pub agent: Option<String> }
 ```
 
 The names avoid `MemoryStore`, which is already the in process vector store of
@@ -310,7 +311,7 @@ would have that text streamed again by the second attempt.
 The `llm` node uses the same function on its one request: history turns are
 the groups, the system messages and the last user message are protected.
 
-### Tool activity of earlier turns (delivered with stage 2)
+### Tool activity of earlier turns (delivered with stage 2, cargo feature `memory`)
 
 Today a conversation stores the user message and the final answer. What the
 agent did in between is lost on the next turn. The fix keeps a digest, not the
@@ -341,6 +342,52 @@ transcript:
 - The state with a learned limit and a summary survives pause and resume.
 
 ## Stage 2: long term
+
+### As built, and where it differs from the plan below
+
+The plan below is what was decided before the code. Building it changed a few
+decisions, each for a reason:
+
+| Planned | Built | Why |
+| --- | --- | --- |
+| Tenant from a claim of the user token (`--memory-tenant-claim`) | Tenant per process (`--memory-tenant NAME`), given to nodes by the host as the `MemoryDefaults` service | The server knows a caller only by subject (`Caller::User(sub)`), and a claim per route is a change to every authenticated route. A deployment per tenant is how the gateway already isolates tenants, and a service the host sets cannot be reached by a request at all, so a client cannot move a run into another tenant (tested with a `sys.tenant_id` sent by a user). |
+| Agent name defaults to the workflow name through the document | The host gives it in `MemoryDefaults` (the served name, or the document name and then the file name for `graphrt run`) | A node is built without its workflow. Without a name the node fails with `memory_scope` instead of guessing. |
+| A `conversation` level of notes | Not built. Within a conversation the tool digest (below) carries what happened | Two ways to remember one conversation would overlap. The level can be added to `MemoryScope` later without a format change. |
+| Three origins | Four: `model_after_tools` is kept apart from `model_inferred` | So the audit log and the review queue show why a note waits. |
+| Keyword search without stemming | A light stemmer (English and Indonesian suffixes) in front of BM25 | "invoice" did not find "invoices" in the first end to end test, which is the most common miss of keyword recall. |
+| Embedder from the knowledge base | `--memory-embedder openai/MODEL` or `local`, else keyword only | A knowledge base has one embedder per dataset, none of which is the memory's. Nothing downloads a model unless the owner asks. |
+| Promote a note to a lesson | Not built. The owner adds the lesson with `graphrt learn add` | Kept for a later change: it needs a decision on how a note's provenance shows in a lesson. |
+
+Recall from a run marks the notes it returns as used (one write of the scope
+file, skipped for notes used in the last minute). That is what keeps the
+eviction order honest.
+
+Review of the first implementation changed or added, each with a test: the
+evidence of a run is read again in full before every write (a trim may have
+removed messages), earlier turns count as outside content, tags are masked
+like text, a note being saved is never retired by its own write, a writer
+never merges into a note of more trust, forget by words is refused after
+outside content and never removes the owner's notes, audit lines go first,
+the audit log rotates at 4 MiB, a lookup of an unknown scope creates nothing,
+a request built from a template counts only the words of `sys.query` as the
+user's, a run never removes or retires the owner's notes and removes at most
+5 notes,
+users per agent are bounded, `/v1/me` reaches served agents only, a newer
+file format is refused, and `serve` refuses an open address without key or
+user verification when a workflow has memory.
+
+Known limit: a run without `sys.query` (a workflow that starts from its own
+inputs) counts its whole request as the user's words, since nothing tells
+the user's part from the rest. An agent whose request pulls in documents
+should get the user's message through `sys.query`.
+
+Findings that were not taken, with the reason: a keyed hash of user ids in
+the audit log (the key would sit beside the log with the same access, so it
+protects nothing the file mode does not), erasing the agent level proposals
+of a user (a run with a user never writes the agent level), and owner
+operations on the `MemoryBank` trait (they move to the trait with default
+methods when the graph store of stage 3 needs them, which does not break
+callers).
 
 ### Shape
 
@@ -471,8 +518,11 @@ Every write from a run passes these steps in order. Each has a test.
    | reads like an instruction to the agent ("ignore", "always call", "system prompt") | pending | pending | pending |
 
    A pending note is stored and is never returned by `recall` until the owner
-   (or the user, for their own notes) approves it. So content from a tool
-   result or the web does not become memory by itself.
+   approves it. (The plan let the user approve their own notes too. Review
+   showed that a user could then clear what `write: review` and the
+   instruction check held back, so the user sees and removes, the owner
+   decides.) So content from a tool result or the web does not become memory
+   by itself.
 6. **Audit.** One line: time, action, note id, scope, actor, run, node,
    origin, decision, size and the SHA-256 of the text. Never the text, so
    erasing a user does not have to rewrite the log.
@@ -613,6 +663,9 @@ user removes the graph, and every change is in the audit log.
 | A person asks for their data or its removal | Export and erase per user, for the owner and for the verified user. Audit lines hold no text. | After erase: no file of the user remains, recall is empty, the audit log has one erase line. |
 | Somebody denies having written a note | Audit line per change with actor, run and text hash. | Every write, approval, removal and erase adds one line. |
 | Path traversal through agent or user names | Agent names are checked against the rule lessons use. User and conversation ids are hashed. | Names with `..`, separators and NUL are refused or hashed. |
+| A client picks another tenant or another workflow's memory | Tenant and default agent come from the host's `MemoryDefaults`, never from the request. | A user who sends `sys.tenant_id` recalls only the notes of the server's tenant. |
+| A tool digest in the history carries planted text into the next turn | The digest is built from what the model already saw (tool context values masked), run secrets are masked, memory tools are left out, it is cut to 2 000 characters and framed as a record of the runtime with brackets replaced and lines indented. | Digest framing test, digest content test. |
+| A user token reaches the owner API, or the key reaches a user's memory | `/v1/memory` takes the key only (a user token is refused), `/v1/me/memory` takes a verified user only (the key is refused), and only that user's scope. | Route tests for both. |
 
 Known limits of stage 1, stated plainly: the frame of the context note is
 fixed text, not a random boundary (requests have to stay the same for
@@ -640,13 +693,13 @@ stage's pull request reports the measured numbers next to these.
 | Trim of 1 000 messages (tiers 1 and 2) | under 2 ms (measured 0.45 ms) |
 | Overhead per agent turn with `auto` and no known limit | none: nothing is estimated (measured: equal to `off`) |
 | Overhead per agent turn with a known limit that is not reached | under 100 µs for a 240 KiB conversation (measured about 30 µs) |
-| `recall` by keyword at 500 notes, scope cached | under 1 ms |
-| First load of a scope of 500 notes | under 10 ms |
-| `remember` with fsync | under 20 ms at the 95th percentile |
+| `recall` by keyword at 500 notes, scope cached | under 1 ms (measured p50 36 µs, p95 61 µs) |
+| First load of a scope of 500 notes | under 10 ms (measured 0.19 ms with the recall) |
+| `remember` with fsync | under 20 ms at the 95th percentile (measured p95 0.67 ms on the development disk) |
 | Graph search, 2 hops, 2 000 entities and 10 000 relations | under 5 ms |
 | Idle memory of a server that has the features and uses none | no change |
-| Binary size, default build | `context` under 100 KiB (measured 77 KiB), `memory` under 300 KiB, `memory-graph` under 200 KiB |
-| Binary size, `agent-slim` and `agent-minimal` | no change beyond the check that refuses a key the build cannot honour (measured: minimal 0, slim +3.6 KiB for stage 1) |
+| Binary size, default build | `context` under 100 KiB (measured 77 KiB), `memory` under 300 KiB (measured 412 KiB: the HTTP routes and the CLI command are in it, they could move behind a feature of their own if the default build gets tight), `memory-graph` under 200 KiB |
+| Binary size, `agent-slim` and `agent-minimal` | no change beyond the check that refuses a key the build cannot honour (measured: minimal 0, slim +3.6 KiB for stage 1, then minimal -352 B and slim +3.2 KiB for stage 2) |
 
 ## What each stage delivers
 

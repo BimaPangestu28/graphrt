@@ -120,6 +120,37 @@ fn context_window() -> Json {
     })
 }
 
+/// Builds without memory accept the key, so that a document can say `off`.
+/// The node refuses any other value when it is built.
+#[cfg(not(feature = "memory"))]
+fn long_term_memory() -> Json {
+    json!({ "description": "Needs a build with long term memory, unless it is `off`." })
+}
+
+/// The schema of `long_term_memory`.
+#[cfg(feature = "memory")]
+fn long_term_memory() -> Json {
+    json!({
+        "description": "Notes the agent saves with the tools memory/remember, memory/recall and \
+                        memory/forget and finds again in later runs, per user. `auto` also adds \
+                        matching notes to the request when a run starts. Needs a host with a memory \
+                        store.",
+        "oneOf": [
+            { "type": "string", "enum": ["auto", "off"] },
+            { "type": "boolean" },
+            nested(
+                json!({
+                    "agent": { "type": "string", "description": "The agent the memory belongs to (default: the workflow name)" },
+                    "user": template("The user the run is for (default `{{#sys.user_id#}}`)"),
+                    "recall": { "type": "string", "enum": ["auto", "off"], "default": "auto" },
+                    "write": { "type": "string", "enum": ["guarded", "review", "open", "off"], "default": "guarded" }
+                }),
+                &[]
+            )
+        ]
+    })
+}
+
 pub(crate) fn question_classifier() -> NodeDescriptor {
     let class = nested(
         json!({
@@ -302,7 +333,8 @@ pub(crate) fn agent() -> NodeDescriptor {
                         "user": template("The user the run is for; that user's lessons are added too")
                     }),
                     &["agent"]
-                )
+                ),
+                "long_term_memory": long_term_memory()
             })),
             &["model"],
         ))
@@ -320,6 +352,10 @@ pub(crate) fn agent() -> NodeDescriptor {
         OutputDescriptor::new("files", ValueType::ArrayFile)
             .describe("Files returned by the tools the agent called (for example files it wrote)"),
     );
+    #[cfg(feature = "memory")]
+    let descriptor = descriptor.output(OutputDescriptor::new("turn_digest", ValueType::String).describe(
+        "Only when tools were called: what each did, short, for the history of the next turn of a conversation",
+    ));
     #[cfg(feature = "context")]
     let descriptor =
         descriptor.output(OutputDescriptor::new("context", ValueType::Object).describe(

@@ -587,6 +587,53 @@
             "agent"
           ]
         },
+        "long_term_memory": {
+          "description": "Notes the agent saves with the tools memory/remember, memory/recall and memory/forget and finds again in later runs, per user. `auto` also adds matching notes to the request when a run starts. Needs a host with a memory store.",
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "off"
+              ]
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "agent": {
+                  "type": "string",
+                  "description": "The agent the memory belongs to (default: the workflow name)"
+                },
+                "user": {
+                  "type": "string",
+                  "description": "The user the run is for (default `{{#sys.user_id#}}`)"
+                },
+                "recall": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "off"
+                  ],
+                  "default": "auto"
+                },
+                "write": {
+                  "type": "string",
+                  "enum": [
+                    "guarded",
+                    "review",
+                    "open",
+                    "off"
+                  ],
+                  "default": "guarded"
+                }
+              },
+              "required": []
+            }
+          ]
+        },
         "context_window": {
           "description": "What happens when the conversation outgrows the model's context window. `auto` (the default) trims it when the provider refuses a request for its size, or when `max_tokens` is passed, and sends the request again. `summarize` also keeps a rolling summary of what was removed. `off` trims nothing.",
           "oneOf": [

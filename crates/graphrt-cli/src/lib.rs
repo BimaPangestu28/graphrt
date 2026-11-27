@@ -61,6 +61,10 @@ pub mod learn_cmd;
 pub mod learning_api;
 #[cfg(feature = "serve")]
 pub mod listen;
+#[cfg(all(feature = "memory", feature = "serve"))]
+pub mod memory_api;
+#[cfg(feature = "memory")]
+pub mod memory_cmd;
 #[cfg(feature = "notify")]
 pub mod notify;
 #[cfg(feature = "online-eval")]
@@ -196,6 +200,12 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "learning") {
         features.push("learning");
     }
+    if cfg!(feature = "context") {
+        features.push("context");
+    }
+    if cfg!(feature = "memory") {
+        features.push("memory");
+    }
     features
 }
 
@@ -211,6 +221,8 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         Command::Skill(args) => block_on_current_thread(skill_cmd::skill(args)),
         #[cfg(feature = "learning")]
         Command::Learn(args) => block_on_current_thread(learn_cmd::learn(args)),
+        #[cfg(feature = "memory")]
+        Command::Memory(args) => block_on_current_thread(memory_cmd::memory(args)),
         Command::Nodes(args) => catalog::nodes(&args),
         #[cfg(feature = "telemetry")]
         Command::Telemetry(args) => telemetry::telemetry(&args),

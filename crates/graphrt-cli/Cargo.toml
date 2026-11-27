@@ -22,13 +22,18 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "connectors", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor", "channel-telegram", "channel-whatsapp", "channel-slack", "channel-teams", "context"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "connectors", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor", "channel-telegram", "channel-whatsapp", "channel-slack", "channel-teams", "context", "memory"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # `context_window` of the `llm` and `agent` nodes: a conversation that outgrows the
 # model's context window is trimmed and sent again instead of failing the node. Not in
 # the slim builds (`serve,llm,plugins`), whose nodes send every message as before.
 context = ["llm", "graphrt-llm/context"]
+# `long_term_memory` of the `agent` node: notes per tenant, agent and user in files
+# (`$GRAPHRT_MEMORY_DIR`, default `~/.graphrt/memory`), `graphrt memory` and, with
+# `serve`, `/v1/memory` for the owner and `/v1/me/memory` for the verified user.
+# Not in the slim builds (`serve,llm,plugins`), which refuse a document that asks for it.
+memory = ["llm", "graphrt-llm/memory", "dep:graphrt-memory", "dep:sha2"]
 # http-request node with SSRF-safe egress.
 http = ["dep:graphrt-http", "dep:reqwest"]
 # code node (embedded JavaScript).
@@ -231,6 +236,7 @@ graphrt-connect = { workspace = true, optional = true, features = ["default"] }
 graphrt-plugin = { workspace = true, optional = true }
 graphrt-skill = { workspace = true, optional = true }
 graphrt-learn = { workspace = true, optional = true }
+graphrt-memory = { workspace = true, optional = true }
 graphrt-wasm = { workspace = true, optional = true }
 graphrt-otel = { workspace = true, optional = true, features = ["http"] }
 graphrt-bundle = { workspace = true, optional = true }

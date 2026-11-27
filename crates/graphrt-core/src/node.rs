@@ -574,6 +574,14 @@ impl NodeContext {
         }
     }
 
+    /// The run's secret registry, for a node that keeps text beyond the run
+    /// (a saved note, for example) and must mask the secrets in it first. It
+    /// only masks: the values themselves cannot be read from it. `None`
+    /// outside the engine.
+    pub fn secret_values(&self) -> Option<Arc<SecretSet>> {
+        self.secret_values.clone()
+    }
+
     /// Time left before the current attempt times out, if it has a deadline.
     /// Nodes that block synchronously (e.g. an embedded interpreter) should
     /// cap their own work by this.
