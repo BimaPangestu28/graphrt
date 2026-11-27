@@ -13,8 +13,8 @@ use std::io::Write as _;
 use std::path::Path;
 
 use graphrt_provider_fly::direct::{
-    AgentFile, ChatAccess, ChatOptions, DeployRequest, DirectError, DirectSettings, ErrorCode, FlyDirect, ServeOptions,
-    ServiceMode, StepEvent, StepStatus, app_name_for,
+    AgentFile, ChatAccess, ChatOptions, DeployRequest, DirectChannel, DirectError, DirectSettings, ErrorCode,
+    FlyDirect, ServeOptions, ServiceMode, StepEvent, StepStatus, app_name_for,
 };
 use graphrt_provider_fly::{FLY_API_TOKEN_ENV, FlyToken, TokenOrigin};
 use serde_json::{Value, json};
@@ -346,6 +346,13 @@ fn serve_options(args: &DirectServeArgs) -> Result<ServeOptions, Failure> {
         approvals: args.approvals,
         expire_approvals: args.expire_approvals,
         push: args.push.clone(),
+        channels: args
+            .channel
+            .iter()
+            .map(|kind| {
+                DirectChannel::parse(kind).ok_or_else(|| Failure::invalid("--channel takes telegram or whatsapp"))
+            })
+            .collect::<Result<_, _>>()?,
     })
 }
 
@@ -495,6 +502,15 @@ mod tests {
         assert_eq!(options.cors_origins, ["https://www.example.com"]);
         let orphan = DirectServeArgs { chat_access: Some(DirectChatAccess::Guests), ..DirectServeArgs::default() };
         assert!(serve_options(&orphan).unwrap_err().message.contains("--chat-access needs --chat"));
+        let channels = DirectServeArgs {
+            channel: vec!["whatsapp".to_owned(), "telegram".to_owned()],
+            ..DirectServeArgs::default()
+        };
+        let options = serve_options(&channels).unwrap();
+        assert_eq!(options.channels, [DirectChannel::WhatsApp, DirectChannel::Telegram]);
+        assert!(options.needs_store());
+        let unknown = DirectServeArgs { channel: vec!["sms".to_owned()], ..DirectServeArgs::default() };
+        assert!(serve_options(&unknown).unwrap_err().message.contains("telegram or whatsapp"));
     }
 
     #[test]

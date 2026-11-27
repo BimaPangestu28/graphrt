@@ -112,6 +112,10 @@ pub struct DirectServeArgs {
     /// CONTACT is `mailto:you@example.com` or an `https:` URL (uses the store volume).
     #[arg(long, value_name = "CONTACT")]
     pub push: Option<String>,
+    /// Direct: answer customers on `telegram` or `whatsapp`, credentials
+    /// passed with `--secret` (docs/deploy-direct.md). Repeatable.
+    #[arg(long, value_name = "KIND")]
+    pub channel: Vec<String>,
     /// Direct: delete the store volume and what is on it (paired devices,
     /// push subscriptions, conversations) once this deploy serves. Not with an
     /// option that uses the store.
@@ -135,6 +139,7 @@ impl DirectServeArgs {
             ("--approvals", self.approvals),
             ("--expire-approvals", self.expire_approvals),
             ("--push", self.push.is_some()),
+            ("--channel", !self.channel.is_empty()),
             ("--drop-store", self.drop_store),
         ]
         .into_iter()
