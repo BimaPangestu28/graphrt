@@ -3,7 +3,7 @@
 //!
 //! | Method | Path | Body | Answer |
 //! | --- | --- | --- | --- |
-//! | GET | `/v1/approvals` | query `workflow`, `limit`, `cursor` | `{approvals, next_cursor}`, most recently paused first |
+//! | GET | `/v1/approvals` | query `workflow`, `limit`, `cursor` | `{approvals, next_cursor, expiry_enforced}`, most recently paused first |
 //! | POST | `/v1/approvals/{run_id}` | `{inputs}` | `202` + where to follow the run |
 //!
 //! Both take the API key, or a device token ([`crate::devices`]) with the scope
@@ -203,7 +203,14 @@ async fn list(State(state): State<Arc<AppState>>, RawQuery(raw): RawQuery) -> Re
                     (!requests.is_empty()).then(|| entry_json(record, &requests))
                 })
                 .collect();
-            Json(serde_json::json!({ "approvals": approvals, "next_cursor": page.next_cursor })).into_response()
+            // `expiry_enforced`: whether this server carries `on_expire` out at `expires_ms`.
+            let expiry_enforced = state.approvals().is_some_and(|inbox| inbox.expire);
+            Json(serde_json::json!({
+                "approvals": approvals,
+                "next_cursor": page.next_cursor,
+                "expiry_enforced": expiry_enforced,
+            }))
+            .into_response()
         }
         Err(e) => store_error(&e),
     }

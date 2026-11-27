@@ -104,7 +104,13 @@ describe("monitoring a server", () => {
     const session = new MonitorSession({ baseUrl: server.url, storage });
     await session.start();
     assert.equal(session.state.status, "locked");
-    assert.deepEqual(session.state.config, { access: "key", devices: true, approvals: true, push: true });
+    assert.deepEqual(session.state.config, {
+      access: "key",
+      devices: true,
+      approvals: true,
+      expire_approvals: false,
+      push: true,
+    });
     assert.equal(await session.unlock("not-the-key", true), false);
     assert.equal(session.state.status, "locked");
     assert.match(session.state.notice ?? "", /not accepted/);

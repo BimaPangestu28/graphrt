@@ -121,6 +121,48 @@ export function ago(ms: number, now = Date.now()): string {
 }
 
 /** How long until `ms`, in a few characters; `undefined` once it passed. */
+/**
+ * What happens at the time limit of `request`, in one sentence; `undefined`
+ * for a request without one.
+ *
+ * @param enforced - Whether the server carries out `on_expire` (`--expire-approvals`).
+ *   Without it nothing happens at the limit: the run keeps waiting.
+ */
+export function expiryNote(
+  request: ApprovalRequest,
+  enforced: boolean,
+  now = Date.now(),
+): string | undefined {
+  if (typeof request.expires_ms !== "number") {
+    return undefined;
+  }
+  const left = timeLeft(request.expires_ms, now);
+  if (!enforced) {
+    return left === undefined
+      ? "The time to answer has passed. The run still waits."
+      : `An answer is expected within ${left}. The run waits after that too.`;
+  }
+  const data = request.data;
+  const fields = typeof data === "object" && data !== null && !Array.isArray(data) ? data : {};
+  const onExpire = fields.on_expire;
+  const rule = typeof onExpire === "object" && onExpire !== null && !Array.isArray(onExpire) ? onExpire : {};
+  const actionId = rule.kind === "answer" && typeof rule.action === "string" ? rule.action : undefined;
+  if (actionId === undefined) {
+    return left === undefined
+      ? "The time to answer has passed: the run stops shortly."
+      : `Without an answer the run stops in ${left}.`;
+  }
+  let title = actionId;
+  for (const action of Array.isArray(fields.actions) ? fields.actions : []) {
+    if (typeof action === "object" && action !== null && !Array.isArray(action) && action.id === actionId) {
+      title = typeof action.title === "string" && action.title !== "" ? action.title : actionId;
+    }
+  }
+  return left === undefined
+    ? `The time to answer has passed: answered with "${title}" shortly.`
+    : `Without an answer it is answered with "${title}" in ${left}.`;
+}
+
 export function timeLeft(ms: number, now = Date.now()): string | undefined {
   const seconds = Math.round((ms - now) / 1000);
   if (seconds <= 0) {
@@ -477,6 +519,12 @@ export class GraphrtMonitorElement extends BaseElement {
       element = this.#newRequestCard(runId, request);
       this.#cards.set(id, { signature, element });
     }
+    // The card is kept, so the time that is left is written again on every pass.
+    const note = element.querySelector<HTMLElement>("[data-expiry]");
+    if (note !== null) {
+      const enforced = this.#session?.state.config?.expire_approvals === true;
+      note.textContent = expiryNote(request, enforced) ?? "";
+    }
     for (const control of element.querySelectorAll<HTMLButtonElement>("button[data-answer]")) {
       control.disabled = busy;
     }
@@ -487,8 +535,8 @@ export class GraphrtMonitorElement extends BaseElement {
   #newRequestCard(runId: string, request: ApprovalRequest): HTMLElement {
     const answer = (input: Json): void => void this.#session?.resolve(runId, request.key, input);
     const data = request.data;
-    const expires = typeof request.expires_ms === "number" ? timeLeft(request.expires_ms) : undefined;
-    const meta = expires !== undefined && h("p", { class: "note" }, `Answers itself or stops in ${expires}.`);
+    // Filled by `#requestCard`, which knows the time that is left on each pass.
+    const meta = typeof request.expires_ms === "number" && h("p", { class: "note", "data-expiry": "" });
     const reason = { kind: request.kind, node_id: request.node_id, ...(data === undefined ? {} : { data }) };
     const block = questionBlock(reason);
     if (block !== undefined) {

@@ -180,6 +180,8 @@ export const monitorConfigSchema = z.looseObject({
   devices: z.boolean(),
   /** Whether the approvals inbox is served (`/v1/approvals`). */
   approvals: z.boolean(),
+  /** Whether the server carries out `on_expire` of requests past their time limit (`--expire-approvals`). */
+  expire_approvals: z.optional(z.boolean()),
   /** Whether the server sends push notifications (`/v1/push`). */
   push: z.boolean(),
 });
@@ -212,6 +214,8 @@ export type Approval = z.infer<typeof approvalSchema>;
 export const approvalPageSchema = z.looseObject({
   approvals: z.array(approvalSchema),
   next_cursor: z.optional(z.nullable(z.string())),
+  /** Whether the server carries out `on_expire` when a request's `expires_ms` passes. */
+  expiry_enforced: z.optional(z.boolean()),
 });
 export type ApprovalPage = z.infer<typeof approvalPageSchema>;
 

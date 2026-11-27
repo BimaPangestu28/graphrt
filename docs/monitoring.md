@@ -147,7 +147,8 @@ curl -s https://agent.example.com/v1/approvals -H "Authorization: Bearer $TOKEN"
       ]
     }
   ],
-  "next_cursor": null
+  "next_cursor": null,
+  "expiry_enforced": false
 }
 ```
 
@@ -171,7 +172,7 @@ Follow it from `first_event`.
 
 | Request | Answer |
 | --- | --- |
-| `GET /v1/approvals?workflow=&limit=&cursor=` | `{approvals, next_cursor}`, most recently paused first |
+| `GET /v1/approvals?workflow=&limit=&cursor=` | `{approvals, next_cursor, expiry_enforced}`, most recently paused first |
 | `POST /v1/approvals/{run_id}` `{inputs}` | `202`. `409` when the run waits no more, `400` for an answer under a key nothing waits for |
 
 Both take the API key or a device token with `approvals:resolve`. Resolving is
@@ -196,6 +197,16 @@ server carries `on_expire` out, checking every 30 seconds:
   with the fields' defaults as values.
 - `stop`: the run ends as `aborted` with the reason
   `expired: nobody answered the request for input in time`.
+
+A run that waits for several requests is stopped when one of the expired ones
+says `stop`. Otherwise the expired ones are answered and the run goes on
+waiting for the rest. An answer and an expiry never both win: whichever claims
+the run first does, and the other finds nothing waiting.
+
+`expiry_enforced` in the inbox says which of the two a server does, and the
+monitoring page words each request to match: "Without an answer it is answered
+with "Reject" in 3 h" on a server that expires requests, "An answer is expected
+within 3 h. The run waits after that too" on one that does not.
 
 Tool approvals have no time limit and never expire.
 

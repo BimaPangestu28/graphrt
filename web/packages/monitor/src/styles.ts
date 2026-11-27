@@ -19,7 +19,7 @@ nav button { flex: 1; min-height: 52px; border: 0; background: transparent; colo
 nav button[aria-current="page"] { color: var(--grt-accent); box-shadow: inset 0 2px 0 var(--grt-accent); }
 .badge { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--grt-warning); color: #ffffff;
   font-size: 12px; line-height: 20px; text-align: center; }
-.chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { flex: none; min-height: 36px; padding: 0 14px; border-radius: 18px; border: 1px solid var(--grt-border); background: var(--grt-surface);
   color: var(--grt-text); font: inherit; font-size: 14px; cursor: pointer; }
 .chip[aria-pressed="true"] { background: var(--grt-accent); border-color: var(--grt-accent); color: var(--grt-accent-text); }

@@ -639,5 +639,8 @@ async fn the_monitoring_page_is_served_with_a_strict_policy() {
     assert_eq!(send(&app, request("GET", "/monitor/secrets.txt", As::Nobody, None)).await.0, StatusCode::NOT_FOUND);
     let (status, config) = call(&app, "GET", "/v1/monitor/config", As::Nobody, None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(config, json!({ "access": "key", "devices": true, "approvals": true, "push": false }));
+    assert_eq!(
+        config,
+        json!({ "access": "key", "devices": true, "approvals": true, "expire_approvals": false, "push": false })
+    );
 }

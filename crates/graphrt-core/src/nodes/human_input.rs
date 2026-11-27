@@ -48,8 +48,9 @@ pub struct HumanInputConfig {
     #[serde(default)]
     pub expire_after_ms: Option<u64>,
     /// What the host should do when the request expires: `stop` (the default)
-    /// or answer with one of `actions`. graphrt does not act on it itself; it is
-    /// reported in the pause data as `on_expire` for the host to carry out.
+    /// or answer with one of `actions`. The engine does not act on it; it is
+    /// reported in the pause data as `on_expire` for the host to carry out
+    /// (`graphrt serve --expire-approvals` does).
     #[serde(default)]
     pub on_expire: OnExpire,
     /// A UI block shown with the question, or a `{{#..#}}` reference to one.

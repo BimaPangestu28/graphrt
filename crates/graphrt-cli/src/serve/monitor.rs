@@ -8,7 +8,7 @@
 //! | GET | `/monitor/sw.js` | its service worker: shows push notifications, keeps the page installable |
 //! | GET | `/monitor/manifest.webmanifest` | the web app manifest, which makes the page installable |
 //! | GET | `/monitor/icon-192.png`, `icon-512.png`, `icon-maskable.png`, `apple-touch-icon.png` | its icons |
-//! | GET | `/v1/monitor/config` | what the page offers (approvals, pairing, push); public |
+//! | GET | `/v1/monitor/config` | what the page offers (approvals and whether they expire, pairing, push); public |
 //!
 //! The page is public like a login page: it holds nothing. Everything it shows
 //! comes from the API with the API key or a device token ([`crate::devices`])
@@ -97,6 +97,9 @@ impl Monitor {
             "access": if self.has_api_key { "key" } else { "open" },
             "devices": state.devices.is_some(),
             "approvals": state.approvals.is_some(),
+            // Whether the server carries out `on_expire` (`--expire-approvals`),
+            // so the page can say what happens at a request's time limit.
+            "expire_approvals": state.approvals.is_some_and(|approvals| approvals.expire),
             "push": push,
         })
     }

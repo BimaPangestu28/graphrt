@@ -10,6 +10,7 @@ import {
   ago,
   defineGraphrtMonitor,
   encodeQr,
+  expiryNote,
   type GraphrtMonitorElement,
   qrSvg,
   timeLeft,
@@ -186,6 +187,55 @@ test("a paired device opens the link and sees only what it may do", async () => 
   await until("the device to be out", () => monitor.session?.state.status === "locked");
   await assert.rejects(new GraphrtClient({ baseUrl: server.url, token: paired.token }).devices.me());
   monitor.remove();
+});
+
+test("a request with a time limit says what happens then, and only what the server does", () => {
+  const now = 1_000_000_000;
+  const request = (data: Record<string, unknown>, left: number | null = 3_600_000) => ({
+    key: "ask",
+    node_id: "ask",
+    kind: "human_input",
+    data: data as never,
+    ...(left === null ? {} : { expires_ms: now + left }),
+  });
+  const reject = {
+    actions: [
+      { id: "approve", title: "Approve" },
+      { id: "reject", title: "Reject" },
+    ],
+    on_expire: { kind: "answer", action: "reject" },
+  };
+  assert.equal(expiryNote(request(reject, null), true, now), undefined, "no time limit, no note");
+  assert.equal(
+    expiryNote(request(reject), true, now),
+    'Without an answer it is answered with "Reject" in 60 min.',
+  );
+  assert.equal(
+    expiryNote(request({ on_expire: { kind: "answer", action: "later" } }), true, now),
+    'Without an answer it is answered with "later" in 60 min.',
+  );
+  assert.equal(
+    expiryNote(request({ on_expire: { kind: "stop" } }), true, now),
+    "Without an answer the run stops in 60 min.",
+  );
+  assert.equal(expiryNote(request({}), true, now), "Without an answer the run stops in 60 min.");
+  assert.equal(
+    expiryNote(request(reject, -5), true, now),
+    'The time to answer has passed: answered with "Reject" shortly.',
+  );
+  assert.equal(
+    expiryNote(request({}, -5), true, now),
+    "The time to answer has passed: the run stops shortly.",
+  );
+  // A server without --expire-approvals does nothing at the limit, and the page says so.
+  assert.equal(
+    expiryNote(request(reject), false, now),
+    "An answer is expected within 60 min. The run waits after that too.",
+  );
+  assert.equal(
+    expiryNote(request(reject, -5), false, now),
+    "The time to answer has passed. The run still waits.",
+  );
 });
 
 test("times are short and a QR code is dark on white", () => {
