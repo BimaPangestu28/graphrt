@@ -61,7 +61,7 @@ pub(crate) async fn run_feedback(
         Ok(score) => (StatusCode::CREATED, axum::Json(score)).into_response(),
         Err(AgentError::Refused { status, body }) if (400..500).contains(&status) => {
             let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
-            let body = serde_json::from_str(&body).unwrap_or_else(|_| json!({ "error": body }));
+            let body = serde_json::from_slice(body.as_bytes()).unwrap_or_else(|_| json!({ "error": body }));
             (status, axum::Json(body)).into_response()
         }
         Err(failure) => error(StatusCode::BAD_GATEWAY, "agent_error", &failure.to_string()),

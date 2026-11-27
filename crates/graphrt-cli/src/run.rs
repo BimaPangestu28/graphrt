@@ -180,8 +180,8 @@ fn collect_inputs(args: &RunArgs) -> Result<IndexMap<String, Value>, CliError> {
         } else {
             std::fs::read_to_string(source).map_err(|e| CliError::usage(format!("cannot read `{source}`: {e}")))?
         };
-        let json: serde_json::Value =
-            serde_json::from_str(&text).map_err(|e| CliError::usage(format!("invalid inputs JSON: {e}")))?;
+        let json: serde_json::Value = serde_json::from_slice(text.as_bytes())
+            .map_err(|e| CliError::usage(format!("invalid inputs JSON: {e}")))?;
         let serde_json::Value::Object(map) = json else {
             return Err(CliError::usage("inputs JSON must be an object"));
         };
@@ -205,7 +205,7 @@ fn load_resume(path: &Path, raw_inputs: &[String]) -> Result<ResumeFrom, CliErro
     for raw in raw_inputs {
         let (node, json) =
             raw.split_once('=').ok_or_else(|| CliError::usage(format!("expected `node_id=json`, got `{raw}`")))?;
-        let value = match serde_json::from_str::<serde_json::Value>(json) {
+        let value = match serde_json::from_slice::<serde_json::Value>(json.as_bytes()) {
             Ok(v) => Value::from_json(v),
             Err(_) => Value::from(json),
         };

@@ -1,6 +1,6 @@
 //! Request bodies of `/internal/v1`, decoded by hand from a JSON tree.
 //!
-//! The tree comes from `serde_json::from_str::<Value>`, which the binary
+//! The tree comes from `serde_json::from_slice::<Value>`, which the binary
 //! already has, and the snapshot from [`Snapshot::from_json`] (the run store's
 //! decoder). A `#[derive(Deserialize)]` struct per body would add its own copy
 //! of every field decoder; for a feature that must stay small, picking fields
@@ -64,7 +64,7 @@ pub fn object(body: &[u8]) -> Result<Map<String, Value>, BodyError> {
         return Ok(Map::new());
     }
     let text = std::str::from_utf8(body).map_err(|_| "body is not UTF-8")?;
-    match serde_json::from_str::<Value>(text) {
+    match serde_json::from_slice::<Value>(text.as_bytes()) {
         Ok(Value::Object(map)) => Ok(map),
         Ok(_) => Err("body must be a JSON object"),
         Err(_) => Err("body is not valid JSON"),

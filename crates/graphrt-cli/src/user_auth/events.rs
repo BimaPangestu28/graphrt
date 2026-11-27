@@ -79,7 +79,7 @@ pub(crate) fn record(mut body: serde_json::Value) -> serde_json::Value {
 pub(crate) fn stored_event(event: &graphrt_core::store::StoredEvent) -> Option<(&'static str, serde_json::Value)> {
     let kind = graphrt_core::store::stored_event_type(event)?;
     let name = RUN_EVENTS.iter().copied().find(|name| *name == kind)?;
-    let mut json: serde_json::Value = serde_json::from_str(event.get()).ok()?;
+    let mut json: serde_json::Value = serde_json::from_slice(event.get().as_bytes()).ok()?;
     if let Some(object) = json.as_object_mut() {
         object.remove("error");
     }

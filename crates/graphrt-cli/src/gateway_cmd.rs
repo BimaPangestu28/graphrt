@@ -338,7 +338,7 @@ pub fn deploy(args: DeployArgs) -> Result<u8, CliError> {
     provider_settings.insert("workflow".to_owned(), serde_json::Value::from(workflow_name(&workflow)));
     for setting in &args.settings {
         let (key, value) = split_pair(setting, "--set")?;
-        let value = serde_json::from_str(value).unwrap_or_else(|_| serde_json::Value::from(value));
+        let value = serde_json::from_slice(value.as_bytes()).unwrap_or_else(|_| serde_json::Value::from(value));
         provider_settings.insert(key.to_owned(), value);
     }
     let mut env = BTreeMap::new();

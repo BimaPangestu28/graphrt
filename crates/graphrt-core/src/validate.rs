@@ -286,7 +286,7 @@ fn parse_raw(text: &str) -> Result<serde_json::Value, Box<Diagnostic>> {
         Box::new(d)
     };
     if text.trim_start().starts_with('{') {
-        return serde_json::from_str(text)
+        return serde_json::from_slice(text.as_bytes())
             .map_err(|e| syntax(format!("invalid JSON: {}", strip_position(&e.to_string())), e.line(), e.column()));
     }
     #[cfg(feature = "yaml")]
@@ -303,7 +303,7 @@ fn parse_raw(text: &str) -> Result<serde_json::Value, Box<Diagnostic>> {
     }
     #[cfg(not(feature = "yaml"))]
     {
-        serde_json::from_str(text).map_err(|e| {
+        serde_json::from_slice(text.as_bytes()).map_err(|e| {
             syntax(
                 format!("invalid JSON (YAML support is not compiled in): {}", strip_position(&e.to_string())),
                 e.line(),

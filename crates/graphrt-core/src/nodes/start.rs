@@ -102,7 +102,7 @@ impl StartNode {
                 continue;
             }
             let raw = match (&raw, spec.kind.as_str()) {
-                (Value::String(s), "json") => serde_json::from_str::<serde_json::Value>(s)
+                (Value::String(s), "json") => serde_json::from_slice::<serde_json::Value>(s.as_bytes())
                     .map(Value::from_json)
                     .map_err(|e| NodeError::invalid_input(format!("input `{}`: invalid JSON: {e}", spec.variable)))?,
                 _ => raw,
@@ -157,7 +157,8 @@ fn coerce_input(ty: ValueType, raw: Value) -> Result<Value, String> {
             ValueType::Object | ValueType::ArrayAny | ValueType::ArrayObject | ValueType::ArrayString,
             Value::String(s),
         ) => {
-            let parsed: serde_json::Value = serde_json::from_str(s).map_err(|e| format!("invalid JSON: {e}"))?;
+            let parsed: serde_json::Value =
+                serde_json::from_slice(s.as_bytes()).map_err(|e| format!("invalid JSON: {e}"))?;
             Value::from_json(parsed)
         }
         // A single file submitted for a file list becomes a one-element list.

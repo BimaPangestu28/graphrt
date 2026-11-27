@@ -252,7 +252,7 @@ impl ToolNode {
 fn parse_json_text(text: &str) -> (Value, Option<String>) {
     let trimmed = text.trim_start();
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        return match serde_json::from_str::<serde_json::Value>(text) {
+        return match serde_json::from_slice::<serde_json::Value>(text.as_bytes()) {
             Ok(json) => (Value::from_json(json), None),
             Err(e) => (Value::Null, Some(e.to_string())),
         };

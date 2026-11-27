@@ -8,10 +8,15 @@
 # none of them: plain tables, WAL and `VACUUM INTO` only. Turning them off,
 # plus SQLite's recommended `OMIT_DEPRECATED` / `OMIT_SHARED_CACHE`, saves
 # about 360 KiB of every binary that links SQLite (gateway core x86_64 musl
-# 9,503,416 → 9,134,408 B). Not applied to `cargo install graphrt-cli` from
-# crates.io, which builds SQLite with libsqlite3-sys's defaults.
+# 9,503,416 → 9,134,408 B). The SQL of those stores calls no JSON, date or
+# time function and no introspection pragma (`function_list` and the like), and
+# nothing serializes a database to memory or uses `sqlite3_complete` or
+# `sqlite3_get_table`, so those are left out too, with the test hooks
+# (`UNTESTABLE`): about 50 KiB more. None of them changes the SQL grammar, so
+# the prebuilt amalgamation stays valid. Not applied to `cargo install
+# graphrt-cli` from crates.io, which builds SQLite with libsqlite3-sys's defaults.
 # A variable already set in the environment wins over this one.
-LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_FTS3 -USQLITE_ENABLE_FTS3_PARENTHESIS -USQLITE_ENABLE_FTS5 -USQLITE_ENABLE_RTREE -USQLITE_ENABLE_STAT4 -USQLITE_ENABLE_DBSTAT_VTAB -USQLITE_SOUNDEX -USQLITE_ENABLE_COLUMN_METADATA -USQLITE_ENABLE_LOAD_EXTENSION -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_SHARED_CACHE"
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_FTS3 -USQLITE_ENABLE_FTS3_PARENTHESIS -USQLITE_ENABLE_FTS5 -USQLITE_ENABLE_RTREE -USQLITE_ENABLE_STAT4 -USQLITE_ENABLE_DBSTAT_VTAB -USQLITE_SOUNDEX -USQLITE_ENABLE_COLUMN_METADATA -USQLITE_ENABLE_LOAD_EXTENSION -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_SHARED_CACHE -DSQLITE_OMIT_JSON -DSQLITE_OMIT_DATETIME_FUNCS -DSQLITE_OMIT_INTROSPECTION_PRAGMAS -DSQLITE_OMIT_DESERIALIZE -DSQLITE_OMIT_COMPLETE -DSQLITE_OMIT_GET_TABLE -DSQLITE_UNTESTABLE"
 
 # C dependencies (SQLite, mimalloc, QuickJS, ring's C parts) of the static musl
 # builds without unwind tables. No Rust panic unwinds through a C frame: a panic

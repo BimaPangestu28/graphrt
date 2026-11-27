@@ -436,7 +436,7 @@ pub fn stored_event_type(event: &StoredEvent) -> Option<&str> {
         #[serde(rename = "type", borrow)]
         kind: Option<&'a str>,
     }
-    serde_json::from_str::<TypeOnly<'_>>(event.get()).ok().and_then(|t| t.kind)
+    serde_json::from_slice::<TypeOnly<'_>>(event.get().as_bytes()).ok().and_then(|t| t.kind)
 }
 
 /// Serialize an event for storage. Secrets are masked by the value serializer; the

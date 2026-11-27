@@ -93,6 +93,6 @@ impl Snapshot {
 
     /// Decode from JSON.
     pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(text)
+        serde_json::from_slice(text.as_bytes())
     }
 }

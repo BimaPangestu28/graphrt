@@ -442,7 +442,8 @@ fn as_list(expected: &Value) -> Vec<Value> {
         Value::String(s) => {
             let trimmed = s.trim();
             if trimmed.starts_with('[')
-                && let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(trimmed)
+                && let Ok(serde_json::Value::Array(items)) =
+                    serde_json::from_slice::<serde_json::Value>(trimmed.as_bytes())
             {
                 return items.into_iter().map(Value::from_json).collect();
             }
