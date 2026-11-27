@@ -116,6 +116,17 @@ struct Inner {
     counter: AtomicU64,
     /// When the embedder last failed (0: never): recall rests it for a minute.
     embedder_failed_ms: AtomicU64,
+    /// Loaded graphs with their indexes, by file.
+    #[cfg(feature = "graph")]
+    graphs: Mutex<HashMap<PathBuf, CachedGraph>>,
+}
+
+#[cfg(feature = "graph")]
+#[derive(Clone)]
+struct CachedGraph {
+    stamp: Option<(SystemTime, u64)>,
+    graph: Arc<crate::graph::GraphFile>,
+    index: Arc<crate::graph::GraphIndex>,
 }
 
 impl std::fmt::Debug for MemoryStore {
@@ -206,6 +217,8 @@ impl MemoryStore {
                 writing: Mutex::new(()),
                 counter: AtomicU64::new(0),
                 embedder_failed_ms: AtomicU64::new(0),
+                #[cfg(feature = "graph")]
+                graphs: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -235,6 +248,8 @@ impl MemoryStore {
                     writing: Mutex::new(()),
                     counter: AtomicU64::new(0),
                     embedder_failed_ms: AtomicU64::new(0),
+                    #[cfg(feature = "graph")]
+                    graphs: Mutex::new(HashMap::new()),
                 };
                 change(&mut inner);
                 inner
@@ -451,11 +466,134 @@ impl MemoryStore {
         if let Some(parent) = path.parent() {
             private_fs::create_dir_all(parent).map_err(|e| store_error("cannot create a memory directory", &e))?;
         }
+        // The graph follows its notes: relations of a removed note go, those of
+        // an approved one come into use.
+        // A graph that cannot be read must not stop the notes: recall checks
+        // every fact against its notes anyway.
+        #[cfg(feature = "graph")]
+        let graph = self.graph_follows(scope, &audit, now).unwrap_or_else(|e| {
+            eprintln!("warning: memory graph of `{}` not updated: {e}", scope.agent);
+            None
+        });
+        #[cfg(feature = "graph")]
+        if let Some((_, lines)) = &graph {
+            audit.extend(lines.iter().cloned());
+        }
         self.append_audit(&agent_dir, &audit, now)?;
+        // The graph first: if the notes file then fails, a fact may be missing
+        // until the next build, but no fact outlives the note it came from.
+        #[cfg(feature = "graph")]
+        if let Some((graph, _)) = graph {
+            self.write_graph(scope, &graph)?;
+        }
         self.write_atomic(&path, &bytes)?;
         let stamp = fs::metadata(&path).ok().map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()));
         self.remember_loaded(&path, file, stamp);
         Ok(out)
+    }
+
+    /// Where the graph of `scope` is kept: next to its notes.
+    #[cfg(feature = "graph")]
+    fn graph_path(&self, scope: &MemoryScope) -> Result<PathBuf, MemoryError> {
+        let notes = self.scope_path(scope)?;
+        let dir = notes.parent().unwrap_or(&self.inner.root);
+        Ok(match scope.user {
+            Some(_) => dir.join("graph.json"),
+            None => dir.join("agent.graph.json"),
+        })
+    }
+
+    #[cfg(feature = "graph")]
+    fn load_graph(&self, scope: &MemoryScope) -> Result<crate::graph::GraphFile, MemoryError> {
+        let path = self.graph_path(scope)?;
+        let graph: crate::graph::GraphFile = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| MemoryError::new("memory_corrupt", format!("{} cannot be read: {e}", path.display())))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => crate::graph::GraphFile::default(),
+            Err(e) => return Err(store_error("cannot read a memory graph", &e)),
+        };
+        if graph.format > FORMAT {
+            return Err(MemoryError::new(
+                "memory_version",
+                format!("{} is of memory format {}, this build reads up to {FORMAT}", path.display(), graph.format),
+            ));
+        }
+        Ok(graph)
+    }
+
+    #[cfg(feature = "graph")]
+    fn write_graph(&self, scope: &MemoryScope, graph: &crate::graph::GraphFile) -> Result<(), MemoryError> {
+        let path = self.graph_path(scope)?;
+        let mut graph = graph.clone();
+        graph.format = FORMAT;
+        let bytes = serde_json::to_vec(&graph).map_err(|e| store_error("cannot encode the memory graph", &e))?;
+        self.write_atomic(&path, &bytes)?;
+        let mut graphs = self.inner.graphs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        graphs.remove(&path);
+        Ok(())
+    }
+
+    /// The graph of `scope` with its indexes, from the cache when the file did not change.
+    #[cfg(feature = "graph")]
+    fn cached_graph(&self, scope: &MemoryScope) -> Result<CachedGraph, MemoryError> {
+        let path = self.graph_path(scope)?;
+        let stamp = fs::metadata(&path).ok().map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()));
+        {
+            let graphs = self.inner.graphs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(cached) = graphs.get(&path).filter(|c| c.stamp == stamp) {
+                return Ok(cached.clone());
+            }
+        }
+        let graph = self.load_graph(scope)?;
+        let cached =
+            CachedGraph { stamp, index: Arc::new(crate::graph::GraphIndex::build(&graph)), graph: Arc::new(graph) };
+        let mut graphs = self.inner.graphs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if graphs.len() >= CACHE_SCOPES {
+            graphs.clear();
+        }
+        graphs.insert(path, cached.clone());
+        Ok(cached)
+    }
+
+    /// What the notes changes of `audit` do to the graph of `scope`, when it has one.
+    #[cfg(feature = "graph")]
+    fn graph_follows(
+        &self,
+        scope: &MemoryScope,
+        audit: &[Json],
+        now: u64,
+    ) -> Result<Option<(crate::graph::GraphFile, Vec<Json>)>, MemoryError> {
+        let ids = |actions: &[&str]| -> Vec<String> {
+            audit
+                .iter()
+                .filter(|line| line["action"].as_str().is_some_and(|a| actions.contains(&a)))
+                .filter_map(|line| line["id"].as_str().map(str::to_owned))
+                .collect()
+        };
+        let gone = ids(&["forget", "reject", "retire", "expire"]);
+        let undone = ids(&["forget", "reject"]);
+        // A note comes into use by approval, or by an update from a writer whose notes are used at once.
+        let mut approved = ids(&["approve"]);
+        approved.extend(
+            audit
+                .iter()
+                .filter(|line| line["action"] == "update" && line["activated"] == true)
+                .filter_map(|line| line["id"].as_str().map(str::to_owned)),
+        );
+        if (gone.is_empty() && approved.is_empty()) || !self.graph_path(scope)?.exists() {
+            return Ok(None);
+        }
+        let mut graph = self.load_graph(scope)?;
+        let mut lines = graph.notes_changed(&gone, &undone, &approved, now);
+        for line in &mut lines {
+            if let Some(fields) = line.as_object_mut() {
+                fields.insert("tenant".to_owned(), json!(scope.tenant));
+                fields.insert("agent".to_owned(), json!(scope.agent));
+                fields.insert("user_sha256".to_owned(), json!(scope.user.as_deref().map(sha256_hex)));
+                fields.insert("actor".to_owned(), json!("graph"));
+            }
+        }
+        Ok(Some((graph, lines)))
     }
 
     /// Refuse a new user of an agent that keeps notes for as many users as it may.
@@ -598,6 +736,7 @@ impl MemoryStore {
                                 r.tags.push(tag.clone());
                             }
                         }
+                        let activated = status == MemoryStatus::Active && r.status == MemoryStatus::Pending;
                         if status == MemoryStatus::Active {
                             r.status = MemoryStatus::Active;
                         }
@@ -607,7 +746,11 @@ impl MemoryStore {
                         r.source = source.clone();
                         // The text changed: the vector is made again at the next recall.
                         stored.vector.clear();
-                        lines.push(audit_line("update", &stored.record, &scope));
+                        let mut line = audit_line("update", &stored.record, &scope);
+                        if activated && let Some(fields) = line.as_object_mut() {
+                            fields.insert("activated".to_owned(), Json::Bool(true));
+                        }
+                        lines.push(line);
                         stored.record.clone()
                     }
                     None => {
@@ -784,6 +927,61 @@ impl MemoryStore {
         Ok(count)
     }
 
+    /// Graph facts of exactly `scope` about `query`, true at `at_ms`, each with
+    /// the notes it came from. Scored by rank like the notes, so they fuse.
+    #[cfg(feature = "graph")]
+    async fn graph_hits(
+        &self,
+        scope: &MemoryScope,
+        level: MemoryLevel,
+        query: &str,
+        at_ms: u64,
+        limit: usize,
+    ) -> Result<Vec<(MemoryHit, Vec<String>)>, MemoryError> {
+        if !self.graph_path(scope)?.exists() {
+            return Ok(Vec::new());
+        }
+        let (scope, query) = (scope.clone(), query.to_owned());
+        let notes_path = self.scope_path(&scope)?;
+        self.blocking(move |store| {
+            let now = store.now();
+            // A fact stands while one of its notes is in use and not expired.
+            let notes = store.load(&notes_path)?;
+            let live: std::collections::HashSet<&str> = notes
+                .file
+                .notes
+                .iter()
+                .filter(|s| s.record.status == MemoryStatus::Active && s.record.expires_ms.is_none_or(|e| e > now))
+                .map(|s| s.record.id.as_str())
+                .collect();
+            let cached = store.cached_graph(&scope)?;
+            let graph = &cached.graph;
+            let alive = |r: &crate::graph::Relation| r.notes.iter().any(|n| live.contains(n.as_str()));
+            let found = graph.search(&cached.index, &query, at_ms, limit, &alive);
+            let top = found.first().map_or(1.0, |(_, score)| score.max(f32::EPSILON));
+            Ok(found
+                .into_iter()
+                .enumerate()
+                .filter_map(|(rank, (at, score))| {
+                    let relation = graph.relations.get(at)?;
+                    let source = MemorySource { actor: "graph".to_owned(), ..MemorySource::default() };
+                    let record = MemoryRecord::new(
+                        relation.id.clone(),
+                        relation.sentence(),
+                        MemoryKind::Fact,
+                        MemoryStatus::Active,
+                        relation.trust,
+                        source,
+                        relation.recorded_ms,
+                    );
+                    let fused = (score / top) / (61.0 + rank as f32);
+                    Some((MemoryHit::fact(record, level, fused), relation.notes.clone()))
+                })
+                .collect())
+        })
+        .await
+    }
+
     /// Whether the embedder failed less than a minute ago: it is not asked again yet.
     fn embedder_resting(&self) -> bool {
         let failed = self.inner.embedder_failed_ms.load(Ordering::Relaxed);
@@ -843,7 +1041,24 @@ impl MemoryStore {
         let path = self.scope_path(scope)?;
         let loaded = self.blocking(move |store| store.load(&path)).await?;
         let notes: Vec<&MemoryRecord> = loaded.file.notes.iter().map(|s| &s.record).collect();
-        Ok(json!({ "tenant": scope.tenant, "agent": scope.agent, "user": scope.user, "notes": notes }))
+        #[allow(unused_mut)]
+        let mut export = json!({ "tenant": scope.tenant, "agent": scope.agent, "user": scope.user, "notes": notes });
+        #[cfg(feature = "graph")]
+        if let Some(fields) = export.as_object_mut() {
+            match self.load_graph(scope) {
+                Ok(graph) => {
+                    fields.insert(
+                        "graph".to_owned(),
+                        json!({ "entities": graph.entities, "relations": graph.relations }),
+                    );
+                }
+                // The notes are exported anyway, and the export says what is missing.
+                Err(e) => {
+                    fields.insert("graph_error".to_owned(), json!(e.kind));
+                }
+            }
+        }
+        Ok(export)
     }
 
     /// Remove everything kept about one user of an agent: the directory goes.
@@ -868,6 +1083,10 @@ impl MemoryStore {
             });
             with_actor(&mut line, &source);
             store.append_audit(&agent_dir, &[line], store.now())?;
+            #[cfg(feature = "graph")]
+            if let Ok(graph) = store.graph_path(&scope) {
+                store.inner.graphs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&graph);
+            }
             if let Some(user_dir) = path.parent() {
                 match fs::remove_dir_all(user_dir) {
                     Ok(()) => {}
@@ -1068,6 +1287,38 @@ impl MemoryBank for MemoryStore {
                     }
                 }
             }
+            #[allow(unused_mut)]
+            let mut fact_notes: HashMap<String, Vec<String>> = HashMap::new();
+            #[cfg(feature = "graph")]
+            if !query.text.trim().is_empty() {
+                let at = query.as_of_ms.unwrap_or_else(|| self.now());
+                for (level_scope, level) in &levels {
+                    // The graph is derived from the notes: when it cannot be read, recall goes on without it.
+                    let facts = match self.graph_hits(level_scope, *level, &query.text, at, limit).await {
+                        Ok(facts) => facts,
+                        Err(e) => {
+                            eprintln!("warning: memory graph of `{}` not read: {}", level_scope.agent, e.kind);
+                            Vec::new()
+                        }
+                    };
+                    for (mut fact, notes) in facts {
+                        fact_notes.insert(fact.record.id.clone(), notes.clone());
+                        // A fact and the note it came from count once: the fact, which
+                        // knows its period, takes the place (and the score) of its note.
+                        let mut replaced = 0.0_f32;
+                        hits.retain(|h| {
+                            let source = h.kind == graphrt_core::memory::HitKind::Note && notes.contains(&h.record.id);
+                            if source {
+                                replaced = replaced.max(h.score);
+                            }
+                            !source
+                        });
+                        fact.score = fact.score.max(replaced);
+                        hits.push(fact);
+                    }
+                }
+                hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+            }
             let mut chars = 0;
             let mut kept = Vec::new();
             for hit in hits {
@@ -1080,8 +1331,14 @@ impl MemoryBank for MemoryStore {
             }
             if query.touch {
                 for (level_scope, level) in levels {
-                    let ids: Vec<String> =
-                        kept.iter().filter(|h| h.level == level).map(|h| h.record.id.clone()).collect();
+                    // A fact counts as a use of the notes it stands on.
+                    let ids: Vec<String> = kept
+                        .iter()
+                        .filter(|h| h.level == level)
+                        .flat_map(|h| {
+                            fact_notes.get(&h.record.id).cloned().unwrap_or_else(|| vec![h.record.id.clone()])
+                        })
+                        .collect();
                     // Recall works without it: the order of eviction is a little less exact.
                     if let Err(e) = self.touch(level_scope, ids).await {
                         eprintln!("warning: memory of `{}`: recalled notes not marked as used: {e}", scope.agent);
@@ -1090,6 +1347,69 @@ impl MemoryBank for MemoryStore {
             }
             Ok(kept)
         })
+    }
+
+    #[cfg(feature = "graph")]
+    fn keeps_graph(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "graph")]
+    fn known_entities<'a>(
+        &'a self,
+        scope: &'a MemoryScope,
+        limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<String>, MemoryError>> {
+        let scope = scope.clone();
+        Box::pin(self.blocking(move |store| Ok(store.load_graph(&scope)?.names(limit))))
+    }
+
+    #[cfg(feature = "graph")]
+    fn link<'a>(
+        &'a self,
+        scope: &'a MemoryScope,
+        note_id: &'a str,
+        facts: graphrt_core::memory::ExtractedFacts,
+    ) -> BoxFuture<'a, Result<usize, MemoryError>> {
+        let (scope, note_id) = (scope.clone(), note_id.to_owned());
+        Box::pin(self.blocking(move |store| {
+            let path = store.scope_path(&scope)?;
+            let agent_dir = store.agent_dir(scope.tenant.as_deref(), &scope.agent)?;
+            let _writing = store.inner.writing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !path.exists() {
+                return Err(MemoryError::new("memory_not_found", "no such note in this scope"));
+            }
+            let _lock = lock(&agent_dir)?;
+            store.forget_cached(&path);
+            let loaded = store.load(&path)?;
+            // Only a note that is still there: what was removed meanwhile adds nothing.
+            let note = loaded
+                .file
+                .notes
+                .iter()
+                .find(|s| s.record.id == note_id)
+                .map(|s| s.record.clone())
+                .ok_or_else(|| MemoryError::new("memory_not_found", "no such note in this scope"))?;
+            let mut graph = store.load_graph(&scope)?;
+            let now = store.now();
+            let counter = &store.inner.counter;
+            let mut id = || new_id(&note_id, now, counter.fetch_add(1, Ordering::Relaxed)).replacen("m_", "g_", 1);
+            let (added, mut lines) = graph.link(&note, &facts, now, &mut id);
+            if lines.is_empty() {
+                return Ok(0);
+            }
+            for line in &mut lines {
+                if let Some(fields) = line.as_object_mut() {
+                    fields.insert("tenant".to_owned(), json!(scope.tenant));
+                    fields.insert("agent".to_owned(), json!(scope.agent));
+                    fields.insert("user_sha256".to_owned(), json!(scope.user.as_deref().map(sha256_hex)));
+                    fields.insert("actor".to_owned(), json!("graph"));
+                }
+            }
+            store.append_audit(&agent_dir, &lines, now)?;
+            store.write_graph(&scope, &graph)?;
+            Ok(added)
+        }))
     }
 
     fn forget<'a>(

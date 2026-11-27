@@ -113,6 +113,8 @@ pub async fn memory(args: MemoryCmdArgs) -> Result<u8, CliError> {
             };
             print_done(json!({"notes": notes, "lessons": lessons}), &said, json, &mut out)
         }
+        #[cfg(feature = "memory-graph")]
+        MemoryCommand::Graph { command } => graph(&store, &scope, command, &source, &mut out).await,
         MemoryCommand::Audit { agent, limit } => {
             let entries = store.audit(args.tenant.as_deref(), agent, *limit).await.map_err(failed)?;
             for entry in &entries {
@@ -138,4 +140,63 @@ fn forget_lessons(dir: Option<PathBuf>, agent: &str, user: &str, actor: &str) ->
 #[cfg(not(feature = "learning"))]
 fn forget_lessons(_dir: Option<PathBuf>, _agent: &str, _user: &str, _actor: &str) -> Result<Option<usize>, CliError> {
     Ok(None)
+}
+
+/// `graphrt memory graph build|show`.
+#[cfg(feature = "memory-graph")]
+async fn graph(
+    store: &MemoryStore,
+    scope: &dyn Fn(&str, Option<String>) -> MemoryScope,
+    command: &crate::args::MemoryGraphCommand,
+    _source: &MemorySource,
+    out: &mut impl Write,
+) -> Result<u8, CliError> {
+    use crate::args::MemoryGraphCommand;
+    match command {
+        MemoryGraphCommand::Show { agent, user } => {
+            let export = store.export_user(&scope(agent, user.clone())).await.map_err(failed)?;
+            write_out(
+                out,
+                &serde_json::to_string_pretty(&export.get("graph").cloned().unwrap_or_default()).unwrap_or_default(),
+            )?;
+            Ok(EXIT_OK)
+        }
+        MemoryGraphCommand::Build { agent, user, model, providers } => {
+            let scope = scope(agent, user.clone());
+            let (provider, name) = crate::setup::parse_model_override(model)?;
+            let options = crate::setup::ServiceOptions { providers: providers.clone(), ..Default::default() };
+            let services = crate::setup::services(&options, graphrt_core::tool::ToolRegistry::new()).await?;
+            let registry = services
+                .get::<graphrt_llm::ModelRegistry>()
+                .ok_or_else(|| CliError::failed("no model providers are configured"))?;
+            let chat = registry.get(&provider).map_err(|error| CliError::usage(error.to_string()))?;
+            // Oldest first: a later note closes what an earlier one said, never the other way.
+            let mut notes = store.list(&scope, &ListFilter::default()).await.map_err(failed)?;
+            notes.sort_by_key(|note| note.created_ms);
+            let (mut read, mut relations, mut skipped) = (0, 0, 0);
+            for note in &notes {
+                let known = store.known_entities(&scope, 50).await.map_err(failed)?;
+                let request = graphrt_llm::ChatRequest::new(name.clone(), Vec::new());
+                // Relative dates are read against the day the note was written.
+                let written = graphrt_llm::memory_graph::day_of(note.created_ms);
+                match graphrt_llm::memory_graph::extract_facts(chat.as_ref(), request, &note.text, &known, &written)
+                    .await
+                {
+                    Ok(facts) => {
+                        relations += store.link(&scope, &note.id, facts).await.map_err(failed)?;
+                        read += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("warning: note {} was not read: {e}", note.id);
+                        skipped += 1;
+                    }
+                }
+            }
+            write_out(
+                out,
+                &format!("read {read} note(s) into the graph, {relations} new relation(s), {skipped} skipped"),
+            )?;
+            Ok(if skipped > 0 && read == 0 { 1 } else { EXIT_OK })
+        }
+    }
 }

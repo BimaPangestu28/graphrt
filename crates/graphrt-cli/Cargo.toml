@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "connectors", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor", "channel-telegram", "channel-whatsapp", "channel-slack", "channel-teams", "context", "memory"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "connectors", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor", "channel-telegram", "channel-whatsapp", "channel-slack", "channel-teams", "context", "memory", "memory-graph"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # `context_window` of the `llm` and `agent` nodes: a conversation that outgrows the
@@ -34,6 +34,9 @@ context = ["llm", "graphrt-llm/context"]
 # `serve`, `/v1/memory` for the owner and `/v1/me/memory` for the verified user.
 # Not in the slim builds (`serve,llm,plugins`), which refuse a document that asks for it.
 memory = ["llm", "graphrt-llm/memory", "dep:graphrt-memory", "dep:sha2"]
+# The memory graph: `long_term_memory.graph` reads saved notes into entities and
+# relations with periods, recall walks them, `graphrt memory graph build|show`.
+memory-graph = ["memory", "graphrt-memory/graph", "graphrt-llm/memory-graph"]
 # http-request node with SSRF-safe egress.
 http = ["dep:graphrt-http", "dep:reqwest"]
 # code node (embedded JavaScript).

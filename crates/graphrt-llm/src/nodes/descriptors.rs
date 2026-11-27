@@ -143,7 +143,12 @@ fn long_term_memory() -> Json {
                     "agent": { "type": "string", "description": "The agent the memory belongs to (default: the workflow name)" },
                     "user": template("The user the run is for (default `{{#sys.user_id#}}`)"),
                     "recall": { "type": "string", "enum": ["auto", "off"], "default": "auto" },
-                    "write": { "type": "string", "enum": ["guarded", "review", "open", "off"], "default": "guarded" }
+                    "write": { "type": "string", "enum": ["guarded", "review", "open", "off"], "default": "guarded" },
+                    "graph": {
+                        "description": "Read each saved note into a memory graph of entities and relations with \
+                                        periods (`true`: with the node's model, or `{model: {provider, name}}`)",
+                        "oneOf": [ { "type": "boolean" }, nested(json!({ "model": model() }), &["model"]) ]
+                    }
                 }),
                 &[]
             )

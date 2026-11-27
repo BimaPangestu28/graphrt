@@ -586,6 +586,25 @@ the run view.
 Cargo feature `memory-graph` (`graphrt-memory/graph`), in the default release
 build, not in the slim builds. Set with `long_term_memory: {graph: true}`.
 
+### As built, and where it differs from the plan below
+
+| Planned | Built | Why |
+| --- | --- | --- |
+| Extraction after a turn finishes in `serve`, with a daily budget | After each saved note, in a background task of the agent node (the run does not wait), and with `graphrt memory graph build` | The note is the unit that passed the gate, and the node already holds the model and the scope. A daily budget is left to the provider's own limits: one small call per note, at most 10 notes per run. |
+| From notes and the user's own messages | From notes only | A user message that is worth a fact is worth a note first, which the gate judges. One source keeps the rule "the graph never holds what the gate did not see". |
+| Candidates between 0.75 and 0.9 given to the extraction call | The 50 most connected entity names are given to every extraction call | The model reuses a name it is shown, and no similarity threshold has to be tuned. Same name or alias, or trigram similarity of 0.9 or more with the same type, still merges without a model. |
+| `merged_into`, a merge that can be undone | A merge adds an alias. No undo | Undo needs the relations of the merged entity kept apart. Kept for later, with the owner API to correct a graph. |
+| A graph fact and its note count once | The fact takes the place and the score of its note | The fact says its period, the note does not. |
+| Graph search under 5 ms at the limits | Graph and its indexes cached per file version: recall with a two hop search p50 1.2 ms, p95 2.5 ms at 2 000 entities and 10 000 relations | Parsing and indexing on every recall took 28 ms. |
+
+Found with a real model: for "Dana left Acme and works at Borealis since
+March 2026" the model wrote both the new job and "works at Acme until March
+2026, replaces". The second closed the first. Now a relation that has an end
+never closes another, it gives its end to the open relation of the same
+triple, and such statements are read first. Relations of less trust never
+close relations of more, and a pending relation closes nothing until its note
+is approved.
+
 ### Model
 
 ```text
@@ -696,9 +715,9 @@ stage's pull request reports the measured numbers next to these.
 | `recall` by keyword at 500 notes, scope cached | under 1 ms (measured p50 36 µs, p95 61 µs) |
 | First load of a scope of 500 notes | under 10 ms (measured 0.19 ms with the recall) |
 | `remember` with fsync | under 20 ms at the 95th percentile (measured p95 0.67 ms on the development disk) |
-| Graph search, 2 hops, 2 000 entities and 10 000 relations | under 5 ms |
+| Graph search, 2 hops, 2 000 entities and 10 000 relations | under 5 ms (measured recall with the graph p50 1.2 ms, p95 2.5 ms) |
 | Idle memory of a server that has the features and uses none | no change |
-| Binary size, default build | `context` under 100 KiB (measured 77 KiB), `memory` under 300 KiB (measured 412 KiB: the HTTP routes and the CLI command are in it, they could move behind a feature of their own if the default build gets tight), `memory-graph` under 200 KiB |
+| Binary size, default build | `context` under 100 KiB (measured 77 KiB), `memory` under 300 KiB (measured 412 KiB: the HTTP routes and the CLI command are in it, they could move behind a feature of their own if the default build gets tight), `memory-graph` under 200 KiB (measured 206 KiB) |
 | Binary size, `agent-slim` and `agent-minimal` | no change beyond the check that refuses a key the build cannot honour (measured: minimal 0, slim +3.6 KiB for stage 1, then minimal -352 B and slim +3.2 KiB for stage 2) |
 
 ## What each stage delivers

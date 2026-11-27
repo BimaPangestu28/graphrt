@@ -552,7 +552,10 @@ starts, as data in the user message. `auto` is the same as
 guarded}`. `write: review` sends every note to review, `open` uses every note
 at once except text that reads like an instruction, `off` only reads. Notes
 built from tool results wait for review under `guarded`. A run without a user
-only proposes notes for the agent as a whole. The tools are ordinary tools, so
+only proposes notes for the agent as a whole. `graph: true` (or `graph:
+{model: {provider, name}}`) also reads each saved note into a memory graph of
+entities and relations with periods, which recall walks two hops wide. The
+tools are ordinary tools, so
 `require_approval: [memory/remember]` makes every write wait for a person. It
 needs a host with a memory store (the `memory` cargo feature of the CLI, in
 the default build). With tools that were called the node also outputs

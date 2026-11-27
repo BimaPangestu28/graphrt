@@ -12,6 +12,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# The memory graph: entities and relations with the period each was true,
+# read out of the notes by a model, searched a few hops wide (graph.rs).
+graph = []
+
 [dependencies]
 graphrt-core = { workspace = true, features = ["memory", "tokio"] }
 graphrt-rag = { workspace = true }
@@ -26,3 +31,7 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "graph_bench"
+required-features = ["graph"]

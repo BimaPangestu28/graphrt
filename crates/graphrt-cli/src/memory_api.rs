@@ -14,6 +14,7 @@
 //! | GET | `/v1/memory/{agent}/users/{user}/export` | – | `{notes, lessons}` |
 //! | DELETE | `/v1/memory/{agent}/users/{user}` | – | `{notes, lessons}` removed |
 //! | GET | `/v1/memory/{agent}/audit` | `?limit=` | `{entries}` |
+//! | GET | `/v1/memory/{agent}/graph` | `?user=` | `{entities, relations}` (feature `memory-graph`) |
 //! | GET | `/v1/me/memory/{agent}` | `?status=` | the verified user's own notes |
 //! | DELETE | `/v1/me/memory/{agent}` | – | erase the verified user's own notes and lessons |
 //! | DELETE | `/v1/me/memory/{agent}/{id}` | – | remove one own note |
@@ -49,13 +50,36 @@ const MAX_AUDIT: usize = 5_000;
 
 /// The owner routes; the caller adds the API key and the closed-owner-API layers.
 pub(crate) fn owner_routes(api: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
-    api.route("/v1/memory/{agent}/notes", get(list).post(add))
+    let api = api
+        .route("/v1/memory/{agent}/notes", get(list).post(add))
         .route("/v1/memory/{agent}/notes/{id}", delete(remove))
         .route("/v1/memory/{agent}/notes/{id}/approve", post(approve))
         .route("/v1/memory/{agent}/notes/{id}/reject", post(reject))
         .route("/v1/memory/{agent}/users/{user}/export", get(export_user))
         .route("/v1/memory/{agent}/users/{user}", delete(erase_user))
-        .route("/v1/memory/{agent}/audit", get(audit))
+        .route("/v1/memory/{agent}/audit", get(audit));
+    #[cfg(feature = "memory-graph")]
+    let api = api.route("/v1/memory/{agent}/graph", get(graph));
+    api
+}
+
+/// `GET /v1/memory/{agent}/graph?user=`: the entities and relations of a user,
+/// or of the agent itself without `user`.
+#[cfg(feature = "memory-graph")]
+async fn graph(
+    State(state): State<Arc<AppState>>,
+    UrlPath(agent): UrlPath<String>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let store = match store(&state) {
+        Ok(store) => store,
+        Err(refused) => return refused,
+    };
+    let params = QueryParams::parse(raw.as_deref());
+    match store.export_user(&scope(&state, &agent, params.string("user"))).await {
+        Ok(export) => Json(export.get("graph").cloned().unwrap_or_default()).into_response(),
+        Err(e) => memory_error(&e),
+    }
 }
 
 /// The routes of the verified user; they authenticate themselves.

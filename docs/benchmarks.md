@@ -201,6 +201,13 @@ Binary size, min-size profile, x86_64 Linux:
 | default without `memory` | | 22 760 664 B | |
 | default | | 23 183 064 B | +412 KiB for the feature |
 
+Memory graph, `cargo run --release -p graphrt-memory --features graph --example graph_bench`:
+recall with a two hop graph search over 2 000 entities and 10 000 relations,
+p50 1.2 ms, p95 2.5 ms (graph and indexes cached per file version). The
+feature `memory-graph` adds 206 KiB to the default build (23 201 880 B
+without it, 23 413 080 B with it). `agent-minimal` and `agent-slim` move by
+less than 400 B, which is code layout.
+
 The feature holds the store, the write gate, the search, the agent's tools,
 eleven HTTP routes and the `graphrt memory` command. The slim builds grow by
 the check that refuses a document asking for memory in a build without it.

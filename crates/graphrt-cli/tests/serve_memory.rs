@@ -286,3 +286,21 @@ async fn every_route_of_the_user_needs_a_user_token_and_a_served_agent() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(!server.root.join("memory").join("_").join("elsewhere").exists());
 }
+
+#[cfg(feature = "memory-graph")]
+#[tokio::test]
+async fn the_owner_reads_the_graph_of_a_user() {
+    let model = FakeModel::start(&[]);
+    let server = server(&model, None).await;
+    let alice = MemoryScope::user(None, "support", "alice");
+    let saved = server.store.remember(&alice, note("Alice lives in Bandung", MemoryTrust::UserStated)).await.unwrap();
+    let facts = serde_json::from_value(
+        json!({"relations": [{"source": "Alice", "relation": "lives_in", "target": "Bandung"}]}),
+    );
+    server.store.link(&alice, &saved.id, facts.unwrap()).await.unwrap();
+    let (status, graph) = server.call(Method::GET, "/v1/memory/support/graph?user=alice", Who::Key, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(graph["relations"][0]["text"], "Alice lives in Bandung");
+    let (status, _) = server.call(Method::GET, "/v1/memory/support/graph?user=alice", Who::User("alice"), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

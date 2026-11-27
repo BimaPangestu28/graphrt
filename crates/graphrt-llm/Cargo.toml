@@ -56,6 +56,9 @@ context = []
 # and `memory/forget` over the host's `graphrt_core::memory::Memories` service, and
 # matching notes added to the request when a run starts (docs/memory-design.md).
 memory = ["graphrt-core/memory"]
+# `long_term_memory.graph`: after a note is saved, a model reads its entities and
+# relations into the store's memory graph in the background (memory_graph.rs).
+memory-graph = ["memory", "graphrt-core/tokio", "dep:tokio"]
 # `text_model::ChatTextModel`: a chat model as a `graphrt_core::text_model::TextModel`, for
 # work outside a run such as drafting a skill. No dependencies.
 text-model = []
@@ -80,7 +83,7 @@ graphrt-core = { workspace = true, features = ["tokio", "jinja", "yaml"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
 graphrt-skill = { workspace = true }
 graphrt-learn = { workspace = true }
-graphrt-memory = { workspace = true }
+graphrt-memory = { workspace = true, features = ["graph"] }
 
 # What the context guard costs (docs/benchmarks.md, "Context guard").
 [[example]]
