@@ -9,3 +9,4 @@ pub mod llm;
 pub mod schema;
 #[cfg(feature = "typesafe")]
 pub mod system_one;
+pub(crate) mod tool_call_repair;
