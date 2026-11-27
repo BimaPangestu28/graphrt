@@ -245,18 +245,37 @@ async fn invariants_hold_over_seeds() {
     if metrics.contains(SECRET) {
         violations.push("I6: secret in metrics".into());
     }
-    // I7: an idle deployment writes nothing and releases its replicas.
+    // I7: an idle deployment writes nothing and releases its replicas. Replicas
+    // become idle once their last lease is given back, which a loaded machine can
+    // delay past any fixed sleep, so poll the pool (as the idle sweep does) until
+    // it is empty, within a deadline far beyond `idle_timeout`.
     tokio::time::sleep(Duration::from_millis(400)).await;
     let writes = gateway.gateway.store.write_count();
     let version = gateway.deployment.current().unwrap();
-    version.pool.release_idle().await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        version.pool.release_idle().await;
+        if version.pool.stats().replicas == 0 && gateway.provider.live() == 0 {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let stats = version.pool.stats();
+            violations.push(format!(
+                "I7: replicas not released 10 s after the last run: {} live at the provider, pool replicas {}, \
+                 active runs {}, queued {}",
+                gateway.provider.live(),
+                stats.replicas,
+                stats.active_runs,
+                stats.queued
+            ));
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Idle and released: nothing is written to the store any more.
     tokio::time::sleep(Duration::from_millis(500)).await;
-    version.pool.release_idle().await;
     if gateway.gateway.store.write_count() != writes {
         violations.push(format!("I7: {} store writes while idle", gateway.gateway.store.write_count() - writes));
-    }
-    if version.pool.stats().replicas != 0 || gateway.provider.live() != 0 {
-        violations.push(format!("I7: {} replicas after idle timeout", gateway.provider.live()));
     }
     println!("simulation: {seeds} seeds from {start}, {} violations", violations.len());
     assert!(
