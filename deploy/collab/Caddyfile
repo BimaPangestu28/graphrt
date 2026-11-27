@@ -1,0 +1,10 @@
+# The public name of the collaboration server (the same as public_url in collab.yaml).
+collab.example.com {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+	}
+	# WebSockets pass through reverse_proxy as they are.
+	reverse_proxy collab:8790
+}

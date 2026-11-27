@@ -168,6 +168,11 @@ channel-whatsapp = ["channels", "graphrt-channel/whatsapp"]
 # agent registry with environments, in the `graphrt-console` crate. Opt-in.
 # See docs/console.md.
 console = ["serve", "jwt", "dep:graphrt-console"]
+# `graphrt collab`: the collaboration server (team workspaces, live co-editing of
+# agent projects, invites, versions, plugin services), hosted or self hosted from
+# one binary. Opt-in and separate from `serve`: nothing changes for single player
+# use. The `:<version>-collab` image is built with only this feature. See docs/collab.md.
+collab = ["console", "dep:graphrt-collab", "graphrt-collab/server", "graphrt-collab/services"]
 # Evaluation scores of served runs: `GET /v1/runs/{id}/scores` and human
 # feedback (`POST /v1/runs/{id}/feedback`), kept next to each run in the store.
 scores = ["serve"]
@@ -230,6 +235,7 @@ graphrt-gateway = { workspace = true, optional = true }
 graphrt-provider-api = { workspace = true, optional = true }
 graphrt-provider-fly = { workspace = true, optional = true }
 graphrt-console = { workspace = true, optional = true }
+graphrt-collab = { workspace = true, optional = true }
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 tokio = { workspace = true, features = ["rt", "time", "signal", "fs", "io-util", "sync", "net", "macros"] }
 futures.workspace = true

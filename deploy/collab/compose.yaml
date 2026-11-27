@@ -1,0 +1,37 @@
+# Self hosted collaboration server with automatic HTTPS (Caddy, Let's Encrypt).
+#
+#   1. Point a DNS name at this machine and put it in Caddyfile and collab.yaml (public_url).
+#   2. cp collab.yaml.example ... or edit collab.yaml, then:
+#      echo "GRAPHRT_COLLAB_SIGNING_KEY=$(docker run --rm ghcr.io/graphrt/graphrt:collab collab key)" > .env
+#      echo "GRAPHRT_COLLAB_SECRETS_KEY=$(docker run --rm ghcr.io/graphrt/graphrt:collab collab key)" >> .env
+#      echo "GRAPHRT_COLLAB_OIDC_SECRET=<client secret of the identity provider>" >> .env
+#   3. docker compose up -d
+#   4. docker compose exec collab graphrt collab invite --config /etc/graphrt/collab.yaml --workspace "My team"
+#      and open the printed link in Graphrt Desktop (Share > Join a team).
+services:
+  collab:
+    image: ghcr.io/graphrt/graphrt:collab
+    # Or build it from this repository: build: { context: ../.., args: { FEATURES: collab } }
+    command: ["collab", "serve", "--config", "/etc/graphrt/collab.yaml"]
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./collab.yaml:/etc/graphrt/collab.yaml:ro
+      - collab-data:/data
+      # - ./plugins:/plugins:ro
+    expose: ["8790"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on: [collab]
+volumes:
+  collab-data:
+  caddy-data:

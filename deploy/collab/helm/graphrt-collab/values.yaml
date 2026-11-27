@@ -1,0 +1,35 @@
+image:
+  repository: ghcr.io/graphrt/graphrt
+  tag: collab
+  pullPolicy: IfNotPresent
+
+# The server config (docs/collab.md). `data_dir` and `listen` are set by the chart.
+config:
+  mode: self_hosted
+  public_url: https://collab.example.com
+  behind_proxy: true
+  auth:
+    roles:
+      allowed_domains: [example.com]
+      default_role: operator
+
+# Keys and the OIDC client secret, from an existing Secret with these keys:
+#   GRAPHRT_COLLAB_SIGNING_KEY, GRAPHRT_COLLAB_SECRETS_KEY, GRAPHRT_COLLAB_OIDC_SECRET (optional)
+# Make them with `graphrt collab key`.
+existingSecret: graphrt-collab-keys
+
+persistence:
+  size: 10Gi
+  storageClass: ""
+
+ingress:
+  enabled: true
+  className: ""
+  host: collab.example.com
+  tlsSecretName: graphrt-collab-tls
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt
+
+resources:
+  requests: { cpu: 50m, memory: 32Mi }
+  limits: { memory: 256Mi }

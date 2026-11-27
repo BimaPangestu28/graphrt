@@ -1,0 +1,23 @@
+{
+  "name": "recorder",
+  "version": "0.0.1",
+  "runtime": "process",
+  "command": "python3",
+  "args": ["-u", "plugin.py"],
+  "permissions": { "secrets": true },
+  "limits": { "timeout_ms": 5000, "max_concurrency": 2 },
+  "tools": [
+    { "name": "record", "description": "Record what the collaboration server sends", "parameters": { "type": "object" } }
+  ],
+  "services": [
+    {
+      "id": "log",
+      "title": "Record workspace events",
+      "tool": "record",
+      "access": "operator",
+      "events": ["project.changed", "version.saved", "member.joined"],
+      "secrets": ["TOKEN"],
+      "reads_projects": true
+    }
+  ]
+}

@@ -62,6 +62,10 @@ pub enum Command {
     #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
     #[command(disable_version_flag = true)]
     Deploy(Box<crate::deploy_cmd::DeployArgs>),
+    /// Run the collaboration server: team workspaces where people edit agent
+    /// projects together in real time (hosted or self hosted). See docs/collab.md.
+    #[cfg(feature = "collab")]
+    Collab(crate::collab_cmd::CollabArgs),
     /// Print version and enabled features.
     Version,
     /// Internal: an agent a gateway starts ahead of demand; it waits for one

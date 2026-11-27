@@ -1,0 +1,8 @@
+apiVersion: v2
+name: graphrt-collab
+description: Graphrt collaboration server (team workspaces, live co-editing of agent projects), hosted or self hosted.
+type: application
+version: 0.1.0
+appVersion: "0.6.2"
+home: https://github.com/Graphrt/graphrt
+sources: [https://github.com/Graphrt/graphrt]

@@ -139,6 +139,14 @@ fn schema_lists_exactly_the_fields_the_parser_accepts() {
         json!([{ "id": "a", "title": "T", "description": "D", "prompt": "P", "zz_unknown": 1 }]);
     let mut unknown_trigger_field = with_node(json!({ "kind": "acme.x", "title": "X" }));
     unknown_trigger_field["triggers"] = json!([{ "id": "t", "title": "T", "watch": "acme.x", "zz_unknown": 1 }]);
+    {
+        let mut unknown_service_field = base_manifest();
+        unknown_service_field["tools"] = json!([{ "name": "t", "description": "d", "parameters": {} }]);
+        unknown_service_field["services"] = json!([{ "id": "s", "title": "S", "tool": "t", "zz_unknown": 1 }]);
+        let listed = schema_properties(&definitions["service"]);
+        assert_eq!(listed, fields_the_parser_accepts(&unknown_service_field), "service fields");
+        assert_eq!(definitions["service"]["additionalProperties"], json!(false));
+    }
     let cases = [
         ("manifest", &unknown_top_level, &schema),
         ("trigger", &unknown_trigger_field, &definitions["trigger"]),

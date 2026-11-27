@@ -207,6 +207,13 @@ every route, an audit log, encrypted secrets and an agent registry with
 environments. It needs the API key. Off unless given. See
 [console.md](console.md).
 
+`graphrt collab serve --config collab.yaml` (cargo feature `collab`, its own
+`:<version>-collab` image) runs the collaboration server: team workspaces
+where people edit agent projects together in real time. `graphrt collab
+invite --config collab.yaml --workspace NAME` makes the first owner's invite,
+`graphrt collab check` checks a config, `graphrt collab key` prints a new key.
+See [collab.md](collab.md).
+
 `--deployment NAME` (or `$GRAPHRT_DEPLOYMENT`) names the deployment the server
 belongs to: webhook idempotency run ids include it, as a graphrt gateway derives
 them (see [serving.md](serving.md#idempotency)), and `--trust-gateway` requires

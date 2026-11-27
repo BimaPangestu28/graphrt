@@ -16,6 +16,8 @@ pub mod bundle_skills;
 pub mod catalog;
 #[cfg(feature = "channels")]
 pub mod channels;
+#[cfg(feature = "collab")]
+pub mod collab_cmd;
 #[cfg(feature = "conversations")]
 pub mod conversations;
 #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
@@ -169,6 +171,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "gateway") {
         features.push("gateway");
     }
+    if cfg!(feature = "collab") {
+        features.push("collab");
+    }
     if cfg!(feature = "deploy-fly") {
         features.push("deploy-fly");
     }
@@ -219,6 +224,8 @@ pub fn execute(cli: Cli) -> Result<u8, CliError> {
         Command::Kb(args) => block_on_current_thread(kb::kb(*args)),
         #[cfg(feature = "gateway")]
         Command::Gateway(args) => gateway_cmd::gateway(*args),
+        #[cfg(feature = "collab")]
+        Command::Collab(args) => collab_cmd::collab(args),
         #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
         Command::Deploy(args) => deploy_cmd::deploy(*args),
         #[cfg(feature = "serve")]

@@ -57,7 +57,7 @@ mod build;
 #[cfg(feature = "web-chat")]
 mod chat;
 #[cfg(feature = "console")]
-mod console;
+pub(crate) mod console;
 #[cfg(feature = "cors")]
 mod cors;
 mod delivery;

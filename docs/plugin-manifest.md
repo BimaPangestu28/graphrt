@@ -55,6 +55,7 @@ data model first, with YAML 1.2 boolean spellings only (`true` / `false`;
 | `allow_unprefixed_kinds` | boolean | `false` | See [Node kinds](#node-kinds). |
 | `templates` | array | `[]` | [Templates](#templates): starter prompts a host may offer. Any runtime. |
 | `triggers` | array | `[]` | [Triggers](#triggers): events a host can start workflows on. |
+| `services` | array | `[]` | [Services](#services): server side services a collaboration server runs for workspaces. |
 
 ## Runtime fields
 
@@ -286,6 +287,46 @@ than `limits.timeout_ms`; a few minutes is a good upper bound.
 
 The graphrt CLI does not run triggers itself; hosts such as graphrt Desktop do.
 
+## Services
+
+`services` are server side services a collaboration server
+(`graphrt collab`, see [collab.md](collab.md#plugin-services)) runs for the
+workspaces whose owners enable them. Like triggers they add no protocol: each
+names one of the plugin's `tools`, which the server calls with
+`{"event", "workspace", "project", "details", "at_ms"}` for each event the
+service follows, and with `{"call", "workspace", "caller", "project"}` when a
+member calls it. The plugin runs sandboxed like any other. Every host parses
+`services`, only a collaboration server acts on it (other hosts load the
+plugin's nodes and tools as usual). Unknown keys are errors.
+
+| Field | Type | Default | Constraints |
+| --- | --- | --- | --- |
+| `id` | string | required | `[a-z0-9_-]{1,64}`, unique in the plugin. Shown as `<name>/<id>`. |
+| `title` | string | required | Not blank, no control characters. |
+| `description` | string | `""` | |
+| `tool` | string | required | One of the plugin's `tools`. |
+| `access` | string | `operator` | The lowest workspace role that may call it: `viewer`, `operator` or `owner`. Events reach it whoever caused them. |
+| `events` | array of strings | `[]` | From `project.changed` (a few seconds after editing stops), `version.saved`, `member.joined`. |
+| `secrets` | array of strings | `[]` | Workspace secrets it asks for, variable names. Needs `permissions.secrets: true`. An owner grants each one, and only plugins the server trusts receive them, as the tool call's secrets. |
+| `reads_projects` | boolean | `false` | Whether project content goes along with events and calls. |
+
+```yaml
+name: collab-webhooks
+runtime: process
+command: node
+args: [index.js]
+permissions: { network: true, secrets: true }
+tools:
+  - { name: deliver, description: Post a workspace event to a webhook, parameters: { type: object } }
+services:
+  - id: webhook
+    title: Send changes to a webhook
+    tool: deliver
+    access: owner
+    events: [project.changed, version.saved, member.joined]
+    secrets: [WEBHOOK_URL, WEBHOOK_SECRET]
+```
+
 ## Relative paths
 
 `module`, `checksums` keys and `cwd` are paths inside the
@@ -387,3 +428,4 @@ becomes a guarantee.
 | 1 | 0.2.0 | First specified version. |
 | 1 | unreleased | `runtime: mcp` (MCP server presets) and `templates` (new optional field and value, not breaking). |
 | 1 | unreleased | Optional `triggers` (not breaking: a new optional field). |
+| 1 | unreleased | Optional `services` (not breaking: a new optional field). |
