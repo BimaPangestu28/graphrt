@@ -34,7 +34,7 @@ mod sign;
 mod wasm;
 
 pub use builder::BundleBuilder;
-pub use bundle::{Bundle, BundledPlugin, CompatReport, OpenOptions};
+pub use bundle::{Bundle, BundledPlugin, CompatReport, DEFAULT_MAX_KNOWLEDGE_BYTES, OpenOptions};
 pub use error::BundleError;
 #[cfg(feature = "wasm")]
 pub use graphrt_wasm::WasmLimits;

@@ -397,8 +397,9 @@ size limit besides the volume and the Machine's memory:
    undone as for any store deploy. A redeploy of the same file uploads
    nothing. After the new version is live, older agents are deleted.
 4. The Machine gets more memory for a large agent, since knowledge stores are
-   held in memory: 256 MB plus 4 MB per MB of agent, rounded up to 512 MB,
-   1 GB, 2 GB, 4 GB or 8 GB (2 GB per shared CPU).
+   held in memory: 256 MB plus 4 MB per MB the agent takes once unpacked (a
+   bundle's knowledge store compresses well), rounded up to 512 MB, 1 GB,
+   2 GB, 4 GB or 8 GB (2 GB per shared CPU).
 
 `--drop-store` is refused for such an agent: the volume holds it. The
 Machine's image must come from this graphrt version or a newer one (the

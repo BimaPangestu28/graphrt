@@ -40,14 +40,15 @@ pub(super) fn agent_on_volume(agent: &AgentFile) -> bool {
     agent.contents.len() > MAX_AGENT_FILE_BYTES
 }
 
-/// Memory for a Machine serving an agent of `agent_bytes`: 256 MB for agents that
-/// fit in the Machine config; knowledge stores are held in memory, so larger
-/// agents get more (Fly sizes; at most 2 GB per shared CPU).
+/// Memory for a Machine serving `agent`: 256 MB for agents that fit in the
+/// Machine config; knowledge stores are held in memory, so larger agents get
+/// 4 MB per MB they take once unpacked (Fly sizes; at most 2 GB per shared CPU).
 /// Returns `(cpus, memory_mb)`.
-pub(super) fn guest_for(agent_bytes: usize) -> (u32, u32) {
-    if agent_bytes <= MAX_AGENT_FILE_BYTES {
+pub(super) fn guest_for(agent: &AgentFile) -> (u32, u32) {
+    if !agent_on_volume(agent) {
         return (1, 256);
     }
+    let agent_bytes = agent.unpacked_bytes.max(u64::try_from(agent.contents.len()).unwrap_or(u64::MAX));
     let agent_mb = u32::try_from(agent_bytes.div_ceil(1024 * 1024)).unwrap_or(u32::MAX);
     let wanted = 256u32.saturating_add(agent_mb.saturating_mul(4));
     let memory_mb = [256u32, 512, 1024, 2048, 4096, 8192].into_iter().find(|size| *size >= wanted).unwrap_or(8192);
@@ -251,7 +252,7 @@ pub(super) fn machine_config_for(
     // The volume may only hold the agent: `--store` is for deploys that keep state.
     let with_store = store_volume.is_some() && request.serve.needs_store();
     command.extend(request.serve.serve_flags(workflow, public_url, with_store));
-    let (cpus, memory_mb) = guest_for(request.agent.contents.len());
+    let (cpus, memory_mb) = guest_for(&request.agent);
     let mut config = json!({
         "image": request.image,
         "init": { "cmd": command },
@@ -293,8 +294,7 @@ pub(super) fn machine_config_for(
 /// The config a new store Machine boots with while its agent is uploaded:
 /// a placeholder agent and no services, so nothing reaches it meanwhile.
 pub(super) fn holding_config(request: &DeployRequest, workflow: &str, public_url: &str, volume: &str) -> Value {
-    let placeholder =
-        AgentFile { file_name: format!("{workflow}.yaml"), contents: PLACEHOLDER_WORKFLOW.as_bytes().to_vec() };
+    let placeholder = AgentFile::new(format!("{workflow}.yaml"), PLACEHOLDER_WORKFLOW.as_bytes().to_vec());
     let config = machine_config_for(request, workflow, public_url, Some(volume), AgentSource::Inline(&placeholder));
     with_role(&config, Role::Standby, None)
 }
@@ -433,7 +433,7 @@ mod tests {
             secrets: BTreeMap::from([("OPENAI_API_KEY".into(), "sk-secret".into())]),
             api_key_candidate: "grk_x".into(),
             rotate_api_key: false,
-            agent: AgentFile { file_name: "Support Bot.GRT".into(), contents: b"bundle".to_vec() },
+            agent: AgentFile::new("Support Bot.GRT", b"bundle".to_vec()),
             now_ms: 1_700_000_000_000,
             serve: ServeOptions::default(),
             drop_store: false,
@@ -534,10 +534,11 @@ mod tests {
     #[test]
     fn sizes_large_agents_and_rejects_reserved_secrets() {
         let mut too_big = request(ServiceMode::AlwaysOn);
-        assert_eq!(guest_for(MAX_AGENT_FILE_BYTES), (1, 256));
-        assert_eq!(guest_for(MAX_AGENT_FILE_BYTES + 1), (1, 512));
-        assert_eq!(guest_for(100 * 1024 * 1024), (1, 1024));
-        assert_eq!(guest_for(5 * 1024 * 1024 * 1024), (4, 8192));
+        let sized = |bytes: usize| AgentFile::new("a.grt", vec![0; bytes]);
+        assert_eq!(guest_for(&sized(MAX_AGENT_FILE_BYTES)), (1, 256));
+        assert_eq!(guest_for(&sized(MAX_AGENT_FILE_BYTES + 1)), (1, 512));
+        assert_eq!(guest_for(&sized(2 * 1024 * 1024).unpacked(100 * 1024 * 1024)), (1, 1024), "unpacked size counts");
+        assert_eq!(guest_for(&sized(2 * 1024 * 1024).unpacked(5 * 1024 * 1024 * 1024)), (4, 8192));
         assert_eq!(volume_gb_for(10 * 1024 * 1024), 2);
         assert_eq!(volume_gb_for(1024 * 1024 * 1024), 4);
         too_big.agent.contents = vec![0; MAX_AGENT_FILE_BYTES + 1];

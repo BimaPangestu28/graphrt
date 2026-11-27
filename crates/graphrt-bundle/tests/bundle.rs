@@ -283,3 +283,43 @@ fn sqlite_store_with_pending_write_ahead_log_is_rejected() {
     assert!(bundle.file("knowledge/local-kb.db").is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `len` bytes that do not compress (so the zip-bomb guard has nothing to say).
+fn noise(len: usize) -> Vec<u8> {
+    let mut state = 0x2545_f491_u32;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state.to_le_bytes()[0]
+        })
+        .collect()
+}
+
+#[test]
+fn knowledge_stores_larger_than_the_file_limit_open_and_other_files_do_not() {
+    let dir = std::env::temp_dir().join(format!("graphrt-bundle-kb-large-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // 70 MiB: above the 64 MiB limit of one ordinary file.
+    let store = noise(70 * 1024 * 1024);
+    std::fs::write(dir.join("kb.db"), &store).unwrap();
+    let kb = "stores:\n  local: { type: sqlite, path: kb.db }\ndatasets:\n  - { id: d, store: local }\n";
+    let bytes = BundleBuilder::new("kb", "1")
+        .workflow("w.yaml", read("examples/hello.yaml"))
+        .unwrap()
+        .knowledge(kb, &dir)
+        .unwrap()
+        .build()
+        .unwrap();
+    let bundle = Bundle::open(&bytes, &OpenOptions::default()).unwrap();
+    assert_eq!(bundle.file("knowledge/local-kb.db").map(<[u8]>::len), Some(store.len()));
+    // The knowledge limit still applies when set lower.
+    let small = OpenOptions { max_knowledge_bytes: 1024 * 1024, ..OpenOptions::default() };
+    assert!(matches!(Bundle::open(&bytes, &small), Err(BundleError::Archive(_))));
+    // The same size anywhere else is refused.
+    let zip = raw_zip(&[("bundle.json", b"{}"), ("assets/big.bin", &store)]);
+    assert!(matches!(Bundle::open(&zip, &OpenOptions::default()), Err(BundleError::Archive(_))));
+    let _ = std::fs::remove_dir_all(&dir);
+}

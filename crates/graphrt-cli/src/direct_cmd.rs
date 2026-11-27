@@ -413,7 +413,10 @@ fn read_agent(path: &Path) -> Result<AgentFile, Failure> {
             graphrt_core::Workflow::parse(text)
                 .map_err(|error| Failure::invalid(format!("{}: {error}", path.display())))?;
         }
-        "grt" => check_bundle(path, &contents)?,
+        "grt" => {
+            let unpacked = check_bundle(path, &contents)?;
+            return Ok(AgentFile::new(file_name, contents).unpacked(unpacked));
+        }
         _ => {
             return Err(Failure::invalid(format!(
                 "{}: expected a .grt bundle or a .yaml/.json workflow",
@@ -421,19 +424,21 @@ fn read_agent(path: &Path) -> Result<AgentFile, Failure> {
             )));
         }
     }
-    Ok(AgentFile { file_name, contents })
+    Ok(AgentFile::new(file_name, contents))
 }
 
+/// Opens the bundle (hashes, limits) and returns the bytes of its files once unpacked.
 #[cfg(feature = "bundle")]
-fn check_bundle(path: &Path, contents: &[u8]) -> Result<(), Failure> {
-    graphrt_bundle::Bundle::open(contents, &graphrt_bundle::OpenOptions::default())
-        .map(drop)
-        .map_err(|error| Failure::invalid(format!("{}: {error}", path.display())))
+fn check_bundle(path: &Path, contents: &[u8]) -> Result<u64, Failure> {
+    let bundle = graphrt_bundle::Bundle::open(contents, &graphrt_bundle::OpenOptions::default())
+        .map_err(|error| Failure::invalid(format!("{}: {error}", path.display())))?;
+    let unpacked: usize = bundle.paths().filter_map(|file| bundle.file(file)).map(<[u8]>::len).sum();
+    Ok(u64::try_from(unpacked).unwrap_or(u64::MAX))
 }
 
 #[cfg(not(feature = "bundle"))]
-fn check_bundle(_path: &Path, _contents: &[u8]) -> Result<(), Failure> {
-    Ok(())
+fn check_bundle(_path: &Path, contents: &[u8]) -> Result<u64, Failure> {
+    Ok(u64::try_from(contents.len()).unwrap_or(u64::MAX))
 }
 
 /// The published image of this graphrt version.

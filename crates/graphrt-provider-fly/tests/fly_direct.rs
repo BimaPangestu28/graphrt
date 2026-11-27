@@ -46,7 +46,7 @@ fn request(version: &str, now_ms: u64) -> DeployRequest {
         secrets: BTreeMap::from([("OPENAI_API_KEY".into(), OPENAI_VALUE.into())]),
         api_key_candidate: API_KEY.into(),
         rotate_api_key: false,
-        agent: AgentFile { file_name: "support.yaml".into(), contents: format!("# {version}\n").into_bytes() },
+        agent: AgentFile::new("support.yaml", format!("# {version}\n").into_bytes()),
         now_ms,
         serve: ServeOptions::default(),
         drop_store: false,
@@ -570,7 +570,7 @@ fn large_agent(version: &str, size: usize, seed: u8) -> DeployRequest {
             (state >> 24) as u8
         })
         .collect();
-    request.agent = AgentFile { file_name: "support.grt".into(), contents };
+    request.agent = AgentFile::new("support.grt", contents);
     request
 }
 
