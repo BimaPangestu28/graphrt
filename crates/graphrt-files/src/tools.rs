@@ -24,7 +24,7 @@ use serde_json::json;
 
 use crate::path::WorkspacePath;
 use crate::sniff::MediaClass;
-use crate::text::{LineWindow, read_lines, search_file, window_of};
+use crate::text::{Found, LineWindow, Matcher, SearchBudget, read_lines, search_file, search_text, window_of};
 use crate::workspace::{FilesError, StoredFile, Workspace};
 
 /// Name hosts register the provider under: tools are `files/list`, `files/read`...
@@ -54,6 +54,10 @@ pub struct FileToolsConfig {
     pub max_search_scan_bytes: u64,
     /// Most files one `search` looks at.
     pub max_search_files: usize,
+    /// Most documents (PDF, Office) one `search` extracts and looks into.
+    pub max_search_documents: usize,
+    /// Longest time one `search` runs. It answers with what it found by then.
+    pub max_search_time: std::time::Duration,
     /// Largest content `write` accepts, in bytes.
     pub max_write_bytes: u64,
     /// Largest document `read` extracts text from, in bytes.
@@ -80,6 +84,8 @@ impl Default for FileToolsConfig {
             max_search_file_bytes: 8 * 1024 * 1024,
             max_search_scan_bytes: 64 * 1024 * 1024,
             max_search_files: 2_000,
+            max_search_documents: 25,
+            max_search_time: std::time::Duration::from_secs(5),
             max_write_bytes: 4 * 1024 * 1024,
             max_document_bytes: 32 * 1024 * 1024,
             allow_delete: true,
@@ -89,8 +95,7 @@ impl Default for FileToolsConfig {
     }
 }
 
-/// The text of the last document `read` extracted, so paging through a PDF
-/// parses it once.
+/// The text of one extracted document.
 #[derive(Debug)]
 struct ExtractedDocument {
     /// Store-independent identity: scope key, path, size and modification time.
@@ -98,12 +103,47 @@ struct ExtractedDocument {
     text: Arc<str>,
 }
 
+/// Most bytes of extracted text kept between calls.
+const MAX_CACHED_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
+/// The text of the documents extracted last, newest at the back, so paging
+/// through a PDF, or reading a document a search just found, parses it once.
+#[derive(Debug, Default)]
+struct DocumentCache {
+    documents: std::collections::VecDeque<ExtractedDocument>,
+    bytes: usize,
+}
+
+impl DocumentCache {
+    fn get(&mut self, key: &str) -> Option<Arc<str>> {
+        let index = self.documents.iter().position(|document| document.key == key)?;
+        let document = self.documents.remove(index)?;
+        let text = Arc::clone(&document.text);
+        self.documents.push_back(document);
+        Some(text)
+    }
+
+    fn put(&mut self, key: String, text: Arc<str>) {
+        if text.len() > MAX_CACHED_TEXT_BYTES {
+            return;
+        }
+        self.bytes += text.len();
+        self.documents.push_back(ExtractedDocument { key, text });
+        while self.bytes > MAX_CACHED_TEXT_BYTES {
+            match self.documents.pop_front() {
+                Some(oldest) => self.bytes = self.bytes.saturating_sub(oldest.text.len()),
+                None => break,
+            }
+        }
+    }
+}
+
 /// The `files` tools over one [`Workspace`].
 #[derive(Debug)]
 pub struct FileTools {
     workspace: Workspace,
     config: FileToolsConfig,
-    last_document: Mutex<Option<ExtractedDocument>>,
+    documents: Mutex<DocumentCache>,
 }
 
 impl FileTools {
@@ -113,7 +153,7 @@ impl FileTools {
     }
 
     pub fn with_config(workspace: Workspace, config: FileToolsConfig) -> Self {
-        Self { workspace, config, last_document: Mutex::new(None) }
+        Self { workspace, config, documents: Mutex::new(DocumentCache::default()) }
     }
 
     /// Give every end user their own files.
@@ -198,9 +238,10 @@ impl FileTools {
             spec(
                 "search",
                 format!(
-                    "Find the lines that contain a text (not a pattern) in the text files of the workspace or of \
-                     one directory or file. Returns up to {} matches as `path:line: text`. Documents such as PDF \
-                     are not searched: read them instead.",
+                    "Find the lines that contain a text in the text files of the workspace or of one directory \
+                     or file. Returns up to {} matches as `path:line: text`. With `regex` the query is a regular \
+                     expression. With `documents` the text of PDF and Office files is searched too, which is \
+                     slower. A single document named by `path` is always searched.",
                     config.max_search_results
                 ),
                 json!({
@@ -208,9 +249,11 @@ impl FileTools {
                     "additionalProperties": false,
                     "required": ["query"],
                     "properties": {
-                        "query": { "type": "string", "minLength": 2, "maxLength": 200, "description": "Text to look for." },
+                        "query": { "type": "string", "minLength": 2, "maxLength": 200, "description": "Text to look for, or a regular expression with `regex`." },
                         "path": { "type": "string", "description": "Directory or file to search. Omit for the whole workspace." },
-                        "case_sensitive": { "type": "boolean", "description": "Match upper and lower case exactly (default false)." }
+                        "case_sensitive": { "type": "boolean", "description": "Match upper and lower case exactly (default false)." },
+                        "regex": { "type": "boolean", "description": "Read `query` as a regular expression, matched line by line (default false). No backreferences or lookaround." },
+                        "documents": { "type": "boolean", "description": "Also search inside PDF and Office documents (default false)." }
                     }
                 }),
             ),
@@ -363,21 +406,21 @@ impl FileTools {
         )
     }
 
-    /// Text of a PDF or Office document, extracted once and kept for the next page.
+    /// Text of a PDF or Office document, extracted once and kept for the next call.
     async fn document_text(&self, workspace: &Workspace, stored: &StoredFile) -> Result<Arc<str>, String> {
         let entry = &stored.entry;
         let reference = workspace.file_value(stored).reference.unwrap_or_default();
         let key = format!("{reference}|{}|{:?}", entry.size, entry.modified_ms);
-        if let Ok(cached) = self.last_document.lock()
-            && let Some(document) = cached.as_ref().filter(|document| document.key == key)
+        if let Ok(mut cache) = self.documents.lock()
+            && let Some(text) = cache.get(&key)
         {
-            return Ok(Arc::clone(&document.text));
+            return Ok(text);
         }
         let bytes = workspace.read_all(&entry.path, self.config.max_document_bytes).await.map_err(explain)?;
         let text: Arc<str> =
             extract_document(bytes, stored.media.mime, entry.path.file_name().to_owned()).await?.into();
-        if let Ok(mut cached) = self.last_document.lock() {
-            *cached = Some(ExtractedDocument { key, text: Arc::clone(&text) });
+        if let Ok(mut cache) = self.documents.lock() {
+            cache.put(key, Arc::clone(&text));
         }
         Ok(text)
     }
@@ -389,14 +432,22 @@ impl FileTools {
             return Err("`query` must be between 2 and 200 characters".to_owned());
         }
         let case_sensitive = args.case_sensitive.unwrap_or(false);
-        let needle = if case_sensitive { query.to_owned() } else { query.to_lowercase() };
+        let matcher = Arc::new(if args.regex.unwrap_or(false) {
+            pattern_matcher(query, case_sensitive)?
+        } else {
+            Matcher::literal(query, case_sensitive)
+        });
         let config = &self.config;
+        // One clock for the whole call: listing, reading, extracting and matching.
+        let deadline = std::time::Instant::now().checked_add(config.max_search_time);
         let target = args.path.as_deref().filter(|path| !is_root(path)).map(parse_path).transpose()?;
         // A file is searched alone; a directory (or nothing) means every file below it.
         let single_file = match &target {
             Some(path) => workspace.stat(path).await.ok().flatten(),
             None => None,
         };
+        // A document the model named is what it wants searched.
+        let in_documents = args.documents.unwrap_or(single_file.is_some());
         let (entries, listing_truncated) = match single_file {
             Some(entry) => (vec![entry], false),
             None => {
@@ -409,32 +460,62 @@ impl FileTools {
         let mut scanned_bytes = 0u64;
         let mut skipped = SkippedFiles::default();
         let mut stopped_early = false;
+        let mut documents_searched = 0usize;
         for entry in &entries {
+            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                skipped.out_of_time = true;
+                break;
+            }
             if lines.len() >= config.max_search_results || scanned_bytes >= config.max_search_scan_bytes {
                 stopped_early = true;
                 break;
             }
-            if entry.size > config.max_search_file_bytes {
-                skipped.too_large += 1;
-                continue;
-            }
             let Ok(stored) = workspace.inspect(&entry.path).await else { continue };
-            match stored.media.class {
-                MediaClass::Text | MediaClass::ActiveText => {}
-                MediaClass::Pdf | MediaClass::Document => {
+            let budget = SearchBudget {
+                max_matches: config.max_search_results - lines.len(),
+                max_scan_bytes: config.max_search_scan_bytes - scanned_bytes,
+                snippet_chars: 200,
+                deadline,
+            };
+            let found = match stored.media.class {
+                MediaClass::Text | MediaClass::ActiveText if entry.size > config.max_search_file_bytes => {
+                    skipped.too_large += 1;
+                    continue;
+                }
+                MediaClass::Text | MediaClass::ActiveText => {
+                    search_file(workspace, &entry.path, &matcher, budget).await.map_err(explain)?
+                }
+                MediaClass::Pdf | MediaClass::Document if !in_documents => {
                     skipped.documents += 1;
                     continue;
                 }
+                MediaClass::Pdf | MediaClass::Document if entry.size > config.max_document_bytes => {
+                    skipped.too_large += 1;
+                    continue;
+                }
+                MediaClass::Pdf | MediaClass::Document if documents_searched >= config.max_search_documents => {
+                    skipped.documents_over_limit += 1;
+                    continue;
+                }
+                MediaClass::Pdf | MediaClass::Document => {
+                    documents_searched += 1;
+                    // A document that cannot be read is skipped, not the end of the search.
+                    let Ok(text) = self.document_text(workspace, &stored).await else {
+                        skipped.unreadable += 1;
+                        continue;
+                    };
+                    let matcher = Arc::clone(&matcher);
+                    crate::blocking(move || search_text(&text, &matcher, budget)).await?
+                }
                 _ => continue,
-            }
-            let remaining_results = config.max_search_results - lines.len();
-            let remaining_bytes = config.max_search_scan_bytes - scanned_bytes;
-            let (matches, scanned) =
-                search_file(workspace, &entry.path, &needle, case_sensitive, remaining_results, remaining_bytes, 200)
-                    .await
-                    .map_err(explain)?;
+            };
+            let Found { matches, scanned, timed_out } = found;
             scanned_bytes = scanned_bytes.saturating_add(scanned);
             lines.extend(matches.into_iter().map(|found| format!("{}:{}: {}", entry.path, found.line, found.text)));
+            if timed_out {
+                skipped.out_of_time = true;
+                break;
+            }
         }
 
         let mut text = if lines.is_empty() { format!("No line contains `{query}`.") } else { lines.join("\n") };
@@ -540,6 +621,10 @@ struct SearchArgs {
     path: Option<String>,
     #[serde(default)]
     case_sensitive: Option<bool>,
+    #[serde(default)]
+    regex: Option<bool>,
+    #[serde(default)]
+    documents: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -557,24 +642,59 @@ struct PathArgs {
     path: String,
 }
 
-/// Files a search did not look into.
+/// What a search did not look into, and why.
 #[derive(Debug, Default)]
 struct SkippedFiles {
+    /// Documents left out because the search was for text files only.
     documents: usize,
+    /// Documents beyond the number one search extracts.
+    documents_over_limit: usize,
+    /// Documents whose text could not be extracted.
+    unreadable: usize,
     too_large: usize,
+    /// The time limit ended the search.
+    out_of_time: bool,
 }
 
 impl SkippedFiles {
     fn note(&self) -> String {
         let mut note = String::new();
+        if self.out_of_time {
+            note.push_str(
+                "\n[the search ran out of time and is incomplete: narrow it with `path` or use a simpler query]",
+            );
+        }
         if self.documents > 0 {
-            note.push_str(&format!("\n[{} document file(s) were not searched: read them instead]", self.documents));
+            note.push_str(&format!(
+                "\n[{} document file(s) were not searched: search again with `documents: true`, or read them]",
+                self.documents
+            ));
+        }
+        if self.documents_over_limit > 0 {
+            note.push_str(&format!(
+                "\n[{} more document file(s) were not searched: narrow the search with `path`]",
+                self.documents_over_limit
+            ));
+        }
+        if self.unreadable > 0 {
+            note.push_str(&format!("\n[{} document file(s) could not be read]", self.unreadable));
         }
         if self.too_large > 0 {
             note.push_str(&format!("\n[{} file(s) were too large to search]", self.too_large));
         }
         note
     }
+}
+
+/// A regular expression from a model, compiled with bounds.
+#[cfg(feature = "regex")]
+fn pattern_matcher(query: &str, case_sensitive: bool) -> Result<Matcher, String> {
+    Matcher::pattern(query, case_sensitive)
+}
+
+#[cfg(not(feature = "regex"))]
+fn pattern_matcher(_query: &str, _case_sensitive: bool) -> Result<Matcher, String> {
+    Err("this build has no regular expressions: search for a text instead".to_owned())
 }
 
 fn parse<T: serde::de::DeserializeOwned>(arguments: serde_json::Value) -> Result<T, String> {

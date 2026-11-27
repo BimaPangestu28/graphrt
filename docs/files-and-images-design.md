@@ -165,14 +165,44 @@ Decision: tools. `files/read` extracts documents with `graphrt-doc`, which
 already bounds zip and PDF decompression, and keeps the text of the last
 document so paging does not parse it again.
 
-### 6. Search is a text search
+### 6. Search is a text search, with patterns and documents on request
 
-A regular expression from a model is an input to a pattern engine. Rust's
-`regex` crate is linear time, but it is still a second parser fed by a model,
-and literal search answers almost every "which file mentions X" question. The
-tool takes a text, reads text files in steps of 256 KiB and stops at 50
-matches or 64 MiB. Documents are not searched: that is what a knowledge base
-is for, and the tool says how many it skipped.
+The first version took a text only: a literal search answers almost every
+"which file mentions X" question, and a regular expression from a model is
+an input to a second parser. Both were added on 2026-11-27, each behind an
+argument the model has to set.
+
+**Regular expressions** (`regex: true`). What makes a pattern from an
+untrusted author dangerous is backtracking: `(a+)+$` takes exponential time
+in engines that try every way to match. The choice of engine is therefore
+the defence.
+
+| Option | Time on hostile patterns | Notes |
+| --- | --- | --- |
+| A backtracking engine with a step counter (`fancy-regex`, PCRE2 with match limits) | bounded only by the counter, and one more knob to get wrong | supports backreferences and lookaround |
+| **`regex` 1.13** | linear in the text for every pattern, by construction | no backreferences, no lookaround. Already linked into the default CLI. |
+| A hand written glob or wildcard matcher | linear | too weak for `inv-\d{4}` or `^total` |
+
+Linear time is not the whole answer, so three more bounds hold:
+
+- **Compiling.** `(\w{1,500}){500}` is a short text that compiles into a huge
+  program. The compiled size is limited to 1 MiB, the matching cache to
+  2 MiB and nesting to 50 levels, and the query to 200 characters. A pattern
+  over a limit is refused in milliseconds, before a file is read.
+- **Time.** Linear with a large constant is still slow over 64 MiB. Every
+  search has a deadline (5 seconds by default) that is checked between files
+  and every 256 lines. It applies to text searches too. The search answers
+  with what it found and says it is incomplete.
+- **The executor.** A step of a file (256 KiB) is matched on the blocking
+  pool, so a slow pattern over a large file does not hold an async worker.
+
+**Documents** (`documents: true`, or a single document named by `path`).
+Extraction is the expensive part, so it is opt in per call, limited to 25
+documents per search and to the size `read` accepts, and the extracted text
+is kept (16 MiB of text across documents) so the `read` that follows a hit
+does not parse the file again. A document that cannot be read is counted
+and skipped. One extraction cannot be interrupted by the deadline. It is
+bounded by the size limits of `graphrt-doc`, as before.
 
 ### 7. Users are separated by a scope the model cannot touch
 
@@ -311,6 +341,9 @@ the host file system goes.
 | F5 | FIFO or device that blocks or never ends | Only regular files are opened, and with `O_NONBLOCK` | `dir_store::special_files_are_not_opened` |
 | F6 | Filling the disk: one huge file, many files, many small writes | Per file size, total bytes and file count, checked under one lock so concurrent writers cannot pass together | `workspace::tests::size_quota_and_count_limits_hold`, `concurrent_writers_cannot_pass_the_quota_together`, `tools::limits_come_back_as_errors_the_model_can_act_on` |
 | F7 | Flooding the context: a huge file, endless lines, a search that matches everything | Windowed reads with a character budget, lines cut at 16 KiB, search capped by matches, files and bytes | `tools::reading_pages_through_long_files`, `search_stops_at_its_limits`, `text::tests::an_endless_line_is_cut_not_buffered` |
+| F17 | A regular expression written to hang the search (`(a+)+$`, `(a\|aa)+$`, `(.*a){12}`) or to exhaust memory when compiled (`(\w{1,500}){500}`, deep nesting) | A linear time engine without backtracking. Limits on compiled size, matching cache, nesting and query length. A deadline on every search. | `tools::a_hostile_pattern_cannot_take_the_search_hostage`, `text::tests::patterns_match_lines_and_are_bounded_when_they_are_built`, `text::tests::a_search_stops_at_its_deadline` |
+| F18 | A search over many or large documents that keeps the CPU busy, or a broken document that ends it | Documents are searched only on request, at most 25 per search and up to the size `read` accepts. Unreadable ones are counted and skipped. | `tools::a_search_extracts_a_bounded_number_of_documents`, `tools::search_looks_inside_documents_when_asked` |
+| F19 | Pattern matching over a large file stalling every other run | Steps of 64 KiB and more are matched on the blocking pool | `tools::matching_a_large_file_does_not_block_the_async_worker` |
 | F8 | MIME spoofing: a program named `photo.png`, a PDF named `notes.txt` | The type is sniffed from content. The extension only refines text and zip containers. | `sniff::tests::the_extension_never_overrides_the_content`, `workspace::tests::the_type_comes_from_the_bytes_and_programs_are_refused` |
 | F9 | Storing something the system would run | ELF, PE, Mach-O, WebAssembly and `#!` scripts are refused. Files are created `0600`, directories `0700`. | `tools::programs_cannot_be_written_whatever_the_name`, `dir_store::files_and_directories_are_owner_only` |
 | F10 | Active content served back to a user interface (HTML, SVG with script) | Detected wherever the tag is and whatever the extension, reported as `text/html` or `image/svg+xml` with `inline_safe: false` | `sniff::tests::html_and_svg_are_active_whatever_they_are_called`, `tools::programs_cannot_be_written_whatever_the_name` |
@@ -379,7 +412,8 @@ the host file system goes.
 - **A store that ignores `If-None-Match`.** Creation without overwrite is
   then only checked inside one process.
 - **CPU time of document extraction.** Bounded by size limits, not by a
-  timer. Run agents with a node or run timeout.
+  timer: the deadline of a search is checked between documents, not inside
+  one. Run agents with a node or run timeout.
 
 ## Performance
 
@@ -397,9 +431,12 @@ Measured with `cargo run --release -p graphrt-files --example bench` on a
 | `files/write`, small file | 22 µs |
 | `files/read`, small file | 29 µs |
 | `files/read`, last 10 lines of a 32 MiB file | 20 ms (1,598 MiB/s), one 256 KiB buffer at a time |
-| `files/search`, 32 MiB of text | 55 ms (587 MiB/s) |
+| `files/search`, 32 MiB of text | 50 ms (646 MiB/s) |
+| `files/search` by regular expression (`ERROR \w+-in-the-\w+$`), 32 MiB | 35 ms (917 MiB/s) |
+| The same with nested repetition (`(.*e){8}needle`) | 69 ms (464 MiB/s) |
+| Refuse a pattern that would compile too large | 3.7 ms |
 | List 2,000 files in 20 directories | 1.8 ms |
-| `files/search` across 2,000 small files | 59 ms |
+| `files/search` across 2,000 small files | 65 ms |
 
 How the code gets there:
 
@@ -521,7 +558,6 @@ is used: nothing is opened, registered or allocated at start without
   `VisionPreparer` in the services, the `files` output for the results), but
   it has to follow the runtime version the app builds against.
 - Creating PDF and Office files. Agents write text formats.
-- Searching inside documents, and regular expression search.
 - Native document blocks (sending a PDF to a provider as a document).
 - Audio and video.
 - A second image generator (Gemini) and image editing.

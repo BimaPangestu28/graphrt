@@ -62,7 +62,7 @@ uses `provider_id: files`.
 | --- | --- | --- |
 | `list` | `path?` | Files below a directory (or the whole workspace) with sizes, at most 500 |
 | `read` | `path`, `offset?`, `limit?` | A window of lines: 200 by default, at most 2,000 lines and 24,000 characters. Says when more lines follow. |
-| `search` | `query`, `path?`, `case_sensitive?` | Lines that contain the text, as `path:line: text`, at most 50 |
+| `search` | `query`, `path?`, `case_sensitive?`, `regex?`, `documents?` | Lines that contain the text or match the pattern, as `path:line: text`, at most 50 |
 | `write` | `path`, `content`, `overwrite?` | Creates a text file. Fails on an existing file unless `overwrite` is true. |
 | `info` | `path` | Size, detected type and SHA-256 |
 | `delete` | `path` | Removes one file |
@@ -76,9 +76,24 @@ What `read` understands:
 - Images and other binary files are refused with a message that says what the
   file is, so the model does not get megabytes of noise.
 
-`search` looks for a text, not a pattern. It reads text files only and says
-how many documents it left out. For questions over many documents, use a
-[knowledge base](serving.md#knowledge-base-api).
+What `search` does:
+
+- It looks for a text, in any case unless `case_sensitive` is true.
+- With `regex: true` the query is a regular expression, matched line by
+  line: `inv-\d{4}`, `^total|EUR$`, `\berror\b`. The engine has no
+  backreferences and no lookaround, which is what lets it match in time
+  linear in the text whatever the pattern is. A pattern that would compile
+  into more than 1 MiB is refused.
+- It reads text files. With `documents: true` it also extracts and searches
+  PDF and Office files, at most 25 per search. A single document named by
+  `path` is searched without the flag. Line numbers of a document are the
+  ones `read` uses, so the agent can open the place it found.
+- A search ends after 5 seconds with what it found and says that it is
+  incomplete. It also says how many documents it left out and why.
+
+For questions over many documents, use a
+[knowledge base](serving.md#knowledge-base-api): it answers by meaning and
+does not read every file on every question.
 
 A failure the model can fix (a wrong path, a full workspace, a file that is
 too large) comes back as an error result with the reason, so the agent can
@@ -234,7 +249,8 @@ minutes is dropped. Downloads are streamed in steps of 256 KiB.
 | Number of files | 5,000 | `WorkspaceLimits::max_files` |
 | Content of one `write` | 4 MiB | `FileToolsConfig::max_write_bytes` |
 | One `read` | 2,000 lines, 24,000 characters | `FileToolsConfig` |
-| One `search` | 50 matches, 64 MiB scanned, 2,000 files, files up to 8 MiB | `FileToolsConfig` |
+| One `search` | 50 matches, 64 MiB scanned, 2,000 files, files up to 8 MiB, 25 documents, 5 seconds | `FileToolsConfig` |
+| A regular expression | 200 characters, 1 MiB compiled, 50 levels of nesting | fixed |
 | Path | 512 bytes, 12 levels, 128 bytes per name | fixed |
 
 The CLI uses the defaults. Embedders set their own (see
@@ -345,11 +361,12 @@ Cargo features of `graphrt-files`:
 | Feature | Default | Meaning |
 | --- | --- | --- |
 | `tokio` | on | File I/O, hashing and extraction run on Tokio's blocking pool |
-| `doc` | on | `files/read` extracts document text with `graphrt-doc` |
+| `doc` | on | `files/read` and `files/search` extract document text with `graphrt-doc` |
+| `regex` | on | `files/search` takes regular expressions (the `regex` crate) |
 | `s3` | off | `S3Store`: the workspace in S3 or an S3 compatible object store |
 
-Without `doc` the crate depends on `graphrt-core`, `sha2` and nothing else of
-weight, which suits phones and small agents.
+Without `doc` and `regex` the crate depends on `graphrt-core`, `sha2` and
+nothing else of weight, which suits phones and small agents.
 
 ## Object storage
 
