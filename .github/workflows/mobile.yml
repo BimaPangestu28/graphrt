@@ -131,13 +131,14 @@ jobs:
         with:
           tool: cargo-ndk
       - name: Build libgraphrt_ffi.so with the SDK's features (aarch64-linux-android, x86_64-linux-android)
-        # The runner image ships the NDK; use its newest one (r27+). The armeabi-v7a
-        # library of the release AAR is checked here, not built.
-        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" examples/mobile/android/scripts/build-rust.sh
+        # The runner image's default NDK (ANDROID_NDK_ROOT, r27): its newest one (r30)
+        # cannot build the QuickJS bindings yet (see sdk/android/scripts/build-native.sh).
+        # The armeabi-v7a library of the release AAR is checked here, not built.
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_ROOT" examples/mobile/android/scripts/build-rust.sh
       - name: Check armv7-linux-androideabi
         run: |
           rustup target add armv7-linux-androideabi
-          ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" cargo ndk -t armeabi-v7a check -p graphrt-ffi --lib --features sdk
+          ANDROID_NDK_HOME="$ANDROID_NDK_ROOT" cargo ndk -t armeabi-v7a check -p graphrt-ffi --lib --features sdk
 
       - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:

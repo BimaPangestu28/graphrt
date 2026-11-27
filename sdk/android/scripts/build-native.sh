@@ -5,7 +5,8 @@
 # Usage: sdk/android/scripts/build-native.sh
 #
 # Environment (all optional):
-#   ANDROID_NDK_HOME   NDK to use (default: newest under $ANDROID_HOME/ndk or ~/Library/Android/sdk/ndk)
+#   ANDROID_NDK_HOME   NDK to use, r27 to r29 (default: newest under $ANDROID_HOME/ndk or
+#                      ~/Library/Android/sdk/ndk)
 #   GRAPHRT_ABIS       space-separated ABIs (default: "arm64-v8a armeabi-v7a x86_64")
 #   GRAPHRT_FEATURES   cargo feature flags (default: "--features sdk", what the release
 #                      AAR ships; needs libclang for the JavaScript code node)
@@ -30,7 +31,8 @@ find_newest_ndk() {
     return 1
   fi
   local newest
-  newest="$(ls -1 "$ndk_parent" | sort -V | tail -n 1)"
+  # The newest below r30 (see the NDK check below).
+  newest="$(ls -1 "$ndk_parent" | grep -E '^(2[7-9])\.' | sort -V | tail -n 1)"
   [[ -n "$newest" ]] && echo "$ndk_parent/$newest"
 }
 
@@ -44,6 +46,16 @@ export ANDROID_NDK_HOME
 
 if ! command -v cargo-ndk >/dev/null 2>&1; then
   echo "error: cargo-ndk is not installed; run: cargo install cargo-ndk" >&2
+  exit 1
+fi
+
+# NDK r30 refuses the bare Rust triple that bindgen (the QuickJS bindings of the
+# JavaScript code node) passes to clang ("Unversioned target triples are not
+# supported"), and cargo-ndk replaces any bindgen arguments set here. Until
+# cargo-ndk passes a versioned triple, build with r27 to r29.
+ndk_major="$(sed -n 's/^Pkg.Revision *= *\([0-9]*\).*/\1/p' "$ANDROID_NDK_HOME/source.properties" 2>/dev/null || true)"
+if [[ -n "$ndk_major" ]] && ((ndk_major >= 30)) && [[ "$features" != *no-default-features* ]]; then
+  echo "error: NDK r$ndk_major cannot build the JavaScript code node yet; use r27 to r29 (ANDROID_NDK_HOME)" >&2
   exit 1
 fi
 

@@ -15,5 +15,5 @@ scripts/build-native.sh                  # the .so files, with the `sdk` feature
 scripts/test-jvm.sh                      # tests and snippets on the JVM
 ```
 
-Needs the Android NDK r27+, `cargo-ndk`, libclang and a JDK 17+. The release
+Needs the Android NDK r27 to r29, `cargo-ndk`, libclang and a JDK 17+. The release
 workflow builds the AAR and attaches it to every GitHub release.

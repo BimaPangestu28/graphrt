@@ -24,7 +24,7 @@ workflows and the config as assets.
   `rustup target add aarch64-linux-android x86_64-linux-android`
 - libclang on the build host (the JavaScript code node's bindings are
   generated at build time), for example `apt install libclang-dev`
-- Android SDK with platform 36 and an NDK (r27+; tested with 28.2.13676358)
+- Android SDK with platform 36 and an NDK r27 to r29 (tested with 27.1 and 28.2, r30 cannot build the JavaScript code node yet)
 - [`cargo-ndk`](https://github.com/bbqsrc/cargo-ndk): `cargo install cargo-ndk`
 - JDK 17+ for Gradle. The Gradle wrapper (9.3.1) downloads Gradle, AGP 8.13
   and Kotlin 2.2 on first use.
