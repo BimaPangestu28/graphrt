@@ -88,7 +88,7 @@ skills = ["llm", "graphrt-llm/skills", "graphrt-llm/text-model", "dep:graphrt-sk
 # `~/.graphrt/learning`. Opt-in (`--features learning`): the release binaries
 # and the GHCR image are built with it, the slim agent builds are not. See
 # docs/learning.md.
-learning = ["llm", "graphrt-llm/learning", "graphrt-llm/text-model", "dep:graphrt-learn", "dep:graphrt-skill"]
+learning = ["llm", "graphrt-llm/learning", "graphrt-llm/text-model", "dep:graphrt-learn", "dep:graphrt-skill", "graphrt-gateway?/feedback"]
 # `graphrt eval`: run a workflow against test cases with assertions and a CI
 # gate (JSON and JUnit reports). Pulls in `replay`. Opt-in (`--features eval`):
 # the release binaries and the GHCR image are built with it.

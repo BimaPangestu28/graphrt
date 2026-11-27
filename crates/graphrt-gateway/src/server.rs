@@ -8,6 +8,7 @@
 //! | GET | `/v1/deployments/{d}/runs/{id}/events` | SSE replay + live tail (`Last-Event-ID` or `?from=`) |
 //! | POST | `/v1/deployments/{d}/runs/{id}/resume` | resume a paused run (`inputs`, `secrets`) |
 //! | POST | `/v1/deployments/{d}/runs/{id}/abort` | abort |
+//! | POST | `/v1/deployments/{d}/runs/{id}/feedback` | rate a run (`name`, `value`, `comment`, `user`), recorded by an agent (cargo feature `feedback`) |
 //! | POST | `/v1/deployments/{d}/hooks/{hook}` | webhook ingress |
 //! | POST | `/v1/deployments/{d}/warm` | prewarm replicas ahead of traffic (`{"replicas": n}`) |
 //! | POST | `/admin/v1/deployments/{d}/versions` | register a version (admin token) |
@@ -47,7 +48,9 @@ use crate::pool::ActivateError;
 use crate::pool::{PrewarmOutcome, PrewarmRequest};
 use crate::signature::unix_now;
 use crate::sse::{Frame, is_after, resume_point};
-use crate::supervisor::{Gateway, LiveRun, RunInput, Settled, StartError, StartOptions, Started};
+use crate::supervisor::{
+    CALLER_FIELD, CALLER_KEY, CALLER_USER, Gateway, LiveRun, RunInput, Settled, StartError, StartOptions, Started,
+};
 use crate::warm::PrewarmSource;
 use crate::webhook::{HookConfig, delivery_key, hook_run_id, verify};
 
@@ -114,8 +117,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/deployments/{deployment}/runs", post(create_run))
         .route("/v1/deployments/{deployment}/runs/{run_id}", get(get_run))
         .route("/v1/deployments/{deployment}/runs/{run_id}/events", get(run_events))
-        .route("/v1/deployments/{deployment}/runs/{run_id}/resume", post(resume_run))
-        .route("/v1/deployments/{deployment}/runs/{run_id}/abort", post(abort_run))
+        .route("/v1/deployments/{deployment}/runs/{run_id}/{action}", post(run_action))
         .route("/v1/deployments/{deployment}/hooks/{hook}", post(webhook))
         .route("/v1/deployments/{deployment}/warm", post(warm))
         .route("/admin/v1/deployments/{deployment}/versions", post(add_version))
@@ -123,7 +125,7 @@ pub fn router(app: Arc<App>) -> Router {
         .with_state(app)
 }
 
-fn error(status: StatusCode, error_type: &str, message: &str) -> Response {
+pub(crate) fn error(status: StatusCode, error_type: &str, message: &str) -> Response {
     (status, axum::Json(json!({ "error": message, "error_type": error_type }))).into_response()
 }
 
@@ -135,7 +137,7 @@ fn retry_after(status: StatusCode, error_type: &str, message: &str, seconds: u64
     response
 }
 
-fn start_error(app: &App, failure: StartError) -> Response {
+pub(crate) fn start_error(app: &App, failure: StartError) -> Response {
     match failure {
         StartError::Version(VersionError::Retired(_)) => {
             error(StatusCode::GONE, "version_retired", &failure.to_string())
@@ -290,10 +292,16 @@ fn run_input(
     principal: &Principal,
 ) -> RunInput {
     let mut expires_at = None;
-    if let Principal::User { subject, expires_at: exp } = principal {
-        set_verified_user(&mut body, subject);
-        expires_at = Some(*exp);
-    }
+    let caller = match principal {
+        Principal::User { subject, expires_at: exp } => {
+            set_verified_user(&mut body, subject);
+            expires_at = Some(*exp);
+            CALLER_USER
+        }
+        Principal::ApiKey => CALLER_KEY,
+    };
+    // Over anything the client sent: the agent believes the user only when it says `user`.
+    body.insert(CALLER_FIELD.into(), Json::from(caller));
     if !deployment.input_headers.is_empty() {
         let inputs = body.entry("inputs").or_insert_with(|| Json::Object(Default::default()));
         if let Some(inputs) = inputs.as_object_mut() {
@@ -309,7 +317,7 @@ fn run_input(
     RunInput { body, expires_at }
 }
 
-fn parse_object(bytes: &[u8]) -> Result<serde_json::Map<String, Json>, Response> {
+pub(crate) fn parse_object(bytes: &[u8]) -> Result<serde_json::Map<String, Json>, Response> {
     if bytes.is_empty() {
         return Ok(serde_json::Map::new());
     }
@@ -376,7 +384,7 @@ async fn create_run(
     (StatusCode::OK, axum::Json(record_json(&record))).into_response()
 }
 
-async fn load_run(app: &App, deployment: &Deployment, run_id: &str) -> Result<RunRecord, Response> {
+pub(crate) async fn load_run(app: &App, deployment: &Deployment, run_id: &str) -> Result<RunRecord, Response> {
     match app.gateway.store.get(run_id).await {
         Ok(Some(record)) if record.deployment.as_deref() == Some(deployment.name.as_str()) => Ok(record),
         Ok(_) | Err(graphrt_core::store::StoreError::InvalidId(_)) => {
@@ -660,13 +668,19 @@ struct ResumeBody {
     stream: bool,
 }
 
-async fn resume_run(
+/// `POST .../runs/{id}/resume`, `.../abort` and `.../feedback` (cargo feature
+/// `feedback`): one handler, so the binary holds one copy of the extractor code.
+async fn run_action(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    Path((name, run_id)): Path<(String, String)>,
+    Path((name, run_id, action)): Path<(String, String, String)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    let known = matches!(action.as_str(), "resume" | "abort") || (cfg!(feature = "feedback") && action == "feedback");
+    if !known {
+        return error(StatusCode::NOT_FOUND, "not_found", "unknown run action");
+    }
     let deployment = match find_deployment(&app, &name) {
         Ok(deployment) => deployment,
         Err(response) => return response,
@@ -675,21 +689,37 @@ async fn resume_run(
         Ok(principal) => principal,
         Err(response) => return response,
     };
+    match action.as_str() {
+        "resume" => resume_run(&app, &deployment, &principal, run_id, &headers, &body).await,
+        #[cfg(feature = "feedback")]
+        "feedback" => crate::feedback::run_feedback(&app, &deployment, &principal, &run_id, &body).await,
+        _ => abort_run(&app, &deployment, &run_id).await,
+    }
+}
+
+async fn resume_run(
+    app: &App,
+    deployment: &Arc<Deployment>,
+    principal: &Principal,
+    run_id: String,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
     let request: ResumeBody = if body.is_empty() {
         ResumeBody::default()
     } else {
-        match serde_json::from_slice(&body) {
+        match serde_json::from_slice(body) {
             Ok(request) => request,
             Err(failure) => return error(StatusCode::BAD_REQUEST, "bad_request", &failure.to_string()),
         }
     };
     deployment.record_arrival(unix_now());
-    let fresh = match &principal {
-        Principal::User { .. } => Some(run_input(&deployment, &headers, serde_json::Map::new(), &principal)),
+    let fresh = match principal {
+        Principal::User { .. } => Some(run_input(deployment, headers, serde_json::Map::new(), principal)),
         Principal::ApiKey => None,
     };
     let inputs = if request.inputs.is_null() { json!({}) } else { request.inputs };
-    match app.gateway.resume_run(&deployment, &run_id, inputs, request.secrets, fresh).await {
+    match app.gateway.resume_run(deployment, &run_id, inputs, request.secrets, fresh).await {
         Ok(run) if request.stream => {
             let start = app.gateway.store.get(&run_id).await.ok().flatten().map_or(0, |record| record.event_count);
             client_stream(app.gateway.clone(), run_id, Some(run), start, None, None)
@@ -697,28 +727,16 @@ async fn resume_run(
         Ok(run) => {
             (StatusCode::ACCEPTED, axum::Json(json!({ "run_id": run.run_id, "status": "running" }))).into_response()
         }
-        Err(failure) => start_error(&app, failure),
+        Err(failure) => start_error(app, failure),
     }
 }
 
-async fn abort_run(
-    State(app): State<Arc<App>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    Path((name, run_id)): Path<(String, String)>,
-    headers: HeaderMap,
-) -> Response {
-    let deployment = match find_deployment(&app, &name) {
-        Ok(deployment) => deployment,
-        Err(response) => return response,
-    };
-    if let Err(response) = admit(&app, peer.ip(), &deployment, &headers).await {
-        return response;
-    }
-    match app.gateway.abort_run(&deployment, &run_id).await {
+async fn abort_run(app: &App, deployment: &Deployment, run_id: &str) -> Response {
+    match app.gateway.abort_run(deployment, run_id).await {
         Ok(record) => {
             (StatusCode::ACCEPTED, axum::Json(json!({ "run_id": record.run_id, "status": "aborting" }))).into_response()
         }
-        Err(failure) => start_error(&app, failure),
+        Err(failure) => start_error(app, failure),
     }
 }
 

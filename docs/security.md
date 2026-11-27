@@ -448,9 +448,16 @@ What an agent learned is treated as untrusted until a person approved it.
 - **Behind a gateway.** An agent run with `--trust-gateway` takes the user of
   a run from a request the gateway signed and from nowhere else. The gateway
   sets `user_id` and `sys.user_id` to the user it verified, over anything the
-  client sent. The agent verifies no user token, so feedback sent to it is
-  always `derived`, and a gateway signature does not open `/v1/skills` or
-  `/v1/learning`.
+  client sent, and says so with `caller: user`. A run request without
+  `caller` (a gateway older than the field) names no user: the agent drops
+  its `sys.user_id`, so an old gateway in front of a new agent cannot make a
+  run read another user's lessons. Feedback sent to the agent's own route is
+  always `derived`. Feedback of an end user goes through the gateway's
+  `POST /v1/deployments/{d}/runs/{id}/feedback`: the user's token, on a run
+  started with a token of the same user, makes it their own words, with the
+  same rules as `--verify-jwt` (another user's token is `403`, a missing or
+  bad one `401`, risky lessons wait for the owner). A gateway signature does
+  not open `/v1/skills` or `/v1/learning`.
 - **A model only proposes.** What a model suggests when distilling
   (`graphrt learn distill --model`, `POST /v1/learning/{agent}/distill`) is a
   proposal with trust `derived`. A skill drafted from lessons installs

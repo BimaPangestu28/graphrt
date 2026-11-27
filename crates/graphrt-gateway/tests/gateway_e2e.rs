@@ -40,7 +40,7 @@ async fn sync_run_needs_a_key_and_returns_outputs() {
     assert_eq!(events.len(), 4);
     // The request is stored for a restart without its declared secret input.
     let request = gateway.gateway.store.load_request(run_id).await.unwrap().unwrap();
-    assert_eq!(request, r#"{"body":{"inputs":{"text":"hi"}},"needs_secrets":["api_token"]}"#);
+    assert_eq!(request, r#"{"body":{"inputs":{"text":"hi"},"caller":"key"},"needs_secrets":["api_token"]}"#);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

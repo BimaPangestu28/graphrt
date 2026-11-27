@@ -106,6 +106,19 @@ pub struct RunInput {
     pub expires_at: Option<u64>,
 }
 
+/// Field of a run request the gateway signs that says who started the run:
+/// [`CALLER_USER`] (an end user whose token the gateway verified: `user_id`
+/// and `sys.user_id` are that user) or [`CALLER_KEY`] (a deployment API key,
+/// a webhook or a cron job: `sys` is the caller's, as with an agent's own API
+/// key). Always set by the gateway, over anything the client sent. An agent
+/// that gets a run request without it (from a gateway older than the field)
+/// ignores the `sys.user_id` the request carries.
+pub const CALLER_FIELD: &str = "caller";
+/// [`CALLER_FIELD`] of a run an end user started with a verified token.
+pub const CALLER_USER: &str = "user";
+/// [`CALLER_FIELD`] of every other run.
+pub const CALLER_KEY: &str = "key";
+
 /// What a run settles as.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Settled {
@@ -520,9 +533,12 @@ impl Gateway {
     pub async fn start_run(
         self: &Arc<Self>,
         deployment: &Arc<Deployment>,
-        input: RunInput,
+        mut input: RunInput,
         options: StartOptions,
     ) -> Result<Started, StartError> {
+        // Webhook and cron runs have no end user: their caller is the deployment's owner.
+        let caller = input.body.entry(CALLER_FIELD).or_insert_with(|| Json::from(CALLER_KEY));
+        let user_verified = caller.as_str() == Some(CALLER_USER);
         let version = deployment.current()?;
         let run_id = options.run_id.clone().unwrap_or_else(new_run_id);
         graphrt_core::store::validate_run_id(&run_id).map_err(|error| StartError::Conflict(error.to_string()))?;
@@ -550,6 +566,8 @@ impl Gateway {
             && let Some(user) = input.body.get("user_id").and_then(Json::as_str)
         {
             record.user_id = Some(user.to_owned());
+            // Only a user whose token the gateway verified may later act on the run as that user.
+            record.user_verified = user_verified;
         }
         // Written with the record (one transaction), without its secrets: a
         // restart re-dispatches a run that has no checkpoint from it.

@@ -1,0 +1,65 @@
+# Live skill catalog smoke test (crates/graphrt-cli/tests/live_catalog.rs): the
+# default index of Graphrt/graphrt-plugins over HTTPS, verified against the
+# catalog key built into the binary, then one skill installed into a scratch
+# store and its files checked against their digests. Read only.
+#
+# Runs nightly, on pushes to main that touch the catalog client, and on manual
+# dispatch, never on pull requests: a network hiccup or a catalog release in
+# progress must not turn a pull request red. Needs no secrets.
+name: Live catalog
+
+on:
+  schedule:
+    - cron: "41 3 * * *" # nightly, 03:41 UTC
+  push:
+    branches: [main]
+    paths:
+      - "crates/graphrt-cli/src/plugin_catalog/**"
+      - "crates/graphrt-cli/src/skill_cmd.rs"
+      - "crates/graphrt-cli/tests/live_catalog.rs"
+      - "crates/graphrt-skill/**"
+      - ".github/workflows/live-catalog.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-catalog-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  live:
+    name: live catalog
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: live-catalog
+      - name: Build test
+        run: cargo test -p graphrt-cli --no-default-features --features skills,plugins --test live_catalog --no-run
+      - name: Live catalog test
+        env:
+          GRAPHRT_LIVE_CATALOG: "1"
+        run: |
+          set -o pipefail
+          cargo test -p graphrt-cli --no-default-features --features skills,plugins --test live_catalog -- \
+            --ignored --nocapture 2>&1 | tee live.log
+          # A run that skipped (e.g. a renamed switch) must not pass silently.
+          if grep -q "skipping live catalog" live.log; then
+            echo "::error::the live catalog test was skipped although GRAPHRT_LIVE_CATALOG=1"
+            exit 1
+          fi
+          echo "### live catalog: passed" >> "$GITHUB_STEP_SUMMARY"
+          grep -oE "\[live-catalog\] .*" live.log >> "$GITHUB_STEP_SUMMARY" || true

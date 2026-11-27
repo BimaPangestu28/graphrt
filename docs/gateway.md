@@ -170,12 +170,13 @@ can be active at once for rotation (the first signs).
 | GET | `/v1/deployments/{d}/runs/{id}/events` | SSE replay and live tail; `Last-Event-ID` or `?from=N` |
 | POST | `/v1/deployments/{d}/runs/{id}/resume` | `{inputs, secrets, stream}` for a paused (human-input) run |
 | POST | `/v1/deployments/{d}/runs/{id}/abort` | |
+| POST | `/v1/deployments/{d}/runs/{id}/feedback` | `{name, value, comment?, user?}` as on `graphrt serve`: `201` and the stored score. An end user's token rates only a run started with a token of the same user (`403` otherwise), and the feedback counts as that user's own words (see [learning.md](learning.md)). With the API key `user` is a label. An agent of the run's version records it. In the release gateway (cargo feature `learning`, which enables `graphrt-gateway/feedback`), not in the smallest gateway build |
 | POST | `/v1/deployments/{d}/hooks/{hook}` | webhook ingress; duplicates answer `{"duplicate": true}` |
 | POST | `/v1/deployments/{d}/warm` | prewarm the current version ahead of traffic, `{"replicas": n}` (default 1): `202 warming`, `200 warm`, `429 warm_budget_exhausted` (see [Warm-up and cost guards](#warm-up-and-cost-guards)) |
 | GET | `/metrics`, `/healthz` | Prometheus text; liveness |
 
 Credentials: `X-Api-Key: <key>` or `Authorization: Bearer <key or JWT>`. A
-verified JWT's `sub` becomes the run's `user_id`. Errors are JSON
+verified JWT's `sub` becomes the run's `user_id` and `sys.user_id`. Errors are JSON
 `{error, error_type}`; `503` and `429` carry `Retry-After`; a resume of a
 version retired more than 7 days ago is `410 version_retired`.
 

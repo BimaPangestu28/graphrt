@@ -86,10 +86,27 @@ also sets `sys.user_id` to that user, over anything the client sent, so a
 workflow that reads `{{#sys.user_id#}}` (one user's lessons or files) gets the
 verified user, as under `graphrt serve --verify-jwt`.
 
+The run request says who started the run in `caller`, which the gateway
+always sets over anything the client sent:
+
+| `caller` | Who | What the agent does |
+| --- | --- | --- |
+| `user` | An end user whose token the gateway verified, named in `user_id` | Sets `sys.user_id` to `user_id` (over the client's) and keeps the user as the run's verified user. Without a `user_id` the request is `400` |
+| `key` | A deployment API key, a webhook or a cron job | Takes `sys` as sent, as with the agent's own API key |
+| missing (or another value) | A gateway older than the field, which forwarded the client's `sys` as it came | Drops `sys.user_id`, so the run reads no user's lessons and files, and logs a warning once. The run itself still runs |
+
+So an agent never takes the user of a run from the client, also behind an
+older gateway. Upgrade the gateway together with its agents, or before them,
+to keep lessons per user working.
+
 A gateway signature opens `/internal/v1` and nothing else. The public routes
 of the agent, the owner routes `/v1/skills` and `/v1/learning` among them,
 still take the agent's API key. The agent verifies no user token, so feedback
-that reaches it is recorded as a label and never as a user's own words.
+sent to its own `/v1/runs/{id}/feedback` is recorded as a label and never as a
+user's own words. Feedback of an end user goes through the gateway
+(`POST /v1/deployments/{d}/runs/{id}/feedback`, see
+[gateway.md](gateway.md#api)), which forwards it with
+`/internal/v1/runs/{id}/feedback`.
 
 ## Signatures
 
@@ -137,6 +154,7 @@ gateway (it strips them).
 | POST | `/internal/v1/runs` | Start or resume run `Graphrt-Run-Id` at `Graphrt-Epoch`; the response is the run's SSE stream |
 | GET | `/internal/v1/runs/{id}/stream?from=N` | Reattach to a running execution after a lost connection (or `Last-Event-ID`); `409 finished` once it ended |
 | POST | `/internal/v1/runs/{id}/abort` | Abort the execution at `Graphrt-Epoch` |
+| POST | `/internal/v1/runs/{id}/feedback` | Feedback on a run (`{name, value, comment, user, verified, workflow}`): `201` and the stored score. With `verified: true` the gateway checked that `user` is the verified user of the run, and the agent records the feedback as that user's own words (low risk lessons may be approved by `auto_approve_user_feedback`, risky ones wait for the owner). It answers `403` when it holds the run and its verified user is someone else. Without `verified` `user` is a label. The score is kept when this agent holds the run, the learning signal for the agents of `workflow` either way. An agent built without the `scores` feature answers `404` |
 | POST | `/internal/v1/drain` | `{deadline_ms}`: the shutdown drain of `serve` (no new runs, active runs pause, preempted near the deadline); answers `202` at once |
 | POST | `/internal/v1/stop` | drain and exit exactly as on `SIGTERM` (`--drain-timeout`, pause cause `gateway stop`); answers `202` at once. The local-process provider sends it on Windows, which has no signal to send |
 | GET | `/internal/v1/orphans` | Lost executions held for reclaim |
@@ -152,6 +170,7 @@ gateway (it strips them).
 | `deployment_version` | Copied to the run record |
 | `event_index` | Global index of this execution's first event (the gateway's event count), so ids continue the run's log |
 | `resume` | `{snapshot, inputs, secrets}`: resume a paused run from the snapshot in the body; the agent never reads a store |
+| `caller` | Who started the run: `user` or `key` (see [Starting an agent](#starting-an-agent)) |
 | `preempt_after_ms` | Optional: the agent preempts this execution after that many milliseconds (shortly before the platform's request cap); the stream ends with `run_paused` (`kind: external`, `data: "request_cap"`) and the gateway re-dispatches the run |
 
 Epochs make every start idempotent:

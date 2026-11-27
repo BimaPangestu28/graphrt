@@ -53,6 +53,8 @@ pub(super) fn dispatch(
             done(reattach(&state, &agent, &request, run_id, cursor))
         }
         ["runs", run_id, "abort"] if method == Method::POST => done(abort(&state, &agent, &request, run_id)),
+        #[cfg(feature = "scores")]
+        ["runs", run_id, "feedback"] if method == Method::POST => feedback(state, run_id, &body),
         ["drain"] if method == Method::POST => {
             let deadline_ms = match super::body::drain_deadline_ms(&body) {
                 Ok(deadline_ms) => deadline_ms,
@@ -67,6 +69,16 @@ pub(super) fn dispatch(
         }
         ["orphans", run_id] if method == Method::DELETE => done(release_orphan(&agent, &request, run_id)),
         _ => done(protocol_error(StatusCode::NOT_FOUND, "not_found", "no such gateway endpoint")),
+    }
+}
+
+/// `POST /internal/v1/runs/{id}/feedback`: feedback the gateway forwarded
+/// (see [`crate::scores::gateway_feedback`]).
+#[cfg(feature = "scores")]
+fn feedback(state: Arc<AppState>, run_id: &str, body: &[u8]) -> BoxFuture<'static, Response> {
+    match super::body::object(body) {
+        Ok(body) => Box::pin(crate::scores::gateway_feedback(state, run_id.to_owned(), body)),
+        Err(message) => Box::pin(std::future::ready(bad_request(message))),
     }
 }
 
@@ -187,7 +199,48 @@ struct Prepared {
     preempt_after_ms: Option<u64>,
 }
 
-fn prepare(state: &AppState, run_id: &str, epoch: u64, body: RunBody) -> Result<Prepared, Response> {
+/// The end user the gateway verified for a run, if any, with `sys.user_id`
+/// of `body` set to that user or removed.
+///
+/// `sys.user_id` names whose lessons and files a workflow reads, so it must
+/// not come from the client unchecked. A gateway says who started the run in
+/// `caller`: `user` (it verified the token of the user in `user_id`, which
+/// then wins over the client's `sys.user_id`) or `key` (an API key, a webhook
+/// or a cron job: `sys` is the caller's, as with this agent's own API key). A
+/// gateway older than `caller` forwarded the client's `sys` as it came, so
+/// without `caller` the client's `sys.user_id` is dropped: the run reads no
+/// one's lessons rather than possibly another user's.
+///
+/// @throws Response - `400` when `caller` is `user` without a `user_id`.
+fn verified_user(body: &mut RunBody) -> Result<Option<String>, Response> {
+    match body.caller.as_deref() {
+        Some("user") => {
+            let user = body.user_id.clone().ok_or_else(|| bad_request("`caller` is `user` without a `user_id`"))?;
+            body.sys.insert("user_id".to_owned(), serde_json::Value::String(user.clone()));
+            Ok(Some(user))
+        }
+        Some("key") => Ok(None),
+        _ => {
+            if body.sys.remove("user_id").is_some() {
+                warn_unconfirmed_user();
+            }
+            Ok(None)
+        }
+    }
+}
+
+/// Said once per process: every run of an old gateway would say it again.
+fn warn_unconfirmed_user() {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        eprintln!(
+            "warning: the gateway did not say who started a run (`caller`), so the `sys.user_id` the client sent \
+             is ignored and runs read no user's lessons; upgrade the gateway to the version of this agent"
+        );
+    });
+}
+
+fn prepare(state: &AppState, run_id: &str, epoch: u64, mut body: RunBody) -> Result<Prepared, Response> {
     let Some(workflow) = state.served_workflow(&body.workflow) else {
         return Err(protocol_error(StatusCode::NOT_FOUND, "unknown_workflow", "unknown workflow"));
     };
@@ -202,6 +255,7 @@ fn prepare(state: &AppState, run_id: &str, epoch: u64, body: RunBody) -> Result<
     if let Some(busy) = state.busy_response() {
         return Err(busy);
     }
+    let verified_user = verified_user(&mut body)?;
     let mut record = RunRecord::running(run_id, &body.workflow, fingerprint, now_ms());
     let context = RunRequest {
         metadata: body.metadata,
@@ -211,6 +265,7 @@ fn prepare(state: &AppState, run_id: &str, epoch: u64, body: RunBody) -> Result<
         ..RunRequest::default()
     };
     context.apply_context(&mut record).map_err(|m| bad_request(&m))?;
+    record.user_verified = verified_user.is_some();
     record.deployment = state.gateway_agent().map(|agent| agent.deployment().to_owned());
     record.deployment_version = body.deployment_version;
     record.epoch = epoch;

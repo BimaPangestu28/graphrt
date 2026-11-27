@@ -31,6 +31,8 @@ pub mod app;
 pub mod config;
 pub mod deploy;
 pub mod deployment;
+#[cfg(feature = "feedback")]
+mod feedback;
 #[cfg(feature = "gw-local")]
 pub mod local;
 pub mod metrics;

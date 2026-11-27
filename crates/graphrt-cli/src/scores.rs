@@ -378,6 +378,71 @@ pub async fn post_feedback(
     (StatusCode::CREATED, Json(score.to_json())).into_response()
 }
 
+/// Feedback on a run behind a gateway (`POST /internal/v1/runs/{id}/feedback`,
+/// signed by the trusted gateway): `{name, value, comment?, user?, verified,
+/// workflow}`. The gateway checked who wrote it, so `verified: true` makes
+/// `user` the authenticated author of their own words, as a verified token
+/// does on [`post_feedback`]: their low risk lessons may be approved by the
+/// policy, risky ones still wait for the owner. Without it `user` is a label.
+///
+/// The run may have executed on another replica: the score is kept with the
+/// run when this agent still holds it, and the learning signal is recorded
+/// either way, for the agents of `workflow`. When this agent holds the run, a
+/// verified author must also be its verified user here.
+#[cfg(feature = "trust-gateway")]
+pub(crate) async fn gateway_feedback(
+    state: Arc<AppState>,
+    run_id: String,
+    mut body: Map<String, JsonValue>,
+) -> Response {
+    let verified = matches!(body.remove("verified"), Some(JsonValue::Bool(true)));
+    let Some(JsonValue::String(workflow)) = body.remove("workflow") else {
+        return error_response(StatusCode::BAD_REQUEST, "`workflow` is required");
+    };
+    let request = match FeedbackRequest::from_json(&JsonValue::Object(body)) {
+        Ok(request) => request,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
+    };
+    if verified && request.user.is_none() {
+        return error_response(StatusCode::BAD_REQUEST, "verified feedback needs its `user`");
+    }
+    let record = match state.store().get(&run_id).await {
+        Ok(record) => record,
+        Err(e) => return crate::serve::store_error(&e),
+    };
+    if verified
+        && let Some(record) = &record
+        && !(record.user_verified && record.user_id == request.user)
+    {
+        return error_response(StatusCode::FORBIDDEN, "this run does not belong to the authenticated user");
+    }
+    let mut score = Score::new(&run_id, request.name.trim(), request.value, ScoreSource::Human, request.user);
+    score.comment = request.comment.filter(|c| !c.is_empty());
+    if record.is_some()
+        && let Err(e) = state.score_store().put_scores(&run_id, vec![score.clone()]).await
+    {
+        return crate::serve::store_error(&e);
+    }
+    #[cfg(feature = "learning")]
+    crate::learning_api::capture_feedback(
+        &state,
+        &crate::learning_api::FeedbackSignal {
+            workflow: &workflow,
+            run_id: &run_id,
+            value: score.value.as_number(),
+            comment: score.comment.as_deref(),
+            author: score.user.as_deref(),
+            authenticated: verified,
+        },
+    );
+    #[cfg(not(feature = "learning"))]
+    let _ = workflow;
+    if let Some(record) = &record {
+        state.score_sinks().publish(record, &score, None);
+    }
+    (StatusCode::CREATED, Json(score.to_json())).into_response()
+}
+
 /// `403` when a verified end user rates a run they do not own; API-key callers
 /// may rate any run.
 #[cfg(feature = "jwt")]
