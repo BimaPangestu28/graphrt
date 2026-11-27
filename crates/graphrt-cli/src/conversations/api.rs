@@ -161,7 +161,7 @@ async fn list(State(state): State<Arc<AppState>>, RawQuery(raw): RawQuery, heade
         Err(e) => return store_error(&e),
     };
     let visible = all.into_iter().filter(|conversation| match caller.user() {
-        Some(user) => conversation.owner.as_deref() == Some(user),
+        Some(user) => conversation.is_reachable_by(Some(user)),
         None => owner_filter.as_ref().is_none_or(|owner| conversation.owner.as_ref() == Some(owner)),
     });
     let mut matching: Vec<Conversation> =

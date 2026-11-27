@@ -1,0 +1,30 @@
+# A channels file for `graphrt serve --channels`. Use it for what the flag
+# `--channel KIND=WORKFLOW` cannot say. Every key except `kind` and `workflow`
+# is optional. Secrets are never written here: an entry names the environment
+# variable that holds each one. See docs/channels.md.
+#
+#   graphrt serve examples/channels/support.yaml --channels examples/channels/channels.yaml \
+#     --env-file .env --store ./runs --public-url https://agent.example.com
+channels:
+  - kind: telegram
+    workflow: support
+    # mode: webhook            # default: polling, which needs no public address
+    # token_env: TELEGRAM_BOT_TOKEN
+    # allow: ["123456789"]     # only these Telegram user ids may write
+    # groups: true             # also answer in group chats
+    # approvers: ["123456789"] # team members who answer approvals in the chat
+    rate_limit: 10             # messages per minute of one customer
+    budget: 120                # messages per minute of all customers together
+    messages:
+      welcome: "Halo! Ada yang bisa kami bantu?"
+      error: "Maaf, ada gangguan di sistem kami. Silakan coba lagi."
+
+  - kind: whatsapp
+    workflow: support
+    # access_token_env: WHATSAPP_ACCESS_TOKEN
+    # phone_number_id_env: WHATSAPP_PHONE_NUMBER_ID
+    # app_secret_env: WHATSAPP_APP_SECRET
+    # verify_token_env: WHATSAPP_VERIFY_TOKEN
+    # An approved template sent when an answer is ready more than 24 hours
+    # after the customer's last message. Without it such an answer is not sent.
+    # reengage_template: { name: follow_up, language: id }

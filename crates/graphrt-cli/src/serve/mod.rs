@@ -24,6 +24,7 @@
 //! | GET, POST, DELETE | `/v1/push`, `/v1/push/subscriptions` | `{endpoint, keys}` | Web Push subscriptions (`--push`, see [`crate::notify`]) |
 //! | GET | `/monitor/` | – | the monitoring page (`--monitor`), with `/v1/monitor/config` |
 //! | GET | `/chat/`, `/chat/{workflow}` | – | the chat page (`--chat`), with `/chat/embed.js`, `/v1/chat/config` and `/v1/chat/guest` |
+//! | GET, POST | `/v1/channels/{name}/webhook` | a Telegram update or a WhatsApp delivery | messaging channels (`--channel`, see [`crate::channels`]) |
 //! | GET | `/v1/hooks` | – | webhooks configured with `--webhooks` |
 //! | POST | `/v1/hooks/{hook}` | any JSON (signature-checked when configured) | `202` + run id; see [`crate::webhooks`] |
 //!

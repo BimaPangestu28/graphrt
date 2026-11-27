@@ -152,8 +152,11 @@ impl Conversation {
     }
 
     /// Whether `user` may use it: its owner, or (`None`) a holder of the API key.
+    /// A conversation of a messaging channel belongs to a customer of that
+    /// channel, who never calls the API: only the key reaches it, whatever a
+    /// user token's subject is.
     pub fn is_reachable_by(&self, user: Option<&str>) -> bool {
-        user.is_none() || self.owner.as_deref() == user
+        user.is_none() || (self.channel.is_none() && self.owner.as_deref() == user)
     }
 
     /// The stored turns as `sys.history`: `[{role, content}]`, oldest first.
@@ -555,6 +558,10 @@ mod tests {
         assert!(conversation.is_reachable_by(Some("u1")));
         assert!(!conversation.is_reachable_by(Some("u2")));
         assert!(conversation.is_reachable_by(None));
+        let mut on_channel = Conversation::new("c", Some("telegram:42".into()), "chat", None, 1);
+        on_channel.channel = Some(ChannelLink::default());
+        assert!(!on_channel.is_reachable_by(Some("telegram:42")), "a token with a customer's id reaches nothing");
+        assert!(on_channel.is_reachable_by(None));
         let keyed = Conversation::new("c", None, "chat", None, 1);
         assert!(!keyed.is_reachable_by(Some("u1")), "a user never reaches a conversation of the key");
     }

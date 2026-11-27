@@ -1599,6 +1599,7 @@ name = "graphrt-channel"
 version = "0.6.2"
 dependencies = [
  "reqwest",
+ "rustls",
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.21",

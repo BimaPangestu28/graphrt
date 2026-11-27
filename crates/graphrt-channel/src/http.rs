@@ -130,6 +130,14 @@ pub(crate) fn safe_file_name(name: &str) -> String {
     if cleaned.is_empty() { "file".to_owned() } else { cleaned.to_owned() }
 }
 
+/// A client for tests. In this workspace reqwest is built without a TLS
+/// provider, so one is installed first.
+#[cfg(test)]
+pub(crate) fn test_client() -> reqwest::Client {
+    let _already_installed = rustls::crypto::ring::default_provider().install_default();
+    reqwest::Client::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

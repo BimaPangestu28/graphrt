@@ -639,13 +639,13 @@ mod client {
         use super::*;
 
         fn cloud() -> WhatsAppCloud {
-            WhatsAppCloud::new(reqwest::Client::new(), "106540352242922", Secret::new("EAAG-access-token-value"))
+            WhatsAppCloud::new(crate::http::test_client(), "106540352242922", Secret::new("EAAG-access-token-value"))
                 .unwrap_or_else(|e| unreachable!("{e}"))
         }
 
         #[test]
         fn the_account_must_be_named_by_its_id() {
-            let http = reqwest::Client::new();
+            let http = crate::http::test_client();
             for bad in ["", "+62 812", "1065/../x"] {
                 let refused = WhatsAppCloud::new(http.clone(), bad, Secret::new("token-value"));
                 assert!(matches!(refused, Err(ChannelError::Invalid(_))), "{bad}");

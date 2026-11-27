@@ -38,3 +38,5 @@ workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+# The workspace builds reqwest without a TLS provider: the tests that build a client install one.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

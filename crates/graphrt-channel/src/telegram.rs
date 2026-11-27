@@ -553,7 +553,7 @@ mod client {
 
         #[test]
         fn a_token_must_look_like_one() {
-            let http = reqwest::Client::new();
+            let http = crate::http::test_client();
             assert!(TelegramBot::new(http.clone(), Secret::new("123456:AAE-xample_token")).is_ok());
             for bad in ["", "short", "123456:abc/../../x", "123456:abc def"] {
                 let refused = TelegramBot::new(http.clone(), Secret::new(bad));
@@ -563,7 +563,7 @@ mod client {
 
         #[test]
         fn a_refusal_never_shows_the_token() {
-            let bot = TelegramBot::new(reqwest::Client::new(), Secret::new("123456:AAE-xample_token"))
+            let bot = TelegramBot::new(crate::http::test_client(), Secret::new("123456:AAE-xample_token"))
                 .unwrap_or_else(|e| unreachable!("{e}"));
             let body = br#"{"ok":false,"error_code":404,"description":"Not Found: /bot123456:AAE-xample_token/x"}"#;
             let answer = Answer { status: 404, content_type: None, body: body.to_vec() };

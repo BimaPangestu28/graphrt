@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Graphrt/graphrt/main/schema/workflow-v1.schema.json
+# A support assistant customers talk to on Telegram or WhatsApp.
+# Needs a model: set OPENAI_API_KEY (or change `provider`).
+#
+#   TELEGRAM_BOT_TOKEN=... graphrt serve examples/channels/support.yaml --channel telegram=support
+#
+# Each customer has a conversation of their own: the server keeps the history
+# and hands it to the model as `sys.history`. See docs/channels.md.
+version: "1"
+name: support
+graph:
+  nodes:
+    - id: start
+      type: start
+
+    - id: llm
+      type: llm
+      model:
+        provider: openai
+        name: gpt-4o-mini
+        completion_params: { temperature: 0.3 }
+      # The customer's message ({{#sys.query#}}) is added after the history by itself.
+      prompt_template:
+        - role: system
+          text: |
+            You are the support assistant of a small online shop. Answer in the
+            language the customer writes in. Keep answers short: this is a chat
+            on a phone. If you do not know something, say so and offer to pass
+            the question to the team.
+      memory:
+        window: { enabled: true, size: 20 }
+        variable_selector: [sys, history]
+      retry: { max_retries: 2, interval_ms: 1000, backoff: 2.0 }
+      timeout_ms: 60000
+
+    - id: answer
+      type: answer
+      answer: "{{#llm.text#}}"
+
+  edges:
+    - { source: start, target: llm }
+    - { source: llm, target: answer }
