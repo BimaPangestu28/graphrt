@@ -167,31 +167,199 @@ pub(crate) struct Match {
     pub text: String,
 }
 
-/// Lines of a text file containing `needle` (already lowercased when
-/// `case_sensitive` is off), at most `max_matches`. Returns the matches and
-/// the bytes scanned.
+/// What a search looks for in a line.
+#[derive(Clone, Debug)]
+pub(crate) enum Matcher {
+    /// A text. `needle` is already lowercased when `case_sensitive` is off.
+    Literal { needle: String, case_sensitive: bool },
+    /// A regular expression (linear time: no backtracking).
+    #[cfg(feature = "regex")]
+    Pattern(regex::Regex),
+}
+
+impl Matcher {
+    /// A text to find.
+    pub(crate) fn literal(query: &str, case_sensitive: bool) -> Self {
+        let needle = if case_sensitive { query.to_owned() } else { query.to_lowercase() };
+        Matcher::Literal { needle, case_sensitive }
+    }
+
+    /// A regular expression to find. The compiled program and its matching
+    /// cache are bounded, so a pattern cannot ask for unbounded memory, and
+    /// the engine matches in time linear in the text whatever the pattern is.
+    ///
+    /// @throws String - A message for the model: a syntax error, or a pattern that is too large.
+    #[cfg(feature = "regex")]
+    pub(crate) fn pattern(query: &str, case_sensitive: bool) -> Result<Self, String> {
+        regex::RegexBuilder::new(query)
+            .case_insensitive(!case_sensitive)
+            .size_limit(MAX_PATTERN_PROGRAM_BYTES)
+            .dfa_size_limit(MAX_PATTERN_CACHE_BYTES)
+            .nest_limit(MAX_PATTERN_NESTING)
+            .build()
+            .map(Matcher::Pattern)
+            .map_err(|error| match error {
+                regex::Error::CompiledTooBig(_) => {
+                    "the regular expression is too large: use smaller repetition counts or a simpler pattern".to_owned()
+                }
+                other => {
+                    // The last line of the report says what is wrong, without the picture above it.
+                    let report = other.to_string();
+                    let reason = report.lines().last().unwrap_or_default().trim_start_matches("error: ");
+                    format!("invalid regular expression: {}", reason.chars().take(200).collect::<String>())
+                }
+            })
+    }
+
+    /// Byte position and length of the first match in `line`.
+    fn find(&self, line: &str) -> Option<(usize, usize)> {
+        match self {
+            Matcher::Literal { needle, case_sensitive: true } => {
+                line.find(needle.as_str()).map(|at| (at, needle.len()))
+            }
+            Matcher::Literal { needle, case_sensitive: false } => {
+                line.to_lowercase().find(needle.as_str()).map(|at| (at, needle.len()))
+            }
+            #[cfg(feature = "regex")]
+            Matcher::Pattern(pattern) => pattern.find(line).map(|found| (found.start(), found.len())),
+        }
+    }
+}
+
+/// Largest compiled program of a pattern.
+#[cfg(feature = "regex")]
+const MAX_PATTERN_PROGRAM_BYTES: usize = 1024 * 1024;
+/// Largest matching cache of a pattern.
+#[cfg(feature = "regex")]
+const MAX_PATTERN_CACHE_BYTES: usize = 2 * 1024 * 1024;
+/// Deepest nesting of groups in a pattern.
+#[cfg(feature = "regex")]
+const MAX_PATTERN_NESTING: u32 = 50;
+/// A step at least this large is matched on the blocking pool.
+const BLOCKING_STEP_BYTES: usize = 64 * 1024;
+/// The clock is read once per this many lines.
+const LINES_PER_CLOCK_CHECK: usize = 256;
+
+/// How far one search may go.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SearchBudget {
+    pub max_matches: usize,
+    pub max_scan_bytes: u64,
+    pub snippet_chars: usize,
+    /// When the search has to be over, whatever is left.
+    pub deadline: Option<std::time::Instant>,
+}
+
+/// What a search of one file found.
+#[derive(Debug, Default)]
+pub(crate) struct Found {
+    pub matches: Vec<Match>,
+    /// Bytes looked at.
+    pub scanned: u64,
+    /// The deadline passed before the end of the file.
+    pub timed_out: bool,
+}
+
+/// Matches lines as they arrive, and knows when to stop.
+struct Scanner {
+    matcher: std::sync::Arc<Matcher>,
+    budget: SearchBudget,
+    line_number: usize,
+    matches: Vec<Match>,
+    timed_out: bool,
+}
+
+impl Scanner {
+    fn new(matcher: std::sync::Arc<Matcher>, budget: SearchBudget) -> Self {
+        Self { matcher, budget, line_number: 0, matches: Vec::new(), timed_out: false }
+    }
+
+    fn out_of_time(&mut self) -> bool {
+        if self.budget.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            self.timed_out = true;
+        }
+        self.timed_out
+    }
+
+    /// Look at one line. Returns whether to go on.
+    fn line(&mut self, line: &str) -> bool {
+        self.line_number += 1;
+        if self.line_number.is_multiple_of(LINES_PER_CLOCK_CHECK) && self.out_of_time() {
+            return false;
+        }
+        if let Some((position, length)) = self.matcher.find(line) {
+            let text = snippet(line, position, length, self.budget.snippet_chars);
+            self.matches.push(Match { line: self.line_number, text });
+        }
+        self.matches.len() < self.budget.max_matches
+    }
+}
+
+/// Lines of a text file that `matcher` finds, within `budget`.
+///
+/// The file is read in steps. A large step is matched on the blocking pool,
+/// so a slow pattern over a large file does not hold an async worker.
 pub(crate) async fn search_file(
     workspace: &Workspace,
     path: &WorkspacePath,
-    needle: &str,
-    case_sensitive: bool,
-    max_matches: usize,
-    max_scan_bytes: u64,
-    snippet_chars: usize,
-) -> Result<(Vec<Match>, u64), FilesError> {
-    let mut matches = Vec::new();
-    let mut line_number = 0usize;
-    let mut on_line = |line: &[u8]| {
-        line_number += 1;
-        let text = String::from_utf8_lossy(line);
-        let found = if case_sensitive { text.find(needle) } else { text.to_lowercase().find(needle) };
-        if let Some(position) = found {
-            matches.push(Match { line: line_number, text: snippet(&text, position, needle.len(), snippet_chars) });
+    matcher: &std::sync::Arc<Matcher>,
+    budget: SearchBudget,
+) -> Result<Found, FilesError> {
+    let mut state = (LineSplitter::new(), Scanner::new(std::sync::Arc::clone(matcher), budget));
+    let mut offset = 0u64;
+    let mut go_on = !state.1.out_of_time();
+    while go_on && offset < budget.max_scan_bytes {
+        let step = STEP_BYTES.min(budget.max_scan_bytes - offset);
+        let chunk = workspace.read(path, offset, step).await?;
+        if chunk.is_empty() {
+            break;
         }
-        matches.len() < max_matches
-    };
-    let scanned = for_each_line(workspace, path, max_scan_bytes, &mut on_line).await?;
-    Ok((matches, scanned))
+        let first = offset == 0;
+        let large = chunk.len() >= BLOCKING_STEP_BYTES;
+        offset = offset.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+        let feed = move |(mut splitter, mut scanner): (LineSplitter, Scanner)| {
+            // A byte order mark is not part of the first line.
+            let bytes = if first { chunk.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&chunk) } else { &chunk };
+            let go_on = !scanner.out_of_time()
+                && splitter.push(bytes, &mut |line: &[u8]| scanner.line(&String::from_utf8_lossy(line)));
+            ((splitter, scanner), go_on)
+        };
+        (state, go_on) = if large {
+            let moved = state;
+            crate::blocking(move || feed(moved))
+                .await
+                .map_err(|message| crate::store::StoreError::io(path.as_str(), message))?
+        } else {
+            feed(state)
+        };
+    }
+    let (mut splitter, mut scanner) = state;
+    if go_on {
+        splitter.finish(&mut |line: &[u8]| scanner.line(&String::from_utf8_lossy(line)));
+    }
+    Ok(Found { matches: scanner.matches, scanned: offset, timed_out: scanner.timed_out })
+}
+
+/// The same search over text that is already in memory (extracted documents).
+pub(crate) fn search_text(text: &str, matcher: &std::sync::Arc<Matcher>, budget: SearchBudget) -> Found {
+    let mut scanner = Scanner::new(std::sync::Arc::clone(matcher), budget);
+    if !scanner.out_of_time() {
+        for line in text.lines() {
+            // An endless line is cut like in a file.
+            let line = match line.char_indices().nth(MAX_LINE_BYTES) {
+                Some((cut, _)) => line.get(..cut).unwrap_or(line),
+                None => line,
+            };
+            if !scanner.line(line) {
+                break;
+            }
+        }
+    }
+    Found {
+        matches: scanner.matches,
+        scanned: u64::try_from(text.len()).unwrap_or(u64::MAX),
+        timed_out: scanner.timed_out,
+    }
 }
 
 /// At most `max_chars` characters of `line` around the match at byte `position`.
@@ -290,17 +458,56 @@ mod tests {
         assert!(!window.more);
     }
 
+    fn budget(max_matches: usize) -> SearchBudget {
+        SearchBudget { max_matches, max_scan_bytes: 1 << 20, snippet_chars: 200, deadline: None }
+    }
+
+    async fn lines_found(ws: &Workspace, matcher: Matcher, max_matches: usize) -> Vec<usize> {
+        let found = search_file(ws, &path("a.md"), &std::sync::Arc::new(matcher), budget(max_matches)).await.unwrap();
+        found.matches.iter().map(|found| found.line).collect()
+    }
+
     #[tokio::test]
     async fn search_finds_lines_case_insensitively_and_stops_at_the_cap() {
         let ws = workspace_with("a.md", "# Invoice\nTotal: 120 EUR\nÉCOLE fee\ntotal again\n".as_bytes()).await;
-        let (found, _) = search_file(&ws, &path("a.md"), "total", false, 10, 1 << 20, 200).await.unwrap();
-        assert_eq!(found.iter().map(|m| m.line).collect::<Vec<_>>(), [2, 4]);
-        let (exact, _) = search_file(&ws, &path("a.md"), "Total", true, 10, 1 << 20, 200).await.unwrap();
-        assert_eq!(exact.len(), 1);
-        let (unicode, _) = search_file(&ws, &path("a.md"), "école", false, 10, 1 << 20, 200).await.unwrap();
-        assert_eq!(unicode[0].line, 3);
-        let (capped, _) = search_file(&ws, &path("a.md"), "total", false, 1, 1 << 20, 200).await.unwrap();
-        assert_eq!(capped.len(), 1);
+        assert_eq!(lines_found(&ws, Matcher::literal("total", false), 10).await, [2, 4]);
+        assert_eq!(lines_found(&ws, Matcher::literal("Total", true), 10).await, [2]);
+        assert_eq!(lines_found(&ws, Matcher::literal("école", false), 10).await, [3]);
+        assert_eq!(lines_found(&ws, Matcher::literal("total", false), 1).await, [2]);
+    }
+
+    #[cfg(feature = "regex")]
+    #[tokio::test]
+    async fn patterns_match_lines_and_are_bounded_when_they_are_built() {
+        let ws =
+            workspace_with("a.md", "# Invoice INV-0042\nTotal: 120 EUR\nref inv-7\ntotal again\n".as_bytes()).await;
+        assert_eq!(lines_found(&ws, Matcher::pattern(r"inv-\d{4}", false).unwrap(), 10).await, [1]);
+        assert_eq!(lines_found(&ws, Matcher::pattern(r"inv-\d+", true).unwrap(), 10).await, [3]);
+        assert_eq!(lines_found(&ws, Matcher::pattern(r"^total|EUR$", false).unwrap(), 10).await, [2, 4]);
+        // A pattern is one line of text to the model, whatever is wrong with it.
+        let invalid = Matcher::pattern("(unclosed", false).unwrap_err();
+        assert!(invalid.starts_with("invalid regular expression: ") && !invalid.contains('\n'), "{invalid}");
+        // Repetition that would compile into a huge program, and nesting without end, are refused.
+        for hostile in [r"(\w{1,500}){500}", r"((a{100}){100}){100}", &format!("{}a{}", "(".repeat(60), ")".repeat(60))]
+        {
+            let refused = Matcher::pattern(hostile, false).unwrap_err();
+            assert!(refused.contains("too large") || refused.contains("invalid regular expression"), "{refused}");
+        }
+        // Features that need backtracking do not exist in this engine.
+        assert!(Matcher::pattern(r"(a)\1", false).is_err());
+        assert!(Matcher::pattern(r"a(?=b)", false).is_err());
+    }
+
+    #[test]
+    fn a_search_stops_at_its_deadline() {
+        let text = "needle\n".repeat(10_000);
+        let matcher = std::sync::Arc::new(Matcher::literal("needle", true));
+        let past = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(1));
+        let late = SearchBudget { max_matches: usize::MAX, deadline: past, ..budget(0) };
+        let found = search_text(&text, &matcher, late);
+        assert!(found.timed_out && found.matches.is_empty());
+        let in_time = search_text(&text, &matcher, SearchBudget { max_matches: usize::MAX, ..budget(0) });
+        assert_eq!((in_time.matches.len(), in_time.timed_out), (10_000, false));
     }
 
     #[test]

@@ -13,11 +13,14 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["tokio", "doc"]
+default = ["tokio", "doc", "regex"]
 # Run file I/O, hashing and extraction on Tokio's blocking pool when a Tokio runtime is present.
 tokio = ["dep:tokio", "tokio/rt"]
 # `files/read` extracts the text of PDF, Office, spreadsheet, EPUB and e-mail files with graphrt-doc.
 doc = ["dep:graphrt-doc"]
+# `files/search` takes regular expressions (`regex: true`). The engine matches in
+# linear time, and the size of a compiled pattern is bounded.
+regex = ["dep:regex"]
 
 [dependencies]
 # `tool-files`: the files the tools return reach the `files` output of `tool` nodes.
@@ -29,6 +32,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 sha2 = { version = "0.11", default-features = false }
 tokio = { workspace = true, optional = true }
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"], optional = true }
 
 # `O_NOFOLLOW` for opening workspace files (already linked through std and tokio).
 [target.'cfg(unix)'.dependencies]
