@@ -176,7 +176,8 @@ pub struct DeployArgs {
 /// Options of a deploy (no subcommand).
 #[derive(Debug, Args)]
 pub struct DeployRunArgs {
-    /// Workflow file the agents serve; with `--direct` also a bundle (`.grt`).
+    /// Workflow file the agents serve; with `--direct` also a bundle (`.grt`) of any size: above
+    /// 1 MiB it is uploaded onto the store volume.
     #[arg(value_name = "WORKFLOW", required = true)]
     pub workflow: Option<PathBuf>,
     /// Target platform.

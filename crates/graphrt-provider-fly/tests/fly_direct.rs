@@ -587,23 +587,25 @@ async fn an_agent_larger_than_a_machine_config_is_uploaded_onto_the_store_volume
     let outcome = direct.deploy(&first, &mut |event| events.push(event)).await.unwrap();
     assert_eq!(outcome.version, "v1");
 
-    let state = fake.state();
-    let volume = state.volume_named("graphrt_store").expect("a store volume").clone();
-    assert_eq!(volume.size_gb, 2, "room for the agent and the next one");
-    let machine = state.machine_named("graphrt-store").expect("the store Machine").clone();
-    assert_eq!(machine.metadata("graphrt_role"), Some("current"));
-    assert!(machine.config.get("files").is_none(), "the agent is not in the Machine config");
-    assert_eq!(machine.config.pointer("/guest/memory_mb").and_then(|value| value.as_u64()), Some(512));
-    let command = command_of(&machine);
-    assert!(command[1].starts_with("/data/agents/"), "{command:?}");
-    assert!(!command.contains(&"--store".to_owned()), "the volume only holds the agent: {command:?}");
-    let files = state.volume_files.get(&volume.id).expect("files on the volume");
-    let dir = command[1].trim_start_matches("/data/agents/");
-    assert_eq!(files.get(&format!("{dir}/support.grt")), Some(&first.agent.contents), "byte for byte");
-    let steps: Vec<String> = state.exec_commands.iter().map(|command| command[3].clone()).collect();
-    // hash, begin, 3 pieces of 2 MiB, commit, then prune after promotion.
-    assert_eq!(steps, ["hash", "begin", "append", "append", "append", "commit", "prune"]);
-    drop(state);
+    let volume = {
+        let state = fake.state();
+        let volume = state.volume_named("graphrt_store").expect("a store volume").clone();
+        assert_eq!(volume.size_gb, 2, "room for the agent and the next one");
+        let machine = state.machine_named("graphrt-store").expect("the store Machine").clone();
+        assert_eq!(machine.metadata("graphrt_role"), Some("current"));
+        assert!(machine.config.get("files").is_none(), "the agent is not in the Machine config");
+        assert_eq!(machine.config.pointer("/guest/memory_mb").and_then(|value| value.as_u64()), Some(512));
+        let command = command_of(&machine);
+        assert!(command[1].starts_with("/data/agents/"), "{command:?}");
+        assert!(!command.contains(&"--store".to_owned()), "the volume only holds the agent: {command:?}");
+        let files = state.volume_files.get(&volume.id).expect("files on the volume");
+        let dir = command[1].trim_start_matches("/data/agents/");
+        assert_eq!(files.get(&format!("{dir}/support.grt")), Some(&first.agent.contents), "byte for byte");
+        let steps: Vec<String> = state.exec_commands.iter().map(|command| command[3].clone()).collect();
+        // hash, begin, 3 pieces of 2 MiB, commit, then prune after promotion.
+        assert_eq!(steps, ["hash", "begin", "append", "append", "append", "commit", "prune"]);
+        volume
+    };
     let uploading = events.iter().filter(|event| event.message.starts_with("Uploading the agent")).count();
     assert_eq!(uploading, 3, "one progress line per piece");
     let started = events.iter().find(|event| event.step == Step::Starting && event.status == StepStatus::Done).unwrap();
