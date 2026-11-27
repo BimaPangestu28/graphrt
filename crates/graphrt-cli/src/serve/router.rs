@@ -153,6 +153,7 @@ fn with_learning_routes(api: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
         )
         .route("/v1/learning/{agent}/forget", post(l::forget))
         .route("/v1/learning/{agent}/distill", post(l::distill))
+        .route("/v1/learning/{agent}/skill-draft", post(l::skill_draft))
         .route("/v1/learning/{agent}/policy", get(l::get_policy).merge(axum::routing::patch(l::patch_policy)))
         .route("/v1/learning/{agent}/audit", get(l::audit))
 }
