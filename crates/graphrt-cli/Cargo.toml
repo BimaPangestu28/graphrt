@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor", "channel-telegram", "channel-whatsapp"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # http-request node with SSRF-safe egress.
@@ -145,6 +145,15 @@ web-push = ["notify", "devices", "http"]
 # details and the approvals inbox, installable as a web app. Built from `web/`
 # and embedded in the binary.
 web-monitor = ["approvals", "run-follow"]
+# Messaging channels (`serve --channel KIND=WORKFLOW`, off unless given): a
+# customer writes on the channel, the workflow runs, the answer goes back, with
+# one conversation per customer. `channels` is the shared part; a channel is
+# built in by its own feature, and a build without it has none of its code.
+channels = ["conversations", "approvals", "dep:graphrt-channel", "graphrt-channel/client", "dep:graphrt-ui", "dep:reqwest", "dep:rustls"]
+# Telegram, through the official Bot API: long polling or a webhook.
+channel-telegram = ["channels", "graphrt-channel/telegram"]
+# WhatsApp, through the official Cloud API: a signed webhook.
+channel-whatsapp = ["channels", "graphrt-channel/whatsapp"]
 # Evaluation scores of served runs: `GET /v1/runs/{id}/scores` and human
 # feedback (`POST /v1/runs/{id}/feedback`), kept next to each run in the store.
 scores = ["serve"]
@@ -200,6 +209,8 @@ graphrt-wasm = { workspace = true, optional = true }
 graphrt-otel = { workspace = true, optional = true, features = ["http"] }
 graphrt-bundle = { workspace = true, optional = true }
 graphrt-eval = { workspace = true, optional = true }
+graphrt-channel = { workspace = true, optional = true }
+graphrt-ui = { workspace = true, optional = true }
 graphrt-gateway = { workspace = true, optional = true }
 graphrt-provider-api = { workspace = true, optional = true }
 graphrt-provider-fly = { workspace = true, optional = true }

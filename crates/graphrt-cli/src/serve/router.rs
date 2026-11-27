@@ -197,6 +197,9 @@ fn self_authenticating_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // Conversations authorize themselves: the key, or a verified user for their own.
     #[cfg(feature = "conversations")]
     let routes = if state.conversations.is_some() { routes.merge(crate::conversations::routes()) } else { routes };
+    // Channel webhooks authenticate by their secret or signature, the rest by the key.
+    #[cfg(feature = "channels")]
+    let routes = if state.channels.is_some() { routes.merge(crate::channels::routes()) } else { routes };
     // The chat page, its config and guest sessions are public.
     #[cfg(feature = "web-chat")]
     let routes = if state.chat.is_some() { routes.merge(super::chat::routes()) } else { routes };

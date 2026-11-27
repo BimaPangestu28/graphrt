@@ -1,0 +1,42 @@
+[package]
+name = "graphrt-channel"
+description = "Messaging channels for graphrt agents: Telegram (Bot API) and WhatsApp (Cloud API). Parses what a channel delivers, verifies its signatures, and sends replies split and formatted for it."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-channel"
+homepage = "https://github.com/Graphrt/graphrt"
+keywords = ["agent", "telegram", "whatsapp", "chatbot", "graphrt"]
+categories = ["api-bindings", "web-programming"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Telegram Bot API: updates (long polling and webhook), the webhook secret check.
+telegram = ["dep:serde_json"]
+# WhatsApp Cloud API: webhook verification, the `X-Hub-Signature-256` check, messages and statuses.
+whatsapp = ["dep:serde_json", "dep:sha2"]
+# The HTTP side: send replies, download and upload media, poll Telegram. The caller
+# brings the `reqwest::Client`, so TLS and proxies are its choice. Without this
+# feature the crate only parses, verifies and formats, and links no HTTP client.
+client = ["dep:reqwest", "dep:tokio"]
+
+[dependencies]
+thiserror.workspace = true
+serde_json = { workspace = true, optional = true }
+sha2 = { version = "0.11", optional = true, default-features = false }
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["time"] }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+# The workspace builds reqwest without a TLS provider: the tests that build a client install one.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

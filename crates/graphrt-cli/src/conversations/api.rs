@@ -83,6 +83,9 @@ fn summary(conversation: &Conversation, to_key: bool) -> serde_json::Value {
     if to_key && let (Some(object), Some(owner)) = (json.as_object_mut(), &conversation.owner) {
         object.insert("owner".into(), owner.as_str().into());
     }
+    if to_key && let (Some(object), Some(channel)) = (json.as_object_mut(), &conversation.channel) {
+        object.insert("channel".into(), serde_json::to_value(channel).unwrap_or_default());
+    }
     json
 }
 
@@ -158,7 +161,7 @@ async fn list(State(state): State<Arc<AppState>>, RawQuery(raw): RawQuery, heade
         Err(e) => return store_error(&e),
     };
     let visible = all.into_iter().filter(|conversation| match caller.user() {
-        Some(user) => conversation.owner.as_deref() == Some(user),
+        Some(user) => conversation.is_reachable_by(Some(user)),
         None => owner_filter.as_ref().is_none_or(|owner| conversation.owner.as_ref() == Some(owner)),
     });
     let mut matching: Vec<Conversation> =

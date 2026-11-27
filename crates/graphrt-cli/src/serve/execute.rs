@@ -134,6 +134,12 @@ pub(super) fn launch(
             .map(|(conversations, session)| crate::conversations::Turn::of(conversations, session)),
         #[cfg(feature = "notify")]
         notify: state.notifications.clone(),
+        #[cfg(feature = "channels")]
+        channels: state
+            .channels
+            .as_ref()
+            .filter(|_| record.session_id.as_deref().is_some_and(crate::channels::is_channel_conversation))
+            .cloned(),
     };
     let assembler = new_assembler(engine, &input);
     #[cfg(feature = "run-follow")]
@@ -235,4 +241,106 @@ pub(crate) async fn launch_detached(
     // Webhook runs have no waiting caller: after a drain the next server resumes them.
     active.set_detached();
     Ok(Launch::Started(active))
+}
+
+/// One message of a customer on a messaging channel, to run as a turn of
+/// their conversation.
+#[cfg(feature = "channels")]
+#[derive(Debug)]
+pub(crate) struct ChannelTurn {
+    /// Idempotent: a message delivered twice starts one run.
+    pub run_id: String,
+    pub conversation: crate::conversations::Conversation,
+    pub message: String,
+    /// `sys.user_id` and the run's user.
+    pub user_id: String,
+    /// `sys.files`.
+    pub files: Vec<Value>,
+    /// `sys.channel`.
+    pub channel: String,
+}
+
+/// Why a channel turn did not start.
+#[cfg(feature = "channels")]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TurnRefused {
+    /// A run of this message exists already.
+    Duplicate,
+    /// The server executes `--max-active-runs` runs, or it is shutting down.
+    Busy,
+    Failed(String),
+}
+
+/// Start the run of a channel turn in the background. Like a run that names a
+/// `conversation_id`: the stored turns are its `sys.history`, the stored
+/// variables its `conversation` namespace, and the turn is added when it succeeds.
+///
+/// @throws TurnRefused - See its variants. Nothing is left behind.
+#[cfg(feature = "channels")]
+pub(crate) async fn start_channel_turn(
+    state: &Arc<AppState>,
+    turn: ChannelTurn,
+) -> Result<Arc<ActiveRun>, TurnRefused> {
+    let failed = |why: String| TurnRefused::Failed(why);
+    let conversation = &turn.conversation;
+    let Some(workflow) = state.workflows.get(&conversation.workflow) else {
+        return Err(failed(format!("workflow `{}` is not served", conversation.workflow)));
+    };
+    let Some(conversations) = state.conversations.as_ref() else {
+        return Err(failed("the server keeps no conversations".to_owned()));
+    };
+    if state.refuse_if_busy().is_some() {
+        return Err(TurnRefused::Busy);
+    }
+    match state.store.get(&turn.run_id).await {
+        Ok(None) => {}
+        Ok(Some(_)) => return Err(TurnRefused::Duplicate),
+        Err(e) => return Err(failed(e.to_string())),
+    }
+    let mut record =
+        RunRecord::running(&turn.run_id, &conversation.workflow, workflow.engine.graph().fingerprint(), now_ms());
+    record.session_id = Some(conversation.id.clone());
+    record.user_id = Some(turn.user_id.clone());
+    record.metadata.insert("channel".to_owned(), turn.channel.clone());
+    match conversations.begin_turn(&conversation.id, &turn.run_id, &turn.message).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(failed("the conversation is gone".to_owned())),
+        Err(e) => return Err(failed(e.to_string())),
+    }
+    if let Err(error) = state.store.create(record.clone()).await {
+        // The message was remembered for a run that never started.
+        let dropped = crate::conversations::TurnEnd::Dropped;
+        crate::conversations::Turn::of(conversations, &conversation.id)
+            .finish(&turn.run_id, dropped, "", IndexMap::new())
+            .await;
+        return Err(match error {
+            StoreError::Conflict(_) => TurnRefused::Duplicate,
+            other => failed(other.to_string()),
+        });
+    }
+    let mut input = RunInput::new();
+    input.run_id = Some(turn.run_id);
+    let message = Value::String(turn.message.into());
+    match &conversation.input {
+        Some(name) => {
+            input.inputs.insert(name.clone(), message);
+        }
+        None => {
+            input.sys.insert("query".to_owned(), message);
+        }
+    }
+    input.sys.insert("user_id".to_owned(), Value::String(turn.user_id.into()));
+    input.sys.insert("conversation_id".to_owned(), Value::String(conversation.id.as_str().into()));
+    input.sys.insert("history".to_owned(), Value::from_json(conversation.history()));
+    input.sys.insert("channel".to_owned(), Value::String(turn.channel.into()));
+    if !turn.files.is_empty() {
+        input.sys.insert("files".to_owned(), Value::Array(Arc::new(turn.files)));
+    }
+    input.conversation =
+        conversation.variables.iter().map(|(name, value)| (name.clone(), Value::from_json(value.clone()))).collect();
+    input.env = workflow.env.clone();
+    let active = launch(state, &workflow.engine, record, input, None);
+    // No caller waits: after a drain the next server resumes it, and its answer still goes out.
+    active.set_detached();
+    Ok(active)
 }

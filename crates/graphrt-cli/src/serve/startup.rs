@@ -103,11 +103,17 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         let chat = super::chat::Chat::new(&args.chat, context, |name| state.start_inputs(name))?;
         state.with_chat(chat)
     };
+    #[cfg(feature = "channels")]
+    let state = channels_from_args(state, &args, &options)?;
     #[cfg(feature = "jwt")]
     let state = with_user_resume(state, &args, verifies_user_tokens)?;
     #[cfg(feature = "devices")]
     let state = monitoring_from_args(state, &args, &options, api_key.is_some())?;
     let state = Arc::new(state);
+    #[cfg(feature = "channels")]
+    if let Some(channels) = state.channels() {
+        channels.start(&state);
+    }
     #[cfg(feature = "approvals")]
     if state.approvals().is_some_and(|approvals| approvals.expire) {
         crate::approvals::spawn_expiry(&state);
@@ -284,7 +290,12 @@ fn monitoring_from_args(
 #[cfg(feature = "conversations")]
 fn conversations_from_args(args: &ServeArgs) -> Result<Option<crate::conversations::Conversations>, CliError> {
     let flags = &args.conversations;
-    if !flags.conversations {
+    // Every customer of a channel has a conversation.
+    #[cfg(feature = "channels")]
+    let for_channels = !args.channels.channel.is_empty() || args.channels.channels.is_some();
+    #[cfg(not(feature = "channels"))]
+    let for_channels = false;
+    if !flags.conversations && !for_channels {
         return Ok(None);
     }
     let dir = store_dir(args);
@@ -296,6 +307,36 @@ fn conversations_from_args(args: &ServeArgs) -> Result<Option<crate::conversatio
     let conversations = crate::conversations::Conversations::open(dir.as_deref(), limits)?;
     eprintln!("  {}", conversations.describe(dir.is_some()));
     Ok(Some(conversations))
+}
+
+/// The channels of `--channel` and `--channels`, with their secrets from the
+/// environment or `--env-file`.
+///
+/// @throws CliError (usage) - A malformed flag or file, a missing secret, or a
+///   channel of a workflow that is not served.
+#[cfg(feature = "channels")]
+fn channels_from_args(state: AppState, args: &ServeArgs, options: &ServiceOptions) -> Result<AppState, CliError> {
+    let flags = &args.channels;
+    let defaults = crate::channels::Defaults { rate_limit: flags.channel_rate_limit, budget: flags.channel_budget };
+    let lookup = |name: &str| lookup_env(options, name);
+    let configs = crate::channels::config::load(&flags.channel, flags.channels.as_deref(), defaults, &lookup)?;
+    #[cfg(feature = "devices")]
+    let public_url = args
+        .monitor
+        .public_url
+        .clone()
+        .or_else(|| lookup_env(options, "GRAPHRT_PUBLIC_URL"))
+        .filter(|url| !url.trim().is_empty())
+        .map(|url| url.trim().trim_end_matches('/').to_owned());
+    #[cfg(not(feature = "devices"))]
+    let public_url = None;
+    let channels = crate::channels::Channels::new(configs, |name| state.serves(name), public_url, args.user_resume)?;
+    if let Some(channels) = &channels {
+        for line in channels.describe() {
+            eprintln!("  {line}");
+        }
+    }
+    Ok(state.with_channels(channels.map(Arc::new)))
 }
 
 /// `--user-resume`, which needs users: `--verify-jwt` or a chat page for guests.
@@ -310,8 +351,12 @@ fn with_user_resume(state: AppState, args: &ServeArgs, verifies_user_tokens: boo
     let has_guests = state.chat.as_deref().is_some_and(super::chat::Chat::is_public);
     #[cfg(not(feature = "web-chat"))]
     let has_guests = false;
-    if !verifies_user_tokens && !has_guests {
-        return Err(CliError::usage("--user-resume needs users: set --verify-jwt or --chat-access guests"));
+    #[cfg(feature = "channels")]
+    let has_customers = state.channels().is_some();
+    #[cfg(not(feature = "channels"))]
+    let has_customers = false;
+    if !verifies_user_tokens && !has_guests && !has_customers {
+        return Err(CliError::usage("--user-resume needs users: set --verify-jwt, --chat-access guests or --channel"));
     }
     Ok(state.with_user_resume(true))
 }

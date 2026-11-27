@@ -260,6 +260,10 @@ pub struct Capture {
     /// Who hears when the run fails or waits for a person.
     #[cfg(feature = "notify")]
     pub notify: Option<Arc<crate::notify::Notifications>>,
+    /// The messaging channels, for a run of a channel conversation: its answer,
+    /// or its question, goes to the customer when the execution ends.
+    #[cfg(feature = "channels")]
+    pub channels: Option<Arc<crate::channels::Channels>>,
 }
 
 /// Called when an execution ends (to drop it from the active set).
@@ -316,6 +320,8 @@ pub fn spawn(
         ids_pending: true,
         #[cfg(feature = "conversations")]
         conversation_variables: indexmap::IndexMap::new(),
+        #[cfg(feature = "channels")]
+        produced_files: Vec::new(),
     };
     let Tracking { on_start, on_finish } = tracking;
     on_start(&active);
@@ -333,7 +339,14 @@ struct Recorder {
     /// The `conversation` variables this execution wrote, for its conversation.
     #[cfg(feature = "conversations")]
     conversation_variables: indexmap::IndexMap<String, serde_json::Value>,
+    /// The files the run's nodes produced (their `files` outputs), for its channel.
+    #[cfg(feature = "channels")]
+    produced_files: Vec<graphrt_core::value::File>,
 }
+
+/// Most files of one run sent to a channel.
+#[cfg(feature = "channels")]
+const MAX_PRODUCED_FILES: usize = 10;
 
 impl Recorder {
     fn on_event(&mut self, event: &Event, record: &mut RunRecord) {
@@ -361,6 +374,19 @@ impl Recorder {
         {
             // Through JSON so a secret is stored as its mask.
             self.conversation_variables.insert(selector.name().to_owned(), value.to_json());
+        }
+        #[cfg(feature = "channels")]
+        if self.capture.channels.is_some()
+            && let Event::NodeSucceeded { outputs, .. } = event
+            && let Some(Value::Array(files)) = outputs.get("files")
+        {
+            for file in files.iter() {
+                let Value::File(file) = file else { continue };
+                let known = self.produced_files.iter().any(|other| other.reference == file.reference);
+                if !known && self.produced_files.len() < MAX_PRODUCED_FILES {
+                    self.produced_files.push((**file).clone());
+                }
+            }
         }
     }
 
@@ -437,6 +463,10 @@ async fn drive(
             #[cfg(feature = "notify")]
             if let Some(notifications) = &recorder.capture.notify {
                 notifications.run_ended(&record);
+            }
+            #[cfg(feature = "channels")]
+            if let Some(channels) = &recorder.capture.channels {
+                channels.run_ended(&record, std::mem::take(&mut recorder.produced_files));
             }
         }
     }

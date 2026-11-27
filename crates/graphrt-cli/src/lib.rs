@@ -14,6 +14,8 @@ pub mod bundle_cmd;
 #[cfg(all(feature = "skills", feature = "bundle"))]
 pub mod bundle_skills;
 pub mod catalog;
+#[cfg(feature = "channels")]
+pub mod channels;
 #[cfg(feature = "conversations")]
 pub mod conversations;
 #[cfg(any(feature = "gateway", feature = "deploy-fly"))]
@@ -171,6 +173,10 @@ pub fn enabled_features() -> Vec<&'static str> {
     if cfg!(feature = "mimalloc") {
         features.push("mimalloc");
     }
+    #[cfg(feature = "channel-telegram")]
+    features.push("channel-telegram");
+    #[cfg(feature = "channel-whatsapp")]
+    features.push("channel-whatsapp");
     if cfg!(feature = "skills") {
         features.push("skills");
     }

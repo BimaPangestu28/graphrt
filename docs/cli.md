@@ -191,6 +191,16 @@ notifications when a run fails or waits for a person, and `--public-url URL`
 names the address pairing links use. `--monitor` turns on `--devices` and
 `--approvals`. All are off unless given. See [monitoring.md](monitoring.md).
 
+For talking to customers on a messaging channel: `--channel telegram=WORKFLOW`
+or `--channel whatsapp=WORKFLOW` (repeatable, `=INPUT` names the start input
+that takes the message) answers each customer in a conversation of their own,
+with the credentials from the environment or `--env-file`. `--channels FILE`
+configures several bots, allowed senders, group chats, approvers and the
+server's own sentences. `--channel-rate-limit N` and `--channel-budget N` limit
+the messages a minute of one customer and of all customers of a channel. A
+channel turns on `--conversations`. All are off unless given. See
+[channels.md](channels.md).
+
 `--deployment NAME` (or `$GRAPHRT_DEPLOYMENT`) names the deployment the server
 belongs to: webhook idempotency run ids include it, as a graphrt gateway derives
 them (see [serving.md](serving.md#idempotency)), and `--trust-gateway` requires

@@ -70,6 +70,30 @@ pub struct PendingTurn {
     pub created_ms: u64,
 }
 
+/// The messaging channel a conversation happens on (`serve --channel`): one
+/// conversation per channel and customer.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelLink {
+    /// The channel's name in the server's configuration, e.g. `telegram`.
+    pub name: String,
+    /// `telegram` or `whatsapp`.
+    pub kind: String,
+    /// The chat answers go to: a Telegram chat id, a WhatsApp phone number.
+    pub chat_id: String,
+    /// The name the channel shows for the customer. The customer chose it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_name: Option<String>,
+    /// When the customer last wrote. WhatsApp takes free text for 24 hours after it.
+    #[serde(default)]
+    pub last_inbound_ms: u64,
+    /// A person of the team answers this customer: messages are kept and start no run.
+    #[serde(default)]
+    pub human: bool,
+    /// The paused run whose question the customer's next message answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_run: Option<String>,
+}
+
 /// A stored conversation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Conversation {
@@ -92,6 +116,9 @@ pub struct Conversation {
     pub variables: IndexMap<String, serde_json::Value>,
     #[serde(default)]
     pub pending: Vec<PendingTurn>,
+    /// The messaging channel it happens on, for a conversation of `--channel`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<ChannelLink>,
 }
 
 impl Conversation {
@@ -108,12 +135,28 @@ impl Conversation {
             messages: Vec::new(),
             variables: IndexMap::new(),
             pending: Vec::new(),
+            channel: None,
         }
     }
 
+    /// Add a message outside any run: what a customer wrote while a person of
+    /// the team answers, or what that person wrote.
+    #[cfg(feature = "channels")]
+    pub(crate) fn add_message(&mut self, role: Role, content: &str, now_ms: u64, limits: &Limits) {
+        if self.title.is_empty() && role == Role::User {
+            self.title = title_of(content);
+        }
+        self.messages.push(Message { role, content: content.to_owned(), run_id: None, created_ms: now_ms });
+        self.updated_ms = now_ms;
+        self.trim(limits);
+    }
+
     /// Whether `user` may use it: its owner, or (`None`) a holder of the API key.
+    /// A conversation of a messaging channel belongs to a customer of that
+    /// channel, who never calls the API: only the key reaches it, whatever a
+    /// user token's subject is.
     pub fn is_reachable_by(&self, user: Option<&str>) -> bool {
-        user.is_none() || self.owner.as_deref() == user
+        user.is_none() || (self.channel.is_none() && self.owner.as_deref() == user)
     }
 
     /// The stored turns as `sys.history`: `[{role, content}]`, oldest first.
@@ -273,6 +316,43 @@ impl Conversations {
         conversation.title = title.as_deref().map(title_of).unwrap_or_default();
         self.store.insert(conversation.clone(), self.limits.per_user).await?;
         Ok(conversation)
+    }
+
+    /// The conversation `id` of a messaging channel, created for `owner` with
+    /// `workflow` when the customer writes for the first time.
+    ///
+    /// @throws ConversationError - When the store fails.
+    #[cfg(feature = "channels")]
+    pub(crate) async fn open_channel(
+        &self,
+        id: &str,
+        owner: &str,
+        workflow: &str,
+        input: Option<String>,
+        link: ChannelLink,
+    ) -> Result<Conversation, ConversationError> {
+        if let Some(existing) = self.store.get(id).await? {
+            return Ok(existing);
+        }
+        let mut conversation = Conversation::new(id, Some(owner.to_owned()), workflow, input, now_ms());
+        conversation.channel = Some(link);
+        // One conversation per customer: the limit per user never drops it.
+        self.store.insert(conversation.clone(), 0).await?;
+        Ok(conversation)
+    }
+
+    /// Change the conversation `id` in place.
+    ///
+    /// @returns The conversation after the change, or `None` when there is none.
+    /// @throws ConversationError - When the store fails.
+    #[cfg(feature = "channels")]
+    pub(crate) async fn change(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut Conversation, &Limits) + Send + 'static,
+    ) -> Result<Option<Conversation>, ConversationError> {
+        let limits = self.limits;
+        self.store.update(id, Box::new(move |conversation| change(conversation, &limits))).await
     }
 
     /// The turn of run `run_id` in the conversation `id`, whose message is
@@ -478,6 +558,10 @@ mod tests {
         assert!(conversation.is_reachable_by(Some("u1")));
         assert!(!conversation.is_reachable_by(Some("u2")));
         assert!(conversation.is_reachable_by(None));
+        let mut on_channel = Conversation::new("c", Some("telegram:42".into()), "chat", None, 1);
+        on_channel.channel = Some(ChannelLink::default());
+        assert!(!on_channel.is_reachable_by(Some("telegram:42")), "a token with a customer's id reaches nothing");
+        assert!(on_channel.is_reachable_by(None));
         let keyed = Conversation::new("c", None, "chat", None, 1);
         assert!(!keyed.is_reachable_by(Some("u1")), "a user never reaches a conversation of the key");
     }

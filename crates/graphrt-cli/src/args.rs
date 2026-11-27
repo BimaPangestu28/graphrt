@@ -1002,6 +1002,9 @@ pub struct ServeArgs {
     #[cfg(feature = "devices")]
     #[command(flatten)]
     pub monitor: MonitorArgs,
+    #[cfg(feature = "channels")]
+    #[command(flatten)]
+    pub channels: ChannelArgs,
     /// Online evaluation: an evaluator config (YAML or JSON) that scores a deterministic
     /// sample of finished runs with judge workflows, regexes, JSON schemas, budgets or
     /// trajectory checks, in a bounded background pool. Scores are stored with each run
@@ -1054,6 +1057,34 @@ pub struct ConversationArgs {
     /// Delete conversations not used for this many days (0 = keep them).
     #[arg(long, value_name = "DAYS", default_value_t = 30, requires = "conversations")]
     pub conversation_ttl_days: u64,
+}
+
+/// Messaging channels of `graphrt serve` (see docs/channels.md).
+#[cfg(feature = "channels")]
+#[derive(Debug, Default, Args)]
+pub struct ChannelArgs {
+    /// Let customers talk to a workflow on a messaging channel: `telegram=WORKFLOW`
+    /// or `whatsapp=WORKFLOW`. Each customer gets a conversation of their own, the
+    /// message is `sys.query` (or the start input `INPUT`) and the answer goes back
+    /// on the channel. Credentials come from the environment or `--env-file`:
+    /// `TELEGRAM_BOT_TOKEN`, or `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`,
+    /// `WHATSAPP_APP_SECRET` and `WHATSAPP_VERIFY_TOKEN`. Turns on `--conversations`.
+    /// Repeatable. Off unless given. See docs/channels.md.
+    #[arg(long, value_name = "KIND=WORKFLOW[=INPUT]")]
+    pub channel: Vec<String>,
+    /// A channels file (YAML or JSON) for what the flag cannot say: several bots,
+    /// allowed senders, group chats, approvers, the server's own sentences.
+    #[arg(long, value_name = "FILE")]
+    pub channels: Option<PathBuf>,
+    /// Messages per minute one customer may send, with bursts of the same size
+    /// (0 = unlimited). A channels file can set it per channel.
+    #[arg(long, value_name = "N", default_value_t = crate::channels::config::DEFAULT_RATE_LIMIT)]
+    pub channel_rate_limit: u32,
+    /// Messages per minute all customers of one channel together may send
+    /// (0 = unlimited). Anyone can write to a bot, so this is what bounds the
+    /// model spend of a channel.
+    #[arg(long, value_name = "N", default_value_t = crate::channels::config::DEFAULT_BUDGET)]
+    pub channel_budget: u32,
 }
 
 /// Monitoring a served agent from another device (see docs/monitoring.md).
