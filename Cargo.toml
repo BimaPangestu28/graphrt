@@ -16,6 +16,7 @@ members = [
     "crates/graphrt-plugin-sdk",
     "crates/graphrt-skill",
     "crates/graphrt-learn",
+    "crates/graphrt-memory",
     "crates/graphrt-wasm",
     "crates/graphrt-otel",
     "crates/graphrt-bundle",
@@ -60,6 +61,7 @@ graphrt-plugin = { path = "crates/graphrt-plugin", version = "0.6.3", default-fe
 graphrt-plugin-sdk = { path = "crates/graphrt-plugin-sdk", version = "0.6.3", default-features = false }
 graphrt-skill = { path = "crates/graphrt-skill", version = "0.6.3", default-features = false }
 graphrt-learn = { path = "crates/graphrt-learn", version = "0.6.3", default-features = false }
+graphrt-memory = { path = "crates/graphrt-memory", version = "0.6.3", default-features = false }
 graphrt-wasm = { path = "crates/graphrt-wasm", version = "0.6.3", default-features = false }
 graphrt-otel = { path = "crates/graphrt-otel", version = "0.6.3", default-features = false }
 graphrt-bundle = { path = "crates/graphrt-bundle", version = "0.6.3", default-features = false }

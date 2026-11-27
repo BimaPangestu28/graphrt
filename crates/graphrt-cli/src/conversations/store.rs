@@ -345,7 +345,13 @@ mod tests {
             .update(
                 "a",
                 Box::new(|c| {
-                    c.messages.push(Message { role: Role::User, content: "hi".into(), run_id: None, created_ms: 30 });
+                    c.messages.push(Message {
+                        role: Role::User,
+                        content: "hi".into(),
+                        run_id: None,
+                        created_ms: 30,
+                        tools: None,
+                    });
                     c.updated_ms = 30;
                 }),
             )

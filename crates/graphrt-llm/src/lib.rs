@@ -33,6 +33,9 @@ pub mod context;
 pub mod credential_config;
 pub mod credentials;
 pub mod error;
+/// `long_term_memory` of the `agent` node (feature `memory`).
+#[cfg(feature = "memory")]
+pub(crate) mod memory;
 /// Scripted model for tests and offline examples (feature `mock`, on by default).
 #[cfg(any(test, feature = "mock"))]
 pub mod mock;

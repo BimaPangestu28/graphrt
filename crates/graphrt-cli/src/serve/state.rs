@@ -151,9 +151,16 @@ pub struct AppState {
     /// The admin console (`--console`).
     #[cfg(feature = "console")]
     pub(super) console: Option<Arc<graphrt_console::Console>>,
+    /// The memory store behind `/v1/memory` and `/v1/me/memory`: the one the
+    /// served agents use.
+    #[cfg(feature = "memory")]
+    pub(super) memory: Option<graphrt_memory::MemoryStore>,
+    /// The tenant of every memory scope of this server (`--memory-tenant`).
+    #[cfg(feature = "memory")]
+    pub(super) memory_tenant: Option<String>,
     /// Set when the server listens beyond loopback without an API key: the
     /// owner routes (`/v1/skills`, `/v1/learning`) are refused then.
-    #[cfg(any(feature = "skills", feature = "learning"))]
+    #[cfg(any(feature = "skills", feature = "learning", feature = "memory"))]
     pub(super) owner_api_closed: AtomicBool,
 }
 
@@ -224,12 +231,66 @@ impl AppState {
             skill_catalog: crate::plugin_catalog::skills::SkillCatalogConfig::default(),
             #[cfg(feature = "console")]
             console: None,
-            #[cfg(any(feature = "skills", feature = "learning"))]
+            #[cfg(any(feature = "skills", feature = "learning", feature = "memory"))]
             owner_api_closed: AtomicBool::new(false),
             #[cfg(feature = "learning")]
             lessons: graphrt_learn::LessonStore::default_root()
                 .map(|root| Arc::new(graphrt_learn::LessonStore::open(root))),
+            #[cfg(feature = "memory")]
+            memory: None,
+            #[cfg(feature = "memory")]
+            memory_tenant: None,
         }
+    }
+
+    /// Serve `/v1/memory` from `store`, the store the served agents use, with
+    /// every scope under `tenant`.
+    #[cfg(feature = "memory")]
+    pub fn with_memory(mut self, store: Option<graphrt_memory::MemoryStore>, tenant: Option<String>) -> Self {
+        self.memory = store;
+        self.memory_tenant = tenant;
+        self
+    }
+
+    /// The memory store behind `/v1/memory`.
+    #[cfg(feature = "memory")]
+    pub(crate) fn memory_store(&self) -> Option<&graphrt_memory::MemoryStore> {
+        self.memory.as_ref()
+    }
+
+    /// The tenant of the memory scopes of this server.
+    #[cfg(feature = "memory")]
+    pub(crate) fn memory_tenant(&self) -> Option<&str> {
+        self.memory_tenant.as_deref()
+    }
+
+    /// Whether runs may be started with verified user tokens (`--verify-jwt`).
+    #[cfg(feature = "memory")]
+    pub(crate) fn verifies_user_tokens(&self) -> bool {
+        #[cfg(feature = "jwt")]
+        return self.user_auth.is_some();
+        #[cfg(not(feature = "jwt"))]
+        false
+    }
+
+    /// The agents whose memory the served workflows use: `long_term_memory.agent`
+    /// of their `agent` nodes, else the workflow's name.
+    #[cfg(feature = "memory")]
+    pub(crate) fn memory_agents(&self) -> Vec<String> {
+        let mut agents: Vec<String> = Vec::new();
+        for (name, served) in &self.workflows {
+            for node in served.engine.graph().workflow().graph.nodes.iter().filter(|n| n.kind == "agent") {
+                let agent = match node.config.get("long_term_memory") {
+                    None | Some(serde_json::Value::Null | serde_json::Value::Bool(false)) => continue,
+                    Some(serde_json::Value::String(word)) if word == "off" => continue,
+                    Some(setting) => setting.get("agent").and_then(serde_json::Value::as_str).unwrap_or(name),
+                };
+                if !agents.iter().any(|known| known == agent) {
+                    agents.push(agent.to_owned());
+                }
+            }
+        }
+        agents
     }
 
     /// The workspace the served agents use, which [`AppState::with_workspace_api`] can serve.
@@ -336,13 +397,13 @@ impl AppState {
     /// `graphrt serve` calls this when it listens beyond loopback without an
     /// API key: anyone who reaches the port could otherwise grant tools to
     /// skills or approve lessons, which outlives the run and the server.
-    #[cfg(any(feature = "skills", feature = "learning"))]
+    #[cfg(any(feature = "skills", feature = "learning", feature = "memory"))]
     pub fn close_owner_api(&self) {
         self.owner_api_closed.store(true, Ordering::Relaxed);
     }
 
     /// Whether [`AppState::close_owner_api`] was called.
-    #[cfg(any(feature = "skills", feature = "learning"))]
+    #[cfg(any(feature = "skills", feature = "learning", feature = "memory"))]
     pub(super) fn owner_api_is_closed(&self) -> bool {
         self.owner_api_closed.load(Ordering::Relaxed)
     }

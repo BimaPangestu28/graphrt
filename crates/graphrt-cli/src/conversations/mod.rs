@@ -60,6 +60,11 @@ pub struct Message {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     pub created_ms: u64,
+    /// Of an answer: what the agent's tools did in that turn, as a short
+    /// digest (`turn_digest` of the `agent` node), sent with the history so
+    /// the next turn knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<String>,
 }
 
 /// A message whose run has not finished yet.
@@ -146,7 +151,13 @@ impl Conversation {
         if self.title.is_empty() && role == Role::User {
             self.title = title_of(content);
         }
-        self.messages.push(Message { role, content: content.to_owned(), run_id: None, created_ms: now_ms });
+        self.messages.push(Message {
+            role,
+            content: content.to_owned(),
+            run_id: None,
+            created_ms: now_ms,
+            tools: None,
+        });
         self.updated_ms = now_ms;
         self.trim(limits);
     }
@@ -159,12 +170,18 @@ impl Conversation {
         user.is_none() || (self.channel.is_none() && self.owner.as_deref() == user)
     }
 
-    /// The stored turns as `sys.history`: `[{role, content}]`, oldest first.
+    /// The stored turns as `sys.history`: `[{role, content, tool_digest?}]`, oldest first.
     pub fn history(&self) -> serde_json::Value {
         let role = |role| if role == Role::User { "user" } else { "assistant" };
         self.messages
             .iter()
-            .map(|message| serde_json::json!({ "role": role(message.role), "content": message.content }))
+            .map(|message| {
+                let mut item = serde_json::json!({ "role": role(message.role), "content": message.content });
+                if let (Some(tools), Some(fields)) = (&message.tools, item.as_object_mut()) {
+                    fields.insert("tool_digest".to_owned(), serde_json::Value::String(tools.clone()));
+                }
+                item
+            })
             .collect()
     }
 
@@ -183,7 +200,13 @@ impl Conversation {
 
     /// Add the turn of `run_id`, whose run succeeded with `answer`, and keep the
     /// conversation within `limits`. Does nothing when the run has no pending message.
+    #[cfg(test)]
     fn complete_turn(&mut self, run_id: &str, answer: &str, now_ms: u64, limits: &Limits) {
+        self.complete_turn_with(run_id, answer, None, now_ms, limits);
+    }
+
+    /// [`Conversation::complete_turn`] with the digest of the turn's tool calls.
+    fn complete_turn_with(&mut self, run_id: &str, answer: &str, tools: Option<String>, now_ms: u64, limits: &Limits) {
         let Some(position) = self.pending.iter().position(|turn| turn.run_id == run_id) else { return };
         let turn = self.pending.remove(position);
         let run = Some(run_id.to_owned());
@@ -192,12 +215,14 @@ impl Conversation {
             content: turn.content,
             run_id: run.clone(),
             created_ms: turn.created_ms,
+            tools: None,
         });
         self.messages.push(Message {
             role: Role::Assistant,
             content: answer.to_owned(),
             run_id: run,
             created_ms: now_ms,
+            tools: tools.filter(|tools| !tools.trim().is_empty()),
         });
         self.updated_ms = now_ms;
         self.trim(limits);
@@ -207,7 +232,10 @@ impl Conversation {
     /// The newest turn always stays.
     fn trim(&mut self, limits: &Limits) {
         let over = |messages: &[Message]| {
-            let bytes: usize = messages.iter().map(|message| message.content.len()).sum();
+            let bytes: usize = messages
+                .iter()
+                .map(|message| message.content.len() + message.tools.as_ref().map_or(0, String::len))
+                .sum();
             (limits.max_messages > 0 && messages.len() > limits.max_messages) || bytes > MAX_CONVERSATION_BYTES
         };
         let mut drop = 0;
@@ -429,6 +457,18 @@ impl Turn {
         answer: &str,
         variables: IndexMap<String, serde_json::Value>,
     ) {
+        self.finish_with_tools(run_id, end, answer, variables, None).await;
+    }
+
+    /// [`Turn::finish`] with the digest of what the turn's tools did.
+    pub async fn finish_with_tools(
+        &self,
+        run_id: &str,
+        end: TurnEnd,
+        answer: &str,
+        variables: IndexMap<String, serde_json::Value>,
+        tools: Option<String>,
+    ) {
         let limits = self.conversations.limits;
         let (run, answer) = (run_id.to_owned(), answer.to_owned());
         let now = now_ms();
@@ -441,7 +481,7 @@ impl Turn {
             match end {
                 TurnEnd::Succeeded => {
                     conversation.variables.extend(variables);
-                    conversation.complete_turn(&run, &answer, now, &limits);
+                    conversation.complete_turn_with(&run, &answer, tools, now, &limits);
                 }
                 TurnEnd::Paused => conversation.variables.extend(variables),
                 TurnEnd::Dropped => conversation.pending.retain(|turn| turn.run_id != run),
@@ -532,6 +572,29 @@ mod tests {
         let stored = all.store.get(&id).await.unwrap().unwrap();
         let texts: Vec<&str> = stored.messages.iter().map(|m| m.content.as_str()).collect();
         assert_eq!(texts, ["question 2", "answer 2", "question 3", "answer 3"]);
+    }
+
+    #[test]
+    fn the_tool_digest_of_a_turn_goes_out_with_the_history() {
+        let mut conversation = Conversation::new("c", None, "chat", None, 1);
+        conversation.begin_turn("r", "where is order 7?", 2);
+        conversation.complete_turn_with(
+            "r",
+            "It shipped.",
+            Some("- orders(7) returned: shipped".into()),
+            3,
+            &Limits::default(),
+        );
+        conversation.begin_turn("s", "thanks", 4);
+        conversation.complete_turn_with("s", "You're welcome.", Some("  ".into()), 5, &Limits::default());
+        let history = conversation.history();
+        assert_eq!(history[1]["tool_digest"], "- orders(7) returned: shipped");
+        assert!(history[0].get("tool_digest").is_none());
+        assert!(history[3].get("tool_digest").is_none(), "an empty digest is not kept");
+        // A store written before digests existed still reads.
+        let old: Message =
+            serde_json::from_value(json!({"role": "assistant", "content": "x", "created_ms": 1})).unwrap();
+        assert_eq!(old.tools, None);
     }
 
     #[test]

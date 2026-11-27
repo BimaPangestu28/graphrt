@@ -30,7 +30,7 @@ pub(crate) enum Caller {
 
 impl Caller {
     /// The verified end user, if the caller is one.
-    #[cfg(feature = "conversations")]
+    #[cfg(any(feature = "conversations", feature = "memory"))]
     pub(crate) fn user(&self) -> Option<&str> {
         match self {
             Caller::ApiKey => None,
@@ -307,7 +307,7 @@ pub(super) async fn require_auth(State(state): State<Arc<AppState>>, request: Re
 /// Refuse the owner routes of a server that has no API key and listens beyond
 /// loopback (see [`AppState::close_owner_api`]). With a key, the `require_auth`
 /// layer around these routes decides.
-#[cfg(any(feature = "skills", feature = "learning"))]
+#[cfg(any(feature = "skills", feature = "learning", feature = "memory"))]
 pub(super) async fn refuse_closed_owner_api(
     State(state): State<Arc<AppState>>,
     request: Request,

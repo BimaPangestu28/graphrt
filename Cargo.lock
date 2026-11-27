@@ -1717,6 +1717,7 @@ dependencies = [
  "graphrt-learn",
  "graphrt-llm",
  "graphrt-mcp",
+ "graphrt-memory",
  "graphrt-otel",
  "graphrt-plugin",
  "graphrt-provider-api",
@@ -2040,6 +2041,7 @@ dependencies = [
  "futures",
  "graphrt-core",
  "graphrt-learn",
+ "graphrt-memory",
  "graphrt-skill",
  "indexmap",
  "reqwest",
@@ -2065,6 +2067,20 @@ dependencies = [
  "serde",
  "serde_json",
  "sse-stream",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "graphrt-memory"
+version = "0.6.3"
+dependencies = [
+ "futures",
+ "graphrt-core",
+ "graphrt-rag",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
  "tokio",
 ]

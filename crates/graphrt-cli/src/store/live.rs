@@ -320,6 +320,8 @@ pub fn spawn(
         ids_pending: true,
         #[cfg(feature = "conversations")]
         conversation_variables: indexmap::IndexMap::new(),
+        #[cfg(feature = "conversations")]
+        tool_digest: String::new(),
         #[cfg(feature = "channels")]
         produced_files: Vec::new(),
     };
@@ -339,11 +341,17 @@ struct Recorder {
     /// The `conversation` variables this execution wrote, for its conversation.
     #[cfg(feature = "conversations")]
     conversation_variables: indexmap::IndexMap<String, serde_json::Value>,
+    /// `turn_digest` outputs of the turn, joined.
+    #[cfg(feature = "conversations")]
+    tool_digest: String,
     /// The files the run's nodes produced (their `files` outputs), for its channel.
     #[cfg(feature = "channels")]
     produced_files: Vec<graphrt_core::value::File>,
 }
 
+/// Bytes of tool digest kept for one turn of a conversation.
+#[cfg(feature = "conversations")]
+const MAX_TOOL_DIGEST_BYTES: usize = 4_000;
 /// Most files of one run sent to a channel.
 #[cfg(feature = "channels")]
 const MAX_PRODUCED_FILES: usize = 10;
@@ -375,6 +383,23 @@ impl Recorder {
             // Through JSON so a secret is stored as its mask.
             self.conversation_variables.insert(selector.name().to_owned(), value.to_json());
         }
+        // What the agents' tools did in this turn, for the next turn's history.
+        #[cfg(feature = "conversations")]
+        if self.capture.conversation.is_some()
+            && let Event::NodeSucceeded { outputs, .. } = event
+            && let Some(Value::String(digest)) = outputs.get("turn_digest")
+            && self.tool_digest.len() < MAX_TOOL_DIGEST_BYTES
+        {
+            if !self.tool_digest.is_empty() {
+                self.tool_digest.push('\n');
+            }
+            let room = MAX_TOOL_DIGEST_BYTES - self.tool_digest.len();
+            let mut end = digest.len().min(room);
+            while !digest.is_char_boundary(end) {
+                end -= 1;
+            }
+            self.tool_digest.push_str(digest.get(..end).unwrap_or_default());
+        }
         #[cfg(feature = "channels")]
         if self.capture.channels.is_some()
             && let Event::NodeSucceeded { outputs, .. } = event
@@ -402,7 +427,8 @@ impl Recorder {
             Event::RunPaused { .. } => TurnEnd::Paused,
             _ => TurnEnd::Dropped,
         };
-        turn.finish(run_id, end, answer, std::mem::take(&mut self.conversation_variables)).await;
+        let tools = Some(std::mem::take(&mut self.tool_digest)).filter(|digest| !digest.is_empty());
+        turn.finish_with_tools(run_id, end, answer, std::mem::take(&mut self.conversation_variables), tools).await;
     }
 }
 

@@ -1,0 +1,28 @@
+[package]
+name = "graphrt-memory"
+description = "Long term memory for graphrt agents: notes per tenant, agent and user, a write gate against secrets and planted text, keyword and optional semantic recall, files only."
+readme = "README.md"
+documentation = "https://docs.rs/graphrt-memory"
+homepage = "https://github.com/Graphrt/graphrt"
+keywords = ["agent", "memory", "llm", "workflow", "privacy"]
+categories = ["development-tools"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+graphrt-core = { workspace = true, features = ["memory", "tokio"] }
+graphrt-rag = { workspace = true }
+futures.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = { version = "0.11", default-features = false }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

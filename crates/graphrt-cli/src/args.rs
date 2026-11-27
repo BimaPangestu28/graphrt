@@ -44,6 +44,9 @@ pub enum Command {
     /// Review what agents learned: list, approve, edit, forget.
     #[cfg(feature = "learning")]
     Learn(LearnCmdArgs),
+    /// What agents remember about users: list, approve, export, erase a user, audit.
+    #[cfg(feature = "memory")]
+    Memory(MemoryCmdArgs),
     /// Build, inspect, verify and sign portable bundles (`.grt`).
     #[cfg(feature = "bundle")]
     Bundle(BundleArgs),
@@ -445,6 +448,86 @@ pub enum SkillCommand {
     },
 }
 
+/// Options of `graphrt memory`.
+#[cfg(feature = "memory")]
+#[derive(Debug, Args)]
+pub struct MemoryCmdArgs {
+    #[command(subcommand)]
+    pub command: MemoryCommand,
+    /// Memory store directory [default: $GRAPHRT_MEMORY_DIR, else ~/.graphrt/memory].
+    #[arg(long, global = true, value_name = "DIR")]
+    pub dir: Option<PathBuf>,
+    /// The tenant, for a server started with `--memory-tenant`.
+    #[arg(long, global = true, value_name = "NAME")]
+    pub tenant: Option<String>,
+    /// Lesson store whose lessons `forget-user` erases too [default:
+    /// $GRAPHRT_LEARNING_DIR, else ~/.graphrt/learning].
+    #[arg(long, global = true, value_name = "DIR")]
+    pub learning_dir: Option<PathBuf>,
+    /// Print as JSON.
+    #[arg(long, global = true)]
+    pub json: bool,
+    /// Who is making the change, for the audit log.
+    #[arg(long, global = true, value_name = "NAME", default_value = "owner")]
+    pub actor: String,
+}
+
+/// `graphrt memory` subcommands. `AGENT` is `long_term_memory.agent`, by default the workflow name.
+#[cfg(feature = "memory")]
+#[derive(Debug, Subcommand)]
+pub enum MemoryCommand {
+    /// List the notes of a user, or of the agent itself without `--user`.
+    List {
+        agent: String,
+        #[arg(long, value_name = "USER")]
+        user: Option<String>,
+        /// Only notes waiting for review.
+        #[arg(long)]
+        pending: bool,
+        /// Only notes that match these words.
+        #[arg(long, value_name = "WORDS")]
+        query: Option<String>,
+    },
+    /// Add a note yourself: it is used from the next run on.
+    Add {
+        agent: String,
+        text: String,
+        #[arg(long, value_name = "USER")]
+        user: Option<String>,
+    },
+    /// Approve a note waiting for review.
+    Approve {
+        agent: String,
+        id: String,
+        #[arg(long, value_name = "USER")]
+        user: Option<String>,
+    },
+    /// Reject a note waiting for review: it is removed.
+    Reject {
+        agent: String,
+        id: String,
+        #[arg(long, value_name = "USER")]
+        user: Option<String>,
+    },
+    /// Remove one note.
+    Forget {
+        agent: String,
+        id: String,
+        #[arg(long, value_name = "USER")]
+        user: Option<String>,
+    },
+    /// Print everything kept about a user, as JSON.
+    Export { agent: String, user: String },
+    /// Erase everything kept about a user (notes, and lessons in the lesson store).
+    ForgetUser { agent: String, user: String },
+    /// Print the audit log of an agent (no note text is in it).
+    Audit {
+        agent: String,
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+    },
+}
+
 /// Options of `graphrt learn`.
 #[cfg(feature = "learning")]
 #[derive(Debug, Args)]
@@ -760,6 +843,23 @@ pub struct ServiceArgs {
     #[cfg(feature = "files")]
     #[arg(long, value_name = "DIR")]
     pub workspace: Option<PathBuf>,
+    /// Directory of the long term memory of `agent` nodes (`long_term_memory`).
+    /// Default `$GRAPHRT_MEMORY_DIR`, else `~/.graphrt/memory`.
+    #[cfg(feature = "memory")]
+    #[arg(long, value_name = "DIR")]
+    pub memory_dir: Option<PathBuf>,
+    /// Keep every memory scope of this process under one tenant: its own
+    /// directory, erased by removing it. Letters, digits, `.`, `_` and `-`.
+    #[cfg(feature = "memory")]
+    #[arg(long, value_name = "NAME")]
+    pub memory_tenant: Option<String>,
+    /// Also recall notes by meaning: `openai/MODEL` (an embeddings model of
+    /// the `openai` provider, `OPENAI_API_KEY` and `OPENAI_BASE_URL`) or `local`
+    /// (the built in local model, downloaded on first use). Without it recall
+    /// is by keyword only.
+    #[cfg(feature = "memory")]
+    #[arg(long, value_name = "SPEC")]
+    pub memory_embedder: Option<String>,
     /// The workspace cannot be changed: no `files/write` and no `files/delete`.
     #[cfg(feature = "files")]
     #[arg(long, requires = "workspace")]

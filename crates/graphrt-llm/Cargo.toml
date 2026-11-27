@@ -52,6 +52,10 @@ learning = []
 # turns, optionally with a rolling summary) instead of failing the node. Off by
 # default: without it the nodes send every message, as they always did.
 context = []
+# `long_term_memory` of the `agent` node: the tools `memory/remember`, `memory/recall`
+# and `memory/forget` over the host's `graphrt_core::memory::Memories` service, and
+# matching notes added to the request when a run starts (docs/memory-design.md).
+memory = ["graphrt-core/memory"]
 # `text_model::ChatTextModel`: a chat model as a `graphrt_core::text_model::TextModel`, for
 # work outside a run such as drafting a skill. No dependencies.
 text-model = []
@@ -76,6 +80,7 @@ graphrt-core = { workspace = true, features = ["tokio", "jinja", "yaml"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
 graphrt-skill = { workspace = true }
 graphrt-learn = { workspace = true }
+graphrt-memory = { workspace = true }
 
 # What the context guard costs (docs/benchmarks.md, "Context guard").
 [[example]]

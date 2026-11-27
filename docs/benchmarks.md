@@ -180,6 +180,31 @@ The slim builds grow by the check that refuses a document asking for the
 guard in a build that does not have it, and the schema of the key. The guard
 itself is not in them.
 
+## Long term memory
+
+What `long_term_memory` (cargo feature `memory`) costs, from
+`cargo run --release -p graphrt-memory --example memory_bench` (2026-11-27,
+the scope files on the development NVMe disk):
+
+| What | Time |
+| --- | ---: |
+| `remember` with fsync, 500 notes into one scope | p50 0.47 ms, p95 0.67 ms |
+| First load and recall of a scope of 500 notes | 0.19 ms |
+| Recall by keyword, 500 notes, scope cached | p50 36 µs, p95 61 µs |
+
+Binary size, min-size profile, x86_64 Linux:
+
+| Build | `main` | With memory | Change |
+| --- | ---: | ---: | ---: |
+| `agent-minimal` | 4 406 264 B | 4 405 912 B | -352 B |
+| `agent-slim` | 7 722 704 B | 7 725 944 B | +3.2 KiB |
+| default without `memory` | | 22 760 664 B | |
+| default | | 23 183 064 B | +412 KiB for the feature |
+
+The feature holds the store, the write gate, the search, the agent's tools,
+eleven HTTP routes and the `graphrt memory` command. The slim builds grow by
+the check that refuses a document asking for memory in a build without it.
+
 ## Gateway targets on Linux
 
 `bench/targets.sh` measures every target of the gateway plan on Linux against
