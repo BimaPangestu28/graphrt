@@ -638,7 +638,13 @@ impl HttpRequestNode {
                 if lossy {
                     output = output.meta("body_lossy", true);
                 }
-                output = output.with("body", text).with("files", Value::array([]));
+                // What a reader sees of a page; the body itself for anything that is not HTML.
+                let readable = if crate::readable::is_html_type(&content_type) {
+                    crate::readable::html_to_text(&text)
+                } else {
+                    text.clone()
+                };
+                output = output.with("body", text).with("text", readable).with("files", Value::array([]));
             }
             None => {
                 if bytes.len() > INLINE_FILE_LIMIT {
@@ -669,7 +675,7 @@ impl HttpRequestNode {
                     mime_type: Some(mime.to_owned()),
                     size: u64::try_from(bytes.len()).ok(),
                 };
-                output = output.with("body", "").with("files", Value::array([Value::from(file)]));
+                output = output.with("body", "").with("text", "").with("files", Value::array([Value::from(file)]));
             }
         }
         Ok(output)

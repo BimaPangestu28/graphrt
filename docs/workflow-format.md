@@ -507,7 +507,11 @@ idempotency_key: true            # Idempotency-Key on POST / PUT / PATCH / DELET
 
 JSON bodies insert values JSON-escaped (inside strings) or as typed JSON
 (outside strings); invalid JSON fails the node. Outputs `status_code`, `body`,
-`headers`, `json` (for JSON responses) and `files` (small binary responses).
+`text`, `headers`, `json` (for JSON responses) and `files` (small binary
+responses). `text` is the readable text of an HTML page (markup, scripts and
+styles removed) and the body for other text responses: hand it to a model step
+instead of raw HTML. A request without a `User-Agent` header is sent as
+`graphrt/<version>`.
 
 A node can run more than once: after a retry, and after a run that was
 preempted (a shutdown drain, a lost gateway stream) resumes, when the node

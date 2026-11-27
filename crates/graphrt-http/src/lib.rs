@@ -24,9 +24,10 @@ mod body;
 mod client;
 mod node;
 mod policy;
+mod readable;
 
 mod files;
-pub use client::{ClientError, HttpClient};
+pub use client::{ClientError, DEFAULT_USER_AGENT, HttpClient};
 pub use files::HttpFileResolver;
 pub use node::{HttpRequestNode, INLINE_FILE_LIMIT, KIND};
 pub use policy::{EgressError, EgressPolicy, is_public};
@@ -112,6 +113,9 @@ pub fn descriptor() -> graphrt_core::catalog::NodeDescriptor {
         ))
         .output(OutputDescriptor::new("status_code", ValueType::Integer))
         .output(OutputDescriptor::new("body", ValueType::String).describe("Response text (empty for binary bodies)"))
+        .output(OutputDescriptor::new("text", ValueType::String).describe(
+            "Readable text: an HTML page without its markup, scripts and styles; the body for other text responses",
+        ))
         .output(OutputDescriptor::new("json", ValueType::Any).describe("Parsed body for JSON responses"))
         .output(OutputDescriptor::new("headers", ValueType::Object))
         .output(OutputDescriptor::new("files", ValueType::ArrayFile).describe("Binary response as a file"))

@@ -11,6 +11,13 @@ change) until it is cut; `scripts/changelog.py preview` shows them together.
 
 ### Added
 
+- `http-request` has a `text` output: the readable text of an HTML page (markup,
+  scripts, styles and comments removed, character references decoded, one line
+  per block). For other text responses it is the body. A step that hands a web
+  page to a model reads `{{#fetch.text#}}` instead of raw HTML.
+- `http-request` sends `User-Agent: graphrt/<version>` when the node sets none
+  (`graphrt_http::DEFAULT_USER_AGENT`). Sites such as Wikipedia answer 403 to a
+  request without one. A `User-Agent` in the node's `headers` replaces it.
 - PDF page numbers for knowledge passages. graphrt-doc's new
   `Options::page_markers` (off by default) starts every PDF page with a
   private-use marker carrying its 1-based number (`page_marker`).
