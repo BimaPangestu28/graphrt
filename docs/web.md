@@ -43,8 +43,12 @@ them (`--no-default-features --features serve,llm,...`) has none of this code.
 | `GET /v1/chat/config` | What the page offers: title, workflows, who may chat. Public |
 | `POST /v1/chat/guest` | A [guest session](#guests). Public, only with `--chat-access guests` |
 
-The message of the person is `sys.query` of the run. For a workflow that
-takes it as a start input, name the input: `--chat support=message`.
+The message of the person is `sys.query` of the run. A workflow whose start
+requires exactly one input (required, no default) gets the message there, as a
+[channel](channels.md) does, so `--chat support` works for a workflow that asks
+for `message`. Otherwise name the input: `--chat support=message`. A workflow
+that requires several inputs needs that name and defaults for the others, or
+the server does not start.
 
 The page shows the answer as it streams, [UI blocks](workflow-format.md#ui-blocks)
 of the run's outputs (cards, charts, tables, stat tiles, diagrams), and

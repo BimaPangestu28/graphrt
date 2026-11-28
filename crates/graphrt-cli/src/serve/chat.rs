@@ -73,6 +73,15 @@ impl ChatWorkflow {
     }
 }
 
+/// The start inputs of a served workflow, as the chat page needs them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChatStartInputs {
+    /// Every start input.
+    pub declared: Vec<String>,
+    /// Those a run cannot start without (required, no default).
+    pub required: Vec<String>,
+}
+
 /// The chat page of a server.
 #[derive(Debug)]
 pub struct Chat {
@@ -105,14 +114,18 @@ pub struct ChatContext<'a> {
 impl Chat {
     /// The chat page for `args`, or `None` without `--chat`.
     ///
-    /// @param start_inputs - The declared start inputs of a served workflow, `None` for one not served.
+    /// Without `=INPUT`, a workflow whose start requires exactly one input gets the message
+    /// there, as a channel does (`--chat support` for a workflow that asks for `message`);
+    /// one that requires none gets it as `sys.query`.
+    ///
+    /// @param start_inputs - The start inputs of a served workflow, `None` for one not served.
     /// @throws CliError (usage) - A workflow that is not served, an input it does not declare,
-    ///   `--chat-access users` without `--verify-jwt`, `guests` behind user tokens, or a
-    ///   `--chat-mermaid` file that cannot be read.
+    ///   required inputs a message cannot fill, `--chat-access users` without `--verify-jwt`,
+    ///   `guests` behind user tokens, or a `--chat-mermaid` file that cannot be read.
     pub fn new(
         args: &ChatArgs,
         context: ChatContext<'_>,
-        start_inputs: impl Fn(&str) -> Option<Vec<String>>,
+        start_inputs: impl Fn(&str) -> Option<ChatStartInputs>,
     ) -> Result<Option<Self>, CliError> {
         if let Some(flag) = args.option_without_chat() {
             return Err(CliError::usage(format!("{flag} needs a chat page: add --chat WORKFLOW")));
@@ -122,18 +135,11 @@ impl Chat {
         }
         let mut workflows: Vec<ChatWorkflow> = Vec::new();
         for spec in &args.chat {
-            let workflow = ChatWorkflow::parse(spec).map_err(CliError::usage)?;
+            let mut workflow = ChatWorkflow::parse(spec).map_err(CliError::usage)?;
             let Some(inputs) = start_inputs(&workflow.name) else {
                 return Err(CliError::usage(format!("--chat `{}`: this workflow is not served", workflow.name)));
             };
-            if let Some(input) = &workflow.input
-                && !inputs.contains(input)
-            {
-                return Err(CliError::usage(format!(
-                    "--chat `{spec}`: workflow `{}` declares no start input `{input}`",
-                    workflow.name
-                )));
-            }
+            workflow.input = message_input(spec, &workflow, &inputs)?;
             if !workflows.iter().any(|known| known.name == workflow.name) {
                 workflows.push(workflow);
             }
@@ -226,6 +232,42 @@ impl Chat {
             "diagrams": self.mermaid.is_some(),
         })
     }
+}
+
+/// The start input the chat message goes to (`None`: `sys.query`), checked against the
+/// workflow's start inputs: the one `=INPUT` names, else the only required one.
+///
+/// @throws CliError (usage) - An input the workflow does not declare, or required inputs a
+///   message cannot fill: every chat would answer "something went wrong".
+fn message_input(spec: &str, workflow: &ChatWorkflow, inputs: &ChatStartInputs) -> Result<Option<String>, CliError> {
+    let name = &workflow.name;
+    let chosen = match (&workflow.input, inputs.required.as_slice()) {
+        (Some(input), _) => {
+            if !inputs.declared.contains(input) {
+                return Err(CliError::usage(format!(
+                    "--chat `{spec}`: workflow `{name}` declares no start input `{input}`"
+                )));
+            }
+            input.clone()
+        }
+        (None, []) => return Ok(None),
+        (None, [only]) => only.clone(),
+        (None, several) => {
+            return Err(CliError::usage(format!(
+                "--chat `{spec}`: workflow `{name}` requires the start inputs {}; a message fills one: name it with \
+                 `--chat {name}=INPUT` and give the others a default",
+                several.join(", ")
+            )));
+        }
+    };
+    let unfilled: Vec<&str> = inputs.required.iter().map(String::as_str).filter(|input| *input != chosen).collect();
+    if !unfilled.is_empty() {
+        return Err(CliError::usage(format!(
+            "--chat `{spec}`: workflow `{name}` also requires {}, which a chat message cannot fill: give it a default",
+            unfilled.join(", ")
+        )));
+    }
+    Ok(Some(chosen))
 }
 
 /// Read the Mermaid build an operator named with `--chat-mermaid`.
@@ -383,8 +425,8 @@ mod tests {
         }
     }
 
-    fn inputs(name: &str) -> Option<Vec<String>> {
-        (name == "support").then(|| vec!["message".to_owned()])
+    fn inputs(name: &str) -> Option<ChatStartInputs> {
+        (name == "support").then(|| ChatStartInputs { declared: vec!["message".to_owned()], required: Vec::new() })
     }
 
     #[test]
@@ -402,6 +444,31 @@ mod tests {
         for bad in ["internal", "support=nope", "=message", "support="] {
             assert!(Chat::new(&args(&[bad], ChatAccess::Key), ChatContext::default(), inputs).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_workflow_that_requires_one_input_gets_the_message_there() {
+        let asks_for = |required: &[&str], declared: &[&str]| {
+            let required: Vec<String> = required.iter().map(|name| (*name).to_owned()).collect();
+            let declared: Vec<String> = declared.iter().map(|name| (*name).to_owned()).collect();
+            move |name: &str| {
+                (name == "bot").then(|| ChatStartInputs { declared: declared.clone(), required: required.clone() })
+            }
+        };
+        let chat = |spec: &str, inputs: &dyn Fn(&str) -> Option<ChatStartInputs>| {
+            Chat::new(&args(&[spec], ChatAccess::Guests), ChatContext::default(), inputs)
+        };
+        let one = chat("bot", &asks_for(&["message"], &["message", "note"])).unwrap().unwrap();
+        assert_eq!(one.workflows, [ChatWorkflow { name: "bot".into(), input: Some("message".into()) }]);
+        let none = chat("bot", &asks_for(&[], &["note"])).unwrap().unwrap();
+        assert_eq!(none.workflows[0].input, None, "sys.query");
+        let named = chat("bot=note", &asks_for(&[], &["message", "note"])).unwrap().unwrap();
+        assert_eq!(named.workflows[0].input.as_deref(), Some("note"));
+
+        let several = chat("bot", &asks_for(&["message", "city"], &["message", "city"])).unwrap_err();
+        assert!(several.to_string().contains("--chat bot=INPUT"), "{several}");
+        let unfilled = chat("bot=message", &asks_for(&["message", "city"], &["message", "city"])).unwrap_err();
+        assert!(unfilled.to_string().contains("also requires city"), "{unfilled}");
     }
 
     #[test]

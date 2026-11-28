@@ -106,7 +106,7 @@ pub async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             #[cfg(not(feature = "cors"))]
             frame_origins: Vec::new(),
         };
-        let chat = super::chat::Chat::new(&args.chat, context, |name| state.start_inputs(name))?;
+        let chat = super::chat::Chat::new(&args.chat, context, |name| state.chat_start_inputs(name))?;
         state.with_chat(chat)
     };
     #[cfg(feature = "channels")]

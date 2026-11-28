@@ -91,7 +91,7 @@ pub(crate) use auth::Operator;
 pub(crate) use auth::constant_time_eq;
 pub use build::{build_state, discover};
 #[cfg(feature = "web-chat")]
-pub use chat::{Chat, ChatContext, ChatWorkflow};
+pub use chat::{Chat, ChatContext, ChatStartInputs, ChatWorkflow};
 #[cfg(feature = "cors")]
 pub use cors::Cors;
 #[cfg(feature = "trust-gateway")]
