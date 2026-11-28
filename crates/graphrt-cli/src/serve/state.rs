@@ -279,6 +279,7 @@ impl AppState {
     pub(crate) fn memory_agents(&self) -> Vec<String> {
         let mut agents: Vec<String> = Vec::new();
         // The served workflows, and those they start as subagents (a bundle's are linked only).
+        #[allow(unused_mut)]
         let mut graphs: Vec<(&str, &graphrt_core::Graph)> =
             self.workflows.iter().map(|(name, served)| (name.as_str(), served.engine.graph().as_ref())).collect();
         #[cfg(feature = "subagents")]

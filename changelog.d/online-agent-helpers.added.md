@@ -13,3 +13,6 @@
   refuses a workflow file whose agents list subagents (deploy a bundle).
   `graphrt deploy capabilities` says per target whether memory is kept, and
   what the agent file carries (`agent_file`).
+- `graphrt run --workflows DIR` keeps a subagent's memory under its file
+  name, as `graphrt serve` does, not under its `name:`. A bundle's subagent
+  keeps it under `<bundle>.<name>`.

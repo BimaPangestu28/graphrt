@@ -180,13 +180,16 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
             "an agent lists subagent `{name}`: pass the folder of its workflow with `--workflows DIR`"
         )));
     }
-    #[allow(unused_mut)]
-    let mut limits = setup::limits(&args.services);
+    #[cfg(not(feature = "bundle"))]
+    let engine =
+        engine.with_services(services).with_clock(Arc::new(TokioClock)).with_limits(setup::limits(&args.services));
+    // A bundle's budgets: the lower of the host's and its own.
     #[cfg(feature = "bundle")]
-    if let Some(parts) = &bundled {
-        limits = parts.budgets.over(&limits);
-    }
-    let engine = engine.with_services(services).with_clock(Arc::new(TokioClock)).with_limits(limits);
+    let engine = {
+        let host = setup::limits(&args.services);
+        let limits = bundled.as_ref().map_or_else(|| host.clone(), |parts| parts.budgets.over(&host));
+        engine.with_services(services).with_clock(Arc::new(TokioClock)).with_limits(limits)
+    };
 
     let mut assembler = ResponseAssembler::new(&graph);
     if let Some(resume) = &input.resume {

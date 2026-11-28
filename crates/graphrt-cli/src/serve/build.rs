@@ -121,6 +121,8 @@ pub async fn build_state(
         if let Some(parts) = bundled.take() {
             let mut helpers = IndexMap::new();
             for (helper, graph) in parts.helpers {
+                // Its memory is the bundle's own: two bundles that carry `research` keep two.
+                let scope = format!("{name}.{helper}");
                 let env = setup::workflow_env(&graph, options);
                 #[cfg(feature = "skills")]
                 let engine = match &own_skills {
@@ -128,13 +130,13 @@ pub async fn build_state(
                         #[allow(unused_mut)]
                         let mut own = services_with_skills(&workflow_services, store);
                         #[cfg(feature = "memory")]
-                        setup::with_memory_defaults(&mut own, options, &helper);
+                        setup::with_memory_defaults(&mut own, options, &scope);
                         Engine::new(graph).with_services(own)
                     }
-                    None => with_workflow_services(Engine::new(graph), &workflow_services, options, &helper),
+                    None => with_workflow_services(Engine::new(graph), &workflow_services, options, &scope),
                 };
                 #[cfg(not(feature = "skills"))]
-                let engine = with_workflow_services(Engine::new(graph), &workflow_services, options, &helper);
+                let engine = with_workflow_services(Engine::new(graph), &workflow_services, options, &scope);
                 helpers.insert(helper, ServedWorkflow { engine, env });
             }
             carried.insert(name.clone(), helpers);
@@ -256,9 +258,10 @@ pub(crate) fn link_served(
     workflows: &mut IndexMap<String, ServedWorkflow>,
     carried: &IndexMap<String, IndexMap<String, ServedWorkflow>>,
 ) -> Result<(), CliError> {
-    let served = Linkable::of(workflows);
+    // A bundle's entry is no subagent of a served workflow: what it starts is the bundle's.
+    let served = Linkable::of(workflows, |name| !carried.contains_key(name));
     let bundles: IndexMap<&String, Linkable> =
-        carried.iter().map(|(name, helpers)| (name, Linkable::of(helpers))).collect();
+        carried.iter().map(|(name, helpers)| (name, Linkable::of(helpers, |_| true))).collect();
     for (name, workflow) in workflows.iter_mut() {
         let own = crate::setup::listed(workflow.engine.graph());
         if own.is_empty() {
@@ -285,13 +288,16 @@ struct Linkable {
 
 #[cfg(feature = "subagents")]
 impl Linkable {
-    fn of(workflows: &IndexMap<String, ServedWorkflow>) -> Self {
+    /// The workflows of `workflows` that `keep` keeps.
+    fn of(workflows: &IndexMap<String, ServedWorkflow>, keep: impl Fn(&str) -> bool) -> Self {
         let lists = workflows
             .iter()
+            .filter(|(name, _)| keep(name))
             .map(|(name, served)| (name.clone(), crate::setup::listed(served.engine.graph())))
             .collect();
         let links = workflows
             .iter()
+            .filter(|(name, _)| keep(name))
             .map(|(name, served)| {
                 let link = graphrt_core::engine::LinkedWorkflow::new(Arc::clone(served.engine.graph()))
                     .with_env(served.env.clone())
@@ -445,6 +451,12 @@ mod bundle_tests {
             "the bundle's own, not the served one"
         );
         assert_eq!(state.workflows.len(), 2, "a bundle adds no endpoint besides its entry");
+        // A served workflow cannot start the bundle's entry: what it would start is the bundle's.
+        let outer = dir.join("outer.json");
+        std::fs::write(&outer, lister("outer", &["lead"])).unwrap();
+        let files = [("lead".to_owned(), dir.join("lead.grt")), ("outer".to_owned(), outer)];
+        let refused = build_state(&files, &options, Limits::default(), None).await.err().unwrap().to_string();
+        assert!(refused.contains("`lead`") && refused.contains("does not serve"), "{refused}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
