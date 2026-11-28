@@ -192,7 +192,7 @@ pub(crate) enum Done {
 /// The `sys` values a child sees: the ones that identify the request.
 fn child_sys(ctx: &NodeContext) -> IndexMap<String, Value> {
     let mut sys = IndexMap::new();
-    for name in ["run_id", "user_id", "conversation_id"] {
+    for name in ["run_id", "user_id", "conversation_id", graphrt_core::memory::USER_SOURCE_VAR] {
         let template = graphrt_core::template::Template::parse(&format!("{{{{#sys.{name}#}}}}"));
         let value = template.render(&ctx.pool);
         if !value.trim().is_empty() {

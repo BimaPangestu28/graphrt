@@ -314,8 +314,57 @@ impl MemoryStore {
         let dir = self.agent_dir(scope.tenant.as_deref(), &scope.agent)?;
         Ok(match &scope.user {
             None => dir.join("agent.json"),
-            Some(user) => dir.join("users").join(sha256_hex(user)).join("notes.json"),
+            Some(user) => dir.join("users").join(user_dir_name(user)).join("notes.json"),
         })
+    }
+
+    /// Move the notes kept under the id of `scope` without its source to
+    /// `scope`, when `scope` has none yet: see [`MemoryBank::adopt`]. Takes
+    /// both locks, so it is never called while one is held.
+    fn adopt_blocking(&self, scope: &MemoryScope, source: &MemorySource) -> Result<bool, MemoryError> {
+        let path = self.scope_path(scope)?;
+        let Some(legacy) = self.legacy_of(scope)? else { return Ok(false) };
+        let legacy_path = legacy.path;
+        let (Some(user_dir), Some(legacy_dir)) = (path.parent(), legacy_path.parent()) else { return Ok(false) };
+        if exists(user_dir)? || !exists(legacy_dir)? {
+            return Ok(false);
+        }
+        let agent_dir = self.agent_dir(scope.tenant.as_deref(), &scope.agent)?;
+        let _writing = self.inner.writing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = lock(&agent_dir)?;
+        // Under the lock: another process may have moved them, or written the scoped id.
+        if exists(user_dir)? || !exists(legacy_dir)? {
+            return Ok(false);
+        }
+        self.forget_cached(&legacy_path);
+        let count = self.load(&legacy_path).ok().map(|loaded| loaded.file.notes.len());
+        let mut line = json!({
+            "action": "adopt_user", "tenant": scope.tenant, "agent": scope.agent,
+            "user_sha256": scope.user.as_deref().map(sha256_hex),
+            "from_user_sha256": sha256_hex(&legacy.id), "count": count,
+        });
+        with_actor(&mut line, source);
+        self.append_audit(&agent_dir, &[line], self.now())?;
+        fs::rename(legacy_dir, user_dir).map_err(|e| store_error("cannot move the notes of a user", &e))?;
+        self.forget_cached(&legacy_path);
+        self.forget_cached(&path);
+        #[cfg(feature = "graph")]
+        {
+            let mut graphs = self.inner.graphs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            graphs.remove(&legacy_dir.join("graph.json"));
+            graphs.remove(&user_dir.join("graph.json"));
+        }
+        Ok(true)
+    }
+
+    /// Where a scoped user id kept its notes before ids carried their source,
+    /// `None` for the agent's own memory and for an id without a source.
+    fn legacy_of(&self, scope: &MemoryScope) -> Result<Option<Legacy>, MemoryError> {
+        let Some(id) = scope.user.as_deref().and_then(graphrt_core::memory::legacy_user) else { return Ok(None) };
+        let dir = self.agent_dir(scope.tenant.as_deref(), &scope.agent)?;
+        // Hashed as ids were before sources, never as a scoped id: see `user_dir_name`.
+        let path = dir.join("users").join(sha256_hex(id)).join("notes.json");
+        Ok(Some(Legacy { id: id.to_owned(), path }))
     }
 
     fn limit_of(&self, scope: &MemoryScope) -> usize {
@@ -788,7 +837,17 @@ impl MemoryStore {
         query_vector: Option<&[f32]>,
         status: Option<MemoryStatus>,
     ) -> Result<Vec<(MemoryRecord, f32)>, MemoryError> {
-        let path = self.scope_path(scope)?;
+        self.search_at(self.scope_path(scope)?, query, query_vector, status).await
+    }
+
+    /// [`Self::search_scope`] in the file at `path`.
+    async fn search_at(
+        &self,
+        path: PathBuf,
+        query: &str,
+        query_vector: Option<&[f32]>,
+        status: Option<MemoryStatus>,
+    ) -> Result<Vec<(MemoryRecord, f32)>, MemoryError> {
         let loaded = self.blocking(move |store| store.load(&path)).await?;
         let now = self.now();
         let alive = |stored: &Stored| {
@@ -993,9 +1052,13 @@ impl MemoryStore {
     }
 
     /// The notes of exactly `scope`, newest first, for the owner.
+    /// A scoped id also lists what is still kept under its id without the source.
     pub async fn list(&self, scope: &MemoryScope, filter: &ListFilter) -> Result<Vec<MemoryRecord>, MemoryError> {
         let query = filter.query.clone().unwrap_or_default();
         let mut hits = self.search_scope(scope, &query, None, filter.status).await?;
+        if let Some(legacy) = self.legacy_of(scope)? {
+            hits.extend(self.search_at(legacy.path, &query, None, filter.status).await?);
+        }
         if query.trim().is_empty() {
             hits.sort_by_key(|a| std::cmp::Reverse(a.0.updated_ms));
         }
@@ -1037,12 +1100,33 @@ impl MemoryStore {
     }
 
     /// Everything kept about one user of an agent.
+    /// A scoped id also gives what is still kept under its id without the
+    /// source (`legacy_notes`), which no run of it has taken over yet.
     pub async fn export_user(&self, scope: &MemoryScope) -> Result<Json, MemoryError> {
         let path = self.scope_path(scope)?;
-        let loaded = self.blocking(move |store| store.load(&path)).await?;
+        let legacy = self.legacy_of(scope)?.map(|legacy| legacy.path);
+        let (loaded, legacy) = self
+            .blocking(move |store| {
+                // A damaged old file does not stop the export: it says so instead.
+                let legacy = legacy.map(|path| store.load(&path).map_err(|e| e.kind));
+                Ok((store.load(&path)?, legacy))
+            })
+            .await?;
         let notes: Vec<&MemoryRecord> = loaded.file.notes.iter().map(|s| &s.record).collect();
+        let legacy_notes: Vec<&MemoryRecord> = match &legacy {
+            Some(Ok(legacy)) => legacy.file.notes.iter().map(|s| &s.record).collect(),
+            _ => Vec::new(),
+        };
         #[allow(unused_mut)]
         let mut export = json!({ "tenant": scope.tenant, "agent": scope.agent, "user": scope.user, "notes": notes });
+        if !legacy_notes.is_empty()
+            && let Some(fields) = export.as_object_mut()
+        {
+            fields.insert("legacy_notes".to_owned(), json!(legacy_notes));
+        }
+        if let (Some(Err(kind)), Some(fields)) = (&legacy, export.as_object_mut()) {
+            fields.insert("legacy_error".to_owned(), json!(kind));
+        }
         #[cfg(feature = "graph")]
         if let Some(fields) = export.as_object_mut() {
             match self.load_graph(scope) {
@@ -1062,41 +1146,67 @@ impl MemoryStore {
     }
 
     /// Remove everything kept about one user of an agent: the directory goes.
-    /// Returns how many notes there were.
+    /// A scoped user id ([`graphrt_core::memory::UserSource`]) also loses
+    /// what is still kept under its id without the source. Returns how many
+    /// notes there were.
     pub async fn erase_user(&self, scope: &MemoryScope, source: &MemorySource) -> Result<usize, MemoryError> {
-        let path = self.scope_path(scope)?;
-        let agent_dir = self.agent_dir(scope.tenant.as_deref(), &scope.agent)?;
+        self.scope_path(scope)?;
         let (scope, source) = (scope.clone(), source.clone());
         self.blocking(move |store| {
+            let agent_dir = store.agent_dir(scope.tenant.as_deref(), &scope.agent)?;
             let _writing = store.inner.writing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !agent_dir.exists() {
+            if !exists(&agent_dir)? {
                 return Ok(0);
             }
             let _lock = lock(&agent_dir)?;
-            store.forget_cached(&path);
-            // Counted when the file can be read: a damaged file must not stop an erase.
-            let count = store.load(&path).ok().map(|loaded| loaded.file.notes.len());
-            store.forget_cached(&path);
-            let mut line = json!({
-                "action": "erase_user", "tenant": scope.tenant, "agent": scope.agent,
-                "user_sha256": scope.user.as_deref().map(sha256_hex), "count": count,
-            });
-            with_actor(&mut line, &source);
-            store.append_audit(&agent_dir, &[line], store.now())?;
-            #[cfg(feature = "graph")]
-            if let Ok(graph) = store.graph_path(&scope) {
-                store.inner.graphs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&graph);
+            // Both under one lock, the old id first: no run can move it to the scoped id in between.
+            let mut count = 0;
+            if let Some(legacy) = store.legacy_of(&scope)?
+                && legacy.path.parent().map(exists).transpose()?.unwrap_or(false)
+            {
+                count += store.erase_one(&agent_dir, &scope, &legacy.path, &legacy.id, &source)?;
             }
-            if let Some(user_dir) = path.parent() {
-                match fs::remove_dir_all(user_dir) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(store_error("cannot erase a user", &e)),
-                }
-            }
-            Ok(count.unwrap_or(0))
+            let path = store.scope_path(&scope)?;
+            let user = scope.user.clone().unwrap_or_default();
+            count += store.erase_one(&agent_dir, &scope, &path, &user, &source)?;
+            Ok(count)
         })
         .await
+    }
+
+    /// Remove the directory of the notes at `path`, those of `user` of the
+    /// agent of `scope`, with its audit line. The caller holds both locks of `agent_dir`.
+    fn erase_one(
+        &self,
+        agent_dir: &Path,
+        scope: &MemoryScope,
+        path: &Path,
+        user: &str,
+        source: &MemorySource,
+    ) -> Result<usize, MemoryError> {
+        let Some(user_dir) = path.parent() else { return Ok(0) };
+        self.forget_cached(path);
+        // Counted when the file can be read: a damaged file must not stop an erase.
+        let count = self.load(path).ok().map(|loaded| loaded.file.notes.len());
+        self.forget_cached(path);
+        let mut line = json!({
+            "action": "erase_user", "tenant": scope.tenant, "agent": scope.agent,
+            "user_sha256": sha256_hex(user), "count": count,
+        });
+        with_actor(&mut line, source);
+        self.append_audit(agent_dir, &[line], self.now())?;
+        #[cfg(feature = "graph")]
+        self.inner
+            .graphs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&user_dir.join("graph.json"));
+        match fs::remove_dir_all(user_dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(store_error("cannot erase a user", &e)),
+        }
+        Ok(count.unwrap_or(0))
     }
 
     /// The newest `limit` lines of an agent's audit log, oldest first.
@@ -1120,6 +1230,30 @@ impl MemoryStore {
         })
         .await
     }
+}
+
+/// Where an id kept its notes before ids carried their source.
+#[derive(Debug)]
+struct Legacy {
+    /// The id without its source.
+    id: String,
+    path: PathBuf,
+}
+
+/// The directory name of a user: the hash of the id. A scoped id
+/// (`channel/shop:42`) is hashed with a prefix no id stored before sources
+/// has, so an old id that reads like a scoped one (`user/alice`, named with
+/// the API key) never shares a directory with it.
+fn user_dir_name(user: &str) -> String {
+    match graphrt_core::memory::UserSource::split(user) {
+        Some(_) => sha256_hex(&format!("scoped\u{0}{user}")),
+        None => sha256_hex(user),
+    }
+}
+
+/// Whether `path` exists. An error reading it is an error, not a no.
+fn exists(path: &Path) -> Result<bool, MemoryError> {
+    path.try_exists().map_err(|e| store_error("cannot read a memory directory", &e))
 }
 
 fn lock(dir: &Path) -> Result<LockGuard, MemoryError> {
@@ -1211,6 +1345,15 @@ fn retire_one(file: &mut ScopeFile, scope: &MemoryScope, keep: &[String], by_own
 }
 
 impl MemoryBank for MemoryStore {
+    fn adopt<'a>(
+        &'a self,
+        scope: &'a MemoryScope,
+        source: &'a MemorySource,
+    ) -> BoxFuture<'a, Result<bool, MemoryError>> {
+        let (scope, source) = (scope.clone(), source.clone());
+        Box::pin(self.blocking(move |store| store.adopt_blocking(&scope, &source)))
+    }
+
     fn remember<'a>(
         &'a self,
         scope: &'a MemoryScope,

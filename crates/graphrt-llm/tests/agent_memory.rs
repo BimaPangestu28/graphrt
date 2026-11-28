@@ -99,8 +99,9 @@ fn progress(events: &[Event], name: &str) -> Vec<Json> {
         .collect()
 }
 
+/// The scope of a run that names `name` and no source: the host's own (`api`).
 fn user(name: &str) -> MemoryScope {
-    MemoryScope::user(None, "support", name)
+    MemoryScope::user(None, "support", graphrt_core::memory::UserSource::Api.scoped(name))
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -190,7 +191,9 @@ async fn a_tool_argument_cannot_name_another_user_and_secrets_never_reach_the_st
     assert_eq!(alice.len(), 1);
     assert!(!alice[0].text.contains("sk-live"), "{}", alice[0].text);
     assert!(store.list(&user("bob"), &ListFilter::default()).await.unwrap().is_empty());
-    assert!(store.list(&MemoryScope::user(None, "other", "alice"), &ListFilter::default()).await.unwrap().is_empty());
+    assert!(
+        store.list(&MemoryScope::user(None, "other", "api/alice"), &ListFilter::default()).await.unwrap().is_empty()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -252,6 +255,108 @@ async fn without_a_user_a_run_only_proposes_and_cannot_forget() {
     let agent = store.list(&MemoryScope::agent(None, "support"), &ListFilter::default()).await.unwrap();
     assert_eq!(agent.len(), 1);
     assert_eq!(agent[0].status, MemoryStatus::Pending);
+}
+
+fn from(source: &str, user: &str, query: &str) -> RunInput {
+    let mut input = input(user, query);
+    input.sys.insert("user_source".into(), Value::from(source));
+    input
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_same_user_id_from_two_sources_never_reads_the_others_memory() {
+    let store = MemoryStore::open(temp_root("sources"));
+    let model = Arc::new(MockModel::new(vec![
+        MockModel::tool_calls(&[("c1", "remember", r#"{"text":"Orders batik in size M","kind":"preference"}"#)]),
+        MockModel::text("Noted."),
+        MockModel::text("Hello."),
+        MockModel::text("Hello again."),
+        MockModel::text("Size M, as before."),
+    ]));
+    let engine = engine(&model, &store, json!("auto"), json!({}));
+    // Telegram customer 42 of the channel `shop`.
+    succeeded(&run(&engine, from("channel", "shop:42", "I order batik in size M")).await);
+    // A login whose subject is the same text, and a caller with the API key naming it.
+    for (source, at) in [("user", 2), ("api", 3)] {
+        succeeded(&run(&engine, from(source, "shop:42", "Which batik size do I order?")).await);
+        let request = model.requests()[at].clone();
+        assert!(!request.messages.iter().any(|m| m.text().contains("size M")), "{source} read the channel's memory");
+    }
+    succeeded(&run(&engine, from("channel", "shop:42", "Which batik size do I order?")).await);
+    let request = model.requests()[4].clone();
+    assert!(request.messages.last().unwrap().text().contains("Orders batik in size M"));
+    let channel = MemoryScope::user(None, "support", "channel/shop:42");
+    assert_eq!(store.list(&channel, &ListFilter::default()).await.unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_whose_host_names_the_source_takes_over_the_notes_kept_before_sources() {
+    let store = MemoryStore::open(temp_root("adopt"));
+    // Written for the channel customer before ids carried their source.
+    let old = MemoryScope::user(None, "support", "shop:42");
+    let saved = graphrt_core::memory::NewMemory::new(
+        "Orders batik in size M",
+        graphrt_core::memory::MemoryTrust::UserStated,
+        graphrt_core::memory::MemorySource::default(),
+    );
+    store.remember(&old, saved).await.unwrap();
+    let model = Arc::new(MockModel::new(vec![MockModel::text("Size M."), MockModel::text("Size M again.")]));
+    let engine = engine(&model, &store, json!("auto"), json!({}));
+    // A run without a source (an app that embeds the runtime, a run paused before sources) moves nothing.
+    succeeded(&run(&engine, input("shop:42", "Which batik size do I order?")).await);
+    assert!(!model.requests()[0].messages.last().unwrap().text().contains("size M"));
+    succeeded(&run(&engine, from("channel", "shop:42", "Which batik size do I order?")).await);
+    assert!(model.requests()[1].messages.last().unwrap().text().contains("Orders batik in size M"));
+    let channel = MemoryScope::user(None, "support", "channel/shop:42");
+    assert_eq!(store.list(&channel, &ListFilter::default()).await.unwrap().len(), 1);
+    assert!(store.export_user(&old).await.unwrap()["notes"].as_array().unwrap().is_empty(), "moved, not copied");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_id_the_configuration_renders_from_an_input_is_never_the_verified_users() {
+    let store = MemoryStore::open(temp_root("rendered"));
+    let model = Arc::new(MockModel::new(vec![
+        MockModel::tool_calls(&[("c1", "remember", r#"{"text":"Prefers invoices as PDF","kind":"preference"}"#)]),
+        MockModel::text("Noted."),
+    ]));
+    // The workflow names the user from what the request says, not from `sys.user_id`.
+    let engine = engine(&model, &store, json!({"user": "{{#sys.customer#}}"}), json!({}));
+    let mut input = from("user", "alice", "I prefer invoices as PDF");
+    input.sys.insert("customer".into(), Value::from("bob"));
+    succeeded(&run(&engine, input).await);
+    let verified_bob = MemoryScope::user(None, "support", "user/bob");
+    assert!(store.list(&verified_bob, &ListFilter::default()).await.unwrap().is_empty());
+    let named_bob = MemoryScope::user(None, "support", "api/bob");
+    assert_eq!(store.list(&named_bob, &ListFilter::default()).await.unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_same_customer_number_on_two_channels_is_two_customers() {
+    let store = MemoryStore::open(temp_root("two-channels"));
+    let model = Arc::new(MockModel::new(vec![
+        MockModel::tool_calls(&[("c1", "remember", r#"{"text":"Lives in Bandung","kind":"fact"}"#)]),
+        MockModel::text("Noted."),
+        MockModel::text("Hello."),
+        MockModel::text("Bandung."),
+    ]));
+    let engine = engine(&model, &store, json!("auto"), json!({}));
+    succeeded(&run(&engine, from("channel", "telegram:42", "I live in Bandung")).await);
+    succeeded(&run(&engine, from("channel", "whatsapp:42", "Where do I live?")).await);
+    assert!(!model.requests()[2].messages.iter().any(|m| m.text().contains("Bandung")), "another channel's 42");
+    succeeded(&run(&engine, from("channel", "telegram:42", "Where do I live?")).await);
+    assert!(model.requests()[3].messages.last().unwrap().text().contains("Lives in Bandung"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_source_the_runtime_does_not_know_fails_the_run() {
+    let store = MemoryStore::open(temp_root("bad-source"));
+    let model = Arc::new(MockModel::new(vec![MockModel::text("ok")]));
+    let engine = engine(&model, &store, json!("auto"), json!({}));
+    let events = run(&engine, from("admin", "alice", "hi")).await;
+    let failed =
+        events.iter().any(|e| matches!(e, Event::RunFailed { error_type, .. } if error_type == "memory_scope"));
+    assert!(failed, "{:?}", events.last());
+    assert!(model.requests().is_empty(), "no model call with a scope it could not name");
 }
 
 #[tokio::test(flavor = "multi_thread")]

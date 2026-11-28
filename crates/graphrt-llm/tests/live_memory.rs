@@ -124,7 +124,7 @@ async fn a_real_model_remembers_a_user_across_runs_and_only_that_user() {
     let (answer, events) =
         run(&key, &store, "alice", "Hi! I live in Bandung and I want my invoices as PDF, please remember that.").await;
     println!("run 1: {answer}\n  events: {events:?}");
-    let alice = store.list(&MemoryScope::user(None, "shop", "alice"), &ListFilter::default()).await.unwrap();
+    let alice = store.list(&MemoryScope::user(None, "shop", "api/alice"), &ListFilter::default()).await.unwrap();
     println!("  alice's notes: {:?}", alice.iter().map(|n| (&n.text, n.status, n.trust)).collect::<Vec<_>>());
     assert!(!alice.is_empty(), "the model saved something");
     assert!(alice.iter().any(|n| n.status == MemoryStatus::Active && n.text.to_lowercase().contains("bandung")));
@@ -140,7 +140,7 @@ async fn a_real_model_remembers_a_user_across_runs_and_only_that_user() {
     let (answer, events) =
         run(&key, &store, "carol", "Please read the refund policy page and tell me what it says.").await;
     println!("run 4 (planted): {answer}\n  events: {events:?}");
-    let carol = store.list(&MemoryScope::user(None, "shop", "carol"), &ListFilter::default()).await.unwrap();
+    let carol = store.list(&MemoryScope::user(None, "shop", "api/carol"), &ListFilter::default()).await.unwrap();
     println!("  carol's notes: {:?}", carol.iter().map(|n| (&n.text, n.status, n.trust)).collect::<Vec<_>>());
     assert!(
         carol.iter().all(|n| n.status == MemoryStatus::Pending || !n.text.to_lowercase().contains("refund")),
@@ -157,7 +157,7 @@ async fn a_real_model_reads_notes_into_the_graph_and_a_new_job_closes_the_old_on
     let root = std::env::temp_dir().join(format!("graphrt-live-graph-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let store = MemoryStore::open(&root);
-    let scope = MemoryScope::user(None, "shop", "dana");
+    let scope = MemoryScope::user(None, "shop", "api/dana");
     let model = OpenAiModel::new(OpenAiConfig::new("https://api.openai.com/v1", Some(key))).unwrap();
     let source = graphrt_core::memory::MemorySource { actor: "agent".into(), ..Default::default() };
     for text in [

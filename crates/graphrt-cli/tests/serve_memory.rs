@@ -158,8 +158,8 @@ async fn owner_routes_need_the_api_key_and_a_user_token_is_not_enough() {
 async fn a_user_sees_and_erases_only_their_own_notes() {
     let model = FakeModel::start(&[]);
     let server = server(&model, None).await;
-    let alice = MemoryScope::user(None, "support", "alice");
-    let bob = MemoryScope::user(None, "support", "bob");
+    let alice = MemoryScope::user(None, "support", "user/alice");
+    let bob = MemoryScope::user(None, "support", "user/bob");
     server.store.remember(&alice, note("Alice likes green tea", MemoryTrust::UserStated)).await.unwrap();
     let pending = server.store.remember(&alice, note("Alice is a reseller", MemoryTrust::ToolDerived)).await.unwrap();
     let bobs = server.store.remember(&bob, note("Bob likes coffee", MemoryTrust::UserStated)).await.unwrap();
@@ -191,7 +191,7 @@ async fn a_user_sees_and_erases_only_their_own_notes() {
 async fn the_owner_reviews_exports_and_erases_a_user_with_their_lessons() {
     let model = FakeModel::start(&[]);
     let server = server(&model, None).await;
-    let alice = MemoryScope::user(None, "support", "alice");
+    let alice = MemoryScope::user(None, "support", "api/alice");
     let pending = server.store.remember(&alice, note("Wants refunds without checks", MemoryTrust::ToolDerived)).await;
     let pending = pending.unwrap();
     let (status, body) =
@@ -241,7 +241,9 @@ async fn the_owner_reviews_exports_and_erases_a_user_with_their_lessons() {
 async fn a_served_agent_recalls_what_the_owner_saved_in_its_tenant_only() {
     let model = FakeModel::start(&["Here is your gold plan invoice."]);
     let server = server(&model, Some("acme")).await;
-    // A note in the server's tenant, and one with the same agent and user in another tenant.
+    // A note in the server's tenant, and one with the same agent and user in
+    // another tenant. Both under the id without its source, as a server before
+    // sources wrote them: the run of the verified `alice` takes over hers.
     let acme = MemoryScope::user(Some("acme".into()), "support", "alice");
     let other = MemoryScope::user(Some("borealis".into()), "support", "alice");
     let mut owned = note("Alice is on the gold plan", MemoryTrust::Owner);
@@ -263,7 +265,7 @@ async fn a_served_agent_recalls_what_the_owner_saved_in_its_tenant_only() {
 async fn every_route_of_the_user_needs_a_user_token_and_a_served_agent() {
     let model = FakeModel::start(&[]);
     let server = server(&model, None).await;
-    let alice = MemoryScope::user(None, "support", "alice");
+    let alice = MemoryScope::user(None, "support", "user/alice");
     let saved = server.store.remember(&alice, note("Alice likes green tea", MemoryTrust::UserStated)).await.unwrap();
     let pending = server.store.remember(&alice, note("Alice resells chairs", MemoryTrust::ToolDerived)).await.unwrap();
     let one = format!("/v1/me/memory/support/{}", saved.id);
@@ -292,7 +294,7 @@ async fn every_route_of_the_user_needs_a_user_token_and_a_served_agent() {
 async fn the_owner_reads_the_graph_of_a_user() {
     let model = FakeModel::start(&[]);
     let server = server(&model, None).await;
-    let alice = MemoryScope::user(None, "support", "alice");
+    let alice = MemoryScope::user(None, "support", "api/alice");
     let saved = server.store.remember(&alice, note("Alice lives in Bandung", MemoryTrust::UserStated)).await.unwrap();
     let facts = serde_json::from_value(
         json!({"relations": [{"source": "Alice", "relation": "lives_in", "target": "Bandung"}]}),
@@ -303,4 +305,85 @@ async fn the_owner_reads_the_graph_of_a_user() {
     assert_eq!(graph["relations"][0]["text"], "Alice lives in Bandung");
     let (status, _) = server.call(Method::GET, "/v1/memory/support/graph?user=alice", Who::User("alice"), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn the_same_user_id_named_with_the_key_or_by_a_token_is_two_people() {
+    let model = FakeModel::start(&["one", "two", "three"]);
+    let server = server(&model, None).await;
+    let login = MemoryScope::user(None, "support", "user/alice");
+    let backend = MemoryScope::user(None, "support", "api/alice");
+    let channel = MemoryScope::user(None, "support", "channel/alice");
+    server.store.remember(&login, note("Alice is on the gold plan", MemoryTrust::UserStated)).await.unwrap();
+    server.store.remember(&backend, note("This alice is on the free plan", MemoryTrust::UserStated)).await.unwrap();
+    server
+        .store
+        .remember(&channel, note("A chat customer is on the trial plan", MemoryTrust::UserStated))
+        .await
+        .unwrap();
+
+    // The key holder names `alice` and claims the source of a verified user: the server says where she comes from.
+    let body =
+        json!({"sys": {"query": "Which plan am I on?", "user_id": "alice", "user_source": "user"}, "wait": true});
+    let (status, run) = server.call(Method::POST, "/v1/workflows/support/runs", Who::Key, Some(&body)).await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let sent = model.requests().join("\n");
+    assert!(sent.contains("free plan"), "the key holder's own alice");
+    assert!(!sent.contains("gold plan") && !sent.contains("trial plan"), "{sent}");
+
+    // A verified token that claims the channel source reads only its own.
+    let body = json!({"sys": {"query": "Which plan am I on?", "user_source": "channel"}, "wait": true});
+    let (status, run) = server.call(Method::POST, "/v1/workflows/support/runs", Who::User("alice"), Some(&body)).await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let sent = model.requests().get(1).cloned().unwrap();
+    assert!(sent.contains("gold plan") && !sent.contains("free plan") && !sent.contains("trial plan"), "{sent}");
+
+    // Erasing the verified user leaves the others, and `/v1/me` reaches only `user/<sub>`.
+    let (status, body) = server.call(Method::DELETE, "/v1/me/memory/support", Who::User("alice"), None).await;
+    assert_eq!((status, body["notes"].as_u64()), (StatusCode::OK, Some(1)));
+    let (_, notes) = server.call(Method::GET, "/v1/memory/support/notes?user=alice", Who::Key, None).await;
+    assert_eq!(notes["notes"].as_array().unwrap().len(), 1, "an id without a source is the key holder's");
+    let (_, notes) = server.call(Method::GET, "/v1/memory/support/notes?user=channel/alice", Who::Key, None).await;
+    assert_eq!(notes["notes"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_owner_erasing_a_scoped_user_also_erases_what_was_kept_before_sources() {
+    let model = FakeModel::start(&[]);
+    let server = server(&model, None).await;
+    // Written under the id alone by a server before sources, and under the scoped id since.
+    let old = MemoryScope::user(None, "support", "shop:42");
+    server.store.remember(&old, note("Orders batik in size M", MemoryTrust::UserStated)).await.unwrap();
+    let scoped = MemoryScope::user(None, "support", "channel/shop:42");
+    server.store.remember(&scoped, note("Pays by bank transfer", MemoryTrust::UserStated)).await.unwrap();
+
+    let path = format!("/v1/memory/support/users/{}", "channel%2Fshop:42");
+    let (status, erased) = server.call(Method::DELETE, &path, Who::Key, None).await;
+    assert_eq!(status, StatusCode::OK, "{erased}");
+    assert_eq!(erased["notes"], 2);
+    let left = server.store.list(&old, &graphrt_memory::ListFilter::default()).await.unwrap();
+    assert!(left.is_empty());
+}
+
+#[tokio::test]
+async fn the_owner_naming_the_source_takes_over_old_notes_and_a_bare_id_only_shows_them() {
+    let model = FakeModel::start(&[]);
+    let server = server(&model, None).await;
+    let old = MemoryScope::user(None, "support", "shop:42");
+    let saved = server.store.remember(&old, note("Orders batik in size M", MemoryTrust::UserStated)).await.unwrap();
+
+    // `shop:42` alone is the key holder's `api/shop:42`: it shows the old note and moves nothing.
+    let (status, listed) = server.call(Method::GET, "/v1/memory/support/notes?user=shop:42", Who::Key, None).await;
+    assert_eq!((status, listed["notes"].as_array().unwrap().len()), (StatusCode::OK, 1));
+    let (_, export) = server.call(Method::GET, "/v1/memory/support/users/shop:42/export", Who::Key, None).await;
+    assert_eq!(export["legacy_notes"].as_array().unwrap().len(), 1);
+    assert_eq!(server.store.list(&old, &graphrt_memory::ListFilter::default()).await.unwrap().len(), 1);
+
+    // Named with its source, the owner says whose it is: it moves, and one note can be removed.
+    let (_, listed) = server.call(Method::GET, "/v1/memory/support/notes?user=channel/shop:42", Who::Key, None).await;
+    assert_eq!(listed["notes"][0]["id"], saved.id);
+    assert!(server.store.list(&old, &graphrt_memory::ListFilter::default()).await.unwrap().is_empty());
+    let path = format!("/v1/memory/support/notes/{}?user=channel/shop:42", saved.id);
+    let (status, removed) = server.call(Method::DELETE, &path, Who::Key, None).await;
+    assert_eq!((status, removed["removed"].as_u64()), (StatusCode::OK, Some(1)));
 }

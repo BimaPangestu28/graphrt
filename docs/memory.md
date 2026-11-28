@@ -64,6 +64,20 @@ Every note belongs to one scope: tenant, agent, user.
   Behind `--verify-jwt` that is the verified subject of the token and a
   client cannot change it. Nothing a model passes to a tool can name another
   user, agent or tenant.
+- The user always carries **where it comes from**, so the same id from two
+  places names two people: the number `42` of a Telegram customer and the
+  subject `42` of a login never share notes. The host sets the source in
+  `sys.user_source` over anything a client sent:
+
+  | Source | Scoped id | Who |
+  | --- | --- | --- |
+  | `user` | `user/<sub>` | A token the server (`--verify-jwt`) or its gateway verified, or a chat guest (`guest:<id>`) |
+  | `api` | `api/<id>` | An id the holder of the API key named, a gateway API key, and `graphrt run` or an app that embeds the runtime |
+  | `channel` | `channel/<channel>:<id>` | A customer of a messaging channel. The channel name stands for the bot account (one Telegram bot, one WhatsApp number, one Slack workspace, one Teams app), whose ids are unique |
+
+  A child run of a subagent keeps the user and the source of its parent. The
+  source holds for the user the host named (`sys.user_id`): a `user` template
+  that renders another id (from an input, say) is `api/<id>`.
 - The **agent** is `long_term_memory.agent`, by default the workflow's name
   as the host serves it.
 - The **tenant** is set by the host: `graphrt serve --memory-tenant acme`
@@ -132,7 +146,7 @@ Files, no database: `--memory-dir`, else `$GRAPHRT_MEMORY_DIR`, else
 <root>/t/<tenant>/<agent>/           one tenant
   agent.json                         the agent's own notes
   audit.jsonl                        one line per change: who, when, which note, never its text
-  users/<sha256 of the user id>/notes.json
+  users/<sha256 of the scoped user id>/notes.json
 ```
 
 Directories are `0700`, files `0600`. Each file is replaced atomically under a
@@ -148,7 +162,9 @@ reach, has no API key and does not verify user tokens, and a workflow uses
 ## For the owner: `/v1/memory` and `graphrt memory`
 
 All of these need the API key. A server that listens beyond loopback without
-a key refuses them.
+a key refuses them. `user` is a scoped id (`user/<sub>`, `channel/shop:42`,
+`api/<id>`, written `channel%2Fshop:42` in a path). An id without one of those
+sources is `api/<id>`, the id a run started with the API key uses.
 
 | Method | Path | What |
 | --- | --- | --- |
@@ -164,12 +180,40 @@ a key refuses them.
 The same from the command line:
 
 ```sh
-graphrt memory list support --user alice --pending
-graphrt memory approve support m_0a1b2c --user alice
-graphrt memory export support alice > alice.json
-graphrt memory forget-user support alice --learning-dir /srv/lessons
+graphrt memory list support --user user/alice --pending
+graphrt memory approve support m_0a1b2c --user user/alice
+graphrt memory export support channel/shop:42 > customer.json
+graphrt memory forget-user support user/alice --learning-dir /srv/lessons
 graphrt memory audit support
 ```
+
+### Notes kept before sources
+
+A server before sources kept notes under the id alone (`shop:42`, `alice`).
+The first run of a user whose host names the source (a run started over the
+API, a channel turn, a gateway run) moves the notes of the same id without its
+source to the scoped id, with an `adopt_user` line in the audit log. It never
+merges: when the scoped id has notes already, the old ones stay where they are.
+The owner moves them too by naming the user with its source
+(`?user=channel/shop:42`, `graphrt memory list support --user channel/shop:42`),
+and so does a verified user on `/v1/me/memory`. A bare id (`?user=shop:42`,
+which means `api/shop:42`) moves nothing: `list` shows the old notes and
+`export` returns them as `legacy_notes`, read only, until a run or a named
+request takes them. Erasing the scoped id erases both, so `DELETE
+/v1/memory/{agent}/users/channel%2Fshop:42` leaves nothing of that customer
+under either id. A run without a source (an app that embeds the runtime, a run
+paused before the upgrade) moves nothing. If notes cannot be moved, the memory
+operation fails and the next one tries again. Lessons keep the id without its
+source (`sys.user_id`) and are erased with it.
+
+Scoped ids are hashed apart from old ids, so an old id that reads like a
+scoped one (`user/alice`, named with the API key before sources) never
+becomes the verified `alice`'s: it is the old id of `api/user/alice`.
+
+Before sources, a caller with the API key and a verified user with the same
+id shared one scope. Whichever of them runs first after the upgrade takes
+those notes over: when that matters, erase or export such users with the old
+binary first.
 
 ## For the user: `/v1/me/memory`
 

@@ -240,9 +240,18 @@ async fn attached_files(
 }
 
 /// The run's `sys` values: the caller's, with a verified end user's `sub` as
-/// `user_id`, which wins over anything the client put there.
+/// `user_id`, which wins over anything the client put there. With memory, the
+/// server says where that user comes from (`sys.user_source`, part of their
+/// memory scope): `user` for a verified token, `api` for an id the key holder
+/// named. A client never sets it.
 fn run_sys(sys: serde_json::Map<String, serde_json::Value>, verified_user: Option<String>) -> IndexMap<String, Value> {
     let mut values = to_values(sys);
+    #[cfg(feature = "memory")]
+    {
+        use graphrt_core::memory::{USER_SOURCE_VAR, UserSource};
+        let source = UserSource::of_caller(verified_user.is_some());
+        values.insert(USER_SOURCE_VAR.to_owned(), Value::String(source.as_str().into()));
+    }
     if let Some(subject) = verified_user {
         values.insert("user_id".to_owned(), Value::String(subject.into()));
     }

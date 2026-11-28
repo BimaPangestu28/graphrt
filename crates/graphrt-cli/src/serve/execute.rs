@@ -332,6 +332,12 @@ pub(crate) async fn start_channel_turn(
     input.sys.insert("conversation_id".to_owned(), Value::String(conversation.id.as_str().into()));
     input.sys.insert("history".to_owned(), Value::from_json(conversation.history()));
     input.sys.insert("channel".to_owned(), Value::String(turn.channel.into()));
+    // The id is `<channel name>:<customer id>`: memory keeps it apart from the same text of any other source.
+    #[cfg(feature = "memory")]
+    input.sys.insert(
+        graphrt_core::memory::USER_SOURCE_VAR.to_owned(),
+        Value::String(graphrt_core::memory::UserSource::Channel.as_str().into()),
+    );
     if !turn.files.is_empty() {
         input.sys.insert("files".to_owned(), Value::Array(Arc::new(turn.files)));
     }

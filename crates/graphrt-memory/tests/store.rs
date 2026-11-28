@@ -616,3 +616,159 @@ async fn a_full_scope_never_retires_the_owners_notes_for_another_writer() {
     let refused = tight.remember(&alice, note("likes cherries", MemoryTrust::UserStated)).await.unwrap_err();
     assert_eq!(refused.kind, "memory_full");
 }
+
+fn sourced(source: graphrt_core::memory::UserSource, id: &str) -> MemoryScope {
+    MemoryScope::user(None, "support", source.scoped(id))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_same_id_from_two_sources_is_two_people() {
+    use graphrt_core::memory::UserSource::{Api, Channel, Verified};
+    let store = MemoryStore::open(temp_root("sources"));
+    let telegram = sourced(Channel, "shop:42");
+    let login = sourced(Verified, "shop:42");
+    let backend = sourced(Api, "shop:42");
+    store.remember(&telegram, note("Rina orders batik in size M", MemoryTrust::UserStated)).await.unwrap();
+    store.remember(&login, note("Budi orders batik in size XL", MemoryTrust::UserStated)).await.unwrap();
+
+    assert_eq!(recall(&store, &telegram, "batik size").await, ["Rina orders batik in size M"]);
+    assert_eq!(recall(&store, &login, "batik size").await, ["Budi orders batik in size XL"]);
+    assert!(recall(&store, &backend, "batik size").await.is_empty());
+    let export = store.export_user(&backend).await.unwrap();
+    assert_eq!(export["notes"].as_array().unwrap().len(), 0);
+    // An erase of one source leaves the others.
+    let owner = MemorySource { actor: "owner".into(), ..MemorySource::default() };
+    assert_eq!(store.erase_user(&login, &owner).await.unwrap(), 1);
+    assert_eq!(recall(&store, &telegram, "batik size").await.len(), 1);
+}
+
+fn run_source() -> MemorySource {
+    MemorySource { actor: "agent".into(), run_id: Some("run-2".into()), ..MemorySource::default() }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn notes_stored_before_sources_move_to_the_scoped_id_when_a_run_adopts_them() {
+    let root = temp_root("adopt");
+    let store = MemoryStore::open(&root);
+    // What a server before sources wrote for the channel customer `shop:42`.
+    let old = user("shop:42");
+    store.remember(&old, note("Rina orders batik in size M", MemoryTrust::UserStated)).await.unwrap();
+    let scoped = sourced(graphrt_core::memory::UserSource::Channel, "shop:42");
+
+    // A look by the owner shows them and moves nothing.
+    let listed = store.list(&scoped, &ListFilter::default()).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    let export = store.export_user(&scoped).await.unwrap();
+    assert_eq!(export["legacy_notes"].as_array().unwrap().len(), 1);
+    assert!(recall(&store, &scoped, "batik size").await.is_empty(), "not moved by a look");
+
+    assert!(store.adopt(&scoped, &run_source()).await.unwrap());
+    assert_eq!(recall(&store, &scoped, "batik size").await, ["Rina orders batik in size M"]);
+    assert!(recall(&store, &old, "batik size").await.is_empty(), "the notes moved, they are not copied");
+    assert!(!store.adopt(&scoped, &run_source()).await.unwrap(), "once");
+    // A second store on the same root (another process) finds them where they are now.
+    let again = MemoryStore::open(&root);
+    assert_eq!(recall(&again, &scoped, "batik size").await.len(), 1);
+    let export = store.export_user(&scoped).await.unwrap();
+    assert!(export.get("legacy_notes").is_none());
+    let audit = store.audit(None, "support", 50).await.unwrap();
+    let adopted: Vec<_> = audit.iter().filter(|line| line["action"] == "adopt_user").collect();
+    assert_eq!(adopted.len(), 1);
+    assert_eq!((adopted[0]["count"].as_u64(), adopted[0]["run_id"].as_str()), (Some(1), Some("run-2")));
+    assert!(!serde_json::to_string(&audit).unwrap().contains("shop:42"), "no id in clear");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scoped_id_inside_another_never_takes_that_scope() {
+    use graphrt_core::memory::UserSource::{Api, Verified};
+    let store = MemoryStore::open(temp_root("nested"));
+    let bob = sourced(Verified, "bob");
+    store.remember(&bob, note("Bob is on the gold plan", MemoryTrust::UserStated)).await.unwrap();
+    // A backend names its user `user/bob` with the API key.
+    let nested = sourced(Api, "user/bob");
+    assert!(!store.adopt(&nested, &run_source()).await.unwrap());
+    assert!(recall(&store, &nested, "gold plan").await.is_empty());
+    assert!(store.list(&nested, &ListFilter::default()).await.unwrap().is_empty());
+    let owner = MemorySource { actor: "owner".into(), ..MemorySource::default() };
+    assert_eq!(store.erase_user(&nested, &owner).await.unwrap(), 0);
+    assert_eq!(recall(&store, &bob, "gold plan").await.len(), 1, "bob keeps his notes");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_old_id_that_reads_like_a_scoped_one_is_not_that_scope() {
+    let root = temp_root("lookalike");
+    let store = MemoryStore::open(&root);
+    // Before sources, a caller with the API key named its user `user/alice`: the
+    // store kept it under the hash of that text. Made here from another id's notes.
+    store.remember(&user("seed"), note("This alice resells chairs", MemoryTrust::UserStated)).await.unwrap();
+    let hex = |text: &str| -> String {
+        use sha2::Digest as _;
+        sha2::Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+    };
+    let users = root.join("_").join("support").join("users");
+    std::fs::rename(users.join(hex("seed")), users.join(hex("user/alice"))).unwrap();
+    let alice = sourced(graphrt_core::memory::UserSource::Verified, "alice");
+    assert!(recall(&store, &alice, "chairs").await.is_empty(), "the verified alice has her own directory");
+    // It is the old id of the key holder's `user/alice`: that run takes it over, and an erase reaches it.
+    let named = sourced(graphrt_core::memory::UserSource::Api, "user/alice");
+    assert!(store.adopt(&named, &run_source()).await.unwrap());
+    assert_eq!(recall(&store, &named, "chairs").await.len(), 1);
+    assert!(recall(&store, &alice, "chairs").await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn old_notes_are_not_moved_over_notes_the_scoped_id_has_and_an_erase_takes_both() {
+    let store = MemoryStore::open(temp_root("adopt-both"));
+    let scoped = sourced(graphrt_core::memory::UserSource::Verified, "alice");
+    store.remember(&scoped, note("Alice works at Acme", MemoryTrust::UserStated)).await.unwrap();
+    // An older server, sharing the directory, wrote under the old id meanwhile.
+    let old = user("alice");
+    store.remember(&old, note("Alice prefers invoices as PDF", MemoryTrust::UserStated)).await.unwrap();
+
+    assert!(!store.adopt(&scoped, &run_source()).await.unwrap());
+    assert_eq!(recall(&store, &scoped, "acme invoices").await, ["Alice works at Acme"]);
+    assert_eq!(recall(&store, &old, "acme invoices").await.len(), 1, "kept where it was");
+    let owner = MemorySource { actor: "owner".into(), ..MemorySource::default() };
+    assert_eq!(store.erase_user(&scoped, &owner).await.unwrap(), 2, "the person's notes under both ids");
+    assert!(recall(&store, &old, "acme invoices").await.is_empty());
+    assert!(recall(&store, &scoped, "acme invoices").await.is_empty());
+    let audit = store.audit(None, "support", 50).await.unwrap();
+    assert_eq!(audit.iter().filter(|line| line["action"] == "erase_user").count(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runs_adopting_at_once_move_the_notes_once() {
+    let store = MemoryStore::open(temp_root("adopt-race"));
+    let old = user("shop:7");
+    for text in ["Orders batik in size M", "Pays by bank transfer", "Lives in Bandung"] {
+        store.remember(&old, note(text, MemoryTrust::UserStated)).await.unwrap();
+    }
+    let scoped = sourced(graphrt_core::memory::UserSource::Channel, "shop:7");
+    let tasks: Vec<_> = (0..8)
+        .map(|_| {
+            let (store, scoped) = (store.clone(), scoped.clone());
+            tokio::spawn(async move { store.adopt(&scoped, &run_source()).await })
+        })
+        .collect();
+    let mut moved = 0;
+    for task in tasks {
+        if task.await.unwrap().unwrap() {
+            moved += 1;
+        }
+    }
+    assert_eq!(moved, 1);
+    assert_eq!(store.list(&scoped, &ListFilter::default()).await.unwrap().len(), 3);
+    let audit = store.audit(None, "support", 50).await.unwrap();
+    assert_eq!(audit.iter().filter(|line| line["action"] == "adopt_user").count(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_id_without_a_source_is_only_ever_its_own_old_scope() {
+    let store = MemoryStore::open(temp_root("adopt-none"));
+    let old = user("42");
+    store.remember(&old, note("Prefers delivery on Friday", MemoryTrust::UserStated)).await.unwrap();
+    // `team/42` is no source: an id like any other, it moves nothing.
+    let other = user("team/42");
+    assert!(recall(&store, &other, "delivery friday").await.is_empty());
+    assert_eq!(recall(&store, &old, "delivery friday").await.len(), 1);
+}

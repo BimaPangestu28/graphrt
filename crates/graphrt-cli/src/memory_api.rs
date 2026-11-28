@@ -76,7 +76,11 @@ async fn graph(
         Err(refused) => return refused,
     };
     let params = QueryParams::parse(raw.as_deref());
-    match store.export_user(&scope(&state, &agent, params.string("user"))).await {
+    let scope = match ready_scope(store, &state, &agent, params.string("user"), &owner(None)).await {
+        Ok(scope) => scope,
+        Err(refused) => return refused,
+    };
+    match store.export_user(&scope).await {
         Ok(export) => Json(export.get("graph").cloned().unwrap_or_default()).into_response(),
         Err(e) => memory_error(&e),
     }
@@ -106,8 +110,39 @@ fn store(state: &AppState) -> Result<&MemoryStore, Response> {
     state.memory_store().ok_or_else(|| error_response(StatusCode::NOT_FOUND, "this server has no memory store"))
 }
 
+/// The scope of `user` as a request names it: a scoped id (`channel/shop:42`,
+/// `user/<sub>`, `api/<id>`) as it is, any other id as one the owner names (`api/<id>`).
 fn scope(state: &AppState, agent: &str, user: Option<String>) -> MemoryScope {
+    let user = user.map(|user| graphrt_core::memory::owner_named_user(&user));
     MemoryScope { tenant: state.memory_tenant().map(str::to_owned), agent: agent.to_owned(), user }
+}
+
+/// The scope of `user` (see [`scope`]), after taking over the notes it kept
+/// before ids carried their source when the request names the source itself
+/// (`channel/shop:42`): the owner then says whose they are, as a run's host
+/// does. A bare id (`api/<id>` by default) moves nothing: its old notes stay
+/// visible read only in `list` and `export` until a run of that user takes them.
+///
+/// @throws Response - when the store cannot move them.
+async fn ready_scope(
+    store: &MemoryStore,
+    state: &AppState,
+    agent: &str,
+    user: Option<String>,
+    source: &MemorySource,
+) -> Result<MemoryScope, Response> {
+    let named = user.as_deref().is_some_and(|user| graphrt_core::memory::UserSource::split(user).is_some());
+    let scope = scope(state, agent, user);
+    if named {
+        store.adopt(&scope, source).await.map_err(|e| memory_error(&e))?;
+    }
+    Ok(scope)
+}
+
+/// The id lessons know `user` (as a request names it) by: `sys.user_id` of its runs.
+#[cfg(feature = "learning")]
+fn lesson_user(user: &str) -> String {
+    graphrt_core::memory::run_user_id(&graphrt_core::memory::owner_named_user(user)).to_owned()
 }
 
 fn owner(actor: Option<&str>) -> MemorySource {
@@ -155,7 +190,11 @@ async fn list(
         Err(refused) => return refused,
     };
     let filter = ListFilter { status, query: params.string("q") };
-    match store.list(&scope(&state, &agent, params.string("user")), &filter).await {
+    let scope = match ready_scope(store, &state, &agent, params.string("user"), &owner(None)).await {
+        Ok(scope) => scope,
+        Err(refused) => return refused,
+    };
+    match store.list(&scope, &filter).await {
         Ok(notes) => Json(json!({ "notes": notes })).into_response(),
         Err(e) => memory_error(&e),
     }
@@ -171,11 +210,14 @@ async fn add(
         Ok(store) => store,
         Err(refused) => return refused,
     };
-    let note = NewMemory::new(body.text, MemoryTrust::Owner, owner(body.actor.as_deref()))
-        .kind(body.kind)
-        .tags(body.tags)
-        .policy(WritePolicy::Open);
-    match store.remember(&scope(&state, &agent, body.user), note).await {
+    let source = owner(body.actor.as_deref());
+    let scope = match ready_scope(store, &state, &agent, body.user, &source).await {
+        Ok(scope) => scope,
+        Err(refused) => return refused,
+    };
+    let note =
+        NewMemory::new(body.text, MemoryTrust::Owner, source).kind(body.kind).tags(body.tags).policy(WritePolicy::Open);
+    match store.remember(&scope, note).await {
         Ok(record) => (StatusCode::CREATED, Json(record)).into_response(),
         Err(e) => memory_error(&e),
     }
@@ -192,17 +234,32 @@ async fn remove(
         Err(refused) => return refused,
     };
     let params = QueryParams::parse(raw.as_deref());
-    let scope = scope(&state, &agent, params.string("user"));
-    match store.forget(&scope, &ForgetTarget::Id(id), &owner(params.string("actor").as_deref())).await {
+    let source = owner(params.string("actor").as_deref());
+    let scope = match ready_scope(store, &state, &agent, params.string("user"), &source).await {
+        Ok(scope) => scope,
+        Err(refused) => return refused,
+    };
+    match store.forget(&scope, &ForgetTarget::Id(id), &source).await {
         Ok(0) => error_response(StatusCode::NOT_FOUND, "no such note in this scope"),
         Ok(removed) => Json(json!({ "removed": removed })).into_response(),
         Err(e) => memory_error(&e),
     }
 }
 
-async fn decide(state: &AppState, scope: MemoryScope, id: &str, approve: bool, source: MemorySource) -> Response {
+async fn decide(
+    state: &AppState,
+    agent: &str,
+    user: Option<String>,
+    id: &str,
+    approve: bool,
+    source: MemorySource,
+) -> Response {
     let store = match store(state) {
         Ok(store) => store,
+        Err(refused) => return refused,
+    };
+    let scope = match ready_scope(store, state, agent, user, &source).await {
+        Ok(scope) => scope,
         Err(refused) => return refused,
     };
     match store.decide(&scope, id, approve, &source).await {
@@ -220,8 +277,7 @@ async fn approve(
     RawQuery(raw): RawQuery,
 ) -> Response {
     let params = QueryParams::parse(raw.as_deref());
-    let scope = scope(&state, &agent, params.string("user"));
-    decide(&state, scope, &id, true, owner(params.string("actor").as_deref())).await
+    decide(&state, &agent, params.string("user"), &id, true, owner(params.string("actor").as_deref())).await
 }
 
 /// `POST /v1/memory/{agent}/notes/{id}/reject`: a rejected note is removed.
@@ -231,8 +287,7 @@ async fn reject(
     RawQuery(raw): RawQuery,
 ) -> Response {
     let params = QueryParams::parse(raw.as_deref());
-    let scope = scope(&state, &agent, params.string("user"));
-    decide(&state, scope, &id, false, owner(params.string("actor").as_deref())).await
+    decide(&state, &agent, params.string("user"), &id, false, owner(params.string("actor").as_deref())).await
 }
 
 /// The lessons of one user of `agent`: `Ok(None)` when this server keeps no lessons.
@@ -267,12 +322,16 @@ async fn export_user(
         Ok(store) => store,
         Err(refused) => return refused,
     };
-    let mut export = match store.export_user(&scope(&state, &agent, Some(user.clone()))).await {
+    let scope = match ready_scope(store, &state, &agent, Some(user.clone()), &owner(None)).await {
+        Ok(scope) => scope,
+        Err(refused) => return refused,
+    };
+    let mut export = match store.export_user(&scope).await {
         Ok(export) => export,
         Err(e) => return memory_error(&e),
     };
     #[cfg(feature = "learning")]
-    match user_lessons(&state, &agent, &user) {
+    match user_lessons(&state, &agent, &lesson_user(&user)) {
         Ok(Some(lessons)) => {
             if let Some(fields) = export.as_object_mut() {
                 fields.insert("lessons".to_owned(), lessons);
@@ -298,7 +357,7 @@ async fn erase(state: &AppState, agent: &str, user: &str, source: &MemorySource)
     };
     #[cfg(feature = "learning")]
     let lessons = match state.lesson_store() {
-        Some(lessons) => match lessons.forget(agent, &graphrt_learn::Forget::User(user.to_owned()), &source.actor) {
+        Some(lessons) => match lessons.forget(agent, &graphrt_learn::Forget::User(lesson_user(user)), &source.actor) {
             Ok(removed) => removed,
             // An agent that never learned anything has no lesson file.
             Err(graphrt_learn::Error::NotFound { .. }) => 0,
@@ -343,7 +402,7 @@ async fn audit(
     }
 }
 
-/// The verified user of a `/v1/me` request for the memory of `agent`. The API
+/// The scoped id of the verified user of a `/v1/me` request for the memory of `agent`. The API
 /// key is not a user here, and only agents the served workflows use are
 /// reachable: a user cannot make the server create directories for any name.
 async fn me(state: &AppState, headers: &HeaderMap, agent: &str) -> Result<String, Response> {
@@ -354,7 +413,8 @@ async fn me(state: &AppState, headers: &HeaderMap, agent: &str) -> Result<String
     if !state.memory_agents().iter().any(|known| known == agent) {
         return Err(error_response(StatusCode::NOT_FOUND, "no served agent of that name keeps memory"));
     }
-    Ok(user)
+    // Their runs remember under the same scoped id (`user/<sub>`).
+    Ok(graphrt_core::memory::UserSource::Verified.scoped(&user))
 }
 
 fn me_source(user: &str) -> MemorySource {
@@ -388,7 +448,12 @@ async fn my_notes(
         Ok(status) => status,
         Err(refused) => return refused,
     };
-    match store.list(&scope(&state, &agent, Some(user)), &ListFilter { status, query: params.string("q") }).await {
+    let source = me_source(&user);
+    let scope = match ready_scope(store, &state, &agent, Some(user), &source).await {
+        Ok(scope) => scope,
+        Err(refused) => return refused,
+    };
+    match store.list(&scope, &ListFilter { status, query: params.string("q") }).await {
         Ok(notes) => Json(json!({ "notes": notes })).into_response(),
         Err(e) => memory_error(&e),
     }
@@ -417,7 +482,11 @@ async fn remove_mine(
         Err(refused) => return refused,
     };
     let source = me_source(&user);
-    match store.forget(&scope(&state, &agent, Some(user)), &ForgetTarget::Id(id), &source).await {
+    let scope = match ready_scope(store, &state, &agent, Some(user), &source).await {
+        Ok(scope) => scope,
+        Err(refused) => return refused,
+    };
+    match store.forget(&scope, &ForgetTarget::Id(id), &source).await {
         Ok(0) => error_response(StatusCode::NOT_FOUND, "no such note"),
         Ok(removed) => Json(json!({ "removed": removed })).into_response(),
         Err(e) => memory_error(&e),
