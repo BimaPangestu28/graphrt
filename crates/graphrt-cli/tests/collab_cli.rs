@@ -401,13 +401,13 @@ async fn desktop_signs_in_with_the_company_provider() {
 async fn hosted_server_with_two_providers() {
     let dir = TempDir::new("providers");
     let google = start_idp().await;
-    let microsoft = start_idp().await;
+    let company = start_idp().await;
     let extra = format!(
         "mode: hosted\nauth:\n  providers:\n\
          \x20   - {{id: google, name: Google, issuer: '{}', client_id_env: GRAPHRT_TEST_OIDC_ID, client_secret_env: GRAPHRT_TEST_OIDC_SECRET}}\n\
-         \x20   - {{id: microsoft, name: Microsoft, issuer: '{}', client_id: graphrt-desktop, client_secret_env: GRAPHRT_TEST_OIDC_SECRET, email_verified_claim: xms_edov}}\n\
+         \x20   - {{id: acme, name: Acme, issuer: '{}', client_id: graphrt-desktop, client_secret_env: GRAPHRT_TEST_OIDC_SECRET, email_verified_claim: email_checked}}\n\
          \x20   - {{id: later, issuer: 'https://later.example', client_id_env: GRAPHRT_TEST_UNSET_ID}}\n",
-        google.issuer, microsoft.issuer
+        google.issuer, company.issuer
     );
     let server = start_server(&dir.0, &extra, "http").await;
 
@@ -416,11 +416,11 @@ async fn hosted_server_with_two_providers() {
     assert_eq!(info["sign_in"]["oidc"], true);
     assert_eq!(
         info["sign_in"]["providers"],
-        json!([{"id": "google", "name": "Google"}, {"id": "microsoft", "name": "Microsoft"}])
+        json!([{"id": "google", "name": "Google"}, {"id": "acme", "name": "Acme"}])
     );
     let out = graphrt(&["collab", "check", "--config", server.config.to_str().unwrap()]);
     let banner = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(banner.contains("sign in with Google, Microsoft") && banner.contains("later is off"), "{banner}");
+    assert!(banner.contains("sign in with Google, Acme") && banner.contains("later is off"), "{banner}");
 
     // Each provider signs in its own people: the first is the default.
     let ana =
@@ -428,17 +428,16 @@ async fn hosted_server_with_two_providers() {
     assert_eq!(ana["account"]["email"], "ana@example.com");
     let bo = sign_in_with(
         &server,
-        &microsoft,
-        Some("microsoft"),
-        json!({"sub": "same", "email": "bo@example.com", "name": "Bo", "xms_edov": true}),
+        &company,
+        Some("acme"),
+        json!({"sub": "same", "email": "bo@example.com", "name": "Bo", "email_checked": true}),
     )
     .unwrap();
     assert_eq!(bo["account"]["email"], "bo@example.com");
     // The same subject at two providers is two accounts.
     assert_ne!(ana["account"]["id"], bo["account"]["id"]);
-    // An email Microsoft does not vouch for is not used.
-    let cy =
-        sign_in_with(&server, &microsoft, Some("microsoft"), json!({"sub": "cy", "email": "ana@example.com"})).unwrap();
+    // An email the company IdP does not vouch for is not used.
+    let cy = sign_in_with(&server, &company, Some("acme"), json!({"sub": "cy", "email": "ana@example.com"})).unwrap();
     assert!(cy["account"]["email"].is_null(), "{cy}");
     // A provider the server does not have.
     let path = format!(

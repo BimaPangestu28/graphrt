@@ -98,7 +98,7 @@ pub struct AuthConfig {
     #[serde(default)]
     pub oidc: Option<OidcConfig>,
     /// Several identity providers, each a sign in button in the app (e.g.
-    /// Google and Microsoft). `oidc` is the same as one provider with the id `oidc`.
+    /// Google and the company's own). `oidc` is the same as one provider with the id `oidc`.
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
     /// Who may sign in with the provider, and (self hosted) who creates
@@ -168,13 +168,11 @@ pub const LEGACY_PROVIDER: &str = "oidc";
 pub struct ProviderConfig {
     /// A short id the app sends to pick this provider, e.g. `google` (a to z, 0 to 9, `-`).
     pub id: String,
-    /// The name on the sign in button. Default: `Google` or `Microsoft` for
-    /// their issuers, else the issuer's host.
+    /// The name on the sign in button. Default: `Google` for its issuer, else
+    /// the issuer's host.
     #[serde(default)]
     pub name: Option<String>,
     /// The issuer; `<issuer>/.well-known/openid-configuration` describes it.
-    /// Microsoft's `https://login.microsoftonline.com/common/v2.0` signs in
-    /// work, school and personal accounts of any tenant.
     pub issuer: String,
     /// The client id registered at the provider.
     #[serde(default)]
@@ -197,7 +195,7 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub auth_params: BTreeMap<String, String>,
     /// A claim that must be `true` for the email of the token to be used, for a
-    /// provider that does not say `email_verified` (Microsoft: `xms_edov`). Without
+    /// provider that does not say `email_verified`. Without
     /// it, an email is used unless the token says `email_verified: false`.
     #[serde(default)]
     pub email_verified_claim: Option<String>,
@@ -212,7 +210,6 @@ impl ProviderConfig {
         let host = self.issuer.split("://").nth(1).and_then(|rest| rest.split('/').next()).unwrap_or(&self.issuer);
         match host {
             "accounts.google.com" => "Google".to_owned(),
-            "login.microsoftonline.com" => "Microsoft".to_owned(),
             other => other.to_owned(),
         }
     }
@@ -535,11 +532,11 @@ mod tests {
     fn several_providers_are_checked() {
         let base = "public_url: https://x.example\ndata_dir: /tmp/x\nmode: hosted\nauth:\n  providers:\n";
         let google = "    - {id: google, issuer: 'https://accounts.google.com', client_id_env: G_ID, client_secret_env: G_SECRET}\n";
-        let microsoft = "    - {id: microsoft, issuer: 'https://login.microsoftonline.com/common/v2.0', client_id: m, email_verified_claim: xms_edov}\n";
-        let c = config(&format!("{base}{google}{microsoft}")).unwrap();
+        let company = "    - {id: company, issuer: 'https://sso.example.com/realms/staff', client_id: c, email_verified_claim: email_checked}\n";
+        let c = config(&format!("{base}{google}{company}")).unwrap();
         assert!(!c.auth.invite_accounts());
         let names: Vec<String> = c.auth.all_providers().iter().map(ProviderConfig::display_name).collect();
-        assert_eq!(names, ["Google", "Microsoft"]);
+        assert_eq!(names, ["Google", "sso.example.com"]);
         // The same id twice, a bad id, both or neither client id, no openid scope.
         assert!(config(&format!("{base}{google}{google}")).is_err());
         assert!(config(&format!("{base}    - {{id: Google, issuer: 'https://a.example', client_id: c}}\n")).is_err());
