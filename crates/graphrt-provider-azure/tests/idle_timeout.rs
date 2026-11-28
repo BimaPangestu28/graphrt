@@ -202,7 +202,15 @@ async fn c06_proxy_adds_under_50ms_p95_and_does_not_buffer() {
     eprintln!("C6 delivery delay p95: direct {direct_p95:?}, through idle proxy {proxied_p95:?}");
     assert!(proxied_p95.saturating_sub(direct_p95) <= Duration::from_millis(50));
     // Buffering of ≥ 1 chunk would delay an event by at least one gap (15 ms) on every event.
-    assert!(proxied.iter().max().unwrap() < &Duration::from_millis(50), "events must arrive as they are sent");
+    // `p95` sorted the delays: the last ones are the largest.
+    let late = proxied.iter().filter(|delay| **delay >= Duration::from_millis(15)).count();
+    let largest: Vec<Duration> = proxied.iter().rev().take(5).copied().collect();
+    assert!(
+        proxied.iter().max().unwrap() < &Duration::from_millis(50),
+        "events must arrive as they are sent: {late} of {} events 15 ms or more late (buffering delays most, \
+         a busy runner one or two), the largest delays {largest:?}, direct p95 {direct_p95:?}",
+        proxied.len()
+    );
 }
 
 #[test]
