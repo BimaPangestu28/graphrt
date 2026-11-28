@@ -88,10 +88,14 @@ impl Agent {
     /// An agent with `api_key`, one lesson for Sari and one for Budi, and the
     /// most permissive learning policy there is.
     async fn new(gateway: Gateway, api_key: Option<&str>) -> Self {
+        Self::with_model(gateway, api_key, FakeModel::start(&[])).await
+    }
+
+    /// [`Agent::new`] on `model`.
+    async fn with_model(gateway: Gateway, api_key: Option<&str>, model: FakeModel) -> Self {
         let root = graphrt_core::private_fs::create_fresh_temp_dir("graphrt-gateway-skills-learning").unwrap();
         let file = root.join("chat.yaml");
         std::fs::write(&file, CHAT).unwrap();
-        let model = FakeModel::start(&[]);
         let options = ServiceOptions {
             plugins: common::no_plugins(),
             env_file: model.env(),
@@ -551,4 +555,19 @@ async fn feedback_on_a_run_an_old_gateway_started_is_never_verified_here() {
     agent.send(from_gateway("run-old", &old_gateway_run(SARI, SARI))).await;
     let (status, refused) = agent.feedback(gateway_feedback(&SECRET, "run-old", &forwarded(SARI, LOOK_UP, true))).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+}
+
+#[tokio::test]
+async fn a_run_the_gateway_starts_stops_at_the_budget_its_request_set() {
+    let agent =
+        Agent::with_model(Gateway::Trusted, Some(API_KEY), FakeModel::with_usage(&["A long answer."], 120)).await;
+    let mut request = run_for(SARI);
+    request["limits"] = json!({ "max_total_tokens": 50 });
+    let (status, stream) = agent.send(from_gateway("run-budget", &request)).await;
+    assert_eq!(status, StatusCode::OK, "{stream}");
+    assert!(stream.contains("run_failed") && stream.contains("limit_exceeded"), "{stream}");
+    let mut within = run_for(SARI);
+    within["limits"] = json!({ "max_total_tokens": 500 });
+    let (_, stream) = agent.send(from_gateway("run-within", &within)).await;
+    assert!(stream.contains("run_succeeded"), "{stream}");
 }

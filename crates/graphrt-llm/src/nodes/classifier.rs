@@ -317,6 +317,13 @@ impl ClassifierNode {
         let client =
             ctx.require_service::<Arc<SystemOneClient>>("TypeSafe client (graphrt_llm::typesafe::SystemOneClient)")?;
         let request = self.system_one_request(query, &instruction);
+        // System One has no price: a run with a cost budget could not count it.
+        if ctx.budget().is_some_and(|budget| budget.remaining_cost_micros().is_some()) {
+            return Err(NodeError::fatal(
+                "price_missing",
+                "the run has a cost budget and System One has no price: its cost could not be counted",
+            ));
+        }
         let response = client.ask(&request).await?;
         // Paid for whatever comes next, an answer it rejects too.
         ctx.charge(&response.usage.to_usage(), 0)?;

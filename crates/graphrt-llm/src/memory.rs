@@ -368,7 +368,7 @@ impl RunMemory {
                 None => None,
                 Some(other) => {
                     let model_config = other.as_ref().unwrap_or(node_model);
-                    let model = crate::nodes::common::model_for(ctx, model_config)?;
+                    let model = crate::nodes::common::helper_model(ctx, model_config)?;
                     let request = model_config.request(Vec::new(), &ctx.pool)?;
                     Some(Extractor { model, request })
                 }

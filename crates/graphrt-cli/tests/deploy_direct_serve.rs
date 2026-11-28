@@ -94,10 +94,35 @@ async fn a_plain_deploy_reports_nothing_extra_and_no_store() {
         result["serve"],
         json!({
             "chat": null, "cors_origins": [], "conversations": false, "monitor": false, "devices": false,
-            "approvals": false, "expire_approvals": false, "push": false, "channels": [],
+            "approvals": false, "expire_approvals": false, "push": false, "channels": [], "memory": false,
         })
     );
     assert!(fake.state().volumes.is_empty());
+}
+
+#[tokio::test]
+async fn an_agent_that_remembers_keeps_its_memory_on_the_store_volume() {
+    let fake = FakeFly::start_empty().await;
+    let dir = graphrt_core::private_fs::create_fresh_temp_dir("graphrt-direct-memory").unwrap();
+    let workflow = dir.join("support.yaml");
+    std::fs::write(
+        &workflow,
+        "version: \"1\"\nname: support\ngraph:\n  nodes:\n    - { id: start, type: start }\n    - id: helper\n      type: agent\n      model: { provider: openai, name: m }\n      query: \"{{#sys.query#}}\"\n      long_term_memory: auto\n    - { id: end, type: end, outputs: [{ variable: text, value_selector: [helper, text] }] }\n  edges:\n    - { source: start, target: helper }\n    - { source: helper, target: end }\n",
+    )
+    .unwrap();
+    let workflow = workflow.display().to_string();
+
+    let output = graphrt(&fake, &deploy_args("v1", &workflow, &[])).await;
+
+    assert_eq!(output.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let result = final_line(&output);
+    assert_eq!(result["serve"]["memory"], true);
+    assert!(result["store"].is_object(), "{result}");
+    let state = fake.state();
+    assert_eq!(state.volumes.len(), 1, "the notes outlive the Machine");
+    let command = state.machines[0].config.to_string();
+    assert!(command.contains(r#""--memory-dir","/data/memory""#), "{command}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]

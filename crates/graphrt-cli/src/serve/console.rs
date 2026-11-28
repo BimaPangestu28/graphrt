@@ -270,6 +270,7 @@ fn compile(
             let built = std::fs::write(&path, bytes)
                 .map_err(|error| format!("cannot check the bundle: {error}"))
                 .and_then(|()| {
+                    // `bundle_graph` compiles every workflow the bundle carries, not only the entry.
                     crate::bundle_cmd::bundle_graph(&path, &mut options, &mut registry, trust)
                         .map_err(|error| error.to_string())
                 });

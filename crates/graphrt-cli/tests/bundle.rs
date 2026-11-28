@@ -173,3 +173,126 @@ async fn serve_loads_bundles_from_a_directory() {
     let state = build_state(&files, &options, graphrt_core::engine::Limits::default(), None).await;
     assert!(state.is_ok(), "{:?}", state.err().map(|e| e.message));
 }
+
+/// An agent workflow that lists `listed` as subagents.
+fn lister(name: &str, listed: &[&str]) -> String {
+    let subagents: String =
+        listed.iter().map(|workflow| format!("        - {{ workflow: {workflow}, description: Helps }}\n")).collect();
+    let subagents = if subagents.is_empty() {
+        "      subagents: []\n".to_owned()
+    } else {
+        format!("      subagents:\n{subagents}")
+    };
+    format!(
+        "version: \"1\"\nname: {name}\ngraph:\n  nodes:\n    - {{ id: start, type: start }}\n    - id: lead\n      type: agent\n      model: {{ provider: openai, name: m }}\n      query: go\n{subagents}    - {{ id: end, type: end, outputs: [{{ variable: text, value_selector: [lead, text] }}] }}\n  edges:\n    - {{ source: start, target: lead }}\n    - {{ source: lead, target: end }}\n"
+    )
+}
+
+#[test]
+fn a_bundle_carries_the_workflows_its_agents_list_and_the_budgets_of_its_runs() {
+    let dir = scratch("helpers");
+    std::fs::write(dir.join("lead.yaml"), lister("lead", &["research"])).unwrap();
+    std::fs::write(dir.join("research.yaml"), lister("research", &["notes"])).unwrap();
+    std::fs::write(dir.join("notes.yml"), lister("notes", &[])).unwrap();
+    std::fs::write(dir.join("unrelated.yaml"), lister("unrelated", &[])).unwrap();
+    let out = dir.join("lead.grt");
+    let lead = dir.join("lead.yaml");
+    let (lead_path, out_path) = (lead.to_str().unwrap(), out.to_str().unwrap());
+    // A cost budget counts with the prices of the bundled providers file: without one it is refused.
+    let o = graphrt(&dir, &["bundle", "build", lead_path, "-o", out_path, "--max-cost-per-run", "0.25"]);
+    assert!(!o.status.success() && stderr(&o).contains("--providers"), "{}", stderr(&o));
+    let o = graphrt(&dir, &["bundle", "build", lead_path, "-o", out_path, "--max-tokens-per-run", "0"]);
+    assert!(!o.status.success() && stderr(&o).contains("budget of 0"), "{}", stderr(&o));
+    let providers = dir.join("providers.yaml");
+    std::fs::write(
+        &providers,
+        "providers:\n  - name: openai\n    kind: openai\n    api_key_env: OPENAI_API_KEY\n    prices:\n      m: { input_per_million: 1, output_per_million: 2 }\n",
+    )
+    .unwrap();
+    let mut args = vec!["bundle", "build", lead_path, "-o", out_path, "--max-tokens-per-run", "20000"];
+    args.extend(["--max-cost-per-run", "0.25", "--providers", providers.to_str().unwrap()]);
+    let o = graphrt(&dir, &args);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(stdout(&o).contains("subagent: research (workflows/research.yaml)"), "{}", stdout(&o));
+    assert!(stdout(&o).contains("subagent: notes (workflows/notes.yml)"), "listed by a listed one");
+
+    let o = graphrt(&dir, &["bundle", "inspect", out.to_str().unwrap(), "--json"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let inspected: serde_json::Value = serde_json::from_str(&stdout(&o)).unwrap();
+    let manifest = inspected.get("manifest").unwrap_or(&inspected);
+    assert_eq!(
+        manifest["workflows"],
+        serde_json::json!(["workflow.yaml", "workflows/research.yaml", "workflows/notes.yml"])
+    );
+    assert_eq!(manifest["limits"], serde_json::json!({ "max_total_tokens": 20000, "max_cost_micros": 250000 }));
+    assert_eq!(manifest["format_version"], 2, "older runtimes refuse it rather than run it without budgets");
+    let o = graphrt(&dir, &["bundle", "inspect", out_path]);
+    assert!(stdout(&o).contains("subagent:  research (workflows/research.yaml)"), "{}", stdout(&o));
+    assert!(stdout(&o).contains("per run:   20000 tokens, cost 0.25"), "{}", stdout(&o));
+
+    // A subagent that names the workflow being bundled, or a name that is no file name, is refused.
+    std::fs::write(dir.join("circle.yaml"), lister("circle", &["back"])).unwrap();
+    std::fs::write(dir.join("back.yaml"), lister("back", &["circle"])).unwrap();
+    let circle = dir.join("circle.yaml");
+    let o = graphrt(&dir, &["bundle", "build", circle.to_str().unwrap(), "-o", dir.join("c.grt").to_str().unwrap()]);
+    assert!(!o.status.success() && stderr(&o).contains("cannot start its entry"), "{}", stderr(&o));
+    for bad in ["../outside", "a/b", ".hidden", "workflow"] {
+        std::fs::write(dir.join("bad.yaml"), lister("bad", &[bad])).unwrap();
+        let bad_lead = dir.join("bad.yaml");
+        let o =
+            graphrt(&dir, &["bundle", "build", bad_lead.to_str().unwrap(), "-o", dir.join("b.grt").to_str().unwrap()]);
+        assert!(!o.status.success() && stderr(&o).contains("no workflow file name"), "{bad}: {}", stderr(&o));
+    }
+
+    // A listed workflow that is not there stops the build, with where to look.
+    std::fs::write(dir.join("lost.yaml"), lister("lost", &["missing"])).unwrap();
+    let lost = dir.join("lost.yaml");
+    let o = graphrt(&dir, &["bundle", "build", lost.to_str().unwrap(), "-o", dir.join("lost.grt").to_str().unwrap()]);
+    assert!(!o.status.success());
+    assert!(
+        stderr(&o).contains("lists subagent `missing`") && stderr(&o).contains("--workflows DIR"),
+        "{}",
+        stderr(&o)
+    );
+    // `--workflows` names another folder.
+    let elsewhere = dir.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("missing.yaml"), lister("missing", &[])).unwrap();
+    let o = graphrt(
+        &dir,
+        &[
+            "bundle",
+            "build",
+            lost.to_str().unwrap(),
+            "-o",
+            dir.join("lost.grt").to_str().unwrap(),
+            "--workflows",
+            elsewhere.to_str().unwrap(),
+        ],
+    );
+    assert!(o.status.success(), "{}", stderr(&o));
+}
+
+#[cfg(feature = "subagents")]
+#[test]
+fn running_a_bundle_links_the_workflows_it_carries() {
+    let dir = scratch("run-helpers");
+    std::fs::write(dir.join("lead.yaml"), lister("lead", &["research"])).unwrap();
+    std::fs::write(dir.join("research.yaml"), lister("research", &[])).unwrap();
+    let out = dir.join("lead.grt");
+    let lead = dir.join("lead.yaml");
+    let o = graphrt(&dir, &["bundle", "build", lead.to_str().unwrap(), "-o", out.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    // The model is unreachable: the run gets as far as calling it, past linking its subagents.
+    let o = Command::new(env!("CARGO_BIN_EXE_graphrt"))
+        .args(["run", out.to_str().unwrap()])
+        .env("HOME", &dir)
+        .env("OPENAI_API_KEY", "test-key")
+        .env("OPENAI_BASE_URL", "http://127.0.0.1:9/v1")
+        .env_remove("GRAPHRT_PLUGIN_PATH")
+        .env_remove("GRAPHRT_TRUSTED_KEYS")
+        .output()
+        .unwrap();
+    let said = stderr(&o) + &stdout(&o);
+    assert!(!said.contains("--workflows") && !said.contains("lists subagent"), "{said}");
+}

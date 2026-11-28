@@ -17,7 +17,8 @@ graphrt serve bundles/                                # serve every .grt (and .y
 | --- | --- |
 | `bundle.json` | Manifest: name, version, entry workflow, requirements, SHA-256 of every file |
 | `bundle.sig` | Optional Ed25519 signature over `bundle.json` |
-| `workflow.yaml` | The entry workflow (more workflows may be listed) |
+| `workflow.yaml` | The entry workflow |
+| `workflows/` | The workflows its agents start as `subagents` |
 | `plugins/<name>/` | Plugins: WebAssembly plugins are portable; process / HTTP plugins are kept but flagged non-portable |
 | `knowledge/` | Knowledge-base config, plus prebuilt memory-store files it references |
 | `providers.json` | Model providers file — **never secrets** |
@@ -38,6 +39,45 @@ graphrt bundle build triage.yaml \
   --bundle-version 1.2.0 \
   -o triage.grt
 ```
+
+## Subagents and budgets
+
+An agent that lists `subagents` starts other workflows as tools. A bundle
+carries them: `graphrt bundle build` reads the workflows the entry's agents
+list, and what those list in turn, from the entry's folder (or `--workflows
+DIR`) by file name (`research` is `research.yaml`, `.yml` or `.json`), and
+keeps each under `workflows/<file name>` with its skills and WebAssembly
+plugins. A listed workflow that is not there stops the build, and so does a
+subagent that names the workflow being bundled. `graphrt serve` and `graphrt
+run` link them to the entry. They are not served on their own: a bundle adds
+no endpoint besides its entry, its agents start only the workflows it
+carries, and no other served workflow starts those. Each runs on the bundle's
+services, with its own memory scope (its name).
+
+The budgets of every run of the bundle, child runs included, go in the
+manifest's `limits`:
+
+```sh
+graphrt bundle build lead.yaml --providers providers.yaml \
+  --max-tokens-per-run 50000 --max-cost-per-run 0.50 -o lead.grt
+```
+
+```json
+"limits": { "max_total_tokens": 50000, "max_cost_micros": 500000 }
+```
+
+Cost is in the price unit of the bundled providers file (`prices` per model,
+see `providers.md`), in millionths, so `--max-cost-per-run` needs
+`--providers`. A budget of 0 is refused. A host that sets its own
+`--max-tokens-per-run` or `--max-cost-per-run` gets the lower of the two (a
+host whose `--providers` replace the bundle's counts the bundle's cost budget
+with its own prices, and says so at start). `graphrt bundle inspect` lists the
+subagents and the budgets.
+
+A bundle with `limits` is format 2: a runtime that does not know budgets
+refuses it rather than run it without them. A bundle without `limits` stays
+format 1, which every runtime reads. `limits` refuses fields it does not know,
+so a new budget comes with a new format version.
 
 ## Requirements and compatibility
 

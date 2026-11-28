@@ -229,7 +229,9 @@ pub(crate) fn common_deploy(args: &DeployRunArgs, reporter: &mut Reporter) -> Re
     for value in secrets.values() {
         reporter.hide(value);
     }
-    let agent = read_agent(&workflow_path)?;
+    let (agent, needs) = read_agent(&workflow_path)?;
+    let mut serve = serve;
+    serve.memory = needs.memory;
     let api_key_candidate = generate_api_key()?;
     // Hidden everywhere except the field that hands it over.
     reporter.hide(&api_key_candidate);
@@ -273,6 +275,8 @@ pub(crate) fn serve_options(args: &DirectServeArgs) -> Result<ServeOptions, Fail
                     .ok_or_else(|| Failure::invalid("--channel takes telegram, whatsapp, slack or teams"))
             })
             .collect::<Result<_, _>>()?,
+        // From the agent file, not a flag: see `read_agent`.
+        memory: false,
     })
 }
 
@@ -294,8 +298,33 @@ pub(crate) fn read_secrets(names: &[String]) -> Result<BTreeMap<String, String>,
     Ok(secrets)
 }
 
+/// What the agent asks of the platform, read from its workflows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AgentNeeds {
+    /// An `agent` node keeps long term memory: it needs the store.
+    pub(crate) memory: bool,
+}
+
+impl AgentNeeds {
+    fn add(&mut self, workflow: &graphrt_core::Workflow) {
+        self.memory |= remembers(workflow);
+    }
+}
+
+/// Whether an `agent` node of `workflow` has `long_term_memory` (not `off`).
+fn remembers(workflow: &graphrt_core::Workflow) -> bool {
+    workflow.graph.nodes.iter().filter(|node| node.kind == "agent").any(|node| {
+        !matches!(node.config.get("long_term_memory"), None | Some(Value::Null | Value::Bool(false)))
+            && node.config.get("long_term_memory").and_then(Value::as_str) != Some("off")
+    })
+}
+
 /// Reads and checks the agent file locally, so a broken agent never reaches Fly.
-pub(crate) fn read_agent(path: &Path) -> Result<AgentFile, Failure> {
+///
+/// @throws Failure(invalid_input) - a workflow file whose agents list
+///   subagents (only a bundle carries their workflows), a bundle that lacks
+///   one, or a file that does not parse.
+pub(crate) fn read_agent(path: &Path) -> Result<(AgentFile, AgentNeeds), Failure> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -307,35 +336,52 @@ pub(crate) fn read_agent(path: &Path) -> Result<AgentFile, Failure> {
         "yaml" | "yml" | "json" => {
             let text = std::str::from_utf8(&contents)
                 .map_err(|_| Failure::invalid(format!("{}: not UTF-8 text", path.display())))?;
-            graphrt_core::Workflow::parse(text)
+            let workflow = graphrt_core::Workflow::parse(text)
                 .map_err(|error| Failure::invalid(format!("{}: {error}", path.display())))?;
+            if let Some(listed) = crate::setup::listed_in(&workflow).first() {
+                return Err(Failure::invalid(format!(
+                    "{}: an agent lists subagent `{listed}`, whose workflow a single file cannot bring: deploy a \
+                     bundle (`graphrt bundle build {}` adds the workflows its agents list)",
+                    path.display(),
+                    path.display()
+                )));
+            }
+            let mut needs = AgentNeeds::default();
+            needs.add(&workflow);
+            Ok((AgentFile::new(file_name, contents), needs))
         }
         "grt" => {
-            let unpacked = check_bundle(path, &contents)?;
-            return Ok(AgentFile::new(file_name, contents).unpacked(unpacked));
+            let (unpacked, needs) = check_bundle(path, &contents)?;
+            Ok((AgentFile::new(file_name, contents).unpacked(unpacked), needs))
         }
-        _ => {
-            return Err(Failure::invalid(format!(
-                "{}: expected a .grt bundle or a .yaml/.json workflow",
-                path.display()
-            )));
+        _ => Err(Failure::invalid(format!("{}: expected a .grt bundle or a .yaml/.json workflow", path.display()))),
+    }
+}
+
+/// Opens the bundle (hashes, limits) and returns the bytes of its files once
+/// unpacked, and what its workflows need. Every subagent an agent lists must
+/// be a workflow of the bundle: the server refuses to start otherwise.
+fn check_bundle(path: &Path, contents: &[u8]) -> Result<(u64, AgentNeeds), Failure> {
+    let invalid = |error: &dyn std::fmt::Display| Failure::invalid(format!("{}: {error}", path.display()));
+    let bundle = graphrt_bundle::Bundle::open(contents, &graphrt_bundle::OpenOptions::default())
+        .map_err(|error| invalid(&error))?;
+    let unpacked: usize = bundle.paths().filter_map(|file| bundle.file(file)).map(<[u8]>::len).sum();
+    let manifest = bundle.manifest();
+    let mut needs = AgentNeeds::default();
+    for stored in &manifest.workflows {
+        let workflow = bundle.workflow(Some(stored)).map_err(|error| invalid(&error))?;
+        needs.add(&workflow);
+        for listed in crate::setup::listed_in(&workflow) {
+            let carried = manifest.subagent_workflows().any(|(name, _)| name == listed);
+            if !carried {
+                return Err(invalid(&format!(
+                    "an agent lists subagent `{listed}`, which the bundle does not carry (build it again with \
+                     `graphrt bundle build`, which adds the workflows its agents list)"
+                )));
+            }
         }
     }
-    Ok(AgentFile::new(file_name, contents))
-}
-
-/// Opens the bundle (hashes, limits) and returns the bytes of its files once unpacked.
-#[cfg(feature = "bundle")]
-fn check_bundle(path: &Path, contents: &[u8]) -> Result<u64, Failure> {
-    let bundle = graphrt_bundle::Bundle::open(contents, &graphrt_bundle::OpenOptions::default())
-        .map_err(|error| Failure::invalid(format!("{}: {error}", path.display())))?;
-    let unpacked: usize = bundle.paths().filter_map(|file| bundle.file(file)).map(<[u8]>::len).sum();
-    Ok(u64::try_from(unpacked).unwrap_or(u64::MAX))
-}
-
-#[cfg(not(feature = "bundle"))]
-fn check_bundle(_path: &Path, contents: &[u8]) -> Result<u64, Failure> {
-    Ok(u64::try_from(contents.len()).unwrap_or(u64::MAX))
+    Ok((u64::try_from(unpacked).unwrap_or(u64::MAX), needs))
 }
 
 /// `grk_` + 48 random hex digits (24 bytes from the OS).
@@ -378,6 +424,55 @@ mod tests {
     fn secret_flags_take_names_only() {
         assert!(read_secrets(&["OPENAI_API_KEY=sk-x".to_owned()]).is_err());
         assert!(read_secrets(&["GRAPHRT_TEST_SURELY_UNSET_VARIABLE".to_owned()]).is_err());
+    }
+
+    fn agent_doc(name: &str, agent: &str) -> String {
+        format!(
+            "version: \"1\"\nname: {name}\ngraph:\n  nodes:\n    - {{ id: start, type: start }}\n    - id: lead\n      type: agent\n      model: {{ provider: openai, name: m }}\n      query: go\n{agent}    - {{ id: end, type: end, outputs: [{{ variable: text, value_selector: [lead, text] }}] }}\n  edges:\n    - {{ source: start, target: lead }}\n    - {{ source: lead, target: end }}\n"
+        )
+    }
+
+    #[test]
+    fn the_agent_file_says_whether_it_remembers_and_a_single_file_cannot_bring_subagents() {
+        let dir = graphrt_core::private_fs::create_fresh_temp_dir("graphrt-direct-agent").unwrap();
+        let remembers = dir.join("support.yaml");
+        std::fs::write(&remembers, agent_doc("support", "      long_term_memory: auto\n")).unwrap();
+        assert!(read_agent(&remembers).unwrap().1.memory);
+        let off = dir.join("off.yaml");
+        std::fs::write(&off, agent_doc("off", "      long_term_memory: \"off\"\n")).unwrap();
+        assert!(!read_agent(&off).unwrap().1.memory);
+        let lead = dir.join("lead.yaml");
+        std::fs::write(&lead, agent_doc("lead", "      subagents: [{ workflow: research, description: Finds }]\n"))
+            .unwrap();
+        let refused = read_agent(&lead).unwrap_err();
+        assert!(refused.message.contains("subagent `research`") && refused.message.contains("graphrt bundle build"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bundle_must_carry_the_subagents_its_agents_list_and_says_when_one_remembers() {
+        let dir = graphrt_core::private_fs::create_fresh_temp_dir("graphrt-direct-bundle").unwrap();
+        let lead = agent_doc("lead", "      subagents: [{ workflow: research, description: Finds }]\n");
+        let research = agent_doc("research", "      long_term_memory: auto\n");
+        let carried = graphrt_bundle::BundleBuilder::new("lead", "1.0.0")
+            .workflow("workflow.yaml", lead.clone())
+            .unwrap()
+            .workflow("workflows/research.yaml", research)
+            .unwrap()
+            .build()
+            .unwrap();
+        let path = dir.join("lead.grt");
+        std::fs::write(&path, carried).unwrap();
+        let (_, needs) = read_agent(&path).unwrap();
+        assert!(needs.memory, "a subagent that remembers needs the store too");
+        let lacking = graphrt_bundle::BundleBuilder::new("lead", "1.0.0")
+            .workflow("workflow.yaml", lead)
+            .unwrap()
+            .build()
+            .unwrap();
+        std::fs::write(&path, lacking).unwrap();
+        assert!(read_agent(&path).unwrap_err().message.contains("does not carry"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

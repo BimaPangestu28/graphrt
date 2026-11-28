@@ -278,8 +278,16 @@ impl AppState {
     #[cfg(feature = "memory")]
     pub(crate) fn memory_agents(&self) -> Vec<String> {
         let mut agents: Vec<String> = Vec::new();
-        for (name, served) in &self.workflows {
-            for node in served.engine.graph().workflow().graph.nodes.iter().filter(|n| n.kind == "agent") {
+        // The served workflows, and those they start as subagents (a bundle's are linked only).
+        #[allow(unused_mut)]
+        let mut graphs: Vec<(&str, &graphrt_core::Graph)> =
+            self.workflows.iter().map(|(name, served)| (name.as_str(), served.engine.graph().as_ref())).collect();
+        #[cfg(feature = "subagents")]
+        for served in self.workflows.values() {
+            graphs.extend(served.engine.linked().map(|(name, link)| (name, link.graph().as_ref())));
+        }
+        for (name, graph) in graphs {
+            for node in graph.workflow().graph.nodes.iter().filter(|n| n.kind == "agent") {
                 let agent = match node.config.get("long_term_memory") {
                     None | Some(serde_json::Value::Null | serde_json::Value::Bool(false)) => continue,
                     Some(serde_json::Value::String(word)) if word == "off" => continue,

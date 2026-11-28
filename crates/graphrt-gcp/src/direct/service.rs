@@ -376,6 +376,19 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_that_remembers_keeps_its_notes_in_the_store_folder() {
+        let serve = ServeOptions { memory: true, ..ServeOptions::default() };
+        let request = request(serve, ServiceMode::ScaleToZero);
+        let template = render_template(&plan(&request, &[]));
+        assert_eq!(template["containers"][0]["volumeMounts"][1]["mountPath"], "/data");
+        let args = template["containers"][0]["args"].as_array().cloned().unwrap_or_default();
+        let at = args.iter().position(|arg| arg == "--memory-dir").expect("--memory-dir");
+        assert_eq!(args.get(at + 1), Some(&json!("/data/memory")));
+        assert_eq!(template["scaling"]["maxInstanceCount"], 1, "one writer of the notes");
+        assert_eq!(template["labels"][STORE_LABEL], "1");
+    }
+
+    #[test]
     fn a_candidate_gets_no_traffic_until_it_is_promoted() {
         assert_eq!(
             candidate_traffic(&[], "v1"),

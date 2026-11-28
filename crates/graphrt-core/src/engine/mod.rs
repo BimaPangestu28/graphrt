@@ -324,6 +324,12 @@ impl Engine {
         }
     }
 
+    /// The workflows linked to this engine's runs, by name.
+    #[cfg(feature = "subagents")]
+    pub fn linked(&self) -> impl Iterator<Item = (&str, &LinkedWorkflow)> {
+        self.linked.iter().map(|(name, link)| (name.as_str(), link))
+    }
+
     /// Workflows the nodes of this engine's runs may start as child runs
     /// ([`crate::node::ChildRuns`]), by name. A snapshot covers them: a run is
     /// not resumed against a changed child workflow.

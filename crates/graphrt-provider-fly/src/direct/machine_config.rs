@@ -174,7 +174,8 @@ pub(super) fn validate_request(request: &DeployRequest) -> Result<(), DirectErro
     if request.drop_store && request.serve.needs_store() {
         return Err(DirectError::invalid(
             "--drop-store deletes the store this deploy needs: leave out --monitor, --devices, --push, \
-             --conversations and --channel, or leave out --drop-store",
+             --conversations and --channel, or leave out --drop-store (an agent with `long_term_memory` keeps \
+             its notes on the store too: it always needs one)",
         ));
     }
     if request.mode == ServiceMode::ScaleToZero && request.serve.channels.contains(&DirectChannel::Telegram) {

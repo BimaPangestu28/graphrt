@@ -188,6 +188,19 @@ pub struct BundleBuildArgs {
     /// Sign the bundle with this secret key file.
     #[arg(long, value_name = "FILE")]
     pub sign_key: Option<PathBuf>,
+    /// Where the workflows the agents list as `subagents` are, by file name
+    /// (`<name>.yaml`, `.yml` or `.json`) [default: the entry workflow's folder].
+    /// They travel in the bundle, with what they list in turn.
+    #[arg(long, value_name = "DIR")]
+    pub workflows: Option<PathBuf>,
+    /// Tokens (prompt and completion) every run of the bundle may use, child
+    /// runs included, unless the host sets a lower budget.
+    #[arg(long, value_name = "N")]
+    pub max_tokens_per_run: Option<u64>,
+    /// Cost every run of the bundle may reach, in the price unit of its
+    /// providers file (`prices` per model), for example `0.50`.
+    #[arg(long, value_name = "AMOUNT", value_parser = parse_cost)]
+    pub max_cost_per_run: Option<u64>,
     #[command(flatten)]
     pub plugins: PluginArgs,
 }
@@ -1487,7 +1500,7 @@ pub enum UserEvents {
 }
 
 /// A cost in the price unit as micro units: `0.5` is 500 000.
-#[cfg(feature = "llm")]
+#[cfg(any(feature = "llm", feature = "bundle"))]
 fn parse_cost(raw: &str) -> Result<u64, String> {
     let amount: f64 = raw.trim().parse().map_err(|_| format!("`{raw}` is not a number"))?;
     if !amount.is_finite() || amount < 0.0 || amount > 1.0e12 {

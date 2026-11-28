@@ -39,6 +39,52 @@ pub fn trusted_keys(flags: &[String]) -> Vec<String> {
     keys
 }
 
+/// What a bundle runs: its entry workflow, the workflows its agents start as
+/// subagents (by name), and the budgets of its runs.
+#[cfg(feature = "bundle")]
+#[derive(Debug)]
+pub struct BundleParts {
+    pub entry: Arc<Graph>,
+    pub helpers: Vec<(String, Arc<Graph>)>,
+    pub budgets: RunBudgets,
+}
+
+/// The budgets of every run of a bundle (the manifest's `limits`).
+#[cfg(feature = "bundle")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RunBudgets {
+    pub max_total_tokens: Option<u64>,
+    /// In millionths of the price unit of the providers file.
+    pub max_cost_micros: Option<u64>,
+}
+
+#[cfg(feature = "bundle")]
+impl RunBudgets {
+    /// `host` with these budgets: the lower of the two where both set one.
+    pub fn over(&self, host: &graphrt_core::engine::Limits) -> graphrt_core::engine::Limits {
+        let lower = |host: Option<u64>, bundle: Option<u64>| match (host, bundle) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let mut limits = host.clone();
+        limits.max_total_tokens = lower(host.max_total_tokens, self.max_total_tokens);
+        limits.max_cost_micros = lower(host.max_cost_micros, self.max_cost_micros);
+        limits
+    }
+}
+
+/// The rule for the name of a subagent's workflow file: 1 to 128 letters,
+/// digits, `.`, `_` or `-`, not starting with `.`, and not `workflow` (the
+/// name a bundle keeps for its entry).
+#[cfg(feature = "bundle")]
+pub fn valid_helper_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && !name.starts_with('.')
+        && name != "workflow"
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 /// Open a bundle, register its WebAssembly plugins in `registry` and compile its
 /// entry workflow. When `options` has no `--providers` / `--knowledge`, the
 /// bundle's own configs are used (extracted to a private temporary directory).
@@ -49,6 +95,18 @@ pub fn bundle_graph(
     registry: &mut Registry,
     trust: &[String],
 ) -> Result<Arc<Graph>, CliError> {
+    Ok(bundle_parts(path, options, registry, trust)?.entry)
+}
+
+/// [`bundle_graph`], with the workflows the bundle carries for its subagents
+/// (every workflow besides the entry, compiled the same way) and its budgets.
+#[cfg(feature = "bundle")]
+pub fn bundle_parts(
+    path: &Path,
+    options: &mut ServiceOptions,
+    registry: &mut Registry,
+    trust: &[String],
+) -> Result<BundleParts, CliError> {
     let bundle = open(path, trust)?;
     let kinds = bundle
         .register_wasm_plugins(registry, &graphrt_bundle::WasmLimits::default())
@@ -63,6 +121,7 @@ pub fn bundle_graph(
     if let Some(mismatch) = &report.version_mismatch {
         return Err(CliError::invalid(format!("{}: {mismatch}", path.display())));
     }
+    let host_providers = options.providers.is_some();
     if bundle.providers_config().is_some() || bundle.knowledge_config().is_some() {
         apply_bundle_configs(&bundle, options)?;
     }
@@ -76,14 +135,41 @@ pub fn bundle_graph(
         let signed_by_trusted_key = bundle.signer().is_some() && !trusted_keys(trust).is_empty();
         options.skills_dir = crate::bundle_skills::install_from_bundle(&bundle, &dir, signed_by_trusted_key)?;
     }
-    let mut workflow = bundle.workflow(None).map_err(|e| CliError::invalid(format!("{}: {e}", path.display())))?;
-    if let Some(raw) = options.model_override.as_deref() {
-        let (provider, name) = setup::parse_model_override(raw)?;
-        setup::apply_model_override(&mut workflow, &provider, &name);
+    let compile = |name: Option<&str>| -> Result<Arc<Graph>, CliError> {
+        let mut workflow = bundle.workflow(name).map_err(|e| CliError::invalid(format!("{}: {e}", path.display())))?;
+        if let Some(raw) = options.model_override.as_deref() {
+            let (provider, model) = setup::parse_model_override(raw)?;
+            setup::apply_model_override(&mut workflow, &provider, &model);
+        }
+        let graph = Graph::build(workflow, registry).map_err(|e| {
+            CliError::invalid(crate::extensions::explain_unknown_kind(format!("{}: {e}", path.display())))
+        })?;
+        Ok(Arc::new(graph))
+    };
+    let entry = compile(None)?;
+    let manifest = bundle.manifest();
+    let mut helpers: Vec<(String, Arc<Graph>)> = Vec::new();
+    for (name, stored) in manifest.subagent_workflows() {
+        // What `graphrt bundle build` checks, for a bundle made by hand.
+        if !valid_helper_name(name) || helpers.iter().any(|(known, _)| known == name) {
+            return Err(CliError::invalid(format!(
+                "{}: the bundle carries `{stored}`, whose name `{name}` is not a subagent's (or twice)",
+                path.display()
+            )));
+        }
+        helpers.push((name.to_owned(), compile(Some(stored))?));
     }
-    let graph = Graph::build(workflow, registry)
-        .map_err(|e| CliError::invalid(crate::extensions::explain_unknown_kind(format!("{}: {e}", path.display()))))?;
-    Ok(Arc::new(graph))
+    let budgets = manifest.limits.map_or_else(RunBudgets::default, |limits| RunBudgets {
+        max_total_tokens: limits.max_total_tokens,
+        max_cost_micros: limits.max_cost_micros,
+    });
+    if budgets.max_cost_micros.is_some() && host_providers {
+        eprintln!(
+            "warning: {}: the bundle's cost budget is counted with the prices of --providers, not the bundle's own",
+            path.display()
+        );
+    }
+    Ok(BundleParts { entry, helpers, budgets })
 }
 
 /// Without the `bundle` feature, bundles are rejected with a clear message.
@@ -199,6 +285,30 @@ fn build_cmd(args: crate::args::BundleBuildArgs) -> Result<u8, CliError> {
     if let Some(description) = workflow.description.clone().filter(|d| !d.is_empty()) {
         builder = builder.description(description);
     }
+    // The workflows its agents start as subagents, and what those start, travel with it.
+    let folder = match &args.workflows {
+        Some(dir) => dir.clone(),
+        None => args.workflow.parent().map(Path::to_path_buf).unwrap_or_default(),
+    };
+    let helpers = helper_workflows(&workflow, &stem, &folder)?;
+    for helper in &helpers {
+        builder = builder.workflow(&helper.bundle_path, helper.text.clone()).map_err(invalid)?;
+    }
+    if args.max_tokens_per_run == Some(0) || args.max_cost_per_run == Some(0) {
+        return Err(CliError::usage("a budget of 0 refuses every run: leave the flag out for no budget"));
+    }
+    // Cost is counted with the prices of the providers file: without one it stays 0.
+    if args.max_cost_per_run.is_some() && args.providers.is_none() {
+        return Err(CliError::usage(
+            "--max-cost-per-run counts with `prices` of the bundled providers file: add --providers FILE",
+        ));
+    }
+    builder = builder.limits(graphrt_bundle::BundleLimits {
+        max_total_tokens: args.max_tokens_per_run,
+        max_cost_micros: args.max_cost_per_run,
+    });
+    let workflows: Vec<&graphrt_core::Workflow> =
+        std::iter::once(&workflow).chain(helpers.iter().map(|helper| &helper.workflow)).collect();
 
     // Explicit plugin directories.
     let mut included: Vec<String> = Vec::new();
@@ -212,7 +322,7 @@ fn build_cmd(args: crate::args::BundleBuildArgs) -> Result<u8, CliError> {
     let explicit = explicit_kinds(&args.plugin)?;
     let mut missing = Vec::new();
     let mut seen_plugins: Vec<PathBuf> = Vec::new();
-    for node in &workflow.graph.nodes {
+    for node in workflows.iter().flat_map(|workflow| workflow.graph.nodes.iter()) {
         if builtin.contains(&node.kind) || explicit.contains(&node.kind) {
             continue;
         }
@@ -263,9 +373,17 @@ fn build_cmd(args: crate::args::BundleBuildArgs) -> Result<u8, CliError> {
         let prefix = dir.file_name().and_then(|n| n.to_str()).map(|n| format!("assets/{n}")).unwrap_or("assets".into());
         builder = builder.include_dir(dir, &prefix).map_err(invalid)?;
     }
-    // Skills the workflow's agents list travel with the bundle.
+    // Skills the agents of every workflow list travel with the bundle.
     #[cfg(feature = "skills")]
-    let bundled_skills = crate::bundle_skills::listed_skills(&workflow);
+    let bundled_skills = {
+        let mut names: Vec<String> = Vec::new();
+        for listed in workflows.iter().flat_map(|workflow| crate::bundle_skills::listed_skills(workflow)) {
+            if !names.contains(&listed) {
+                names.push(listed);
+            }
+        }
+        names
+    };
     #[cfg(feature = "skills")]
     if !bundled_skills.is_empty() {
         let root = graphrt_skill::SkillStore::default_root()
@@ -285,6 +403,9 @@ fn build_cmd(args: crate::args::BundleBuildArgs) -> Result<u8, CliError> {
     write_file(&out, &bytes)?;
     let signed = if args.sign_key.is_some() { ", signed" } else { "" };
     println_out(&format!("built {} ({} bytes{signed})", out.display(), bytes.len()))?;
+    for helper in &helpers {
+        println_out(&format!("  subagent: {} ({})", helper.name, helper.bundle_path))?;
+    }
     for plugin in included {
         println_out(&format!("  plugin: {plugin}"))?;
     }
@@ -293,6 +414,77 @@ fn build_cmd(args: crate::args::BundleBuildArgs) -> Result<u8, CliError> {
         println_out(&format!("  skill: {skill}"))?;
     }
     Ok(EXIT_OK)
+}
+
+/// A workflow an agent of the bundle starts as a subagent.
+#[cfg(feature = "bundle")]
+#[derive(Debug)]
+struct Helper {
+    /// The name agents list it under: its file name without the extension.
+    name: String,
+    /// Where it is kept in the bundle: `workflows/<file name>`.
+    bundle_path: String,
+    text: String,
+    workflow: graphrt_core::Workflow,
+}
+
+/// The workflows `entry` lists as subagents, and what those list in turn,
+/// read from `folder` by file name (`<name>.yaml`, `.yml` or `.json`).
+///
+/// @throws CliError (usage) - a listed workflow that is not in `folder`, two
+///   files of one name, or a name that is the entry's own (`entry_name`).
+/// @throws CliError (invalid) - a listed workflow that does not parse.
+#[cfg(feature = "bundle")]
+fn helper_workflows(entry: &graphrt_core::Workflow, entry_name: &str, folder: &Path) -> Result<Vec<Helper>, CliError> {
+    let mut helpers: Vec<Helper> = Vec::new();
+    let mut queue: Vec<(String, String)> =
+        setup::listed_in(entry).into_iter().map(|name| ("the workflow".to_owned(), name)).collect();
+    queue.reverse();
+    while let Some((by, name)) = queue.pop() {
+        if helpers.iter().any(|helper| helper.name == name) {
+            continue;
+        }
+        // A bundle starts its entry under the name it is served as, which the bundle cannot know.
+        if name == entry_name {
+            return Err(CliError::usage(format!(
+                "{by} lists subagent `{name}`, the workflow being bundled: a bundle's subagents cannot start its entry"
+            )));
+        }
+        if !valid_helper_name(&name) {
+            return Err(CliError::usage(format!(
+                "{by} lists subagent `{name}`, which is no workflow file name (letters, digits, `.`, `_` or `-`, \
+                 not `workflow`)"
+            )));
+        }
+        let found: Vec<PathBuf> = ["yaml", "yml", "json"]
+            .iter()
+            .map(|ext| folder.join(format!("{name}.{ext}")))
+            .filter(|path| path.is_file())
+            .collect();
+        let path = match found.as_slice() {
+            [path] => path.clone(),
+            [] => {
+                return Err(CliError::usage(format!(
+                    "{by} lists subagent `{name}`, but `{}` has no `{name}.yaml`, `.yml` or `.json` \
+                     (pass the folder of its workflow with --workflows DIR)",
+                    folder.display()
+                )));
+            }
+            _ => return Err(CliError::usage(format!("`{}` has two workflow files named `{name}`", folder.display()))),
+        };
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| CliError::usage(format!("cannot read `{}`: {e}", path.display())))?;
+        let workflow =
+            graphrt_core::Workflow::parse(&text).map_err(|e| CliError::invalid(format!("{}: {e}", path.display())))?;
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
+        let lister = format!("`{name}`");
+        let mut next: Vec<(String, String)> =
+            setup::listed_in(&workflow).into_iter().map(|listed| (lister.clone(), listed)).collect();
+        next.reverse();
+        queue.extend(next);
+        helpers.push(Helper { name, bundle_path: format!("workflows/{file_name}"), text, workflow });
+    }
+    Ok(helpers)
 }
 
 /// Node kinds declared by explicitly passed plugin directories.
@@ -341,6 +533,16 @@ fn inspect(path: &Path, json: bool, trust: &[String]) -> Result<u8, CliError> {
     for p in &m.requires.plugins {
         let portable = if p.portable { "portable" } else { "NOT portable" };
         lines.push(format!("plugin:    {} {} ({}, {portable})", p.name, p.version, p.runtime));
+    }
+    for (name, stored) in m.subagent_workflows() {
+        lines.push(format!("subagent:  {name} ({stored})"));
+    }
+    if let Some(limits) = m.limits.as_ref().filter(|limits| !limits.is_empty()) {
+        let tokens = limits.max_total_tokens.map(|n| format!("{n} tokens"));
+        #[allow(clippy::cast_precision_loss)]
+        let cost = limits.max_cost_micros.map(|micros| format!("cost {}", micros as f64 / 1_000_000.0));
+        let budgets: Vec<String> = tokens.into_iter().chain(cost).collect();
+        lines.push(format!("per run:   {}", budgets.join(", ")));
     }
     if !m.requires.providers.is_empty() {
         lines.push(format!("providers: {} (configure on the host)", m.requires.providers.join(", ")));
@@ -418,6 +620,42 @@ mod tests {
         }
         for dir in [first, second] {
             std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+}
+
+#[cfg(all(test, feature = "bundle"))]
+mod budget_tests {
+    use super::RunBudgets;
+    use graphrt_core::engine::Limits;
+
+    #[test]
+    fn the_lower_of_the_host_and_the_bundle_applies_per_budget_and_the_rest_is_the_hosts() {
+        let host = |tokens: Option<u64>| Limits { max_total_tokens: tokens, max_steps: 77, ..Limits::default() };
+        let bundle = |tokens: Option<u64>| RunBudgets { max_total_tokens: tokens, max_cost_micros: None };
+        for (host_tokens, bundle_tokens, expected) in [
+            (Some(9_000), Some(5_000), Some(5_000)),
+            (Some(5_000), Some(9_000), Some(5_000)),
+            (None, Some(5_000), Some(5_000)),
+            (Some(5_000), None, Some(5_000)),
+            (None, None, None),
+        ] {
+            let limits = bundle(bundle_tokens).over(&host(host_tokens));
+            assert_eq!(limits.max_total_tokens, expected, "host {host_tokens:?}, bundle {bundle_tokens:?}");
+            assert_eq!(limits.max_steps, 77, "the host's other limits stay");
+        }
+        let cost = RunBudgets { max_total_tokens: None, max_cost_micros: Some(250_000) }
+            .over(&Limits { max_cost_micros: Some(900_000), ..Limits::default() });
+        assert_eq!(cost.max_cost_micros, Some(250_000));
+    }
+
+    #[test]
+    fn a_helper_name_is_a_file_name_and_never_the_entrys() {
+        for good in ["research", "notes.v2", "a_b-c"] {
+            assert!(super::valid_helper_name(good), "{good}");
+        }
+        for bad in ["", ".hidden", "a/b", "../x", "workflow", "with space"] {
+            assert!(!super::valid_helper_name(bad), "{bad}");
         }
     }
 }

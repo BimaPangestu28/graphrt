@@ -547,7 +547,31 @@ fn is_sys_query(selector: &Selector) -> bool {
 }
 
 /// Look up the configured provider.
+///
+/// @throws NodeError - `price_missing` (fatal) when the run has a cost budget
+///   and the providers file gives `config`'s model no price: its calls could
+///   not be counted, so the run stops before paying for one.
 pub fn model_for(ctx: &NodeContext, config: &ModelConfig) -> Result<Arc<dyn ChatModel>, NodeError> {
+    let model = helper_model(ctx, config)?;
+    let registry = ctx.require_service::<ModelRegistry>("model registry (graphrt_llm::ModelRegistry)")?;
+    let cost_limited = ctx.budget().is_some_and(|budget| budget.remaining_cost_micros().is_some());
+    if cost_limited && registry.price(&config.provider, &config.name).is_none() {
+        return Err(NodeError::fatal(
+            "price_missing",
+            format!(
+                "the run has a cost budget and `{}/{}` has no price (`prices` of the providers file): \
+                 its cost could not be counted",
+                config.provider, config.name
+            ),
+        ));
+    }
+    Ok(model)
+}
+
+/// The model of `config` for work the run's budget does not price by it: a
+/// context summary (charged at the node model's price) or a memory graph
+/// extraction (outside the run). No price is needed under a cost budget.
+pub(crate) fn helper_model(ctx: &NodeContext, config: &ModelConfig) -> Result<Arc<dyn ChatModel>, NodeError> {
     let registry = ctx.require_service::<ModelRegistry>("model registry (graphrt_llm::ModelRegistry)")?;
     Ok(registry.get(&config.provider)?)
 }

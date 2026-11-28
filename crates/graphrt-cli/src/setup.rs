@@ -769,8 +769,20 @@ pub(crate) fn is_mcp_config(path: &std::path::Path) -> bool {
 /// The workflows the `agent` nodes of `graph` list in `subagents`.
 #[cfg(feature = "subagents")]
 pub(crate) fn listed(graph: &graphrt_core::graph::Graph) -> Vec<String> {
+    listed_in(graph.workflow())
+}
+
+/// The workflows the `agent` nodes of `workflow` list in `subagents`.
+#[cfg(any(
+    feature = "subagents",
+    feature = "bundle",
+    feature = "deploy-fly",
+    feature = "deploy-cloud-run",
+    feature = "deploy-aws"
+))]
+pub(crate) fn listed_in(workflow: &graphrt_core::Workflow) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
-    for node in graph.workflow().graph.nodes.iter().filter(|n| n.kind == "agent") {
+    for node in workflow.graph.nodes.iter().filter(|n| n.kind == "agent") {
         let entries = node.config.get("subagents").and_then(serde_json::Value::as_array);
         for entry in entries.into_iter().flatten() {
             if let Some(workflow) = entry.get("workflow").and_then(serde_json::Value::as_str)

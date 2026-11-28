@@ -52,6 +52,10 @@ pub async fn build_state(
     let mut workflows = IndexMap::new();
     #[cfg(feature = "skills")]
     let mut bundled_skills = IndexMap::new();
+    // The workflows each bundle carries for its subagents, by the bundle's served name.
+    #[cfg(feature = "subagents")]
+    #[allow(unused_mut)]
+    let mut carried: IndexMap<String, IndexMap<String, ServedWorkflow>> = IndexMap::new();
     for (name, path) in files {
         if path.extension().and_then(|e| e.to_str()) == Some("json") && is_mcp_config(path) {
             continue;
@@ -60,11 +64,27 @@ pub async fn build_state(
         #[cfg(feature = "skills")]
         let mut own_skills = None;
         let mut own_services: Option<Arc<graphrt_core::Services>> = None;
+        // What else a bundle brings: the workflows of its subagents and its budgets.
+        #[cfg(feature = "bundle")]
+        let mut bundled: Option<crate::bundle_cmd::BundleParts> = None;
         let graph = if crate::bundle_cmd::is_bundle(path) {
             // Bundled WebAssembly plugins are registered; services come from the host flags.
             let mut bundle_options = options.clone();
             // Left as it is by a bundle without skills, so what comes back is the bundle's own store.
             bundle_options.skills_dir = None;
+            #[cfg(feature = "bundle")]
+            let graph = {
+                let parts = crate::bundle_cmd::bundle_parts(
+                    path,
+                    &mut bundle_options,
+                    &mut extensions.registry,
+                    &options.trust_keys,
+                )?;
+                let entry = Arc::clone(&parts.entry);
+                bundled = Some(parts);
+                entry
+            };
+            #[cfg(not(feature = "bundle"))]
             let graph = crate::bundle_cmd::bundle_graph(
                 path,
                 &mut bundle_options,
@@ -86,8 +106,41 @@ pub async fn build_state(
             setup::load_graph_with(path, options.model_override.as_deref(), &extensions.registry)?
         };
         let env = setup::workflow_env(&graph, options);
+        #[cfg(not(feature = "bundle"))]
         let engine = Engine::new(graph).with_clock(Arc::new(TokioClock)).with_limits(limits.clone());
+        // A bundle's budgets: the lower of the host's and its own.
+        #[cfg(feature = "bundle")]
+        let engine = Engine::new(graph)
+            .with_clock(Arc::new(TokioClock))
+            .with_limits(bundled.as_ref().map_or_else(|| limits.clone(), |parts| parts.budgets.over(&limits)));
         let workflow_services = own_services.unwrap_or_else(|| Arc::clone(&services));
+        // The workflows of its subagents run on the bundle's services, each in
+        // its own memory scope. They are linked to the bundle's agents only, never
+        // served on their own: a bundle adds no endpoint besides its entry.
+        #[cfg(all(feature = "bundle", feature = "subagents"))]
+        if let Some(parts) = bundled.take() {
+            let mut helpers = IndexMap::new();
+            for (helper, graph) in parts.helpers {
+                // Its memory is the bundle's own: two bundles that carry `research` keep two.
+                let scope = format!("{name}.{helper}");
+                let env = setup::workflow_env(&graph, options);
+                #[cfg(feature = "skills")]
+                let engine = match &own_skills {
+                    Some(store) => {
+                        #[allow(unused_mut)]
+                        let mut own = services_with_skills(&workflow_services, store);
+                        #[cfg(feature = "memory")]
+                        setup::with_memory_defaults(&mut own, options, &scope);
+                        Engine::new(graph).with_services(own)
+                    }
+                    None => with_workflow_services(Engine::new(graph), &workflow_services, options, &scope),
+                };
+                #[cfg(not(feature = "skills"))]
+                let engine = with_workflow_services(Engine::new(graph), &workflow_services, options, &scope);
+                helpers.insert(helper, ServedWorkflow { engine, env });
+            }
+            carried.insert(name.clone(), helpers);
+        }
         #[cfg(feature = "skills")]
         let engine = match own_skills {
             Some(store) => {
@@ -105,7 +158,7 @@ pub async fn build_state(
         workflows.insert(name.clone(), ServedWorkflow { engine, env });
     }
     #[cfg(feature = "subagents")]
-    link_served(&mut workflows)?;
+    link_served(&mut workflows, &carried)?;
     #[allow(unused_mut)]
     let mut state = AppState::new(workflows, api_key).with_extensions(extensions);
     #[cfg(any(feature = "online-eval", feature = "skills", feature = "learning"))]
@@ -194,55 +247,99 @@ fn is_mcp_config(path: &Path) -> bool {
 /// workflow brings its own environment and services (memory scope, skills,
 /// tools), not the parent's.
 ///
+/// A bundle's agents start only the workflows the bundle carries
+/// (`carried`, by the bundle's served name), and no other served workflow
+/// starts those.
+///
 /// @throws CliError - when an agent lists a workflow this server does not serve,
 ///   so a misnamed subagent stops the start, not a run halfway.
 #[cfg(feature = "subagents")]
-pub(crate) fn link_served(workflows: &mut IndexMap<String, ServedWorkflow>) -> Result<(), CliError> {
-    let lists: IndexMap<String, Vec<String>> =
-        workflows.iter().map(|(name, served)| (name.clone(), crate::setup::listed(served.engine.graph()))).collect();
-    let links: IndexMap<String, graphrt_core::engine::LinkedWorkflow> = workflows
-        .iter()
-        .map(|(name, served)| {
-            let link = graphrt_core::engine::LinkedWorkflow::new(Arc::clone(served.engine.graph()))
-                .with_env(served.env.clone())
-                .with_services(Arc::clone(served.engine.services()));
-            (name.clone(), link)
-        })
-        .collect();
-    for (name, names) in &lists {
-        for listed in names {
-            let Some(link) = links.get(listed) else {
+pub(crate) fn link_served(
+    workflows: &mut IndexMap<String, ServedWorkflow>,
+    carried: &IndexMap<String, IndexMap<String, ServedWorkflow>>,
+) -> Result<(), CliError> {
+    // A bundle's entry is no subagent of a served workflow: what it starts is the bundle's.
+    let served = Linkable::of(workflows, |name| !carried.contains_key(name));
+    let bundles: IndexMap<&String, Linkable> =
+        carried.iter().map(|(name, helpers)| (name, Linkable::of(helpers, |_| true))).collect();
+    for (name, workflow) in workflows.iter_mut() {
+        let own = crate::setup::listed(workflow.engine.graph());
+        if own.is_empty() {
+            continue;
+        }
+        let (pool, what) = match bundles.get(name) {
+            Some(bundle) => (bundle, "which its bundle does not carry"),
+            None => (&served, "which this server does not serve"),
+        };
+        let linked = pool.reach(name, own, what)?;
+        let graph = Arc::clone(workflow.engine.graph());
+        let engine = std::mem::replace(&mut workflow.engine, Engine::new(graph));
+        workflow.engine = engine.with_linked(linked);
+    }
+    Ok(())
+}
+
+/// Workflows an agent may start, by name, with what each lists in turn.
+#[cfg(feature = "subagents")]
+struct Linkable {
+    lists: IndexMap<String, Vec<String>>,
+    links: IndexMap<String, graphrt_core::engine::LinkedWorkflow>,
+}
+
+#[cfg(feature = "subagents")]
+impl Linkable {
+    /// The workflows of `workflows` that `keep` keeps.
+    fn of(workflows: &IndexMap<String, ServedWorkflow>, keep: impl Fn(&str) -> bool) -> Self {
+        let lists = workflows
+            .iter()
+            .filter(|(name, _)| keep(name))
+            .map(|(name, served)| (name.clone(), crate::setup::listed(served.engine.graph())))
+            .collect();
+        let links = workflows
+            .iter()
+            .filter(|(name, _)| keep(name))
+            .map(|(name, served)| {
+                let link = graphrt_core::engine::LinkedWorkflow::new(Arc::clone(served.engine.graph()))
+                    .with_env(served.env.clone())
+                    .with_services(Arc::clone(served.engine.services()));
+                (name.clone(), link)
+            })
+            .collect();
+        Self { lists, links }
+    }
+
+    /// Every workflow reachable from `own` (what workflow `name` lists),
+    /// each checked: it exists here and can run as a subagent.
+    ///
+    /// @throws CliError - for a listed workflow that is not here (`what` says
+    ///   where it was looked for) or cannot run as one.
+    fn reach(
+        &self,
+        name: &str,
+        own: Vec<String>,
+        what: &str,
+    ) -> Result<Vec<(String, graphrt_core::engine::LinkedWorkflow)>, CliError> {
+        let mut reach: Vec<String> = Vec::new();
+        let mut queue: Vec<(String, String)> = own.into_iter().map(|listed| (name.to_owned(), listed)).collect();
+        while let Some((by, next)) = queue.pop() {
+            if reach.contains(&next) {
+                continue;
+            }
+            let Some(link) = self.links.get(&next) else {
+                let known: Vec<&str> = self.links.keys().map(String::as_str).collect();
                 return Err(CliError::usage(format!(
-                    "workflow `{name}` lists subagent `{listed}`, which this server does not serve (served: {})",
-                    links.keys().cloned().collect::<Vec<_>>().join(", ")
+                    "workflow `{by}` lists subagent `{next}`, {what} (there: {})",
+                    if known.is_empty() { "none".to_owned() } else { known.join(", ") }
                 )));
             };
             link.check().map_err(|why| {
-                CliError::usage(format!("workflow `{name}` lists subagent `{listed}`, which cannot run as one: {why}"))
+                CliError::usage(format!("workflow `{by}` lists subagent `{next}`, which cannot run as one: {why}"))
             })?;
-        }
-    }
-    for (name, served) in workflows.iter_mut() {
-        if lists.get(name).is_none_or(Vec::is_empty) {
-            continue;
-        }
-        // Every workflow reachable from this one through the lists.
-        let mut reach: Vec<String> = Vec::new();
-        let mut queue: Vec<String> = lists.get(name).cloned().unwrap_or_default();
-        while let Some(next) = queue.pop() {
-            if reach.contains(&next) || !links.contains_key(&next) {
-                continue;
-            }
-            queue.extend(lists.get(&next).cloned().unwrap_or_default());
+            queue.extend(self.lists.get(&next).cloned().unwrap_or_default().into_iter().map(|n| (next.clone(), n)));
             reach.push(next);
         }
-        let linked: Vec<(String, graphrt_core::engine::LinkedWorkflow)> =
-            reach.into_iter().filter_map(|n| links.get(&n).map(|link| (n, link.clone()))).collect();
-        let graph = Arc::clone(served.engine.graph());
-        let engine = std::mem::replace(&mut served.engine, Engine::new(graph));
-        served.engine = engine.with_linked(linked);
+        Ok(reach.into_iter().filter_map(|n| self.links.get(&n).map(|link| (n, link.clone()))).collect())
     }
-    Ok(())
 }
 
 #[cfg(all(test, feature = "subagents"))]
@@ -277,14 +374,14 @@ mod subagent_tests {
         workflows.insert("leaf".to_owned(), served(plain.clone()));
         workflows.insert("other".to_owned(), served(plain));
         let before_other = workflows["other"].engine.fingerprint().to_owned();
-        link_served(&mut workflows).unwrap();
+        link_served(&mut workflows, &IndexMap::new()).unwrap();
         let lead = workflows["lead"].engine.fingerprint();
         assert!(lead.contains(":middle=") && lead.contains(":leaf=") && !lead.contains(":other="), "{lead}");
         assert_eq!(workflows["other"].engine.fingerprint(), before_other, "a workflow without subagents is not linked");
         // A listed workflow the server does not serve stops the start.
         let mut workflows = IndexMap::new();
         workflows.insert("lead".to_owned(), served(with_agent(&["researcher"])));
-        let error = link_served(&mut workflows).unwrap_err().to_string();
+        let error = link_served(&mut workflows, &IndexMap::new()).unwrap_err().to_string();
         assert!(error.contains("`researcher`"), "{error}");
         // A served workflow that a model cannot start stops the start too, unless
         // the variable it cannot pass has a default.
@@ -295,9 +392,71 @@ mod subagent_tests {
         let mut workflows = IndexMap::new();
         workflows.insert("lead".to_owned(), served(with_agent(&["locked"])));
         workflows.insert("locked".to_owned(), served(start(serde_json::Value::Null)));
-        let error = link_served(&mut workflows).unwrap_err().to_string();
+        let error = link_served(&mut workflows, &IndexMap::new()).unwrap_err().to_string();
         assert!(error.contains("cannot run as one") && error.contains("`token`"), "{error}");
         workflows.insert("locked".to_owned(), served(start(serde_json::json!("fallback"))));
-        link_served(&mut workflows).unwrap();
+        link_served(&mut workflows, &IndexMap::new()).unwrap();
+    }
+}
+
+#[cfg(all(test, feature = "bundle", feature = "subagents"))]
+mod bundle_tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    use super::*;
+
+    fn lister(name: &str, listed: &[&str]) -> String {
+        let subagents: Vec<serde_json::Value> =
+            listed.iter().map(|w| serde_json::json!({"workflow": w, "description": "Helps"})).collect();
+        serde_json::json!({"version": "1", "name": name, "graph": {"nodes": [
+            {"id": "start", "type": "start"},
+            {"id": "lead", "type": "agent", "model": {"provider": "openai", "name": "m"}, "query": "go", "subagents": subagents},
+            {"id": "end", "type": "end", "outputs": [{"variable": "text", "value_selector": ["lead", "text"]}]}],
+            "edges": [{"source": "start", "target": "lead"}, {"source": "lead", "target": "end"}]}})
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn a_served_bundle_links_its_subagents_without_serving_them_under_the_lower_budget() {
+        let dir = graphrt_core::private_fs::create_fresh_temp_dir("graphrt-serve-bundle-helpers").unwrap();
+        let bytes = graphrt_bundle::BundleBuilder::new("lead", "1.0.0")
+            .workflow("workflow.json", lister("lead", &["research"]))
+            .unwrap()
+            .workflow("workflows/research.json", lister("research", &[]))
+            .unwrap()
+            .limits(graphrt_bundle::BundleLimits { max_total_tokens: Some(9_000), max_cost_micros: Some(400_000) })
+            .build()
+            .unwrap();
+        let path = dir.join("lead.grt");
+        std::fs::write(&path, bytes).unwrap();
+        let options = ServiceOptions {
+            plugins: crate::extensions::PluginOptions { no_default: true, ..Default::default() },
+            ..ServiceOptions::default()
+        };
+        // The host's lower token budget wins, the bundle's lower cost budget wins too.
+        let host = Limits { max_total_tokens: Some(5_000), max_cost_micros: Some(900_000), ..Limits::default() };
+        // A served workflow of the same name as the bundle's subagent: neither one replaces the other.
+        let research = dir.join("research.json");
+        std::fs::write(&research, lister("research", &[])).unwrap();
+        let files = [("lead".to_owned(), path), ("research".to_owned(), research)];
+        let state = build_state(&files, &options, host, None).await.unwrap();
+        let lead = &state.workflows["lead"];
+        assert_eq!(lead.engine.limits().max_total_tokens, Some(5_000));
+        assert_eq!(lead.engine.limits().max_cost_micros, Some(400_000));
+        let linked: Vec<&str> = lead.engine.linked().map(|(name, _)| name).collect();
+        assert_eq!(linked, ["research"]);
+        let carried = lead.engine.linked().next().unwrap().1.graph();
+        assert!(
+            !Arc::ptr_eq(carried, state.workflows["research"].engine.graph()),
+            "the bundle's own, not the served one"
+        );
+        assert_eq!(state.workflows.len(), 2, "a bundle adds no endpoint besides its entry");
+        // A served workflow cannot start the bundle's entry: what it would start is the bundle's.
+        let outer = dir.join("outer.json");
+        std::fs::write(&outer, lister("outer", &["lead"])).unwrap();
+        let files = [("lead".to_owned(), dir.join("lead.grt")), ("outer".to_owned(), outer)];
+        let refused = build_state(&files, &options, Limits::default(), None).await.err().unwrap().to_string();
+        assert!(refused.contains("`lead`") && refused.contains("does not serve"), "{refused}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

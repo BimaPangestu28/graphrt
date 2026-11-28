@@ -323,3 +323,33 @@ fn knowledge_stores_larger_than_the_file_limit_open_and_other_files_do_not() {
     assert!(matches!(Bundle::open(&zip, &OpenOptions::default()), Err(BundleError::Archive(_))));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn limits_and_helper_workflows_travel_in_the_manifest() {
+    let limits = graphrt_bundle::BundleLimits { max_total_tokens: Some(50_000), max_cost_micros: Some(250_000) };
+    let bytes = BundleBuilder::new("hello", "1.0.0")
+        .created_at("2026-01-01T00:00:00Z")
+        .workflow("workflow.yaml", read("examples/hello.yaml"))
+        .unwrap()
+        .workflow("workflows/helper.yaml", read("examples/hello.yaml"))
+        .unwrap()
+        .limits(limits)
+        .build()
+        .unwrap();
+    let bundle = Bundle::open(&bytes, &OpenOptions::default()).unwrap();
+    assert_eq!(bundle.manifest().limits, Some(limits));
+    assert_eq!(bundle.manifest().workflows, ["workflow.yaml", "workflows/helper.yaml"]);
+    assert!(bundle.workflow(Some("helper")).is_ok());
+    // No limits: the field is left out, so older runtimes read the manifest as before.
+    let plain = hello_bundle();
+    let bundle = Bundle::open(&plain, &OpenOptions::default()).unwrap();
+    assert_eq!(bundle.manifest().limits, None);
+    assert!(!String::from_utf8_lossy(bundle.manifest_bytes()).contains("limits"));
+    let empty = BundleBuilder::new("hello", "1.0.0")
+        .workflow("workflow.yaml", read("examples/hello.yaml"))
+        .unwrap()
+        .limits(graphrt_bundle::BundleLimits::default())
+        .build()
+        .unwrap();
+    assert_eq!(Bundle::open(&empty, &OpenOptions::default()).unwrap().manifest().limits, None);
+}

@@ -30,6 +30,60 @@
       "items": {
         "$ref": "#/$defs/target"
       }
+    },
+    "agent_file": {
+      "type": "object",
+      "description": "What the agent file carries to every target, in builds with a direct target: a workflow file alone brings no subagents, a bundle brings them (manifest `workflows`) with the budgets of its runs (manifest `limits`, the lower of the host's and the bundle's applies). `build`, `file` and `from` are words for people. Absent in tools older than the field.",
+      "properties": {
+        "formats": {
+          "$ref": "#/$defs/strings"
+        },
+        "subagents": {
+          "type": "object",
+          "properties": {
+            "in": {
+              "const": "bundle"
+            },
+            "manifest_field": {
+              "const": "workflows"
+            },
+            "path": {
+              "type": "string"
+            },
+            "build": {
+              "type": "string"
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "in": {
+              "const": "bundle"
+            },
+            "manifest_field": {
+              "const": "limits"
+            },
+            "fields": {
+              "$ref": "#/$defs/strings"
+            },
+            "combine": {
+              "enum": [
+                "lower"
+              ]
+            },
+            "build": {
+              "type": "string"
+            }
+          }
+        },
+        "prices": {
+          "type": "object"
+        },
+        "memory": {
+          "type": "object"
+        }
+      }
     }
   },
   "$defs": {
@@ -160,6 +214,44 @@
         },
         "idle_cost": {
           "type": "string"
+        },
+        "memory": {
+          "type": "object",
+          "description": "Whether the target keeps long term memory (`long_term_memory`) between instances, and where on the store. Absent in tools older than the field.",
+          "required": [
+            "kept"
+          ],
+          "properties": {
+            "kept": {
+              "type": "boolean"
+            },
+            "dir": {
+              "type": "string"
+            },
+            "refused": {
+              "type": "string",
+              "description": "Why a deploy of an agent that remembers is refused."
+            }
+          },
+          "if": {
+            "properties": {
+              "kept": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "kept",
+              "dir"
+            ]
+          },
+          "else": {
+            "required": [
+              "kept",
+              "refused"
+            ]
+          }
         }
       }
     }

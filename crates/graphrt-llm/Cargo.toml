@@ -69,7 +69,10 @@ text-model = []
 http = ["dep:reqwest", "dep:rustls", "dep:tokio"]
 
 [dependencies]
-graphrt-core.workspace = true
+# `budgets`: the agent and the other model nodes charge every response to the
+# run's token and cost budget. Without it a build never enforces
+# `--max-tokens-per-run`, `--max-cost-per-run` or a request's `limits`.
+graphrt-core = { workspace = true, features = ["budgets"] }
 futures.workspace = true
 thiserror.workspace = true
 serde.workspace = true

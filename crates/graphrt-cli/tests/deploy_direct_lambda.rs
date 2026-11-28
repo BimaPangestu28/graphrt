@@ -201,3 +201,36 @@ fn fly_and_lambda_flags_do_not_mix() {
         graphrt(&["--target", "ecs", "--direct", "--deployment", "a", "--version", "v1", "--json", &agent], dir.path());
     assert!(String::from_utf8_lossy(&output.stdout).contains("lambda only, not ecs"));
 }
+
+#[test]
+fn an_agent_that_remembers_is_refused_before_any_aws_call() {
+    let dir = Dir::new("memory");
+    std::fs::write(dir.path().join("credentials"), "[graphrt]\naws_access_key_id = AKIAX\naws_secret_access_key = y\n")
+        .unwrap();
+    let agent = dir.path().join("support.yaml");
+    std::fs::write(
+        &agent,
+        "version: \"1\"\nname: support\ngraph:\n  nodes:\n    - { id: start, type: start }\n    - id: helper\n      type: agent\n      model: { provider: openai, name: m }\n      query: \"{{#sys.query#}}\"\n      long_term_memory: auto\n    - { id: end, type: end, outputs: [{ variable: text, value_selector: [helper, text] }] }\n  edges:\n    - { source: start, target: helper }\n    - { source: helper, target: end }\n",
+    )
+    .unwrap();
+    let agent = agent.display().to_string();
+    let args = [
+        "--target",
+        "lambda",
+        "--direct",
+        "--deployment",
+        "support",
+        "--version",
+        "v1",
+        "--region",
+        "ap-southeast-1",
+        "--secret",
+        "OPENAI_API_KEY",
+        "--json",
+        &agent,
+    ];
+    let output = graphrt(&args, dir.path());
+    let line = last_line(&output);
+    assert_eq!((line["code"].as_str(), output.status.code()), (Some("invalid_input"), Some(2)), "{line}");
+    assert!(line["message"].as_str().unwrap().contains("--target fly"), "{line}");
+}
