@@ -312,13 +312,21 @@ async fn an_llm_node_is_charged_its_cost_and_a_failed_call_is_paid_for() {
         "{:?}",
         events.last()
     );
-    // A model without a price costs nothing, and the run is told.
+    // A model without a price under a cost budget is refused before it is called:
+    // its cost could not be counted.
     let s = setup(vec![MockModel::text("a poem")]);
     let limits = Limits { max_cost_micros: Some(1_000), ..Limits::default() };
     let events = run(&engine(&s, llm_graph(), limits, None), query("write")).await;
+    assert!(
+        matches!(events.last(), Some(Event::RunFailed { error_type, .. }) if error_type == "price_missing"),
+        "{:?}",
+        events.last()
+    );
+    assert!(s.model.requests().is_empty(), "nothing was paid for");
+    // Without a cost budget a model needs no price.
+    let s = setup(vec![MockModel::text("a poem")]);
+    let events = run(&engine(&s, llm_graph(), Limits::default(), None), query("write")).await;
     assert_eq!(outputs(&events)["text"], "a poem");
-    assert!(events.iter().any(|e| matches!(e, Event::NodeProgress { name, data, .. }
-        if name == "budget" && data.to_json()["price_missing"] == "mock/m")));
 }
 
 #[tokio::test(flavor = "multi_thread")]

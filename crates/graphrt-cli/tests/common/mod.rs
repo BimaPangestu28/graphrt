@@ -18,6 +18,16 @@ pub struct FakeModel {
 
 impl FakeModel {
     pub fn start(answers: &[&str]) -> Self {
+        Self::serve(answers, None)
+    }
+
+    /// [`FakeModel::start`], with a final usage chunk of `tokens` total tokens
+    /// on every answer, as OpenAI sends with `stream_options.include_usage`.
+    pub fn with_usage(answers: &[&str], tokens: u64) -> Self {
+        Self::serve(answers, Some(tokens))
+    }
+
+    fn serve(answers: &[&str], usage: Option<u64>) -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -32,7 +42,13 @@ impl FakeModel {
                 let answer = answers.pop_front().unwrap_or_else(|| "ok".to_owned());
                 let chunk = serde_json::json!({"choices": [{"index": 0, "delta": {"content": answer}}]});
                 let done = serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]});
-                let body = format!("data: {chunk}\n\ndata: {done}\n\ndata: [DONE]\n\n");
+                let usage = usage.map_or_else(String::new, |total| {
+                    let completion = total / 2;
+                    let chunk = serde_json::json!({"choices": [], "usage": {
+                        "prompt_tokens": total - completion, "completion_tokens": completion, "total_tokens": total}});
+                    format!("data: {chunk}\n\n")
+                });
+                let body = format!("data: {chunk}\n\ndata: {done}\n\n{usage}data: [DONE]\n\n");
                 let head = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                     body.len()
