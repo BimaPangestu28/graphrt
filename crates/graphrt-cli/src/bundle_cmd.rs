@@ -41,6 +41,7 @@ pub fn trusted_keys(flags: &[String]) -> Vec<String> {
 
 /// What a bundle runs: its entry workflow, the workflows its agents start as
 /// subagents (by name), and the budgets of its runs.
+#[cfg(feature = "bundle")]
 #[derive(Debug)]
 pub struct BundleParts {
     pub entry: Arc<Graph>,
@@ -49,6 +50,7 @@ pub struct BundleParts {
 }
 
 /// The budgets of every run of a bundle (the manifest's `limits`).
+#[cfg(feature = "bundle")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RunBudgets {
     pub max_total_tokens: Option<u64>,
@@ -56,6 +58,7 @@ pub struct RunBudgets {
     pub max_cost_micros: Option<u64>,
 }
 
+#[cfg(feature = "bundle")]
 impl RunBudgets {
     /// `host` with these budgets: the lower of the two where both set one.
     pub fn over(&self, host: &graphrt_core::engine::Limits) -> graphrt_core::engine::Limits {
@@ -73,6 +76,7 @@ impl RunBudgets {
 /// The rule for the name of a subagent's workflow file: 1 to 128 letters,
 /// digits, `.`, `_` or `-`, not starting with `.`, and not `workflow` (the
 /// name a bundle keeps for its entry).
+#[cfg(feature = "bundle")]
 pub fn valid_helper_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
@@ -84,6 +88,7 @@ pub fn valid_helper_name(name: &str) -> bool {
 /// Open a bundle, register its WebAssembly plugins in `registry` and compile its
 /// entry workflow. When `options` has no `--providers` / `--knowledge`, the
 /// bundle's own configs are used (extracted to a private temporary directory).
+#[cfg(feature = "bundle")]
 pub fn bundle_graph(
     path: &Path,
     options: &mut ServiceOptions,
@@ -169,12 +174,12 @@ pub fn bundle_parts(
 
 /// Without the `bundle` feature, bundles are rejected with a clear message.
 #[cfg(not(feature = "bundle"))]
-pub fn bundle_parts(
+pub fn bundle_graph(
     path: &Path,
     _options: &mut ServiceOptions,
     _registry: &mut Registry,
     _trust: &[String],
-) -> Result<BundleParts, CliError> {
+) -> Result<Arc<Graph>, CliError> {
     Err(CliError::usage(format!("`{}`: running bundles requires a build with the `bundle` feature", path.display())))
 }
 
@@ -619,7 +624,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "bundle"))]
 mod budget_tests {
     use super::RunBudgets;
     use graphrt_core::engine::Limits;

@@ -106,12 +106,13 @@ pub async fn build_state(
             setup::load_graph_with(path, options.model_override.as_deref(), &extensions.registry)?
         };
         let env = setup::workflow_env(&graph, options);
+        #[cfg(not(feature = "bundle"))]
+        let engine = Engine::new(graph).with_clock(Arc::new(TokioClock)).with_limits(limits.clone());
         // A bundle's budgets: the lower of the host's and its own.
         #[cfg(feature = "bundle")]
-        let file_limits = bundled.as_ref().map_or_else(|| limits.clone(), |parts| parts.budgets.over(&limits));
-        #[cfg(not(feature = "bundle"))]
-        let file_limits = limits.clone();
-        let engine = Engine::new(graph).with_clock(Arc::new(TokioClock)).with_limits(file_limits);
+        let engine = Engine::new(graph)
+            .with_clock(Arc::new(TokioClock))
+            .with_limits(bundled.as_ref().map_or_else(|| limits.clone(), |parts| parts.budgets.over(&limits)));
         let workflow_services = own_services.unwrap_or_else(|| Arc::clone(&services));
         // The workflows of its subagents run on the bundle's services, each in
         // its own memory scope. They are linked to the bundle's agents only, never
