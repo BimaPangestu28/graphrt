@@ -9,6 +9,212 @@ change) until it is cut; `scripts/changelog.py preview` shows them together.
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-11-28
+
+An agent goes online on the cloud a business already pays for, with nothing
+running while nobody uses it. `graphrt deploy --direct` now also targets
+Google Cloud Run and AWS Lambda (a public Function URL, no Docker, no
+gateway), with the same JSON Lines as Fly, and on Lambda the store lives in an
+S3 bucket that every instance shares, so conversations, the monitoring page,
+push notifications and WhatsApp, Slack or Teams work there too. Apps read what
+each target supports from `graphrt deploy capabilities --json`. Agents
+remember users across runs (long term memory with a write gate and a memory
+graph), start other workflows as subagents, and stay within token and cost
+budgets per run. The admin console has its own page and the chat widget an
+embed SDK.
+
+### Added
+
+- `graphrt collab`: `auth.providers` signs people in with several identity
+  providers, each a button in the app (Google on the hosted server, any
+  OpenID Connect provider on a self hosted one). A provider whose
+  `client_id_env` is empty is off until it is set. `GET /v1/info` lists them
+  and `GET /v1/auth/login?provider=<id>` picks one. `email_verified_claim`
+  keeps only emails the provider vouches for. The client's `login_url` and
+  `LoopbackLogin::url` take the provider.
+- `graphrt deploy --target cloud-run --direct`: one agent online on Google
+  Cloud Run with one command, no gateway and no image build. The agent file
+  goes into a Cloud Storage bucket the revision mounts, the published image is
+  pulled through an Artifact Registry remote repository of `ghcr.io`, secrets
+  and the API key live in Secret Manager, the service is public with graphrt's
+  API key (no `allUsers` binding), and the store is a folder of the bucket
+  (one instance). `status`, `list-versions`, `rollback` (traffic tags),
+  `pause`, `resume` and `remove` work as on Fly, with the same JSON Lines
+  (`docs/schemas/deploy-direct-cloud-run.schema.json`). APIs that are off are
+  turned on, and errors name the fix: the API to enable, the billing link, the
+  role to ask for, the organization policy in the way. See
+  docs/deploy-cloud-run.md.
+- `graphrt-gcp` accepts a person's Google sign in: `authorized_user`
+  credentials (the application default credentials of `gcloud auth
+  application-default login`, or any refresh token), an access token in
+  `GOOGLE_OAUTH_ACCESS_TOKEN`, or a token source of the caller's own, for
+  organizations that forbid service account keys.
+- `graphrt deploy --target lambda --direct`: one agent online at a public AWS
+  Lambda Function URL with nothing running while idle, no gateway and no
+  Docker. The deploy copies the graphrt image into ECR with the Lambda Web
+  Adapter and the agent, creates the role, log group, function, `live` alias
+  and URL (response streaming for SSE), and health checks each version before
+  it serves. `status`, `list-versions`, `rollback`, `pause`, `resume` and
+  `remove` work as on Fly, with the same JSON Lines
+  (`docs/schemas/deploy-direct-aws.schema.json`). Credentials come from the
+  standard AWS places (`--profile`, `AWS_PROFILE`, the environment). Errors
+  say how to fix missing permissions, regions and quotas. Cargo feature
+  `deploy-aws`, in the default build. See `docs/deploy-direct-aws.md`.
+- `agent` nodes remember users across runs with `long_term_memory: auto`:
+  the tools `memory/remember`, `memory/recall` and `memory/forget` over notes
+  kept per tenant, agent and user in files (new crate `graphrt-memory`, no
+  database), and matching notes added to the request as data when a run
+  starts. Every write passes a gate: secrets are masked, notes built from tool
+  results or web pages and text that reads like an instruction wait for
+  review, and every change is in an audit log without note text. The owner
+  lists, approves, exports and erases with `/v1/memory` and `graphrt memory`,
+  a verified user with `/v1/me/memory`. `--memory-dir` and `--memory-tenant`
+  on `run` and `serve`. In the default build (cargo feature `memory`), not in
+  the slim builds. See `docs/memory.md`.
+- What an agent's tools did in a turn reaches the next turn of a
+  conversation: the `agent` node outputs `turn_digest`, `serve
+  --conversations` stores it and sends it in `sys.history` as `tool_digest`,
+  framed as a record written by the runtime.
+- `long_term_memory: {graph: true}` builds a memory graph: after a note is
+  saved, a model reads its entities and relations in the background, each
+  relation with the period it was true. A newer relation closes the one it
+  replaces instead of deleting it, so a recall `as_of` a past time finds what
+  was true then. Recall walks the graph two hops wide and fuses the facts
+  with the notes. Relations follow their notes (pending with them, gone with
+  them), names are cleaned, masked and bounded, and erasing a user removes
+  the graph. `graphrt memory graph build|show`, `GET
+  /v1/memory/{agent}/graph`. In the default build (cargo feature
+  `memory-graph`), not in the slim builds. See "The memory graph" in
+  `docs/memory.md`.
+- A run can have a token and a cost budget: `--max-tokens-per-run` and
+  `--max-cost-per-run` on `run` and `serve`, `limits` in a run request of
+  `serve` (only lower than the server's), `max_total_tokens` and
+  `max_cost_micros` in `Limits` and in the FFI limits. Model turns are charged
+  as they happen, child runs included, with prices per model from `prices` in
+  the providers file. An agent that cannot afford another tool turn answers
+  without tools (`stopped_reason: budget`). The counters are in the snapshot.
+- The `agent` loop keeps a checkpoint per turn: a retry, a node timeout or a
+  preempted run that is resumed goes on from the last turn instead of
+  starting over, and a tool that already ran is not run again. A call cut
+  while it ran is repeated only when it is read only or listed in
+  `retry_safe_tools`, otherwise the model reads that its outcome is unknown.
+  Every tool call carries an idempotency key, which plugins receive as
+  `idempotency_key`. See `docs/workflow-format.md` and
+  `docs/orchestration-design.md`.
+- The admin console page at `/console/` (`graphrt serve --console`): agents
+  with the version each environment runs, uploads, promotion, rollback and
+  "Restart and apply", runs and approvals through the monitoring view,
+  secrets by name, people with their roles and open sessions, and the audit
+  log with filters, the JSON lines export and the chain check. What each
+  person sees follows their role, at phone width too. The monitoring page
+  uses a console sign in when there is one and offers "Sign in with your
+  organization" next to the key. The browser package gains `@graphrt-dev/graphrt/console`, `client.console`
+  and `sessionFetch`.
+- `graphrt serve --store s3://bucket/prefix`: runs, events, snapshots, scores,
+  conversations, paired devices and push subscriptions in an S3 bucket (or an
+  S3 compatible store) that any number of servers share, with conditional
+  writes on ETags instead of a lock or a database. Cargo feature `store-s3`,
+  in the default build. See `docs/serving.md`, "A store in S3".
+- `graphrt deploy --target lambda --direct` takes `--conversations`,
+  `--monitor`, `--devices`, `--push`, `--channel whatsapp|slack|teams` and
+  `--drop-store`: the deployment gets an S3 bucket as its store, kept across
+  redeploys. On Lambda `graphrt serve` holds the end of a response until the
+  work it left running is stored (`GRAPHRT_HOLD_UNTIL_IDLE`), so approvals,
+  channel answers and async runs finish before Lambda freezes the instance.
+- `graphrt deploy capabilities --json`: what each direct target (Fly, Cloud
+  Run, Lambda) supports in this build, flags, modes, store, channels and
+  credentials, for apps. See `docs/deploy-capabilities.md`.
+- `agent` nodes can start other workflows as tools with `subagents:
+  [{workflow, description, handoff?}]`: the model picks which listed
+  workflow to call, how often and several at once (`max_parallel_subagents`,
+  `max_subagent_calls`). Each call is a child run of the same run with a
+  context of its own, the same step budget, deadline, depth limit, services
+  and secrets, and its events in the same stream under frame
+  `<node>.<workflow>[<n>]`. An approval inside a child pauses the whole run
+  and resuming it continues the child. `handoff: true` makes the child's
+  answer the agent's answer. `graphrt serve` links the workflows it serves,
+  `graphrt run --workflows DIR` the files of a directory, and a snapshot is
+  not resumed against a changed child workflow. In the default build (cargo
+  feature `subagents`), not in the slim builds. See `docs/workflow-format.md`
+  and `docs/orchestration-design.md`.
+- Embed SDK for the chat widget (`/chat/embed.js`, `graphrt/chat`): events
+  `open`, `close`, `ready`, `message`, `answer`, `handoff` and `error` through
+  `GraphrtChat.on/off` and as DOM events `graphrt-chat-<event>` on
+  `<graphrt-chat>` and `<graphrt-chat-widget>`, the methods `send`,
+  `setContext`, `reset` and `setTheme`, `GraphrtChat.init({...})` with the
+  names of the `data-` attributes, and a queue stub
+  (`window.GraphrtChat = window.GraphrtChat || { q: [] }`) for calls made
+  before the script loaded. TypeScript types ship in `graphrt/chat`.
+- Page context: `setContext` sends a JSON object with every message as
+  `sys.context`. `graphrt serve` refuses one that is not an object, larger
+  than 8 KiB or nested deeper than 5 levels (`400`, also for runs a gateway
+  forwards), and never reads it as identity.
+
+### Changed
+
+- The browser package is published to npm as `@graphrt-dev/graphrt`, not
+  `graphrt`, which npm refused as too close to `graphql`. Install it with
+  `npm install @graphrt-dev/graphrt` and import `@graphrt-dev/graphrt/client`,
+  `/ui`, `/chat`, `/monitor` and `/console`. `web/scripts/first-publish.sh
+  --rename v0.6.3` publishes 0.6.3 from its tag under the new name.
+- Breaking for code that builds these structs with literals: `Limits` and
+  `RunInput` gained `max_total_tokens` and `max_cost_micros`, `Snapshot`
+  gained `budget`, `NodeSnapshot` gained `checkpoint`, `ToolCallContext`
+  gained `idempotency_key`, the plugin SDK's `ToolCall` gained
+  `idempotency_key`, and a providers entry may hold `prices`. All have
+  defaults (`..Default::default()`), and snapshots written before keep
+  working.
+
+### Fixed
+
+- The container image build (`Dockerfile`) gives each platform its own cargo
+  caches, used by one build at a time. A build of `linux/amd64` and
+  `linux/arm64` together, as the release workflow does, could fail with
+  "failed to unpack package ... File exists" when both unpacked the same crate.
+- The release workflow no longer publishes the image job's build record
+  (`*.dockerbuild`) as a release asset.
+- `scripts/publish.sh --execute` (the release workflow's crates.io job) fails
+  when a crate is refused, and waits for the time crates.io names when it
+  answers 429 for new crates. With colour on (`CARGO_TERM_COLOR=always`, as in
+  CI) it took a refused crate for published, so the 0.6.3 job ended green with
+  five crates missing.
+- `graphrt serve`: on a slow disk a shutdown drain could leave every active run
+  `unfinished` (and failed after the restart) although it had paused them in
+  time. Each run stored its final state in three writes through the `--store`
+  directory's one lock, interleaved with every other run's, so no run was
+  complete until nearly all writes were done. A run now stores its last events,
+  its snapshot and its record in one write (one lock, four syncs instead of
+  seven), so runs are stored one after another and a drain that runs out of
+  time still keeps most of them. Store backends can do the same through the new
+  `RunStore::finish` (the default writes the parts one by one).
+- `graphrt serve`: a run's nodes no longer wait for its event writes. The
+  driver of each run stopped taking events from the engine while a batch went
+  to the store, so on a slow disk every node of the run, and its preemption or
+  abort, waited for the write (a shutdown drain could miss its deadline). A
+  write now goes on next to the run, and the events that come meanwhile go out
+  together in the next one: on an NVMe `--store` directory a streaming run of
+  100 quick nodes ends in 23 ms instead of 133 ms. Batches (32 events or
+  250 ms), retries and the final write are unchanged. A run that holds 40,000
+  unwritten events waits for the store, unless it was asked to stop.
+- `graphrt-core`: `RunHandle::stop_requested` tells whether a run was asked to
+  abort, pause or preempt.
+- `graphrt deploy --target fly` (gateway pools): the command's program becomes
+  the Machine's `init.entrypoint`. It went to `init.cmd`, which on Fly replaces
+  only the image's CMD, so `graphrt serve ...` ran as `graphrt graphrt serve
+  ...` with the graphrt image. A command that starts with `serve` (the form the
+  Fly guide showed) still keeps the image's entrypoint.
+- The release workflow's Maven Central job waits for the Central Portal to
+  validate the uploaded bundle and fails with the Portal's errors when it is
+  refused.
+
+### Security
+
+- `graphrt gateway` no longer passes `resume`, `event_index`,
+  `preempt_after_ms`, `fingerprint` or `deployment_version` from a caller's
+  run request to the agent. Only the gateway sets them, so a caller cannot
+  resume a run from a snapshot of its own (forged node state, a budget set
+  back to zero).
+
 ## [0.6.3] - 2026-11-27
 
 An agent goes online from one command and is used from a browser, a phone or a

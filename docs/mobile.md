@@ -30,7 +30,7 @@ API 26 and newer). Put it in `app/libs/` and add:
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation(files("libs/graphrt-android-0.6.3.aar"))
+    implementation(files("libs/graphrt-android-0.6.4.aar"))
     // What the AAR needs (a Maven Central release declares these itself):
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")

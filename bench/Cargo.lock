@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-core"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "futures",
  "indexmap",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "graphrt-llm"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "futures",
  "graphrt-core",

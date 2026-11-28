@@ -12,7 +12,7 @@ graphrt deploy capabilities --json
   "type": "result",
   "action": "capabilities",
   "schema_version": 1,
-  "graphrt": "0.6.3",
+  "graphrt": "0.6.4",
   "targets": [
     {
       "target": "lambda",

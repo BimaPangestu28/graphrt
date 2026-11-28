@@ -123,7 +123,7 @@ the workflow has loaded.
 On screen, under the buttons:
 
 ```text
-graphrt 0.6.3 loaded workflow 'hello'
+graphrt 0.6.4 loaded workflow 'hello'
 Result
 status: succeeded
 greeting: Hello, Grace.
