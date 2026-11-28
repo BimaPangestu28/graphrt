@@ -25,6 +25,7 @@
 //!   made it) and its log group.
 
 mod account;
+mod bucket;
 mod layer;
 mod lifecycle;
 pub mod registry;
@@ -82,6 +83,12 @@ pub struct DeployRequest {
     pub serve_summary: serde_json::Value,
     /// An existing execution role to use instead of the one graphrt creates.
     pub role_arn: Option<String>,
+    /// The version keeps state (`--monitor`, `--conversations`...): it gets
+    /// the deployment's S3 bucket as `graphrt serve --store s3://<bucket>`.
+    pub store: bool,
+    /// Delete the store bucket (and what is in it) once this version, which
+    /// must not need it, serves.
+    pub drop_store: bool,
     /// Wall clock of the deploy (Unix ms).
     pub now_ms: u64,
 }
@@ -112,8 +119,8 @@ pub struct DeployOutcome {
     /// Only when this deploy created or rotated the key (shown once).
     pub api_key: Option<String>,
     pub serve: serde_json::Value,
-    /// Always `null`: Lambda keeps no store.
-    pub store: Option<()>,
+    /// The deployment's store bucket, when it has one.
+    pub store: Option<StoreSummary>,
     /// The deployment was paused and this deploy put it back online.
     pub resumed: bool,
 }
@@ -127,6 +134,17 @@ impl std::fmt::Debug for DeployOutcome {
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .finish_non_exhaustive()
     }
+}
+
+/// The store bucket of a deployment, in deploy results and the status.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct StoreSummary {
+    /// S3 bucket name (`graphrt serve --store s3://<bucket>`).
+    pub bucket: String,
+    pub region: String,
+    /// Whether the serving version uses it. `false`: kept from an earlier
+    /// deploy (its conversations and devices stay) until `--drop-store`.
+    pub in_use: bool,
 }
 
 /// Stable error codes (the `code` of a JSON `error` line).
@@ -341,6 +359,8 @@ pub struct DirectSettings {
     pub iam: ServiceEndpoint,
     pub sts: ServiceEndpoint,
     pub logs: ServiceEndpoint,
+    /// S3 base URL of the store bucket; `None`: `https://<bucket>.s3.<region>.amazonaws.com`.
+    pub s3_base_url: Option<String>,
     pub limits: ApiLimits,
     /// Longest wait for a function update or a new role.
     pub ready_timeout: Duration,
@@ -368,6 +388,7 @@ impl DirectSettings {
             },
             sts: ServiceEndpoint::regional("sts", region),
             logs: ServiceEndpoint::regional("logs", region),
+            s3_base_url: None,
             limits: ApiLimits::default(),
             ready_timeout: Duration::from_secs(300),
             health_timeout: Duration::from_secs(180),

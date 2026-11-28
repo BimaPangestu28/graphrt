@@ -91,6 +91,35 @@ pub(crate) async fn ensure_role(
     Ok((arn, true))
 }
 
+/// Name of the inline policy that lets the role use the store bucket.
+pub(crate) const STORE_POLICY: &str = "graphrt-store";
+
+/// Lets role `name` use the store bucket (an inline policy, replaced each time).
+pub(crate) async fn put_store_policy(iam: &AwsRestClient, name: &str, document: &str) -> Result<(), DirectError> {
+    query_call(
+        iam,
+        "PutRolePolicy",
+        "2010-05-08",
+        &[("RoleName", name), ("PolicyName", STORE_POLICY), ("PolicyDocument", document)],
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| DirectError::from_aws(error, "let the function's role use the store bucket"))
+}
+
+/// Removes the store policy of role `name` (a missing one is fine).
+pub(crate) async fn delete_store_policy(iam: &AwsRestClient, name: &str) -> Result<(), DirectError> {
+    match query_call(iam, "DeleteRolePolicy", "2010-05-08", &[("RoleName", name), ("PolicyName", STORE_POLICY)]).await {
+        Ok(_) => Ok(()),
+        Err(error)
+            if error.message.starts_with("NoSuchEntity") || error.kind == crate::api::ProviderErrorKind::NotFound =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(DirectError::from_aws(error, "remove the store policy of the function's role")),
+    }
+}
+
 /// Deletes role `name` if graphrt made it (tag `graphrt:deployment`); `false` when absent or not ours.
 pub(crate) async fn delete_role(iam: &AwsRestClient, name: &str) -> Result<bool, DirectError> {
     let tags = match query_call(iam, "ListRoleTags", "2010-05-08", &[("RoleName", name)]).await {
@@ -102,6 +131,7 @@ pub(crate) async fn delete_role(iam: &AwsRestClient, name: &str) -> Result<bool,
         return Ok(false);
     }
     let context = "delete the function's IAM role";
+    delete_store_policy(iam, name).await?;
     match query_call(
         iam,
         "DetachRolePolicy",

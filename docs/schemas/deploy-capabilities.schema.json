@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Graphrt/graphrt/blob/main/docs/schemas/deploy-capabilities.schema.json",
+  "title": "graphrt deploy capabilities --json",
+  "description": "What each direct deploy target supports in this build. Fields are only added, never renamed or removed; schema_version changes when a field changes meaning. See docs/deploy-capabilities.md.",
+  "type": "object",
+  "required": [
+    "type",
+    "action",
+    "schema_version",
+    "graphrt",
+    "targets"
+  ],
+  "properties": {
+    "type": {
+      "const": "result"
+    },
+    "action": {
+      "const": "capabilities"
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "graphrt": {
+      "type": "string"
+    },
+    "targets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/target"
+      }
+    }
+  },
+  "$defs": {
+    "strings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "target",
+        "available",
+        "docs",
+        "schema",
+        "credentials",
+        "flags",
+        "modes",
+        "default_mode",
+        "max_request_secs",
+        "serve",
+        "store",
+        "channels",
+        "channels_always_on",
+        "idle_cost"
+      ],
+      "properties": {
+        "target": {
+          "enum": [
+            "fly",
+            "cloud-run",
+            "lambda"
+          ]
+        },
+        "available": {
+          "type": "boolean",
+          "description": "The target is in this build."
+        },
+        "docs": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string",
+          "description": "Schema of the target's deploy JSON Lines."
+        },
+        "credentials": {
+          "type": "object",
+          "required": [
+            "env",
+            "flags"
+          ],
+          "properties": {
+            "env": {
+              "$ref": "#/$defs/strings"
+            },
+            "flags": {
+              "$ref": "#/$defs/strings"
+            }
+          }
+        },
+        "flags": {
+          "$ref": "#/$defs/strings"
+        },
+        "modes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "scale-to-zero",
+              "always-on"
+            ]
+          }
+        },
+        "default_mode": {
+          "enum": [
+            "scale-to-zero",
+            "always-on"
+          ]
+        },
+        "max_request_secs": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "serve": {
+          "$ref": "#/$defs/strings"
+        },
+        "store": {
+          "type": "object",
+          "required": [
+            "kind",
+            "features",
+            "drop_store"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "volume",
+                "gcs",
+                "s3"
+              ]
+            },
+            "features": {
+              "$ref": "#/$defs/strings"
+            },
+            "drop_store": {
+              "type": "boolean"
+            },
+            "requires_feature": {
+              "type": "string"
+            },
+            "available": {
+              "type": "boolean"
+            }
+          }
+        },
+        "channels": {
+          "$ref": "#/$defs/strings"
+        },
+        "channels_always_on": {
+          "$ref": "#/$defs/strings",
+          "description": "Channels that need --mode always-on."
+        },
+        "channels_refused": {
+          "$ref": "#/$defs/strings",
+          "description": "Channels the target cannot run at all."
+        },
+        "idle_cost": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

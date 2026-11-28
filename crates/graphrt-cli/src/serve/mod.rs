@@ -69,6 +69,7 @@ mod execute;
 mod files_api;
 #[cfg(feature = "web-chat")]
 mod guests;
+pub mod hold;
 mod local_host;
 #[cfg(feature = "web-monitor")]
 mod monitor;

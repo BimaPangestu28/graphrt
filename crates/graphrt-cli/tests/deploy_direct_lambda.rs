@@ -103,9 +103,17 @@ fn refusals_come_before_any_aws_call_with_a_fix() {
     assert_eq!((line["code"].as_str(), code), (Some("invalid_input"), Some(2)), "{line}");
     assert!(line["message"].as_str().unwrap().contains("--target fly --mode always-on"));
 
-    let (line, _) = deploy(&["--monitor"], dir.path());
+    // The store features are accepted (they get an S3 bucket): the deploy goes
+    // on to AWS, which is unreachable here.
+    let (line, _) = deploy(&["--monitor", "--conversations", "--push", "mailto:ops@example.com"], dir.path());
+    assert_eq!(line["code"], "aws_unavailable", "{line}");
+
+    let (line, _) = deploy(&["--channel", "telegram"], dir.path());
     assert_eq!(line["code"], "invalid_input");
-    assert!(line["message"].as_str().unwrap().contains("--target fly or --target cloud-run"), "{line}");
+    assert!(line["message"].as_str().unwrap().contains("--target fly --mode always-on"), "{line}");
+
+    let (line, _) = deploy(&["--monitor", "--drop-store"], dir.path());
+    assert_eq!(line["code"], "invalid_input", "{line}");
 
     let (line, code) = deploy(&["--profile", "missing"], dir.path());
     assert_eq!((line["code"].as_str(), code), (Some("missing_credentials"), Some(1)), "{line}");
@@ -152,6 +160,31 @@ fn an_unreachable_aws_is_an_error_line_and_not_a_hang() {
         dir.path(),
     );
     assert_eq!(last_line(&output)["code"], "aws_unavailable");
+}
+
+#[test]
+fn capabilities_name_every_target_for_apps() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_graphrt"))
+        .args(["deploy", "capabilities", "--json"])
+        .output()
+        .expect("run graphrt");
+    assert_eq!(output.status.code(), Some(0));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let text = std::fs::read_to_string(repo_root().join("docs/schemas/deploy-capabilities.schema.json")).unwrap();
+    let validator = jsonschema::validator_for(&serde_json::from_str(&text).unwrap()).expect("schema compiles");
+    let errors: Vec<String> = validator.iter_errors(&value).map(|error| error.to_string()).collect();
+    assert!(errors.is_empty(), "{value} does not match the schema: {errors:?}");
+    let lambda = value["targets"].as_array().unwrap().iter().find(|t| t["target"] == "lambda").unwrap().clone();
+    assert_eq!((lambda["available"].as_bool(), lambda["store"]["kind"].as_str()), (Some(true), Some("s3")));
+}
+
+#[test]
+fn deploy_help_lists_the_capabilities_subcommand() {
+    // Apps call `deploy capabilities --json` only when `deploy --help` lists it.
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_graphrt")).args(["deploy", "--help"]).output().unwrap();
+    let help = String::from_utf8_lossy(&output.stdout);
+    let commands = help.split("Commands:").nth(1).unwrap_or_default();
+    assert!(commands.lines().any(|line| line.trim_start().starts_with("capabilities ")), "{help}");
 }
 
 #[test]

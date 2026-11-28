@@ -242,11 +242,23 @@ fn cors_from_args(
     Ok(super::cors::Cors::new(&origins, mapped, has_api_key)?.map(Arc::new))
 }
 
-/// The run store directory: `--store`, else `$GRAPHRT_STORE`.
-#[cfg(any(feature = "conversations", feature = "devices", feature = "console"))]
+/// The run store directory: `--store`, else `$GRAPHRT_STORE`. `None` for a
+/// store of shared objects (`s3://...`), which is no directory.
+#[cfg(feature = "console")]
 pub(super) fn store_dir(args: &ServeArgs) -> Option<PathBuf> {
-    let env_dir = std::env::var(crate::store::STORE_ENV).ok().filter(|dir| !dir.is_empty()).map(PathBuf::from);
-    args.store.clone().or(env_dir)
+    match store_location(args) {
+        Ok(Some(crate::store::StoreLocation::Dir(dir))) => Some(dir),
+        _ => None,
+    }
+}
+
+/// Where the run store is (`--store`, else `$GRAPHRT_STORE`): conversations,
+/// devices and push subscriptions are kept there too.
+///
+/// @throws CliError (usage) - An `s3://` location that cannot be used.
+#[cfg(any(feature = "conversations", feature = "devices", feature = "console"))]
+pub(super) fn store_location(args: &ServeArgs) -> Result<Option<crate::store::StoreLocation>, CliError> {
+    crate::store::location(args.store.as_ref())
 }
 
 /// What `--monitor`, `--devices`, `--approvals`, `--expire-approvals` and
@@ -263,7 +275,7 @@ fn monitoring_from_args(
     has_api_key: bool,
 ) -> Result<AppState, CliError> {
     let flags = &args.monitor;
-    let dir = store_dir(args);
+    let dir = store_location(args)?;
     #[cfg(feature = "web-monitor")]
     let page = flags.monitor;
     #[cfg(not(feature = "web-monitor"))]
@@ -277,7 +289,7 @@ fn monitoring_from_args(
             crate::devices::api::server_url(&url).map_err(|why| CliError::usage(format!("--public-url `{url}`: {why}")))
         })
         .transpose()?;
-    let devices = if flags.devices || page { Some(crate::devices::Devices::open(dir.as_deref())?) } else { None };
+    let devices = if flags.devices || page { Some(crate::devices::Devices::open(dir.as_ref())?) } else { None };
     if let Some(devices) = &devices {
         eprintln!("  {}", devices.describe());
     }
@@ -297,7 +309,7 @@ fn monitoring_from_args(
         let push = flags
             .push
             .as_deref()
-            .map(|contact| WebPush::open(dir.as_deref(), contact, options.allow_private_network))
+            .map(|contact| WebPush::open(dir.as_ref(), contact, options.allow_private_network))
             .transpose()?
             .map(Arc::new);
         if let Some(push) = &push {
@@ -337,13 +349,13 @@ fn conversations_from_args(args: &ServeArgs) -> Result<Option<crate::conversatio
     if !flags.conversations && !for_channels {
         return Ok(None);
     }
-    let dir = store_dir(args);
+    let dir = store_location(args)?;
     let limits = crate::conversations::Limits {
         max_messages: flags.conversation_max_messages,
         per_user: flags.conversations_per_user,
         ttl_days: flags.conversation_ttl_days,
     };
-    let conversations = crate::conversations::Conversations::open(dir.as_deref(), limits)?;
+    let conversations = crate::conversations::Conversations::open(dir.as_ref(), limits)?;
     eprintln!("  {}", conversations.describe(dir.is_some()));
     Ok(Some(conversations))
 }

@@ -2,6 +2,7 @@
 //! Lambda deployment.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde::Serialize;
@@ -23,7 +24,8 @@ use crate::rest::is_conflict;
 pub type Progress<'a> = &'a mut (dyn FnMut(StepEvent) + Send);
 
 /// Environment names the deployer manages itself (not carried over as secrets).
-const MANAGED_ENV: [&str; 7] = [
+const MANAGED_ENV: [&str; 8] = [
+    HOLD_ENV,
     "GRAPHRT_DEPLOYMENT",
     "GRAPHRT_DEPLOYMENT_VERSION",
     "AWS_LWA_PORT",
@@ -37,6 +39,12 @@ const MAX_ENVIRONMENT_BYTES: usize = 4 * 1024;
 /// Path of the adapter binary inside its image.
 const ADAPTER_BINARY: &str = "lambda-adapter";
 const DESCRIPTION_PREFIX: &str = "graphrt";
+/// `graphrt serve`'s switch that holds a response until the server is idle.
+const HOLD_ENV: &str = "GRAPHRT_HOLD_UNTIL_IDLE";
+/// Days a finished run stays in the store bucket (`graphrt serve --store-ttl-days`).
+const STORE_RUN_TTL_DAYS: u32 = 30;
+/// Crashes tolerated while a role just got its store policy (IAM takes seconds to apply it).
+const MAX_START_CRASHES_NEW_POLICY: u32 = 10;
 /// Function errors in a row after which a new version counts as broken.
 const MAX_START_CRASHES: u32 = 3;
 
@@ -94,7 +102,7 @@ pub struct DeploymentStatus {
     pub last_deployed_at: Option<String>,
     /// Lambda has no Machines: always empty (kept for the shape the Fly status has).
     pub machines: Vec<Value>,
-    pub store: Option<()>,
+    pub store: Option<super::StoreSummary>,
 }
 
 /// One entry of `list-versions`, newest first.
@@ -486,7 +494,7 @@ impl LambdaDirect {
     }
 
     /// Invokes version `number` with `GET /readyz` until it answers 200.
-    async fn check_health(&self, number: u64) -> Result<(), DirectError> {
+    async fn check_health(&self, number: u64, max_crashes: u32) -> Result<(), DirectError> {
         let config = LambdaConfig {
             endpoint: self.settings.lambda.clone(),
             limits: self.settings.limits,
@@ -505,7 +513,7 @@ impl LambdaDirect {
         let started = Instant::now();
         let mut last = String::from("no answer");
         let mut crashes = 0;
-        while started.elapsed() < self.settings.health_timeout && crashes < MAX_START_CRASHES {
+        while started.elapsed() < self.settings.health_timeout && crashes < max_crashes {
             match provider.invoke_agent(&deployment, &request).await {
                 Ok(response) if response.head.status == 200 => return Ok(()),
                 Ok(response) => {
@@ -522,7 +530,7 @@ impl LambdaDirect {
             }
             tokio::time::sleep(self.settings.poll_interval).await;
         }
-        let why = if crashes >= MAX_START_CRASHES {
+        let why = if crashes >= max_crashes {
             format!("it stopped {crashes} times while starting")
         } else {
             format!("it was not ready within {} s", self.settings.health_timeout.as_secs())
@@ -715,6 +723,18 @@ impl LambdaDirect {
         if existing.is_none() {
             account::ensure_log_group(&self.logs, &self.log_group(), &request.deployment).await?;
         }
+        let bucket = self.bucket(&account)?;
+        let had_bucket = bucket.exists().await?;
+        let mut new_policy = false;
+        if request.store {
+            event(&mut progress, Step::Preparing, StepStatus::Running, format!("store bucket {}", bucket.name));
+            bucket.ensure(&request.deployment).await?;
+            if request.role_arn.is_none() {
+                account::put_store_policy(&self.iam, &self.role_name(), &super::bucket::role_policy(&bucket.name))
+                    .await?;
+                new_policy = !had_bucket;
+            }
+        }
         event(
             &mut progress,
             Step::Preparing,
@@ -761,7 +781,20 @@ impl LambdaDirect {
 
         event(&mut progress, Step::Starting, StepStatus::Running, "updating the function and publishing the version");
         let description = version_description(&request.version, &request.workflow, request.now_ms);
-        let command = serve_command(&request.serve_flags);
+        let existing_url = if existing.is_some() { self.function_url().await? } else { None };
+        let mut flags = public_url_flags(&request.serve_flags, existing_url.as_deref());
+        if request.store {
+            flags.splice(
+                0..0,
+                [
+                    "--store".to_owned(),
+                    format!("s3://{}", bucket.name),
+                    "--store-ttl-days".to_owned(),
+                    STORE_RUN_TTL_DAYS.to_string(),
+                ],
+            );
+        }
+        let command = serve_command(&flags);
         let configuration = self.configuration(
             &role_arn,
             &environment,
@@ -785,7 +818,8 @@ impl LambdaDirect {
         if paused {
             self.lift_pause().await.map_err(&failure)?;
         }
-        if let Err(error) = self.check_health(number).await {
+        let crash_budget = if new_policy { MAX_START_CRASHES_NEW_POLICY } else { MAX_START_CRASHES };
+        if let Err(error) = self.check_health(number, crash_budget).await {
             if paused {
                 let _still_paused = self.set_pause().await;
             }
@@ -796,7 +830,19 @@ impl LambdaDirect {
         self.point_live(number).await.map_err(&failure)?;
         let url = self.ensure_function_url().await.map_err(&failure)?;
         let removed = self.prune(number).await.map_err(&failure)?;
+        let dropped = if request.drop_store && had_bucket { bucket.delete().await.map_err(&failure)? } else { false };
+        if dropped && request.role_arn.is_none() {
+            account::delete_store_policy(&self.iam, &self.role_name()).await.map_err(&failure)?;
+        }
+        let store = (request.store || (had_bucket && !dropped)).then(|| super::StoreSummary {
+            bucket: bucket.name.clone(),
+            region: self.settings.region.clone(),
+            in_use: request.store,
+        });
         let mut message = format!("{} serves at {url}", request.version);
+        if dropped {
+            message.push_str(&format!(" (store bucket {} deleted)", bucket.name));
+        }
         if !removed.is_empty() {
             message.push_str(&format!(" (removed old version(s) {})", removed.join(", ")));
         }
@@ -809,9 +855,48 @@ impl LambdaDirect {
             workflow: request.workflow.clone(),
             api_key: new_key,
             serve: request.serve_summary.clone(),
-            store: None,
+            store,
             resumed: paused,
         })
+    }
+
+    /// The store bucket of this deployment in `account`.
+    fn bucket(&self, account: &str) -> Result<super::bucket::Bucket, DirectError> {
+        let name = super::bucket::bucket_name(&self.function, account, &self.settings.region);
+        let base_url = self.settings.s3_base_url.as_deref();
+        super::bucket::Bucket::new(
+            Arc::clone(&self.chain),
+            &name,
+            &self.settings.region,
+            base_url,
+            self.settings.limits,
+        )
+    }
+
+    /// The store bucket, if it exists, and whether the `live` version uses it.
+    async fn store_summary(&self, live: Option<u64>) -> Result<Option<super::StoreSummary>, DirectError> {
+        let account = account::account_id(&self.sts).await?;
+        let bucket = self.bucket(&account)?;
+        if !bucket.exists().await? {
+            return Ok(None);
+        }
+        let in_use = match live {
+            Some(number) => self
+                .get_function(Some(&number.to_string()))
+                .await?
+                .and_then(|function| {
+                    function
+                        .get("Configuration")?
+                        .get("ImageConfigResponse")?
+                        .get("ImageConfig")?
+                        .get("Command")?
+                        .as_array()
+                        .map(|command| command.iter().any(|part| part.as_str() == Some("--store")))
+                })
+                .unwrap_or(false),
+            None => false,
+        };
+        Ok(Some(super::StoreSummary { bucket: bucket.name.clone(), region: self.settings.region.clone(), in_use }))
     }
 
     /// Deletes Lambda version `number` and the image tag `label` (best effort:
@@ -881,7 +966,7 @@ impl LambdaDirect {
             mode: Some("scale-to-zero".to_owned()),
             last_deployed_at: current.map(|version| rfc3339(version.deployed_ms)),
             machines: Vec::new(),
-            store: None,
+            store: self.store_summary(live).await?,
         })
     }
 
@@ -975,7 +1060,7 @@ impl LambdaDirect {
             let number = self.publish(&new_configuration, &image_uri, &architecture, true, &description).await?;
             event(&mut progress, Step::Starting, StepStatus::Done, format!("Lambda version {number}"));
             event(&mut progress, Step::Checking, StepStatus::Running, "calling /readyz");
-            self.check_health(number).await?;
+            self.check_health(number, MAX_START_CRASHES).await?;
             number
         };
         self.point_live(number).await?;
@@ -1038,6 +1123,8 @@ impl LambdaDirect {
             }
         }
         Ecr { client: self.ecr.clone() }.delete_repository(&self.repository()).await?;
+        let account = account::account_id(&self.sts).await?;
+        self.bucket(&account)?.delete().await?;
         let own_role = self.role_name();
         if role_from_function.as_deref().is_none_or(|arn| arn.ends_with(&format!("/{own_role}"))) {
             account::delete_role(&self.iam, &own_role).await?;
@@ -1045,6 +1132,24 @@ impl LambdaDirect {
         account::delete_log_group(&self.logs, &self.log_group()).await?;
         Ok(function.is_some())
     }
+}
+
+/// `flags` with the `--public-url` of pairing links set to `url`, or dropped
+/// when the URL is not known yet (the server then takes the request's host).
+fn public_url_flags(flags: &[String], url: Option<&str>) -> Vec<String> {
+    let mut out = Vec::with_capacity(flags.len());
+    let mut iter = flags.iter();
+    while let Some(flag) = iter.next() {
+        if flag == "--public-url" {
+            let value = iter.next().map(String::as_str).filter(|value| !value.is_empty());
+            if let Some(url) = value.or(url) {
+                out.extend(["--public-url".to_owned(), url.to_owned()]);
+            }
+            continue;
+        }
+        out.push(flag.clone());
+    }
+    out
 }
 
 /// `serve /workflows --addr 0.0.0.0:8080` and the feature flags.
@@ -1063,6 +1168,8 @@ fn full_environment(secrets: &BTreeMap<String, String>, deployment: &str, versio
         ("AWS_LWA_PORT", AGENT_PORT.to_string()),
         ("AWS_LWA_INVOKE_MODE", "response_stream".to_owned()),
         ("AWS_LWA_READINESS_CHECK_PATH", "/readyz".to_owned()),
+        // Lambda freezes an instance when a response ends: hold it until the work is stored.
+        (HOLD_ENV, "1".to_owned()),
         // Lambda's file system is read-only except /tmp.
         ("HOME", "/tmp".to_owned()),
         ("TMPDIR", "/tmp".to_owned()),
@@ -1080,6 +1187,12 @@ fn agent_file_name(request: &DeployRequest) -> String {
 }
 
 fn validate(request: &DeployRequest) -> Result<(), DirectError> {
+    if request.store && request.drop_store {
+        return Err(DirectError::invalid(
+            "--drop-store deletes the store this deploy needs: leave out --monitor, --devices, --push, \
+             --conversations and --channel, or leave out --drop-store",
+        ));
+    }
     if !is_version_label(&request.version) {
         return Err(DirectError::invalid(format!(
             "--version {:?} must be 1-64 letters, digits, dots, dashes or underscores, starting with a letter or digit (it is also the image tag)",
@@ -1179,6 +1292,8 @@ mod tests {
             serve_flags: Vec::new(),
             serve_summary: Value::Null,
             role_arn: None,
+            store: false,
+            drop_store: false,
             now_ms: 0,
         }
     }
@@ -1196,6 +1311,17 @@ mod tests {
         let mut label = request();
         label.version = "v 1".into();
         assert!(validate(&label).unwrap_err().message.contains("--version"));
+    }
+
+    #[test]
+    fn the_pairing_url_is_the_known_url_or_left_to_the_request() {
+        let flags: Vec<String> =
+            ["--monitor", "--public-url", "", "--chat", "a"].iter().map(|f| (*f).to_owned()).collect();
+        assert_eq!(public_url_flags(&flags, None), ["--monitor", "--chat", "a"]);
+        assert_eq!(
+            public_url_flags(&flags, Some("https://x.lambda-url.ap-southeast-1.on.aws")),
+            ["--monitor", "--public-url", "https://x.lambda-url.ap-southeast-1.on.aws", "--chat", "a"]
+        );
     }
 
     #[test]

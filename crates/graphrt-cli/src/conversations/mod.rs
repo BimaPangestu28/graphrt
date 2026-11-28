@@ -22,7 +22,6 @@
 mod api;
 mod store;
 
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -283,15 +282,20 @@ pub struct Conversations {
 }
 
 impl Conversations {
-    /// Conversations in `store_dir` (the run store directory), or in memory without one.
+    /// Conversations in the run store's location (a directory or shared
+    /// objects), or in memory without one.
     ///
     /// @throws CliError (usage) - When the directory cannot be created.
-    pub fn open(store_dir: Option<&Path>, limits: Limits) -> Result<Self, CliError> {
-        let store: Arc<dyn ConversationStore> = match store_dir {
-            Some(dir) => Arc::new(
+    pub fn open(store: Option<&crate::store::StoreLocation>, limits: Limits) -> Result<Self, CliError> {
+        let store: Arc<dyn ConversationStore> = match store {
+            Some(crate::store::StoreLocation::Dir(dir)) => Arc::new(
                 FileConversations::open(dir)
                     .map_err(|e| CliError::usage(format!("cannot keep conversations in `{}`: {e}", dir.display())))?,
             ),
+            #[cfg(feature = "store-s3")]
+            Some(crate::store::StoreLocation::Objects(objects)) => {
+                Arc::new(store::SharedConversations::new(Arc::clone(objects)))
+            }
             None => Arc::new(MemoryConversations::default()),
         };
         Ok(Self::with_store(store, limits))
@@ -377,7 +381,7 @@ impl Conversations {
     pub(crate) async fn change(
         &self,
         id: &str,
-        change: impl FnOnce(&mut Conversation, &Limits) + Send + 'static,
+        mut change: impl FnMut(&mut Conversation, &Limits) + Send + 'static,
     ) -> Result<Option<Conversation>, ConversationError> {
         let limits = self.limits;
         self.store.update(id, Box::new(move |conversation| change(conversation, &limits))).await
@@ -480,10 +484,10 @@ impl Turn {
             }
             match end {
                 TurnEnd::Succeeded => {
-                    conversation.variables.extend(variables);
-                    conversation.complete_turn_with(&run, &answer, tools, now, &limits);
+                    conversation.variables.extend(variables.clone());
+                    conversation.complete_turn_with(&run, &answer, tools.clone(), now, &limits);
                 }
-                TurnEnd::Paused => conversation.variables.extend(variables),
+                TurnEnd::Paused => conversation.variables.extend(variables.clone()),
                 TurnEnd::Dropped => conversation.pending.retain(|turn| turn.run_id != run),
             }
         });

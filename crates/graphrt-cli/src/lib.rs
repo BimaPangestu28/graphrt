@@ -21,6 +21,8 @@ pub mod collab_cmd;
 #[cfg(feature = "conversations")]
 pub mod conversations;
 #[cfg(any(feature = "gateway", feature = "deploy-fly", feature = "deploy-cloud-run", feature = "deploy-aws"))]
+pub mod deploy_capabilities;
+#[cfg(any(feature = "gateway", feature = "deploy-fly", feature = "deploy-cloud-run", feature = "deploy-aws"))]
 pub mod deploy_cmd;
 #[cfg(feature = "devices")]
 pub mod devices;
@@ -188,6 +190,9 @@ pub fn enabled_features() -> Vec<&'static str> {
     }
     if cfg!(feature = "deploy-aws") {
         features.push("deploy-aws");
+    }
+    if cfg!(feature = "store-s3") {
+        features.push("store-s3");
     }
     if cfg!(feature = "mimalloc") {
         features.push("mimalloc");

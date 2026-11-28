@@ -167,8 +167,14 @@
           "$ref": "#/$defs/serve"
         },
         "store": {
-          "type": "null",
-          "description": "Lambda keeps no store."
+          "oneOf": [
+            {
+              "$ref": "#/$defs/store"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "region": {
           "type": "string",
@@ -238,7 +244,14 @@
           "$ref": "#/$defs/timestamp"
         },
         "store": {
-          "type": "null"
+          "oneOf": [
+            {
+              "$ref": "#/$defs/store"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "region": {
           "type": "string",
@@ -554,6 +567,28 @@
               "teams"
             ]
           }
+        }
+      }
+    },
+    "store": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bucket",
+        "region",
+        "in_use"
+      ],
+      "description": "The deployment's S3 bucket, `graphrt serve --store s3://<bucket>` (conversations, devices, push subscriptions, runs).",
+      "properties": {
+        "bucket": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "in_use": {
+          "type": "boolean",
+          "description": "Whether the serving version uses it; false: kept from an earlier deploy until --drop-store."
         }
       }
     }

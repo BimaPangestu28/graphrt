@@ -104,14 +104,16 @@ pub struct DirectServeArgs {
     /// e.g. `https://www.example.com`. Repeatable.
     #[arg(long, value_name = "ORIGIN")]
     pub cors_origin: Vec<String>,
-    /// Direct: the server keeps chat conversations (uses the store volume).
+    /// Direct: the server keeps chat conversations (uses the store: a volume on Fly,
+    /// a bucket on Cloud Run, store on Lambda in an S3 bucket).
     #[arg(long)]
     pub conversations: bool,
     /// Direct: serve the monitoring page at `/monitor/`, with device pairing and
-    /// the approvals inbox (uses the store volume).
+    /// the approvals inbox (uses the store: a volume on Fly, a bucket on Cloud Run,
+    /// store on Lambda in an S3 bucket).
     #[arg(long)]
     pub monitor: bool,
-    /// Direct: pair devices with their own revocable token (uses the store volume).
+    /// Direct: pair devices with their own revocable token (uses the store; store on Lambda in an S3 bucket).
     #[arg(long)]
     pub devices: bool,
     /// Direct: serve the approvals inbox (`/v1/approvals`).
@@ -121,14 +123,15 @@ pub struct DirectServeArgs {
     #[arg(long)]
     pub expire_approvals: bool,
     /// Direct: send push notifications when a run fails or waits for a person;
-    /// CONTACT is `mailto:you@example.com` or an `https:` URL (uses the store volume).
+    /// CONTACT is `mailto:you@example.com` or an `https:` URL (uses the store; store on Lambda in an S3 bucket).
     #[arg(long, value_name = "CONTACT")]
     pub push: Option<String>,
     /// Direct: answer customers on `telegram`, `whatsapp`, `slack` or `teams`, credentials
-    /// passed with `--secret` (docs/deploy-direct.md). Repeatable.
+    /// passed with `--secret` (docs/deploy-direct.md). Uses the store (store on Lambda in an
+    /// S3 bucket, where Telegram is refused). Repeatable.
     #[arg(long, value_name = "KIND")]
     pub channel: Vec<String>,
-    /// Direct: delete the store volume and what is on it (paired devices,
+    /// Direct: delete the store (volume or bucket) and what is in it (paired devices,
     /// push subscriptions, conversations) once this deploy serves. Not with an
     /// option that uses the store.
     #[arg(long)]
@@ -178,9 +181,10 @@ impl DirectServeArgs {
 #[derive(Debug, Args)]
 #[command(subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
 pub struct DeployArgs {
-    /// Manage an existing direct deployment instead of deploying.
+    /// Manage an existing direct deployment instead of deploying, or list what
+    /// each target supports (`capabilities`).
     #[command(subcommand)]
-    pub action: Option<DeployAction>,
+    pub action: Option<DeployCommand>,
     #[command(flatten)]
     pub run: DeployRunArgs,
 }
@@ -279,6 +283,24 @@ pub struct DeployRunArgs {
     pub serve_args: Vec<String>,
 }
 
+/// Subcommands of `graphrt deploy`.
+#[derive(Debug, Subcommand)]
+pub enum DeployCommand {
+    /// What every direct target supports in this build (flags, modes, store,
+    /// channels, credentials), for apps: `--json` prints one JSON object.
+    Capabilities(CapabilitiesArgs),
+    #[command(flatten)]
+    Direct(DeployAction),
+}
+
+/// Options of `graphrt deploy capabilities`.
+#[derive(Debug, Args)]
+pub struct CapabilitiesArgs {
+    /// Print one JSON object (the contract is `docs/deploy-capabilities.md`).
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// Management subcommands of a direct deployment.
 #[derive(Debug, Subcommand)]
 pub enum DeployAction {
@@ -368,7 +390,8 @@ pub struct DirectTargetArgs {
 /// Usage errors, platform and gateway failures (with `--json`, after the error line).
 pub fn deploy(args: DeployArgs) -> Result<u8, CliError> {
     match args.action {
-        Some(action) => manage(&action),
+        Some(DeployCommand::Capabilities(capabilities)) => crate::deploy_capabilities::print(capabilities.json),
+        Some(DeployCommand::Direct(action)) => manage(&action),
         None if args.run.direct => deploy_direct(&args.run),
         None => deploy_with_gateway(args.run),
     }

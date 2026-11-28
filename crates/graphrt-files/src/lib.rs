@@ -60,7 +60,7 @@ pub use memory::MemoryStore;
 pub use path::{MAX_COMPONENT_BYTES, MAX_PATH_BYTES, MAX_PATH_DEPTH, PathError, WorkspacePath};
 pub use resolver::WorkspaceResolver;
 #[cfg(feature = "s3")]
-pub use s3::{S3Config, S3Store};
+pub use s3::{Fetched, ObjectError, PutCondition, RawObject, S3Config, S3Store};
 pub use sniff::{MediaClass, MediaType, SNIFF_BYTES, sniff};
 pub use store::{Entry, FileStore, Listing, StoreError, hex};
 pub use tools::{FileTools, FileToolsConfig, PROVIDER, SCOPE_CONTEXT_KEY};

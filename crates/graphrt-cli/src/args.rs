@@ -59,8 +59,9 @@ pub enum Command {
     #[cfg(feature = "gateway")]
     Gateway(Box<crate::gateway_cmd::GatewayArgs>),
     /// Deploy a new immutable version of a deployment, through a gateway or
-    /// with `--direct` straight to Fly.io; manage direct deployments
-    /// (status, list-versions, rollback, pause, resume, remove).
+    /// with `--direct` straight to Fly.io, Cloud Run or AWS Lambda; manage direct
+    /// deployments (status, list-versions, rollback, pause, resume, remove) and list
+    /// what each target supports (capabilities).
     // `--version` names the deployment version here, not the binary's.
     #[cfg(any(feature = "gateway", feature = "deploy-fly", feature = "deploy-cloud-run", feature = "deploy-aws"))]
     #[command(disable_version_flag = true)]
