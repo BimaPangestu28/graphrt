@@ -5,13 +5,17 @@
 //! [`FLUSH_AFTER`], whichever comes first, so a replay (`/events`) or another
 //! replica reading a shared store trails a live run by at most a quarter second.
 //! Store writes that fail with an I/O error are retried with bounded backoff.
+//!
+//! The run goes on while its events are written (see [`Batches`]): a slow store
+//! delays the replay, never the run's nodes, its preemption or its cancellation.
 
-use std::pin::pin;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use futures::future::Either;
 use futures::{Stream, StreamExt};
 use graphrt_core::engine::{RunHandle, RunStream};
 use graphrt_core::response::ResponseAssembler;
@@ -445,42 +449,43 @@ async fn drive(
     mut recorder: Recorder,
 ) {
     let run_id = record.run_id.clone();
-    let mut writer =
-        EventWriter { store: Arc::clone(&store), first_index: record.event_count, written: 0, behind: Vec::new() };
-    let mut pending: Vec<StoredEvent> = Vec::new();
+    let writer = EventWriter {
+        run_id: run_id.clone(),
+        store: Arc::clone(&store),
+        first_index: record.event_count,
+        written: 0,
+        behind: Vec::new(),
+    };
+    let mut batches = Batches::new(writer);
     // Only the assembled text is kept (`text_so_far`); the chunks themselves are dropped.
     let mut chunks = Vec::new();
-    // Armed when the first event of a batch is queued (a timer per batch, not per event).
-    let mut flush_timer = pin!(tokio::time::sleep(FLUSH_AFTER));
-    let mut timer_armed = false;
-    loop {
-        let next = if timer_armed {
-            match futures::future::select(run.next(), flush_timer.as_mut()).await {
-                Either::Left((event, _)) => event,
-                Either::Right(((), _)) => {
-                    timer_armed = false;
-                    writer.write(&run_id, std::mem::take(&mut pending)).await;
-                    continue;
-                }
-            }
-        } else {
-            run.next().await
+    let terminal = loop {
+        let next = std::future::poll_fn(|cx| batches.poll_next(&mut run, active.handle(), cx)).await;
+        let event = match next {
+            Next::Wrote => continue,
+            Next::Event(None) => break None,
+            Next::Event(Some(event)) => event,
         };
-        let Some(event) = next else { break };
         recorder.on_event(&event, &mut record);
         assembler.push_into(&event, &mut chunks);
         chunks.clear();
-        let terminal = event.is_terminal();
-        pending.push(event_to_stored(&event));
-        #[cfg(feature = "conversations")]
-        if terminal {
-            recorder.finish_turn(&run_id, &event, assembler.text_so_far()).await;
+        let stored = event_to_stored(&event);
+        if !event.is_terminal() {
+            active.publish(&Arc::new(event), String::new);
+            batches.push(stored);
+            continue;
         }
+        #[cfg(feature = "conversations")]
+        recorder.finish_turn(&run_id, &event, assembler.text_so_far()).await;
         let event = Arc::new(event);
         active.publish(&event, || assembler.text_so_far().to_owned());
-        if terminal {
-            timer_armed = false;
-            let last = std::mem::take(&mut pending);
+        batches.push_last(stored);
+        break Some(event);
+    };
+    // The engine is done: from here on the driver waits for the store.
+    let (mut writer, last) = batches.finish().await;
+    match terminal {
+        Some(event) => {
             store_final_state(&*store, &mut writer, &mut record, &event, assembler.text_so_far(), last).await;
             // After the state is stored: whoever follows the notice finds it.
             #[cfg(feature = "notify")]
@@ -491,21 +496,150 @@ async fn drive(
             if let Some(channels) = &recorder.capture.channels {
                 channels.run_ended(&record, std::mem::take(&mut recorder.produced_files));
             }
-        } else if pending.len() >= FLUSH_EVERY {
-            timer_armed = false;
-            writer.write(&run_id, std::mem::take(&mut pending)).await;
-        } else if !timer_armed {
-            flush_timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_AFTER);
-            timer_armed = true;
         }
+        None => writer.write(last).await,
     }
-    writer.write(&run_id, pending).await;
     on_finish(&run_id);
     active.done_tx.send_replace(true);
     // After the waiters are woken, so evaluation never delays a response.
     #[cfg(feature = "online-eval")]
     if let Some(online) = &recorder.capture.online {
         online.submit(&record, &active.feed().events);
+    }
+}
+
+/// Unwritten events a run may hold while a write of its events is in flight.
+/// Beyond it the driver takes no more events from the engine until the write
+/// is done (backpressure), unless the run was asked to stop: a paused,
+/// preempted or aborted run always gets to its terminal event.
+const MAX_QUEUED: usize = 4 * FEED_CAP;
+/// How often a run held back by [`MAX_QUEUED`] checks whether it was asked to stop.
+const STOP_CHECK: Duration = Duration::from_millis(10);
+
+/// A write of a run's events; it hands the writer back when done.
+type Write = futures::future::BoxFuture<'static, EventWriter>;
+
+/// Where a run's [`EventWriter`] is: free, or in a write.
+enum Writer {
+    Idle(EventWriter),
+    Busy(Write),
+}
+
+/// What the driver gets from [`Batches::poll_next`].
+enum Next {
+    /// The engine's next event (`None`: the run's stream ended).
+    Event(Option<Event>),
+    /// A write finished or started; nothing for the driver to do.
+    Wrote,
+}
+
+/// A run's events on their way to the store, in batches of [`FLUSH_EVERY`]
+/// events or [`FLUSH_AFTER`] after the first, one write at a time.
+///
+/// A write is polled next to the engine, never in its place: the run's nodes go
+/// on (and so do its preemption and cancellation) while the store is slow.
+/// Events that come during a write are held and go out together in the next one.
+struct Batches {
+    /// Events not handed to a write yet.
+    pending: Vec<StoredEvent>,
+    /// `pending` is to be written as soon as the writer is free.
+    due: bool,
+    /// Fires [`FLUSH_AFTER`] after the first event of a batch (a timer per
+    /// batch, not per event).
+    timer: Pin<Box<tokio::time::Sleep>>,
+    timer_armed: bool,
+    writer: Writer,
+    /// [`MAX_QUEUED`] (lower in tests).
+    max_queued: usize,
+    /// Armed only while the run is held back by [`MAX_QUEUED`].
+    stop_check: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl Batches {
+    fn new(writer: EventWriter) -> Self {
+        Self {
+            pending: Vec::new(),
+            due: false,
+            timer: Box::pin(tokio::time::sleep(FLUSH_AFTER)),
+            timer_armed: false,
+            writer: Writer::Idle(writer),
+            max_queued: MAX_QUEUED,
+            stop_check: None,
+        }
+    }
+
+    /// Queue a (non terminal) event.
+    fn push(&mut self, event: StoredEvent) {
+        self.pending.push(event);
+        if self.pending.len() >= FLUSH_EVERY {
+            self.due = true;
+            self.start_write();
+        } else if !self.timer_armed {
+            self.timer.as_mut().reset(tokio::time::Instant::now() + FLUSH_AFTER);
+            self.timer_armed = true;
+        }
+    }
+
+    /// Queue the terminal event: it goes out with the run's final state.
+    fn push_last(&mut self, event: StoredEvent) {
+        self.pending.push(event);
+    }
+
+    /// Hand the pending events to the writer when they are due and it is free.
+    fn start_write(&mut self) {
+        if !self.due || self.pending.is_empty() {
+            return;
+        }
+        let Writer::Idle(_) = &self.writer else { return };
+        let batch = std::mem::take(&mut self.pending);
+        // A placeholder, replaced below before it could be polled (a boxed
+        // zero sized future does not allocate).
+        let previous = std::mem::replace(&mut self.writer, Writer::Busy(Box::pin(futures::future::pending())));
+        let Writer::Idle(mut writer) = previous else { return };
+        self.writer = Writer::Busy(Box::pin(async move {
+            writer.write(batch).await;
+            writer
+        }));
+        self.due = false;
+        self.timer_armed = false;
+    }
+
+    /// The engine's next event, while the write in flight (if any) makes progress.
+    fn poll_next(&mut self, run: &mut RunStream, handle: &RunHandle, cx: &mut Context<'_>) -> Poll<Next> {
+        if let Writer::Busy(write) = &mut self.writer
+            && let Poll::Ready(writer) = write.as_mut().poll(cx)
+        {
+            self.writer = Writer::Idle(writer);
+            self.start_write();
+            return Poll::Ready(Next::Wrote);
+        }
+        if self.timer_armed && self.timer.as_mut().poll(cx).is_ready() {
+            self.timer_armed = false;
+            self.due = true;
+            self.start_write();
+            return Poll::Ready(Next::Wrote);
+        }
+        let held_back = matches!(self.writer, Writer::Busy(_)) && self.pending.len() >= self.max_queued;
+        if held_back && !handle.stop_requested() {
+            let check = self.stop_check.get_or_insert_with(|| Box::pin(tokio::time::sleep(STOP_CHECK)));
+            if check.as_mut().poll(cx).is_ready() {
+                check.as_mut().reset(tokio::time::Instant::now() + STOP_CHECK);
+                // Polls the new timer (and checks the stop request) again.
+                cx.waker().wake_by_ref();
+            }
+            return Poll::Pending;
+        }
+        self.stop_check = None;
+        run.poll_next_unpin(cx).map(Next::Event)
+    }
+
+    /// Wait for the write in flight; the writer and the events not handed to it.
+    async fn finish(self) -> (EventWriter, Vec<StoredEvent>) {
+        let writer = match self.writer {
+            Writer::Idle(writer) => writer,
+            Writer::Busy(write) => write.await,
+        };
+        (writer, self.pending)
     }
 }
 
@@ -550,7 +684,7 @@ async fn store_final_state(
     };
     // Every part is idempotent, so the ones that went through are not stored twice.
     eprintln!("warning: run {run_id}: cannot store the final state in one write, writing it in parts: {error}");
-    writer.write(&run_id, events).await;
+    writer.write(events).await;
     if let Some(snapshot) = snapshot {
         let saved = with_retries(|| store.save_snapshot(&run_id, &snapshot)).await;
         if let Err(e) = saved {
@@ -567,6 +701,7 @@ async fn store_final_state(
 /// Writes a run's event batches to the store at their indices, retrying I/O errors.
 #[derive(Debug)]
 struct EventWriter {
+    run_id: String,
     store: Arc<dyn RunStore>,
     /// Index of this execution's first event in the run's log.
     first_index: u64,
@@ -597,7 +732,8 @@ impl EventWriter {
     }
 
     /// Append `batch`, the events right after the ones already handed over.
-    async fn write(&mut self, run_id: &str, batch: Vec<StoredEvent>) {
+    async fn write(&mut self, batch: Vec<StoredEvent>) {
+        let run_id = self.run_id.as_str();
         if batch.is_empty() && self.behind.is_empty() {
             return;
         }
@@ -788,6 +924,121 @@ mod tests {
             }
         }
         (seen, lagged, ended_with_terminal)
+    }
+
+    /// A run of `length` quick nodes in a line, and a store holding its record.
+    async fn chain_run(length: usize) -> (RunStream, Arc<crate::store::MemoryStore>) {
+        let mut yaml =
+            String::from("version: '1'\nname: t\ngraph:\n  nodes:\n    - { id: start, type: start, variables: [] }\n");
+        let mut edges = String::new();
+        let mut previous = "start".to_owned();
+        for index in 0..length {
+            yaml.push_str(&format!("    - {{ id: p{index}, type: template-transform, template: x, variables: [] }}\n"));
+            edges.push_str(&format!("    - {{ source: {previous}, target: p{index} }}\n"));
+            previous = format!("p{index}");
+        }
+        yaml.push_str("  edges:\n");
+        yaml.push_str(&edges);
+        let workflow = graphrt_core::dsl::Workflow::from_yaml(&yaml).unwrap_or_else(|e| unreachable!("workflow: {e}"));
+        let graph = graphrt_core::Graph::build(workflow, &graphrt_core::node::Registry::with_builtins())
+            .unwrap_or_else(|e| unreachable!("workflow: {e}"));
+        let run = graphrt_core::Engine::new(Arc::new(graph)).run(graphrt_core::engine::RunInput::new());
+        let store = Arc::new(crate::store::MemoryStore::new());
+        store.create(RunRecord::running("r", "t", "fp", 0)).await.unwrap_or_else(|e| unreachable!("create: {e}"));
+        (run, store)
+    }
+
+    /// Batches whose writer is in a write that ends when `release` is sent.
+    fn stuck_batches(
+        store: Arc<crate::store::MemoryStore>,
+        max_queued: usize,
+    ) -> (Batches, tokio::sync::oneshot::Sender<()>) {
+        let writer = EventWriter { run_id: "r".to_owned(), store, first_index: 0, written: 0, behind: Vec::new() };
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let mut batches = Batches::new(writer);
+        let Writer::Idle(writer) =
+            std::mem::replace(&mut batches.writer, Writer::Busy(Box::pin(futures::future::pending())))
+        else {
+            unreachable!("a new writer is idle")
+        };
+        batches.writer = Writer::Busy(Box::pin(async move {
+            let _released = released.await;
+            writer
+        }));
+        batches.max_queued = max_queued;
+        (batches, release)
+    }
+
+    /// The next step of `batches`, or `None` when it is held back for 100 ms.
+    async fn step(batches: &mut Batches, run: &mut RunStream, handle: &RunHandle) -> Option<Next> {
+        let next = std::future::poll_fn(|cx| batches.poll_next(run, handle, cx));
+        tokio::time::timeout(Duration::from_millis(100), next).await.ok()
+    }
+
+    #[tokio::test]
+    async fn a_write_in_flight_holds_the_run_back_only_past_the_queue_bound_and_never_a_stop() {
+        let (mut run, store) = chain_run(20).await;
+        let handle = run.handle();
+        let (mut batches, _release) = stuck_batches(Arc::clone(&store), 4);
+        // Events go on while the write is in flight, up to the bound.
+        let mut seen = 0;
+        while let Some(next) = step(&mut batches, &mut run, &handle).await {
+            let Next::Event(Some(event)) = next else { unreachable!("the write never ends, the run neither") };
+            assert!(!event.is_terminal());
+            batches.push(event_to_stored(&event));
+            seen += 1;
+        }
+        assert_eq!((seen, batches.pending.len()), (4, 4));
+        // Asked to stop, the run gets to its terminal event although the write still hangs.
+        handle.preempt("test");
+        let terminal = loop {
+            match step(&mut batches, &mut run, &handle).await {
+                Some(Next::Event(Some(event))) if event.is_terminal() => break event,
+                Some(Next::Event(Some(event))) => batches.push(event_to_stored(&event)),
+                other => unreachable!("held back after the stop request: {}", other.is_some()),
+            }
+        };
+        // The nodes are quick: they may all have run before the stop request.
+        assert!(matches!(terminal, Event::RunPaused { .. } | Event::RunSucceeded { .. }), "{terminal:?}");
+    }
+
+    #[tokio::test]
+    async fn events_held_during_a_write_go_out_together_in_the_next_one() {
+        let (mut run, store) = chain_run(20).await;
+        let handle = run.handle();
+        let (mut batches, release) = stuck_batches(Arc::clone(&store), 4);
+        let mut events = 0_u64;
+        while let Some(Next::Event(Some(event))) = step(&mut batches, &mut run, &handle).await {
+            batches.push(event_to_stored(&event));
+            events += 1;
+        }
+        assert_eq!(events, 4);
+        let _sent = release.send(());
+        // The write ends; the held events are due (past the batch timer) and
+        // the run goes on to its end.
+        let mut terminal = None;
+        while terminal.is_none() {
+            match step(&mut batches, &mut run, &handle).await {
+                Some(Next::Wrote) => {}
+                Some(Next::Event(Some(event))) if event.is_terminal() => {
+                    events += 1;
+                    batches.push_last(event_to_stored(&event));
+                    terminal = Some(event);
+                }
+                Some(Next::Event(Some(event))) => {
+                    events += 1;
+                    batches.push(event_to_stored(&event));
+                }
+                Some(Next::Event(None)) | None => unreachable!("the run ended without a terminal event"),
+            }
+        }
+        let (mut writer, last) = batches.finish().await;
+        let written = writer.written;
+        assert!(written >= 4, "{written}");
+        writer.write(last).await;
+        assert_eq!(writer.written, events);
+        let stored = store.events("r", 0).await.unwrap_or_default();
+        assert_eq!(u64::try_from(stored.len()).unwrap_or(0), events);
     }
 
     #[tokio::test]

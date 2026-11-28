@@ -435,6 +435,14 @@ impl RunHandle {
         self.control.request_preempt(reason);
     }
 
+    /// Whether the run was asked to stop: aborted, paused or preempted (by the
+    /// host or by one of its nodes). A host that holds back the run's stream
+    /// (backpressure) lets it through once this is true, so the stop is never
+    /// delayed.
+    pub fn stop_requested(&self) -> bool {
+        self.control.is_stopped() || self.control.pause_requested()
+    }
+
     /// Write a variable into the root frame (applied between node completions).
     pub fn update_variable(&self, selector: Selector, value: Value) {
         self.control.push_update(selector, value);
