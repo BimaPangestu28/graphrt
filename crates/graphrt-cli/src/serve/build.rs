@@ -60,11 +60,27 @@ pub async fn build_state(
         #[cfg(feature = "skills")]
         let mut own_skills = None;
         let mut own_services: Option<Arc<graphrt_core::Services>> = None;
+        // What else a bundle brings: the workflows of its subagents and its budgets.
+        #[cfg(feature = "bundle")]
+        let mut bundled: Option<crate::bundle_cmd::BundleParts> = None;
         let graph = if crate::bundle_cmd::is_bundle(path) {
             // Bundled WebAssembly plugins are registered; services come from the host flags.
             let mut bundle_options = options.clone();
             // Left as it is by a bundle without skills, so what comes back is the bundle's own store.
             bundle_options.skills_dir = None;
+            #[cfg(feature = "bundle")]
+            let graph = {
+                let parts = crate::bundle_cmd::bundle_parts(
+                    path,
+                    &mut bundle_options,
+                    &mut extensions.registry,
+                    &options.trust_keys,
+                )?;
+                let entry = Arc::clone(&parts.entry);
+                bundled = Some(parts);
+                entry
+            };
+            #[cfg(not(feature = "bundle"))]
             let graph = crate::bundle_cmd::bundle_graph(
                 path,
                 &mut bundle_options,
@@ -85,24 +101,41 @@ pub async fn build_state(
         } else {
             setup::load_graph_with(path, options.model_override.as_deref(), &extensions.registry)?
         };
-        let env = setup::workflow_env(&graph, options);
-        let engine = Engine::new(graph).with_clock(Arc::new(TokioClock)).with_limits(limits.clone());
+        #[cfg(feature = "bundle")]
+        let file_limits = bundled.as_ref().map_or_else(|| limits.clone(), |parts| parts.limits_over(&limits));
+        #[cfg(not(feature = "bundle"))]
+        let file_limits = limits.clone();
         let workflow_services = own_services.unwrap_or_else(|| Arc::clone(&services));
-        #[cfg(feature = "skills")]
-        let engine = match own_skills {
-            Some(store) => {
-                #[allow(unused_mut)]
-                let mut own = services_with_skills(&workflow_services, &store);
-                #[cfg(feature = "memory")]
-                setup::with_memory_defaults(&mut own, options, name);
-                bundled_skills.insert(name.clone(), store);
-                engine.with_services(own)
+        // The entry under the file's name, then the workflows a bundle carries for its subagents.
+        #[cfg(feature = "bundle")]
+        let helpers = bundled.map(|parts| parts.helpers).unwrap_or_default();
+        #[cfg(not(feature = "bundle"))]
+        let helpers: Vec<(String, Arc<graphrt_core::Graph>)> = Vec::new();
+        for (name, graph) in std::iter::once((name.clone(), graph)).chain(helpers) {
+            if workflows.contains_key(&name) {
+                return Err(CliError::usage(format!(
+                    "two served workflows are named `{name}` (`{}` brings one)",
+                    path.display()
+                )));
             }
-            None => with_workflow_services(engine, &workflow_services, options, name),
-        };
-        #[cfg(not(feature = "skills"))]
-        let engine = with_workflow_services(engine, &workflow_services, options, name);
-        workflows.insert(name.clone(), ServedWorkflow { engine, env });
+            let env = setup::workflow_env(&graph, options);
+            let engine = Engine::new(graph).with_clock(Arc::new(TokioClock)).with_limits(file_limits.clone());
+            #[cfg(feature = "skills")]
+            let engine = match &own_skills {
+                Some(store) => {
+                    #[allow(unused_mut)]
+                    let mut own = services_with_skills(&workflow_services, store);
+                    #[cfg(feature = "memory")]
+                    setup::with_memory_defaults(&mut own, options, &name);
+                    bundled_skills.insert(name.clone(), Arc::clone(store));
+                    engine.with_services(own)
+                }
+                None => with_workflow_services(engine, &workflow_services, options, &name),
+            };
+            #[cfg(not(feature = "skills"))]
+            let engine = with_workflow_services(engine, &workflow_services, options, &name);
+            workflows.insert(name, ServedWorkflow { engine, env });
+        }
     }
     #[cfg(feature = "subagents")]
     link_served(&mut workflows)?;
@@ -299,5 +332,56 @@ mod subagent_tests {
         assert!(error.contains("cannot run as one") && error.contains("`token`"), "{error}");
         workflows.insert("locked".to_owned(), served(start(serde_json::json!("fallback"))));
         link_served(&mut workflows).unwrap();
+    }
+}
+
+#[cfg(all(test, feature = "bundle", feature = "subagents"))]
+mod bundle_tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    use super::*;
+
+    fn lister(name: &str, listed: &[&str]) -> String {
+        let subagents: Vec<serde_json::Value> =
+            listed.iter().map(|w| serde_json::json!({"workflow": w, "description": "Helps"})).collect();
+        serde_json::json!({"version": "1", "name": name, "graph": {"nodes": [
+            {"id": "start", "type": "start"},
+            {"id": "lead", "type": "agent", "model": {"provider": "openai", "name": "m"}, "query": "go", "subagents": subagents},
+            {"id": "end", "type": "end", "outputs": [{"variable": "text", "value_selector": ["lead", "text"]}]}],
+            "edges": [{"source": "start", "target": "lead"}, {"source": "lead", "target": "end"}]}})
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn a_served_bundle_serves_and_links_its_subagents_under_its_budgets() {
+        let dir = graphrt_core::private_fs::create_fresh_temp_dir("graphrt-serve-bundle-helpers").unwrap();
+        let bytes = graphrt_bundle::BundleBuilder::new("lead", "1.0.0")
+            .workflow("workflow.json", lister("lead", &["research"]))
+            .unwrap()
+            .workflow("workflows/research.json", lister("research", &[]))
+            .unwrap()
+            .limits(graphrt_bundle::BundleLimits { max_total_tokens: Some(9_000), max_cost_micros: Some(400_000) })
+            .build()
+            .unwrap();
+        let path = dir.join("lead.grt");
+        std::fs::write(&path, bytes).unwrap();
+        let options = ServiceOptions {
+            plugins: crate::extensions::PluginOptions { no_default: true, ..Default::default() },
+            ..ServiceOptions::default()
+        };
+        // The host's lower token budget wins, the bundle's cost budget applies.
+        let host = Limits { max_total_tokens: Some(5_000), ..Limits::default() };
+        let state = build_state(&[("lead".to_owned(), path)], &options, host, None).await.unwrap();
+        let lead = &state.workflows["lead"];
+        assert_eq!(lead.engine.limits().max_total_tokens, Some(5_000));
+        assert_eq!(lead.engine.limits().max_cost_micros, Some(400_000));
+        let research = &state.workflows["research"];
+        assert_eq!(research.engine.limits().max_cost_micros, Some(400_000), "served on its own too");
+        assert_ne!(
+            lead.engine.fingerprint(),
+            graphrt_core::Engine::new(Arc::clone(lead.engine.graph())).fingerprint(),
+            "the lead is linked to its subagent"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

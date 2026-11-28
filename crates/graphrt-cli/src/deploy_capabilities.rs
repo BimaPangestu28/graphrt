@@ -19,6 +19,33 @@ pub const SCHEMA_VERSION: u64 = 1;
 const SERVE_FEATURES: [&str; 9] =
     ["chat", "cors-origin", "conversations", "monitor", "devices", "approvals", "expire-approvals", "push", "channel"];
 
+/// Where long term memory is kept on a target with a store (`--memory-dir`).
+const MEMORY_DIR: &str = "/data/memory";
+
+/// What the agent file (a workflow or a bundle) carries to every target: a
+/// workflow file alone brings no subagents, a bundle brings them with the
+/// budgets of its runs (`docs/bundles.md`).
+fn agent_file() -> Value {
+    json!({
+        "formats": ["yaml", "json", "grt"],
+        "subagents": {
+            "in": "bundle",
+            "manifest_field": "workflows",
+            "path": "workflows/<name>.<yaml|yml|json>",
+            "build": "graphrt bundle build <entry> [--workflows DIR]",
+        },
+        "limits": {
+            "in": "bundle",
+            "manifest_field": "limits",
+            "fields": ["max_total_tokens", "max_cost_micros"],
+            "build": "graphrt bundle build <entry> --max-tokens-per-run N --max-cost-per-run AMOUNT",
+            "host_lower_wins": true,
+        },
+        "prices": { "in": "bundle", "file": "providers (graphrt bundle build --providers FILE), `prices` per model" },
+        "memory": { "from": "long_term_memory of any agent node of the agent file", "needs": "store" },
+    })
+}
+
 /// The capabilities of every direct target.
 pub fn capabilities() -> Value {
     let fly = json!({
@@ -32,7 +59,8 @@ pub fn capabilities() -> Value {
         "default_mode": "scale-to-zero",
         "max_request_secs": Value::Null,
         "serve": SERVE_FEATURES,
-        "store": { "kind": "volume", "features": ["conversations", "monitor", "devices", "push", "channel"], "drop_store": true },
+        "store": { "kind": "volume", "features": ["conversations", "monitor", "devices", "push", "channel", "memory"], "drop_store": true },
+        "memory": { "kept": true, "dir": MEMORY_DIR },
         "channels": ["telegram", "whatsapp", "slack", "teams"],
         "channels_always_on": ["telegram", "slack-socket-mode"],
         "idle_cost": "stopped machine rootfs, plus the store volume while it exists",
@@ -51,7 +79,8 @@ pub fn capabilities() -> Value {
         "default_mode": "scale-to-zero",
         "max_request_secs": 3600,
         "serve": SERVE_FEATURES,
-        "store": { "kind": "gcs", "features": ["conversations", "monitor", "devices", "push", "channel"], "drop_store": true },
+        "store": { "kind": "gcs", "features": ["conversations", "monitor", "devices", "push", "channel", "memory"], "drop_store": true },
+        "memory": { "kept": true, "dir": MEMORY_DIR },
         "channels": ["telegram", "whatsapp", "slack", "teams"],
         "channels_always_on": ["telegram", "slack-socket-mode"],
         "idle_cost": "none for the service, storage of the image and the store bucket",
@@ -77,6 +106,10 @@ pub fn capabilities() -> Value {
             "requires_feature": "store-s3",
             "available": cfg!(feature = "store-s3"),
         },
+        "memory": {
+            "kept": false,
+            "refused": "Lambda keeps no files between requests, and requests at once would write notes apart",
+        },
         "channels": ["whatsapp", "slack", "teams"],
         "channels_always_on": [],
         "channels_refused": ["telegram", "slack-socket-mode"],
@@ -87,6 +120,7 @@ pub fn capabilities() -> Value {
         "action": "capabilities",
         "schema_version": SCHEMA_VERSION,
         "graphrt": env!("CARGO_PKG_VERSION"),
+        "agent_file": agent_file(),
         "targets": [fly, cloud_run, lambda],
     })
 }
@@ -143,6 +177,17 @@ mod tests {
         }
         let lambda = targets.iter().find(|target| target["target"] == "lambda").cloned().unwrap_or_default();
         assert_eq!(lambda["store"]["kind"], "s3");
+        assert_eq!(lambda["memory"]["kept"], false);
+        for target in targets.iter().filter(|target| target["target"] != "lambda") {
+            assert_eq!(target["memory"]["dir"], "/data/memory");
+        }
+        assert_eq!(value["agent_file"]["limits"]["fields"], json!(["max_total_tokens", "max_cost_micros"]));
         assert!(lambda["serve"].as_array().is_some_and(|serve| serve.contains(&Value::from("monitor"))));
+    }
+
+    #[cfg(any(feature = "deploy-fly", feature = "deploy-cloud-run"))]
+    #[test]
+    fn the_memory_dir_is_the_one_deploys_give_serve() {
+        assert_eq!(MEMORY_DIR, graphrt_provider_api::direct::MEMORY_PATH);
     }
 }

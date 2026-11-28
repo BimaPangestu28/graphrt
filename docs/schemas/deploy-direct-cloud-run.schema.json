@@ -632,6 +632,10 @@
        "teams"
       ]
      }
+    },
+    "memory": {
+      "description": "Long term memory of the agent is kept on the store (--memory-dir /data/memory). Absent in results of tools older than the field.",
+      "type": "boolean"
     }
    }
   }

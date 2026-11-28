@@ -87,8 +87,19 @@ pub fn service_options(args: &ServiceArgs) -> Result<ServiceOptions, CliError> {
 pub async fn run(args: RunArgs) -> Result<u8, CliError> {
     let mut options = service_options(&args.services)?;
     let mut extensions = Extensions::load(&options.plugins)?;
+    // A bundle brings the workflows of its subagents and the budgets of its runs.
+    #[cfg(feature = "bundle")]
+    let mut bundled: Option<crate::bundle_cmd::BundleParts> = None;
     let graph = if crate::bundle_cmd::is_bundle(&args.workflow) {
         let trust = &args.services.trust_key;
+        #[cfg(feature = "bundle")]
+        {
+            let parts = crate::bundle_cmd::bundle_parts(&args.workflow, &mut options, &mut extensions.registry, trust)?;
+            let entry = Arc::clone(&parts.entry);
+            bundled = Some(parts);
+            entry
+        }
+        #[cfg(not(feature = "bundle"))]
         crate::bundle_cmd::bundle_graph(&args.workflow, &mut options, &mut extensions.registry, trust)?
     } else {
         setup::load_graph_with(&args.workflow, options.model_override.as_deref(), &extensions.registry)?
@@ -122,11 +133,26 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
     }
     #[allow(unused_mut)]
     let mut engine = Engine::new(graph.clone());
+    #[cfg(all(feature = "subagents", feature = "bundle"))]
+    let carried = bundled.as_ref().map(|parts| parts.helpers.clone()).unwrap_or_default();
+    #[cfg(all(feature = "subagents", not(feature = "bundle")))]
+    let carried: Vec<(String, Arc<graphrt_core::Graph>)> = Vec::new();
     #[cfg(feature = "subagents")]
-    if let Some(dir) = &args.workflows {
+    let from_bundle = !carried.is_empty();
+    #[cfg(feature = "subagents")]
+    if args.workflows.is_some() || from_bundle {
         let mut linked = indexmap::IndexMap::new();
-        for (name, path) in workflow_files(dir)? {
-            let graph = setup::load_graph_with(&path, options.model_override.as_deref(), &extensions.registry)?;
+        // The bundle's own workflows, then the files of `--workflows`.
+        let mut found: Vec<(String, Arc<graphrt_core::Graph>)> = carried;
+        if let Some(dir) = &args.workflows {
+            for (name, path) in workflow_files(dir)? {
+                found.push((
+                    name,
+                    setup::load_graph_with(&path, options.model_override.as_deref(), &extensions.registry)?,
+                ));
+            }
+        }
+        for (name, graph) in found {
             let env = setup::workflow_env(&graph, &options);
             // The run's services with the child's own memory scope (its workflow's name).
             #[allow(unused_mut)]
@@ -135,7 +161,7 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
             setup::with_memory_defaults(&mut own, &options, &graph.workflow().name.clone().unwrap_or(name.clone()));
             let link = graphrt_core::engine::LinkedWorkflow::new(graph).with_env(env).with_services(Arc::new(own));
             if linked.insert(name.clone(), link).is_some() {
-                return Err(CliError::usage(format!("--workflows: two files are named `{name}`")));
+                return Err(CliError::usage(format!("--workflows: two workflows are named `{name}`")));
             }
         }
         // Only what the run can reach is linked: every linked workflow is in the
@@ -146,14 +172,20 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
     }
     #[cfg(feature = "subagents")]
     if args.workflows.is_none()
+        && !from_bundle
         && let Some(name) = setup::listed(&graph).first()
     {
         return Err(CliError::usage(format!(
             "an agent lists subagent `{name}`: pass the folder of its workflow with `--workflows DIR`"
         )));
     }
-    let engine =
-        engine.with_services(services).with_clock(Arc::new(TokioClock)).with_limits(setup::limits(&args.services));
+    #[allow(unused_mut)]
+    let mut limits = setup::limits(&args.services);
+    #[cfg(feature = "bundle")]
+    if let Some(parts) = &bundled {
+        limits = parts.limits_over(&limits);
+    }
+    let engine = engine.with_services(services).with_clock(Arc::new(TokioClock)).with_limits(limits);
 
     let mut assembler = ResponseAssembler::new(&graph);
     if let Some(resume) = &input.resume {

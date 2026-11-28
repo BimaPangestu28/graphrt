@@ -29,6 +29,30 @@ pub struct BundleManifest {
     pub requires: Requires,
     /// SHA-256 (hex) of every file except the manifest and signature.
     pub files: BTreeMap<String, String>,
+    /// Budgets every run of the bundle gets, child runs included, unless the
+    /// host sets its own (`--max-tokens-per-run`, `--max-cost-per-run`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<BundleLimits>,
+}
+
+/// The budgets of a bundle's runs. Cost is in the price unit of the
+/// providers file (`prices` per model), in millionths.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleLimits {
+    /// Tokens (prompt and completion) a run may use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_tokens: Option<u64>,
+    /// Cost a run may reach, in millionths of the price unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_micros: Option<u64>,
+}
+
+impl BundleLimits {
+    /// Whether no budget is set.
+    pub fn is_empty(&self) -> bool {
+        self.max_total_tokens.is_none() && self.max_cost_micros.is_none()
+    }
 }
 
 /// What a host needs to run the bundle.

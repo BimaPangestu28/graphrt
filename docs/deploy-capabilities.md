@@ -26,6 +26,7 @@ graphrt deploy capabilities --json
       "max_request_secs": 900,
       "serve": ["chat", "cors-origin", "conversations", "monitor", "devices", "approvals", "expire-approvals", "push", "channel"],
       "store": { "kind": "s3", "features": ["conversations", "monitor", "devices", "push", "channel"], "drop_store": true, "requires_feature": "store-s3", "available": true },
+      "memory": { "kept": false, "refused": "Lambda keeps no files between requests, and requests at once would write notes apart" },
       "channels": ["whatsapp", "slack", "teams"],
       "channels_always_on": [],
       "channels_refused": ["telegram", "slack-socket-mode"],
@@ -54,3 +55,5 @@ makes no network call. The schema is
 | `channels` | values of `--channel` |
 | `channels_always_on` | channels that need `--mode always-on` |
 | `channels_refused` | channels the target cannot run at all |
+| `memory` | whether the target keeps long term memory between instances (`kept`), in which directory of the store (`dir`), or why an agent that remembers is refused (`refused`, Lambda) |
+| `agent_file` | (top level) what the agent file carries to every target: `subagents` and `limits` travel in a bundle (manifest `workflows` and `limits`), prices in its providers file, memory follows `long_term_memory` of the workflows |

@@ -38,7 +38,9 @@ pub use bundle::{Bundle, BundledPlugin, CompatReport, DEFAULT_MAX_KNOWLEDGE_BYTE
 pub use error::BundleError;
 #[cfg(feature = "wasm")]
 pub use graphrt_wasm::WasmLimits;
-pub use manifest::{BUNDLE_FORMAT_VERSION, BundleManifest, MANIFEST_PATH, PluginRef, Requires, SIGNATURE_PATH};
+pub use manifest::{
+    BUNDLE_FORMAT_VERSION, BundleLimits, BundleManifest, MANIFEST_PATH, PluginRef, Requires, SIGNATURE_PATH,
+};
 pub use secrets::check_no_inline_secrets;
 pub use sign::{BundleSignature, KeyPair, generate_keypair, parse_public_key, sign_bundle};
 

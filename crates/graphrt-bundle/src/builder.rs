@@ -7,7 +7,9 @@ use graphrt_core::Workflow;
 
 use crate::archive::{validate_path, write_zip};
 use crate::error::BundleError;
-use crate::manifest::{BUNDLE_FORMAT_VERSION, BundleManifest, MANIFEST_PATH, PluginRef, Requires, SIGNATURE_PATH};
+use crate::manifest::{
+    BUNDLE_FORMAT_VERSION, BundleLimits, BundleManifest, MANIFEST_PATH, PluginRef, Requires, SIGNATURE_PATH,
+};
 use crate::secrets::check_no_inline_secrets;
 use crate::sha256_hex;
 
@@ -26,6 +28,7 @@ pub struct BundleBuilder {
     workflows: Vec<String>,
     files: BTreeMap<String, Vec<u8>>,
     plugins: Vec<PluginRef>,
+    limits: Option<BundleLimits>,
 }
 
 impl BundleBuilder {
@@ -190,6 +193,13 @@ impl BundleBuilder {
         Ok(self)
     }
 
+    /// Budgets of every run of the bundle (`limits` of the manifest). Empty
+    /// limits leave the field out.
+    pub fn limits(mut self, limits: BundleLimits) -> Self {
+        self.limits = (!limits.is_empty()).then_some(limits);
+        self
+    }
+
     /// Finish: compute requirements and hashes and produce the archive bytes.
     pub fn build(self) -> Result<Vec<u8>, BundleError> {
         let entry = self.workflows.first().cloned().ok_or_else(|| BundleError::Build("no workflow added".into()))?;
@@ -233,6 +243,7 @@ impl BundleBuilder {
                 env: env.into_iter().collect(),
             },
             files,
+            limits: self.limits,
         };
         if manifest.name.trim().is_empty() {
             return Err(BundleError::Build("bundle `name` must not be empty".into()));

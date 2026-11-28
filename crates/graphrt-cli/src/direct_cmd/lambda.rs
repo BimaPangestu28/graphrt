@@ -106,6 +106,13 @@ pub(super) fn run_deploy(args: &DeployRunArgs, reporter: &mut Reporter) -> Resul
     }
     common.serve.validate().map_err(Failure::invalid)?;
     refuse_always_on_channels(&common.serve.channels, &common.secrets)?;
+    if common.serve.memory {
+        return Err(Failure::invalid(
+            "the agent keeps long term memory (`long_term_memory`), which Lambda has no disk to keep between \
+             requests: its notes would be lost and two requests at once would write them apart. Use --target fly \
+             or --target cloud-run, whose store keeps them",
+        ));
+    }
     let workflow = workflow_name_of(&common.agent.file_name);
     let direct = direct_for(&common.deployment, args.app.as_deref(), args.region.as_deref(), args.profile.as_deref())?;
     let request = DeployRequest {

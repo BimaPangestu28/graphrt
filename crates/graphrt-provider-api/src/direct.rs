@@ -9,6 +9,9 @@ use serde::Serialize;
 
 /// Where the store is mounted in the container (`graphrt serve --store`).
 pub const STORE_PATH: &str = "/data";
+/// Where the long term memory of the agent's `agent` nodes is kept, on the
+/// store (`graphrt serve --memory-dir`).
+pub const MEMORY_PATH: &str = "/data/memory";
 /// Days a finished run stays in the store (`graphrt serve --store-ttl-days`),
 /// so the store does not fill up with run records.
 pub const STORE_RUN_TTL_DAYS: u32 = 30;
@@ -121,15 +124,24 @@ pub struct ServeOptions {
     pub push: Option<String>,
     /// `--channel <kind>=<workflow>`: messaging channels (each kind once).
     pub channels: Vec<DirectChannel>,
+    /// The agent remembers users (`long_term_memory` in one of its
+    /// workflows): `--memory-dir` on the store, so notes outlive an instance.
+    pub memory: bool,
 }
 
 impl ServeOptions {
     /// Whether the deployment keeps state that must outlive an instance stop or a
     /// redeploy: paired devices, push subscriptions with the server's push key,
     /// conversations, or channel conversations (with the message ids that keep a
-    /// redelivered message from running twice). Such a deployment gets persistent storage as its `--store`.
+    /// redelivered message from running twice), or long term memory. Such a deployment gets persistent
+    /// storage as its `--store`.
     pub fn needs_store(&self) -> bool {
-        self.monitor || self.devices || self.push.is_some() || self.conversations || !self.channels.is_empty()
+        self.monitor
+            || self.devices
+            || self.push.is_some()
+            || self.conversations
+            || !self.channels.is_empty()
+            || self.memory
     }
 
     /// Whether a device is ever paired (then the pairing link needs the public address).
@@ -182,6 +194,9 @@ impl ServeOptions {
         if with_store {
             push("--store", Some(STORE_PATH.to_owned()));
             push("--store-ttl-days", Some(STORE_RUN_TTL_DAYS.to_string()));
+            if self.memory {
+                push("--memory-dir", Some(MEMORY_PATH.to_owned()));
+            }
         }
         if let Some(chat) = &self.chat {
             push("--chat", Some(workflow.to_owned()));
@@ -238,6 +253,7 @@ impl ServeOptions {
             expire_approvals: self.expire_approvals,
             push: self.push.is_some(),
             channels: self.channels.iter().map(|channel| channel.as_str()).collect(),
+            memory: self.memory,
         }
     }
 }
@@ -263,6 +279,8 @@ pub struct ServeSummary {
     pub push: bool,
     /// The messaging channels the agent answers on (`telegram`, `whatsapp`).
     pub channels: Vec<&'static str>,
+    /// Long term memory is kept on the store (`--memory-dir`).
+    pub memory: bool,
 }
 
 /// How a direct deployment runs.
@@ -418,6 +436,7 @@ mod tests {
             expire_approvals: true,
             push: Some("mailto:owner@example.com".into()),
             channels: vec![DirectChannel::Telegram, DirectChannel::WhatsApp],
+            memory: true,
         }
     }
 
@@ -463,6 +482,8 @@ mod tests {
                 "/data",
                 "--store-ttl-days",
                 "30",
+                "--memory-dir",
+                "/data/memory",
                 "--chat",
                 "support",
                 "--chat-access",
@@ -498,9 +519,17 @@ mod tests {
             ServeOptions { push: Some("mailto:a@b.co".into()), ..ServeOptions::default() },
             ServeOptions { conversations: true, ..ServeOptions::default() },
             ServeOptions { channels: vec![DirectChannel::WhatsApp], ..ServeOptions::default() },
+            ServeOptions { memory: true, ..ServeOptions::default() },
         ] {
             assert!(options.needs_store(), "{options:?}");
         }
+        // Memory lives on the store: without one, no `--memory-dir` (the platform has no disk to keep).
+        let memory = ServeOptions { memory: true, ..ServeOptions::default() };
+        assert!(memory.serve_flags("support", "https://support.fly.dev", false).is_empty());
+        assert_eq!(
+            memory.serve_flags("support", "https://support.fly.dev", true)[4..],
+            ["--memory-dir", "/data/memory"]
+        );
         let inbox_only = ServeOptions { approvals: true, expire_approvals: true, ..ServeOptions::default() };
         assert!(!inbox_only.needs_store(), "the inbox reads the runs: it keeps nothing of its own");
         assert_eq!(inbox_only.serve_flags("a", "https://a.fly.dev", false), ["--expire-approvals"]);
