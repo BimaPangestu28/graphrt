@@ -51,6 +51,7 @@ impl Drop for TempDir {
 
 /// `chat` and `confirm` are built for signed-in users (they take the verified
 /// token), `support` is offered to chat guests, `internal` to nobody but the key.
+/// `shop` answers with the page context (`sys.context`) and the user.
 fn write_workflows(dir: &TempDir) -> PathBuf {
     let flows = dir.path().join("flows");
     std::fs::create_dir_all(&flows).unwrap();
@@ -117,6 +118,22 @@ graph:
       variables:
         - { variable: message, type: text-input, required: true }
     - { id: done, type: answer, answer: "You said {{#start.message#}} as {{#sys.user_id#}}" }
+  edges:
+    - { source: start, target: done }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        flows.join("shop.yaml"),
+        r#"version: "1"
+name: shop
+graph:
+  nodes:
+    - id: start
+      type: start
+      variables:
+        - { variable: user_jwt, type: secret, required: false }
+    - { id: done, type: answer, answer: "{{#sys.query#}} about {{#sys.context.product_id#}} for {{#sys.user_id#}}" }
   edges:
     - { source: start, target: done }
 "#,
@@ -705,4 +722,54 @@ async fn each_guest_is_rate_limited() {
     for _ in 0..5 {
         assert_eq!(call(&app, "GET", &format!("/v1/runs/{last}"), As::Bearer(token), None).await.0, StatusCode::OK);
     }
+}
+
+// ---- The page context of a web chat (`sys.context`) ---------------------------------
+
+#[tokio::test]
+async fn the_page_context_reaches_the_workflow_and_is_never_identity() {
+    let dir = TempDir::new("context");
+    let app = app(&dir, Setup::default()).await;
+    let start = json!({ "sys": {
+        "query": "Is it in stock?",
+        "context": { "product_id": "sku-1", "cart": { "items": [{ "id": "sku-2", "qty": 1 }] } },
+    } });
+    let (status, result) = call(&app, "POST", "/v1/workflows/shop/runs", As::Key, Some(&start)).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["answer"], "Is it in stock? about sku-1 for ");
+
+    // A context that claims to be someone else changes nothing: the user is the verified token.
+    let forged = json!({ "sys": {
+        "query": "Refund me",
+        "context": { "product_id": "sku-1", "user_id": "admin", "role": "admin", "sub": "admin" },
+    } });
+    let alice = token_for("alice");
+    let (status, result) = call(&app, "POST", "/v1/workflows/shop/runs", As::User(&alice), Some(&forged)).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["answer"], "Refund me about sku-1 for alice");
+}
+
+#[tokio::test]
+async fn a_page_context_out_of_its_limits_is_refused() {
+    let dir = TempDir::new("context-limits");
+    let app = app(&dir, Setup::default()).await;
+    let mut deep = json!("leaf");
+    for _ in 0..6 {
+        deep = json!({ "next": deep });
+    }
+    let refused = [
+        (json!("sku-1"), "must be a JSON object"),
+        (json!(["sku-1"]), "must be a JSON object"),
+        (deep, "nested deeper than 5 levels"),
+        (json!({ "notes": "x".repeat(9000) }), "more than 8192"),
+    ];
+    for (context, reason) in refused {
+        let start = json!({ "sys": { "query": "hi", "context": context } });
+        let (status, body) = call(&app, "POST", "/v1/workflows/shop/runs", As::Key, Some(&start)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.to_string().contains(reason), "{reason}: {body}");
+    }
+    // Nothing was started for them.
+    let (_, runs) = call(&app, "GET", "/v1/runs", As::Key, None).await;
+    assert_eq!(runs["runs"].as_array().map(Vec::len), Some(0), "{runs}");
 }

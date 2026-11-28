@@ -265,6 +265,8 @@ fn prepare(state: &AppState, run_id: &str, epoch: u64, mut body: RunBody) -> Res
         ..RunRequest::default()
     };
     context.apply_context(&mut record).map_err(|m| bad_request(&m))?;
+    // The gateway forwards the client's `sys` as it came: its page context is checked here.
+    crate::serve::check_page_context(&body.sys).map_err(|m| bad_request(&m))?;
     record.user_verified = verified_user.is_some();
     record.deployment = state.gateway_agent().map(|agent| agent.deployment().to_owned());
     record.deployment_version = body.deployment_version;

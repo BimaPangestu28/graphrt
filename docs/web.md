@@ -11,6 +11,7 @@ piece is off until you ask for it.
 | A public chat page | `--chat WORKFLOW --chat-access guests` | Share the link `/chat/WORKFLOW` |
 | A chat bubble on your site | the above, plus `--cors-origin https://your.site` | Add [one script tag](#the-widget) |
 | A chat for signed in users | `--chat WORKFLOW --chat-access users --verify-jwt ...` | Hand the widget [the user's token](#signed-in-users) |
+| The chat to know the page and to react to it | the widget | The [Embed SDK](#embed-sdk): events, `send`, page context |
 | Your own page | `--cors-origin https://your.site` | Use the [browser client](#the-browser-client) |
 | The server to keep the history | `--conversations` | Send `conversation_id` instead of `sys.history` |
 
@@ -139,8 +140,8 @@ The bubble opens a panel. On a phone the panel fills the screen. The chat
 connects to the server when the panel is first opened, so a page whose visitor
 never opens it makes no request.
 
-`window.GraphrtChat` has `open()`, `close()`, `toggle()` and
-`setUserToken(token)`.
+`window.GraphrtChat` is the [Embed SDK](#embed-sdk): events, `send`, the page
+context and the options in JavaScript.
 
 The widget lives in a shadow tree: the styles of your page do not change it and
 its styles do not leak into your page. If your site has a
@@ -158,18 +159,225 @@ With `--chat-access users` the chat sends the token of your identity provider
 (Supabase Auth, Auth0, Firebase...) in the header `--verify-jwt` verifies:
 
 ```html
-<script src="https://agent.example.com/chat/embed.js" data-workflow="support" async></script>
 <script>
-  addEventListener("load", () => {
-    // A function is asked for the token before every request, so a refreshed token is used.
-    GraphrtChat.setUserToken(() => auth.currentSession().access_token);
-  });
+  window.GraphrtChat = window.GraphrtChat || { q: [] };
+  // A function is asked for the token before every request, so a refreshed token is used.
+  GraphrtChat.q.push(["setUserToken", () => auth.currentSession().access_token]);
 </script>
+<script src="https://agent.example.com/chat/embed.js" data-workflow="support" async></script>
 ```
 
 For the chat page, pass the token in the fragment: `/chat/support#token=...`.
 A fragment is never sent to a server, and the page removes it from the address
 bar at once.
+
+## Embed SDK
+
+The widget script is also a small API, `window.GraphrtChat`. With it a site
+passes what the visitor looks at, sends messages for them and reacts to the
+chat. Everything below is in `/chat/embed.js`, which stays about 36 KB
+gzipped.
+
+### Calling it before the script loaded
+
+The script loads `async`, so a page queues its calls in a stub. The script
+runs the queue in order when it loads, before the bubble shows. After that,
+`GraphrtChat.q.push` runs a call at once, so the same code works whenever it
+runs:
+
+```html
+<script>
+  window.GraphrtChat = window.GraphrtChat || { q: [] };
+  GraphrtChat.q.push(["init", { workflow: "support", greeting: "Questions about your order?" }]);
+  GraphrtChat.q.push((chat) => chat.on("answer", (answer) => console.log(answer.text)));
+</script>
+<script src="https://agent.example.com/chat/embed.js" async></script>
+```
+
+A queued call is `[method, ...arguments]` or a function that gets the API.
+An error in one is reported in the console and the calls after it still run.
+
+### Options
+
+`GraphrtChat.init({...})` takes the same options as the `data-` attributes of
+the script tag, and wins over them:
+
+| `init` option | Attribute | Meaning |
+| --- | --- | --- |
+| `workflow` | `data-workflow` | The workflow to chat with |
+| `heading` | `data-heading` | Title of the panel |
+| `greeting` | `data-greeting` | Text shown before the first message |
+| `placeholder` | `data-placeholder` | Placeholder of the message box |
+| `theme` | `data-theme` | `light`, `dark` or `auto` (the visitor's system setting, the default) |
+| `position` | `data-position` | `right` (default) or `left` |
+| `open` | `data-open` | Open the panel at once |
+| `userToken` | | The signed in user's token, or a function that returns it |
+| `context` | | The [page context](#page-context) |
+
+Every option counts until the chat first opens. After that, the look changes
+(`heading`, `greeting`, `placeholder`, `theme`, `position`) and the workflow
+stays.
+
+### Methods
+
+| Method | What |
+| --- | --- |
+| `open()`, `close()`, `toggle()` | Show or hide the panel |
+| `send(text)` | Open the panel and send `text` as the visitor's message once the chat is ready. Calls made early are sent in order. Returns a promise that resolves when the answer is complete |
+| `setContext(object)` | Set the [page context](#page-context) of the next messages. `null` clears it |
+| `reset()` | Start a new conversation |
+| `setTheme(theme)` | `light`, `dark` or `auto` |
+| `setUserToken(token)` | The signed in user's token. Set it before the chat opens |
+| `on(event, listener)` | Call `listener(detail)` on every `event`. Returns a function that removes it |
+| `off(event, listener)` | Remove a listener |
+| `element` | The `<graphrt-chat-widget>` element |
+
+The chat connects to the server when it first opens (or on the first `send`),
+so a page that never opens it still makes no request.
+
+### Events
+
+| Event | When | `detail` |
+| --- | --- | --- |
+| `open` | The panel opened | `{workflow}` |
+| `close` | The panel closed, however it was closed | `{workflow}` |
+| `ready` | The chat connected and takes messages | `{workflow, title}` |
+| `message` | The visitor sent a message (typed, or with `send`) | `{id, text}` |
+| `answer` | An answer is complete | `{id, runId, text, blocks}`, `blocks` are the [UI blocks](workflow-format.md#ui-blocks) of the run's outputs |
+| `handoff` | The answer waits for a person: a question in the chat (`waitingFor: "visitor"`) or an approval by your team (`"team"`) | `{id, runId, waitingFor}` |
+| `error` | The chat cannot be used (`during: "connect"`), or an answer failed (`"answer"`) | `{during, message, id}`, `message` in words for the visitor |
+
+A first message gives `open`, `ready`, `message`, `answer`, in that order.
+
+### Page context
+
+`setContext` tells the workflow about the page: the product the visitor looks
+at, the page URL, the cart, a display name. It goes with every following
+message as `sys.context`, so a node reads `{{#sys.context.product_id#}}`, and
+an LLM prompt can include `{{#sys.context#}}` as JSON.
+
+- **A JSON object** of at most 8 KiB (as UTF-8 JSON) and 5 levels of nesting.
+  Strings, numbers, booleans, `null`, arrays and plain objects only. A property
+  that is `undefined` is left out. Anything else throws a `TypeError` in the
+  page and the context before stays. The server checks the same limits and
+  answers `400` for a context out of them (cargo feature `web-chat`, in the
+  default build and the released binaries). A build without that feature
+  cannot check a context, so it refuses every one with `400`.
+- **Untrusted.** It comes from the browser, so a visitor can change it to
+  anything. Never put a secret, a price to charge, a role or a permission in
+  it. Nothing in the server reads it, and the user is always the
+  [verified token](#signed-in-users) (`sys.user_id`), whatever the context
+  says. A workflow that looks up an order must check that the order belongs
+  to `sys.user_id`, not trust an order id because it came in the context.
+- **Like the message.** It reaches the run like `sys.query`: it is part of the
+  run's input and can appear in traces.
+
+### Examples
+
+A product page that tells the chat what the visitor looks at, and asks for
+them:
+
+```html
+<script>
+  window.GraphrtChat = window.GraphrtChat || { q: [] };
+  GraphrtChat.q.push(["setContext", {
+    product_id: "sku-1042",
+    product_name: "Rain jacket, blue",
+    page: location.href,
+  }]);
+</script>
+<script src="https://agent.example.com/chat/embed.js" data-workflow="shop" async></script>
+
+<button onclick="GraphrtChat.send('Is this jacket available in size M?')">Ask about sizes</button>
+```
+
+The workflow reads it:
+
+```yaml
+- id: answer
+  type: llm
+  model: { provider: openai, name: gpt-4o-mini }
+  prompt_template:
+    - role: system
+      text: "The visitor looks at {{#sys.context.product_name#}} ({{#sys.context.product_id#}})."
+    - role: user
+      text: "{{#sys.query#}}"
+```
+
+A site with signed in users (`--chat-access users`): the token says who they
+are, the context only how to greet them:
+
+```html
+<script>
+  window.GraphrtChat = window.GraphrtChat || { q: [] };
+  GraphrtChat.q.push(
+    ["setUserToken", () => auth.currentSession().access_token],
+    ["setContext", { display_name: currentUser.firstName, cart_items: cart.length }],
+    (chat) => chat.on("handoff", () => analytics.track("chat_handoff")),
+  );
+</script>
+<script src="https://agent.example.com/chat/embed.js" data-workflow="support" async></script>
+```
+
+React, with the script tag in the page's HTML. The context follows the
+product shown, and the listener is removed with the component:
+
+```tsx
+import { useEffect } from "react";
+import type { GraphrtChatApi, GraphrtChatStub } from "graphrt/chat";
+
+declare global {
+  interface Window {
+    GraphrtChat?: GraphrtChatApi | GraphrtChatStub;
+  }
+}
+
+function chat(call: (api: GraphrtChatApi) => void): void {
+  window.GraphrtChat = window.GraphrtChat ?? { q: [] };
+  window.GraphrtChat.q.push(call);
+}
+
+export function ProductPage({ product }: { product: { id: string; name: string } }) {
+  useEffect(() => {
+    chat((api) => api.setContext({ product_id: product.id, product_name: product.name }));
+  }, [product.id, product.name]);
+
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    chat((api) => {
+      stop = api.on("answer", (answer) => console.log("answered", answer.runId));
+    });
+    return () => stop?.();
+  }, []);
+
+  return <button onClick={() => chat((api) => void api.send(`Tell me about ${product.name}`))}>Ask</button>;
+}
+```
+
+The types (`GraphrtChatApi`, `GraphrtChatInitOptions`, `ChatEventMap`,
+`ChatContext` and the `detail` of each event) come with the npm package
+[`graphrt`](../web/packages/graphrt) as `graphrt/chat`. Only the types are
+needed for the script tag. They are strict, without `any`.
+
+### The same in the components
+
+`<graphrt-chat>` and `<graphrt-chat-widget>` of `graphrt/chat` have the same
+methods (`send`, `setContext`, `reset`, the widget also `open`, `close`,
+`toggle`) and fire the events as DOM events named `graphrt-chat-<event>`,
+with the payload in `detail`. They leave the shadow tree, so a listener on
+the element or on `document` gets them:
+
+```ts
+import { defineGraphrtChat, type GraphrtChatElement } from "graphrt/chat";
+
+defineGraphrtChat();
+const chat = document.querySelector("graphrt-chat") as GraphrtChatElement;
+chat.setContext({ product_id: "sku-1042" });
+chat.addEventListener("graphrt-chat-answer", (event) => console.log(event.detail.text));
+```
+
+Without a view, `ChatSession` has `setContext` and `on(listener)` for the
+`ready`, `message`, `answer`, `handoff` and `error` events.
 
 ## Cross-origin requests (CORS)
 

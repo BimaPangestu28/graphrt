@@ -274,6 +274,13 @@ They honour standard proxy environment variables, except the OTel exporter and
   those, as a guest with a signed, stateless token, within
   `--chat-guest-rate-limit` and `--chat-guest-budget`. See
   [web.md](web.md#guests).
+- **Page context is data, not identity.** `sys.context`, which the chat widget
+  sends with every message, is checked for its shape and size only (a JSON
+  object, at most 8 KiB and 5 levels, else `400`). A build without the
+  `web-chat` feature refuses any context. Nothing in the server
+  reads it: the user is the verified token. Treat it in a workflow like the
+  visitor's message, never as proof of who they are or what they may do. See
+  [web.md](web.md#page-context).
 - **Device tokens.** `--devices` pairs a device with a token that lists and
   reads runs and resolves approvals, and nothing else: it starts, stops and
   deletes nothing and pairs no device. Tokens are 256 random bits, stored as

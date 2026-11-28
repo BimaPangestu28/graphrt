@@ -10,7 +10,13 @@
  * button that fires `graphrt-chat-close`).
  *
  * Properties: `userToken` (a token or a function returning one, for servers
- * with `--chat-access users`) and `apiKey`.
+ * with `--chat-access users`), `apiKey` and `context` (see {@link GraphrtChatElement.setContext}).
+ *
+ * Methods: `send(text)`, `setContext(context)` and `reset()`.
+ *
+ * Events (`CustomEvent`s that leave the shadow tree, payload in `detail`):
+ * `graphrt-chat-ready`, `graphrt-chat-message`, `graphrt-chat-answer`,
+ * `graphrt-chat-handoff`, `graphrt-chat-error` and `graphrt-chat-close`.
  */
 import type { TokenSource } from "../client/index.ts";
 import {
@@ -20,7 +26,9 @@ import {
   type GraphrtBlockElement,
   uiBlockKind,
 } from "../ui/index.ts";
+import { type ChatContext, checkChatContext } from "./context.ts";
 import { loadDiagrams } from "./diagrams.ts";
+import { dispatchChatEvent } from "./events.ts";
 import { type ChatMessage, ChatSession, type ChatState, type KeyValueStore } from "./session.ts";
 import { CHAT_CSS } from "./styles.ts";
 import { richText } from "./text.ts";
@@ -66,6 +74,11 @@ export class GraphrtChatElement extends BaseElement {
   apiKey: string | undefined;
   #session: ChatSession | undefined;
   #unsubscribe: (() => void) | undefined;
+  #context: ChatContext | undefined;
+  /** Calls of `send` and `reset`, one after the other. */
+  #outbox: Promise<void> = Promise.resolve();
+  /** Checks run after every change of the state, until they return true. */
+  #waiters: (() => boolean)[] = [];
   #views = new Map<string, MessageView>();
   #parts:
     | {
@@ -102,10 +115,20 @@ export class GraphrtChatElement extends BaseElement {
         ...(this.userToken === undefined ? {} : { userToken: this.userToken }),
         ...(this.apiKey === undefined ? {} : { apiKey: this.apiKey }),
         ...(storage === undefined ? {} : { storage }),
+        ...(this.#context === undefined ? {} : { context: this.#context }),
       });
-      this.#unsubscribe = this.#session.subscribe((state) => this.#render(state));
-      this.#render(this.#session.state);
-      void this.#session.start();
+      const session = this.#session;
+      const stopState = session.subscribe((state) => {
+        this.#render(state);
+        this.#waiters = this.#waiters.filter((done) => !done());
+      });
+      const stopEvents = session.on((event) => dispatchChatEvent(this, event.type, event.detail));
+      this.#unsubscribe = () => {
+        stopState();
+        stopEvents();
+      };
+      this.#render(session.state);
+      void session.start();
     }
   }
 
@@ -113,6 +136,7 @@ export class GraphrtChatElement extends BaseElement {
     this.#unsubscribe?.();
     this.#unsubscribe = undefined;
     this.#session = undefined;
+    // Calls that waited for this session wait for the next one.
     this.#views.clear();
     this.#parts?.list.replaceChildren(this.#parts.empty);
   }
@@ -131,6 +155,93 @@ export class GraphrtChatElement extends BaseElement {
     if (this.#session !== undefined) {
       this.#render(this.#session.state);
     }
+  }
+
+  /** The page context sent with every message as `sys.context`. */
+  get context(): ChatContext | undefined {
+    return this.#context;
+  }
+
+  set context(context: ChatContext | undefined) {
+    this.setContext(context);
+  }
+
+  /**
+   * Set the page context (the product the visitor looks at, the page, the
+   * cart). The workflow reads it as `sys.context`. It is untrusted data of
+   * the browser: never identity, secrets or permissions. `undefined` clears it.
+   *
+   * @throws TypeError - When it is not a JSON object of at most 8 KiB and 5
+   *   levels. The context before stays.
+   */
+  setContext(context: ChatContext | undefined): void {
+    const checked = context === undefined ? undefined : checkChatContext(context);
+    this.#context = checked;
+    this.#session?.setContext(checked);
+  }
+
+  /**
+   * Send `text` as the visitor's message. Waits until the chat is ready and
+   * the answer before is complete, so calls made early are sent in order.
+   *
+   * @returns When the answer is complete, or at once when the chat cannot be
+   *   used (the `graphrt-chat-error` event says why).
+   */
+  send(text: string): Promise<void> {
+    return this.#queue(async () => {
+      for (;;) {
+        const session = await this.#whenReady(true);
+        if (session === undefined) {
+          return;
+        }
+        // The visitor can have sent a message of their own in between.
+        if (!session.state.busy) {
+          await session.send(text);
+          return;
+        }
+      }
+    });
+  }
+
+  /** Start a new conversation, once the chat is ready. */
+  reset(): Promise<void> {
+    return this.#queue(async () => {
+      (await this.#whenReady(false))?.reset();
+    });
+  }
+
+  #queue(work: () => Promise<void>): Promise<void> {
+    const next = this.#outbox.then(work);
+    this.#outbox = next.catch(() => undefined);
+    return next;
+  }
+
+  /**
+   * The session once it is ready (and, with `idle`, not answering), or
+   * `undefined` when it cannot be used.
+   */
+  #whenReady(idle: boolean): Promise<ChatSession | undefined> {
+    return new Promise((resolve) => {
+      const done = (): boolean => {
+        const session = this.#session;
+        if (session === undefined) {
+          return false;
+        }
+        const { status, busy } = session.state;
+        if (status === "unavailable") {
+          resolve(undefined);
+          return true;
+        }
+        if (status === "ready" && !(idle && busy)) {
+          resolve(session);
+          return true;
+        }
+        return false;
+      };
+      if (!done()) {
+        this.#waiters.push(done);
+      }
+    });
   }
 
   #build(): void {
@@ -153,7 +264,7 @@ export class GraphrtChatElement extends BaseElement {
     );
     close.hidden = !this.hasAttribute("closable");
     close.addEventListener("click", () => {
-      this.dispatchEvent(new CustomEvent("graphrt-chat-close", { bubbles: true, composed: true }));
+      dispatchChatEvent(this, "close", { workflow: this.getAttribute("workflow") ?? undefined });
     });
     const empty = make("p", { class: "empty" });
     const list = make(

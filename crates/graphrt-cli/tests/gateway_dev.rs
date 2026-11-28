@@ -174,6 +174,37 @@ fn dev_gateway_records_the_answer_of_a_run() {
     let _cleanup = std::fs::remove_file(workflow);
 }
 
+/// The page context of a web chat (`sys.context`) that a client sends through
+/// the gateway is checked by the agent. A build without the cargo feature
+/// `web-chat` cannot check it, so it refuses every context: one never reaches
+/// a run unchecked. CI runs this file in both builds.
+#[test]
+fn dev_gateway_never_runs_an_unchecked_page_context() {
+    let base = if std::path::Path::new("/tmp").is_dir() { PathBuf::from("/tmp") } else { std::env::temp_dir() };
+    let gateway = DevGateway::start(base.join(format!("grt-gw-context-{}", std::process::id())));
+    gateway.run_hello();
+    let run = |body: &str| -> serde_json::Value {
+        let (status, text) = http(gateway.port, "POST", "/v1/deployments/dev/runs", body);
+        serde_json::from_str(&text).unwrap_or_else(|_| panic!("{status}: {text}\n{}", gateway.log()))
+    };
+    // The agent's `400` reaches the client as a failed run that never started.
+    let refused = |record: &serde_json::Value, reason: &str| {
+        assert_eq!(record["status"], "failed", "{record}");
+        assert_eq!(record["event_count"], 0, "no node ran: {record}");
+        let error = record["error"].as_str().unwrap_or_default();
+        assert!(error.contains("agent refused (400)") && error.contains(reason), "{record}");
+    };
+    let invalid = run(r#"{"inputs":{"name":"Ada"},"sys":{"context":"not an object"}}"#);
+    let valid = run(r#"{"inputs":{"name":"Ada"},"sys":{"context":{"product_id":"sku-1"}}}"#);
+    if cfg!(feature = "web-chat") {
+        refused(&invalid, "must be a JSON object");
+        assert_eq!(valid["status"], "succeeded", "{valid}");
+    } else {
+        refused(&invalid, "needs a build with the cargo feature `web-chat`");
+        refused(&valid, "needs a build with the cargo feature `web-chat`");
+    }
+}
+
 /// Socket paths must fit `sun_path` (104 bytes on macOS, 108 on Linux). With a
 /// socket directory longer than that the agents used to exit with status 2;
 /// the gateway now moves them to a short private directory. (Windows agents

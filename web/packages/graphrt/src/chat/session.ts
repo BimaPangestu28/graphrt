@@ -18,6 +18,8 @@ import {
   type TokenSource,
 } from "../client/index.ts";
 import { collectUiBlocks } from "../ui/index.ts";
+import { type ChatContext, checkChatContext } from "./context.ts";
+import { reportListenerError, type SessionEvent } from "./events.ts";
 
 /** Where a session keeps what must survive a reload. `localStorage` fits. */
 export interface KeyValueStore {
@@ -74,10 +76,13 @@ export interface ChatSessionOptions {
   apiKey?: string;
   /** Keeps the guest session and the conversation across reloads. Default: none. */
   storage?: KeyValueStore;
+  /** The page context sent with every message as `sys.context`. See {@link ChatSession.setContext}. */
+  context?: ChatContext;
   fetch?: typeof fetch;
 }
 
 type Listener = (state: ChatState) => void;
+type EventListener = (event: SessionEvent) => void;
 
 const FAILED = "Something went wrong while answering. Please try again.";
 
@@ -170,6 +175,8 @@ export function questionBlock(reason: PauseReason): Json | undefined {
 export class ChatSession {
   readonly #options: ChatSessionOptions;
   readonly #listeners = new Set<Listener>();
+  readonly #eventListeners = new Set<EventListener>();
+  #context: ChatContext | undefined;
   #client: GraphrtClient;
   #state: ChatState = { status: "loading", title: "", messages: [], busy: false };
   #workflow = "";
@@ -182,7 +189,36 @@ export class ChatSession {
   constructor(options: ChatSessionOptions = {}) {
     this.#options = options;
     this.#token = options.apiKey;
+    this.#context = options.context === undefined ? undefined : checkChatContext(options.context);
     this.#client = this.#newClient();
+  }
+
+  /** The page context sent with the next message, if any. */
+  get context(): ChatContext | undefined {
+    return this.#context;
+  }
+
+  /**
+   * Set the page context, sent with every following message as `sys.context`
+   * (`undefined` sends none). It is untrusted data from the browser: never
+   * identity, secrets or permissions.
+   *
+   * @throws TypeError - When it is not a JSON object within the limits of
+   *   {@link checkChatContext}. The context before stays.
+   */
+  setContext(context: ChatContext | undefined): void {
+    this.#context = context === undefined ? undefined : checkChatContext(context);
+  }
+
+  /**
+   * Call `listener` with every event: `ready`, `message`, `answer`,
+   * `handoff` and `error`.
+   *
+   * @returns A function that stops the calls.
+   */
+  on(listener: EventListener): () => void {
+    this.#eventListeners.add(listener);
+    return () => this.#eventListeners.delete(listener);
   }
 
   /** What a view shows now. A new object after every change. */
@@ -294,6 +330,7 @@ export class ChatSession {
     const question = this.#message("user", content, "done");
     const answer = this.#message("assistant", "", "streaming");
     this.#set({ messages: [...this.#state.messages, question, answer], busy: true });
+    this.#emit({ type: "message", detail: { id: question.id, text: content } });
     try {
       const request = await this.#request(content, history);
       const accepted = await this.#client.startAsync(this.#workflow, request);
@@ -307,6 +344,7 @@ export class ChatSession {
       this.#activeRun = undefined;
       this.#set({ busy: false });
     }
+    this.#emitOutcome(answer.id);
   }
 
   /** Stop the answer that is being produced. */
@@ -347,6 +385,7 @@ export class ChatSession {
       this.#activeRun = undefined;
       this.#set({ busy: false });
     }
+    this.#emitOutcome(messageId);
   }
 
   /** Rate an answer. A second call changes the rating. */
@@ -431,8 +470,12 @@ export class ChatSession {
   }
 
   async #request(content: string, history: Json[]): Promise<RunRequest> {
+    // The checked copy is JSON: its `undefined` properties were left out.
+    const context = this.#context === undefined ? {} : { context: this.#context as Json };
     const message: RunRequest =
-      this.#input === null ? { sys: { query: content } } : { inputs: { [this.#input]: content } };
+      this.#input === null
+        ? { sys: { query: content, ...context } }
+        : { inputs: { [this.#input]: content }, sys: context };
     if (this.#state.config?.conversations) {
       if (this.#conversationId === undefined) {
         const created = await this.#client.conversations.create(
@@ -515,9 +558,59 @@ export class ChatSession {
   }
 
   #set(change: Partial<ChatState>): void {
-    this.#state = { ...this.#state, ...change };
+    const before = this.#state;
+    this.#state = { ...before, ...change };
     for (const listener of this.#listeners) {
       listener(this.#state);
+    }
+    const now = this.#state;
+    if (now.status === "ready" && before.status !== "ready") {
+      this.#emit({ type: "ready", detail: { workflow: this.#workflow, title: now.title } });
+    } else if (
+      now.status === "unavailable" &&
+      (before.status !== "unavailable" || before.notice !== now.notice)
+    ) {
+      this.#emit({ type: "error", detail: { during: "connect", message: now.notice ?? FAILED } });
+    }
+  }
+
+  #emit(event: SessionEvent): void {
+    for (const listener of this.#eventListeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        // A listener of the page that throws must not break the chat.
+        reportListenerError(error);
+      }
+    }
+  }
+
+  /** Fire `answer`, `handoff` or `error` for how the answer `messageId` ended. */
+  #emitOutcome(messageId: string): void {
+    const message = this.#state.messages.find((candidate) => candidate.id === messageId);
+    if (message === undefined) {
+      // The chat was reset while the answer was written.
+      return;
+    }
+    if (message.state === "done") {
+      this.#emit({
+        type: "answer",
+        detail: { id: message.id, runId: message.runId, text: message.text, blocks: message.blocks },
+      });
+    } else if (message.state === "failed") {
+      this.#emit({
+        type: "error",
+        detail: { during: "answer", message: message.error ?? FAILED, id: message.id },
+      });
+    } else if (message.state === "waiting") {
+      this.#emit({
+        type: "handoff",
+        detail: {
+          id: message.id,
+          runId: message.runId,
+          waitingFor: message.questions.length > 0 ? "visitor" : "team",
+        },
+      });
     }
   }
 
