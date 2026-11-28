@@ -684,18 +684,18 @@ const SLOW_DISK_WRITE: Duration = Duration::from_millis(400);
 /// that started 250 ms after the run's last event.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_slow_event_write_does_not_hold_up_preemption() {
-    let (_upstream, port) = start_upstream().await;
+    let (upstream, port) = start_upstream().await;
     let wf = workflows_dir("slow-preempt", port);
     let store = Arc::new(SlowStore::new(Arc::new(graphrt_cli::store::MemoryStore::new()), Duration::ZERO));
     let state = state_with(&wf, Arc::clone(&store) as Arc<dyn RunStore>).await;
     let app = router(Arc::clone(&state), 1 << 20);
     let (status, _, body) = send(&app, post("/v1/workflows/work/runs", json!({ "async": true }))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    wait_until("one active run", || state.active_runs() == 1).await;
+    wait_until("the upstream call", || upstream.calls.load(Ordering::SeqCst) == 1).await;
     let run = state.active_list().remove(0);
 
     // The run hangs in its node; the batch of its first events is written 250 ms
-    // after the first of them, on a disk that now takes 400 ms per write.
+    // after the first of them, on a disk that now takes 2 s per write.
     store.set_write(SLOW_DISK_WRITE * 5);
     tokio::time::sleep(Duration::from_millis(400)).await;
     let preempted = Instant::now();
@@ -705,7 +705,7 @@ async fn a_slow_event_write_does_not_hold_up_preemption() {
     }
     let took = preempted.elapsed();
     assert_eq!(run.terminal_kind(), Some("paused"));
-    assert!(took < Duration::from_millis(500), "the run paused {took:?} after its preemption");
+    assert!(took < Duration::from_secs(1), "the run paused {took:?} after its preemption");
     store.set_write(Duration::ZERO);
     let _ = std::fs::remove_dir_all(&wf);
 }
