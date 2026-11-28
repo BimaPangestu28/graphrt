@@ -29,6 +29,8 @@ struct DevGateway {
     dir: PathBuf,
     port: u16,
     child: Child,
+    /// When the gateway was spawned, for the diagnostics of a failed request.
+    started: Instant,
 }
 
 impl Drop for DevGateway {
@@ -79,19 +81,24 @@ fn free_port() -> u16 {
 
 /// Send one HTTP/1.1 request and return the status code and body.
 fn http(port: u16, method: &str, path: &str, body: &str) -> (u16, String) {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+    try_http(port, method, path, body).unwrap_or_else(|(stage, error)| panic!("{method} {path}: {stage}: {error}"))
+}
+
+/// [`http`], with the stage that failed (connect, write, read) instead of a panic.
+fn try_http(port: u16, method: &str, path: &str, body: &str) -> Result<(u16, String), (&'static str, std::io::Error)> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).map_err(|error| ("connect", error))?;
+    stream.set_read_timeout(Some(Duration::from_secs(30))).map_err(|error| ("connect", error))?;
     write!(
         stream,
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
-    .unwrap();
+    .map_err(|error| ("write", error))?;
     let mut response = String::new();
-    stream.read_to_string(&mut response).unwrap();
+    stream.read_to_string(&mut response).map_err(|error| ("read", error))?;
     let status = response.split(' ').nth(1).and_then(|code| code.parse().ok()).unwrap_or(0);
     let body = response.split_once("\r\n\r\n").map(|(_, rest)| rest.to_owned()).unwrap_or_default();
-    (status, body)
+    Ok((status, body))
 }
 
 impl DevGateway {
@@ -119,7 +126,7 @@ impl DevGateway {
             .stderr(std::fs::File::create(dir.join("gateway.log")).unwrap())
             .spawn()
             .unwrap();
-        let gateway = Self { dir, port, child };
+        let gateway = Self { dir, port, child, started: Instant::now() };
         let deadline = Instant::now() + Duration::from_secs(15);
         while TcpStream::connect(("127.0.0.1", port)).is_err() {
             assert!(Instant::now() < deadline, "graphrt gateway --dev did not listen within 15 s");
@@ -133,7 +140,19 @@ impl DevGateway {
     }
 
     fn run_hello(&self) {
-        let (status, body) = http(self.port, "POST", "/v1/deployments/dev/runs", r#"{"inputs":{"name":"Ada"}}"#);
+        let path = "/v1/deployments/dev/runs";
+        let (status, body) =
+            try_http(self.port, "POST", path, r#"{"inputs":{"name":"Ada"}}"#).unwrap_or_else(|(stage, error)| {
+                // Diagnostics of a reset seen once in CI: was it this gateway, and what had it logged?
+                panic!(
+                    "POST {path} failed at {stage} after {} ms since spawn (gateway pid {}, port {}): {error}\n\
+                     --- gateway log ---\n{}",
+                    self.started.elapsed().as_millis(),
+                    self.child.id(),
+                    self.port,
+                    self.log()
+                )
+            });
         assert_eq!(status, 200, "run through the dev gateway failed: {body}\n{}", self.log());
         let record: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(record["status"], "succeeded", "{record}");

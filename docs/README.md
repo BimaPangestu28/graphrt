@@ -29,6 +29,7 @@ Start with the [project README](../README.md) for install and a first workflow.
 - [One agent on Cloud Run or ECS Fargate](deploy-cloud-run-ecs.md): `graphrt serve` without the gateway, secrets, a volume for the store, zero-downtime redeploys, verified on real GCP and AWS
 - [Direct deploys to Google Cloud Run](deploy-cloud-run.md): `graphrt deploy --target cloud-run --direct`, no gateway and no image build, a Google sign in instead of keys, the same JSON Lines as Fly
 - [Direct deploys to Fly.io](deploy-direct.md) (preview): `graphrt deploy --target fly --direct`, no gateway; JSON Lines contract for apps (status, versions, rollback, pause/resume, remove), API key, least-privilege tokens
+- [Direct deploys to AWS Lambda](deploy-direct-aws.md): `graphrt deploy --target lambda --direct`, a public Function URL that costs nothing while idle, no gateway, no Docker. Same JSON Lines contract, AWS profiles, the smallest IAM policy
 - [Gateway](gateway.md) (preview): always-on front of scale-to-zero agents, SQLite store, auth, limits, webhooks, cron, `graphrt deploy --target local|k8s|cloud-run|aca|ecs|lambda|fly`, measured cold starts
 - [Gateway active/passive](gateway-ha.md) (preview): on-prem HA on a shared volume, fenced lease, systemd units, volumes not to use
 - [Gateway protocol](gateway-protocol.md): `serve --trust-gateway`, signed `/internal/v1` API, run store contract (epochs, idempotent appends, coordination store), SSE ids and `Last-Event-ID`

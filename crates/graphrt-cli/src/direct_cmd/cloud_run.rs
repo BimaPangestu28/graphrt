@@ -36,6 +36,9 @@ pub(super) fn run_deploy(args: &DeployRunArgs, reporter: &mut Reporter) -> Resul
     if args.org.is_some() {
         return Err(Failure::invalid("--org is a Fly option: Cloud Run takes --project"));
     }
+    if args.profile.is_some() {
+        return Err(Failure::invalid("--profile is an AWS option (--target lambda): Cloud Run signs in with Google"));
+    }
     let labels = parse_labels(&args.labels)?;
     let common = common_deploy(args, reporter)?;
     let direct =
@@ -83,6 +86,9 @@ pub(super) fn run_action(action: &DeployAction, reporter: &Reporter) -> Result<(
     let target = action.target();
     if target.org.is_some() {
         return Err(Failure::invalid("--org is a Fly option: Cloud Run takes --project"));
+    }
+    if target.profile.is_some() {
+        return Err(Failure::invalid("--profile is an AWS option (--target lambda): Cloud Run signs in with Google"));
     }
     let direct = direct_for(
         &target.deployment,

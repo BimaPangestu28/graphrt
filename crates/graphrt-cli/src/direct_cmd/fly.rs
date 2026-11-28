@@ -27,6 +27,9 @@ pub(super) fn run_deploy(args: &DeployRunArgs, reporter: &mut Reporter) -> Resul
     if args.project.is_some() || !args.labels.is_empty() {
         return Err(Failure::invalid("--project and --label are Cloud Run options (--target cloud-run)"));
     }
+    if args.profile.is_some() {
+        return Err(Failure::invalid("--profile is an AWS option (--target lambda)"));
+    }
     let common = common_deploy(args, reporter)?;
     let direct = direct_for(&common.deployment, args.app.as_deref())?;
     let request = DeployRequest {
@@ -75,8 +78,10 @@ pub(super) fn run_deploy(args: &DeployRunArgs, reporter: &mut Reporter) -> Resul
 /// `graphrt deploy status|list-versions|rollback|pause|resume|remove --target fly --direct`.
 pub(super) fn run_action(action: &DeployAction, reporter: &Reporter) -> Result<(), Failure> {
     let target: &DirectTargetArgs = action.target();
-    if target.project.is_some() || target.region.is_some() {
-        return Err(Failure::invalid("--project and --region are Cloud Run options here (--target cloud-run)"));
+    if target.project.is_some() || target.region.is_some() || target.profile.is_some() {
+        return Err(Failure::invalid(
+            "--project, --region and --profile are Cloud Run or Lambda options here (--target cloud-run or lambda)",
+        ));
     }
     let direct = direct_for(&target.deployment, target.app.as_deref())?;
     let runtime = runtime()?;

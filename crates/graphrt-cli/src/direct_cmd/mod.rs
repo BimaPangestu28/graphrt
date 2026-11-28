@@ -1,9 +1,11 @@
 //! `graphrt deploy --direct` and its management subcommands: one agent
 //! served straight by a platform, no gateway. Fly.io (feature `deploy-fly`,
-//! [`fly`], `docs/deploy-direct.md`) and Google Cloud Run (feature
-//! `deploy-cloud-run`, [`cloud_run`], `docs/deploy-cloud-run.md`) share the
+//! [`fly`], `docs/deploy-direct.md`), Google Cloud Run (feature
+//! `deploy-cloud-run`, [`cloud_run`], `docs/deploy-cloud-run.md`) and AWS Lambda
+//! (feature `deploy-aws`, [`lambda`], `docs/deploy-direct-aws.md`) share the
 //! flags, the output and the checks of this module. The contracts are pinned by
-//! `tests/deploy_direct.rs` and `tests/deploy_direct_cloud_run.rs`.
+//! `tests/deploy_direct.rs`, `tests/deploy_direct_cloud_run.rs` and
+//! `tests/deploy_direct_lambda.rs`.
 //!
 //! Output: with `--json`, stdout carries JSON Lines only: `step` events, then
 //! exactly one `result` or `error` line (an error after a new API key was
@@ -15,6 +17,8 @@
 mod cloud_run;
 #[cfg(feature = "deploy-fly")]
 mod fly;
+#[cfg(feature = "deploy-aws")]
+mod lambda;
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -171,6 +175,8 @@ pub fn deploy(args: &DeployRunArgs) -> Result<u8, CliError> {
         DeployTarget::Fly => fly::run_deploy(args, &mut reporter),
         #[cfg(feature = "deploy-cloud-run")]
         DeployTarget::CloudRun => cloud_run::run_deploy(args, &mut reporter),
+        #[cfg(feature = "deploy-aws")]
+        DeployTarget::Lambda => lambda::run_deploy(args, &mut reporter),
         other => Err(Failure::invalid(format!("--direct does not support --target {}", other.kind()))),
     };
     match outcome {
@@ -190,6 +196,8 @@ pub fn manage(action: &DeployAction) -> Result<u8, CliError> {
         DeployTarget::Fly => fly::run_action(action, &reporter),
         #[cfg(feature = "deploy-cloud-run")]
         DeployTarget::CloudRun => cloud_run::run_action(action, &reporter),
+        #[cfg(feature = "deploy-aws")]
+        DeployTarget::Lambda => lambda::run_action(action, &reporter),
         other => Err(Failure::invalid(format!("--direct does not support --target {}", other.kind()))),
     };
     match outcome {

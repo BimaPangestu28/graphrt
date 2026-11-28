@@ -27,6 +27,10 @@ deploy-ecs = ["provider-ecs"]
 # Lambda: create/update the image function, publish a version, alias, Function URL (RESPONSE_STREAM).
 deploy-lambda = ["provider-lambda"]
 deploy = ["deploy-ecs", "deploy-lambda"]
+# `graphrt deploy --target lambda --direct`: an agent on a public Function URL with
+# no gateway. Copies the graphrt image into ECR with the Lambda Web Adapter and the
+# agent (no Docker), creates the role, log group, function, alias and URL.
+direct-lambda = ["deploy-lambda", "dep:flate2", "graphrt-provider-api/direct"]
 
 [dependencies]
 graphrt-provider-api.workspace = true
@@ -40,6 +44,7 @@ serde_json = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 bytes = { version = "1", optional = true }
+flate2 = { version = "1", optional = true }
 
 [dev-dependencies]
 graphrt-provider-api = { workspace = true, features = ["conformance"] }

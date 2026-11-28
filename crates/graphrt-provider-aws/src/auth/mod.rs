@@ -17,6 +17,7 @@
 mod clock;
 mod credentials;
 mod presign;
+pub mod profile;
 pub mod sigv4;
 mod sts;
 

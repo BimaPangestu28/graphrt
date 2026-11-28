@@ -110,7 +110,7 @@ jobs:
       - run: cargo check --workspace --exclude graphrt-cli
       - run: >-
           cargo check -p graphrt-cli --no-default-features --features
-          llm,http,code,python,mcp,doc,files,image,rag,connectors,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,deploy-cloud-run,cors,run-follow,conversations,web-chat,devices,approvals,web-push,web-monitor,skills,learning,channel-telegram,channel-whatsapp,channel-slack,channel-teams,context,console,memory,memory-graph,subagents
+          llm,http,code,python,mcp,doc,files,image,rag,connectors,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,deploy-cloud-run,deploy-aws,cors,run-follow,conversations,web-chat,devices,approvals,web-push,web-monitor,skills,learning,channel-telegram,channel-whatsapp,channel-slack,channel-teams,context,console,memory,memory-graph,subagents
       # The `:<version>-collab` image: the collaboration server alone.
       - run: cargo check -p graphrt-cli --no-default-features --features collab
 

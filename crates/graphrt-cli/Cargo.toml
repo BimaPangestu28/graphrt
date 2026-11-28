@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "connectors", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "deploy-cloud-run", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor", "channel-telegram", "channel-whatsapp", "channel-slack", "channel-teams", "context", "memory", "memory-graph", "subagents"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "connectors", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "deploy-cloud-run", "deploy-aws", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor", "channel-telegram", "channel-whatsapp", "channel-slack", "channel-teams", "context", "memory", "memory-graph", "subagents"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # `context_window` of the `llm` and `agent` nodes: a conversation that outgrows the
@@ -225,6 +225,11 @@ deploy-fly = ["dep:graphrt-provider-fly", "graphrt-provider-fly/direct", "dep:gr
 # `graphrt deploy --target cloud-run --direct`: one agent served straight by
 # Google Cloud Run, no gateway (docs/deploy-cloud-run.md).
 deploy-cloud-run = ["dep:graphrt-gcp", "graphrt-gcp/direct-cloud-run", "dep:graphrt-provider-api", "graphrt-provider-api/direct", "dep:reqwest", "dep:rustls", "dep:getrandom"]
+# `graphrt deploy --target lambda --direct` (and the same management subcommands):
+# an agent on a public AWS Lambda Function URL, scaled to zero, no gateway. Signs
+# with the AWS credentials of the environment or a profile (`--profile`); see
+# docs/deploy-direct-aws.md.
+deploy-aws = ["dep:graphrt-provider-aws", "graphrt-provider-aws/direct-lambda", "dep:graphrt-provider-api", "graphrt-provider-api/direct", "dep:reqwest", "dep:rustls", "dep:getrandom"]
 # Opt-in anonymous usage telemetry of the CLI binary (`graphrt telemetry`). Off
 # by default and inert unless an endpoint is configured; see docs/telemetry.md.
 telemetry = ["http", "dep:getrandom"]
@@ -256,6 +261,7 @@ graphrt-gateway = { workspace = true, optional = true }
 graphrt-provider-api = { workspace = true, optional = true }
 graphrt-provider-fly = { workspace = true, optional = true }
 graphrt-gcp = { workspace = true, optional = true }
+graphrt-provider-aws = { workspace = true, optional = true }
 graphrt-console = { workspace = true, optional = true }
 graphrt-collab = { workspace = true, optional = true }
 clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
