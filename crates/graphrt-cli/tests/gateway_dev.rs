@@ -109,7 +109,23 @@ impl DevGateway {
     }
 
     /// Like [`Self::start`], serving `workflow`.
+    ///
+    /// Ready means this gateway logged that it listens on its port: a port from
+    /// [`free_port`] can be taken by another test's process before the gateway
+    /// binds it (seen in CI as a reset 0 ms after spawn with an empty log), so a
+    /// TCP connect alone may reach someone else. A gateway that could not bind
+    /// exits, and is started again on another port.
     fn start_with(dir: PathBuf, workflow: &std::path::Path) -> Self {
+        for _ in 0..5 {
+            if let Some(gateway) = Self::try_start(&dir, workflow) {
+                return gateway;
+            }
+        }
+        panic!("graphrt gateway --dev did not start on any of 5 ports");
+    }
+
+    fn try_start(dir: &std::path::Path, workflow: &std::path::Path) -> Option<Self> {
+        let dir = dir.to_path_buf();
         let _cleanup = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let port = free_port();
@@ -126,13 +142,20 @@ impl DevGateway {
             .stderr(std::fs::File::create(dir.join("gateway.log")).unwrap())
             .spawn()
             .unwrap();
-        let gateway = Self { dir, port, child, started: Instant::now() };
+        let mut gateway = Self { dir, port, child, started: Instant::now() };
+        let listening = format!("graphrt gateway listening on http://127.0.0.1:{port}");
         let deadline = Instant::now() + Duration::from_secs(15);
-        while TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(Instant::now() < deadline, "graphrt gateway --dev did not listen within 15 s");
+        while !gateway.log().contains(&listening) {
+            if gateway.child.try_wait().ok().flatten().is_some() {
+                // Most likely the port was taken: the caller tries another one.
+                eprintln!("gateway on port {port} exited before listening:\n{}", gateway.log());
+                return None;
+            }
+            assert!(Instant::now() < deadline, "graphrt gateway --dev did not listen within 15 s:\n{}", gateway.log());
             std::thread::sleep(Duration::from_millis(10));
         }
-        gateway
+        assert!(TcpStream::connect(("127.0.0.1", port)).is_ok(), "the gateway listens but refuses connections");
+        Some(gateway)
     }
 
     fn log(&self) -> String {
