@@ -102,6 +102,7 @@ fn sandboxed_env() -> Environment<'static> {
     env.set_recursion_limit(RECURSION_LIMIT);
     env.set_auto_escape_callback(|_| AutoEscape::None);
     env.set_undefined_behavior(UndefinedBehavior::Lenient);
+    env.add_filter("grounded", |text: String, sources: minijinja::Value| super::grounding::grounded(&text, &sources));
     env
 }
 
@@ -232,6 +233,30 @@ mod tests {
         .unwrap();
         let NodeOutcome::Completed(o) = r else { panic!() };
         assert_eq!(o.outputs.get("output"), Some(&Value::from("AB ****** |")));
+    }
+
+    #[tokio::test]
+    async fn a_reply_is_checked_against_its_sources() {
+        let mut pool = VariablePool::new();
+        pool.insert("w", "text", Value::from("Our express laundry costs $15k per kg."));
+        pool.insert("start", "message", Value::from("How much is express?"));
+        let template =
+            "{% set checked = reply | grounded([facts, message]) %}{{ checked if checked else 'I do not know.' }}";
+        let config = |facts: &str| {
+            json!({
+                "template": template.replace("facts", &format!("'{facts}'")),
+                "variables": [
+                    {"variable": "reply", "value_selector": ["w", "text"]},
+                    {"variable": "message", "value_selector": ["start", "message"]}
+                ]
+            })
+        };
+        let r = render(config("express 15k per kg"), pool.clone()).await.unwrap();
+        let NodeOutcome::Completed(o) = r else { panic!() };
+        assert_eq!(o.outputs.get("output"), Some(&Value::from("Our express laundry costs 15k per kg.")));
+        let r = render(config("express 12k per kg"), pool).await.unwrap();
+        let NodeOutcome::Completed(o) = r else { panic!() };
+        assert_eq!(o.outputs.get("output"), Some(&Value::from("I do not know.")));
     }
 
     #[tokio::test]
