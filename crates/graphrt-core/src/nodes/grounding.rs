@@ -25,6 +25,29 @@ const CURRENCIES: &[&[&str]] = &[
     &["myr", "ringgit"],
     &["inr", "₹", "rupee", "rupees"],
     &["aud", "a$"],
+    &["vnd", "₫", "dong"],
+    &["thb", "฿", "baht"],
+    &["php", "₱", "peso", "pesos"],
+    &["cny", "rmb", "yuan"],
+    &["krw", "₩", "won"],
+    &["hkd", "hk$"],
+    &["cad", "c$"],
+    &["nzd", "nz$"],
+    &["chf"],
+    &["brl", "r$"],
+    &["zar"],
+    &["ngn", "₦", "naira"],
+    &["aed", "dirham", "dirhams"],
+    &["sar", "riyal", "riyals"],
+    &["try", "₺", "lira"],
+    &["mxn"],
+    &["rub", "₽", "ruble", "rubles"],
+    &["pkr"],
+    &["bdt", "৳", "taka"],
+    &["egp"],
+    &["ghs", "cedi", "cedis"],
+    &["ugx"],
+    &["tzs"],
 ];
 
 /// Multipliers a number may be written with, in the words that follow it.
@@ -109,9 +132,9 @@ fn tokens(text: &str) -> Vec<String> {
                 word.extend(c.to_lowercase());
             }
             '.' | ',' | ':' if between_digits(index) => word.push(*character),
-            '$' | '€' | '£' | '¥' | '₹' => {
+            '$' | '€' | '£' | '¥' | '₹' | '₫' | '฿' | '₱' | '₩' | '₦' | '₺' | '₽' | '৳' => {
                 // `US$`, `S$`, `A$`: the letters before belong to the sign.
-                if !(word == "us" || word == "s" || word == "a") {
+                if !matches!(word.as_str(), "us" | "s" | "a" | "hk" | "c" | "nz" | "r") {
                     flush(&mut word, &mut tokens);
                 }
                 word.push(*character);
@@ -227,9 +250,11 @@ fn next_currency_mark(text: &str, known: &[&str]) -> Option<(usize, usize)> {
             while let Some(found) = lower[from..].find(name) {
                 let start = from + found;
                 let end = start + name.len();
+                // A currency's name or code only next to a number: "try again" is no lira.
                 let whole_word = is_sign
                     || (!lower[..start].chars().last().is_some_and(char::is_alphanumeric)
-                        && !lower[end..].chars().next().is_some_and(char::is_alphabetic));
+                        && !lower[end..].chars().next().is_some_and(char::is_alphabetic)
+                        && next_to_a_number(&lower[..start], &lower[end..]));
                 if whole_word && best.is_none_or(|(at, _)| start < at) {
                     best = Some((start, name.len()));
                 }
@@ -238,6 +263,19 @@ fn next_currency_mark(text: &str, known: &[&str]) -> Option<(usize, usize)> {
         }
     }
     best
+}
+
+/// Whether a word between `before` and `after` stands next to a number (`120k VND`, `IDR 25.000`).
+fn next_to_a_number(before: &str, after: &str) -> bool {
+    let before = before.trim_end();
+    let before = MULTIPLIERS
+        .iter()
+        .find_map(|(word, _)| {
+            before.strip_suffix(word).filter(|rest| rest.ends_with(|c: char| c.is_ascii_digit() || c == ' '))
+        })
+        .unwrap_or(before)
+        .trim_end();
+    before.ends_with(|c: char| c.is_ascii_digit()) || after.trim_start().starts_with(|c: char| c.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -260,6 +298,16 @@ mod tests {
             "Our express laundry service costs 15,000 per kilogram."
         );
         assert_eq!(grounded("Cheesecakes are 120k KES.", &sources(&["cheesecake 120k"])), "Cheesecakes are 120k.");
+        assert_eq!(
+            grounded("Our cheesecakes are priced at 120k VND.", &sources(&["cheesecake 120k"])),
+            "Our cheesecakes are priced at 120k."
+        );
+        assert_eq!(grounded("Price: ₱120k.", &sources(&["cheesecake 120k"])), "Price: 120k.");
+        // A currency's word away from a number is a word.
+        assert_eq!(
+            grounded("Please try again, we won a prize.", &sources(&["x"])),
+            "Please try again, we won a prize."
+        );
         assert_eq!(
             grounded("Harga nasi box Rp 25.000 per box.", &sources(&["nasi box 25k"])),
             "Harga nasi box 25.000 per box."
