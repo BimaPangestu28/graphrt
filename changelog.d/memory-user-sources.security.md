@@ -5,7 +5,8 @@
   customer. Before, a Telegram customer, a login and a backend user with the
   same id text could read each other's notes. Hosts set `sys.user_source` over
   anything a client sends, and subagents inherit it. Notes kept under the id
-  alone move to the scoped id the first time it is used (audit line
-  `adopt_user`), and erasing a scoped id erases them there too. The owner API
+  alone move to the scoped id on the first run of that user (audit line
+  `adopt_user`), owner reads show them until then, and erasing a scoped id
+  erases them there too. The owner API
   and `graphrt memory --user` take scoped ids, and an id without a source means
   `api/<id>`. See `docs/memory.md`.

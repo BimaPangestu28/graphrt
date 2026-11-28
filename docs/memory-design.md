@@ -173,8 +173,13 @@ host bug must not fall back to a shared scope. Alternatives not taken: putting
 the source into `sys.user_id` (lessons, files per user, run ownership and
 conversations all key on it and would all move at once), and a source field
 on `MemoryScope` (every store and API would change for what a prefix of the
-hashed id already gives). Notes kept before sources move to the scoped id on
-its first use, never merged, and an erase of a scoped id erases the old id too.
+hashed id already gives). Scoped ids are hashed with a prefix old ids never
+had, so the two spaces cannot meet. Notes kept before sources move to the
+scoped id on the first run whose host named the source and whose user is
+`sys.user_id` (`MemoryBank::adopt`), never merged, never on an owner read and
+never for an id whose rest is a scoped id (`api/user/bob`). An erase of a
+scoped id erases the old id too, both under one lock. The host's source holds
+only for `sys.user_id`: any other id a `user` template renders is `api`.
 
 ## Stage 1: short term
 

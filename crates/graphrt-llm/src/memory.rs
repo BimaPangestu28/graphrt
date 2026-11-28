@@ -190,6 +190,9 @@ struct Shared {
     user_query: Option<HashSet<String>>,
     /// Notes removed in this run.
     forgets: AtomicUsize,
+    /// Whether the notes kept under the user's id without its source are yet
+    /// to be taken over ([`MemoryBank::adopt`]), before the first use.
+    adopt: futures::lock::Mutex<bool>,
     /// Reads saved notes into the memory graph (`long_term_memory.graph`).
     #[cfg(feature = "memory-graph")]
     extractor: Option<Extractor>,
@@ -262,17 +265,36 @@ fn text_of(ctx: &NodeContext, name: &str) -> Option<String> {
 }
 
 /// Where the user of the run comes from: `sys.user_source`, which the host
-/// sets over anything a client sent, else [`UserSource::Api`] (the host or the
-/// holder of the API key named the user).
+/// sets over anything a client sent. `None` when the host named none (an app
+/// that embeds the runtime, a run paused before sources): its user is `api`.
 ///
 /// @throws NodeError - `memory_scope` (fatal) for a word that names no source:
 ///   a host that sets it wrongly must not fall back to a shared scope.
-fn user_source(ctx: &NodeContext) -> Result<UserSource, NodeError> {
+fn user_source(ctx: &NodeContext) -> Result<Option<UserSource>, NodeError> {
     match text_of(ctx, USER_SOURCE_VAR) {
-        None => Ok(UserSource::Api),
-        Some(word) => UserSource::parse(word.trim()).ok_or_else(|| {
+        None => Ok(None),
+        Some(word) => UserSource::parse(word.trim()).map(Some).ok_or_else(|| {
             NodeError::fatal("memory_scope", "long_term_memory: `sys.user_source` must be `user`, `api` or `channel`")
         }),
+    }
+}
+
+impl Shared {
+    /// Before the first use of the scope in this run: take over the notes kept
+    /// under the user's id without its source. A failure leaves them where
+    /// they are (the owner still sees and erases them there) and the run goes on.
+    async fn ready(&self) {
+        let mut pending = self.adopt.lock().await;
+        if !*pending {
+            return;
+        }
+        *pending = false;
+        if let Err(e) = self.bank.adopt(&self.scope, &self.source).await {
+            eprintln!(
+                "warning: memory of `{}`: notes kept before user sources were not moved to this user ({})",
+                self.scope.agent, e.kind
+            );
+        }
     }
 }
 
@@ -311,10 +333,15 @@ impl RunMemory {
             })?,
         };
         let user = Some(config.user.render(&ctx.pool)).filter(|user| !user.trim().is_empty());
-        let user = match user {
-            Some(id) => Some(user_source(ctx)?.scoped(&id)),
-            None => None,
-        };
+        // The host's source holds for the user it named (`sys.user_id`). Any
+        // other id the configuration renders (an input, say) is a name the
+        // caller chose: `api`, never `user` or `channel`.
+        let named = user_source(ctx)?;
+        let host_user = user.is_some() && user == text_of(ctx, "user_id");
+        let source = named.filter(|_| host_user).unwrap_or(UserSource::Api);
+        // Old notes move only for a source the host named, never for a guess.
+        let adopt = named.is_some() && host_user;
+        let user = user.map(|id| source.scoped(&id));
         let scope = MemoryScope { tenant: defaults.tenant, agent, user };
         scope.validate().map_err(|e| NodeError::fatal(e.kind, format!("long_term_memory: {}", e.message)))?;
         let source = MemorySource {
@@ -337,6 +364,7 @@ impl RunMemory {
             names: Mutex::new(Vec::new()),
             user_query: text_of(ctx, "query").map(|query| words(&query).into_iter().collect()),
             forgets: AtomicUsize::new(0),
+            adopt: futures::lock::Mutex::new(adopt),
             #[cfg(feature = "memory-graph")]
             extractor: match &config.graph {
                 None => None,
@@ -472,6 +500,7 @@ impl RunMemory {
         // A small memory is shown whole: what matches first, then the notes
         // used most recently, up to the store's bound.
         let query = MemoryQuery::new(user.text()).touch().fill_recent();
+        shared.ready().await;
         let hits = shared.bank.recall(&shared.scope, &query).await.map_err(|e| {
             let message = format!("long_term_memory: {}", e.message);
             match e.kind {
@@ -699,6 +728,7 @@ impl MemoryTools {
             .tags(tags)
             .policy(policy)
             .secrets(lock(&shared.tool_secrets).clone());
+        shared.ready().await;
         let saved = shared.bank.remember(&shared.scope, note).await;
         if saved.is_err() {
             shared.writes.fetch_sub(1, Ordering::Relaxed);
@@ -747,6 +777,7 @@ impl MemoryTools {
         let text = arguments.get("query").and_then(Json::as_str).unwrap_or_default().to_owned();
         let limit = arguments.get("limit").and_then(Json::as_u64).map_or(0, |n| usize::try_from(n).unwrap_or(0));
         let query = MemoryQuery::new(text).limit(limit).touch();
+        shared.ready().await;
         match shared.bank.recall(&shared.scope, &query).await {
             Ok(hits) => {
                 self.push_event("memory_recalled", json!({"count": hits.len(), "auto": false}));
@@ -787,6 +818,7 @@ impl MemoryTools {
             shared.forgets.fetch_sub(1, Ordering::Relaxed);
             return error(format!("error: at most {FORGETS_PER_RUN} forget calls in one run"));
         }
+        shared.ready().await;
         match shared.bank.forget(&shared.scope, &target, &shared.source).await {
             Ok(count) => {
                 self.push_event("memory_forgotten", json!({"count": count}));

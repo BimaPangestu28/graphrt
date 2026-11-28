@@ -16,6 +16,8 @@
 //! | a group chat | its conversation, [`ChatKind::Group`] |
 //! | a tap on an Adaptive Card button the bot sent | `choice` is the button's id |
 //!
+//! Only activities of the `msteams` channel are read: the same bot can get Web
+//! Chat and Direct Line deliveries, whose sender picks its own `from.id`.
 //! A person's id is their Microsoft Entra object id (`aadObjectId`), the id an
 //! admin sees in the Entra admin center, else the Bot Framework id (`29:...`).
 //! The answer goes to the activity's `serviceUrl` (feature `client`, [`TeamsBot`]).
@@ -362,6 +364,12 @@ pub fn parse_activity(activity: &Json) -> ParsedActivity {
     }
     if text_of(activity, "type") != Some("message") {
         return parsed(InboundEvent::Ignored("not a message"));
+    }
+    // The connector also signs Web Chat and Direct Line deliveries of the same
+    // bot, where the sender writes its own `from.id`: a person's id is only
+    // known from Teams.
+    if channel_id.as_deref() != Some("msteams") {
+        return parsed(InboundEvent::Ignored("not from Microsoft Teams"));
     }
     let from = activity.get("from").unwrap_or(&Json::Null);
     if text_of(from, "role") == Some("bot") {
@@ -1279,6 +1287,18 @@ mod tests {
             "from": { "id": "29:1abc", "aadObjectId": "a1b2c3d4-0000-0000-0000-000000000001", "name": "Rina" },
             "conversation": conversation, "recipient": { "id": "28:bot" }, "text": text,
             "channelData": { "tenant": { "id": "tenant-1" } } })
+    }
+
+    #[test]
+    fn a_web_chat_delivery_that_names_its_own_sender_is_not_read() {
+        let mut forged = activity(json!({ "id": "a:1personal", "conversationType": "personal" }), "hi");
+        forged["channelId"] = json!("webchat");
+        forged["from"] = json!({ "id": "a1b2c3d4-0000-0000-0000-000000000001" });
+        assert!(matches!(parse_activity(&forged).event, InboundEvent::Ignored("not from Microsoft Teams")));
+        if let Some(fields) = forged.as_object_mut() {
+            fields.remove("channelId");
+        }
+        assert!(matches!(parse_activity(&forged).event, InboundEvent::Ignored(_)));
     }
 
     #[test]

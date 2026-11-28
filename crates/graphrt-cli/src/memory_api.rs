@@ -113,10 +113,10 @@ fn scope(state: &AppState, agent: &str, user: Option<String>) -> MemoryScope {
     MemoryScope { tenant: state.memory_tenant().map(str::to_owned), agent: agent.to_owned(), user }
 }
 
-/// The id lessons know `user` by: `sys.user_id` of the run, without the source.
+/// The id lessons know `user` (as a request names it) by: `sys.user_id` of its runs.
 #[cfg(feature = "learning")]
-fn lesson_user(user: &str) -> &str {
-    graphrt_core::memory::legacy_user(user).unwrap_or(user)
+fn lesson_user(user: &str) -> String {
+    graphrt_core::memory::run_user_id(&graphrt_core::memory::owner_named_user(user)).to_owned()
 }
 
 fn owner(actor: Option<&str>) -> MemorySource {
@@ -281,7 +281,7 @@ async fn export_user(
         Err(e) => return memory_error(&e),
     };
     #[cfg(feature = "learning")]
-    match user_lessons(&state, &agent, lesson_user(&graphrt_core::memory::owner_named_user(&user))) {
+    match user_lessons(&state, &agent, &lesson_user(&user)) {
         Ok(Some(lessons)) => {
             if let Some(fields) = export.as_object_mut() {
                 fields.insert("lessons".to_owned(), lessons);
@@ -307,11 +307,7 @@ async fn erase(state: &AppState, agent: &str, user: &str, source: &MemorySource)
     };
     #[cfg(feature = "learning")]
     let lessons = match state.lesson_store() {
-        Some(lessons) => match lessons.forget(
-            agent,
-            &graphrt_learn::Forget::User(lesson_user(&graphrt_core::memory::owner_named_user(user)).to_owned()),
-            &source.actor,
-        ) {
+        Some(lessons) => match lessons.forget(agent, &graphrt_learn::Forget::User(lesson_user(user)), &source.actor) {
             Ok(removed) => removed,
             // An agent that never learned anything has no lesson file.
             Err(graphrt_learn::Error::NotFound { .. }) => 0,

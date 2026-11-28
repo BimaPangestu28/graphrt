@@ -218,7 +218,7 @@ fn verified_user(body: &mut RunBody) -> Result<Option<String>, Response> {
     #[cfg(feature = "memory")]
     {
         use graphrt_core::memory::{USER_SOURCE_VAR, UserSource};
-        let source = if verified.is_some() { UserSource::Verified } else { UserSource::Api };
+        let source = UserSource::of_caller(verified.is_some());
         body.sys.insert(USER_SOURCE_VAR.to_owned(), serde_json::Value::String(source.as_str().to_owned()));
     }
     Ok(verified)

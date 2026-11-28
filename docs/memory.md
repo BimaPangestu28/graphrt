@@ -75,7 +75,9 @@ Every note belongs to one scope: tenant, agent, user.
   | `api` | `api/<id>` | An id the holder of the API key named, a gateway API key, and `graphrt run` or an app that embeds the runtime |
   | `channel` | `channel/<channel>:<id>` | A customer of a messaging channel. The channel name stands for the bot account (one Telegram bot, one WhatsApp number, one Slack workspace, one Teams app), whose ids are unique |
 
-  A child run of a subagent keeps the user and the source of its parent.
+  A child run of a subagent keeps the user and the source of its parent. The
+  source holds for the user the host named (`sys.user_id`): a `user` template
+  that renders another id (from an input, say) is `api/<id>`.
 - The **agent** is `long_term_memory.agent`, by default the workflow's name
   as the host serves it.
 - The **tenant** is set by the host: `graphrt serve --memory-tenant acme`
@@ -188,16 +190,25 @@ graphrt memory audit support
 ### Notes kept before sources
 
 A server before sources kept notes under the id alone (`shop:42`, `alice`).
-The first time a scoped id is used (a run, a list, an export), the store moves
-the notes of the same id without its source to it, with an `adopt_user` line
-in the audit log. It never merges: when the scoped id has notes already, the
-old ones stay where they are, and erasing the scoped id erases both. So an
-upgrade needs no step, and `DELETE /v1/memory/{agent}/users/channel%2Fshop:42`
-leaves nothing of that customer under either id. Lessons keep the id without
-its source (`sys.user_id`) and are erased with it.
+The first run of a user whose host names the source (a run started over the
+API, a channel turn, a gateway run) moves the notes of the same id without its
+source to the scoped id, with an `adopt_user` line in the audit log. It never
+merges: when the scoped id has notes already, the old ones stay where they are.
+Until a run moves them, the owner sees them with the scoped id: `list` shows
+them and `export` returns them as `legacy_notes`. Erasing the scoped id erases
+both, so `DELETE /v1/memory/{agent}/users/channel%2Fshop:42` leaves nothing of
+that customer under either id. A look by the owner never moves notes, and
+neither does a run without a source (an app that embeds the runtime, a run
+paused before the upgrade). Lessons keep the id without its source
+(`sys.user_id`) and are erased with it.
+
+An id after the source that is a scoped id itself (`api/user/bob`) has no old
+notes: that is another source's scope. Scoped ids are hashed apart from old
+ids, so an old id that reads like a scoped one (`user/alice`, named with the
+API key before sources) never becomes the verified `alice`'s.
 
 Before sources, a caller with the API key and a verified user with the same
-id shared one scope. Whichever of them comes first after the upgrade takes
+id shared one scope. Whichever of them runs first after the upgrade takes
 those notes over: when that matters, erase or export such users with the old
 binary first.
 

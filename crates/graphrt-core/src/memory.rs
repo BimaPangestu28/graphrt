@@ -120,7 +120,14 @@ pub enum UserSource {
 }
 
 impl UserSource {
+    #[cfg(test)]
     const ALL: [Self; 3] = [Self::Verified, Self::Api, Self::Channel];
+
+    /// The source of a run's user as the host knows it: `user` when it verified
+    /// a token, else `api`.
+    pub fn of_caller(verified: bool) -> Self {
+        if verified { Self::Verified } else { Self::Api }
+    }
 
     /// The word in `sys.user_source` and in front of a scoped user id.
     pub fn as_str(self) -> &'static str {
@@ -133,7 +140,12 @@ impl UserSource {
 
     /// The source a word names, `None` for any other word.
     pub fn parse(word: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|source| source.as_str() == word)
+        match word {
+            "user" => Some(Self::Verified),
+            "api" => Some(Self::Api),
+            "channel" => Some(Self::Channel),
+            _ => None,
+        }
     }
 
     /// The user id of a scope for `id` of this source: `<source>/<id>`.
@@ -160,12 +172,26 @@ pub fn owner_named_user(user: &str) -> String {
     }
 }
 
+/// The id of a run's user in a scoped user id: what `sys.user_id` held
+/// (`shop:42` for `channel/shop:42`), the id itself when it has no source.
+/// Lessons know users by it.
+pub fn run_user_id(user: &str) -> &str {
+    UserSource::split(user).map_or(user, |(_, id)| id)
+}
+
 /// The id a scoped user id was stored under before ids carried their source:
 /// the id without it (`shop:42` for `channel/shop:42`). A store moves notes
-/// it finds under that id to the scoped one the first time the scoped one is
-/// used, and an erase of the scoped id erases them there too.
+/// it finds under that id to the scoped one when a run of that user first
+/// uses it ([`MemoryBank::adopt`]), and an erase of the scoped id erases them
+/// there too.
+///
+/// `None` when what follows the source is a scoped id itself (`api/user/bob`):
+/// that is the scope of another source, never old notes. Also `None` for an
+/// id the old rule did not accept, so nothing can be stored under it.
 pub fn legacy_user(user: &str) -> Option<&str> {
-    UserSource::split(user).map(|(_, id)| id)
+    let (_, id) = UserSource::split(user)?;
+    let plain = !id.trim().is_empty() && id.chars().count() <= 256 && !id.chars().any(char::is_control);
+    (plain && UserSource::split(id).is_none()).then_some(id)
 }
 
 /// What a note is about. It decides how long a note lives by default.
@@ -579,6 +605,20 @@ pub trait MemoryBank: Send + Sync + fmt::Debug {
         source: &'a MemorySource,
     ) -> BoxFuture<'a, Result<usize, MemoryError>>;
 
+    /// Before the first use of `scope` by a run whose host named the user's
+    /// source: move the notes kept under the id without its source
+    /// ([`legacy_user`]) to `scope`, when `scope` has none yet. Never merges.
+    /// Returns whether notes moved. Owner reads never call it, so a look at a
+    /// user never decides whose old notes they are.
+    fn adopt<'a>(
+        &'a self,
+        scope: &'a MemoryScope,
+        source: &'a MemorySource,
+    ) -> BoxFuture<'a, Result<bool, MemoryError>> {
+        let _ = (scope, source);
+        Box::pin(async { Ok(false) })
+    }
+
     /// Whether this store keeps a memory graph ([`MemoryBank::link`] works).
     fn keeps_graph(&self) -> bool {
         false
@@ -702,12 +742,24 @@ mod tests {
         assert_eq!(UserSource::split("team/42"), None, "an unknown word is part of an old id");
         assert_eq!(legacy_user("channel/shop:42"), Some("shop:42"));
         assert_eq!(legacy_user("shop:42"), None);
+        assert_eq!(legacy_user("api/user/bob"), None, "the scope of another source is never old notes");
+        assert_eq!(legacy_user("user/channel/shop:42"), None);
+        assert_eq!(legacy_user("api/channel/"), None, "an id the old rule refused");
+        assert_eq!(legacy_user("api/team/42"), Some("team/42"));
         assert_eq!(owner_named_user("alice"), "api/alice", "what the key holder names");
         assert_eq!(owner_named_user("channel/shop:42"), "channel/shop:42");
         assert_eq!(owner_named_user("team/42"), "api/team/42");
+        assert_eq!(run_user_id("api/user/bob"), "user/bob", "the id the run named");
+        assert_eq!(run_user_id("shop:42"), "shop:42");
         for source in UserSource::ALL {
             assert_eq!(UserSource::parse(source.as_str()), Some(source));
+            // A new variant must be added to `ALL`: this match has no wildcard.
+            match source {
+                UserSource::Verified | UserSource::Api | UserSource::Channel => {}
+            }
         }
+        assert_eq!(UserSource::of_caller(true), UserSource::Verified);
+        assert_eq!(UserSource::of_caller(false), UserSource::Api);
         assert_eq!(UserSource::parse("User"), None);
     }
 

@@ -113,7 +113,7 @@ pub async fn memory(args: MemoryCmdArgs) -> Result<u8, CliError> {
             let notes = store.erase_user(&scope(agent, Some(user.clone())), &source).await.map_err(failed)?;
             // Lessons know the user by `sys.user_id`, the id without its source.
             let named = graphrt_core::memory::owner_named_user(user);
-            let lesson_user = graphrt_core::memory::legacy_user(&named).unwrap_or(user);
+            let lesson_user = graphrt_core::memory::run_user_id(&named);
             let lessons = forget_lessons(args.learning_dir.clone(), agent, lesson_user, &source.actor)?;
             let said = match lessons {
                 Some(lessons) => format!("erased {notes} note(s) and {lessons} lesson(s) of that user"),

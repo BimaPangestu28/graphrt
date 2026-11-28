@@ -249,7 +249,7 @@ fn run_sys(sys: serde_json::Map<String, serde_json::Value>, verified_user: Optio
     #[cfg(feature = "memory")]
     {
         use graphrt_core::memory::{USER_SOURCE_VAR, UserSource};
-        let source = if verified_user.is_some() { UserSource::Verified } else { UserSource::Api };
+        let source = UserSource::of_caller(verified_user.is_some());
         values.insert(USER_SOURCE_VAR.to_owned(), Value::String(source.as_str().into()));
     }
     if let Some(subject) = verified_user {
