@@ -923,6 +923,17 @@ pub struct ServiceArgs {
     /// Maximum node executions per run.
     #[arg(long, value_name = "N")]
     pub max_steps: Option<u64>,
+    /// Tokens (prompt and completion) a run may use, child runs included.
+    /// (Builds with model nodes only: without them a run spends no tokens.)
+    #[cfg(feature = "llm")]
+    /// An agent that cannot afford another tool turn answers without tools.
+    #[arg(long, value_name = "N")]
+    pub max_tokens_per_run: Option<u64>,
+    /// Cost a run may reach, in the price unit of the providers file
+    /// (`prices` per model), for example `0.50`.
+    #[cfg(feature = "llm")]
+    #[arg(long, value_name = "AMOUNT", value_parser = parse_cost)]
+    pub max_cost_per_run: Option<u64>,
     /// Export OpenTelemetry traces and metrics over OTLP/HTTP (`$OTEL_EXPORTER_OTLP_ENDPOINT`,
     /// default http://localhost:4318). Enabled automatically when that variable is set.
     #[arg(long)]
@@ -1469,4 +1480,29 @@ pub enum UserEvents {
     Answer,
     /// Every engine event, as for API-key callers.
     All,
+}
+
+/// A cost in the price unit as micro units: `0.5` is 500 000.
+#[cfg(feature = "llm")]
+fn parse_cost(raw: &str) -> Result<u64, String> {
+    let amount: f64 = raw.trim().parse().map_err(|_| format!("`{raw}` is not a number"))?;
+    if !amount.is_finite() || amount < 0.0 || amount > 1.0e12 {
+        return Err(format!("`{raw}` must be between 0 and 1e12"));
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let micros = (amount * 1_000_000.0).round() as u64;
+    Ok(micros)
+}
+
+#[cfg(all(test, feature = "llm"))]
+mod cost_tests {
+    #[test]
+    fn a_cost_is_read_in_micro_units() {
+        for (raw, micros) in [("0.5", 500_000), (" 1 ", 1_000_000), ("0", 0), ("0.000001", 1)] {
+            assert_eq!(super::parse_cost(raw), Ok(micros), "{raw}");
+        }
+        for bad in ["-1", "NaN", "inf", "1e13", "abc", ""] {
+            assert!(super::parse_cost(bad).is_err(), "{bad}");
+        }
+    }
 }

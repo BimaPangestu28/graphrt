@@ -119,6 +119,10 @@ pub struct ProviderConfig {
     pub models: IndexMap<String, String>,
     #[serde(default)]
     pub defaults: DefaultParams,
+    /// Price per model name, for the run's cost budget:
+    /// `{model: {input_per_million, output_per_million}}`.
+    #[serde(default)]
+    pub prices: IndexMap<String, crate::registry::Price>,
     /// Gemini only: how the key is sent, `api-key` (default) or `bearer`.
     #[serde(default)]
     pub auth: Option<String>,
@@ -315,6 +319,21 @@ impl ProvidersConfig {
         for provider in &config.providers {
             let model = build_provider(provider, vars)?;
             registry.try_add(provider.name.clone(), Arc::clone(&model))?;
+            for (name, price) in &provider.prices {
+                if !price.is_valid() {
+                    return Err(LlmError::Config(format!(
+                        "provider `{}`: the price of `{name}` must be between 0 and 1e9 per million tokens",
+                        provider.name
+                    )));
+                }
+                registry.set_price(provider.name.clone(), name.clone(), *price);
+                // A workflow may name the model by an alias of `models`.
+                for (alias, target) in &provider.models {
+                    if target == name && !provider.prices.contains_key(alias) {
+                        registry.set_price(provider.name.clone(), alias.clone(), *price);
+                    }
+                }
+            }
             for alias in &provider.aliases {
                 registry.alias(alias.clone(), provider.name.clone());
             }
@@ -350,6 +369,9 @@ impl ModelRegistry {
     /// of `self` with that name (so a providers file can redirect `openai` to a
     /// local server). Used to layer a providers file over [`ModelRegistry::from_env`].
     pub fn merge(&mut self, other: ModelRegistry) -> &mut Self {
+        for (provider, model, price) in &other.prices {
+            self.set_price(provider.clone(), model.clone(), *price);
+        }
         let (providers, aliases) = other.into_parts();
         for (name, model) in providers {
             self.remove(&name);
@@ -899,6 +921,36 @@ mod tests {
         assert!(registry.get("local").is_ok());
         let debug = format!("{registry:?} {:?}", registry.get("openrouter").unwrap());
         assert!(!debug.contains("sk-or-secret"), "{debug}");
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn prices_are_read_checked_and_follow_aliases() {
+        let cfg = ProvidersConfig::from_json(
+            r#"[{"name":"or","kind":"openai","base_url":"http://x/v1","api_key_env":"NONE","api_key_optional":true,
+                 "aliases":["router"],"models":{"fast":"x/small"},
+                 "prices":{"x/small":{"input_per_million":0.5,"output_per_million":1.5}}}]"#,
+        )
+        .unwrap();
+        let registry = ModelRegistry::from_config_with_vars(&cfg, &vars()).unwrap();
+        let price = registry.price("or", "x/small").unwrap();
+        assert_eq!((price.input_per_million, price.output_per_million), (0.5, 1.5));
+        assert!(registry.price("router", "x/small").is_some(), "a provider alias");
+        assert!(registry.price("or", "fast").is_some(), "a model alias of `models`");
+        assert!(registry.price("or", "other").is_none());
+        let mut merged = ModelRegistry::new();
+        merged.merge(registry);
+        assert!(merged.price("or", "x/small").is_some(), "merge carries prices");
+        let negative = ProvidersConfig::from_json(
+            r#"[{"name":"or","kind":"openai","base_url":"http://x/v1","prices":{"m":{"input_per_million":-1,"output_per_million":1}}}]"#,
+        )
+        .unwrap();
+        let error = ModelRegistry::from_config_with_vars(&negative, &vars()).unwrap_err().to_string();
+        assert!(error.contains("`or`") && error.contains("`m`"), "{error}");
+        let typo = ProvidersConfig::from_json(
+            r#"[{"name":"or","kind":"openai","prices":{"m":{"input_per_milion":1,"output_per_million":1}}}]"#,
+        );
+        assert!(typo.is_err());
     }
 
     #[cfg(feature = "openai")]

@@ -232,9 +232,13 @@ pub struct ToolError {
 pub struct ToolCallContext {
     /// Secret name → plaintext value.
     pub secrets: BTreeMap<String, String>,
+    /// The same for every attempt of one tool call (`<run_id>:<exec_id>:<turn>:<call id>`
+    /// from an `agent` node), different for every other call, so a tool can
+    /// make its effect happen once even when the call is made again. Not a secret.
+    pub idempotency_key: Option<String>,
 }
 
-static EMPTY_TOOL_CALL_CONTEXT: ToolCallContext = ToolCallContext { secrets: BTreeMap::new() };
+static EMPTY_TOOL_CALL_CONTEXT: ToolCallContext = ToolCallContext { secrets: BTreeMap::new(), idempotency_key: None };
 
 impl ToolCallContext {
     /// A shared empty context, for callers that have nothing to pass.
@@ -242,7 +246,7 @@ impl ToolCallContext {
         &EMPTY_TOOL_CALL_CONTEXT
     }
 
-    /// Whether there is nothing in the context.
+    /// Whether the context holds no secrets (the idempotency key is not one).
     pub fn is_empty(&self) -> bool {
         self.secrets.is_empty()
     }
@@ -255,7 +259,10 @@ impl ToolCallContext {
 
 impl fmt::Debug for ToolCallContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ToolCallContext").field("secrets", &self.secrets.keys().collect::<Vec<_>>()).finish()
+        f.debug_struct("ToolCallContext")
+            .field("secrets", &self.secrets.keys().collect::<Vec<_>>())
+            .field("idempotency_key", &self.idempotency_key)
+            .finish()
     }
 }
 

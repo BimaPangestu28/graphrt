@@ -189,18 +189,41 @@ impl LlmNode {
             let mut state = crate::context::ContextState::default();
             // Tokens of a summary the guard asked a model for.
             let mut spent = graphrt_core::event::Usage::default();
-            let mut response = loop {
-                guard.fit(&mut state, &mut messages, &[], &mut spent).await?;
-                match invoke(&ctx, model.as_ref(), request(state.request_messages(&messages))?, mode).await {
-                    Ok(response) => break response,
+            let outcome: Result<ChatResponse, NodeError> = 'call: loop {
+                if let Err(error) = guard.fit(&mut state, &mut messages, &[], &mut spent).await {
+                    break 'call Err(error);
+                }
+                let built = match request(state.request_messages(&messages)) {
+                    Ok(built) => built,
+                    Err(error) => break 'call Err(error),
+                };
+                match invoke(&ctx, model.as_ref(), built, mode).await {
+                    Ok(response) => break 'call Ok(response),
                     // A request the provider refused for its size is trimmed and sent
                     // once more. Any other error, and a second refusal, fail the node.
-                    Err(error) => guard.refused(&mut state, &mut messages, &[], error, &mut spent).await?,
+                    Err(error) => {
+                        if let Err(error) = guard.refused(&mut state, &mut messages, &[], error, &mut spent).await {
+                            break 'call Err(error);
+                        }
+                    }
+                }
+            };
+            let mut response = match outcome {
+                Ok(response) => response,
+                Err(error) => {
+                    // A summary made for the call was paid for, even when the call failed.
+                    if !spent.is_zero() {
+                        // Past a limit the budget stops the run itself: the call's own error is the answer.
+                        let _limit_reached = crate::nodes::common::charge_model(&ctx, &cfg.model, &spent).is_err();
+                    }
+                    return Err(error);
                 }
             };
             response.usage.add(&spent);
             (response, state.report())
         };
+        // Paid for whatever comes next, a broken answer too.
+        crate::nodes::common::charge_model(&ctx, &cfg.model, &response.usage)?;
         let finish = check_finish(&response)?;
         let finish_reason = finish_reason_value(response.finish_reason.as_ref());
         let ChatResponse { text: answer, reasoning: model_reasoning, usage, warnings, .. } = response;
@@ -250,6 +273,11 @@ impl LlmNode {
 impl Node for LlmNode {
     fn run(&self, ctx: NodeContext) -> BoxFuture<'_, NodeResult> {
         Box::pin(self.execute(ctx))
+    }
+
+    /// Each model response is charged with its cost as it arrives.
+    fn tracks_turns(&self) -> bool {
+        true
     }
 
     fn inputs(&self) -> Vec<Selector> {

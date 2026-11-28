@@ -35,6 +35,12 @@ impl Usage {
     pub fn is_zero(&self) -> bool {
         self.total_tokens == 0 && self.prompt_tokens == 0 && self.completion_tokens == 0
     }
+
+    /// The tokens a budget charges: the total, or prompt and completion when
+    /// the provider reported no total (never wrapping on bogus numbers).
+    pub fn billable_tokens(&self) -> u64 {
+        self.total_tokens.max(self.prompt_tokens.saturating_add(self.completion_tokens))
+    }
 }
 
 /// Why a run or node paused.

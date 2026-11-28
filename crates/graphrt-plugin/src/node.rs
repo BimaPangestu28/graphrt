@@ -340,6 +340,10 @@ impl ToolRuntime for PluginTools {
             params.insert("request_id".into(), serde_json::Value::from(id.clone()));
             params.insert("name".into(), serde_json::Value::from(name));
             params.insert("arguments".into(), arguments);
+            // Not a secret: every plugin gets it, so it can make an effect happen once.
+            if let Some(key) = &context.idempotency_key {
+                params.insert("idempotency_key".into(), serde_json::Value::from(key.as_str()));
+            }
             // `context` is only sent when there is something in it, and only to plugins
             // granted plaintext secrets: older plugins never see the new field.
             if !context.is_empty() {

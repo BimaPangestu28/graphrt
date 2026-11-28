@@ -40,6 +40,12 @@ pub struct RunBody {
     pub session_id: Option<String>,
     pub user_id: Option<String>,
     pub tags: Vec<String>,
+    /// `limits` of the run request: a token and cost budget below the agent's
+    /// (builds with model nodes only).
+    #[cfg(feature = "llm")]
+    pub max_total_tokens: Option<u64>,
+    #[cfg(feature = "llm")]
+    pub max_cost_micros: Option<u64>,
     /// Who started the run, as the gateway says: `user` (an end user whose
     /// token it verified, named in `user_id`) or `key`. `None` from a gateway
     /// older than the field.
@@ -116,8 +122,27 @@ pub fn run(body: &[u8]) -> Result<RunBody, BodyError> {
         }
         Some(_) => return Err("`resume` must be an object"),
     };
+    #[cfg(feature = "llm")]
+    match map.remove("limits") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(mut limits)) => {
+            let mut number = |key: &str| match limits.remove(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(value) => value.as_u64().map(Some).ok_or(LIMITS),
+            };
+            run.max_total_tokens = number("max_total_tokens")?;
+            run.max_cost_micros = number("max_cost_micros")?;
+            if !limits.is_empty() {
+                return Err("`limits` has `max_total_tokens` and `max_cost_micros` only");
+            }
+        }
+        Some(_) => return Err(LIMITS),
+    }
     Ok(run)
 }
+
+#[cfg(feature = "llm")]
+const LIMITS: BodyError = "`limits` must be an object of non-negative integers";
 
 const TAGS: BodyError = "`tags` must be an array of strings";
 
@@ -178,6 +203,21 @@ mod tests {
         assert_eq!(run.tags, ["a", "b"]);
         assert_eq!(run.caller.as_deref(), Some("user"));
         assert!(run.resume.is_none());
+    }
+
+    #[cfg(feature = "llm")]
+    #[test]
+    fn the_limits_of_a_run_request_are_decoded_strictly() {
+        let body = serde_json::json!({"workflow": "chat", "limits": {"max_total_tokens": 500, "max_cost_micros": 20}});
+        let decoded = run(body.to_string().as_bytes()).unwrap();
+        assert_eq!((decoded.max_total_tokens, decoded.max_cost_micros), (Some(500), Some(20)));
+        for bad in [
+            serde_json::json!({"workflow": "chat", "limits": {"max_tokens": 5}}),
+            serde_json::json!({"workflow": "chat", "limits": {"max_total_tokens": -1}}),
+            serde_json::json!({"workflow": "chat", "limits": 5}),
+        ] {
+            assert!(run(bad.to_string().as_bytes()).is_err(), "{bad}");
+        }
     }
 
     #[test]

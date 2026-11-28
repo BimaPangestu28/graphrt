@@ -187,6 +187,7 @@ impl ExtractorNode {
 
         let model = model_for(&ctx, &cfg.model)?;
         let response = invoke(&ctx, model.as_ref(), request, StreamMode::Off).await?;
+        crate::nodes::common::charge_model(&ctx, &cfg.model, &response.usage)?;
         let raw: Result<Map<String, Json>, String> = match response.tool_calls.iter().find(|c| c.name == EXTRACT_TOOL) {
             Some(call) => call.arguments_json().map_err(|e| format!("model returned invalid function arguments: {e}")),
             None => match extract_json_where(&response.text, Json::is_object) {
@@ -316,6 +317,11 @@ fn coerce(p: &ParamConfig, v: &Json) -> Result<Value, String> {
 impl Node for ExtractorNode {
     fn run(&self, ctx: NodeContext) -> BoxFuture<'_, NodeResult> {
         Box::pin(self.execute(ctx))
+    }
+
+    /// Each model response is charged with its cost as it arrives.
+    fn tracks_turns(&self) -> bool {
+        true
     }
 
     fn inputs(&self) -> Vec<Selector> {

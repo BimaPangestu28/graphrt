@@ -117,7 +117,7 @@ async fn build_target(
     }
     let services = Arc::new(setup::services(&options, extensions.tools.clone()).await?);
     let env = setup::workflow_env(&graph, &options);
-    let limits = setup::limits(args.services.timeout_ms, args.services.max_steps);
+    let limits = setup::limits(&args.services);
     let engine = Engine::new(Arc::clone(&graph))
         .with_shared_services(Arc::clone(&services))
         .with_clock(Arc::new(TokioClock))

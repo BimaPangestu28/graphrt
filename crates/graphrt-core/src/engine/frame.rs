@@ -43,6 +43,13 @@ const MAX_RETRY_DELAY_MS: u64 = 5 * 60 * 1000;
 
 /// State shared by every frame of one run.
 pub(crate) struct RunShared {
+    /// The token and cost budget of the run, shared by every frame and child
+    /// (builds with model nodes, cargo feature `budgets`; the others keep
+    /// what a resumed snapshot carried, unchanged).
+    #[cfg(feature = "budgets")]
+    pub(crate) budget: Arc<crate::budget::RunBudget>,
+    #[cfg(not(feature = "budgets"))]
+    pub(crate) budget: crate::budget::BudgetState,
     pub(crate) graph: Arc<Graph>,
     pub(crate) services: Arc<Services>,
     pub(crate) clock: Arc<dyn Clock>,
@@ -179,6 +186,9 @@ struct NodeRt {
     attempt: u32,
     /// Saved state of a node that paused itself (kept while paused, handed back on resume).
     resume_state: Option<serde_json::Value>,
+    /// The checkpoint of this execution, for a node that tracks its turns:
+    /// shared with the running task, kept when the run is preempted.
+    progress: Option<Arc<crate::budget::NodeProgress>>,
 }
 
 /// Result of one node task (all attempts).
@@ -417,14 +427,20 @@ impl Frame {
             };
             // A paused node always resumes, even when its saved state is `null`
             // (which a JSON round trip turns into `None`).
+            // A node preempted while running starts its next attempt from its checkpoint.
+            #[cfg(feature = "budgets")]
+            let progress = ns.checkpoint.map(|state| Arc::new(crate::budget::NodeProgress::with(Some(state))));
+            #[cfg(not(feature = "budgets"))]
+            let progress = None;
             let resume_state = if ns.status == NodeStatus::Paused {
                 Some(ns.resume_state.unwrap_or(serde_json::Value::Null))
             } else {
                 None
             };
-            frame
-                .nodes
-                .insert(ix, NodeRt { state, exec_id: Some(Arc::from(ns.exec_id)), attempt: ns.attempt, resume_state });
+            frame.nodes.insert(
+                ix,
+                NodeRt { state, exec_id: Some(Arc::from(ns.exec_id)), attempt: ns.attempt, resume_state, progress },
+            );
         }
         let edge_index: HashMap<&str, EdgeIx> =
             graph.edges().iter().enumerate().map(|(ex, e)| (e.id.as_ref(), ex)).collect();
@@ -514,6 +530,7 @@ impl Frame {
             exec_id: None,
             attempt: 0,
             resume_state: None,
+            progress: None,
         });
         rt.state = State::Ready;
         self.ready.push_back(ix);
@@ -649,6 +666,10 @@ impl Frame {
         if let Some(outcome) = self.commit_finished(running) {
             return outcome;
         }
+        // A node that finished in that last poll may have passed the budget.
+        if self.run.control.is_stopped() {
+            return FrameOutcome::Stopped;
+        }
         let mut cancelled: Vec<NodeIx> =
             self.nodes.iter().filter(|(_, rt)| rt.state == State::Running).map(|(ix, _)| *ix).collect();
         cancelled.sort_unstable();
@@ -704,6 +725,10 @@ impl Frame {
                     exec_id: rt.exec_id.as_deref().map_or_else(|| new_id(self.run.now_ms()), String::from),
                     attempt: rt.attempt,
                     resume_state: rt.resume_state.clone(),
+                    #[cfg(feature = "budgets")]
+                    checkpoint: rt.progress.as_ref().and_then(|progress| progress.get()),
+                    #[cfg(not(feature = "budgets"))]
+                    checkpoint: None,
                 },
             );
         }
@@ -750,9 +775,14 @@ impl Frame {
             exec_id: None,
             attempt: 0,
             resume_state: None,
+            progress: None,
         });
         rt.state = State::Running;
         let exec_id = Arc::clone(rt.exec_id.get_or_insert_with(|| new_id_arc(started)));
+        // Only a node that tracks its turns pays for a handle (one allocation).
+        #[cfg(feature = "budgets")]
+        let progress =
+            if gn.node.tracks_turns() { Some(Arc::clone(rt.progress.get_or_insert_with(Arc::default))) } else { None };
         // Boxed: resuming is rare, and the task future carries this for its whole life.
         let resume: Option<Box<Resume>> = rt.resume_state.take().map(|state| {
             Box::new(Resume { state, input: run.resume_input(&self.id, gn.id.as_ref(), self.in_child()) })
@@ -837,6 +867,8 @@ impl Frame {
                 .with_subgraph(subgraph.clone())
                 .with_deadline(deadline_ms)
                 .with_secret_values(Arc::clone(&run.secret_values));
+                #[cfg(feature = "budgets")]
+                let ctx = ctx.with_budget(Arc::clone(&run.budget), progress.clone());
                 #[cfg(feature = "subagents")]
                 let ctx = ctx.with_children(children.clone());
                 // The result and the error stay inside this block, so the task
@@ -880,8 +912,10 @@ impl Frame {
         if finished_ms.is_some() {
             self.burst_now_ms = finished_ms;
         }
+        // The execution ended: its checkpoint is done with.
         if let Some(rt) = self.nodes.get_mut(&ix) {
             rt.attempt = attempt;
+            rt.progress = None;
         }
         if self.run.control.is_stopped() {
             return Some(FrameOutcome::Stopped);
@@ -930,6 +964,15 @@ impl Frame {
             self.usage.add(usage);
             if gn.role != NodeRole::Container {
                 self.run.add_usage(usage);
+                // A node that tracks its turns charged every response itself.
+                // Any other is charged its tokens now. A charge past a limit
+                // stops the run (the budget's callback), so the frame ends at
+                // its next step: the result of this node is kept.
+                #[cfg(feature = "budgets")]
+                if !gn.node.tracks_turns() {
+                    // An error here was reported already: the budget stopped the run with it.
+                    let _limit_reached = self.run.budget.charge(usage, 0).is_err();
+                }
             }
         }
         if gn.role == NodeRole::Response {
@@ -1174,7 +1217,13 @@ impl Frame {
             let now = self.now_ms();
             self.nodes.insert(
                 target,
-                NodeRt { state: State::Skipped, exec_id: Some(new_id_arc(now)), attempt: 0, resume_state: None },
+                NodeRt {
+                    state: State::Skipped,
+                    exec_id: Some(new_id_arc(now)),
+                    attempt: 0,
+                    resume_state: None,
+                    progress: None,
+                },
             );
             self.run.emit(Event::NodeSkipped { frame: self.id.clone(), node_id: self.node_id(target) });
             for &ex in graph.outgoing(target) {

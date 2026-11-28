@@ -169,6 +169,46 @@ impl Node for Spoofer {
     }
 }
 
+/// Tracks its turns: charges `per_turn` tokens per turn, checkpoints the turn
+/// it reached, fails (retryably) once at turn `fail_at`, waits forever at
+/// turn `hang_at`, and outputs the turn it started from and the last turn.
+#[derive(Debug)]
+struct Turner {
+    turns: u64,
+    per_turn: u64,
+    fail_at: u64,
+    hang_at: u64,
+    failed: std::sync::atomic::AtomicBool,
+}
+impl Node for Turner {
+    fn tracks_turns(&self) -> bool {
+        true
+    }
+    fn run(&self, ctx: NodeContext) -> BoxFuture<'_, NodeResult> {
+        Box::pin(async move {
+            let from = ctx.checkpointed().and_then(|c| c["turn"].as_u64()).unwrap_or(0);
+            let per = Usage { prompt_tokens: self.per_turn, completion_tokens: 0, total_tokens: self.per_turn };
+            for turn in from + 1..=self.turns {
+                ctx.charge(&per, 0)?;
+                ctx.checkpoint(json!({"turn": turn}));
+                if turn == self.fail_at && !self.failed.swap(true, Ordering::SeqCst) {
+                    let mut error = NodeError::new("flaky", "turn failed");
+                    error.retryable = true;
+                    return Err(error);
+                }
+                if turn == self.hang_at && from == 0 {
+                    futures::future::pending::<()>().await;
+                }
+            }
+            let total = self.turns * self.per_turn;
+            Ok(NodeOutput::new()
+                .with("from", Value::Int(i64::try_from(from).unwrap_or(0)))
+                .usage(Usage { prompt_tokens: total, completion_tokens: 0, total_tokens: total })
+                .into())
+        })
+    }
+}
+
 /// Response node: renders `text` into `answer`.
 #[derive(Debug)]
 struct Answer {
@@ -317,6 +357,15 @@ fn registry() -> Registry {
     });
     r.register("pause", |_| Ok(Arc::new(Pauser)));
     r.register("spoof", |_| Ok(Arc::new(Spoofer)));
+    r.register("turner", |d| {
+        Ok(Arc::new(Turner {
+            turns: cfg_u64(d, "turns"),
+            per_turn: cfg_u64(d, "per_turn"),
+            fail_at: cfg_u64(d, "fail_at"),
+            hang_at: cfg_u64(d, "hang_at"),
+            failed: std::sync::atomic::AtomicBool::new(false),
+        }))
+    });
     r.register("answer", |d| Ok(Arc::new(Answer { text: Template::parse(&cfg_str(d, "text")) })));
     r.register("end", |d| Ok(Arc::new(End { name: cfg_str(d, "name"), value: Template::parse(&cfg_str(d, "value")) })));
     r.register("box", |d| {
@@ -1472,4 +1521,166 @@ async fn a_child_pause_kind_from_a_node_without_children_still_reports_its_reaso
 #[test]
 fn the_spoofer_uses_the_reserved_kind() {
     assert_eq!(graphrt_core::node::CHILD_PAUSE, "child_runs");
+}
+
+#[cfg(feature = "budgets")]
+fn turner_graph(config: serde_json::Value) -> Arc<Graph> {
+    build(
+        vec![
+            node("start", "src", json!({})),
+            node("t", "turner", config),
+            node("after", "echo", json!({"template": "x", "usage": 5})),
+            node("end", "end", json!({"name": "from", "value": "{{#t.from#}}"})),
+        ],
+        vec![edge("start", "t"), edge("t", "after"), edge("after", "end")],
+    )
+}
+
+#[cfg(feature = "budgets")]
+fn failure(events: &[Event]) -> (String, String) {
+    match terminal(events) {
+        Event::RunFailed { error, error_type, .. } => (error_type.clone(), error.clone()),
+        other => panic!("expected failure, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "budgets")]
+#[tokio::test]
+async fn the_token_budget_counts_turns_and_node_usage_once_and_stops_the_run() {
+    // 3 turns of 10 charged by the node, 5 charged for `after` when it completes.
+    let g = turner_graph(json!({"turns": 3, "per_turn": 10}));
+    let fits = Engine::new(Arc::clone(&g)).with_limits(Limits { max_total_tokens: Some(35), ..Limits::default() });
+    assert_eq!(outputs(&collect(&fits, RunInput::new()).await)["from"], Value::Int(0));
+    let short = Engine::new(Arc::clone(&g)).with_limits(Limits { max_total_tokens: Some(34), ..Limits::default() });
+    let (kind, message) = failure(&collect(&short, RunInput::new()).await);
+    assert_eq!(kind, "limit_exceeded");
+    assert!(message.contains("token budget of 34"), "{message}");
+    // A turn past the limit ends the node at that turn.
+    let tight = Engine::new(g).with_limits(Limits { max_total_tokens: Some(15), ..Limits::default() });
+    let events = collect(&tight, RunInput::new()).await;
+    assert_eq!(failure(&events).0, "limit_exceeded");
+    assert!(!events.iter().any(|e| matches!(e, Event::NodeStarted { node_id, .. } if node_id.as_ref() == "after")));
+}
+
+#[cfg(feature = "budgets")]
+#[tokio::test]
+async fn a_retry_starts_from_the_checkpoint_and_is_not_charged_twice() {
+    let mut doc = node("t", "turner", json!({"turns": 4, "per_turn": 10, "fail_at": 2}));
+    doc.policy = NodePolicy {
+        retry: RetryPolicy { max_retries: 1, interval_ms: 0, ..RetryPolicy::default() },
+        ..NodePolicy::default()
+    };
+    let g = build(
+        vec![
+            node("start", "src", json!({})),
+            doc,
+            node("end", "end", json!({"name": "from", "value": "{{#t.from#}}"})),
+        ],
+        vec![edge("start", "t"), edge("t", "end")],
+    );
+    // 4 turns of 10, each charged once: 40 fits.
+    let engine = Engine::new(g).with_limits(Limits { max_total_tokens: Some(40), ..Limits::default() });
+    let events = collect(&engine, RunInput::new()).await;
+    assert_eq!(outputs(&events)["from"], Value::Int(2), "the retry went on after turn 2");
+}
+
+#[cfg(feature = "budgets")]
+#[cfg(feature = "tokio")] // needs a timer-capable clock
+#[tokio::test]
+async fn a_preempted_node_resumes_from_its_checkpoint_and_the_budget_goes_on() {
+    let g = turner_graph(json!({"turns": 4, "per_turn": 10, "hang_at": 2}));
+    let engine = Engine::new(g).with_limits(Limits { max_total_tokens: Some(45), ..Limits::default() });
+    let mut stream = engine.run(RunInput::new());
+    let handle = stream.handle();
+    let mut events = Vec::new();
+    let mut asked = false;
+    while let Some(e) = stream.next().await {
+        if !asked && matches!(&e, Event::NodeStarted { node_id, .. } if node_id.as_ref() == "t") {
+            asked = true;
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                handle.preempt("drain");
+            });
+        }
+        events.push(e);
+    }
+    let snapshot = through_json(&paused_snapshot(&events));
+    assert_eq!(snapshot.budget.tokens, 20, "two turns charged before the preempt");
+    assert_eq!(snapshot.root.nodes["t"].checkpoint, Some(json!({"turn": 2})));
+    let events = collect(&engine, RunInput::new().resume(snapshot, IndexMap::new())).await;
+    // Turns 3 and 4 (20) and `after` (5) on top of 20: 45 fits exactly.
+    assert_eq!(outputs(&events)["from"], Value::Int(2));
+}
+
+#[cfg(feature = "budgets")]
+#[cfg(feature = "tokio")] // needs a timer-capable clock
+#[tokio::test]
+async fn the_counters_carried_by_a_snapshot_still_count_after_resume() {
+    let g = turner_graph(json!({"turns": 4, "per_turn": 10, "hang_at": 2}));
+    // One token short of the 45 the whole run needs: only the carried 20 make it fail.
+    let engine = Engine::new(g).with_limits(Limits { max_total_tokens: Some(44), ..Limits::default() });
+    let mut stream = engine.run(RunInput::new());
+    let handle = stream.handle();
+    let mut events = Vec::new();
+    let mut asked = false;
+    while let Some(e) = stream.next().await {
+        if !asked && matches!(&e, Event::NodeStarted { node_id, .. } if node_id.as_ref() == "t") {
+            asked = true;
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                handle.preempt("drain");
+            });
+        }
+        events.push(e);
+    }
+    let snapshot = through_json(&paused_snapshot(&events));
+    let events = collect(&engine, RunInput::new().resume(snapshot, IndexMap::new())).await;
+    assert_eq!(failure(&events).0, "limit_exceeded");
+}
+
+#[cfg(feature = "budgets")]
+#[tokio::test]
+async fn a_request_lowers_the_budget_and_never_raises_it() {
+    let g = turner_graph(json!({"turns": 3, "per_turn": 10}));
+    // 35 tokens in all: a request limit of 15 stops it, whatever the engine's.
+    for (engine_limit, request_limit) in [(Some(100), Some(15)), (Some(15), Some(100)), (None, Some(15))] {
+        let engine =
+            Engine::new(Arc::clone(&g)).with_limits(Limits { max_total_tokens: engine_limit, ..Limits::default() });
+        let mut input = RunInput::new();
+        input.max_total_tokens = request_limit;
+        let events = collect(&engine, input).await;
+        assert_eq!(failure(&events).0, "limit_exceeded", "{engine_limit:?} {request_limit:?}");
+    }
+}
+
+#[cfg(feature = "budgets")]
+#[cfg(feature = "tokio")] // needs a timer-capable clock
+#[tokio::test]
+async fn a_resumed_run_keeps_the_limits_it_started_with() {
+    let g = turner_graph(json!({"turns": 4, "per_turn": 10, "hang_at": 2}));
+    let engine = Engine::new(g);
+    let mut input = RunInput::new();
+    input.max_total_tokens = Some(30);
+    let mut stream = engine.run(input);
+    let handle = stream.handle();
+    let mut events = Vec::new();
+    let mut asked = false;
+    while let Some(e) = stream.next().await {
+        if !asked && matches!(&e, Event::NodeStarted { node_id, .. } if node_id.as_ref() == "t") {
+            asked = true;
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                handle.preempt("drain");
+            });
+        }
+        events.push(e);
+    }
+    let snapshot = through_json(&paused_snapshot(&events));
+    assert_eq!(snapshot.budget.max_total_tokens, Some(30));
+    // Resumed without limits: the run's own 30 still holds (20 more turns and 5 pass it).
+    let events = collect(&engine, RunInput::new().resume(snapshot, IndexMap::new())).await;
+    assert_eq!(failure(&events).0, "limit_exceeded");
 }

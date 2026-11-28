@@ -164,6 +164,31 @@ calls of that turn run first.
 
 ## Stage 5: budgets and checkpoints
 
+### As built, and where it differs from the plan below
+
+| Planned | Built | Why |
+| --- | --- | --- |
+| `NodeContext::charge` adds to atomics of the run | `graphrt_core::budget::RunBudget`, two atomics shared by every frame and child, `charge` returns `limit_exceeded` and stops the run once | As planned. 13.5 ns per charge. |
+| Model nodes charge after every response | Nodes that say `Node::tracks_turns` charge each model response with its cost as it arrives, a call that then fails too: the agent per turn (a context summary of the turn included), `llm`, classifier and extractor per call. The engine charges every other node the tokens it reports when it completes | A node that does not know about budgets is still bounded by tokens, and no response is counted twice. |
+| The engine keeps the latest checkpoint of every running node | Only for nodes that say `Node::tracks_turns` (the agent, `llm`, classifier, extractor): one allocation per execution, none for other nodes. Only the agent writes checkpoints | A run without model nodes pays nothing. |
+| `NodeSnapshot::resume_state` holds the checkpoint | `NodeSnapshot::checkpoint`, next to `resume_state` | A node can tell "continue after approval" from "continue after a cut attempt", and a checkpoint newer than a resume state wins. |
+| Checkpoint after each tool result | After a model turn with its calls marked as started, after each call when calls run one after another, after a batch of parallel calls, and right after an approval resume. A cut inside a parallel batch reports the whole batch as interrupted. A checkpoint that cannot be decoded (another version) starts the node over | One checkpoint per batch keeps parallel turns cheap. |
+| An agent that cannot afford another tool turn answers | When what is left does not afford another tool turn and the answer after it (twice the last turn), the last turn runs without tools, `stopped_reason: budget`. That answer is kept even when it passes the limit by itself. An agent that starts with nothing left fails with `limit_exceeded` before calling the model | The answer turn must not fail the run it was made to save. A run passes its limit by at most one answer of each agent that had room when it asked. |
+| Per request limits up to the server's value | `RunInput::max_total_tokens` and `max_cost_micros`. The lowest of the engine's, the request's and, on resume, the run's own (kept in the snapshot's `budget`) applies. `serve` and the gateway take `limits` in the run request body | The engine enforces "only lower", not each host, and a resumed run keeps the budget it started with. |
+| Prices in the providers file | `prices: {model: {input_per_million, output_per_million}}` per provider, `ModelRegistry::price` (aliases resolve) | As planned. |
+| Idempotency key per tool call | `ToolCallContext::idempotency_key`, `<run_id>:<exec_id>:<turn>:<call id>`, sent to plugins as `idempotency_key` | Providers that give no call id number calls per turn (`call_0`), so the turn is in the key. Not a secret, so every plugin gets it. |
+
+A paused run keeps the limits it ran with in its snapshot. Raising
+`--max-tokens-per-run` or `--max-cost-per-run` and restarting the server does
+not give more room to runs that were paused before: the lowest limit wins.
+
+Measured (`examples/checkpoint_bench.rs`): 99 tool turns growing the
+conversation to 200 messages of about 1 KiB cost 39 µs per turn when the node
+runs alone and 327 µs in the engine with two checkpoints and a charge per
+turn. The checkpoint is a JSON copy of the whole loop state, about 140 µs on
+average for this conversation, under the 1 ms target and small next to a real
+model turn.
+
 ### Token and cost budget
 
 ```rust
@@ -230,12 +255,12 @@ have acted. The rule:
 
 | The tool is | On the next attempt |
 | --- | --- |
-| Listed in `retry_safe_tools`, or one of the read only built in tools (`memory/recall`, file reads, `load_skill`) | Called again. |
+| Listed in `retry_safe_tools` (`provider/name`, `provider/*`, `*`), or one of the read only built in tools (the recall of the agent's own memory, the skill tools) | Called again. |
 | Anything else | Not called. The model gets the result `interrupted: this call was started and its outcome is unknown. It was not repeated.` and decides what to do, which may be to check and call again. |
 | Listed in `require_approval` | Not called. It waits for approval again, with a note that an earlier attempt was interrupted. |
 
 Every tool call also receives an idempotency key
-(`<run_id>:<exec_id>:<call id>`) in its `ToolCallContext`, the same for every
+(`<run_id>:<exec_id>:<turn>:<call id>`) in its `ToolCallContext`, the same for every
 attempt of that call, so a plugin or an HTTP service can make the effect happen
 once even when the owner marks the tool as safe to retry.
 
@@ -272,7 +297,7 @@ same holds for a node timeout followed by a retry.
 | Approval keys of the parent approve inside a child | A child's pause is keyed by its frame (`lead.mailer[0]/assistant`). A bare node id never reaches a child. | Plain key test. |
 | A node fakes the pause kind of child runs to hide its pause | The engine passes a pause on without a reason only for a node whose child really paused in this run. | Spoofed pause test. |
 | Injected text in a child's answer steers the parent | The answer is a tool result: bounded, masked, and data to the model like any tool result. A handoff is opt in per entry. | Covered by the tool result tests. |
-| A retry repeats a payment or a message | Checkpoints, the unknown outcome rule, idempotency key per call. Until stage 5 a retry of the parent agent runs its children again. | Timeout tests above. |
+| A retry repeats a payment or a message | Checkpoints, the unknown outcome rule, idempotency key per call. A child call cut while it ran is not repeated unless its workflow is listed in `retry_safe_tools`. | Timeout tests above. |
 | A run spends without bound | Token and cost limits charged per turn across the tree. | Budget tests above. |
 | A resumed run continues against a changed workflow | The fingerprint covers linked graphs. | Resume with a changed child is refused. |
 
@@ -309,6 +334,14 @@ they have today.
   `retry_safe_tools`.
 - Run limits: `max_total_tokens`, `max_cost_micros` per request and per server.
 - Events carry the child frame id, so a run view can draw the tree. New
-  progress events: `subagent_started`, `subagent_finished`, `budget`.
+  progress events: `subagent_finished`, `subagent_failed`, `subagent_paused`
+  (a child's start is the `node_started` of its first node, under its frame),
+  `budget` (the last turn runs without tools),
+  `checkpoint_restored`, `tool_interrupted`.
+- Run limits per request: `limits: {max_total_tokens, max_cost_micros}` in
+  the body of `POST /v1/workflows/{name}/runs`, and the same two fields in
+  the FFI `limits` config. A paused run's snapshot carries `budget: {tokens,
+  cost_micros}`, and an agent node's snapshot carries `checkpoint`.
+- Prices per model: `prices` of a provider in the providers file.
 - Pause reasons of children arrive with frame qualified keys, which the
   approvals inbox already shows.

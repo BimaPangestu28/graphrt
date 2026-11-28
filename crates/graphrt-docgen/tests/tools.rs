@@ -18,7 +18,7 @@ fn path(raw: &str) -> WorkspacePath {
 }
 
 fn scope(name: &str) -> ToolCallContext {
-    ToolCallContext { secrets: [("scope".to_owned(), name.to_owned())].into() }
+    ToolCallContext { secrets: [("scope".to_owned(), name.to_owned())].into(), ..ToolCallContext::default() }
 }
 
 async fn call(tools: &DocumentTools, name: &str, arguments: Json) -> ToolOutput {

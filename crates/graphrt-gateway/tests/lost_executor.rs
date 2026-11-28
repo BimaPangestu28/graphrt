@@ -181,3 +181,21 @@ async fn after_a_gateway_crash_a_run_that_needs_a_secret_ends_credentials_requir
     let request = request.expect("stored with the run");
     assert!(!request.contains("sk-never-stored") && request.contains(r#""needs_secrets":["api_token"]"#), "{request}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_cannot_send_a_snapshot_or_the_fields_the_gateway_sets() {
+    let gateway = start_gateway(url_platform(Duration::from_secs(30))).await;
+    let forged = json!({"snapshot": {"format": 1, "run_id": "x", "graph_fingerprint": "", "elapsed_ms": 0,
+        "steps": 0, "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, "handled_errors": 0,
+        "root": {"pool": {}, "nodes": {}, "edges": {}, "outputs": {}}}});
+    let body = json!({"inputs": {}, "resume": forged, "event_index": 99, "preempt_after_ms": 1,
+        "limits": {"max_total_tokens": 10}});
+    let (_, record) = gateway.post(&runs(), body).await;
+    assert_eq!(record["status"], "succeeded", "{record}");
+    let bodies = gateway.provider.world.bodies.lock().unwrap().clone();
+    let sent = &bodies[0];
+    assert!(sent.get("resume").is_none(), "{sent}");
+    assert_eq!(sent["event_index"], 0, "{sent}");
+    assert!(sent.get("preempt_after_ms").is_none(), "{sent}");
+    assert_eq!(sent["limits"]["max_total_tokens"], 10, "the caller's limits reach the agent");
+}

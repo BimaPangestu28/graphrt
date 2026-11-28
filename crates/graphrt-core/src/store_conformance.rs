@@ -148,6 +148,7 @@ async fn final_writes_store_events_snapshot_and_record(store: &dyn RunStore) {
         usage: crate::event::Usage::default(),
         handled_errors: 0,
         root: crate::snapshot::FrameSnapshot::default(),
+        ..crate::Snapshot::default()
     };
     let mut paused = record(id);
     paused.status = RunStatus::Paused;

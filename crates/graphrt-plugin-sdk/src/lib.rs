@@ -202,12 +202,16 @@ impl fmt::Display for PluginError {
 impl std::error::Error for PluginError {}
 
 /// A `tool.call` request.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToolCall {
     pub name: String,
     pub arguments: Value,
     /// Per-call values from the host, outside the model-written arguments.
     pub context: ToolCallContext,
+    /// The same for every attempt of this call (a retry, a resumed run), so
+    /// the tool can make its effect happen once. Sent by `agent` nodes,
+    /// `None` otherwise: never dedupe calls without one.
+    pub idempotency_key: Option<String>,
 }
 
 /// The `context` of a `tool.call`: per-run values the host sends next to the
@@ -633,6 +637,11 @@ impl Plugin {
             name,
             arguments: params.get("arguments").cloned().unwrap_or(Value::Null),
             context: ToolCallContext::from_params(&params),
+            idempotency_key: params
+                .get("idempotency_key")
+                .and_then(Value::as_str)
+                .filter(|key| !key.is_empty())
+                .map(str::to_owned),
         };
         let out = out.clone();
         tokio::spawn(async move {

@@ -130,6 +130,12 @@ pub struct Limits {
     pub default_node_timeout_ms: Option<u64>,
     /// Maximum nodes executing concurrently within one frame. Default 64.
     pub max_concurrency: usize,
+    /// Total tokens (prompt and completion) the run may use, child runs
+    /// included. Charged after every model response. Default none.
+    pub max_total_tokens: Option<u64>,
+    /// Cost the run may reach, in millionths of the price unit of the
+    /// providers file (prices per model). Default none.
+    pub max_cost_micros: Option<u64>,
 }
 
 impl Default for Limits {
@@ -140,6 +146,8 @@ impl Default for Limits {
             max_depth: 8,
             default_node_timeout_ms: None,
             max_concurrency: 64,
+            max_total_tokens: None,
+            max_cost_micros: None,
         }
     }
 }
@@ -159,6 +167,12 @@ pub struct RunInput {
     pub run_id: Option<String>,
     /// Resume a paused run.
     pub resume: Option<ResumeFrom>,
+    /// A token budget for this run, below the engine's
+    /// ([`Limits::max_total_tokens`]): the lower of the two applies.
+    pub max_total_tokens: Option<u64>,
+    /// A cost budget for this run in micro units, below the engine's
+    /// ([`Limits::max_cost_micros`]): the lower of the two applies.
+    pub max_cost_micros: Option<u64>,
 }
 
 impl RunInput {

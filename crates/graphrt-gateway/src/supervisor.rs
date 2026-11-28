@@ -723,6 +723,11 @@ impl Gateway {
         let mut body = input.map(|input| input.body.clone()).unwrap_or_default();
         body.remove("stream");
         body.remove("async");
+        // Fields only the gateway sets: a caller never sends a snapshot of its
+        // own (forged node state, a budget set back to zero) or a schedule.
+        for owned in ["resume", "event_index", "preempt_after_ms", "fingerprint", "deployment_version"] {
+            body.remove(owned);
+        }
         body.insert("workflow".into(), Json::from(version.info.workflow.clone()));
         if !version.info.fingerprint.is_empty() {
             body.insert("fingerprint".into(), Json::from(version.info.fingerprint.clone()));

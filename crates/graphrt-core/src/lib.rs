@@ -13,6 +13,7 @@
 //! provider; those live in separate crates and plug in through
 //! [`node::Services`] and [`node::Registry`].
 
+pub mod budget;
 pub mod catalog;
 pub mod child_env;
 pub mod condition;

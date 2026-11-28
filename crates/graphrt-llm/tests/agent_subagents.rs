@@ -933,3 +933,24 @@ async fn the_first_handoff_in_the_models_order_wins_whatever_finishes_first() {
     let out = outputs(&events);
     assert_eq!((out["text"].as_str(), out["stopped"].as_str()), (Some("rested"), Some("handoff")));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn children_spend_the_parents_token_budget_and_the_whole_run_stops_at_it() {
+    let s = setup(vec![MockModel::tool_calls(&[("c1", "recursive", "{}")]), MockModel::text("never")], vec![]);
+    for _ in 0..4 {
+        s.deep.push(MockModel::tool_calls(&[("d", "recursive", "{}")]));
+    }
+    let root = lead(json!([{"workflow": "recursive", "description": "Goes deeper"}]), json!({}));
+    // Each turn charges 2 tokens: the parent's turn and two levels of children pass 5.
+    let limits = Limits { max_total_tokens: Some(5), ..Limits::default() };
+    let events = run(&engine(root, &s, limits), query("go")).await;
+    match events.last() {
+        Some(Event::RunFailed { error_type, error, .. }) => {
+            assert_eq!(error_type, "limit_exceeded");
+            assert!(error.contains("token budget of 5"), "{error}");
+        }
+        other => panic!("expected the budget to stop the run, got {other:?}"),
+    }
+    assert_eq!(s.parent.requests().len(), 1, "the parent made no turn after its children spent the budget");
+    assert_eq!(s.deep.requests().len(), 2);
+}

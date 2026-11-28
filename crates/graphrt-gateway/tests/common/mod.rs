@@ -60,6 +60,7 @@ fn snapshot(run_id: &str) -> Snapshot {
         usage: Default::default(),
         handled_errors: 0,
         root: FrameSnapshot::default(),
+        ..Snapshot::default()
     }
 }
 

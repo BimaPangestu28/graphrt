@@ -34,6 +34,9 @@ pub(crate) fn env_value(vars: &[(String, String)], name: &str) -> Option<String>
 #[derive(Clone, Default)]
 pub struct ModelRegistry {
     providers: IndexMap<String, Arc<dyn ChatModel>>,
+    /// Prices per provider and model name, for the run's cost budget.
+    /// A few entries, looked up by a scan: no hash map code for them.
+    pub(crate) prices: Vec<(String, String, Price)>,
     aliases: IndexMap<String, String>,
     /// Why a well-known provider was not registered (shown in "unknown provider" errors).
     hints: IndexMap<String, String>,
@@ -67,9 +70,83 @@ const CONTEXT_WINDOW_TTL: std::time::Duration = std::time::Duration::from_secs(3
 #[cfg(feature = "context")]
 const MAX_CONTEXT_WINDOWS: usize = 256;
 
+/// What a model costs, in the price unit of the providers file (any
+/// currency: the run's cost budget is in millionths of it).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct Price {
+    pub input_per_million: f64,
+    pub output_per_million: f64,
+}
+
+/// The highest price per million tokens a providers file may give (a guard
+/// against a misplaced decimal point, not a market price).
+const MAX_PRICE_PER_MILLION: f64 = 1.0e9;
+
+impl Price {
+    /// A price, checked like one in a providers file.
+    ///
+    /// @throws LlmError - `Config` for a negative, not finite or absurd price.
+    pub fn new(input_per_million: f64, output_per_million: f64) -> Result<Self, LlmError> {
+        let price = Self { input_per_million, output_per_million };
+        if price.is_valid() {
+            Ok(price)
+        } else {
+            Err(LlmError::Config(format!(
+                "a price per million tokens is between 0 and {MAX_PRICE_PER_MILLION}, got {input_per_million} and {output_per_million}"
+            )))
+        }
+    }
+
+    /// The cost of `usage` in micro units: a price per million tokens is the
+    /// cost of one token in micro units.
+    pub fn cost_micros(&self, usage: &graphrt_core::event::Usage) -> u64 {
+        // A provider that reports only a total: priced as input.
+        let (prompt, completion) = if usage.prompt_tokens == 0 && usage.completion_tokens == 0 {
+            (usage.total_tokens, 0)
+        } else {
+            (usage.prompt_tokens, usage.completion_tokens)
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let micros = prompt as f64 * self.input_per_million + completion as f64 * self.output_per_million;
+        if micros.is_finite() && micros > 0.0 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let micros = micros.round().min(u64::MAX as f64) as u64;
+            micros
+        } else {
+            0
+        }
+    }
+
+    /// Both prices are finite, not negative and not absurd.
+    pub fn is_valid(&self) -> bool {
+        [self.input_per_million, self.output_per_million]
+            .iter()
+            .all(|p| p.is_finite() && *p >= 0.0 && *p <= MAX_PRICE_PER_MILLION)
+    }
+}
+
 impl ModelRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the price of `model` at `provider` (the names a workflow uses).
+    pub fn set_price(&mut self, provider: impl Into<String>, model: impl Into<String>, price: Price) -> &mut Self {
+        let (provider, model) = (provider.into(), model.into());
+        match self.prices.iter_mut().find(|(p, m, _)| *p == provider && *m == model) {
+            Some(entry) => entry.2 = price,
+            None => self.prices.push((provider, model, price)),
+        }
+        self
+    }
+
+    /// The price of `model` at `provider`, also when `provider` is an alias.
+    pub fn price(&self, provider: &str, model: &str) -> Option<Price> {
+        let find =
+            |p: &str| self.prices.iter().find(|(name, m, _)| name == p && m == model).map(|(_, _, price)| *price);
+        find(provider).or_else(|| find(self.aliases.get(provider)?))
     }
 
     /// The context window of `model` at `provider` in tokens, when that

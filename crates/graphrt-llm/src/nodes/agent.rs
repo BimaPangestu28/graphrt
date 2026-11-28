@@ -245,6 +245,12 @@ pub struct AgentConfig {
     /// Child runs in one run of this node (default 16).
     #[serde(default)]
     pub max_subagent_calls: Option<usize>,
+    /// Tools called again when an attempt was cut while they ran (a retry, a
+    /// resumed preempt): `provider/name`, the name the model sees, `provider/*`
+    /// or `*`. The recall of the agent's own memory and the skill tools are
+    /// always. Any other cut call is not repeated.
+    #[serde(default)]
+    pub retry_safe_tools: Vec<String>,
 }
 
 /// `learning` of the `agent` node: whose lessons a run reads.
@@ -504,6 +510,37 @@ struct AgentState {
     #[cfg(feature = "subagents")]
     #[serde(default, skip_serializing_if = "crate::subagents::ChildState::is_empty")]
     children: crate::subagents::ChildState,
+    /// Calls running when the checkpoint was kept: an attempt that restores
+    /// it does not know their outcome.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    started: Vec<ToolCall>,
+    /// Calls of the turn that had not started yet (one after another, or
+    /// children after the plain calls): an attempt that restores runs them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    queued: Vec<ToolCall>,
+    /// Tokens and cost of the last model turn, to tell whether the budget
+    /// affords another one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    last_turn_tokens: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    last_turn_cost: u64,
+    /// A mark of the start over that happened because the checkpoint of an
+    /// earlier attempt could not be read: it is in the idempotency keys, so
+    /// the new turns' calls never take the keys of the earlier ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restart: Option<String>,
+    /// The mark of a start over that applies once the approved calls of the
+    /// resume ran (they keep the keys they had).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restart_next: Option<String>,
+    /// The run was told once that this model has no price.
+    #[serde(skip)]
+    price_reported: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// Why the loop ended.
@@ -520,6 +557,9 @@ enum StopReason {
     /// A `subagents` entry with `handoff: true` answered for this agent.
     #[cfg(feature = "subagents")]
     Handoff,
+    /// The run's token or cost budget did not afford another tool turn: the
+    /// last turn answered without tools.
+    Budget,
 }
 
 impl StopReason {
@@ -531,6 +571,7 @@ impl StopReason {
             StopReason::Unrecognized(reason) => format!("finish:{reason}"),
             #[cfg(feature = "subagents")]
             StopReason::Handoff => "handoff".into(),
+            StopReason::Budget => "budget".into(),
         }
     }
 }
@@ -855,6 +896,108 @@ impl AgentNode {
         bound_tool(tools, call).is_some_and(|t| self.needs_approval(t))
     }
 
+    /// Whether a call cut while it ran may be made again: a read only built in
+    /// tool, or one the owner listed in `retry_safe_tools`.
+    fn retry_safe(&self, tool: &BoundTool) -> bool {
+        // Read only tools of this crate, known by where they come from: the
+        // recall of the agent's own memory (a reserved provider) and the skill
+        // tools. Registry providers are trusted by the owner's list only.
+        #[allow(unused_mut)]
+        let mut read_only = false;
+        #[cfg(feature = "memory")]
+        {
+            read_only |= tool.provider == crate::memory::MEMORY_PROVIDER && tool.name == "recall";
+        }
+        #[cfg(feature = "skills")]
+        {
+            read_only |= tool.skill_tool;
+        }
+        read_only
+            || self.config.retry_safe_tools.iter().any(|r| {
+                r == "*"
+                    || *r == tool.exposed
+                    || *r == format!("{}/{}", tool.provider, tool.name)
+                    || *r == format!("{}/*", tool.provider)
+            })
+    }
+
+    /// Keep `state` as the checkpoint of this execution (nothing outside an
+    /// engine). A state that cannot be encoded is not kept: the next attempt
+    /// then starts over, as before checkpoints.
+    fn save(ctx: &NodeContext, state: &AgentState) {
+        if !ctx.keeps_checkpoints() {
+            return;
+        }
+        match serde_json::to_value(state) {
+            Ok(value) => ctx.checkpoint(value),
+            Err(error) => {
+                eprintln!("agent {}: checkpoint not kept: {error}", ctx.node_id);
+                ctx.progress("checkpoint_skipped", Value::from_json(json!({"error": error.to_string()})));
+            }
+        }
+    }
+
+    /// The calls an interrupted attempt had started: a safe one runs again, one
+    /// that needs approval waits for it again, any other gets a result saying
+    /// it was not repeated.
+    async fn settle_interrupted(&self, ctx: &NodeContext, state: &mut AgentState, tools: &[BoundTool]) {
+        let started = std::mem::take(&mut state.started);
+        // Calls that never started run now, as they would have.
+        let mut again = std::mem::take(&mut state.queued);
+        if started.is_empty() && again.is_empty() {
+            return;
+        }
+        for call in started {
+            let tool = bound_tool(tools, &call);
+            ctx.progress("tool_interrupted", Value::from_json(json!({"id": call.id, "name": call.name})));
+            if tool.is_some_and(|t| self.needs_approval(t)) {
+                state.pending.push(call);
+            } else if tool.is_some_and(|t| self.retry_safe(t)) {
+                again.push(call);
+            } else {
+                let message = "interrupted: this call was started and its outcome is unknown. It was not repeated.";
+                self.record(state, tools, &call, ToolOutput::error(message));
+            }
+        }
+        // In the order the model made them (a few calls: a plain pass, no sort).
+        let order: Vec<String> = state
+            .messages
+            .iter()
+            .rev()
+            .find(|m| !m.tool_calls.is_empty())
+            .map(|m| m.tool_calls.iter().map(|c| c.id.clone()).collect())
+            .unwrap_or_default();
+        let mut ordered = Vec::with_capacity(again.len());
+        for id in &order {
+            if let Some(at) = again.iter().position(|call| call.id == *id) {
+                ordered.push(again.swap_remove(at));
+            }
+        }
+        ordered.append(&mut again);
+        self.run_calls(ctx, state, tools, ordered).await;
+    }
+
+    /// The cost of `usage` in micro units at the price the providers file
+    /// gives this agent's model, 0 without one.
+    fn cost_of(&self, ctx: &NodeContext, state: &mut AgentState, usage: &Usage) -> u64 {
+        let model = &self.config.model;
+        crate::nodes::common::price_of(ctx, model, usage).unwrap_or_else(|| {
+            if !state.price_reported {
+                state.price_reported = crate::nodes::common::report_missing_price(ctx, model);
+            }
+            0
+        })
+    }
+
+    /// Whether the run's budget affords another tool turn like the last one
+    /// and the answer after it (two such turns).
+    fn budget_affords_another_turn(ctx: &NodeContext, state: &AgentState) -> bool {
+        let Some(budget) = ctx.budget() else { return true };
+        let tokens = budget.remaining_tokens().is_none_or(|left| left > state.last_turn_tokens.saturating_mul(2));
+        let cost = budget.remaining_cost_micros().is_none_or(|left| left > state.last_turn_cost.saturating_mul(2));
+        tokens && cost
+    }
+
     /// The approved lessons this run reads, as a section for the system
     /// prompt (empty without `learning` or without lessons).
     #[cfg(feature = "learning")]
@@ -928,24 +1071,59 @@ impl AgentNode {
                 None => undecided.push(call),
             }
         }
+        // Still pending while the approved ones run, so a checkpoint keeps them.
+        state.pending.clone_from(&undecided);
         self.run_calls(ctx, state, tools, approved).await;
         undecided
     }
 
     async fn execute(&self, ctx: NodeContext) -> NodeResult {
-        let bound = self.bind_tools(&ctx).await?;
-        let (tools, skill_catalog) = (bound.tools, bound.catalog);
+        let mut bound = self.bind_tools(&ctx).await?;
+        let (tools, skill_catalog) = (std::mem::take(&mut bound.tools), std::mem::take(&mut bound.catalog));
         let model = model_for(&ctx, &self.config.model)?;
-        let mut state = match &ctx.resume {
+        // An earlier attempt of this execution was cut (a retry, a resumed
+        // preempt): go on from its last turn. Newer than a resume state.
+        let mut restarted = false;
+        if let Some(saved) = ctx.checkpointed().and_then(|saved| match Self::restore_state(&bound, saved) {
+            Ok(state) => Some(state),
+            // From another version of this node: start over, as without checkpoints.
+            Err(error) => {
+                eprintln!("agent {}: checkpoint not read, the loop starts over: {}", ctx.node_id, error.message);
+                ctx.progress("checkpoint_skipped", Value::from_json(json!({"error": error.message})));
+                restarted = true;
+                None
+            }
+        }) {
+            let mut state = saved;
+            ctx.progress("checkpoint_restored", Value::from_json(json!({"iteration": state.iteration})));
+            self.settle_interrupted(&ctx, &mut state, &tools).await;
+            // A start over whose approved calls ran in this attempt.
+            if let Some(mark) = state.restart_next.take() {
+                state.restart = Some(mark);
+            }
+            #[cfg(feature = "subagents")]
+            if let Some(error) = state.children.stopped.take() {
+                return Err(error);
+            }
+            if Self::must_pause(&state) {
+                return self.pause(&state, &tools);
+            }
+            #[cfg(feature = "subagents")]
+            if let Some(text) = state.children.handoff.take() {
+                return Ok(finished(&ctx, state, text, &StopReason::Handoff));
+            }
+            return self.run_loop(&ctx, model, &tools, state).await;
+        }
+        let state = match &ctx.resume {
             Some(resume) => {
-                let mut state: AgentState = serde_json::from_value(resume.state.clone())
-                    .map_err(|e| NodeError::fatal("invalid_resume_state", e.to_string()))?;
-                #[cfg(feature = "memory")]
-                {
-                    bound.memory.count_writes(memory_writes(&state.log));
-                    state.memory = bound.memory.clone();
-                    state.memory.read_all(&state.messages);
+                let mut state = Self::restore_state(&bound, resume.state.clone())?;
+                if restarted {
+                    state.restart_next = Some(restart_mark(&ctx));
                 }
+                // Kept at once: a cut while children resume or approved calls run
+                // goes on from here instead of from turn 1. Its pending calls ask
+                // for approval again, and approved calls are marked started.
+                Self::save(&ctx, &state);
                 // Children that waited go on first, each where it stopped.
                 #[cfg(feature = "subagents")]
                 if let Some(config) = &self.subagents
@@ -960,6 +1138,11 @@ impl AgentNode {
                     self.record_children(&ctx, &mut state, &tools, done);
                 }
                 let undecided = self.apply_decisions(&ctx, &mut state, &tools, resume.input.as_ref()).await;
+                // Started over from the paused state: the approved calls kept their
+                // keys, the turns from here on get new ones.
+                if let Some(mark) = state.restart_next.take() {
+                    state.restart = Some(mark);
+                }
                 #[cfg(feature = "subagents")]
                 if let Some(error) = state.children.stopped.take() {
                     return Err(error);
@@ -967,6 +1150,9 @@ impl AgentNode {
                 if !undecided.is_empty() {
                     state.pending = undecided;
                 }
+                // With the decisions and the children's results in it: a cut from
+                // here on goes on from this state, not from the one paused.
+                Self::save(&ctx, &state);
                 if Self::must_pause(&state) {
                     return self.pause(&state, &tools);
                 }
@@ -988,6 +1174,9 @@ impl AgentNode {
                 let images = self.config.vision.image_parts(&ctx.pool)?;
                 #[allow(unused_mut)]
                 let mut state = self.initial_state(&ctx, &[&skill_catalog, &notes], images)?;
+                if restarted {
+                    state.restart = Some(restart_mark(&ctx));
+                }
                 #[cfg(all(feature = "skills", feature = "learning"))]
                 {
                     state.has_notes = !notes.is_empty();
@@ -1003,24 +1192,49 @@ impl AgentNode {
                 state
             }
         };
+        self.run_loop(&ctx, model, &tools, state).await
+    }
+
+    /// The agent loop from `state` on: model turns and tool turns until an answer.
+    async fn run_loop(
+        &self,
+        ctx: &NodeContext,
+        model: Arc<dyn ChatModel>,
+        tools: &[BoundTool],
+        mut state: AgentState,
+    ) -> NodeResult {
         let (final_text, stop) = loop {
             state.iteration += 1;
-            let offer =
-                TurnTools { offered: !tools.is_empty(), final_turn: state.iteration >= self.config.max_iterations };
-            let mut turn = self.model_turn(&ctx, model.as_ref(), &mut state, &tools, offer).await?;
+            // Nothing left: no answer is affordable, the run stops here.
+            ctx.check_budget()?;
+            // A budget that does not afford another tool turn and the answer
+            // after it gets one more turn without tools: an answer from what
+            // the agent has.
+            let budget_low = !tools.is_empty() && !Self::budget_affords_another_turn(ctx, &state);
+            if budget_low {
+                ctx.progress("budget", Value::from_json(json!({"iteration": state.iteration, "final_turn": true})));
+            }
+            let offer = TurnTools {
+                offered: !tools.is_empty(),
+                final_turn: state.iteration >= self.config.max_iterations || budget_low,
+                answer_for_budget: budget_low,
+            };
+            let mut turn = self.model_turn(ctx, model.as_ref(), &mut state, tools, offer).await?;
             if offer.callable() && turn.response.tool_calls.is_empty() {
-                read_calls_written_as_text(&mut turn, &state, &tools);
+                read_calls_written_as_text(&mut turn, &state, tools);
             }
             if !offer.callable() || turn.response.tool_calls.is_empty() {
-                break self.answer_turn(&ctx, &mut state, turn, offer);
+                let (text, stop) = self.answer_turn(ctx, &mut state, turn, offer);
+                let stop = if budget_low && stop == StopReason::MaxIterations { StopReason::Budget } else { stop };
+                break (text, stop);
             }
-            self.tool_turn(&ctx, &mut state, &tools, turn).await;
+            self.tool_turn(ctx, &mut state, tools, turn).await;
             #[cfg(feature = "subagents")]
             if let Some(error) = state.children.stopped.take() {
                 return Err(error);
             }
             if Self::must_pause(&state) {
-                return self.pause(&state, &tools);
+                return self.pause(&state, tools);
             }
             // A handoff: the child answered for this agent.
             #[cfg(feature = "subagents")]
@@ -1028,7 +1242,22 @@ impl AgentNode {
                 break (text, StopReason::Handoff);
             }
         };
-        Ok(finished(&ctx, state, final_text, &stop))
+        Ok(finished(ctx, state, final_text, &stop))
+    }
+
+    /// The state saved by a pause or a checkpoint, with this attempt's memory attached.
+    #[cfg_attr(not(feature = "memory"), allow(unused_variables))]
+    fn restore_state(bound: &BoundTools, saved: Json) -> Result<AgentState, NodeError> {
+        #[allow(unused_mut)]
+        let mut state: AgentState =
+            serde_json::from_value(saved).map_err(|e| NodeError::fatal("invalid_resume_state", e.to_string()))?;
+        #[cfg(feature = "memory")]
+        {
+            bound.memory.count_writes(memory_writes(&state.log));
+            state.memory = bound.memory.clone();
+            state.memory.read_all(&state.messages);
+        }
+        Ok(state)
     }
 
     /// Ask the model for the next turn (streaming per `stream_tool_turns`) and
@@ -1042,6 +1271,8 @@ impl AgentNode {
         offer: TurnTools,
     ) -> Result<Turn, NodeError> {
         let cfg = &self.config;
+        // Everything this turn spends (a context summary too) is charged with it.
+        let usage_before = state.usage;
         if let Some(keep) = cfg.keep_tool_images {
             prune_tool_images(&mut state.messages, keep);
         }
@@ -1073,7 +1304,7 @@ impl AgentNode {
         #[cfg(not(feature = "context"))]
         let (response, streamed) = stream_turn(ctx, model, request(state.messages.clone(), specs)?, plan).await?;
         #[cfg(feature = "context")]
-        let (response, streamed) = {
+        let outcome: Result<(ChatResponse, usize), NodeError> = 'turn: {
             // The fields of the state the guard reads and changes, borrowed apart.
             let AgentState { messages, context, usage, log, .. } = state;
             let shown = pinned_results(log, messages);
@@ -1081,20 +1312,54 @@ impl AgentNode {
             let scope = crate::context::Scope { pinned: &pinned, tail: 0 };
             let mut guard = self.context.session(ctx, model, &cfg.model, scope);
             loop {
-                let estimate = guard.fit(context, messages, &specs, usage).await?;
-                let turn = request(context.request_messages(messages), specs.clone())?;
+                let estimate = match guard.fit(context, messages, &specs, usage).await {
+                    Ok(estimate) => estimate,
+                    Err(error) => break 'turn Err(error),
+                };
+                let turn = match request(context.request_messages(messages), specs.clone()) {
+                    Ok(turn) => turn,
+                    Err(error) => break 'turn Err(error),
+                };
                 match stream_turn(ctx, model, turn, plan).await {
                     Ok(done) => {
                         guard.observe(context, estimate, &done.0.usage);
-                        break done;
+                        break 'turn Ok(done);
                     }
                     // A turn the provider refused for its size is trimmed and sent
                     // once more. Any other error, and a second refusal, end the turn.
-                    Err(error) => guard.refused(context, messages, &specs, error, usage).await?,
+                    Err(error) => {
+                        if let Err(error) = guard.refused(context, messages, &specs, error, usage).await {
+                            break 'turn Err(error);
+                        }
+                    }
                 }
             }
         };
+        #[cfg(feature = "context")]
+        let (response, streamed) = match outcome {
+            Ok(done) => done,
+            Err(error) => {
+                // A summary made for the turn was paid for, even when the turn failed.
+                let spent = usage_since(&state.usage, &usage_before);
+                if !spent.is_zero() {
+                    // Past a limit the budget stops the run itself: the turn's own error is the answer.
+                    let cost = self.cost_of(ctx, state, &spent);
+                    let _limit_reached = ctx.charge(&spent, cost).is_err();
+                }
+                return Err(error);
+            }
+        };
         state.usage.add(&response.usage);
+        let spent = usage_since(&state.usage, &usage_before);
+        let cost = self.cost_of(ctx, state, &spent);
+        state.last_turn_tokens = spent.billable_tokens();
+        state.last_turn_cost = cost;
+        if offer.answer_for_budget {
+            // The answer the budget asked for is kept, even when it passes the limit.
+            ctx.charge_final(&spent, cost);
+        } else {
+            ctx.charge(&spent, cost)?;
+        }
         // A content-filtered or malformed turn is an error, never an empty "completed" answer.
         let finish = check_finish(&response)?;
         Ok(Turn { response, streamed, finish, live: plan.live })
@@ -1143,8 +1408,8 @@ impl AgentNode {
         let runnable = self.runnable_calls(state, tools, response.tool_calls);
         let (gated, free): (Vec<ToolCall>, Vec<ToolCall>) =
             runnable.into_iter().partition(|c| self.call_needs_approval(tools, c));
-        self.run_calls(ctx, state, tools, free).await;
         state.pending = gated;
+        self.run_calls(ctx, state, tools, free).await;
     }
 
     /// The calls that can run. Calls past `max_tool_calls_per_turn` and calls
@@ -1300,6 +1565,10 @@ impl AgentNode {
         if calls.is_empty() {
             return;
         }
+        // The turn is kept with the calls that run now marked as started and
+        // the others queued: an attempt cut while they run knows which
+        // outcomes it does not know, and runs what never started.
+        state.queued.clone_from(&calls);
         // What the model read before these calls decides where a saved note came from.
         #[cfg(feature = "memory")]
         state.memory.observe(&state.messages, &calls);
@@ -1309,13 +1578,73 @@ impl AgentNode {
                 Value::from_json(json!({"id": call.id, "name": call.name, "arguments": log_arguments(call, tools)})),
             );
         }
+        // The same for every attempt of a call, different for every other call:
+        // the turn is in it because providers number calls per turn.
+        let key = match &state.restart {
+            None => format!("{}:{}", ctx.idempotency_key(), state.iteration),
+            Some(mark) => format!("{}:r{mark}.{}", ctx.idempotency_key(), state.iteration),
+        };
         #[cfg(feature = "subagents")]
-        let (calls, outputs) = self.call_with_children(ctx, state, tools, calls).await;
-        #[cfg(not(feature = "subagents"))]
-        let outputs = self.call_tools(tools, &calls).await;
-        self.record_outputs(ctx, state, tools, &calls, outputs);
+        let (children, calls): (Vec<ToolCall>, Vec<ToolCall>) = match &self.subagents {
+            Some(_) => calls.into_iter().partition(|call| {
+                bound_tool(tools, call).is_some_and(|b| b.provider == crate::subagents::SUBAGENT_PROVIDER)
+            }),
+            None => (Vec::new(), calls),
+        };
+        if self.config.parallel_tool_calls {
+            Self::start_calls(ctx, state, &calls);
+            let outputs = futures::future::join_all(calls.iter().map(|c| call_tool(tools, c, &key))).await;
+            self.finish_calls(ctx, state, tools, &calls, outputs);
+        } else {
+            // One after another: each result is kept as soon as it is in.
+            for call in calls {
+                Self::start_calls(ctx, state, std::slice::from_ref(&call));
+                let output = call_tool(tools, &call, &key).await;
+                self.finish_calls(ctx, state, tools, std::slice::from_ref(&call), vec![output]);
+            }
+        }
+        #[cfg(feature = "subagents")]
+        if let Some(config) = &self.subagents
+            && !children.is_empty()
+        {
+            let with_workflow: Vec<(ToolCall, String)> = children
+                .iter()
+                .map(|call| (call.clone(), bound_tool(tools, call).map(|b| b.name.clone()).unwrap_or_default()))
+                .collect();
+            Self::start_calls(ctx, state, &children);
+            let mut child_state = std::mem::take(&mut state.children);
+            let done = config.run(ctx, &mut child_state, with_workflow).await;
+            state.children = child_state;
+            // A child that paused waits in `state.children`, not in `started`.
+            state.started.retain(|started| !children.iter().any(|c| c.id == started.id));
+            self.record_children(ctx, state, tools, done);
+        }
         #[cfg(feature = "memory")]
         state.memory.flush_events(ctx);
+        state.started.clear();
+        state.queued.clear();
+        Self::save(ctx, state);
+    }
+
+    /// Move `calls` from the queue to the started calls, and keep the turn.
+    fn start_calls(ctx: &NodeContext, state: &mut AgentState, calls: &[ToolCall]) {
+        state.queued.retain(|queued| !calls.iter().any(|c| c.id == queued.id));
+        state.started.extend(calls.iter().cloned());
+        Self::save(ctx, state);
+    }
+
+    /// Record the results of `calls` and keep the turn without them in `started`.
+    fn finish_calls(
+        &self,
+        ctx: &NodeContext,
+        state: &mut AgentState,
+        tools: &[BoundTool],
+        calls: &[ToolCall],
+        outputs: Vec<ToolOutput>,
+    ) {
+        self.record_outputs(ctx, state, tools, calls, outputs);
+        state.started.retain(|started| !calls.iter().any(|c| c.id == started.id));
+        Self::save(ctx, state);
     }
 
     /// Show the results of `calls` to the host and add them to the conversation.
@@ -1342,44 +1671,6 @@ impl AgentNode {
         }
     }
 
-    /// Run `calls`: those to listed workflows as child runs, the rest as tools.
-    /// Returns the calls that have a result, with their results: a child that
-    /// paused has none yet.
-    #[cfg(feature = "subagents")]
-    async fn call_with_children(
-        &self,
-        ctx: &NodeContext,
-        state: &mut AgentState,
-        tools: &[BoundTool],
-        calls: Vec<ToolCall>,
-    ) -> (Vec<ToolCall>, Vec<ToolOutput>) {
-        let Some(config) = &self.subagents else {
-            let outputs = self.call_tools(tools, &calls).await;
-            return (calls, outputs);
-        };
-        let (children, plain): (Vec<ToolCall>, Vec<ToolCall>) = calls.into_iter().partition(|call| {
-            bound_tool(tools, call).is_some_and(|b| b.provider == crate::subagents::SUBAGENT_PROVIDER)
-        });
-        let mut outputs = self.call_tools(tools, &plain).await;
-        let mut done_calls = plain;
-        let with_workflow: Vec<(ToolCall, String)> = children
-            .into_iter()
-            .map(|call| {
-                let workflow = bound_tool(tools, &call).map(|b| b.name.clone()).unwrap_or_default();
-                (call, workflow)
-            })
-            .collect();
-        let mut child_state = std::mem::take(&mut state.children);
-        for done in config.run(ctx, &mut child_state, with_workflow).await {
-            if let crate::subagents::Done::Result(call, output) = done {
-                done_calls.push(call);
-                outputs.push(output);
-            }
-        }
-        state.children = child_state;
-        (done_calls, outputs)
-    }
-
     /// Add the results of children that finished on resume.
     #[cfg(feature = "subagents")]
     fn record_children(
@@ -1397,18 +1688,6 @@ impl AgentNode {
             })
             .unzip();
         self.record_outputs(ctx, state, tools, &calls, outputs);
-    }
-
-    /// Run `calls` concurrently or one after another, per `parallel_tool_calls`.
-    async fn call_tools(&self, tools: &[BoundTool], calls: &[ToolCall]) -> Vec<ToolOutput> {
-        if self.config.parallel_tool_calls {
-            return futures::future::join_all(calls.iter().map(|c| call_tool(tools, c))).await;
-        }
-        let mut outputs = Vec::with_capacity(calls.len());
-        for call in calls {
-            outputs.push(call_tool(tools, call).await);
-        }
-        outputs
     }
 }
 
@@ -1485,6 +1764,8 @@ fn loaded_skill(bound: Option<&BoundTool>, call: &ToolCall) -> Option<String> {
 struct TurnTools {
     offered: bool,
     final_turn: bool,
+    /// The budget ran low: this is the answer it leaves room for.
+    answer_for_budget: bool,
 }
 
 impl TurnTools {
@@ -1640,6 +1921,21 @@ fn finished(ctx: &NodeContext, state: AgentState, text: String, stop: &StopReaso
         (outcome, _) => outcome,
     };
     outcome
+}
+
+/// A mark of one start over, different for every one (the time, and the
+/// attempt within it).
+fn restart_mark(ctx: &NodeContext) -> String {
+    format!("{:x}-{}", ctx.clock.now_ms(), ctx.attempt)
+}
+
+/// What `now` holds beyond `before`.
+fn usage_since(now: &Usage, before: &Usage) -> Usage {
+    Usage {
+        prompt_tokens: now.prompt_tokens.saturating_sub(before.prompt_tokens),
+        completion_tokens: now.completion_tokens.saturating_sub(before.completion_tokens),
+        total_tokens: now.total_tokens.saturating_sub(before.total_tokens),
+    }
 }
 
 /// The node outputs of a finished loop.
@@ -1872,7 +2168,9 @@ fn scrub_json(value: &mut Json, context: &ToolCallContext) {
     }
 }
 
-async fn call_tool(tools: &[BoundTool], call: &ToolCall) -> ToolOutput {
+/// Run one call. `key` is the node execution's idempotency key with the turn:
+/// the call gets `<key>:<call id>`, the same for every attempt of the call.
+async fn call_tool(tools: &[BoundTool], call: &ToolCall, key: &str) -> ToolOutput {
     let Some(tool) = bound_tool(tools, call) else {
         return ToolOutput::error(format!("error: unknown tool `{}`", call.name));
     };
@@ -1880,7 +2178,9 @@ async fn call_tool(tools: &[BoundTool], call: &ToolCall) -> ToolOutput {
         Ok(map) => Json::Object(map),
         Err(e) => return ToolOutput::error(format!("error: {e}")),
     };
-    match tool.runtime.call(&tool.name, arguments, tool.context()).await {
+    let mut context = tool.context().clone();
+    context.idempotency_key = Some(format!("{key}:{}", call.id));
+    match tool.runtime.call(&tool.name, arguments, &context).await {
         Ok(output) => output,
         Err(e) => ToolOutput::error(format!("error: {e}")),
     }
@@ -1965,6 +2265,11 @@ fn truncate(text: &str, max_chars: usize) -> String {
 impl Node for AgentNode {
     fn run(&self, ctx: NodeContext) -> BoxFuture<'_, NodeResult> {
         Box::pin(self.execute(ctx))
+    }
+
+    /// The loop charges the budget per model turn and keeps a checkpoint per turn.
+    fn tracks_turns(&self) -> bool {
+        true
     }
 
     fn inputs(&self) -> Vec<Selector> {

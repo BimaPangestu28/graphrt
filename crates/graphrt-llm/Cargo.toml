@@ -82,7 +82,7 @@ sha2 = { version = "0.11", optional = true, default-features = false }
 tokio = { workspace = true, optional = true, features = ["time", "rt"] }
 
 [dev-dependencies]
-graphrt-core = { workspace = true, features = ["tokio", "jinja", "yaml"] }
+graphrt-core = { workspace = true, features = ["tokio", "jinja", "yaml", "budgets"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
 graphrt-skill = { workspace = true }
 graphrt-learn = { workspace = true }
@@ -97,6 +97,10 @@ required-features = ["context", "mock"]
 workspace = true
 
 # What a child run of `subagents` costs (docs/benchmarks.md, "Subagents").
+[[example]]
+name = "checkpoint_bench"
+required-features = ["mock"]
+
 [[example]]
 name = "subagents_bench"
 required-features = ["subagents", "mock"]

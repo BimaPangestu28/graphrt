@@ -161,6 +161,7 @@ Fields:
 | `api_key_env`, `api_key_optional` | all | Variable holding the key (Gemini key or token, Bedrock API key). |
 | `headers` | all | Extra headers (`${VAR}` allowed). |
 | `aliases`, `models`, `defaults` | all | Extra provider names, model-name aliases, default parameters. |
+| `prices` | all | Price per model name, `{gpt-5: {input_per_million: 1.25, output_per_million: 10}}`, in any unit (a currency). The run's cost budget (`--max-cost-per-run`) is charged with it after every model response. Without a price a model costs nothing. |
 | `auth_header`, `query` | `openai` | Custom key header, query parameters. |
 | `auth` | `gemini` | `api-key` (default) or `bearer`. |
 | `region`, `access_key_id_env`, `secret_access_key_env`, `session_token_env` | `bedrock` | Region and SigV4 credentials. |

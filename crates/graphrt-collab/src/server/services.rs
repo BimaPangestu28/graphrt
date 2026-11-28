@@ -249,7 +249,7 @@ impl Services {
             .tools
             .get(&offered.plugin)
             .ok_or_else(|| ServerError::Internal(format!("plugin `{}` has no tools", offered.plugin)))?;
-        let context = ToolCallContext { secrets };
+        let context = ToolCallContext { secrets, ..ToolCallContext::default() };
         let output = tokio::time::timeout(CALL_TIMEOUT, runtime.call(&offered.service.tool, arguments, &context))
             .await
             .map_err(|_| ServerError::Upstream(format!("the service {} took too long", offered.key())))?

@@ -49,6 +49,8 @@ Workflows can be YAML (`.yaml`, `.yml`) or JSON.
 | `--image-model [PROVIDER/]NAME` | Add `image/generate`, backed by this image model. `NAME` or `openai/NAME` (for example `gpt-image-2`): the OpenAI images API, key from `$OPENAI_API_KEY`, endpoint from `$OPENAI_BASE_URL`. `gemini/NAME` (for example `gemini/gemini-3.1-flash-image`): the Gemini API, key from `$GEMINI_API_KEY` or `$GOOGLE_API_KEY`, endpoint from `$GEMINI_BASE_URL`. Needs `--image-tools`. |
 | `--timeout-ms MS` | Abort the run after this long. |
 | `--max-steps N` | Maximum node executions. |
+| `--max-tokens-per-run N` | Tokens (prompt and completion) a run may use, child runs included. Charged after every model response. An agent that cannot afford another tool turn answers without tools. Also on `serve`, where a request may set a lower `limits.max_total_tokens`. |
+| `--max-cost-per-run AMOUNT` | Cost a run may reach, in the price unit of the providers file (`prices` per model), for example `0.50`. Models without a price cost nothing. Also on `serve` (`limits.max_cost_micros` per request, in millionths). |
 | `--resume SNAPSHOT` | Resume a paused run. |
 | `--resume-input node=json` | Input for a paused node, e.g. `review={"action":"approve","values":{}}`. Repeatable. |
 | `--snapshot-out FILE` | Where to write the snapshot on pause (default `<workflow>.snapshot.json`). |

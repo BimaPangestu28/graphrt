@@ -574,13 +574,18 @@ pub fn workflow_env(graph: &Graph, options: &ServiceOptions) -> IndexMap<String,
 }
 
 /// Limits from CLI flags.
-pub fn limits(timeout_ms: Option<u64>, max_steps: Option<u64>) -> Limits {
+pub fn limits(args: &crate::args::ServiceArgs) -> Limits {
     let mut limits = Limits::default();
-    if let Some(ms) = timeout_ms {
+    if let Some(ms) = args.timeout_ms {
         limits.max_duration_ms = Some(ms);
     }
-    if let Some(steps) = max_steps {
+    if let Some(steps) = args.max_steps {
         limits.max_steps = steps;
+    }
+    #[cfg(feature = "llm")]
+    {
+        limits.max_total_tokens = args.max_tokens_per_run;
+        limits.max_cost_micros = args.max_cost_per_run;
     }
     limits
 }
