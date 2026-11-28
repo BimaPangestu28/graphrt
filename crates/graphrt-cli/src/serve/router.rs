@@ -41,6 +41,12 @@ pub fn router_with_uploads(state: Arc<AppState>, max_body_bytes: usize, max_uplo
     // The admin console checks sessions and roles in front of every route (`--console`).
     #[cfg(feature = "console")]
     let routes = super::console::wrap(routes, &state, max_upload_bytes);
+    // On Lambda: a response ends once the work it left running is stored.
+    let routes = if super::hold::enabled() {
+        routes.layer(middleware::from_fn_with_state(Arc::clone(&state), super::hold::hold_until_idle))
+    } else {
+        routes
+    };
     routes
         .layer(DefaultBodyLimit::max(max_body_bytes))
         // Outermost: early rejections leave the body unread; drain it so keep-alive clients can reuse the connection.

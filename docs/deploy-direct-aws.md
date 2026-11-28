@@ -7,9 +7,12 @@ A direct deploy to AWS puts one agent online at a Lambda Function URL
 nothing running while nobody calls it. Each request starts (or reuses) a
 Lambda instance that runs `graphrt serve` behind the
 [Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter).
-Blocking runs, streamed runs (SSE) and the chat page work as on
-[Fly](deploy-direct.md) and [Cloud Run](deploy-cloud-run.md). Idle costs nothing but a few cents of image storage
-a year.
+Blocking runs, streamed runs (SSE), the chat page, conversations kept by the
+server, the monitoring page with paired phones and approvals, push
+notifications and messaging channels work as on [Fly](deploy-direct.md) and
+[Cloud Run](deploy-cloud-run.md): their state is kept in an S3 bucket of the
+deployment ([The store](#the-store-an-s3-bucket)). Idle costs nothing but a few
+cents of storage a year.
 
 No Docker is needed. Lambda only runs images from ECR in its own account, so
 the deploy copies the graphrt image into an ECR repository of the deployment
@@ -42,11 +45,11 @@ version` lists `deploy-aws` when it is available.
 | Cost while idle | none (image storage, cents a year) | a stopped Machine's rootfs, a volume if any |
 | First request after idle | about 0.1 to 0.3 s start, plus the model | about 1 to 2 s Machine start |
 | One request at most | 15 minutes | no limit |
-| Store (monitoring, devices, push, conversations, channels) | no | yes, a volume |
-| Always on (`--mode always-on`, Telegram polling) | no | yes |
+| Store (monitoring, devices, push, conversations, channels) | yes, an S3 bucket | yes, a volume |
+| Always on (`--mode always-on`, Telegram polling, Slack Socket Mode) | no | yes |
 
-Use Fly, Cloud Run or the [gateway](gateway-aws.md) when the agent needs the
-store or runs longer than 15 minutes. Why not other AWS services:
+Use Fly, Cloud Run or the [gateway](gateway-aws.md) when the agent runs longer
+than 15 minutes or must keep running (Telegram). Why not other AWS services:
 
 - **ECS Fargate** needs a load balancer for a public HTTPS address (about
   US$18 a month, always on) and does not scale to zero by itself. ECS Express
@@ -65,6 +68,8 @@ graphrt deploy --target lambda --direct --deployment <name> --version <label>
                [--chat [--chat-access key|guests] [--chat-title T]
                        [--chat-guest-rate-limit N] [--chat-guest-budget N]]
                [--cors-origin ORIGIN ...] [--approvals] [--expire-approvals]
+               [--conversations] [--monitor] [--devices] [--push CONTACT]
+               [--channel whatsapp|slack|teams ...] [--drop-store]
                [--json] <agent.grt|workflow.yaml|.json>
 
 graphrt deploy status        --target lambda --direct --deployment <name> [--profile P] [--region R] [--json]
@@ -85,12 +90,15 @@ graphrt deploy remove        --target lambda --direct --deployment <name> [--pro
 | `--secret NAME` | none | Stored as an environment variable of the function, value read from `$NAME`. Kept by later deploys |
 | `--rotate-api-key` | off | Replace the API key (the new one is printed once) |
 | `--app` | `graphrt-<deployment>` | Function name, for an existing naming scheme |
-| `--set role_arn=ARN` | a role graphrt creates | Execution role to use instead (it needs to write logs only) |
-| `--chat`, `--cors-origin`, `--approvals`, `--expire-approvals` | off | As on [Fly](deploy-direct.md#chat-page-monitoring-and-the-store) |
+| `--set role_arn=ARN` | a role graphrt creates | Execution role to use instead (it needs to write logs, and to use the store bucket when a feature needs the store) |
+| `--chat`, `--cors-origin`, `--approvals`, `--expire-approvals`, `--conversations`, `--monitor`, `--devices`, `--push`, `--channel` | off | As on [Fly](deploy-direct.md#chat-page-monitoring-and-the-store). The ones that keep state use [the store](#the-store-an-s3-bucket) |
+| `--drop-store` | off | Delete the store bucket and everything in it once this version, which must not use the store, serves |
 
 Refused on Lambda, before any AWS call: `--mode always-on`, `--org`,
-`--drop-store`, and the flags that need the store (`--monitor`, `--devices`,
-`--push`, `--conversations`, `--channel`).
+`--channel telegram` (Telegram is asked for messages all the time, which needs
+a server that keeps running) and Slack's Socket Mode (`SLACK_APP_TOKEN`: use
+the Events API with `SLACK_SIGNING_SECRET`). `graphrt deploy capabilities
+--json` lists this for apps ([deploy-capabilities.md](deploy-capabilities.md)).
 
 ## Credentials and region
 
@@ -129,6 +137,7 @@ environment of the `graphrt` process, plus `--region`, or point
 | ECR repository, one image tag per version | `graphrt-<deployment>` | storage, about US$0.10 per GB a month |
 | IAM role with `AWSLambdaBasicExecutionRole` (unless `--set role_arn`) | `graphrt-<deployment>-lambda` | free |
 | CloudWatch log group, 14 days retention | `/aws/lambda/graphrt-<deployment>` | per GB of logs |
+| S3 bucket of the store, only when a feature needs it, and an inline policy `graphrt-store` on the role for it | `graphrt-<deployment>-<account>-<region>` | storage and requests |
 
 Everything is tagged `graphrt:deployment`. The Function URL is public, the
 API key (`GRAPHRT_API_KEY`, generated by the first deploy) protects the agent
@@ -165,7 +174,8 @@ Differences from Fly:
 - the steps are the same four (`preparing`, `secrets`, `starting`, `checking`), copying the image is part of `preparing`,
 - every result has `region`, `app` is the function name and `url` the
   Function URL,
-- `status` has `machines: []` and `store: null`, `mode` is `scale-to-zero`,
+- `status` has `machines: []`, `mode` is `scale-to-zero`,
+- `store` (deploy and status) is `{bucket, region, in_use}` or `null`,
 - `list-versions` entries add `lambda_version`.
 
 | `code` | Meaning and what to do |
@@ -185,11 +195,11 @@ Differences from Fly:
 | `aws_api` | AWS refused a call for another reason (the message has AWS's code) |
 | `internal` | a local failure |
 
-## State across deploys, and what Lambda does not keep
+## State across deploys
 
 Kept by every redeploy: the URL, the API key (until `--rotate-api-key`), the
-secrets (a deploy adds or replaces values, it never drops one), and the
-versions for rollback.
+secrets (a deploy adds or replaces values, it never drops one), the versions
+for rollback, and everything in the store.
 
 A rollback serves an earlier label again. When the API key and the secrets
 are the same as that version's, `live` just moves back (under a second).
@@ -197,17 +207,43 @@ Otherwise the version is published again with today's key and secrets and
 health checked first, so a rollback never brings back a rotated key. The URL
 follows within about five seconds.
 
-Lambda keeps no disk between requests and freezes an instance between
-them. So:
+## The store: an S3 bucket
 
-- there is no `--store`: run records live in the memory of one instance and
-  `GET /v1/runs/{id}` may not find a run made on another one,
-- use blocking or streamed runs. An async run (`"async": true`) only moves
-  while a request is being served, so it can stall,
-- the chat page keeps the history in the browser (no `--conversations`).
+A deploy with `--conversations`, `--monitor`, `--devices`, `--push` or
+`--channel` creates one S3 bucket for the deployment (private, encrypted by S3)
+and runs `graphrt serve --store s3://<bucket> --store-ttl-days 30`. Every
+Lambda instance reads and writes the same bucket:
 
-For any of these use the Fly or Cloud Run direct deploy (both have a store) or
-the gateway.
+| Object | What |
+| --- | --- |
+| `runs/<id>/record.json`, `events/`, `snapshot.json` | run records and events (`GET /v1/runs`, the monitoring page), the snapshot of a paused run |
+| `conversations/<id>.json` | conversations kept by the server and of channel customers |
+| `devices.json` | paired phones (token hashes only) |
+| `push/vapid.pkcs8`, `push/subscriptions.json` | the push key and the browsers that subscribed |
+| `coord/...` | markers that make something happen once across instances |
+
+There is no lock and no database: every change is a conditional write on the
+object's ETag (`If-Match`, `If-None-Match: *`), retried on a newer copy when
+another instance wrote first. Two instances adding turns to one conversation
+keep both, a paused run is resumed once, and a channel message delivered twice
+runs once. A new instance does not mark the runs of other instances as
+interrupted: only a `running` run whose record did not change for an hour
+counts as stopped (`GRAPHRT_STORE_STALE_RUN_SECS`).
+
+Lambda freezes an instance as soon as its response ends. So a deployment on
+Lambda runs `graphrt serve` with `GRAPHRT_HOLD_UNTIL_IDLE=1`: a response is
+sent as soon as it is ready, but its end waits until no run executes and no
+background work (a resumed approval, a channel answer, the last writes of a
+run) is left, so nothing is frozen halfway. A client that resolves an
+approval gets its `202` at once and the connection closes when the resumed run
+is stored. Async runs (`"async": true`) work the same way: the request that
+started one ends when the run did.
+
+A later deploy without those features keeps the bucket (`"in_use": false`),
+so turning them on again finds the conversations and paired phones.
+`--drop-store` deletes the bucket with everything in it, `remove` too. The same
+store works outside Lambda: `graphrt serve --store s3://bucket/prefix` with
+the usual AWS credentials, on any number of servers ([serving.md](serving.md#a-store-in-s3)).
 
 ## Limits
 
@@ -231,7 +267,8 @@ tier (1 million requests and 400,000 GB seconds a month, which covers about
 
 | | Cost |
 | --- | --- |
-| Idle | US$0 for Lambda. ECR stores the image (about 20 MB, shared by the versions): under US$0.01 a month |
+| Idle | US$0 for Lambda. ECR stores the image (about 20 MB, shared by the versions): under US$0.01 a month. The store bucket: US$0.025 per GB a month, a few MB for thousands of conversations |
+| Store requests (with a store) | about 15 to 30 requests per chat turn (record, events, conversation): about US$0.0001 per turn, US$0.023 per GB a month stored |
 | One chat (512 MB, about 2 s waiting on the model) | about US$0.000017 (US$1.70 per 100,000), plus the model provider |
 | Logs | US$0.70 per GB ingested, a few hundred bytes per request |
 | Traffic out | first 100 GB a month free, then about US$0.12 per GB |
@@ -279,7 +316,7 @@ only resources named `graphrt-*`:
       "Effect": "Allow",
       "Action": [
         "iam:GetRole", "iam:CreateRole", "iam:TagRole", "iam:ListRoleTags", "iam:DeleteRole",
-        "iam:AttachRolePolicy", "iam:DetachRolePolicy"
+        "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy"
       ],
       "Resource": "arn:aws:iam::*:role/graphrt-*"
     },
@@ -289,6 +326,12 @@ only resources named `graphrt-*`:
       "Action": "iam:PassRole",
       "Resource": "arn:aws:iam::*:role/graphrt-*",
       "Condition": { "StringEquals": { "iam:PassedToService": "lambda.amazonaws.com" } }
+    },
+    {
+      "Sid": "GraphrtStore",
+      "Effect": "Allow",
+      "Action": ["s3:CreateBucket", "s3:PutBucketTagging", "s3:ListBucket", "s3:DeleteObject", "s3:DeleteBucket"],
+      "Resource": ["arn:aws:s3:::graphrt-*", "arn:aws:s3:::graphrt-*/*"]
     },
     {
       "Sid": "GraphrtLogs",
@@ -308,7 +351,8 @@ Lambda add its pull permission to the repository on the first deploy.
 
 `graphrt deploy remove` deletes the function (with its versions, alias, URL
 and pause), the ECR repository with its images, the role when graphrt made it
-(tag `graphrt:deployment`) and the log group. Running it again cleans up what
+(tag `graphrt:deployment`), the log group and the store bucket with everything
+in it. Running it again cleans up what
 is left and answers `removed: false`.
 
 ## Tested on real AWS
@@ -334,6 +378,24 @@ OpenAI key as `--secret`, an amd64 image built from this branch (the published
 | user with only the [IAM policy](#iam-policy) | deploy, redeploy, status, list-versions, pause, resume, rollback, remove |
 | seventh label | the oldest labels and their image tags deleted, five kept |
 | remove, twice | function, repository, role, log group gone, then `removed: false` |
+
+Store on Lambda, same account and region, 2026-11-28, an image built from
+the branch of the store:
+
+| Step | Result |
+| --- | --- |
+| deploy with `--chat --conversations --monitor --push` | 29 s, bucket created, the role's inline policy, `store: {in_use: true}` |
+| a conversation of two turns, redeploy, a third turn | the third answer used the first turn ("You said you like mango"), 6 messages kept |
+| a phone paired on v1 (`POST /v1/devices`) | its token still worked after the redeploy, the pairing link used the Function URL |
+| the push key | the same VAPID key before and after the redeploy |
+| four turns at once into one conversation (four instances) | all 4 turns kept, 14 messages, none lost |
+| `GET /v1/runs` | every run of every instance listed |
+| an approval (`examples/approval.yaml`) resolved with the phone's token | `202` in 0.28 s, connection closed after 0.55 s with the run `succeeded` |
+| a WhatsApp delivery (signed, dummy Meta credentials) and the same delivery again | first `200` after 2.9 s with the run done and the customer's conversation stored, the second ran nothing |
+| cold start of a new instance with a store | Init 170 to 270 ms (2 s for the first pull of a new image, as without a store) |
+| a version without store features, then `--drop-store` | bucket kept (`in_use: false`), then the bucket and the policy deleted |
+| a user with only the [IAM policy](#iam-policy) | deploy with the store and remove |
+| remove | function, image repository, role with its policy, log group and bucket gone |
 
 Not tested: an arm64 image (the test image was amd64 only), a profile with a
 session token, and a bundle larger than 100 MB.

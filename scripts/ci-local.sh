@@ -78,7 +78,7 @@ run_chatbot_e2e() {
 run_msrv() {
   cargo "+$MSRV_TOOLCHAIN" check --workspace --exclude graphrt-cli &&
     cargo "+$MSRV_TOOLCHAIN" check -p graphrt-cli --no-default-features --features \
-      llm,http,code,python,mcp,doc,files,image,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,deploy-cloud-run,deploy-aws,cors,run-follow,conversations,web-chat,devices,approvals,web-push,web-monitor,skills,learning,channel-telegram,channel-whatsapp,channel-slack,channel-teams,context,memory,memory-graph,subagents
+      llm,http,code,python,mcp,doc,files,image,rag,plugins,wasm,otel,bundle,serve,trust-gateway,jwt,telemetry,scores,langfuse,deploy-fly,deploy-cloud-run,deploy-aws,store-s3,cors,run-follow,conversations,web-chat,devices,approvals,web-push,web-monitor,skills,learning,channel-telegram,channel-whatsapp,channel-slack,channel-teams,context,memory,memory-graph,subagents
 }
 
 ensure_toolchain() { rustup toolchain list | grep -q "^$1" || rustup toolchain install --profile minimal "$1"; }

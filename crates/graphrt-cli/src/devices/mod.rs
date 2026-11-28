@@ -24,7 +24,6 @@
 
 pub mod api;
 
-use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use base64::Engine as _;
@@ -166,27 +165,32 @@ impl From<String> for DeviceError {
 }
 
 impl Devices {
-    /// The devices in `store_dir` (created when missing), or in memory without one.
+    /// The devices in the run store's location (a directory, created when
+    /// missing, or shared objects), or in memory without one.
     ///
     /// @throws CliError (usage) - When the directory or the file cannot be read.
-    pub fn open(store_dir: Option<&Path>) -> Result<Self, CliError> {
-        let path = match store_dir {
-            Some(dir) => {
+    pub fn open(store: Option<&crate::store::StoreLocation>) -> Result<Self, CliError> {
+        let file = match store {
+            Some(crate::store::StoreLocation::Dir(dir)) => {
                 private_fs::create_dir_all(dir)
                     .map_err(|e| CliError::usage(format!("--devices: cannot create `{}`: {e}", dir.display())))?;
-                Some(dir.join(FILE_NAME))
+                SharedJsonFile::open(Some(dir.join(FILE_NAME)))
             }
-            None => None,
+            #[cfg(feature = "store-s3")]
+            Some(crate::store::StoreLocation::Objects(objects)) => {
+                SharedJsonFile::open_object(std::sync::Arc::clone(objects), FILE_NAME)
+            }
+            None => SharedJsonFile::open(None),
         };
-        let file = SharedJsonFile::open(path).map_err(|e| CliError::usage(format!("--devices: {e}")))?;
+        let file = file.map_err(|e| CliError::usage(format!("--devices: {e}")))?;
         Ok(Self { file, last_used_written_ms: AtomicU64::new(0), random: SystemRandom::new() })
     }
 
     /// One line for the startup log.
     pub fn describe(&self) -> String {
         let count = self.file.read(Vec::len).unwrap_or_default();
-        match self.file.path() {
-            Some(path) => format!("device tokens: {count} device(s) in {} (/v1/devices)", path.display()),
+        match self.file.location() {
+            Some(place) => format!("device tokens: {count} device(s) in {place} (/v1/devices)"),
             None => format!(
                 "device tokens: {count} device(s), kept in memory and gone at a restart (set --store to keep them)"
             ),
@@ -363,7 +367,7 @@ mod tests {
     #[test]
     fn devices_are_stored_hashed_and_shared_between_servers() {
         let dir = temp_dir("shared");
-        let first = Devices::open(Some(&dir)).unwrap();
+        let first = Devices::open(Some(&crate::store::StoreLocation::Dir(dir.clone()))).unwrap();
         let paired = first.create("phone", &[], None).unwrap();
         let secret = paired.token.rsplit('.').next().unwrap();
         let file = std::fs::read_to_string(dir.join(FILE_NAME)).unwrap();
@@ -377,7 +381,7 @@ mod tests {
         }
         // A second server on the same directory accepts the token, and stops
         // when the first revokes the device.
-        let second = Devices::open(Some(&dir)).unwrap();
+        let second = Devices::open(Some(&crate::store::StoreLocation::Dir(dir.clone()))).unwrap();
         assert!(second.verify(&paired.token).is_ok());
         assert!(first.revoke(&paired.device.id).unwrap());
         assert_eq!(second.verify(&paired.token), Err(DeviceError::InvalidToken));

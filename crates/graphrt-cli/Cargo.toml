@@ -22,7 +22,7 @@ name = "graphrt"
 path = "src/main.rs"
 
 [features]
-default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "connectors", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "deploy-cloud-run", "deploy-aws", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor", "channel-telegram", "channel-whatsapp", "channel-slack", "channel-teams", "context", "memory", "memory-graph", "subagents"]
+default = ["llm", "http", "code", "python", "mcp", "doc", "files", "image", "documents", "rag", "connectors", "local-embed", "plugins", "mcp-presets", "wasm", "otel", "bundle", "serve", "trust-gateway", "jwt", "telemetry", "scores", "langfuse", "deploy-fly", "deploy-cloud-run", "deploy-aws", "store-s3", "cors", "run-follow", "conversations", "web-chat", "devices", "approvals", "web-push", "web-monitor", "channel-telegram", "channel-whatsapp", "channel-slack", "channel-teams", "context", "memory", "memory-graph", "subagents"]
 # llm, question-classifier, parameter-extractor and agent nodes.
 llm = ["dep:graphrt-llm"]
 # `context_window` of the `llm` and `agent` nodes: a conversation that outgrows the
@@ -55,6 +55,11 @@ files = ["dep:graphrt-files", "dep:thiserror", "graphrt-core/tool-files", "graph
 # object store instead of a directory (`graphrt-files/s3`: a small signed client
 # over the reqwest and sha2 the CLI already links, no AWS SDK). Opt-in.
 files-s3 = ["files", "graphrt-files/s3"]
+# `--store s3://bucket/prefix`: runs, conversations, devices and push
+# subscriptions in an S3 bucket that several servers share (Lambda instances),
+# with conditional writes instead of a lock (no database, nothing billed while
+# idle but storage). See docs/serving.md, "A store in S3".
+store-s3 = ["dep:graphrt-files", "graphrt-files/s3"]
 # Images: `vision` inputs are checked, stripped of metadata and downscaled before they
 # reach a model, `--image-tools` adds the `image` tools to a workspace and
 # `--image-model` an image generator (OpenAI images API).

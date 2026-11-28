@@ -13,6 +13,7 @@ graphrt serve examples/ --store ./runs --store-ttl-days 30
 | Option | Effect |
 | --- | --- |
 | `--store <dir>` (or `$GRAPHRT_STORE`) | Durable directory store. Paused runs survive restarts. |
+| `--store s3://bucket/prefix` | The same in an S3 bucket that any number of servers share, see [A store in S3](#a-store-in-s3). |
 | *(neither)* | In-memory store. Runs are lost when the server stops. |
 | `--store-ttl-days <n>` | Hourly cleanup of runs (any status except running) not updated for `n` days. |
 | `--store-inputs` | Keep each run's inputs (secrets masked) in its record; see [Run context and evaluation data](#run-context-and-evaluation-data). |
@@ -25,6 +26,27 @@ graphrt serve examples/ --store ./runs --store-ttl-days 30
 | `--listen unix:/path` | Listen on a Unix socket (mode `0600`) instead of TCP (`--listen` is an alias of `--addr`). |
 | `--trust-gateway` | Run as an agent behind a graphrt gateway: signed `/internal/v1` API. See [gateway-protocol.md](gateway-protocol.md). |
 
+### A store in S3
+
+`--store s3://bucket/prefix` keeps everything `--store` keeps in a directory
+(runs, events, snapshots, scores, conversations, paired devices, push
+subscriptions and the push key) as objects in an S3 bucket, or an S3
+compatible store. Several servers can share it at once, such as the instances
+of a Lambda function ([deploy-direct-aws.md](deploy-direct-aws.md#the-store-an-s3-bucket)):
+every change is a conditional write on the object's ETag, retried on a newer
+copy when another server wrote first, so no lock or database is needed and
+nothing is billed while idle but storage.
+
+The bucket's region comes from `AWS_REGION` (or `GRAPHRT_S3_REGION`), the
+credentials from the usual AWS variables, a container or an instance role.
+`GRAPHRT_S3_ENDPOINT` points at another S3 compatible store (MinIO, R2). The
+role needs `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` on
+`arn:aws:s3:::bucket/prefix/*` and `s3:ListBucket` on the bucket. A starting
+server marks as interrupted only `running` runs whose record did not change
+for an hour (`GRAPHRT_STORE_STALE_RUN_SECS`), since the others may belong to
+servers still running. Needs the cargo feature `store-s3` (in the default
+build).
+
 ### Flags as environment variables
 
 A container started without a command line of its own (`docker run -e ...`, a
@@ -33,7 +55,7 @@ conversations and monitoring with variables instead of flags:
 
 | Variable | Flag | Value |
 | --- | --- | --- |
-| `GRAPHRT_STORE` | `--store` | a directory |
+| `GRAPHRT_STORE` | `--store` | a directory, or `s3://bucket/prefix` |
 | `GRAPHRT_PUBLIC_URL` | `--public-url` | the address clients reach the server at |
 | `GRAPHRT_CORS_ORIGINS` | `--cors-origin` | origins, separated by commas |
 | `GRAPHRT_CHAT` | `--chat` | `WORKFLOW` or `WORKFLOW=INPUT`, several separated by commas |

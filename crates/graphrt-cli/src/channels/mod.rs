@@ -536,7 +536,9 @@ impl Channels {
             return;
         }
         let (bot, chat_id, text) = (Arc::clone(bot), chat_id.to_owned(), text.to_owned());
+        let busy = crate::serve::hold::Busy::hold();
         graphrt_core::task::spawn(async move {
+            let _busy = busy;
             bot.say(&chat_id, &text, &[]).await;
         });
     }
@@ -570,7 +572,9 @@ impl Channels {
             && let Some((pending, input)) = self.approver_answer(bot, &message)
         {
             let (channels, bot) = (Arc::clone(self), Arc::clone(bot));
+            let busy = crate::serve::hold::Busy::hold();
             graphrt_core::task::spawn(async move {
+                let _busy = busy;
                 if message.choice.is_some() && bot.config.kind != ChannelKind::Telegram {
                     // Slack and Teams mark the tapped buttons as answered. Best effort.
                     let _marked = bot.channel.typing(&message).await;
@@ -610,8 +614,11 @@ impl Channels {
 
     fn spawn_turn(self: &Arc<Self>, bot: &Arc<Bot>, conversation: String, messages: Vec<InboundMessage>) {
         let (channels, bot) = (Arc::clone(self), Arc::clone(bot));
+        // Held until the turn's run is tracked (or the turn ended without one).
+        let busy = crate::serve::hold::Busy::hold();
         graphrt_core::task::spawn(async move {
             let running = channels.turn(&bot, &conversation, messages).await;
+            drop(busy);
             if !running {
                 channels.release(&bot, &conversation);
             }
@@ -725,7 +732,7 @@ impl Channels {
                 if let Some(link) = &mut conversation.channel {
                     link.last_inbound_ms = now_ms();
                     if name.is_some() {
-                        link.customer_name = name;
+                        link.customer_name = name.clone();
                     }
                 }
             })
@@ -962,7 +969,9 @@ impl Channels {
     pub(crate) fn run_ended(self: &Arc<Self>, record: &RunRecord, files: Vec<graphrt_core::value::File>) {
         let Some(conversation) = record.session_id.clone().filter(|id| is_channel_conversation(id)) else { return };
         let (channels, record) = (Arc::clone(self), record.clone());
+        let busy = crate::serve::hold::Busy::hold();
         graphrt_core::task::spawn(async move {
+            let _busy = busy;
             channels.deliver(&conversation, &record, files).await;
         });
     }
@@ -994,7 +1003,7 @@ impl Channels {
         let changed = conversations
             .change(conversation_id, move |conversation, _| {
                 if let Some(link) = &mut conversation.channel {
-                    link.waiting_run = waiting_run;
+                    link.waiting_run = waiting_run.clone();
                 }
             })
             .await;

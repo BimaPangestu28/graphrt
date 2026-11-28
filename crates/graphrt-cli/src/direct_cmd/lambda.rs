@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use graphrt_provider_api::direct::{StepEvent, workflow_name_of};
+use graphrt_provider_api::direct::{ServiceMode, StepEvent, workflow_name_of};
 use graphrt_provider_aws::auth::profile::{SharedFiles, load_profile};
 use graphrt_provider_aws::auth::{ChainConfig, Clock, CredentialChain};
 use graphrt_provider_aws::direct::{
@@ -20,7 +20,7 @@ use graphrt_provider_aws::direct::{
 use serde_json::{Value, json};
 
 use super::{Failure, Reporter, common_deploy, runtime};
-use crate::deploy_cmd::{DeployAction, DeployRunArgs, DirectMode, DirectTargetArgs};
+use crate::deploy_cmd::{DeployAction, DeployRunArgs, DirectTargetArgs};
 
 /// Overrides every AWS endpoint (tests against a fake AWS).
 const ENDPOINT_ENV: &str = "GRAPHRT_AWS_ENDPOINT_URL";
@@ -38,20 +38,34 @@ impl From<DirectError> for Failure {
 
 /// Flags of the Fly deployer that mean nothing on Lambda.
 fn refuse_fly_only_flags(args: &DeployRunArgs) -> Result<(), Failure> {
-    if args.mode == Some(DirectMode::AlwaysOn) {
-        return Err(Failure::invalid(
-            "--mode always-on is not offered on Lambda: an instance starts on each request and nothing runs (or is \
-             billed) while idle. Use --target fly --mode always-on for an agent that must keep running",
-        ));
-    }
     if args.org.is_some() {
         return Err(Failure::invalid("--org is a Fly setting: on AWS the account comes from the credentials"));
     }
     if args.project.is_some() || !args.labels.is_empty() {
         return Err(Failure::invalid("--project and --label are Cloud Run options (--target cloud-run)"));
     }
-    if args.serve.drop_store {
-        return Err(Failure::invalid("--drop-store: a Lambda deployment has no store to drop"));
+    Ok(())
+}
+
+/// Channels that need a process running between messages, which Lambda does
+/// not keep: Telegram (long polling) and Slack's Socket Mode.
+fn refuse_always_on_channels(
+    channels: &[graphrt_provider_api::direct::DirectChannel],
+    secrets: &std::collections::BTreeMap<String, String>,
+) -> Result<(), Failure> {
+    use graphrt_provider_api::direct::DirectChannel;
+    if channels.contains(&DirectChannel::Telegram) {
+        return Err(Failure::invalid(
+            "--channel telegram asks Telegram for new messages all the time, which needs a server that keeps \
+             running: deploy it with --target fly --mode always-on. WhatsApp, Slack (Events API) and Teams work \
+             on Lambda",
+        ));
+    }
+    if channels.contains(&DirectChannel::Slack) && secrets.contains_key("SLACK_APP_TOKEN") {
+        return Err(Failure::invalid(
+            "--channel slack with SLACK_APP_TOKEN (Socket Mode) keeps a socket open, which Lambda does not: leave \
+             out SLACK_APP_TOKEN and use the Events API with SLACK_SIGNING_SECRET",
+        ));
     }
     Ok(())
 }
@@ -84,14 +98,14 @@ pub(super) fn run_deploy(args: &DeployRunArgs, reporter: &mut Reporter) -> Resul
     refuse_fly_only_flags(args)?;
     let role_arn = role_arn_setting(&args.settings)?;
     let common = common_deploy(args, reporter)?;
-    common.serve.validate().map_err(Failure::invalid)?;
-    if common.serve.needs_store() {
+    if common.mode == ServiceMode::AlwaysOn {
         return Err(Failure::invalid(
-            "--monitor, --devices, --push, --conversations and --channel keep state on disk (graphrt serve --store), \
-             which Lambda does not have between requests. Leave them out on --target lambda, or deploy to \
-             --target fly or --target cloud-run, which give the deployment a store",
+            "--mode always-on is not offered on Lambda: an instance starts on each request and nothing runs (or is \
+             billed) while idle. Use --target fly --mode always-on for an agent that must keep running",
         ));
     }
+    common.serve.validate().map_err(Failure::invalid)?;
+    refuse_always_on_channels(&common.serve.channels, &common.secrets)?;
     let workflow = workflow_name_of(&common.agent.file_name);
     let direct = direct_for(&common.deployment, args.app.as_deref(), args.region.as_deref(), args.profile.as_deref())?;
     let request = DeployRequest {
@@ -110,6 +124,8 @@ pub(super) fn run_deploy(args: &DeployRunArgs, reporter: &mut Reporter) -> Resul
         serve_summary: serde_json::to_value(common.serve.summary()).unwrap_or(Value::Null),
         workflow,
         role_arn,
+        store: common.serve.needs_store(),
+        drop_store: args.serve.drop_store,
         now_ms: graphrt_core::store::now_ms(),
     };
     let outcome = runtime()?
@@ -125,6 +141,13 @@ pub(super) fn run_deploy(args: &DeployRunArgs, reporter: &mut Reporter) -> Resul
     );
     if outcome.serve.get("chat").is_some_and(|chat| !chat.is_null()) {
         human.push_str(&format!("\nchat page: {}/chat/", outcome.url));
+    }
+    if let Some(store) = &outcome.store {
+        let note = if store.in_use { "in use" } else { "kept, not used by this version: --drop-store deletes it" };
+        human.push_str(&format!("\nstore: S3 bucket {} in {} ({note})", store.bucket, store.region));
+    }
+    if outcome.serve.get("monitor").and_then(Value::as_bool) == Some(true) {
+        human.push_str(&format!("\nmonitoring page: {}/monitor/", outcome.url));
     }
     if outcome.resumed {
         human.push_str("\nthe deployment was paused: this deploy put it back online");
@@ -303,6 +326,7 @@ fn direct_for(
         {
             service.base_url.clone_from(&endpoint);
         }
+        settings.s3_base_url = Some(endpoint.clone());
         config.sts_endpoint = Some(endpoint);
         config.imds_disabled = true;
     }

@@ -215,6 +215,29 @@ impl VapidKey {
         Ok(Self { pair, public })
     }
 
+    #[cfg(feature = "store-s3")]
+    /// The key of a shared store (created once: the server that loses the
+    /// race to create it uses the winner's key).
+    fn open_object(objects: &dyn crate::store::objects::Objects, random: &SystemRandom) -> Result<Self, String> {
+        use crate::store::objects::{Condition, ObjectError, block_on, get};
+        let key = format!("{DIR_NAME}/{KEY_FILE}");
+        if let Some(object) = block_on(get(objects, &key)).map_err(|e| format!("{key}: {e}"))? {
+            return Self::from_pkcs8(&object.bytes, random).map_err(|e| format!("{key}: {e}"));
+        }
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, random)
+            .map_err(|_| "no system randomness for a VAPID key".to_owned())?;
+        match block_on(objects.write(&key, pkcs8.as_ref().to_vec(), Condition::Absent)) {
+            Ok(_) => Self::from_pkcs8(pkcs8.as_ref(), random),
+            Err(ObjectError::Precondition) => {
+                let object = block_on(get(objects, &key))
+                    .map_err(|e| format!("{key}: {e}"))?
+                    .ok_or_else(|| format!("{key} vanished while it was created"))?;
+                Self::from_pkcs8(&object.bytes, random).map_err(|e| format!("{key}: {e}"))
+            }
+            Err(error) => Err(format!("{key}: {error}")),
+        }
+    }
+
     /// The key in `dir` (created on first use), or a new one kept in memory.
     fn open(dir: Option<&Path>, random: &SystemRandom) -> Result<Self, String> {
         let generate = || {
@@ -305,7 +328,11 @@ impl WebPush {
     /// @param contact - A `mailto:` or `https:` address for push services (the VAPID `sub`).
     /// @param allow_private - Whether push endpoints may be private or plain `http` addresses.
     /// @throws CliError (usage) - A contact of another form, or files that cannot be read or created.
-    pub fn open(store_dir: Option<&Path>, contact: &str, allow_private: bool) -> Result<Self, CliError> {
+    pub fn open(
+        store: Option<&crate::store::StoreLocation>,
+        contact: &str,
+        allow_private: bool,
+    ) -> Result<Self, CliError> {
         let contact = contact.trim();
         let is_address = contact.strip_prefix("mailto:").is_some_and(|address| address.contains('@'))
             || contact.strip_prefix("https://").is_some_and(|rest| !rest.is_empty());
@@ -314,19 +341,26 @@ impl WebPush {
                 "--push `{contact}`: expected an address push services may contact, such as mailto:you@example.com"
             )));
         }
-        let dir = match store_dir {
-            Some(store) => {
+        let random = SystemRandom::new();
+        let (key, subscriptions) = match store {
+            #[cfg(feature = "store-s3")]
+            Some(crate::store::StoreLocation::Objects(objects)) => (
+                VapidKey::open_object(objects.as_ref(), &random),
+                SharedJsonFile::open_object(
+                    std::sync::Arc::clone(objects),
+                    &format!("{DIR_NAME}/{SUBSCRIPTIONS_FILE}"),
+                ),
+            ),
+            Some(crate::store::StoreLocation::Dir(store)) => {
                 let dir = store.join(DIR_NAME);
                 private_fs::create_dir_all(&dir)
                     .map_err(|e| CliError::usage(format!("--push: cannot create `{}`: {e}", dir.display())))?;
-                Some(dir)
+                (VapidKey::open(Some(&dir), &random), SharedJsonFile::open(Some(dir.join(SUBSCRIPTIONS_FILE))))
             }
-            None => None,
+            None => (VapidKey::open(None, &random), SharedJsonFile::open(None)),
         };
-        let random = SystemRandom::new();
-        let key = VapidKey::open(dir.as_deref(), &random).map_err(|e| CliError::usage(format!("--push: {e}")))?;
-        let subscriptions = SharedJsonFile::open(dir.map(|dir| dir.join(SUBSCRIPTIONS_FILE)))
-            .map_err(|e| CliError::usage(format!("--push: {e}")))?;
+        let key = key.map_err(|e| CliError::usage(format!("--push: {e}")))?;
+        let subscriptions = subscriptions.map_err(|e| CliError::usage(format!("--push: {e}")))?;
         let policy = EgressPolicy { allow_private, max_redirects: 0, ..EgressPolicy::default() };
         let client = HttpClient::new(policy).map_err(|e| CliError::usage(format!("--push: {e}")))?;
         Ok(Self { key, contact: contact.to_owned(), subscriptions, client, allow_private, random })
@@ -335,7 +369,8 @@ impl WebPush {
     /// One line for the startup log.
     pub fn describe(&self) -> String {
         let count = self.subscriptions.read(Vec::len).unwrap_or_default();
-        let kept = if self.subscriptions.path().is_some() { "" } else { ", kept in memory (set --store to keep them)" };
+        let kept =
+            if self.subscriptions.location().is_some() { "" } else { ", kept in memory (set --store to keep them)" };
         format!("web push: {count} subscription(s){kept}, when a run fails or waits for a person")
     }
 
@@ -666,9 +701,12 @@ mod tests {
     #[test]
     fn the_key_and_the_subscriptions_survive_a_restart() {
         let dir = temp_dir("restart");
-        let push = WebPush::open(Some(&dir), "mailto:ops@example.com", false).unwrap();
+        let push = WebPush::open(Some(&crate::store::StoreLocation::Dir(dir.clone())), "mailto:ops@example.com", false)
+            .unwrap();
         push.subscribe(browser("https://push.example.net/a").subscription).unwrap();
-        let again = WebPush::open(Some(&dir), "mailto:ops@example.com", false).unwrap();
+        let again =
+            WebPush::open(Some(&crate::store::StoreLocation::Dir(dir.clone())), "mailto:ops@example.com", false)
+                .unwrap();
         assert_eq!(again.public_key(), push.public_key());
         assert_eq!(again.subscription_count(), 1);
         #[cfg(unix)]

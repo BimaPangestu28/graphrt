@@ -33,8 +33,9 @@ pub enum ConversationError {
 
 pub type ConversationResult<T> = Result<T, ConversationError>;
 
-/// A change applied to a stored conversation under the store's lock.
-pub type Change = Box<dyn FnOnce(&mut Conversation) + Send>;
+/// A change applied to a stored conversation under the store's lock. A shared
+/// store may apply it again to a newer copy when another server wrote first.
+pub type Change = Box<dyn FnMut(&mut Conversation) + Send>;
 
 /// Storage of conversations. Every method is atomic with respect to the others.
 pub trait ConversationStore: Send + Sync + std::fmt::Debug {
@@ -111,7 +112,7 @@ impl ConversationStore for MemoryConversations {
         Box::pin(async move { Ok(found) })
     }
 
-    fn update(&self, id: &str, change: Change) -> BoxFuture<'_, ConversationResult<Option<Conversation>>> {
+    fn update(&self, id: &str, mut change: Change) -> BoxFuture<'_, ConversationResult<Option<Conversation>>> {
         let mut all = self.locked();
         let changed = all.get_mut(id).map(|conversation| {
             change(conversation);
@@ -290,7 +291,7 @@ impl ConversationStore for FileConversations {
         self.blocking(move |dir| dir.read(&id))
     }
 
-    fn update(&self, id: &str, change: Change) -> BoxFuture<'_, ConversationResult<Option<Conversation>>> {
+    fn update(&self, id: &str, mut change: Change) -> BoxFuture<'_, ConversationResult<Option<Conversation>>> {
         let id = id.to_owned();
         self.blocking(move |dir| {
             let Some(mut conversation) = dir.read(&id)? else { return Ok(None) };
@@ -321,6 +322,157 @@ impl ConversationStore for FileConversations {
         })
     }
 }
+
+#[cfg(feature = "store-s3")]
+mod shared {
+    use super::*;
+
+    /// Conversations as shared objects (`--store s3://...`): one object each,
+    /// `conversations/<id>.json`, changed with a compare and swap on its ETag, so
+    /// several servers can add turns to the same conversation.
+    #[derive(Clone, Debug)]
+    pub struct SharedConversations {
+        objects: Arc<dyn crate::store::objects::Objects>,
+        /// Conversations read while listing, by key, with their ETag.
+        cache: Arc<Mutex<HashMap<String, (String, Conversation)>>>,
+    }
+
+    /// Compare and swap attempts before giving up on a busy conversation.
+    const MAX_SHARED_ATTEMPTS: usize = 64;
+
+    fn object_error(error: crate::store::objects::ObjectError) -> ConversationError {
+        ConversationError::Io(error.to_string())
+    }
+
+    impl SharedConversations {
+        pub fn new(objects: Arc<dyn crate::store::objects::Objects>) -> Self {
+            Self { objects, cache: Arc::default() }
+        }
+
+        fn key(id: &str) -> ConversationResult<String> {
+            validate_id(id)?;
+            Ok(format!("conversations/{id}.json"))
+        }
+
+        async fn read(&self, id: &str) -> ConversationResult<Option<(Conversation, String)>> {
+            let key = Self::key(id)?;
+            let Some(object) = crate::store::objects::get(self.objects.as_ref(), &key).await.map_err(object_error)?
+            else {
+                return Ok(None);
+            };
+            let conversation = serde_json::from_slice(&object.bytes)
+                .map_err(|e| ConversationError::Corrupt(format!("conversation `{id}`: {e}")))?;
+            Ok(Some((conversation, object.etag)))
+        }
+
+        async fn write(
+            &self,
+            conversation: &Conversation,
+            condition: crate::store::objects::Condition,
+        ) -> Result<String, crate::store::objects::ObjectError> {
+            let key = Self::key(&conversation.id).map_err(|e| crate::store::objects::ObjectError::Io(e.to_string()))?;
+            let bytes =
+                serde_json::to_vec(conversation).map_err(|e| crate::store::objects::ObjectError::Io(e.to_string()))?;
+            self.objects.write(&key, bytes, condition).await
+        }
+
+        async fn read_all(&self) -> ConversationResult<Vec<Conversation>> {
+            let keys = self.objects.keys("conversations/").await.map_err(object_error)?;
+            let cached = self.cache.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            let mut fresh = HashMap::new();
+            let mut all = Vec::new();
+            for (key, etag) in keys {
+                let known = cached.get(&key).filter(|(cached_etag, _)| *cached_etag == etag).map(|(_, c)| c.clone());
+                let conversation = match known {
+                    Some(conversation) => conversation,
+                    None => {
+                        let Some(object) =
+                            crate::store::objects::get(self.objects.as_ref(), &key).await.map_err(object_error)?
+                        else {
+                            continue;
+                        };
+                        match serde_json::from_slice::<Conversation>(&object.bytes) {
+                            Ok(conversation) => conversation,
+                            Err(e) => {
+                                eprintln!("warning: skipping conversation `{key}`: {e}");
+                                continue;
+                            }
+                        }
+                    }
+                };
+                fresh.insert(key, (etag, conversation.clone()));
+                all.push(conversation);
+            }
+            *self.cache.lock().unwrap_or_else(PoisonError::into_inner) = fresh;
+            sort_recent_first(&mut all);
+            Ok(all)
+        }
+    }
+
+    impl ConversationStore for SharedConversations {
+        fn insert(&self, conversation: Conversation, keep_per_owner: usize) -> BoxFuture<'_, ConversationResult<()>> {
+            Box::pin(async move {
+                self.write(&conversation, crate::store::objects::Condition::Always).await.map_err(object_error)?;
+                if keep_per_owner > 0 && conversation.owner.is_some() {
+                    let owned = self.read_all().await?.into_iter().filter(|c| c.owner == conversation.owner).collect();
+                    for id in beyond_limit(owned, keep_per_owner) {
+                        self.objects.remove(&Self::key(&id)?).await.map_err(object_error)?;
+                    }
+                }
+                Ok(())
+            })
+        }
+
+        fn get(&self, id: &str) -> BoxFuture<'_, ConversationResult<Option<Conversation>>> {
+            let id = id.to_owned();
+            Box::pin(async move { Ok(self.read(&id).await?.map(|(conversation, _)| conversation)) })
+        }
+
+        fn update(&self, id: &str, mut change: Change) -> BoxFuture<'_, ConversationResult<Option<Conversation>>> {
+            let id = id.to_owned();
+            Box::pin(async move {
+                for _ in 0..MAX_SHARED_ATTEMPTS {
+                    let Some((mut conversation, etag)) = self.read(&id).await? else { return Ok(None) };
+                    change(&mut conversation);
+                    match self.write(&conversation, crate::store::objects::Condition::Matches(etag)).await {
+                        Ok(_) => return Ok(Some(conversation)),
+                        Err(crate::store::objects::ObjectError::Precondition) => continue,
+                        Err(error) => return Err(object_error(error)),
+                    }
+                }
+                Err(ConversationError::Io(format!("conversation `{id}` kept changing while it was written")))
+            })
+        }
+
+        fn all(&self) -> BoxFuture<'_, ConversationResult<Vec<Conversation>>> {
+            Box::pin(self.read_all())
+        }
+
+        fn delete(&self, id: &str) -> BoxFuture<'_, ConversationResult<bool>> {
+            let id = id.to_owned();
+            Box::pin(async move {
+                let existed = self.read(&id).await?.is_some();
+                if existed {
+                    self.objects.remove(&Self::key(&id)?).await.map_err(object_error)?;
+                }
+                Ok(existed)
+            })
+        }
+
+        fn purge_before(&self, cutoff_ms: u64) -> BoxFuture<'_, ConversationResult<usize>> {
+            Box::pin(async move {
+                let mut removed = 0;
+                for conversation in self.read_all().await?.into_iter().filter(|c| c.updated_ms < cutoff_ms) {
+                    self.objects.remove(&Self::key(&conversation.id)?).await.map_err(object_error)?;
+                    removed += 1;
+                }
+                Ok(removed)
+            })
+        }
+    }
+}
+#[cfg(feature = "store-s3")]
+pub use shared::SharedConversations;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -381,6 +533,31 @@ mod tests {
         let mut ids: Vec<String> = store.all().await.unwrap().into_iter().map(|c| c.id).collect();
         ids.sort();
         assert_eq!(ids, ["keyed", "mid", "new", "other"]);
+    }
+
+    #[cfg(feature = "store-s3")]
+    #[tokio::test]
+    async fn the_shared_store_keeps_the_contract_and_merges_concurrent_turns() {
+        let objects: Arc<dyn crate::store::objects::Objects> =
+            Arc::new(crate::store::objects::MemoryObjects::default());
+        behaves_like_a_store(&SharedConversations::new(Arc::clone(&objects))).await;
+        keeps_the_most_recent_per_owner(&SharedConversations::new(Arc::clone(&objects))).await;
+        let (first, second) = (SharedConversations::new(Arc::clone(&objects)), SharedConversations::new(objects));
+        first.insert(conversation("c", None, 1), 0).await.unwrap();
+        let say = |text: &'static str| -> Change {
+            Box::new(move |c: &mut Conversation| {
+                c.messages.push(Message {
+                    role: Role::User,
+                    content: text.into(),
+                    run_id: None,
+                    created_ms: 2,
+                    tools: None,
+                })
+            })
+        };
+        let (a, b) = tokio::join!(first.update("c", say("one")), second.update("c", say("two")));
+        assert!(a.unwrap().is_some() && b.unwrap().is_some());
+        assert_eq!(first.get("c").await.unwrap().unwrap().messages.len(), 2, "no turn is lost");
     }
 
     #[tokio::test]

@@ -443,6 +443,8 @@ struct ListedObject {
     key: String,
     size: u64,
     modified_ms: Option<u64>,
+    /// The object's ETag, quotes included, as conditional requests take it.
+    etag: Option<String>,
 }
 
 /// One page of `ListObjectsV2`.
@@ -469,7 +471,8 @@ fn parse_list_page(xml: &str) -> ListPage {
         let modified_ms = xml_text(element, "LastModified")
             .and_then(|stamp| parse_iso8601(&stamp))
             .map(|seconds| seconds.saturating_mul(1000));
-        page.objects.push(ListedObject { key, size, modified_ms });
+        let etag = xml_text(element, "ETag").map(|etag| etag.replace("&quot;", "\""));
+        page.objects.push(ListedObject { key, size, modified_ms, etag });
     }
     if xml_text(xml, "IsTruncated").as_deref() == Some("true") {
         page.next = xml_text(xml, "NextContinuationToken").filter(|token| !token.is_empty());
@@ -620,6 +623,160 @@ impl FileStore for S3Store {
     }
 }
 
+/// How a [`S3Store::put_object`] may replace what is there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PutCondition {
+    /// Whatever is stored.
+    Always,
+    /// Only when no object has the key (`If-None-Match: *`).
+    Absent,
+    /// Only while the object still has this ETag (`If-Match`).
+    Matches(String),
+}
+
+/// An object read by [`S3Store::get_object`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawObject {
+    pub bytes: Vec<u8>,
+    /// ETag with its quotes, for [`PutCondition::Matches`].
+    pub etag: String,
+}
+
+/// What a read returned when the caller already holds a version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fetched {
+    /// The object changed (or the caller had none): its bytes and ETag.
+    Object(RawObject),
+    /// Still the version the caller holds (`304 Not Modified`).
+    Unchanged,
+    /// No object has the key.
+    Missing,
+}
+
+/// Why a conditional object operation did not happen.
+#[derive(Debug, thiserror::Error)]
+pub enum ObjectError {
+    /// The condition did not hold: another writer got there first.
+    #[error("the object changed since it was read")]
+    Precondition,
+    #[error(transparent)]
+    Store(#[from] StoreError),
+}
+
+/// Largest object read by [`S3Store::get_object`].
+const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Objects addressed by key below the store's prefix, with the conditional
+/// writes (`If-None-Match`, `If-Match` on ETags) that let several writers share
+/// a bucket without a lock: the run store of `graphrt serve --store s3://`.
+impl S3Store {
+    fn raw_key(&self, key: &str) -> String {
+        match &self.prefix {
+            Some(prefix) => format!("{prefix}/{key}"),
+            None => key.to_owned(),
+        }
+    }
+
+    fn raw_path(&self, key: &str) -> String {
+        format!("{}/{}", self.bucket_path, sigv4::uri_encode(&self.raw_key(key), true))
+    }
+
+    /// The object `key`, or [`Fetched::Unchanged`] while it still has `known_etag`.
+    ///
+    /// @throws StoreError - The store cannot be reached or refuses.
+    pub async fn get_object(&self, key: &str, known_etag: Option<&str>) -> Result<Fetched, StoreError> {
+        let path = self.raw_path(key);
+        let condition = known_etag.map(|etag| [("if-none-match", etag)]);
+        let headers: &[(&str, &str)] = condition.as_ref().map_or(&[], |header| header.as_slice());
+        let request = Request { headers, ..Request::new(reqwest::Method::GET, &path, key) };
+        let response = self.send(&request, &[304, 404]).await?;
+        match response.status().as_u16() {
+            304 => return Ok(Fetched::Unchanged),
+            404 => return Ok(Fetched::Missing),
+            _ => {}
+        }
+        let etag = header(&response, "etag").unwrap_or_default();
+        let body = read_body(response, MAX_OBJECT_BYTES, true).await.map_err(|e| StoreError::io(key, e))?;
+        let bytes = body.ok_or_else(|| StoreError::io(key, "the object is too large"))?;
+        Ok(Fetched::Object(RawObject { bytes, etag }))
+    }
+
+    /// Store `bytes` as `key` when `condition` holds; returns the new ETag.
+    ///
+    /// @throws ObjectError - `Precondition` when the condition failed, `Store` otherwise.
+    pub async fn put_object(&self, key: &str, bytes: Vec<u8>, condition: &PutCondition) -> Result<String, ObjectError> {
+        let hashed = crate::blocking(move || (sigv4::sha256_hex(&bytes), bytes::Bytes::from(bytes))).await;
+        let (payload_hash, body) = hashed.map_err(|e| StoreError::io(key, e))?;
+        let path = self.raw_path(key);
+        let header_value;
+        let headers: Vec<(&str, &str)> = match condition {
+            PutCondition::Always => Vec::new(),
+            PutCondition::Absent => vec![("if-none-match", "*")],
+            PutCondition::Matches(etag) => {
+                header_value = etag.clone();
+                vec![("if-match", header_value.as_str())]
+            }
+        };
+        let request = Request {
+            headers: &headers,
+            body: Some(body),
+            payload_hash: &payload_hash,
+            ..Request::new(reqwest::Method::PUT, &path, key)
+        };
+        // 412: the condition failed. 409: a concurrent conditional write won.
+        // 404: `If-Match` on an object that is gone.
+        let response = self.send(&request, &[404, 409, 412]).await?;
+        if matches!(response.status().as_u16(), 404 | 409 | 412) {
+            return Err(ObjectError::Precondition);
+        }
+        Ok(header(&response, "etag").unwrap_or_default())
+    }
+
+    /// Delete `key`. Deleting a missing key succeeds.
+    ///
+    /// @throws StoreError - The store cannot be reached or refuses.
+    pub async fn delete_object(&self, key: &str) -> Result<(), StoreError> {
+        let path = self.raw_path(key);
+        let request = Request::new(reqwest::Method::DELETE, &path, key);
+        self.send(&request, &[404]).await.map(|_| ())
+    }
+
+    /// Every key starting with `prefix` (relative to the store's prefix) and
+    /// its ETag, in key order.
+    ///
+    /// @throws StoreError - The store cannot be reached, refuses, or keeps announcing pages.
+    pub async fn list_objects(&self, prefix: &str) -> Result<Vec<(String, String)>, StoreError> {
+        let store_prefix = self.prefix.as_ref().map(|prefix| format!("{prefix}/")).unwrap_or_default();
+        let wanted = format!("{store_prefix}{prefix}");
+        let root = self.bucket_root();
+        let page_keys = LIST_PAGE_KEYS.to_string();
+        let mut keys = Vec::new();
+        let mut token: Option<String> = None;
+        for _ in 0..MAX_LIST_PAGES * 16 {
+            let mut query = vec![("list-type", "2"), ("max-keys", page_keys.as_str()), ("prefix", wanted.as_str())];
+            if let Some(token) = &token {
+                query.push(("continuation-token", token.as_str()));
+            }
+            let request = Request { query: &query, ..Request::new(reqwest::Method::GET, &root, prefix) };
+            let response = self.send(&request, &[]).await?;
+            let body = read_body(response, MAX_LIST_BODY_BYTES, true).await.map_err(|e| StoreError::io(prefix, e))?;
+            let body = body.ok_or_else(|| StoreError::io(prefix, "the listing of the object store is too large"))?;
+            let page = parse_list_page(&String::from_utf8_lossy(&body));
+            for object in page.objects {
+                if let Some(key) = object.key.strip_prefix(&store_prefix).filter(|_| object.key.starts_with(&wanted)) {
+                    keys.push((key.to_owned(), object.etag.unwrap_or_default()));
+                }
+            }
+            token = page.next;
+            if token.is_none() {
+                keys.sort();
+                return Ok(keys);
+            }
+        }
+        Err(StoreError::io(prefix, "the object store kept announcing more pages"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,7 +828,7 @@ mod tests {
         assert_eq!(page.objects[0].key, "p/a & b.txt");
         assert_eq!(page.objects[0].size, 12);
         assert_eq!(page.objects[0].modified_ms, Some(1_795_741_323_000));
-        assert_eq!(page.objects[1], ListedObject { key: "p/c.txt".into(), size: 3, modified_ms: None });
+        assert_eq!(page.objects[1], ListedObject { key: "p/c.txt".into(), size: 3, modified_ms: None, etag: None });
         // An entity that is not one of the five stays text, and a cut document ends the page.
         let odd = parse_list_page("<Contents><Key>&xxe;</Key><Size>1</Size></Contents><Contents><Key>cut");
         assert_eq!(odd.objects.len(), 1);
