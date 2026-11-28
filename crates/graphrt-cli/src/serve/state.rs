@@ -698,9 +698,19 @@ impl AppState {
         })
     }
 
+    /// The start inputs of workflow `name` for the chat page: all of them, and those a run
+    /// cannot start without. `None` when it is not served.
+    #[cfg(feature = "web-chat")]
+    pub fn chat_start_inputs(&self, name: &str) -> Option<super::chat::ChatStartInputs> {
+        Some(super::chat::ChatStartInputs {
+            declared: self.start_inputs(name)?,
+            required: self.required_start_inputs(name)?,
+        })
+    }
+
     /// The start inputs of workflow `name` a run cannot start without: required, and
     /// without a default. `None` when it is not served.
-    #[cfg(feature = "channels")]
+    #[cfg(any(feature = "channels", feature = "web-chat"))]
     fn required_start_inputs(&self, name: &str) -> Option<Vec<String>> {
         let workflow = self.workflows.get(name)?;
         let declared = workflow

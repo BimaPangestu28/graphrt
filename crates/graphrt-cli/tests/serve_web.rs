@@ -153,6 +153,8 @@ struct Setup {
     guest_rate_limit: u32,
     /// A file for `--chat-mermaid`.
     mermaid: Option<PathBuf>,
+    /// `--chat` values; empty: `support=message`.
+    chat_specs: Vec<&'static str>,
 }
 
 async fn app(dir: &TempDir, setup: Setup) -> axum::Router {
@@ -171,9 +173,19 @@ async fn app(dir: &TempDir, setup: Setup) -> axum::Router {
     let specs: Vec<HeaderInputSpec> = vec![format!("user_jwt={HEADER}").parse().unwrap()];
     let rules = ClaimRules { issuer: None, audience: None, leeway_secs: 30 };
     let user_auth = UserAuth::with_keys(&specs[0], vec![VerifyKey::hs256(SECRET)], rules, 0);
+    let conversations = setup.conversations.map(|limits| Conversations::open(None, limits).expect("conversations"));
+    let state = build_state(&files, &options, EngineLimits::default(), Some(API_KEY.into()))
+        .await
+        .expect("state")
+        .with_header_inputs(&specs)
+        .expect("header inputs")
+        .with_user_auth(Some(user_auth))
+        .with_user_resume(setup.user_resume)
+        .with_conversations(conversations);
     let chat = setup.chat.map(|access| {
+        let specs = if setup.chat_specs.is_empty() { vec!["support=message"] } else { setup.chat_specs.clone() };
         let args = ChatArgs {
-            chat: vec!["support=message".to_owned()],
+            chat: specs.into_iter().map(str::to_owned).collect(),
             chat_access: Some(access),
             chat_title: Some("Support".to_owned()),
             chat_guest_rate_limit: Some(setup.guest_rate_limit),
@@ -185,19 +197,9 @@ async fn app(dir: &TempDir, setup: Setup) -> axum::Router {
             user_token_header: Some(HEADER.to_ascii_lowercase()),
             frame_origins: vec!["https://shop.example".to_owned()],
         };
-        let inputs = |name: &str| (name == "support").then(|| vec!["message".to_owned()]);
-        Chat::new(&args, context, inputs).expect("chat").expect("a chat page")
+        Chat::new(&args, context, |name| state.chat_start_inputs(name)).expect("chat").expect("a chat page")
     });
-    let conversations = setup.conversations.map(|limits| Conversations::open(None, limits).expect("conversations"));
-    let state = build_state(&files, &options, EngineLimits::default(), Some(API_KEY.into()))
-        .await
-        .expect("state")
-        .with_header_inputs(&specs)
-        .expect("header inputs")
-        .with_user_auth(Some(user_auth))
-        .with_user_resume(setup.user_resume)
-        .with_conversations(conversations)
-        .with_chat(chat);
+    let state = state.with_chat(chat);
     router(Arc::new(state), 1 << 20)
 }
 
@@ -587,6 +589,19 @@ async fn the_chat_page_is_served_with_a_strict_policy() {
     );
     // Without `--chat-mermaid` there is no Mermaid to serve.
     assert_eq!(send(&app, request("GET", "/chat/mermaid.js", As::Nobody, None)).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_chat_page_puts_the_message_in_the_one_input_a_workflow_requires() {
+    let dir = TempDir::new("chat-input");
+    let setup = Setup { chat: Some(ChatAccess::Key), chat_specs: vec!["support", "shop"], ..Setup::default() };
+    let app = app(&dir, setup).await;
+    let (_, config) = call(&app, "GET", "/v1/chat/config", As::Nobody, None).await;
+    assert_eq!(
+        config["workflows"],
+        json!([{ "name": "support", "input": "message" }, { "name": "shop", "input": null }]),
+        "`support` requires `message`; `shop` requires nothing and reads sys.query"
+    );
 }
 
 #[tokio::test]
