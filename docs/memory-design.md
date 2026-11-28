@@ -160,6 +160,22 @@ User: the same rule as lessons. With a verified token `sys.user_id` is the
 token's subject and cannot be set by the client. A `user_id` sent with the API
 key is the owner speaking.
 
+Source: the user of a scope is `<source>/<id>` (`MemoryScope.user`, built by
+the node from `sys.user_source` and the rendered `user`). Sources are `user`
+(a verified token or a chat guest), `api` (named with the API key, or by the
+host) and `channel` (`<channel name>:<customer id>`). Without it two id spaces
+meet: a Telegram customer `42`, a login whose subject is `42`, and a backend
+that names its own user `42` with the API key were one scope. Every host sets
+`sys.user_source` over the client's value (`serve` from the caller, a channel
+turn, the agent behind a gateway from `caller`), a child run inherits it, and
+a run without it is `api`, the host's own. An unknown word fails the run: a
+host bug must not fall back to a shared scope. Alternatives not taken: putting
+the source into `sys.user_id` (lessons, files per user, run ownership and
+conversations all key on it and would all move at once), and a source field
+on `MemoryScope` (every store and API would change for what a prefix of the
+hashed id already gives). Notes kept before sources move to the scoped id on
+its first use, never merged, and an erase of a scoped id erases the old id too.
+
 ## Stage 1: short term
 
 ### The switch

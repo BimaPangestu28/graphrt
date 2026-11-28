@@ -79,6 +79,8 @@ fn extra_workflows() -> Vec<(&'static str, Json)> {
             {"id": "end", "type": "end", "outputs": [
                 {"variable": "query", "value_selector": ["sys", "query"]},
                 {"variable": "run_id", "value_selector": ["sys", "run_id"]},
+                {"variable": "user_id", "value_selector": ["sys", "user_id"]},
+                {"variable": "user_source", "value_selector": ["sys", "user_source"]},
                 {"variable": "parent_env", "value_selector": ["env", "PARENT_ONLY"]},
                 {"variable": "region", "value_selector": ["env", "REGION"]}
             ]}],
@@ -453,7 +455,9 @@ async fn a_childs_secret_environment_is_masked_in_what_reaches_the_parent_even_a
 async fn a_child_sees_its_own_environment_and_the_requests_ids_and_nothing_else_of_the_parent() {
     let s = setup(vec![MockModel::tool_calls(&[("c1", "spy", "{}")]), MockModel::text("seen")], vec![]);
     let root = lead(json!([{"workflow": "spy", "description": "Looks"}]), json!({}));
-    let input = query("the secret plan").env("PARENT_ONLY", "parent value");
+    let mut input = query("the secret plan").env("PARENT_ONLY", "parent value");
+    input.sys.insert("user_id".into(), Value::from("shop:42"));
+    input.sys.insert("user_source".into(), Value::from("channel"));
     let events = run(&engine(root, &s, Limits::default()), input).await;
     let run_id = events
         .iter()
@@ -476,6 +480,9 @@ async fn a_child_sees_its_own_environment_and_the_requests_ids_and_nothing_else_
         .unwrap();
     assert_eq!(child_end.get("run_id"), Some(&Value::from(run_id.as_str())), "the parent's run id");
     assert_eq!(child_end.get("region"), Some(&Value::from("eu")), "its own declared default");
+    // The same user from the same source: a child remembers for the same person.
+    assert_eq!(child_end.get("user_id"), Some(&Value::from("shop:42")));
+    assert_eq!(child_end.get("user_source"), Some(&Value::from("channel")));
     for withheld in ["query", "parent_env"] {
         assert!(child_end.get(withheld).is_none_or(|v| matches!(v, Value::Null)), "{withheld}: {child_end:?}");
     }

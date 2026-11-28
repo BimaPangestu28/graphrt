@@ -213,6 +213,18 @@ struct Prepared {
 ///
 /// @throws Response - `400` when `caller` is `user` without a `user_id`.
 fn verified_user(body: &mut RunBody) -> Result<Option<String>, Response> {
+    let verified = verified_user_id(body)?;
+    // Where the user comes from, for their memory scope: the agent says it, never the client.
+    #[cfg(feature = "memory")]
+    {
+        use graphrt_core::memory::{USER_SOURCE_VAR, UserSource};
+        let source = if verified.is_some() { UserSource::Verified } else { UserSource::Api };
+        body.sys.insert(USER_SOURCE_VAR.to_owned(), serde_json::Value::String(source.as_str().to_owned()));
+    }
+    Ok(verified)
+}
+
+fn verified_user_id(body: &mut RunBody) -> Result<Option<String>, Response> {
     match body.caller.as_deref() {
         Some("user") => {
             let user = body.user_id.clone().ok_or_else(|| bad_request("`caller` is `user` without a `user_id`"))?;
@@ -487,5 +499,37 @@ fn release_orphan(agent: &GatewayAgent, request: &GatewayRequest, run_id: &str) 
     match request.epoch {
         Some(epoch) if agent.release_orphan(run_id, epoch) => StatusCode::NO_CONTENT.into_response(),
         _ => protocol_error(StatusCode::NOT_FOUND, "not_found", "no orphan of this run at this epoch"),
+    }
+}
+
+#[cfg(all(test, feature = "memory"))]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    use super::*;
+
+    fn body(caller: Option<&str>) -> RunBody {
+        let mut body = serde_json::json!({
+            "workflow": "chat", "user_id": "alice",
+            "sys": { "user_id": "alice", "user_source": "channel" },
+        });
+        if let Some(caller) = caller {
+            body["caller"] = serde_json::Value::from(caller);
+        }
+        super::super::body::run(body.to_string().as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn the_agent_says_where_the_user_comes_from_never_the_client() {
+        let mut verified = body(Some("user"));
+        assert_eq!(verified_user(&mut verified).unwrap().as_deref(), Some("alice"));
+        assert_eq!(verified.sys["user_source"], "user", "a user the gateway verified");
+        let mut keyed = body(Some("key"));
+        assert_eq!(verified_user(&mut keyed).unwrap(), None);
+        assert_eq!(keyed.sys["user_source"], "api", "an id the key holder named");
+        let mut old = body(None);
+        assert_eq!(verified_user(&mut old).unwrap(), None);
+        assert_eq!(old.sys["user_source"], "api");
+        assert!(!old.sys.contains_key("user_id"), "dropped without `caller`");
     }
 }

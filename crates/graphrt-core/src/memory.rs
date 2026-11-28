@@ -86,12 +86,86 @@ pub fn check_name(what: &str, name: &str) -> Result<(), MemoryError> {
 }
 
 /// The rule for user ids: any text a person can read, up to 256 characters.
-/// A user id never becomes a path: stores hash it.
+/// A user id of a scope carries its [`UserSource`] in front (`channel/shop:42`),
+/// and the rule then holds for the id after it. A user id never becomes a
+/// path: stores hash it.
 ///
 /// @throws MemoryError - `memory_scope` when `user` breaks it.
 pub fn check_user(user: &str) -> Result<(), MemoryError> {
-    let ok = !user.trim().is_empty() && user.chars().count() <= 256 && !user.chars().any(char::is_control);
+    let id = UserSource::split(user).map_or(user, |(_, id)| id);
+    let ok = !id.trim().is_empty() && id.chars().count() <= 256 && !id.chars().any(char::is_control);
     if ok { Ok(()) } else { Err(MemoryError::new("memory_scope", "a user id must be 1 to 256 visible characters")) }
+}
+
+/// The `sys` variable in which a host says where the user of a run comes from
+/// (`sys.user_source`): `user`, `api` or `channel`, see [`UserSource`]. Hosts
+/// set it over anything a client sent, and a run without it is an `api` run.
+pub const USER_SOURCE_VAR: &str = "user_source";
+
+/// Where the user id of a run comes from. It is part of every user scope, so
+/// the same id from two sources (the number `42` on Telegram and the subject
+/// `42` of a login) names two people with two memories.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum UserSource {
+    /// The subject of a token the server or its gateway verified (`--verify-jwt`),
+    /// or a chat guest (`guest:<id>`, ids no identity provider may issue).
+    Verified,
+    /// An id the holder of the API key named, or the host itself (`graphrt run`,
+    /// an app that embeds the runtime): the owner speaks for its users.
+    Api,
+    /// A customer of a messaging channel. The id is `<channel name>:<customer
+    /// id>`: the name stands for the bot account (one Telegram bot, one WhatsApp
+    /// number, one Slack workspace, one Teams app), whose ids are unique.
+    Channel,
+}
+
+impl UserSource {
+    const ALL: [Self; 3] = [Self::Verified, Self::Api, Self::Channel];
+
+    /// The word in `sys.user_source` and in front of a scoped user id.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Verified => "user",
+            Self::Api => "api",
+            Self::Channel => "channel",
+        }
+    }
+
+    /// The source a word names, `None` for any other word.
+    pub fn parse(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|source| source.as_str() == word)
+    }
+
+    /// The user id of a scope for `id` of this source: `<source>/<id>`.
+    pub fn scoped(self, id: &str) -> String {
+        format!("{}/{id}", self.as_str())
+    }
+
+    /// The source and the id of a scoped user id, `None` for an id without a
+    /// source (one stored before ids carried their source).
+    pub fn split(user: &str) -> Option<(Self, &str)> {
+        let (word, id) = user.split_once('/')?;
+        Some((Self::parse(word)?, id))
+    }
+}
+
+/// The scope user an owner means by `user` (`graphrt memory --user`, `?user=`
+/// of `/v1/memory`): a scoped id as it is (`channel/shop:42`, `user/<sub>`),
+/// and any other id as one the owner names, as a run started with the API key
+/// does (`api/<id>`).
+pub fn owner_named_user(user: &str) -> String {
+    match UserSource::split(user) {
+        Some(_) => user.to_owned(),
+        None => UserSource::Api.scoped(user),
+    }
+}
+
+/// The id a scoped user id was stored under before ids carried their source:
+/// the id without it (`shop:42` for `channel/shop:42`). A store moves notes
+/// it finds under that id to the scoped one the first time the scoped one is
+/// used, and an erase of the scoped id erases them there too.
+pub fn legacy_user(user: &str) -> Option<&str> {
+    UserSource::split(user).map(|(_, id)| id)
 }
 
 /// What a note is about. It decides how long a note lives by default.
@@ -617,6 +691,44 @@ pub fn stem(word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scoped_user_id_names_its_source_and_keeps_the_id_whole() {
+        assert_eq!(UserSource::Channel.scoped("shop:42"), "channel/shop:42");
+        assert_eq!(UserSource::Verified.scoped("a/b"), "user/a/b", "an id may hold slashes");
+        assert_eq!(UserSource::split("user/a/b"), Some((UserSource::Verified, "a/b")));
+        assert_eq!(UserSource::split("api/42"), Some((UserSource::Api, "42")));
+        assert_eq!(UserSource::split("42"), None, "an id stored before sources");
+        assert_eq!(UserSource::split("team/42"), None, "an unknown word is part of an old id");
+        assert_eq!(legacy_user("channel/shop:42"), Some("shop:42"));
+        assert_eq!(legacy_user("shop:42"), None);
+        assert_eq!(owner_named_user("alice"), "api/alice", "what the key holder names");
+        assert_eq!(owner_named_user("channel/shop:42"), "channel/shop:42");
+        assert_eq!(owner_named_user("team/42"), "api/team/42");
+        for source in UserSource::ALL {
+            assert_eq!(UserSource::parse(source.as_str()), Some(source));
+        }
+        assert_eq!(UserSource::parse("User"), None);
+    }
+
+    #[test]
+    fn the_same_id_of_two_sources_is_two_scopes() {
+        let ids: std::collections::HashSet<String> =
+            UserSource::ALL.into_iter().map(|source| source.scoped("42")).collect();
+        assert_eq!(ids.len(), 3);
+        assert!(!ids.contains("42"));
+    }
+
+    #[test]
+    fn the_length_rule_holds_for_the_id_after_the_source() {
+        let longest = "x".repeat(256);
+        assert!(check_user(&UserSource::Channel.scoped(&longest)).is_ok());
+        assert!(check_user(&UserSource::Channel.scoped(&format!("{longest}x"))).is_err());
+        assert!(check_user(&longest).is_ok());
+        assert!(check_user("api/ ").is_err(), "an empty id after the source");
+        assert!(check_user("api/a b").is_ok());
+        assert!(check_user("api/a\u{7}b").is_err());
+    }
 
     #[test]
     fn the_stemmer_joins_forms_of_a_word_and_leaves_others_alone() {

@@ -4,7 +4,9 @@
 //!
 //! The scope of every call comes from the node configuration, the host's
 //! [`MemoryDefaults`] (tenant, workflow name) and the user of the run
-//! (`sys.user_id` by default), never from tool arguments. Before a note
+//! (`sys.user_id` by default) with where it comes from (`sys.user_source`,
+//! set by the host: the same id from two sources is two users), never from
+//! tool arguments. Before a note
 //! is sent to the store, the run's secrets are masked and the note is
 //! compared with what the run read: words the user wrote, words of tool
 //! results, or the model's own. The store decides from that whether the note
@@ -22,7 +24,7 @@ use futures::future::BoxFuture;
 use graphrt_core::dsl::NodeDoc;
 use graphrt_core::memory::{
     ForgetTarget, Memories, MemoryBank, MemoryDefaults, MemoryHit, MemoryKind, MemoryQuery, MemoryScope, MemorySource,
-    MemoryStatus, MemoryTrust, NewMemory, WritePolicy,
+    MemoryStatus, MemoryTrust, NewMemory, USER_SOURCE_VAR, UserSource, WritePolicy,
 };
 use graphrt_core::node::ConfigError;
 use graphrt_core::redact::SecretSet;
@@ -259,6 +261,21 @@ fn text_of(ctx: &NodeContext, name: &str) -> Option<String> {
     Some(template.render(&ctx.pool)).filter(|text| !text.trim().is_empty())
 }
 
+/// Where the user of the run comes from: `sys.user_source`, which the host
+/// sets over anything a client sent, else [`UserSource::Api`] (the host or the
+/// holder of the API key named the user).
+///
+/// @throws NodeError - `memory_scope` (fatal) for a word that names no source:
+///   a host that sets it wrongly must not fall back to a shared scope.
+fn user_source(ctx: &NodeContext) -> Result<UserSource, NodeError> {
+    match text_of(ctx, USER_SOURCE_VAR) {
+        None => Ok(UserSource::Api),
+        Some(word) => UserSource::parse(word.trim()).ok_or_else(|| {
+            NodeError::fatal("memory_scope", "long_term_memory: `sys.user_source` must be `user`, `api` or `channel`")
+        }),
+    }
+}
+
 fn random_boundary() -> String {
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
@@ -294,6 +311,10 @@ impl RunMemory {
             })?,
         };
         let user = Some(config.user.render(&ctx.pool)).filter(|user| !user.trim().is_empty());
+        let user = match user {
+            Some(id) => Some(user_source(ctx)?.scoped(&id)),
+            None => None,
+        };
         let scope = MemoryScope { tenant: defaults.tenant, agent, user };
         scope.validate().map_err(|e| NodeError::fatal(e.kind, format!("long_term_memory: {}", e.message)))?;
         let source = MemorySource {

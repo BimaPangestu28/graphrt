@@ -474,6 +474,9 @@ pub struct MemoryCmdArgs {
 }
 
 /// `graphrt memory` subcommands. `AGENT` is `long_term_memory.agent`, by default the workflow name.
+/// `USER` names where the user comes from: `channel/<channel>:<id>` (a messaging
+/// channel), `user/<sub>` (a verified token) or `api/<id>` (an id named with the
+/// API key). An id without one of those is `api/<id>`.
 #[cfg(feature = "memory")]
 #[derive(Debug, Subcommand)]
 pub enum MemoryCommand {

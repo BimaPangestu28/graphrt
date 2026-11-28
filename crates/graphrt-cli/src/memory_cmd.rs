@@ -64,7 +64,12 @@ pub async fn memory(args: MemoryCmdArgs) -> Result<u8, CliError> {
     }
     let store = MemoryStore::open(args.dir.clone().unwrap_or_else(MemoryStore::default_root));
     let scope =
-        |agent: &str, user: Option<String>| MemoryScope { tenant: args.tenant.clone(), agent: agent.to_owned(), user };
+        // `channel/shop:42` and `user/<sub>` as they are, any other id as one the owner names (`api/<id>`).
+        |agent: &str, user: Option<String>| MemoryScope {
+            tenant: args.tenant.clone(),
+            agent: agent.to_owned(),
+            user: user.map(|user| graphrt_core::memory::owner_named_user(&user)),
+        };
     let source = MemorySource { actor: format!("owner:{}", args.actor), ..MemorySource::default() };
     let json = args.json;
     let mut out = std::io::stdout().lock();
@@ -106,7 +111,10 @@ pub async fn memory(args: MemoryCmdArgs) -> Result<u8, CliError> {
         }
         MemoryCommand::ForgetUser { agent, user } => {
             let notes = store.erase_user(&scope(agent, Some(user.clone())), &source).await.map_err(failed)?;
-            let lessons = forget_lessons(args.learning_dir.clone(), agent, user, &source.actor)?;
+            // Lessons know the user by `sys.user_id`, the id without its source.
+            let named = graphrt_core::memory::owner_named_user(user);
+            let lesson_user = graphrt_core::memory::legacy_user(&named).unwrap_or(user);
+            let lessons = forget_lessons(args.learning_dir.clone(), agent, lesson_user, &source.actor)?;
             let said = match lessons {
                 Some(lessons) => format!("erased {notes} note(s) and {lessons} lesson(s) of that user"),
                 None => format!("erased {notes} note(s) of that user (no lesson store found to erase lessons from)"),

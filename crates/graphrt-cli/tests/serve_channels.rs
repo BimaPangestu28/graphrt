@@ -331,7 +331,7 @@ name: echo
 graph:
   nodes:
     - { id: start, type: start }
-    - { id: done, type: answer, answer: "You said: {{#sys.query#}} [{{#sys.user_id#}} {{#sys.conversation_id#}} {{#sys.channel#}}]" }
+    - { id: done, type: answer, answer: "You said: {{#sys.query#}} [{{#sys.user_id#}} {{#sys.conversation_id#}} {{#sys.channel#}}]{{#sys.user_source#}}" }
   edges:
     - { source: start, target: done }
 "#,
@@ -590,7 +590,9 @@ async fn a_telegram_message_is_answered_in_the_customers_own_conversation() {
     let server = start("tg-poll", Setup { channels: TELEGRAM_POLLING.into(), ..Setup::default() }, &base, "").await;
     telegram.push(telegram.text_update(42, 1, "Halo"));
     until("the first answer", || telegram.sent_to("42").len() == 1).await;
-    assert_eq!(telegram.sent_to("42")[0], "You said: Halo [telegram:42 ch-telegram-42 telegram]");
+    // A channel run says where its user comes from, for memory: the customer's id is of this channel.
+    let source = if cfg!(feature = "memory") { "channel" } else { "" };
+    assert_eq!(telegram.sent_to("42")[0], format!("You said: Halo [telegram:42 ch-telegram-42 telegram]{source}"));
     assert!(!telegram.calls_of("sendChatAction").is_empty(), "the customer saw the bot typing");
 
     telegram.push(telegram.text_update(42, 2, "Lagi"));
@@ -946,7 +948,10 @@ async fn a_whatsapp_webhook_is_verified_signed_and_answered_once() {
     until("the answer", || whatsapp.texts_to("6281234567890").len() == 1).await;
     assert_eq!(
         whatsapp.texts_to("6281234567890")[0],
-        "You said: Halo [whatsapp:6281234567890 ch-whatsapp-6281234567890 whatsapp]"
+        format!(
+            "You said: Halo [whatsapp:6281234567890 ch-whatsapp-6281234567890 whatsapp]{}",
+            if cfg!(feature = "memory") { "channel" } else { "" }
+        )
     );
     // The customer's message was marked as read, with the typing sign.
     let read = whatsapp.messages.lock().unwrap().iter().find(|m| m["status"] == "read").cloned().unwrap();

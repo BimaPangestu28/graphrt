@@ -106,8 +106,17 @@ fn store(state: &AppState) -> Result<&MemoryStore, Response> {
     state.memory_store().ok_or_else(|| error_response(StatusCode::NOT_FOUND, "this server has no memory store"))
 }
 
+/// The scope of `user` as a request names it: a scoped id (`channel/shop:42`,
+/// `user/<sub>`, `api/<id>`) as it is, any other id as one the owner names (`api/<id>`).
 fn scope(state: &AppState, agent: &str, user: Option<String>) -> MemoryScope {
+    let user = user.map(|user| graphrt_core::memory::owner_named_user(&user));
     MemoryScope { tenant: state.memory_tenant().map(str::to_owned), agent: agent.to_owned(), user }
+}
+
+/// The id lessons know `user` by: `sys.user_id` of the run, without the source.
+#[cfg(feature = "learning")]
+fn lesson_user(user: &str) -> &str {
+    graphrt_core::memory::legacy_user(user).unwrap_or(user)
 }
 
 fn owner(actor: Option<&str>) -> MemorySource {
@@ -272,7 +281,7 @@ async fn export_user(
         Err(e) => return memory_error(&e),
     };
     #[cfg(feature = "learning")]
-    match user_lessons(&state, &agent, &user) {
+    match user_lessons(&state, &agent, lesson_user(&graphrt_core::memory::owner_named_user(&user))) {
         Ok(Some(lessons)) => {
             if let Some(fields) = export.as_object_mut() {
                 fields.insert("lessons".to_owned(), lessons);
@@ -298,7 +307,11 @@ async fn erase(state: &AppState, agent: &str, user: &str, source: &MemorySource)
     };
     #[cfg(feature = "learning")]
     let lessons = match state.lesson_store() {
-        Some(lessons) => match lessons.forget(agent, &graphrt_learn::Forget::User(user.to_owned()), &source.actor) {
+        Some(lessons) => match lessons.forget(
+            agent,
+            &graphrt_learn::Forget::User(lesson_user(&graphrt_core::memory::owner_named_user(user)).to_owned()),
+            &source.actor,
+        ) {
             Ok(removed) => removed,
             // An agent that never learned anything has no lesson file.
             Err(graphrt_learn::Error::NotFound { .. }) => 0,
@@ -343,7 +356,7 @@ async fn audit(
     }
 }
 
-/// The verified user of a `/v1/me` request for the memory of `agent`. The API
+/// The scoped id of the verified user of a `/v1/me` request for the memory of `agent`. The API
 /// key is not a user here, and only agents the served workflows use are
 /// reachable: a user cannot make the server create directories for any name.
 async fn me(state: &AppState, headers: &HeaderMap, agent: &str) -> Result<String, Response> {
@@ -354,7 +367,8 @@ async fn me(state: &AppState, headers: &HeaderMap, agent: &str) -> Result<String
     if !state.memory_agents().iter().any(|known| known == agent) {
         return Err(error_response(StatusCode::NOT_FOUND, "no served agent of that name keeps memory"));
     }
-    Ok(user)
+    // Their runs remember under the same scoped id (`user/<sub>`).
+    Ok(graphrt_core::memory::UserSource::Verified.scoped(&user))
 }
 
 fn me_source(user: &str) -> MemorySource {
