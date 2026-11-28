@@ -39,7 +39,7 @@ use serde_json::{Value as Json, json};
 
 pub use self::trim::{Keep, Scope, Trimmed, estimate_messages, estimate_tools, trim};
 use self::trim::{cut_middle, text_tokens};
-use crate::nodes::common::{ModelConfig, check_finish, model_for};
+use crate::nodes::common::{ModelConfig, check_finish};
 use crate::registry::ModelRegistry;
 use crate::types::{ChatModel, ContentPart, Message, Role, collect};
 
@@ -950,7 +950,7 @@ impl Session<'_> {
         let (model, config): (&dyn ChatModel, &ModelConfig) = match summarizer {
             Summarizer::NodeModel => (self.model, self.config),
             Summarizer::Other(config) => {
-                other = model_for(self.ctx, config).map_err(failed)?;
+                other = crate::nodes::common::helper_model(self.ctx, config).map_err(failed)?;
                 (other.as_ref(), config)
             }
         };
