@@ -2,7 +2,7 @@
  * `<graphrt-block>`: a custom element that draws one UI block.
  *
  * @example
- * import { defineGraphrtUi } from "graphrt/ui";
+ * import { defineGraphrtUi } from "@graphrt-dev/graphrt/ui";
  * defineGraphrtUi();
  * const element = document.createElement("graphrt-block");
  * element.block = run.outputs.report;

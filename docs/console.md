@@ -98,7 +98,7 @@ for `localhost` and `127.0.0.1` only, for trying it out.
 
 The page loads nothing from other hosts: its `Content-Security-Policy` allows
 scripts, styles and connections of its own origin only, and forbids framing.
-It is `graphrt/console` of the `graphrt` npm package in `web/`, embedded in the binary.
+It is `@graphrt-dev/graphrt/console` of the `@graphrt-dev/graphrt` npm package in `web/`, embedded in the binary.
 
 ## The config
 

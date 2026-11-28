@@ -44,7 +44,7 @@ export interface PushBrowser {
 
 /**
  * A person signed in to the admin console of the server. The session's
- * `fetch` (see `sessionFetch` of `@graphrt/client`) carries the sign in.
+ * `fetch` (see `sessionFetch` of `@graphrt-dev/graphrt/client`) carries the sign in.
  */
 export interface MemberSignIn {
   /** The console role: an `operator` or `owner` answers approvals and stops runs, a `viewer` reads. */

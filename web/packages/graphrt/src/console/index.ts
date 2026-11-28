@@ -1,5 +1,5 @@
 /**
- * `graphrt/console`: the admin console of a self hosted `graphrt serve
+ * `@graphrt-dev/graphrt/console`: the admin console of a self hosted `graphrt serve
  * --console`, as a web component.
  *
  * - `<graphrt-console>` shows the agents and their versions per environment,

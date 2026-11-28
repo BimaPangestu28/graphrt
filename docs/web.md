@@ -149,7 +149,7 @@ its styles do not leak into your page. If your site has a
 (and `img-src data:` for [diagrams](#diagrams-in-the-chat)).
 
 To place the chat inside your layout instead of in a bubble, use the component
-of the npm package [`graphrt`](../web/packages/graphrt) (`graphrt/chat`):
+of the npm package [`@graphrt-dev/graphrt`](../web/packages/graphrt) (`@graphrt-dev/graphrt/chat`):
 `<graphrt-chat server="https://agent.example.com" workflow="support">`.
 
 ### Signed in users
@@ -320,12 +320,12 @@ the execution's first event. Follow a resumed run from there
 
 ## The browser client
 
-`graphrt/client`, part of the npm package [`graphrt`](../web/packages/graphrt),
+`@graphrt-dev/graphrt/client`, part of the npm package [`@graphrt-dev/graphrt`](../web/packages/graphrt),
 is a typed client for browsers. It uses `fetch` only, so it also runs in
 Node.js 18+, Deno, Bun and workers.
 
 ```ts
-import { GraphrtClient } from "graphrt/client";
+import { GraphrtClient } from "@graphrt-dev/graphrt/client";
 
 const client = new GraphrtClient({ baseUrl: "https://agent.example.com", token });
 
@@ -358,11 +358,11 @@ every run. Use guests or user tokens there.
 
 ## Drawing UI blocks
 
-`graphrt/ui` (in [`web/packages/graphrt`](../web/packages/graphrt)) draws
+`@graphrt-dev/graphrt/ui` (in [`web/packages/graphrt`](../web/packages/graphrt)) draws
 [UI blocks](workflow-format.md#ui-blocks) as a web component:
 
 ```ts
-import { collectUiBlocks, defineGraphrtUi } from "graphrt/ui";
+import { collectUiBlocks, defineGraphrtUi } from "@graphrt-dev/graphrt/ui";
 
 defineGraphrtUi();
 for (const block of collectUiBlocks(result.outputs)) {
@@ -389,8 +389,8 @@ for (const block of collectUiBlocks(result.outputs)) {
 - **Light and dark** follow the page (`prefers-color-scheme`), or the `theme`
   attribute. Colours are `--grt-*` custom properties you can set.
 - **Diagrams** are shown as their Mermaid text until the page brings Mermaid
-  itself: `setDiagramRenderer(mermaidRenderer(mermaid))`. `graphrt/ui` never
-  loads Mermaid on its own, and `graphrt/client` carries none of this. Mermaid is then set
+  itself: `setDiagramRenderer(mermaidRenderer(mermaid))`. `@graphrt-dev/graphrt/ui` never
+  loads Mermaid on its own, and `@graphrt-dev/graphrt/client` carries none of this. Mermaid is then set
   to its strict security level without HTML labels, and the picture is shown
   as an image, never inserted as markup. The chat page of `graphrt serve` does
   this with the file of [`--chat-mermaid`](#diagrams-in-the-chat).
@@ -406,21 +406,21 @@ data}`: `data` holds the card's input values by input id, then the action's own
 ## The npm package
 
 ```sh
-npm install graphrt
+npm install @graphrt-dev/graphrt
 ```
 
 | Import | What |
 | --- | --- |
-| `graphrt/client` | The typed client |
-| `graphrt/ui` | The web components that draw UI blocks |
-| `graphrt/chat` | The chat component and the widget |
-| `graphrt/monitor` | The [monitoring](monitoring.md) view |
-| `graphrt/console` | The [admin console](console.md) |
+| `@graphrt-dev/graphrt/client` | The typed client |
+| `@graphrt-dev/graphrt/ui` | The web components that draw UI blocks |
+| `@graphrt-dev/graphrt/chat` | The chat component and the widget |
+| `@graphrt-dev/graphrt/monitor` | The [monitoring](monitoring.md) view |
+| `@graphrt-dev/graphrt/console` | The [admin console](console.md) |
 
 One package, ES modules with type declarations. Each import pulls only its own
 part (and the parts it is built on: the chat uses the client and the UI blocks),
 and nothing runs on import, so a bundler leaves out what a page does not use.
-The version of `graphrt` is the version of the graphrt release it was published
+The version of `@graphrt-dev/graphrt` is the version of the graphrt release it was published
 with.
 
 The sources live in [`web/packages/graphrt`](../web/packages/graphrt) (an npm

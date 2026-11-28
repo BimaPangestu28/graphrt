@@ -1,8 +1,8 @@
-// Builds the `graphrt` npm package (packages/graphrt), checks it as a user
+// Builds the `@graphrt-dev/graphrt` npm package (packages/graphrt), checks it as a user
 // would get it, and publishes it.
 //
 // The package in the workspace is private and has no version: what is published
-// is a copy staged in .pack/node_modules/graphrt, with the version of the
+// is a copy staged in .pack/node_modules/@graphrt-dev/graphrt, with the version of the
 // graphrt release (`[workspace.package] version` of the root Cargo.toml), the
 // LICENSE of the repository and exports without the `source` condition.
 //
@@ -10,13 +10,13 @@
 //   (none)     build, stage and check: the files npm would upload, every entry
 //              point loads in Node.js, a bundler leaves out what is not imported
 //   --build    build dist/ only
-//   --pack     build, stage, check, and write .pack/graphrt-X.Y.Z.tgz
+//   --pack     build, stage, check, and write .pack/graphrt-dev-graphrt-X.Y.Z.tgz
 //   --execute  build, stage, check, and publish unless the version is on npm already
 //   --version  the version to publish. It must be the version in Cargo.toml, so
 //              a release tag and its package always agree. Default: that version.
 //
 // In the release workflow publishing takes no token: release.yml is the trusted
-// publisher of `graphrt` on npmjs.com (OIDC), and npm gives every version a
+// publisher of `@graphrt-dev/graphrt` on npmjs.com (OIDC), and npm gives every version a
 // provenance statement. See web/README.md.
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -28,7 +28,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(root, "..");
 const packageDir = join(root, "packages", "graphrt");
 const packRoot = join(root, ".pack");
-const stageDir = join(packRoot, "node_modules", "graphrt");
+// The name users install. npm refused the unscoped `graphrt` as too close to
+// `graphql`, so the package lives in the scope of the npm organization graphrt-dev.
+const PACKAGE_NAME = "@graphrt-dev/graphrt";
+const stageDir = join(packRoot, "node_modules", ...PACKAGE_NAME.split("/"));
 const PARTS = ["client", "ui", "chat", "monitor", "console"];
 // Scripts of the embedded pages: they run on import, so they must never ship.
 const PAGE_SCRIPTS = ["chat/page", "chat/embed", "monitor/page", "monitor/sw", "console/page"];
@@ -96,6 +99,9 @@ function buildDist() {
 /** The manifest as published: public, versioned, and resolving to `dist` only. */
 function publishedManifest(version) {
   const manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
+  if (manifest.name !== PACKAGE_NAME) {
+    fail(`packages/graphrt/package.json is named ${manifest.name}, not ${PACKAGE_NAME}`);
+  }
   delete manifest.private;
   manifest.version = version;
   manifest.exports = Object.fromEntries(
@@ -107,7 +113,6 @@ function publishedManifest(version) {
       return [path, published];
     }),
   );
-  manifest.publishConfig = { access: "public" };
   return manifest;
 }
 
@@ -144,7 +149,7 @@ function checkFiles() {
 /** Every entry point loads in Node.js the way a user imports it, by package name. */
 function checkNodeImports() {
   for (const part of PARTS) {
-    const specifier = `graphrt/${part}`;
+    const specifier = `${PACKAGE_NAME}/${part}`;
     const script = `const m = await import(${JSON.stringify(specifier)}); if (Object.keys(m).length === 0) process.exit(3);`;
     const loaded = run(process.execPath, ["--input-type=module", "-e", script], packRoot, true);
     if (!loaded.ok) {
@@ -176,19 +181,19 @@ async function bundleFrom(contents) {
  * component, no styles and no Mermaid loader.
  */
 async function checkTreeShaking() {
-  const unused = await bundleFrom(PARTS.map((part) => `import "graphrt/${part}";`).join("\n"));
+  const unused = await bundleFrom(PARTS.map((part) => `import "${PACKAGE_NAME}/${part}";`).join("\n"));
   if (unused.trim().length > 0) {
     fail(`importing the parts without using them still bundles code:\n${unused.slice(0, 400)}`);
   }
   const client = await bundleFrom(
-    'import { GraphrtClient } from "graphrt/client";\nglobalThis.client = GraphrtClient;',
+    `import { GraphrtClient } from "${PACKAGE_NAME}/client";\nglobalThis.client = GraphrtClient;`,
   );
   for (const marker of ["customElements", "mermaid", "graphrt-block", "--grt-"]) {
     if (client.includes(marker)) {
-      fail(`graphrt/client bundles UI code (found \`${marker}\`)`);
+      fail(`${PACKAGE_NAME}/client bundles UI code (found \`${marker}\`)`);
     }
   }
-  console.log(`graphrt/client alone bundles to ${(client.length / 1024).toFixed(1)} KiB minified`);
+  console.log(`${PACKAGE_NAME}/client alone bundles to ${(client.length / 1024).toFixed(1)} KiB minified`);
 }
 
 async function main() {
@@ -205,7 +210,7 @@ async function main() {
   const count = checkFiles();
   checkNodeImports();
   await checkTreeShaking();
-  console.log(`graphrt@${version}: ${count} files, staged in ${stageDir}`);
+  console.log(`${PACKAGE_NAME}@${version}: ${count} files, staged in ${stageDir}`);
   if (options.mode === "--pack") {
     const packed = run("npm", ["pack", "--json", "--pack-destination", packRoot], stageDir, true);
     if (!packed.ok) {
@@ -217,7 +222,7 @@ async function main() {
   if (options.mode !== "--execute") {
     return;
   }
-  const spec = `graphrt@${version}`;
+  const spec = `${PACKAGE_NAME}@${version}`;
   // A version on npm is final: running a release again leaves it alone.
   const published = run("npm", ["view", spec, "version", "--json"], stageDir, true);
   if (published.ok && published.stdout.includes(version)) {
@@ -229,7 +234,7 @@ async function main() {
   }
   const publish = ["publish", "--access", "public"];
   if (version.includes("-")) {
-    // A prerelease never becomes what `npm install graphrt` gets.
+    // A prerelease never becomes what `npm install @graphrt-dev/graphrt` gets.
     publish.push("--tag", "next");
   }
   if (process.env.GITHUB_ACTIONS === "true") {

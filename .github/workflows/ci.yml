@@ -284,7 +284,7 @@ jobs:
       - run: examples/supabase-chatbot/tests/run.sh target/debug/graphrt
 
   web:
-    name: npm package graphrt (client, UI blocks, chat, monitor) against graphrt serve
+    name: npm package @graphrt-dev/graphrt (client, UI blocks, chat, monitor, console) against graphrt serve
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04

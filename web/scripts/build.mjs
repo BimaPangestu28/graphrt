@@ -1,5 +1,5 @@
 // Builds what `graphrt serve` serves itself, bundled from the sources of the
-// `graphrt` package
+// `@graphrt-dev/graphrt` package
 // (packages/graphrt/src) into the assets of the crates, where the Rust build
 // embeds them:
 //

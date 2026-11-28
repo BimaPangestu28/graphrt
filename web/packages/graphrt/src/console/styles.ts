@@ -1,4 +1,4 @@
-/** Styles of the console: the monitoring view's, with tables and forms. Colours are the tokens of `graphrt/ui`. */
+/** Styles of the console: the monitoring view's, with tables and forms. Colours are the tokens of `@graphrt-dev/graphrt/ui`. */
 import { TOKENS_CSS } from "../ui/index.ts";
 
 export const CONSOLE_CSS = `
