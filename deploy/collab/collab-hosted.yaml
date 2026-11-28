@@ -1,6 +1,6 @@
 # Graphrt's hosted service at https://collab.graphrt.com: many teams, open
-# sign up with Google or Microsoft, the free plan's quotas (docs/collab.md,
-# "Hosted service"). Client ids and secrets come from the environment: a
+# sign up with Google, the free plan's quotas (docs/collab.md, "Hosted
+# service"). The client id and secret come from the environment: the
 # provider is off while its client id variable is empty.
 mode: hosted
 public_url: https://collab.graphrt.com
@@ -15,14 +15,7 @@ auth:
       client_id_env: GRAPHRT_COLLAB_GOOGLE_CLIENT_ID
       client_secret_env: GRAPHRT_COLLAB_GOOGLE_CLIENT_SECRET
       auth_params: { prompt: select_account }
-    - id: microsoft
-      name: Microsoft
-      issuer: https://login.microsoftonline.com/common/v2.0
-      client_id_env: GRAPHRT_COLLAB_MICROSOFT_CLIENT_ID
-      client_secret_env: GRAPHRT_COLLAB_MICROSOFT_CLIENT_SECRET
-      auth_params: { prompt: select_account }
-      email_verified_claim: xms_edov
-  # People without Google or Microsoft join with an invite link of a team.
+  # People without Google join with an invite link of a team.
   invite_accounts: true
   access_token_minutes: 10
   refresh_token_days: 30

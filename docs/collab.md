@@ -127,7 +127,8 @@ back to Desktop on a loopback address (`http://127.0.0.1:<port>/callback`, as
 native apps do). Desktop never sees the password.
 
 **With several providers.** `auth.providers` lists them, and Desktop shows
-one button each ("Sign in with Google", "Sign in with Microsoft"). All of
+one button each (e.g. "Sign in with Google" and one for the company's own
+provider). All of
 them use the same redirect URI. An account is the provider's issuer plus the
 person's subject, so the same person at two providers has two accounts.
 
@@ -140,12 +141,11 @@ auth:
       client_id_env: GRAPHRT_COLLAB_GOOGLE_CLIENT_ID
       client_secret_env: GRAPHRT_COLLAB_GOOGLE_CLIENT_SECRET
       auth_params: { prompt: select_account }
-    - id: microsoft
-      name: Microsoft
-      issuer: https://login.microsoftonline.com/common/v2.0   # work, school and personal accounts
-      client_id_env: GRAPHRT_COLLAB_MICROSOFT_CLIENT_ID
-      client_secret_env: GRAPHRT_COLLAB_MICROSOFT_CLIENT_SECRET
-      email_verified_claim: xms_edov    # only emails Microsoft vouches for
+    - id: acme                          # the company's own provider (Keycloak, Okta, Entra ID, ...)
+      name: Acme
+      issuer: https://sso.acme.example/realms/staff
+      client_id_env: GRAPHRT_COLLAB_ACME_CLIENT_ID
+      client_secret_env: GRAPHRT_COLLAB_ACME_CLIENT_SECRET
 ```
 
 Each entry also takes `client_id` (instead of `client_id_env`), `scopes`
@@ -155,13 +155,12 @@ server can go live before every provider is registered. `GET /v1/info` lists
 the providers that are on, and `GET /v1/auth/login?provider=<id>` picks one
 (the first without it).
 
-Microsoft's `common`, `organizations` and `consumers` issuers are multi
-tenant: the server checks each ID token against the issuer of the tenant it
-names (`tid`). Entra ID does not say whether an email is verified, and a
-tenant admin can set any email on an account, so `email_verified_claim:
-xms_edov` keeps an email only when Microsoft says the domain owner verified
-it (add the optional claims `email` and `xms_edov` to the ID token in the app
-registration). Without a verified email the person still signs in, but
+An issuer is one address: each ID token must name exactly the issuer of the
+discovery document (for Entra ID, the issuer of the company's tenant,
+`https://login.microsoftonline.com/<tenant>/v2.0`). An email is used unless
+the token says `email_verified: false`. For a provider that does not say
+`email_verified`, `email_verified_claim: <claim>` keeps an email only when
+that claim is `true`. Without a verified email the person still signs in, but
 invites sent to an email address and `allowed_domains` do not match them.
 
 **With invite codes only.** Without a provider (or with `invite_accounts: true`),
@@ -239,9 +238,8 @@ system's trust store).
 ### Hosted service
 
 `deploy/collab/collab-hosted.yaml` is the config of Graphrt's hosted server
-at `https://collab.graphrt.com`: `mode: hosted`, open sign up with Google or
-Microsoft, invite codes for people without either, and the free plan's
-quotas:
+at `https://collab.graphrt.com`: `mode: hosted`, open sign up with Google,
+invite codes for people without it, and the free plan's quotas:
 
 | Limit | Free plan | Self hosted default |
 | --- | --- | --- |

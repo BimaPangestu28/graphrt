@@ -1,22 +1,21 @@
 #!/usr/bin/env bash
-# Set the client id and secret of a sign in provider on the hosted server and
+# Set the client id and secret of the Google sign in on the hosted server and
 # restart it. The values are read from the terminal (the secret is not echoed),
 # go to the server on stdin, and never appear in a file, a log or a command line.
 #
-# Usage: DEPLOY_HOST=root@<server-ip> deploy/collab/hosted/set-provider.sh google|microsoft
+# Usage: DEPLOY_HOST=root@<server-ip> deploy/collab/hosted/set-provider.sh google
 set -euo pipefail
 
 : "${DEPLOY_HOST:?Set DEPLOY_HOST, e.g. root@203.0.113.10}"
-provider="${1:?google or microsoft}"
+provider="${1:?google}"
 case "$provider" in
   google) prefix=GRAPHRT_COLLAB_GOOGLE ;;
-  microsoft) prefix=GRAPHRT_COLLAB_MICROSOFT ;;
-  *) echo "unknown provider $provider (google or microsoft)" >&2; exit 2 ;;
+  *) echo "unknown provider $provider (google)" >&2; exit 2 ;;
 esac
 read -r -p "$provider client id: " client_id
 read -r -s -p "$provider client secret: " client_secret
 echo
-# Client ids and secrets of Google and Microsoft use these characters only.
+# Google client ids and secrets use these characters only.
 for value in "$client_id" "$client_secret"; do
   [[ "$value" =~ ^[A-Za-z0-9._~-]+$ ]] || { echo "a value is empty or has unexpected characters" >&2; exit 2; }
 done

@@ -457,7 +457,7 @@ async fn callback(State(server): State<Arc<Server>>, Query(query): Query<Callbac
     if let Some(claim) = &signer.email_verified_claim
         && !claim_is_true(claims.get(claim))
     {
-        // The provider does not vouch for this email (e.g. an Entra tenant that set it freely).
+        // The provider does not vouch for this email (e.g. an admin set it freely).
         identity.email = None;
     }
     // Self hosted: the console's role rules say who may sign in at all.

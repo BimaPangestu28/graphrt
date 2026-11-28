@@ -136,8 +136,7 @@ impl Provider {
         let metadata: ProviderMetadata = serde_json::from_slice(&body)
             .map_err(|error| ConsoleError::SignIn(format!("the discovery document cannot be read: {error}")))?;
         // OpenID Connect Discovery 1.0, section 4.3: the issuer must be the one asked about.
-        // A multi tenant issuer (Microsoft's `common`) names a template instead, see [`TENANT_SLOT`].
-        if !issuer_matches(&metadata.issuer, &self.config.issuer) {
+        if metadata.issuer.trim_end_matches('/') != self.config.issuer.trim_end_matches('/') {
             return Err(ConsoleError::SignIn(format!(
                 "the provider names its issuer `{}`, not `{}`",
                 metadata.issuer, self.config.issuer
@@ -230,8 +229,7 @@ impl Provider {
             .verify(&id_token)
             .await
             .map_err(|why| ConsoleError::SignIn(format!("the ID token is not valid: {why}")))?;
-        let issuer = token_issuer(&connected.metadata.issuer, &claims)?;
-        check_claims(&claims, &issuer, &self.config.client_id, nonce, now_ms() / 1000)?;
+        check_claims(&claims, &connected.metadata.issuer, &self.config.client_id, nonce, now_ms() / 1000)?;
         Ok(claims)
     }
 
@@ -240,45 +238,6 @@ impl Provider {
         let connected = self.connected.lock().await.clone()?;
         connected.metadata.end_session_endpoint.clone()
     }
-}
-
-/// The tenant placeholder in the issuer of a multi tenant provider. Microsoft's
-/// `https://login.microsoftonline.com/common/v2.0` (also `organizations` and
-/// `consumers`) describes its issuer as `https://login.microsoftonline.com/{tenantid}/v2.0`,
-/// and each ID token names the tenant of the person in `tid`.
-const TENANT_SLOT: &str = "{tenantid}";
-
-/// Whether the discovery document's `found` issuer is the `configured` one: the
-/// same address, or a multi tenant template whose tenant segment the configured
-/// address fills (`common`, `organizations`, `consumers` or a tenant id).
-fn issuer_matches(found: &str, configured: &str) -> bool {
-    let found = found.trim_end_matches('/');
-    let configured = configured.trim_end_matches('/');
-    match found.split_once(TENANT_SLOT) {
-        None => found == configured,
-        Some((before, after)) => {
-            configured.strip_prefix(before).and_then(|rest| rest.strip_suffix(after)).is_some_and(is_tenant_segment)
-        }
-    }
-}
-
-fn is_tenant_segment(text: &str) -> bool {
-    !text.is_empty() && text.len() <= 64 && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
-}
-
-/// The issuer an ID token must name: the discovery document's, with the tenant of
-/// the token (`tid`) in place of the template's [`TENANT_SLOT`].
-///
-/// @throws ConsoleError::SignIn - When a multi tenant token names no usable tenant.
-fn token_issuer(issuer: &str, claims: &Claims) -> Result<String> {
-    if !issuer.contains(TENANT_SLOT) {
-        return Ok(issuer.to_owned());
-    }
-    let tenant = claims.get("tid").and_then(serde_json::Value::as_str).unwrap_or_default();
-    if !is_tenant_segment(tenant) {
-        return Err(ConsoleError::SignIn("the ID token names no tenant (tid)".into()));
-    }
-    Ok(issuer.replace(TENANT_SLOT, tenant))
 }
 
 /// `application/x-www-form-urlencoded` of one value (client credentials in Basic auth).
@@ -378,36 +337,6 @@ mod tests {
         assert!(check_claims(&claims(token.clone()), "https://idp.example", "graphrt", "n1", NOW).is_err());
         token["azp"] = json!("graphrt");
         assert!(check_claims(&claims(token), "https://idp.example", "graphrt", "n1", NOW).is_ok());
-    }
-
-    #[test]
-    fn a_multi_tenant_issuer_matches_its_template() {
-        let template = "https://login.microsoftonline.com/{tenantid}/v2.0";
-        assert!(issuer_matches(template, "https://login.microsoftonline.com/common/v2.0"));
-        assert!(issuer_matches(template, "https://login.microsoftonline.com/organizations/v2.0/"));
-        assert!(!issuer_matches(template, "https://login.microsoftonline.com/v2.0"));
-        assert!(!issuer_matches(template, "https://evil.example/common/v2.0"));
-        assert!(!issuer_matches(template, "https://login.microsoftonline.com/a/b/v2.0"));
-        assert!(issuer_matches("https://idp.example/", "https://idp.example"));
-        assert!(!issuer_matches("https://idp.example", "https://other.example"));
-    }
-
-    #[test]
-    fn a_multi_tenant_token_is_checked_against_its_tenant() {
-        let template = "https://login.microsoftonline.com/{tenantid}/v2.0";
-        let tenant = "9188040d-6c67-4c5b-b112-36a304b66dad";
-        let mut token = good();
-        token["iss"] = json!(format!("https://login.microsoftonline.com/{tenant}/v2.0"));
-        token["tid"] = json!(tenant);
-        let issuer = token_issuer(template, &claims(token.clone())).unwrap();
-        assert!(check_claims(&claims(token.clone()), &issuer, "graphrt", "n1", NOW).is_ok());
-        // A token of one tenant that names another tenant as its issuer is refused.
-        token["tid"] = json!("00000000-0000-0000-0000-000000000000");
-        let issuer = token_issuer(template, &claims(token.clone())).unwrap();
-        assert!(check_claims(&claims(token.clone()), &issuer, "graphrt", "n1", NOW).is_err());
-        token.as_object_mut().unwrap().remove("tid");
-        assert!(token_issuer(template, &claims(token)).is_err());
-        assert_eq!(token_issuer("https://idp.example", &claims(good())).unwrap(), "https://idp.example");
     }
 
     #[test]

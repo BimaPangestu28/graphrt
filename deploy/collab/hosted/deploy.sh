@@ -39,7 +39,6 @@ if ! kubectl -n graphrt-collab get secret collab-keys >/dev/null 2>&1; then
   secrets="$(openssl rand -hex 32)"
   printf '%s\n' "GRAPHRT_COLLAB_SIGNING_KEY=$signing" "GRAPHRT_COLLAB_SECRETS_KEY=$secrets" \
     GRAPHRT_COLLAB_GOOGLE_CLIENT_ID= GRAPHRT_COLLAB_GOOGLE_CLIENT_SECRET= \
-    GRAPHRT_COLLAB_MICROSOFT_CLIENT_ID= GRAPHRT_COLLAB_MICROSOFT_CLIENT_SECRET= \
     | kubectl -n graphrt-collab create secret generic collab-keys --from-env-file=/dev/stdin >/dev/null
   unset signing secrets
   echo "created the collab-keys secret"

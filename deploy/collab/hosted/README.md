@@ -9,7 +9,7 @@
 | --- | --- |
 | `Deployment/collab` | one replica (`Recreate`: one process owns `data_dir`), nonroot, read only root filesystem, 256 MiB memory limit |
 | `PersistentVolumeClaim/collab-data` | `data_dir` (`/data`), 5 GiB |
-| `Secret/collab-keys` | the signing and secrets keys (made on the server), the Google and Microsoft client ids and secrets |
+| `Secret/collab-keys` | the signing and secrets keys (made on the server), the Google client id and secret |
 | `ConfigMap/collab-config` | `collab.yaml` |
 | `Ingress/collab` | TLS from cert-manager, one hour WebSocket timeouts |
 | `CronJob/collab-backup` | `data_dir` every day at 02:30 UTC to `/var/backups/graphrt-collab` on the host, kept 14 days |
@@ -27,17 +27,16 @@ The first deploy makes `Secret/collab-keys` with new keys and empty provider
 values. Later deploys keep it. The server starts with invite codes only and
 says which provider is off.
 
-## Turn on Google or Microsoft
+## Turn on Google
 
-Register the apps (redirect URI `https://collab.graphrt.com/v1/auth/callback`,
+Register the app (redirect URI `https://collab.graphrt.com/v1/auth/callback`,
 see [docs/collab.md](../../../docs/collab.md#sign-in)), then:
 
 ```sh
 DEPLOY_HOST=root@<server> deploy/collab/hosted/set-provider.sh google
-DEPLOY_HOST=root@<server> deploy/collab/hosted/set-provider.sh microsoft
 ```
 
-Each asks for the client id and secret, patches the Secret and restarts the
+It asks for the client id and secret, patches the Secret and restarts the
 server. `curl https://collab.graphrt.com/v1/info` then lists the provider.
 
 ## Backups and restore
