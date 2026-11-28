@@ -1525,13 +1525,24 @@ fn bound_tool<'a>(tools: &'a [BoundTool], call: &ToolCall) -> Option<&'a BoundTo
 }
 
 /// A turn without tool calls whose text holds calls written out as JSON (a small model's
-/// `{"name": "resize", "parameters": {...}}`) gets those calls, when they name offered tools.
+/// `{"name": "resize", "parameters": {...}}`) gets those calls, when they name offered tools;
+/// one that holds a call written as a command (`resize --max-width 400 uploads/a.png`) gets
+/// that call, when the command's name and every argument are the tool's own.
 /// Text not yet streamed loses the written calls; text already shown stays as it was.
 fn read_calls_written_as_text(turn: &mut Turn, state: &AgentState, tools: &[BoundTool]) {
     let offered: Vec<&str> =
         tools.iter().filter(|tool| tool.offered(state)).map(|tool| tool.exposed.as_str()).collect();
     let prefix = format!("text_call_{}_", state.iteration);
-    let Some((calls, rest)) = tool_call_repair::calls_written_as_text(&turn.response.text, &offered, &prefix) else {
+    let written = tool_call_repair::calls_written_as_text(&turn.response.text, &offered, &prefix).or_else(|| {
+        let schemas: Vec<(&str, &Json)> = tools
+            .iter()
+            .filter(|tool| tool.offered(state))
+            .map(|tool| (tool.exposed.as_str(), &tool.spec.parameters))
+            .collect();
+        tool_call_repair::command_written_as_text(&turn.response.text, &schemas, &prefix)
+            .map(|(call, rest)| (vec![call], rest))
+    });
+    let Some((calls, rest)) = written else {
         return;
     };
     if turn.streamed == 0 {
@@ -2072,6 +2083,20 @@ mod tests {
         let second = &model.requests()[1].messages;
         let assistant = second.iter().find(|message| !message.tool_calls.is_empty()).unwrap();
         assert_eq!(assistant.tool_calls[0].name, "image_resize");
+        assert!(out.outputs["text"].as_str().unwrap().ends_with("Resized to 400 px."));
+    }
+
+    #[tokio::test]
+    async fn a_call_written_as_a_command_is_made() {
+        let written = "I use this command: `resize --max-width 400 a.png`";
+        let model = Arc::new(MockModel::new(vec![MockModel::text(written), MockModel::text("Resized to 400 px.")]));
+        let tools = Arc::new(ImageTools::default());
+
+        let out = completed(image_agent().run(image_ctx(&model, &tools)).await);
+
+        // The written "400" is put into the integer the schema asks for.
+        assert_eq!(*tools.arguments.lock().unwrap(), [json!({"path": "a.png", "max_width": 400})]);
+        assert_eq!(out.outputs["iterations"], Value::Int(2));
         assert!(out.outputs["text"].as_str().unwrap().ends_with("Resized to 400 px."));
     }
 
