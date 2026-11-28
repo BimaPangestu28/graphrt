@@ -234,6 +234,17 @@ pub struct AgentConfig {
     /// raw JSON, like `learning`.
     #[serde(default)]
     pub long_term_memory: Option<Json>,
+    /// Workflows the model may start as child runs: `[{workflow, description,
+    /// handoff?}]` (see `crate::subagents`). Needs the cargo feature
+    /// `subagents` and a host that links the workflows. Raw JSON, like `learning`.
+    #[serde(default)]
+    pub subagents: Option<Json>,
+    /// Child runs at the same time (default 4).
+    #[serde(default)]
+    pub max_parallel_subagents: Option<usize>,
+    /// Child runs in one run of this node (default 16).
+    #[serde(default)]
+    pub max_subagent_calls: Option<usize>,
 }
 
 /// `learning` of the `agent` node: whose lessons a run reads.
@@ -489,6 +500,10 @@ struct AgentState {
     #[cfg(feature = "memory")]
     #[serde(skip)]
     memory: crate::memory::RunMemory,
+    /// Child runs of `subagents`: how many were started, those that wait.
+    #[cfg(feature = "subagents")]
+    #[serde(default, skip_serializing_if = "crate::subagents::ChildState::is_empty")]
+    children: crate::subagents::ChildState,
 }
 
 /// Why the loop ended.
@@ -502,6 +517,9 @@ enum StopReason {
     Length,
     /// The provider ended the turn with a reason graphrt does not recognize.
     Unrecognized(String),
+    /// A `subagents` entry with `handoff: true` answered for this agent.
+    #[cfg(feature = "subagents")]
+    Handoff,
 }
 
 impl StopReason {
@@ -511,6 +529,8 @@ impl StopReason {
             StopReason::MaxIterations => "max_iterations".into(),
             StopReason::Length => "length".into(),
             StopReason::Unrecognized(reason) => format!("finish:{reason}"),
+            #[cfg(feature = "subagents")]
+            StopReason::Handoff => "handoff".into(),
         }
     }
 }
@@ -531,6 +551,9 @@ pub struct AgentNode {
     /// Parsed `long_term_memory`.
     #[cfg(feature = "memory")]
     memory: Option<crate::memory::LongTermMemory>,
+    /// Parsed `subagents`.
+    #[cfg(feature = "subagents")]
+    subagents: Option<crate::subagents::Subagents>,
 }
 
 /// Whether `context_window` asks for the guard, which this build does not have.
@@ -632,6 +655,24 @@ impl AgentNode {
                 "an agent with `long_term_memory` cannot also list tools of a provider named `memory`",
             ));
         }
+        #[cfg(not(feature = "subagents"))]
+        if config.subagents.as_ref().and_then(Json::as_array).is_some_and(|list| !list.is_empty()) {
+            return Err(ConfigError::new(doc, "`subagents` needs a build with subagents (cargo feature `subagents`)"));
+        }
+        #[cfg(feature = "subagents")]
+        let subagents = crate::subagents::parse(
+            doc,
+            config.subagents.as_ref(),
+            config.max_parallel_subagents,
+            config.max_subagent_calls,
+        )?;
+        #[cfg(feature = "subagents")]
+        if subagents.is_some() && refs.iter().any(|(provider, _)| provider == crate::subagents::SUBAGENT_PROVIDER) {
+            return Err(ConfigError::new(
+                doc,
+                "an agent with `subagents` cannot also list tools of a provider named `subagents`",
+            ));
+        }
         Ok(Self {
             config,
             refs,
@@ -642,6 +683,8 @@ impl AgentNode {
             context,
             #[cfg(feature = "memory")]
             memory,
+            #[cfg(feature = "subagents")]
+            subagents,
         })
     }
 
@@ -653,7 +696,11 @@ impl AgentNode {
         let with_memory = self.memory.is_some();
         #[cfg(not(feature = "memory"))]
         let with_memory = false;
-        if self.refs.is_empty() && self.config.skills.is_empty() && !with_memory {
+        #[cfg(feature = "subagents")]
+        let with_children = self.subagents.is_some();
+        #[cfg(not(feature = "subagents"))]
+        let with_children = false;
+        if self.refs.is_empty() && self.config.skills.is_empty() && !with_memory && !with_children {
             return Ok(BoundTools::default());
         }
         let mut binder = Binder::default();
@@ -681,6 +728,12 @@ impl AgentNode {
             }
             None => crate::memory::RunMemory::default(),
         };
+        #[cfg(feature = "subagents")]
+        if let Some(config) = &self.subagents {
+            let specs = crate::subagents::specs(ctx, config)?;
+            let runtime: Arc<dyn ToolRuntime> = Arc::new(crate::subagents::NotDirectly);
+            binder.bind_specs(crate::subagents::SUBAGENT_PROVIDER, "*", &specs, &runtime, Origin::Agent)?;
+        }
         let mut bound = binder.bound;
         self.attach_tool_context(ctx, &mut bound)?;
         #[cfg(feature = "memory")]
@@ -729,6 +782,17 @@ impl AgentNode {
         binder.bind_specs(SKILL_PROVIDER, "*", &specs, &attached.runtime, Origin::SkillTool)?;
         let registry = ctx.service::<ToolRegistry>();
         for grant in &attached.grants {
+            // The name the agent's own workflows are bound under is never granted.
+            #[cfg(feature = "subagents")]
+            if grant.provider == crate::subagents::SUBAGENT_PROVIDER {
+                ctx.progress(
+                    "skill_tool_unavailable",
+                    Value::from_json(
+                        json!({"skill": grant.skill, "tool": format!("{}/{}", grant.provider, grant.tool)}),
+                    ),
+                );
+                continue;
+            }
             let bound = match registry.and_then(|r| r.get(&grant.provider)) {
                 Some(runtime) => {
                     binder.bind_registered(&grant.provider, &grant.tool, runtime, Origin::Grant(grant)).await.is_ok()
@@ -882,10 +946,34 @@ impl AgentNode {
                     state.memory = bound.memory.clone();
                     state.memory.read_all(&state.messages);
                 }
+                // Children that waited go on first, each where it stopped.
+                #[cfg(feature = "subagents")]
+                if let Some(config) = &self.subagents
+                    && !state.children.paused.is_empty()
+                {
+                    let mut children = std::mem::take(&mut state.children);
+                    let done = config.resume(&ctx, &mut children).await;
+                    if let Some(error) = children.stopped.take() {
+                        return Err(error);
+                    }
+                    state.children = children;
+                    self.record_children(&ctx, &mut state, &tools, done);
+                }
                 let undecided = self.apply_decisions(&ctx, &mut state, &tools, resume.input.as_ref()).await;
+                #[cfg(feature = "subagents")]
+                if let Some(error) = state.children.stopped.take() {
+                    return Err(error);
+                }
                 if !undecided.is_empty() {
                     state.pending = undecided;
+                }
+                if Self::must_pause(&state) {
                     return self.pause(&state, &tools);
+                }
+                // A handoff child that finished on resume answers now: no model turn first.
+                #[cfg(feature = "subagents")]
+                if let Some(text) = state.children.handoff.take() {
+                    return Ok(finished(&ctx, state, text, &StopReason::Handoff));
                 }
                 state
             }
@@ -927,21 +1015,20 @@ impl AgentNode {
                 break self.answer_turn(&ctx, &mut state, turn, offer);
             }
             self.tool_turn(&ctx, &mut state, &tools, turn).await;
-            if !state.pending.is_empty() {
+            #[cfg(feature = "subagents")]
+            if let Some(error) = state.children.stopped.take() {
+                return Err(error);
+            }
+            if Self::must_pause(&state) {
                 return self.pause(&state, &tools);
             }
-        };
-        #[cfg(feature = "memory")]
-        let digest = turn_digest(&state.log, ctx.secret_values().as_deref());
-        let outcome = agent_outputs(state, final_text, &stop);
-        #[cfg(feature = "memory")]
-        let outcome = match (outcome, digest) {
-            (NodeOutcome::Completed(output), Some(digest)) => {
-                NodeOutcome::Completed(output.with("turn_digest", digest))
+            // A handoff: the child answered for this agent.
+            #[cfg(feature = "subagents")]
+            if let Some(text) = state.children.handoff.take() {
+                break (text, StopReason::Handoff);
             }
-            (outcome, _) => outcome,
         };
-        Ok(outcome)
+        Ok(finished(&ctx, state, final_text, &stop))
     }
 
     /// Ask the model for the next turn (streaming per `stream_tool_turns`) and
@@ -1124,11 +1211,30 @@ impl AgentNode {
             .collect();
         let saved = serde_json::to_value(state)
             .map_err(|e| NodeError::fatal("agent_state", format!("cannot save agent state: {e}")))?;
-        Ok(NodeOutcome::Paused(PauseRequest {
-            kind: "tool_approval".to_owned(),
-            data: Value::from_json(json!({"calls": calls})),
-            state: saved,
-        }))
+        #[allow(unused_mut)]
+        let mut data = json!({"calls": calls});
+        // Only children wait: the nodes inside them reported why, this node passes it on.
+        #[allow(unused_mut)]
+        let mut kind = "tool_approval".to_owned();
+        #[cfg(feature = "subagents")]
+        if !state.children.paused.is_empty() {
+            if state.pending.is_empty() {
+                kind = graphrt_core::node::CHILD_PAUSE.to_owned();
+            }
+            if let Some(fields) = data.as_object_mut() {
+                fields.insert("children".to_owned(), json!(state.children.reasons()));
+            }
+        }
+        Ok(NodeOutcome::Paused(PauseRequest { kind, data: Value::from_json(data), state: saved }))
+    }
+
+    /// Whether the loop must pause: calls wait for approval, or children wait.
+    fn must_pause(state: &AgentState) -> bool {
+        #[cfg(feature = "subagents")]
+        if !state.children.paused.is_empty() {
+            return true;
+        }
+        !state.pending.is_empty()
     }
 
     fn deny(
@@ -1203,7 +1309,24 @@ impl AgentNode {
                 Value::from_json(json!({"id": call.id, "name": call.name, "arguments": log_arguments(call, tools)})),
             );
         }
+        #[cfg(feature = "subagents")]
+        let (calls, outputs) = self.call_with_children(ctx, state, tools, calls).await;
+        #[cfg(not(feature = "subagents"))]
         let outputs = self.call_tools(tools, &calls).await;
+        self.record_outputs(ctx, state, tools, &calls, outputs);
+        #[cfg(feature = "memory")]
+        state.memory.flush_events(ctx);
+    }
+
+    /// Show the results of `calls` to the host and add them to the conversation.
+    fn record_outputs(
+        &self,
+        ctx: &NodeContext,
+        state: &mut AgentState,
+        tools: &[BoundTool],
+        calls: &[ToolCall],
+        outputs: Vec<ToolOutput>,
+    ) {
         let capture = ctx.captures_content();
         for (call, output) in calls.iter().zip(outputs) {
             // The tool's own image count, including images the result drops.
@@ -1217,8 +1340,63 @@ impl AgentNode {
             ctx.progress("tool_result", Value::from_json(data));
             push_result(state, tools, call, result);
         }
-        #[cfg(feature = "memory")]
-        state.memory.flush_events(ctx);
+    }
+
+    /// Run `calls`: those to listed workflows as child runs, the rest as tools.
+    /// Returns the calls that have a result, with their results: a child that
+    /// paused has none yet.
+    #[cfg(feature = "subagents")]
+    async fn call_with_children(
+        &self,
+        ctx: &NodeContext,
+        state: &mut AgentState,
+        tools: &[BoundTool],
+        calls: Vec<ToolCall>,
+    ) -> (Vec<ToolCall>, Vec<ToolOutput>) {
+        let Some(config) = &self.subagents else {
+            let outputs = self.call_tools(tools, &calls).await;
+            return (calls, outputs);
+        };
+        let (children, plain): (Vec<ToolCall>, Vec<ToolCall>) = calls.into_iter().partition(|call| {
+            bound_tool(tools, call).is_some_and(|b| b.provider == crate::subagents::SUBAGENT_PROVIDER)
+        });
+        let mut outputs = self.call_tools(tools, &plain).await;
+        let mut done_calls = plain;
+        let with_workflow: Vec<(ToolCall, String)> = children
+            .into_iter()
+            .map(|call| {
+                let workflow = bound_tool(tools, &call).map(|b| b.name.clone()).unwrap_or_default();
+                (call, workflow)
+            })
+            .collect();
+        let mut child_state = std::mem::take(&mut state.children);
+        for done in config.run(ctx, &mut child_state, with_workflow).await {
+            if let crate::subagents::Done::Result(call, output) = done {
+                done_calls.push(call);
+                outputs.push(output);
+            }
+        }
+        state.children = child_state;
+        (done_calls, outputs)
+    }
+
+    /// Add the results of children that finished on resume.
+    #[cfg(feature = "subagents")]
+    fn record_children(
+        &self,
+        ctx: &NodeContext,
+        state: &mut AgentState,
+        tools: &[BoundTool],
+        done: Vec<crate::subagents::Done>,
+    ) {
+        let (calls, outputs): (Vec<ToolCall>, Vec<ToolOutput>) = done
+            .into_iter()
+            .filter_map(|d| match d {
+                crate::subagents::Done::Result(call, output) => Some((call, output)),
+                crate::subagents::Done::Paused => None,
+            })
+            .unzip();
+        self.record_outputs(ctx, state, tools, &calls, outputs);
     }
 
     /// Run `calls` concurrently or one after another, per `parallel_tool_calls`.
@@ -1446,6 +1624,22 @@ fn shown_text(entry: &ToolLogEntry, messages: &[Message]) -> String {
     }
     let _ = messages;
     entry.result.clone()
+}
+
+/// The outcome of a finished loop: its outputs, and the digest of its tool
+/// activity for the conversation's memory (feature `memory`).
+fn finished(ctx: &NodeContext, state: AgentState, text: String, stop: &StopReason) -> NodeOutcome {
+    #[cfg(feature = "memory")]
+    let digest = turn_digest(&state.log, ctx.secret_values().as_deref());
+    #[cfg(not(feature = "memory"))]
+    let _ = ctx;
+    let outcome = agent_outputs(state, text, stop);
+    #[cfg(feature = "memory")]
+    let outcome = match (outcome, digest) {
+        (NodeOutcome::Completed(output), Some(digest)) => NodeOutcome::Completed(output.with("turn_digest", digest)),
+        (outcome, _) => outcome,
+    };
+    outcome
 }
 
 /// The node outputs of a finished loop.

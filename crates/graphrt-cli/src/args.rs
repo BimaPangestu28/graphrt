@@ -949,6 +949,11 @@ pub struct ServiceArgs {
 pub struct RunArgs {
     /// Workflow document (.yaml, .yml or .json) or bundle (.grt).
     pub workflow: PathBuf,
+    /// Workflows the run's agents may start as `subagents` (a file or a
+    /// directory, as `graphrt serve` takes them), by their file name.
+    #[cfg(feature = "subagents")]
+    #[arg(long, value_name = "PATH")]
+    pub workflows: Option<PathBuf>,
     /// Start input as `key=value` (string) or `key:=json`. Repeatable.
     #[arg(short, long = "input", value_name = "KEY=VALUE")]
     pub inputs: Vec<String>,

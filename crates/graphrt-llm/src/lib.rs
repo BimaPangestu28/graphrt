@@ -49,6 +49,9 @@ pub mod registry;
 #[cfg(feature = "replay")]
 pub mod replay;
 pub mod sse;
+/// `subagents` of the `agent` node: workflows run as child runs (feature `subagents`).
+#[cfg(feature = "subagents")]
+pub(crate) mod subagents;
 /// Plain completions for work outside a run (feature `text-model`).
 #[cfg(feature = "text-model")]
 pub mod text_model;

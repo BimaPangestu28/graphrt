@@ -150,12 +150,21 @@ fn check_snapshot(engine: &Engine, snapshot: &Snapshot) -> Result<(), StartFailu
     if snapshot.format != SNAPSHOT_FORMAT {
         return Err((crate::Error::SnapshotFormat(snapshot.format).to_string(), "snapshot_mismatch"));
     }
-    if snapshot.graph_fingerprint != engine.graph.fingerprint() {
+    if snapshot.graph_fingerprint != engine.fingerprint() {
         let mismatch = crate::Error::SnapshotMismatch {
-            expected: engine.graph.fingerprint().to_owned(),
+            expected: engine.fingerprint().to_owned(),
             actual: snapshot.graph_fingerprint.clone(),
         };
-        return Err((mismatch.to_string(), "snapshot_mismatch"));
+        #[allow(unused_mut)]
+        let mut message = mismatch.to_string();
+        // After `+` come the linked workflows (`len:name=fingerprint`).
+        #[cfg(feature = "subagents")]
+        if engine.fingerprint().contains('+') || snapshot.graph_fingerprint.contains('+') {
+            message.push_str(
+                ": the workflow, or a workflow linked to it as a subagent, changed or is not linked as when the run paused",
+            );
+        }
+        return Err((message, "snapshot_mismatch"));
     }
     Ok(())
 }
@@ -207,6 +216,14 @@ fn share_run(
         secrets: carried.secrets,
         resume_inputs: carried.resume_inputs,
         secret_values,
+        #[cfg(feature = "subagents")]
+        fingerprint: engine.fingerprint().to_owned(),
+        #[cfg(feature = "subagents")]
+        linked: Arc::clone(&engine.linked),
+        #[cfg(feature = "subagents")]
+        parents: Mutex::new(std::collections::HashSet::new()),
+        #[cfg(feature = "subagents")]
+        running_children: Mutex::new(std::collections::HashSet::new()),
     })
 }
 
@@ -273,6 +290,9 @@ fn terminal_event(shared: &RunShared, outcome: FrameOutcome, run_id: String, ela
             let snapshot = Snapshot {
                 format: SNAPSHOT_FORMAT,
                 run_id,
+                #[cfg(feature = "subagents")]
+                graph_fingerprint: shared.fingerprint.clone(),
+                #[cfg(not(feature = "subagents"))]
                 graph_fingerprint: shared.graph.fingerprint().to_owned(),
                 elapsed_ms,
                 steps: shared.steps.load(Ordering::Acquire),
@@ -336,7 +356,7 @@ fn apply_host_values(frame: &mut Frame, sys: &IndexMap<String, Value>, conversat
 /// Merge declared variables with host overrides, coercing to the declared types.
 /// Declarations without a value and without an override are omitted when
 /// `omit_missing`, otherwise they get their type's zero value.
-fn resolve_decls(
+pub(crate) fn resolve_decls(
     decls: &[VariableDecl],
     overrides: &IndexMap<String, Value>,
     omit_missing: bool,

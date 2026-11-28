@@ -59,6 +59,9 @@ memory = ["graphrt-core/memory"]
 # `long_term_memory.graph`: after a note is saved, a model reads its entities and
 # relations into the store's memory graph in the background (memory_graph.rs).
 memory-graph = ["memory", "graphrt-core/tokio", "dep:tokio"]
+# `subagents` of the `agent` node: listed workflows offered as tools and run as
+# child runs of the same run, with their pauses passed on (subagents.rs).
+subagents = ["graphrt-core/subagents"]
 # `text_model::ChatTextModel`: a chat model as a `graphrt_core::text_model::TextModel`, for
 # work outside a run such as drafting a skill. No dependencies.
 text-model = []
@@ -92,3 +95,8 @@ required-features = ["context", "mock"]
 
 [lints]
 workspace = true
+
+# What a child run of `subagents` costs (docs/benchmarks.md, "Subagents").
+[[example]]
+name = "subagents_bench"
+required-features = ["subagents", "mock"]

@@ -291,7 +291,7 @@ async fn prepare_drained_resume<'a>(
         Ok(None) | Err(_) => return Err("no stored snapshot".to_owned()),
     };
     let workflow =
-        state.workflows.get(&record.workflow).filter(|w| w.engine.graph().fingerprint() == snapshot.graph_fingerprint);
+        state.workflows.get(&record.workflow).filter(|w| w.engine.fingerprint() == snapshot.graph_fingerprint);
     let Some(workflow) = workflow else {
         return Err("its workflow is not served or changed since".to_owned());
     };

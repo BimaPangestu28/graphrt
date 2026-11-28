@@ -150,6 +150,25 @@ impl Node for Pauser {
     }
 }
 
+/// Pauses with the kind reserved for nodes holding child runs, without any.
+#[derive(Debug)]
+struct Spoofer;
+impl Node for Spoofer {
+    fn run(&self, ctx: NodeContext) -> BoxFuture<'_, NodeResult> {
+        Box::pin(async move {
+            match ctx.resume {
+                None => Ok(NodeOutcome::Paused(PauseRequest {
+                    // The value of `node::CHILD_PAUSE` (feature `subagents`).
+                    kind: "child_runs".into(),
+                    data: Value::from("hidden?"),
+                    state: json!({}),
+                })),
+                Some(_) => Ok(NodeOutput::new().with("answer", Value::from("resumed")).into()),
+            }
+        })
+    }
+}
+
 /// Response node: renders `text` into `answer`.
 #[derive(Debug)]
 struct Answer {
@@ -297,6 +316,7 @@ fn registry() -> Registry {
         }))
     });
     r.register("pause", |_| Ok(Arc::new(Pauser)));
+    r.register("spoof", |_| Ok(Arc::new(Spoofer)));
     r.register("answer", |d| Ok(Arc::new(Answer { text: Template::parse(&cfg_str(d, "text")) })));
     r.register("end", |d| Ok(Arc::new(End { name: cfg_str(d, "name"), value: Template::parse(&cfg_str(d, "value")) })));
     r.register("box", |d| {
@@ -1426,4 +1446,30 @@ async fn preempt_of_a_finished_run_changes_nothing() {
     let events: Vec<Event> = stream.collect().await;
     handle.preempt("late");
     assert_eq!(outputs(&events).get("r"), Some(&Value::from("x")));
+}
+
+#[tokio::test]
+async fn a_child_pause_kind_from_a_node_without_children_still_reports_its_reason() {
+    let g = build(
+        vec![
+            node("start", "src", json!({})),
+            node("p", "spoof", json!({})),
+            node("end", "answer", json!({"text": "{{#p.answer#}}"})),
+        ],
+        vec![edge("start", "p"), edge("p", "end")],
+    );
+    let events = collect(&Engine::new(g), RunInput::new()).await;
+    match terminal(&events) {
+        Event::RunPaused { reasons, .. } => {
+            assert_eq!(reasons.len(), 1, "the pause is not hidden: {reasons:?}");
+            assert_eq!(reasons[0].node_id.as_deref(), Some("p"));
+        }
+        other => panic!("expected pause, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "subagents")]
+#[test]
+fn the_spoofer_uses_the_reserved_kind() {
+    assert_eq!(graphrt_core::node::CHILD_PAUSE, "child_runs");
 }

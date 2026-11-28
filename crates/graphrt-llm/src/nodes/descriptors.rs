@@ -120,6 +120,31 @@ fn context_window() -> Json {
     })
 }
 
+/// Builds without subagents accept the key, so that a document can list none.
+#[cfg(not(feature = "subagents"))]
+fn subagents() -> Json {
+    json!({ "description": "Needs a build with subagents, unless the list is empty." })
+}
+
+/// The schema of `subagents`.
+#[cfg(feature = "subagents")]
+fn subagents() -> Json {
+    json!({
+        "description": "Workflows the model may start as tools: each runs as a child run of this run with its own \
+                        context, sharing the run's step budget, deadline and depth limit. An approval inside a \
+                        child pauses the whole run. Only workflows this host serves can be listed.",
+        "type": "array",
+        "items": nested(
+            json!({
+                "workflow": { "type": "string" },
+                "description": { "type": "string", "description": "What the workflow does, for the model" },
+                "handoff": { "type": "boolean", "default": false, "description": "Its answer becomes this agent's answer" }
+            }),
+            &["workflow", "description"]
+        )
+    })
+}
+
 /// Builds without memory accept the key, so that a document can say `off`.
 /// The node refuses any other value when it is built.
 #[cfg(not(feature = "memory"))]
@@ -339,7 +364,10 @@ pub(crate) fn agent() -> NodeDescriptor {
                     }),
                     &["agent"]
                 ),
-                "long_term_memory": long_term_memory()
+                "long_term_memory": long_term_memory(),
+                "subagents": subagents(),
+                "max_parallel_subagents": { "type": "integer", "minimum": 1, "default": 4 },
+                "max_subagent_calls": { "type": "integer", "minimum": 1, "default": 16 }
             })),
             &["model"],
         ))

@@ -98,9 +98,9 @@ fn query_from(query: Option<&str>) -> u64 {
 
 /// `GET /internal/v1/hello`.
 fn hello(state: &AppState, agent: &GatewayAgent) -> Response {
-    let workflows = state.served_workflows().map(|(name, w)| {
-        json::Object::new().str("name", name).str("fingerprint", w.engine.graph().fingerprint()).finish()
-    });
+    let workflows = state
+        .served_workflows()
+        .map(|(name, w)| json::Object::new().str("name", name).str("fingerprint", w.engine.fingerprint()).finish());
     let body = json::Object::new()
         .num("protocol", PROTOCOL_VERSION.into())
         .str("version", env!("CARGO_PKG_VERSION"))
@@ -247,7 +247,7 @@ fn prepare(state: &AppState, run_id: &str, epoch: u64, mut body: RunBody) -> Res
     if body.resume.as_ref().is_some_and(|resume| resume.snapshot.run_id != run_id) {
         return Err(bad_request("snapshot of another run"));
     }
-    let fingerprint = workflow.engine.graph().fingerprint();
+    let fingerprint = workflow.engine.fingerprint();
     let expected = body.resume.as_ref().map(|r| r.snapshot.graph_fingerprint.as_str()).or(body.fingerprint.as_deref());
     if expected.is_some_and(|expected| expected != fingerprint) {
         return Err(protocol_error(StatusCode::CONFLICT, "fingerprint_mismatch", "another workflow version"));

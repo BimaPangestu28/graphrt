@@ -228,11 +228,122 @@ pub struct Engine {
     services: Arc<Services>,
     clock: Arc<dyn Clock>,
     limits: Limits,
+    /// Workflows its nodes may start as child runs, by name.
+    #[cfg(feature = "subagents")]
+    linked: Arc<IndexMap<String, LinkedWorkflow>>,
+    /// The fingerprint with the linked graphs, made when they are linked
+    /// (`None` without links: the graph's own).
+    #[cfg(feature = "subagents")]
+    linked_fingerprint: Option<Arc<str>>,
+}
+
+/// A workflow linked to an engine's runs ([`Engine::with_linked`]): its graph,
+/// the environment its child runs see (its own, not the parent's, resolved
+/// against its `env` declarations) and the services its host gives it.
+#[cfg(feature = "subagents")]
+#[derive(Clone, Debug)]
+pub struct LinkedWorkflow {
+    graph: Arc<Graph>,
+    env: IndexMap<String, Value>,
+    services: Option<Arc<Services>>,
+}
+
+#[cfg(feature = "subagents")]
+impl LinkedWorkflow {
+    /// `graph` with an empty environment and the parent run's services.
+    pub fn new(graph: Arc<Graph>) -> Self {
+        Self { graph, env: IndexMap::new(), services: None }
+    }
+
+    /// The `env.*` values its child runs see, before its declarations apply.
+    pub fn with_env(mut self, env: IndexMap<String, Value>) -> Self {
+        self.env = env;
+        self
+    }
+
+    /// The services its child runs use (its memory scope, skills, tools),
+    /// instead of the parent run's.
+    pub fn with_services(mut self, services: Arc<Services>) -> Self {
+        self.services = Some(services);
+        self
+    }
+
+    pub fn graph(&self) -> &Arc<Graph> {
+        &self.graph
+    }
+
+    pub fn env(&self) -> &IndexMap<String, Value> {
+        &self.env
+    }
+
+    pub fn services(&self) -> Option<&Arc<Services>> {
+        self.services.as_ref()
+    }
+
+    /// Check what a host can check when it links: the environment against the
+    /// workflow's `env` declarations, and start variables a model can supply.
+    ///
+    /// @throws String - what is wrong, for the host's start error.
+    pub fn check(&self) -> Result<(), String> {
+        self.resolved_env()?;
+        frame::start_schema(&self.graph).map(|_| ())
+    }
+
+    /// The environment resolved against the workflow's declarations: defaults
+    /// apply and a `secret` declaration makes a secret.
+    pub(crate) fn resolved_env(&self) -> Result<Vec<(String, Value)>, String> {
+        root::resolve_decls(&self.graph.workflow().env, &self.env, true).map_err(|why| format!("environment: {why}"))
+    }
 }
 
 impl Engine {
     pub fn new(graph: Arc<Graph>) -> Self {
-        Self { graph, services: Arc::new(Services::new()), clock: default_clock(), limits: Limits::default() }
+        Self {
+            graph,
+            services: Arc::new(Services::new()),
+            clock: default_clock(),
+            limits: Limits::default(),
+            #[cfg(feature = "subagents")]
+            linked: Arc::new(IndexMap::new()),
+            #[cfg(feature = "subagents")]
+            linked_fingerprint: None,
+        }
+    }
+
+    /// Workflows the nodes of this engine's runs may start as child runs
+    /// ([`crate::node::ChildRuns`]), by name. A snapshot covers them: a run is
+    /// not resumed against a changed child workflow.
+    ///
+    /// It replaces the set given before, and a later entry replaces an
+    /// earlier one of the same name. A host links only what the
+    /// engine's agents list (and what those list in turn): every linked
+    /// workflow is in the fingerprint, so linking more would refuse a resume
+    /// whenever an unrelated workflow changed.
+    #[cfg(feature = "subagents")]
+    pub fn with_linked(mut self, linked: impl IntoIterator<Item = (String, LinkedWorkflow)>) -> Self {
+        self.linked = Arc::new(linked.into_iter().collect());
+        self.linked_fingerprint = (!self.linked.is_empty()).then(|| {
+            // Each name is prefixed with its length, so no two link sets give the same text.
+            let mut linked: Vec<String> = self
+                .linked
+                .iter()
+                .map(|(name, link)| format!("{}:{name}={}", name.len(), link.graph.fingerprint()))
+                .collect();
+            linked.sort();
+            Arc::from(format!("{}+{}", self.graph.fingerprint(), linked.join(",")))
+        });
+        self
+    }
+
+    /// The fingerprint a snapshot of this engine's runs carries: the graph's,
+    /// and the linked graphs' when there are any. Hosts compare a snapshot
+    /// with this, not with the graph's own fingerprint.
+    pub fn fingerprint(&self) -> &str {
+        #[cfg(feature = "subagents")]
+        if let Some(linked) = &self.linked_fingerprint {
+            return linked;
+        }
+        self.graph.fingerprint()
     }
 
     pub fn with_services(mut self, services: Services) -> Self {
@@ -258,6 +369,11 @@ impl Engine {
 
     pub fn graph(&self) -> &Arc<Graph> {
         &self.graph
+    }
+
+    /// The services this engine's runs use.
+    pub fn services(&self) -> &Arc<Services> {
+        &self.services
     }
 
     pub fn limits(&self) -> &Limits {

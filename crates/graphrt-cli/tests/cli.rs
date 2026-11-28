@@ -334,3 +334,50 @@ fn serve_refuses_a_plugin_idle_timeout_without_a_pool_and_an_oversized_pool() {
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert!(stderr(&out).contains("--plugin-pool"), "{}", stderr(&out));
 }
+
+#[cfg(feature = "subagents")]
+fn lead_listing(dir: &std::path::Path, listed: &str) -> PathBuf {
+    std::fs::create_dir_all(dir).expect("dir");
+    let lead = dir.join("lead.yaml");
+    let doc = format!(
+        "graph:\n  nodes:\n    - id: start\n      type: start\n    - id: lead\n      type: agent\n      model: {{provider: openai, name: m}}\n      query: go\n      subagents:\n        - workflow: {listed}\n          description: Helps\n    - id: end\n      type: end\n      outputs:\n        - {{variable: text, value_selector: [lead, text]}}\n  edges:\n    - {{source: start, target: lead}}\n    - {{source: lead, target: end}}\n"
+    );
+    std::fs::write(&lead, doc).expect("write");
+    lead
+}
+
+#[cfg(feature = "subagents")]
+#[test]
+fn a_listed_subagent_needs_its_workflow_file_before_the_run_starts() {
+    let dir = temp_path("subagents-missing");
+    let lead = lead_listing(&dir, "research");
+    let lead = lead.to_str().expect("utf8");
+    let out = run(&["run", lead]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("--workflows DIR"), "{}", stderr(&out));
+    let out = run(&["run", lead, "--workflows", dir.to_str().expect("utf8")]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("lists subagent `research`"), "{}", stderr(&out));
+}
+
+#[cfg(feature = "subagents")]
+#[test]
+fn workflows_skip_snapshots_and_mcp_configurations() {
+    let dir = temp_path("subagents-folder");
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::copy(example("hello.yaml"), dir.join("hello.yaml")).expect("copy");
+    std::fs::write(dir.join("hello.snapshot.json"), "{\"format\": 1}").expect("write");
+    std::fs::write(dir.join("mcp.json"), "{\"mcpServers\": {}}").expect("write");
+    let path = example("hello.yaml");
+    let out = run(&[
+        "run",
+        path.to_str().expect("utf8"),
+        "--workflows",
+        dir.to_str().expect("utf8"),
+        "--input",
+        "name=Ada",
+        "-o",
+        "json",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}

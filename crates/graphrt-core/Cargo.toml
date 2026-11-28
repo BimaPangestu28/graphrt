@@ -33,6 +33,9 @@ cron = []
 # The memory contract (`graphrt_core::memory`): notes an agent saves and finds
 # again in later runs. Left out of builds without long term memory.
 memory = []
+# Workflows linked to a run that its nodes start as child runs (an agent's
+# `subagents`): `Engine::with_linked`, `NodeContext::children`.
+subagents = []
 
 [dependencies]
 futures.workspace = true

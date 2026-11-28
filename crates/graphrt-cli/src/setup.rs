@@ -744,6 +744,40 @@ fn memory_embedder(spec: &str, vars: &[(String, String)]) -> Result<Arc<dyn grap
     Err(CliError::usage(format!("--memory-embedder `{spec}`: expected `openai/MODEL` or `local`")))
 }
 
+/// Whether `path` is an MCP configuration (a JSON object with `mcpServers`),
+/// not a workflow, for `run --workflows`, which also reads YAML.
+#[cfg(feature = "subagents")]
+pub(crate) fn is_mcp_config(path: &std::path::Path) -> bool {
+    const KEYS: [&str; 3] = ["mcpServers", "servers", "mcp_servers"];
+    let Ok(text) = std::fs::read_to_string(path) else { return false };
+    if !KEYS.iter().any(|key| text.contains(key)) {
+        return false;
+    }
+    match serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')) {
+        // A workflow has a `graph`, a configuration one of the server keys.
+        Ok(json) => json.get("graph").is_none() && KEYS.iter().any(|key| json.get(key).is_some()),
+        // Not strict JSON (comments, a trailing comma): by its text, as before.
+        Err(_) => text.contains("\"mcpServers\""),
+    }
+}
+
+/// The workflows the `agent` nodes of `graph` list in `subagents`.
+#[cfg(feature = "subagents")]
+pub(crate) fn listed(graph: &graphrt_core::graph::Graph) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for node in graph.workflow().graph.nodes.iter().filter(|n| n.kind == "agent") {
+        let entries = node.config.get("subagents").and_then(serde_json::Value::as_array);
+        for entry in entries.into_iter().flatten() {
+            if let Some(workflow) = entry.get("workflow").and_then(serde_json::Value::as_str)
+                && !names.iter().any(|n| n == workflow)
+            {
+                names.push(workflow.to_owned());
+            }
+        }
+    }
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

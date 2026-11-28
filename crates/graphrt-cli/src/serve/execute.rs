@@ -220,7 +220,7 @@ pub(crate) async fn launch_detached(
         return Err(busy);
     }
     let run_id = run_id.unwrap_or_else(|| state.new_run_id());
-    let record = RunRecord::running(&run_id, name, workflow.engine.graph().fingerprint(), now_ms());
+    let record = RunRecord::running(&run_id, name, workflow.engine.fingerprint(), now_ms());
     match state.store.create(record.clone()).await {
         Ok(()) => {}
         // `create` is atomic, so concurrent redeliveries start one run between them.
@@ -297,8 +297,7 @@ pub(crate) async fn start_channel_turn(
         Ok(Some(_)) => return Err(TurnRefused::Duplicate),
         Err(e) => return Err(failed(e.to_string())),
     }
-    let mut record =
-        RunRecord::running(&turn.run_id, &conversation.workflow, workflow.engine.graph().fingerprint(), now_ms());
+    let mut record = RunRecord::running(&turn.run_id, &conversation.workflow, workflow.engine.fingerprint(), now_ms());
     record.session_id = Some(conversation.id.clone());
     record.user_id = Some(turn.user_id.clone());
     record.metadata.insert("channel".to_owned(), turn.channel.clone());

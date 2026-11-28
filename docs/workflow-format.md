@@ -493,6 +493,11 @@ learning:                 # optional: read approved lessons into the system prom
   user: "{{#sys.user_id#}}"
 context_window: auto      # optional (default auto): see "Context window"
 long_term_memory: auto    # optional: notes the agent saves and finds again in later runs
+subagents:                # optional: workflows the model may start as tools (child runs)
+  - { workflow: research, description: Researches one question and returns a cited answer. }
+  - { workflow: write-report, description: Writes a report from notes., handoff: true }
+max_parallel_subagents: 4   # optional (default 4)
+max_subagent_calls: 16      # optional (default 16 per run of the node)
 ```
 
 Runs a tool-calling loop until the model answers without tools (the last
@@ -560,6 +565,36 @@ tools are ordinary tools, so
 needs a host with a memory store (the `memory` cargo feature of the CLI, in
 the default build). With tools that were called the node also outputs
 `turn_digest` (see "Conversation history"). See [memory.md](memory.md).
+
+`subagents` offers each listed workflow to the model as a tool named after
+it (a name of letters, digits, `_` and `-`), with the workflow's start
+variables as parameters, typed like the start node takes them (select
+options, numbers, arrays). Secret and file variables are left out, and a
+workflow that requires one cannot be listed. An argument the workflow does
+not take is refused with an error result. The model decides which to call,
+how often and how many in one turn (at most `max_parallel_subagents` run at
+once, at most `max_subagent_calls` in a run of the node, further calls get an
+error result). Each call runs the workflow as a child run of the same run, in
+frame `<node>.<workflow>[<n>]`: it starts from its arguments and the `sys`
+values `run_id`, `user_id` and `conversation_id`, sees nothing else of the
+parent, and shares the run's step budget, deadline, depth limit (`max_depth`,
+so a workflow that calls itself stops) and secrets. It sees its own `env`
+(resolved against its own declarations, so a `secret` value is masked like
+the run's) and uses the services its host gives its own workflow, so its
+memory scope and skills are its own. The child's `end` outputs come back as
+the tool result (a single `text`, `answer`, `result` or `output` as text,
+else as JSON), with the run's secrets masked. A child without an answer is an
+error result. A child that pauses (a tool that needs approval, a
+`human-input` node) pauses the whole run with the child's frame qualified
+keys, for example `lead.research[0]/assistant`, and resuming the run resumes
+the child where it stopped. With `handoff: true` the child's answer is the
+agent's answer (`stopped_reason: handoff`) and the loop ends. When two
+handoff calls answer in one turn, the first call in the model's order wins.
+Only workflows the host links can be listed: `graphrt serve` links the
+workflows it serves and refuses to start when an agent lists one it does not
+serve, `graphrt run --workflows DIR` links the workflow files of a directory
+(not the snapshots next to them). Cargo feature `subagents`, in the default
+build.
 
 ### `question-classifier` (branch)
 
