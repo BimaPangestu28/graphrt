@@ -306,6 +306,189 @@ pub(crate) fn calls_written_as_text(text: &str, tools: &[&str], id_prefix: &str)
     Some((calls, without_empty_fences(&kept)))
 }
 
+/// A call a model wrote as a command instead of making it: `resize --max-width 400
+/// uploads/a.png` (llama3.2 answered "I use this command: `resizer -format jpeg -max-width
+/// 400 …`"), or `resize(path="uploads/a.png", max_width=400)`. Read only when the command's
+/// name is an offered tool (as [`calls_written_as_text`] matches names) and every argument
+/// is one of that tool's own (`-` read as `_`; a flag alone is `true` for a yes/no argument;
+/// one argument without a name goes to the only required argument not given). Anything else
+/// is text. Returns the first such call and `text` without it.
+pub(crate) fn command_written_as_text(
+    text: &str,
+    tools: &[(&str, &Json)],
+    id_prefix: &str,
+) -> Option<(ToolCall, String)> {
+    let names: Vec<&str> = tools.iter().map(|(name, _)| *name).collect();
+    for (start, end) in command_spans(text) {
+        let written = text[start..end].trim().trim_start_matches(['$', '>']).trim();
+        let Some((name, arguments)) = command_parts(written) else { continue };
+        let Some(tool) = tool_named(&name, &names).or_else(|| tool_named(&name.replace('-', "_"), &names)) else {
+            continue;
+        };
+        let Some(schema) = tools.iter().find(|(name, _)| *name == tool).map(|(_, schema)| *schema) else { continue };
+        let Some(arguments) = named_arguments(arguments, schema) else { continue };
+        let rest = format!("{}{}", &text[..start], &text[end..]);
+        let call = ToolCall { id: format!("{id_prefix}1"), name: tool, arguments: Json::Object(arguments).to_string() };
+        return Some((call, without_empty_fences(rest.trim()).replace("``", "")));
+    }
+    None
+}
+
+/// Where commands may be written: each text in backticks, and each line.
+fn command_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut quoted = text.match_indices('`').map(|(at, _)| at).filter(|at| !text[*at..].starts_with("```"));
+    while let (Some(open), Some(close)) = (quoted.next(), quoted.next()) {
+        spans.push((open + 1, close));
+    }
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        spans.push((offset, offset + line.trim_end_matches(['\n', '\r']).len()));
+        offset += line.len();
+    }
+    spans
+}
+
+/// One argument of a written command: its name (if it has one) and its value.
+type Written = (Option<String>, Json);
+
+/// The name and arguments of `name(key=value, …)` or `name --key value …`.
+fn command_parts(written: &str) -> Option<(String, Vec<Written>)> {
+    let name_end = written.find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':')))?;
+    let name = &written[..name_end];
+    let after = &written[name_end..];
+    if name.is_empty() || !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    if let Some(inside) = after.strip_prefix('(').and_then(|inside| inside.trim_end().strip_suffix(')')) {
+        let mut arguments = Vec::new();
+        for part in split_words(inside, true) {
+            let (key, value) = part.split_once('=').or_else(|| part.split_once(':'))?;
+            arguments.push((Some(key.trim().to_owned()), Json::String(unquoted(value.trim()))));
+        }
+        return Some((name.to_owned(), arguments));
+    }
+    if !after.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let words = split_words(after, false);
+    let mut arguments = Vec::new();
+    let mut index = 0;
+    while let Some(word) = words.get(index) {
+        match word.strip_prefix("--").or_else(|| word.strip_prefix('-').filter(|flag| flag.len() > 1)) {
+            Some(flag) => match flag.split_once('=') {
+                Some((key, value)) => arguments.push((Some(key.to_owned()), Json::String(unquoted(value)))),
+                None => match words.get(index + 1).filter(|next| !next.starts_with('-')) {
+                    Some(value) => {
+                        arguments.push((Some(flag.to_owned()), Json::String(unquoted(value))));
+                        index += 1;
+                    }
+                    None => arguments.push((Some(flag.to_owned()), Json::Bool(true))),
+                },
+            },
+            None => arguments.push((None, Json::String(unquoted(word)))),
+        }
+        index += 1;
+    }
+    Some((name.to_owned(), arguments))
+}
+
+/// Words split at white space (or at commas, for a function's arguments), quotes kept together.
+fn split_words(text: &str, at_commas: bool) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote: Option<char> = None;
+    for character in text.chars() {
+        match quote {
+            Some(open) => {
+                word.push(character);
+                if character == open {
+                    quote = None;
+                }
+            }
+            None if character == '"' || character == '\'' => {
+                word.push(character);
+                quote = Some(character);
+            }
+            None if (at_commas && character == ',') || (!at_commas && character.is_whitespace()) => {
+                if !word.trim().is_empty() {
+                    words.push(word.trim().to_owned());
+                }
+                word.clear();
+            }
+            None => word.push(character),
+        }
+    }
+    if !word.trim().is_empty() {
+        words.push(word.trim().to_owned());
+    }
+    words
+}
+
+fn unquoted(value: &str) -> String {
+    let value = value.trim();
+    for quote in ['"', '\''] {
+        if let Some(inner) = value.strip_prefix(quote).and_then(|inner| inner.strip_suffix(quote)) {
+            return inner.to_owned();
+        }
+    }
+    value.to_owned()
+}
+
+/// The arguments of a written command under the tool's own names; `None` when one is not the tool's.
+fn named_arguments(written: Vec<Written>, schema: &Json) -> Option<Map<String, Json>> {
+    let properties = schema.get("properties").and_then(Json::as_object)?;
+    let mut arguments = Map::new();
+    let mut unnamed = Vec::new();
+    for (key, value) in written {
+        let Some(key) = key else {
+            unnamed.push(value);
+            continue;
+        };
+        let key = key.trim().replace('-', "_").to_ascii_lowercase();
+        let given: Vec<String> = arguments.keys().cloned().collect();
+        let name = known_name(&key, properties, &given);
+        let property = properties.get(&name)?;
+        let wants_yes_no = property.get("type").and_then(Json::as_str) == Some("boolean");
+        if value == Json::Bool(true) && !wants_yes_no {
+            return None;
+        }
+        // `--overwrite uploads/a.png`: a yes/no flag alone, followed by an argument without a name.
+        let value = match value {
+            Json::String(text)
+                if wants_yes_no && !matches!(text.to_ascii_lowercase().as_str(), "true" | "false" | "yes" | "no") =>
+            {
+                unnamed.push(Json::String(text));
+                Json::Bool(true)
+            }
+            value => value,
+        };
+        arguments.insert(name, value);
+    }
+    match unnamed.as_slice() {
+        [] => {}
+        [value] => {
+            let open: Vec<&str> = schema
+                .get("required")
+                .and_then(Json::as_array)
+                .map(|names| {
+                    names.iter().filter_map(Json::as_str).filter(|name| !arguments.contains_key(*name)).collect()
+                })
+                .unwrap_or_default();
+            let [only] = open.as_slice() else { return None };
+            // Without a named argument, only a path-like word is read as one ("resize the
+            // picture" is a sentence, not a call).
+            let looks_like_a_path = value.as_str().is_some_and(|word| word.contains(['/', '.']));
+            if arguments.is_empty() && !looks_like_a_path {
+                return None;
+            }
+            arguments.insert((*only).to_owned(), value.clone());
+        }
+        _ => return None,
+    }
+    (!arguments.is_empty()).then_some(arguments)
+}
+
 /// The tool and arguments of a JSON object that is a call, if it is one.
 fn call_in(object: &Map<String, Json>, tools: &[&str]) -> Option<(String, Map<String, Json>)> {
     let written_name = ["name", "tool", "function"].iter().find_map(|key| match object.get(*key) {
@@ -452,6 +635,54 @@ mod tests {
         assert_eq!(civil_from_days(days_from_civil(2024, 2, 29)), (2024, 2, 29));
         assert_eq!(civil_from_days(-1), (1969, 12, 31));
         assert_eq!(today().len(), 10);
+    }
+
+    #[test]
+    fn a_call_written_as_a_command_is_read_when_it_names_the_tool_and_its_arguments() {
+        let schema = resize_schema();
+        let tools = [("image_resize", &schema), ("files_read", &schema)];
+        let text = "I use this command:\n`resize --max-width 400 --overwrite uploads/poster.png`\nDone.";
+        let (call, rest) = command_written_as_text(text, &tools, "t_").unwrap();
+        assert_eq!(call.name, "image_resize");
+        assert_eq!(
+            serde_json::from_str::<Json>(&call.arguments).unwrap(),
+            json!({"max_width": "400", "overwrite": true, "path": "uploads/poster.png"})
+        );
+        assert_eq!(rest, "I use this command:\n\nDone.");
+        let (call, _) =
+            command_written_as_text("image_resize(path=\"uploads/a b.png\", max_width=400)", &tools, "t_").unwrap();
+        assert_eq!(
+            serde_json::from_str::<Json>(&call.arguments).unwrap(),
+            json!({"path": "uploads/a b.png", "max_width": "400"})
+        );
+        let (call, _) = command_written_as_text("resize uploads/a.png --max_width=400", &tools, "t_").unwrap();
+        assert_eq!(
+            serde_json::from_str::<Json>(&call.arguments).unwrap(),
+            json!({"path": "uploads/a.png", "max_width": "400"})
+        );
+        let (call, _) = command_written_as_text("$ resize --path=uploads/a.png --width 300", &tools, "t_").unwrap();
+        assert_eq!(
+            serde_json::from_str::<Json>(&call.arguments).unwrap(),
+            json!({"path": "uploads/a.png", "max_width": "300"})
+        );
+    }
+
+    #[test]
+    fn a_command_that_is_not_a_call_of_an_offered_tool_stays_text() {
+        let schema = resize_schema();
+        let tools = [("image_resize", &schema)];
+        for text in [
+            "resizer -format jpeg -max-width 400 photos/cat.jpg",
+            "resize --colour red uploads/a.png",
+            "resize --max-width 400 a.png b.png",
+            "resize --label uploads/a.png --max-width",
+            "Please resize the picture to 400 pixels.",
+            "resize",
+            "resize(400)",
+            "Resize picture",
+        ] {
+            assert!(command_written_as_text(text, &tools, "t_").is_none(), "{text}");
+        }
     }
 
     #[test]
