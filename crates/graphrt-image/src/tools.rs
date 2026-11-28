@@ -114,7 +114,7 @@ impl ImageTools {
             description: description.to_owned(),
             parameters,
         };
-        let path = json!({ "type": "string", "description": "Path of the image in the workspace, for example `photos/cat.jpg`." });
+        let path = json!({ "type": "string", "description": "Path of an image that is in the workspace, exactly as its file is named." });
         let output = json!({ "type": "string", "description": "Path of the new file. Omit to get a name next to the original." });
         let overwrite = json!({ "type": "boolean", "description": "Replace an existing file (default false)." });
         let format = json!({ "type": "string", "enum": ["png", "jpeg", "webp", "gif"] });
