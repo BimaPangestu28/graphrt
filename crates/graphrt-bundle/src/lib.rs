@@ -39,7 +39,8 @@ pub use error::BundleError;
 #[cfg(feature = "wasm")]
 pub use graphrt_wasm::WasmLimits;
 pub use manifest::{
-    BUNDLE_FORMAT_VERSION, BundleLimits, BundleManifest, MANIFEST_PATH, PluginRef, Requires, SIGNATURE_PATH,
+    BUNDLE_FORMAT_PLAIN, BUNDLE_FORMAT_VERSION, BundleLimits, BundleManifest, MANIFEST_PATH, PluginRef, Requires,
+    SIGNATURE_PATH, workflow_name,
 };
 pub use secrets::check_no_inline_secrets;
 pub use sign::{BundleSignature, KeyPair, generate_keypair, parse_public_key, sign_bundle};

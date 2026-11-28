@@ -157,8 +157,9 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
             // The run's services with the child's own memory scope (its workflow's name).
             #[allow(unused_mut)]
             let mut own = services.clone();
+            // Scoped by the name it is linked under, as `graphrt serve` does.
             #[cfg(feature = "memory")]
-            setup::with_memory_defaults(&mut own, &options, &graph.workflow().name.clone().unwrap_or(name.clone()));
+            setup::with_memory_defaults(&mut own, &options, &name);
             let link = graphrt_core::engine::LinkedWorkflow::new(graph).with_env(env).with_services(Arc::new(own));
             if linked.insert(name.clone(), link).is_some() {
                 return Err(CliError::usage(format!("--workflows: two workflows are named `{name}`")));
@@ -183,7 +184,7 @@ pub async fn run(args: RunArgs) -> Result<u8, CliError> {
     let mut limits = setup::limits(&args.services);
     #[cfg(feature = "bundle")]
     if let Some(parts) = &bundled {
-        limits = parts.limits_over(&limits);
+        limits = parts.budgets.over(&limits);
     }
     let engine = engine.with_services(services).with_clock(Arc::new(TokioClock)).with_limits(limits);
 

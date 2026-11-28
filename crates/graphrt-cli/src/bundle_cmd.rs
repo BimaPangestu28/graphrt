@@ -45,22 +45,40 @@ pub fn trusted_keys(flags: &[String]) -> Vec<String> {
 pub struct BundleParts {
     pub entry: Arc<Graph>,
     pub helpers: Vec<(String, Arc<Graph>)>,
-    /// `max_total_tokens` and `max_cost_micros` of the manifest's `limits`.
-    pub limits: (Option<u64>, Option<u64>),
+    pub budgets: RunBudgets,
 }
 
-impl BundleParts {
-    /// `host` with the bundle's budgets: the lower of the two where both set one.
-    pub fn limits_over(&self, host: &graphrt_core::engine::Limits) -> graphrt_core::engine::Limits {
+/// The budgets of every run of a bundle (the manifest's `limits`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RunBudgets {
+    pub max_total_tokens: Option<u64>,
+    /// In millionths of the price unit of the providers file.
+    pub max_cost_micros: Option<u64>,
+}
+
+impl RunBudgets {
+    /// `host` with these budgets: the lower of the two where both set one.
+    pub fn over(&self, host: &graphrt_core::engine::Limits) -> graphrt_core::engine::Limits {
         let lower = |host: Option<u64>, bundle: Option<u64>| match (host, bundle) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
         let mut limits = host.clone();
-        limits.max_total_tokens = lower(host.max_total_tokens, self.limits.0);
-        limits.max_cost_micros = lower(host.max_cost_micros, self.limits.1);
+        limits.max_total_tokens = lower(host.max_total_tokens, self.max_total_tokens);
+        limits.max_cost_micros = lower(host.max_cost_micros, self.max_cost_micros);
         limits
     }
+}
+
+/// The rule for the name of a subagent's workflow file: 1 to 128 letters,
+/// digits, `.`, `_` or `-`, not starting with `.`, and not `workflow` (the
+/// name a bundle keeps for its entry).
+pub fn valid_helper_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && !name.starts_with('.')
+        && name != "workflow"
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 /// Open a bundle, register its WebAssembly plugins in `registry` and compile its
@@ -98,6 +116,7 @@ pub fn bundle_parts(
     if let Some(mismatch) = &report.version_mismatch {
         return Err(CliError::invalid(format!("{}: {mismatch}", path.display())));
     }
+    let host_providers = options.providers.is_some();
     if bundle.providers_config().is_some() || bundle.knowledge_config().is_some() {
         apply_bundle_configs(&bundle, options)?;
     }
@@ -124,14 +143,28 @@ pub fn bundle_parts(
     };
     let entry = compile(None)?;
     let manifest = bundle.manifest();
-    let mut helpers = Vec::new();
-    for stored in manifest.workflows.iter().filter(|stored| **stored != manifest.entry) {
-        let name = stored.rsplit('/').next().unwrap_or(stored);
-        let name = name.rsplit_once('.').map_or(name, |(stem, _)| stem).to_owned();
-        helpers.push((name, compile(Some(stored))?));
+    let mut helpers: Vec<(String, Arc<Graph>)> = Vec::new();
+    for (name, stored) in manifest.subagent_workflows() {
+        // What `graphrt bundle build` checks, for a bundle made by hand.
+        if !valid_helper_name(name) || helpers.iter().any(|(known, _)| known == name) {
+            return Err(CliError::invalid(format!(
+                "{}: the bundle carries `{stored}`, whose name `{name}` is not a subagent's (or twice)",
+                path.display()
+            )));
+        }
+        helpers.push((name.to_owned(), compile(Some(stored))?));
     }
-    let limits = manifest.limits.map_or((None, None), |limits| (limits.max_total_tokens, limits.max_cost_micros));
-    Ok(BundleParts { entry, helpers, limits })
+    let budgets = manifest.limits.map_or_else(RunBudgets::default, |limits| RunBudgets {
+        max_total_tokens: limits.max_total_tokens,
+        max_cost_micros: limits.max_cost_micros,
+    });
+    if budgets.max_cost_micros.is_some() && host_providers {
+        eprintln!(
+            "warning: {}: the bundle's cost budget is counted with the prices of --providers, not the bundle's own",
+            path.display()
+        );
+    }
+    Ok(BundleParts { entry, helpers, budgets })
 }
 
 /// Without the `bundle` feature, bundles are rejected with a clear message.
@@ -255,6 +288,15 @@ fn build_cmd(args: crate::args::BundleBuildArgs) -> Result<u8, CliError> {
     let helpers = helper_workflows(&workflow, &stem, &folder)?;
     for helper in &helpers {
         builder = builder.workflow(&helper.bundle_path, helper.text.clone()).map_err(invalid)?;
+    }
+    if args.max_tokens_per_run == Some(0) || args.max_cost_per_run == Some(0) {
+        return Err(CliError::usage("a budget of 0 refuses every run: leave the flag out for no budget"));
+    }
+    // Cost is counted with the prices of the providers file: without one it stays 0.
+    if args.max_cost_per_run.is_some() && args.providers.is_none() {
+        return Err(CliError::usage(
+            "--max-cost-per-run counts with `prices` of the bundled providers file: add --providers FILE",
+        ));
     }
     builder = builder.limits(graphrt_bundle::BundleLimits {
         max_total_tokens: args.max_tokens_per_run,
@@ -394,19 +436,19 @@ fn helper_workflows(entry: &graphrt_core::Workflow, entry_name: &str, folder: &P
         setup::listed_in(entry).into_iter().map(|name| ("the workflow".to_owned(), name)).collect();
     queue.reverse();
     while let Some((by, name)) = queue.pop() {
-        if name == entry_name || helpers.iter().any(|helper| helper.name == name) {
+        if helpers.iter().any(|helper| helper.name == name) {
             continue;
         }
-        let valid = !name.is_empty()
-            && !name.starts_with('.')
-            && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
-        if !valid {
-            return Err(CliError::usage(format!("{by} lists subagent `{name}`, which is no workflow file name")));
-        }
-        // The entry is kept as `workflow.<ext>`: a subagent of that name could not be told apart.
-        if name == "workflow" {
+        // A bundle starts its entry under the name it is served as, which the bundle cannot know.
+        if name == entry_name {
             return Err(CliError::usage(format!(
-                "{by} lists subagent `workflow`, a name a bundle keeps for its entry: rename that workflow file"
+                "{by} lists subagent `{name}`, the workflow being bundled: a bundle's subagents cannot start its entry"
+            )));
+        }
+        if !valid_helper_name(&name) {
+            return Err(CliError::usage(format!(
+                "{by} lists subagent `{name}`, which is no workflow file name (letters, digits, `.`, `_` or `-`, \
+                 not `workflow`)"
             )));
         }
         let found: Vec<PathBuf> = ["yaml", "yml", "json"]
@@ -487,10 +529,10 @@ fn inspect(path: &Path, json: bool, trust: &[String]) -> Result<u8, CliError> {
         let portable = if p.portable { "portable" } else { "NOT portable" };
         lines.push(format!("plugin:    {} {} ({}, {portable})", p.name, p.version, p.runtime));
     }
-    for helper in m.workflows.iter().filter(|stored| **stored != m.entry) {
-        lines.push(format!("subagent:  {helper}"));
+    for (name, stored) in m.subagent_workflows() {
+        lines.push(format!("subagent:  {name} ({stored})"));
     }
-    if let Some(limits) = &m.limits {
+    if let Some(limits) = m.limits.as_ref().filter(|limits| !limits.is_empty()) {
         let tokens = limits.max_total_tokens.map(|n| format!("{n} tokens"));
         #[allow(clippy::cast_precision_loss)]
         let cost = limits.max_cost_micros.map(|micros| format!("cost {}", micros as f64 / 1_000_000.0));
@@ -573,6 +615,42 @@ mod tests {
         }
         for dir in [first, second] {
             std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::RunBudgets;
+    use graphrt_core::engine::Limits;
+
+    #[test]
+    fn the_lower_of_the_host_and_the_bundle_applies_per_budget_and_the_rest_is_the_hosts() {
+        let host = |tokens: Option<u64>| Limits { max_total_tokens: tokens, max_steps: 77, ..Limits::default() };
+        let bundle = |tokens: Option<u64>| RunBudgets { max_total_tokens: tokens, max_cost_micros: None };
+        for (host_tokens, bundle_tokens, expected) in [
+            (Some(9_000), Some(5_000), Some(5_000)),
+            (Some(5_000), Some(9_000), Some(5_000)),
+            (None, Some(5_000), Some(5_000)),
+            (Some(5_000), None, Some(5_000)),
+            (None, None, None),
+        ] {
+            let limits = bundle(bundle_tokens).over(&host(host_tokens));
+            assert_eq!(limits.max_total_tokens, expected, "host {host_tokens:?}, bundle {bundle_tokens:?}");
+            assert_eq!(limits.max_steps, 77, "the host's other limits stay");
+        }
+        let cost = RunBudgets { max_total_tokens: None, max_cost_micros: Some(250_000) }
+            .over(&Limits { max_cost_micros: Some(900_000), ..Limits::default() });
+        assert_eq!(cost.max_cost_micros, Some(250_000));
+    }
+
+    #[test]
+    fn a_helper_name_is_a_file_name_and_never_the_entrys() {
+        for good in ["research", "notes.v2", "a_b-c"] {
+            assert!(super::valid_helper_name(good), "{good}");
+        }
+        for bad in ["", ".hidden", "a/b", "../x", "workflow", "with space"] {
+            assert!(!super::valid_helper_name(bad), "{bad}");
         }
     }
 }

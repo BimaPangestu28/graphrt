@@ -129,7 +129,7 @@ impl Bundle {
             files.remove(MANIFEST_PATH).ok_or_else(|| BundleError::Manifest(format!("missing `{MANIFEST_PATH}`")))?;
         let manifest: BundleManifest =
             serde_json::from_slice(&manifest_bytes).map_err(|e| BundleError::Manifest(e.to_string()))?;
-        if manifest.format_version != BUNDLE_FORMAT_VERSION {
+        if manifest.format_version == 0 || manifest.format_version > BUNDLE_FORMAT_VERSION {
             return Err(BundleError::Manifest(format!(
                 "unsupported format version {} (this runtime reads {BUNDLE_FORMAT_VERSION})",
                 manifest.format_version
@@ -375,8 +375,7 @@ impl Bundle {
 }
 
 fn stem(path: &str) -> &str {
-    let file = path.rsplit('/').next().unwrap_or(path);
-    file.rsplit_once('.').map_or(file, |(s, _)| s)
+    crate::manifest::workflow_name(path)
 }
 
 fn version_mismatch(requirement: &str, current: &str) -> Option<String> {

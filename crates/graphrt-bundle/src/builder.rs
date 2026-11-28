@@ -8,7 +8,8 @@ use graphrt_core::Workflow;
 use crate::archive::{validate_path, write_zip};
 use crate::error::BundleError;
 use crate::manifest::{
-    BUNDLE_FORMAT_VERSION, BundleLimits, BundleManifest, MANIFEST_PATH, PluginRef, Requires, SIGNATURE_PATH,
+    BUNDLE_FORMAT_PLAIN, BUNDLE_FORMAT_VERSION, BundleLimits, BundleManifest, MANIFEST_PATH, PluginRef, Requires,
+    SIGNATURE_PATH,
 };
 use crate::secrets::check_no_inline_secrets;
 use crate::sha256_hex;
@@ -228,7 +229,8 @@ impl BundleBuilder {
         }
         let files: BTreeMap<String, String> = self.files.iter().map(|(p, b)| (p.clone(), sha256_hex(b))).collect();
         let manifest = BundleManifest {
-            format_version: BUNDLE_FORMAT_VERSION,
+            // The oldest format that holds what the bundle carries.
+            format_version: if self.limits.is_some() { BUNDLE_FORMAT_VERSION } else { BUNDLE_FORMAT_PLAIN },
             name: self.name,
             version: self.version,
             description: self.description,

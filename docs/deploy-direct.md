@@ -362,7 +362,10 @@ outlives a stop and a redeploy. The deploy result says `"memory": true` under
 `serve`. An agent whose agents list `subagents` is deployed as a bundle
 (`graphrt bundle build`, see `bundles.md`), which carries those workflows and
 the budgets of its runs: a workflow file alone is refused, since the server
-could not start the workflows it names.
+could not start the workflows it names. The notes stay on the store when a
+version is removed, and Fly volume snapshots keep them for a while: `remove
+--drop-store` deletes them with the rest of the store, and `DELETE
+/v1/memory/{agent}/users/{user}` erases one user.
 
 Fly attaches a volume to a Machine only when the Machine is created. A
 deployment with a store therefore keeps **one Machine**, named

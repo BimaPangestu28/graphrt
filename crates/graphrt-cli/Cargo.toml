@@ -226,15 +226,15 @@ gateway-all = ["gateway-k8s", "gateway-cloud-run", "gateway-ecs", "gateway-lambd
 # pause|resume|remove`): an agent served by the Fly proxy at https://<app>.fly.dev,
 # no gateway. A small Machines REST client over the reqwest + rustls `http` already
 # links; see docs/deploy-direct.md.
-deploy-fly = ["dep:graphrt-provider-fly", "graphrt-provider-fly/direct", "dep:graphrt-provider-api", "graphrt-provider-api/direct", "dep:reqwest", "dep:rustls", "dep:getrandom"]
+deploy-fly = ["dep:graphrt-provider-fly", "graphrt-provider-fly/direct", "dep:graphrt-provider-api", "graphrt-provider-api/direct", "dep:reqwest", "dep:rustls", "dep:getrandom", "dep:graphrt-bundle"]
 # `graphrt deploy --target cloud-run --direct`: one agent served straight by
 # Google Cloud Run, no gateway (docs/deploy-cloud-run.md).
-deploy-cloud-run = ["dep:graphrt-gcp", "graphrt-gcp/direct-cloud-run", "dep:graphrt-provider-api", "graphrt-provider-api/direct", "dep:reqwest", "dep:rustls", "dep:getrandom"]
+deploy-cloud-run = ["dep:graphrt-gcp", "graphrt-gcp/direct-cloud-run", "dep:graphrt-provider-api", "graphrt-provider-api/direct", "dep:reqwest", "dep:rustls", "dep:getrandom", "dep:graphrt-bundle"]
 # `graphrt deploy --target lambda --direct` (and the same management subcommands):
 # an agent on a public AWS Lambda Function URL, scaled to zero, no gateway. Signs
 # with the AWS credentials of the environment or a profile (`--profile`); see
 # docs/deploy-direct-aws.md.
-deploy-aws = ["dep:graphrt-provider-aws", "graphrt-provider-aws/direct-lambda", "dep:graphrt-provider-api", "graphrt-provider-api/direct", "dep:reqwest", "dep:rustls", "dep:getrandom"]
+deploy-aws = ["dep:graphrt-provider-aws", "graphrt-provider-aws/direct-lambda", "dep:graphrt-provider-api", "graphrt-provider-api/direct", "dep:reqwest", "dep:rustls", "dep:getrandom", "dep:graphrt-bundle"]
 # Opt-in anonymous usage telemetry of the CLI binary (`graphrt telemetry`). Off
 # by default and inert unless an endpoint is configured; see docs/telemetry.md.
 telemetry = ["http", "dep:getrandom"]

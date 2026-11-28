@@ -361,7 +361,6 @@ pub(crate) fn read_agent(path: &Path) -> Result<(AgentFile, AgentNeeds), Failure
 /// Opens the bundle (hashes, limits) and returns the bytes of its files once
 /// unpacked, and what its workflows need. Every subagent an agent lists must
 /// be a workflow of the bundle: the server refuses to start otherwise.
-#[cfg(feature = "bundle")]
 fn check_bundle(path: &Path, contents: &[u8]) -> Result<(u64, AgentNeeds), Failure> {
     let invalid = |error: &dyn std::fmt::Display| Failure::invalid(format!("{}: {error}", path.display()));
     let bundle = graphrt_bundle::Bundle::open(contents, &graphrt_bundle::OpenOptions::default())
@@ -373,7 +372,7 @@ fn check_bundle(path: &Path, contents: &[u8]) -> Result<(u64, AgentNeeds), Failu
         let workflow = bundle.workflow(Some(stored)).map_err(|error| invalid(&error))?;
         needs.add(&workflow);
         for listed in crate::setup::listed_in(&workflow) {
-            let carried = manifest.workflows.iter().any(|other| *other != manifest.entry && stem_of(other) == listed);
+            let carried = manifest.subagent_workflows().any(|(name, _)| name == listed);
             if !carried {
                 return Err(invalid(&format!(
                     "an agent lists subagent `{listed}`, which the bundle does not carry (build it again with \
@@ -383,19 +382,6 @@ fn check_bundle(path: &Path, contents: &[u8]) -> Result<(u64, AgentNeeds), Failu
         }
     }
     Ok((u64::try_from(unpacked).unwrap_or(u64::MAX), needs))
-}
-
-/// `research` for `workflows/research.yaml`.
-#[cfg(feature = "bundle")]
-fn stem_of(stored: &str) -> &str {
-    let file = stored.rsplit('/').next().unwrap_or(stored);
-    file.rsplit_once('.').map_or(file, |(stem, _)| stem)
-}
-
-/// Without the `bundle` feature the bundle is shipped as it is: the server checks it.
-#[cfg(not(feature = "bundle"))]
-fn check_bundle(_path: &Path, contents: &[u8]) -> Result<(u64, AgentNeeds), Failure> {
-    Ok((u64::try_from(contents.len()).unwrap_or(u64::MAX), AgentNeeds::default()))
 }
 
 /// `grk_` + 48 random hex digits (24 bytes from the OS).
@@ -463,7 +449,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(feature = "bundle")]
     #[test]
     fn a_bundle_must_carry_the_subagents_its_agents_list_and_says_when_one_remembers() {
         let dir = graphrt_core::private_fs::create_fresh_temp_dir("graphrt-direct-bundle").unwrap();

@@ -19,12 +19,11 @@ pub const SCHEMA_VERSION: u64 = 1;
 const SERVE_FEATURES: [&str; 9] =
     ["chat", "cors-origin", "conversations", "monitor", "devices", "approvals", "expire-approvals", "push", "channel"];
 
-/// Where long term memory is kept on a target with a store (`--memory-dir`).
-const MEMORY_DIR: &str = "/data/memory";
-
 /// What the agent file (a workflow or a bundle) carries to every target: a
 /// workflow file alone brings no subagents, a bundle brings them with the
-/// budgets of its runs (`docs/bundles.md`).
+/// budgets of its runs (`docs/bundles.md`). `build`, `file` and `from` are
+/// words for people, not for parsing.
+#[cfg(any(feature = "deploy-fly", feature = "deploy-cloud-run", feature = "deploy-aws"))]
 fn agent_file() -> Value {
     json!({
         "formats": ["yaml", "json", "grt"],
@@ -39,7 +38,7 @@ fn agent_file() -> Value {
             "manifest_field": "limits",
             "fields": ["max_total_tokens", "max_cost_micros"],
             "build": "graphrt bundle build <entry> --max-tokens-per-run N --max-cost-per-run AMOUNT",
-            "host_lower_wins": true,
+            "combine": "lower",
         },
         "prices": { "in": "bundle", "file": "providers (graphrt bundle build --providers FILE), `prices` per model" },
         "memory": { "from": "long_term_memory of any agent node of the agent file", "needs": "store" },
@@ -59,8 +58,7 @@ pub fn capabilities() -> Value {
         "default_mode": "scale-to-zero",
         "max_request_secs": Value::Null,
         "serve": SERVE_FEATURES,
-        "store": { "kind": "volume", "features": ["conversations", "monitor", "devices", "push", "channel", "memory"], "drop_store": true },
-        "memory": { "kept": true, "dir": MEMORY_DIR },
+        "store": { "kind": "volume", "features": ["conversations", "monitor", "devices", "push", "channel"], "drop_store": true },
         "channels": ["telegram", "whatsapp", "slack", "teams"],
         "channels_always_on": ["telegram", "slack-socket-mode"],
         "idle_cost": "stopped machine rootfs, plus the store volume while it exists",
@@ -79,8 +77,7 @@ pub fn capabilities() -> Value {
         "default_mode": "scale-to-zero",
         "max_request_secs": 3600,
         "serve": SERVE_FEATURES,
-        "store": { "kind": "gcs", "features": ["conversations", "monitor", "devices", "push", "channel", "memory"], "drop_store": true },
-        "memory": { "kept": true, "dir": MEMORY_DIR },
+        "store": { "kind": "gcs", "features": ["conversations", "monitor", "devices", "push", "channel"], "drop_store": true },
         "channels": ["telegram", "whatsapp", "slack", "teams"],
         "channels_always_on": ["telegram", "slack-socket-mode"],
         "idle_cost": "none for the service, storage of the image and the store bucket",
@@ -106,23 +103,47 @@ pub fn capabilities() -> Value {
             "requires_feature": "store-s3",
             "available": cfg!(feature = "store-s3"),
         },
-        "memory": {
-            "kept": false,
-            "refused": "Lambda keeps no files between requests, and requests at once would write notes apart",
-        },
         "channels": ["whatsapp", "slack", "teams"],
         "channels_always_on": [],
         "channels_refused": ["telegram", "slack-socket-mode"],
         "idle_cost": "none for the function, storage of the image and the store bucket",
     });
-    json!({
+    #[allow(unused_mut)]
+    let mut value = json!({
         "type": "result",
         "action": "capabilities",
         "schema_version": SCHEMA_VERSION,
         "graphrt": env!("CARGO_PKG_VERSION"),
-        "agent_file": agent_file(),
         "targets": [fly, cloud_run, lambda],
-    })
+    });
+    #[cfg(any(feature = "deploy-fly", feature = "deploy-cloud-run", feature = "deploy-aws"))]
+    with_agent_file(&mut value);
+    value
+}
+
+/// What builds with a direct target add: memory per target, and what the
+/// agent file carries (`agent_file`).
+#[cfg(any(feature = "deploy-fly", feature = "deploy-cloud-run", feature = "deploy-aws"))]
+fn with_agent_file(value: &mut Value) {
+    let kept = json!({ "kept": true, "dir": graphrt_provider_api::direct::MEMORY_PATH });
+    let refused = json!({
+        "kept": false,
+        "refused": "Lambda keeps no files between requests, and requests at once would write notes apart",
+    });
+    for target in value.get_mut("targets").and_then(Value::as_array_mut).into_iter().flatten() {
+        let memory = if target.get("target").and_then(Value::as_str) == Some("lambda") { &refused } else { &kept };
+        if memory["kept"] == true
+            && let Some(features) = target.pointer_mut("/store/features").and_then(Value::as_array_mut)
+        {
+            features.push(Value::from("memory"));
+        }
+        if let Some(fields) = target.as_object_mut() {
+            fields.insert("memory".to_owned(), memory.clone());
+        }
+    }
+    if let Some(fields) = value.as_object_mut() {
+        fields.insert("agent_file".to_owned(), agent_file());
+    }
 }
 
 /// `graphrt deploy capabilities`.
@@ -177,17 +198,24 @@ mod tests {
         }
         let lambda = targets.iter().find(|target| target["target"] == "lambda").cloned().unwrap_or_default();
         assert_eq!(lambda["store"]["kind"], "s3");
-        assert_eq!(lambda["memory"]["kept"], false);
-        for target in targets.iter().filter(|target| target["target"] != "lambda") {
-            assert_eq!(target["memory"]["dir"], "/data/memory");
-        }
-        assert_eq!(value["agent_file"]["limits"]["fields"], json!(["max_total_tokens", "max_cost_micros"]));
         assert!(lambda["serve"].as_array().is_some_and(|serve| serve.contains(&Value::from("monitor"))));
     }
 
-    #[cfg(any(feature = "deploy-fly", feature = "deploy-cloud-run"))]
+    #[cfg(any(feature = "deploy-fly", feature = "deploy-cloud-run", feature = "deploy-aws"))]
     #[test]
-    fn the_memory_dir_is_the_one_deploys_give_serve() {
-        assert_eq!(MEMORY_DIR, graphrt_provider_api::direct::MEMORY_PATH);
+    fn a_target_says_whether_it_keeps_memory_and_the_store_lists_it_then() {
+        let value = capabilities();
+        for target in value["targets"].as_array().cloned().unwrap_or_default() {
+            let kept = target["memory"]["kept"] == true;
+            let listed = target["store"]["features"].as_array().is_some_and(|f| f.contains(&Value::from("memory")));
+            assert_eq!(kept, listed, "{}", target["target"]);
+            if kept {
+                assert_eq!(target["memory"]["dir"], "/data/memory");
+            } else {
+                assert!(target["memory"]["refused"].is_string());
+            }
+        }
+        assert_eq!(value["agent_file"]["limits"]["fields"], json!(["max_total_tokens", "max_cost_micros"]));
+        assert_eq!(value["agent_file"]["limits"]["combine"], "lower");
     }
 }
