@@ -11,6 +11,8 @@ mod provider;
 pub mod service_spec;
 mod status;
 
+#[cfg(feature = "direct-cloud-run")]
+pub(crate) use config::is_allowed_endpoint;
 pub use config::{
     CloudRunConfig, DEFAULT_ADMIN_ENDPOINT, DEFAULT_SECRET_MANAGER_ENDPOINT, InvokeAuth, MAX_REQUEST_TIMEOUT_SECS,
 };

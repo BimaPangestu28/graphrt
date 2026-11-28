@@ -27,6 +27,8 @@
 
 #[cfg(feature = "conformance")]
 pub mod conformance;
+#[cfg(feature = "direct")]
+pub mod direct;
 mod error;
 pub mod http;
 pub mod invoke;

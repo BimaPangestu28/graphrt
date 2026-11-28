@@ -17,6 +17,9 @@ default = []
 # `ProviderHttp`: reqwest client with the per-API token bucket, jittered retry and
 # refresh-once-on-401 (rustls with ring, crypto provider installed by the binary).
 http = ["dep:reqwest"]
+# What every direct deploy (`graphrt deploy --direct`) shares: the `graphrt serve`
+# options, the agent file and the progress events. Plain data, no HTTP.
+direct = []
 # C1-C13 conformance harness, the scripted fake HTTP server and an in-memory
 # reference provider. For tests and dev-dependencies only, never in a binary.
 conformance = ["tokio/net", "tokio/io-util", "tokio/rt", "tokio/macros"]

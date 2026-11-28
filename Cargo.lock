@@ -1712,6 +1712,7 @@ dependencies = [
  "graphrt-eval",
  "graphrt-files",
  "graphrt-gateway",
+ "graphrt-gcp",
  "graphrt-http",
  "graphrt-image",
  "graphrt-learn",
