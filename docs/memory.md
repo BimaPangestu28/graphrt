@@ -194,18 +194,21 @@ The first run of a user whose host names the source (a run started over the
 API, a channel turn, a gateway run) moves the notes of the same id without its
 source to the scoped id, with an `adopt_user` line in the audit log. It never
 merges: when the scoped id has notes already, the old ones stay where they are.
-Until a run moves them, the owner sees them with the scoped id: `list` shows
-them and `export` returns them as `legacy_notes`. Erasing the scoped id erases
-both, so `DELETE /v1/memory/{agent}/users/channel%2Fshop:42` leaves nothing of
-that customer under either id. A look by the owner never moves notes, and
-neither does a run without a source (an app that embeds the runtime, a run
-paused before the upgrade). Lessons keep the id without its source
-(`sys.user_id`) and are erased with it.
+The owner moves them too by naming the user with its source
+(`?user=channel/shop:42`, `graphrt memory list support --user channel/shop:42`),
+and so does a verified user on `/v1/me/memory`. A bare id (`?user=shop:42`,
+which means `api/shop:42`) moves nothing: `list` shows the old notes and
+`export` returns them as `legacy_notes`, read only, until a run or a named
+request takes them. Erasing the scoped id erases both, so `DELETE
+/v1/memory/{agent}/users/channel%2Fshop:42` leaves nothing of that customer
+under either id. A run without a source (an app that embeds the runtime, a run
+paused before the upgrade) moves nothing. If notes cannot be moved, the memory
+operation fails and the next one tries again. Lessons keep the id without its
+source (`sys.user_id`) and are erased with it.
 
-An id after the source that is a scoped id itself (`api/user/bob`) has no old
-notes: that is another source's scope. Scoped ids are hashed apart from old
-ids, so an old id that reads like a scoped one (`user/alice`, named with the
-API key before sources) never becomes the verified `alice`'s.
+Scoped ids are hashed apart from old ids, so an old id that reads like a
+scoped one (`user/alice`, named with the API key before sources) never
+becomes the verified `alice`'s: it is the old id of `api/user/alice`.
 
 Before sources, a caller with the API key and a verified user with the same
 id shared one scope. Whichever of them runs first after the upgrade takes

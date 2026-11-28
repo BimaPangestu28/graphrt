@@ -364,3 +364,26 @@ async fn the_owner_erasing_a_scoped_user_also_erases_what_was_kept_before_source
     let left = server.store.list(&old, &graphrt_memory::ListFilter::default()).await.unwrap();
     assert!(left.is_empty());
 }
+
+#[tokio::test]
+async fn the_owner_naming_the_source_takes_over_old_notes_and_a_bare_id_only_shows_them() {
+    let model = FakeModel::start(&[]);
+    let server = server(&model, None).await;
+    let old = MemoryScope::user(None, "support", "shop:42");
+    let saved = server.store.remember(&old, note("Orders batik in size M", MemoryTrust::UserStated)).await.unwrap();
+
+    // `shop:42` alone is the key holder's `api/shop:42`: it shows the old note and moves nothing.
+    let (status, listed) = server.call(Method::GET, "/v1/memory/support/notes?user=shop:42", Who::Key, None).await;
+    assert_eq!((status, listed["notes"].as_array().unwrap().len()), (StatusCode::OK, 1));
+    let (_, export) = server.call(Method::GET, "/v1/memory/support/users/shop:42/export", Who::Key, None).await;
+    assert_eq!(export["legacy_notes"].as_array().unwrap().len(), 1);
+    assert_eq!(server.store.list(&old, &graphrt_memory::ListFilter::default()).await.unwrap().len(), 1);
+
+    // Named with its source, the owner says whose it is: it moves, and one note can be removed.
+    let (_, listed) = server.call(Method::GET, "/v1/memory/support/notes?user=channel/shop:42", Who::Key, None).await;
+    assert_eq!(listed["notes"][0]["id"], saved.id);
+    assert!(server.store.list(&old, &graphrt_memory::ListFilter::default()).await.unwrap().is_empty());
+    let path = format!("/v1/memory/support/notes/{}?user=channel/shop:42", saved.id);
+    let (status, removed) = server.call(Method::DELETE, &path, Who::Key, None).await;
+    assert_eq!((status, removed["removed"].as_u64()), (StatusCode::OK, Some(1)));
+}

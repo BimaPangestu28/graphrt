@@ -176,8 +176,10 @@ on `MemoryScope` (every store and API would change for what a prefix of the
 hashed id already gives). Scoped ids are hashed with a prefix old ids never
 had, so the two spaces cannot meet. Notes kept before sources move to the
 scoped id on the first run whose host named the source and whose user is
-`sys.user_id` (`MemoryBank::adopt`), never merged, never on an owner read and
-never for an id whose rest is a scoped id (`api/user/bob`). An erase of a
+`sys.user_id` (`MemoryBank::adopt`), or on an owner request that names the
+source, never merged and never on a request with a bare id. The old id of
+`api/user/bob` is `user/bob` hashed the old way, which is not the scope
+`user/bob`. An erase of a
 scoped id erases the old id too, both under one lock. The host's source holds
 only for `sys.user_id`: any other id a `user` template renders is `api`.
 

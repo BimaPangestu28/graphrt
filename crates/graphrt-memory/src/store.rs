@@ -323,8 +323,8 @@ impl MemoryStore {
     /// both locks, so it is never called while one is held.
     fn adopt_blocking(&self, scope: &MemoryScope, source: &MemorySource) -> Result<bool, MemoryError> {
         let path = self.scope_path(scope)?;
-        let Some(legacy) = self.legacy_scope(scope) else { return Ok(false) };
-        let legacy_path = self.scope_path(&legacy)?;
+        let Some(legacy) = self.legacy_of(scope)? else { return Ok(false) };
+        let legacy_path = legacy.path;
         let (Some(user_dir), Some(legacy_dir)) = (path.parent(), legacy_path.parent()) else { return Ok(false) };
         if exists(user_dir)? || !exists(legacy_dir)? {
             return Ok(false);
@@ -341,7 +341,7 @@ impl MemoryStore {
         let mut line = json!({
             "action": "adopt_user", "tenant": scope.tenant, "agent": scope.agent,
             "user_sha256": scope.user.as_deref().map(sha256_hex),
-            "from_user_sha256": legacy.user.as_deref().map(sha256_hex), "count": count,
+            "from_user_sha256": sha256_hex(&legacy.id), "count": count,
         });
         with_actor(&mut line, source);
         self.append_audit(&agent_dir, &[line], self.now())?;
@@ -357,11 +357,14 @@ impl MemoryStore {
         Ok(true)
     }
 
-    /// The scope a scoped user id had before ids carried their source, `None`
-    /// for the agent's own memory and for an id without a source.
-    fn legacy_scope(&self, scope: &MemoryScope) -> Option<MemoryScope> {
-        let legacy = graphrt_core::memory::legacy_user(scope.user.as_deref()?)?;
-        Some(MemoryScope { user: Some(legacy.to_owned()), ..scope.clone() })
+    /// Where a scoped user id kept its notes before ids carried their source,
+    /// `None` for the agent's own memory and for an id without a source.
+    fn legacy_of(&self, scope: &MemoryScope) -> Result<Option<Legacy>, MemoryError> {
+        let Some(id) = scope.user.as_deref().and_then(graphrt_core::memory::legacy_user) else { return Ok(None) };
+        let dir = self.agent_dir(scope.tenant.as_deref(), &scope.agent)?;
+        // Hashed as ids were before sources, never as a scoped id: see `user_dir_name`.
+        let path = dir.join("users").join(sha256_hex(id)).join("notes.json");
+        Ok(Some(Legacy { id: id.to_owned(), path }))
     }
 
     fn limit_of(&self, scope: &MemoryScope) -> usize {
@@ -834,7 +837,17 @@ impl MemoryStore {
         query_vector: Option<&[f32]>,
         status: Option<MemoryStatus>,
     ) -> Result<Vec<(MemoryRecord, f32)>, MemoryError> {
-        let path = self.scope_path(scope)?;
+        self.search_at(self.scope_path(scope)?, query, query_vector, status).await
+    }
+
+    /// [`Self::search_scope`] in the file at `path`.
+    async fn search_at(
+        &self,
+        path: PathBuf,
+        query: &str,
+        query_vector: Option<&[f32]>,
+        status: Option<MemoryStatus>,
+    ) -> Result<Vec<(MemoryRecord, f32)>, MemoryError> {
         let loaded = self.blocking(move |store| store.load(&path)).await?;
         let now = self.now();
         let alive = |stored: &Stored| {
@@ -1043,8 +1056,8 @@ impl MemoryStore {
     pub async fn list(&self, scope: &MemoryScope, filter: &ListFilter) -> Result<Vec<MemoryRecord>, MemoryError> {
         let query = filter.query.clone().unwrap_or_default();
         let mut hits = self.search_scope(scope, &query, None, filter.status).await?;
-        if let Some(legacy) = self.legacy_scope(scope) {
-            hits.extend(self.search_scope(&legacy, &query, None, filter.status).await?);
+        if let Some(legacy) = self.legacy_of(scope)? {
+            hits.extend(self.search_at(legacy.path, &query, None, filter.status).await?);
         }
         if query.trim().is_empty() {
             hits.sort_by_key(|a| std::cmp::Reverse(a.0.updated_ms));
@@ -1091,22 +1104,28 @@ impl MemoryStore {
     /// source (`legacy_notes`), which no run of it has taken over yet.
     pub async fn export_user(&self, scope: &MemoryScope) -> Result<Json, MemoryError> {
         let path = self.scope_path(scope)?;
-        let legacy = self.legacy_scope(scope).map(|legacy| self.scope_path(&legacy)).transpose()?;
+        let legacy = self.legacy_of(scope)?.map(|legacy| legacy.path);
         let (loaded, legacy) = self
             .blocking(move |store| {
-                let legacy = legacy.map(|path| store.load(&path)).transpose()?;
+                // A damaged old file does not stop the export: it says so instead.
+                let legacy = legacy.map(|path| store.load(&path).map_err(|e| e.kind));
                 Ok((store.load(&path)?, legacy))
             })
             .await?;
         let notes: Vec<&MemoryRecord> = loaded.file.notes.iter().map(|s| &s.record).collect();
-        let legacy_notes: Vec<&MemoryRecord> =
-            legacy.as_ref().map(|legacy| legacy.file.notes.iter().map(|s| &s.record).collect()).unwrap_or_default();
+        let legacy_notes: Vec<&MemoryRecord> = match &legacy {
+            Some(Ok(legacy)) => legacy.file.notes.iter().map(|s| &s.record).collect(),
+            _ => Vec::new(),
+        };
         #[allow(unused_mut)]
         let mut export = json!({ "tenant": scope.tenant, "agent": scope.agent, "user": scope.user, "notes": notes });
         if !legacy_notes.is_empty()
             && let Some(fields) = export.as_object_mut()
         {
             fields.insert("legacy_notes".to_owned(), json!(legacy_notes));
+        }
+        if let (Some(Err(kind)), Some(fields)) = (&legacy, export.as_object_mut()) {
+            fields.insert("legacy_error".to_owned(), json!(kind));
         }
         #[cfg(feature = "graph")]
         if let Some(fields) = export.as_object_mut() {
@@ -1142,36 +1161,46 @@ impl MemoryStore {
             let _lock = lock(&agent_dir)?;
             // Both under one lock, the old id first: no run can move it to the scoped id in between.
             let mut count = 0;
-            if let Some(legacy) = store.legacy_scope(&scope)
-                && store.scope_path(&legacy)?.parent().map(exists).transpose()?.unwrap_or(false)
+            if let Some(legacy) = store.legacy_of(&scope)?
+                && legacy.path.parent().map(exists).transpose()?.unwrap_or(false)
             {
-                count += store.erase_one(&agent_dir, &legacy, &source)?;
+                count += store.erase_one(&agent_dir, &scope, &legacy.path, &legacy.id, &source)?;
             }
-            count += store.erase_one(&agent_dir, &scope, &source)?;
+            let path = store.scope_path(&scope)?;
+            let user = scope.user.clone().unwrap_or_default();
+            count += store.erase_one(&agent_dir, &scope, &path, &user, &source)?;
             Ok(count)
         })
         .await
     }
 
-    /// Remove the directory of exactly `scope`, a user, with its audit line.
-    /// The caller holds both locks of `agent_dir`.
-    fn erase_one(&self, agent_dir: &Path, scope: &MemoryScope, source: &MemorySource) -> Result<usize, MemoryError> {
-        let path = self.scope_path(scope)?;
+    /// Remove the directory of the notes at `path`, those of `user` of the
+    /// agent of `scope`, with its audit line. The caller holds both locks of `agent_dir`.
+    fn erase_one(
+        &self,
+        agent_dir: &Path,
+        scope: &MemoryScope,
+        path: &Path,
+        user: &str,
+        source: &MemorySource,
+    ) -> Result<usize, MemoryError> {
         let Some(user_dir) = path.parent() else { return Ok(0) };
-        self.forget_cached(&path);
+        self.forget_cached(path);
         // Counted when the file can be read: a damaged file must not stop an erase.
-        let count = self.load(&path).ok().map(|loaded| loaded.file.notes.len());
-        self.forget_cached(&path);
+        let count = self.load(path).ok().map(|loaded| loaded.file.notes.len());
+        self.forget_cached(path);
         let mut line = json!({
             "action": "erase_user", "tenant": scope.tenant, "agent": scope.agent,
-            "user_sha256": scope.user.as_deref().map(sha256_hex), "count": count,
+            "user_sha256": sha256_hex(user), "count": count,
         });
         with_actor(&mut line, source);
         self.append_audit(agent_dir, &[line], self.now())?;
         #[cfg(feature = "graph")]
-        if let Ok(graph) = self.graph_path(scope) {
-            self.inner.graphs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&graph);
-        }
+        self.inner
+            .graphs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&user_dir.join("graph.json"));
         match fs::remove_dir_all(user_dir) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1201,6 +1230,14 @@ impl MemoryStore {
         })
         .await
     }
+}
+
+/// Where an id kept its notes before ids carried their source.
+#[derive(Debug)]
+struct Legacy {
+    /// The id without its source.
+    id: String,
+    path: PathBuf,
 }
 
 /// The directory name of a user: the hash of the id. A scoped id

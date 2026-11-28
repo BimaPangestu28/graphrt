@@ -180,18 +180,18 @@ pub fn run_user_id(user: &str) -> &str {
 }
 
 /// The id a scoped user id was stored under before ids carried their source:
-/// the id without it (`shop:42` for `channel/shop:42`). A store moves notes
-/// it finds under that id to the scoped one when a run of that user first
-/// uses it ([`MemoryBank::adopt`]), and an erase of the scoped id erases them
-/// there too.
+/// the id without it (`shop:42` for `channel/shop:42`, `user/bob` for
+/// `api/user/bob`, an id the key holder named). A store moves notes it finds
+/// under that id to the scoped one when a run of that user first uses it
+/// ([`MemoryBank::adopt`]), and an erase of the scoped id erases them there
+/// too. Stores keep scoped ids apart from old ids (another hash), so the old
+/// id `user/bob` is never the scope `user/bob`.
 ///
-/// `None` when what follows the source is a scoped id itself (`api/user/bob`):
-/// that is the scope of another source, never old notes. Also `None` for an
-/// id the old rule did not accept, so nothing can be stored under it.
+/// `None` for an id the old rule did not accept: nothing was stored under it.
 pub fn legacy_user(user: &str) -> Option<&str> {
     let (_, id) = UserSource::split(user)?;
     let plain = !id.trim().is_empty() && id.chars().count() <= 256 && !id.chars().any(char::is_control);
-    (plain && UserSource::split(id).is_none()).then_some(id)
+    plain.then_some(id)
 }
 
 /// What a note is about. It decides how long a note lives by default.
@@ -742,9 +742,9 @@ mod tests {
         assert_eq!(UserSource::split("team/42"), None, "an unknown word is part of an old id");
         assert_eq!(legacy_user("channel/shop:42"), Some("shop:42"));
         assert_eq!(legacy_user("shop:42"), None);
-        assert_eq!(legacy_user("api/user/bob"), None, "the scope of another source is never old notes");
-        assert_eq!(legacy_user("user/channel/shop:42"), None);
-        assert_eq!(legacy_user("api/channel/"), None, "an id the old rule refused");
+        assert_eq!(legacy_user("api/user/bob"), Some("user/bob"), "an old id, hashed apart from the scope");
+        assert_eq!(legacy_user("api/channel/"), Some("channel/"), "hashed as it was, never validated as scoped");
+        assert_eq!(legacy_user("api/ "), None, "an id the old rule refused");
         assert_eq!(legacy_user("api/team/42"), Some("team/42"));
         assert_eq!(owner_named_user("alice"), "api/alice", "what the key holder names");
         assert_eq!(owner_named_user("channel/shop:42"), "channel/shop:42");

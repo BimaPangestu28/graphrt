@@ -281,20 +281,18 @@ fn user_source(ctx: &NodeContext) -> Result<Option<UserSource>, NodeError> {
 
 impl Shared {
     /// Before the first use of the scope in this run: take over the notes kept
-    /// under the user's id without its source. A failure leaves them where
-    /// they are (the owner still sees and erases them there) and the run goes on.
-    async fn ready(&self) {
+    /// under the user's id without its source.
+    ///
+    /// @throws MemoryError - when they cannot be moved. The operation fails as
+    ///   a failing store would, and the next one tries again: a write first
+    ///   would give the scoped id notes and leave the old ones out for good.
+    async fn ready(&self) -> Result<(), graphrt_core::memory::MemoryError> {
         let mut pending = self.adopt.lock().await;
-        if !*pending {
-            return;
+        if *pending {
+            self.bank.adopt(&self.scope, &self.source).await?;
+            *pending = false;
         }
-        *pending = false;
-        if let Err(e) = self.bank.adopt(&self.scope, &self.source).await {
-            eprintln!(
-                "warning: memory of `{}`: notes kept before user sources were not moved to this user ({})",
-                self.scope.agent, e.kind
-            );
-        }
+        Ok(())
     }
 }
 
@@ -500,8 +498,11 @@ impl RunMemory {
         // A small memory is shown whole: what matches first, then the notes
         // used most recently, up to the store's bound.
         let query = MemoryQuery::new(user.text()).touch().fill_recent();
-        shared.ready().await;
-        let hits = shared.bank.recall(&shared.scope, &query).await.map_err(|e| {
+        let recalled = match shared.ready().await {
+            Ok(()) => shared.bank.recall(&shared.scope, &query).await,
+            Err(e) => Err(e),
+        };
+        let hits = recalled.map_err(|e| {
             let message = format!("long_term_memory: {}", e.message);
             match e.kind {
                 // Trying again cannot help these.
@@ -728,8 +729,10 @@ impl MemoryTools {
             .tags(tags)
             .policy(policy)
             .secrets(lock(&shared.tool_secrets).clone());
-        shared.ready().await;
-        let saved = shared.bank.remember(&shared.scope, note).await;
+        let saved = match shared.ready().await {
+            Ok(()) => shared.bank.remember(&shared.scope, note).await,
+            Err(e) => Err(e),
+        };
         if saved.is_err() {
             shared.writes.fetch_sub(1, Ordering::Relaxed);
         }
@@ -777,8 +780,11 @@ impl MemoryTools {
         let text = arguments.get("query").and_then(Json::as_str).unwrap_or_default().to_owned();
         let limit = arguments.get("limit").and_then(Json::as_u64).map_or(0, |n| usize::try_from(n).unwrap_or(0));
         let query = MemoryQuery::new(text).limit(limit).touch();
-        shared.ready().await;
-        match shared.bank.recall(&shared.scope, &query).await {
+        let recalled = match shared.ready().await {
+            Ok(()) => shared.bank.recall(&shared.scope, &query).await,
+            Err(e) => Err(e),
+        };
+        match recalled {
             Ok(hits) => {
                 self.push_event("memory_recalled", json!({"count": hits.len(), "auto": false}));
                 if hits.is_empty() {
@@ -818,8 +824,11 @@ impl MemoryTools {
             shared.forgets.fetch_sub(1, Ordering::Relaxed);
             return error(format!("error: at most {FORGETS_PER_RUN} forget calls in one run"));
         }
-        shared.ready().await;
-        match shared.bank.forget(&shared.scope, &target, &shared.source).await {
+        let forgotten = match shared.ready().await {
+            Ok(()) => shared.bank.forget(&shared.scope, &target, &shared.source).await,
+            Err(e) => Err(e),
+        };
+        match forgotten {
             Ok(count) => {
                 self.push_event("memory_forgotten", json!({"count": count}));
                 Ok(ToolOutput::text(json!({"removed": count}).to_string()))

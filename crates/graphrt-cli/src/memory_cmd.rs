@@ -71,6 +71,23 @@ pub async fn memory(args: MemoryCmdArgs) -> Result<u8, CliError> {
             user: user.map(|user| graphrt_core::memory::owner_named_user(&user)),
         };
     let source = MemorySource { actor: format!("owner:{}", args.actor), ..MemorySource::default() };
+    // A user named with its source (`channel/shop:42`) first takes over the
+    // notes it kept before ids carried their source: the owner says whose
+    // they are. A bare id moves nothing (its old notes show read only).
+    let named = match &args.command {
+        MemoryCommand::List { agent, user, .. }
+        | MemoryCommand::Add { agent, user, .. }
+        | MemoryCommand::Approve { agent, user, .. }
+        | MemoryCommand::Reject { agent, user, .. }
+        | MemoryCommand::Forget { agent, user, .. } => user.as_ref().map(|user| (agent, user)),
+        MemoryCommand::Export { agent, user } => Some((agent, user)),
+        _ => None,
+    };
+    if let Some((agent, user)) = named
+        && graphrt_core::memory::UserSource::split(user).is_some()
+    {
+        store.adopt(&scope(agent, Some(user.clone())), &source).await.map_err(failed)?;
+    }
     let json = args.json;
     let mut out = std::io::stdout().lock();
     match &args.command {

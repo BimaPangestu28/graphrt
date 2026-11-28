@@ -709,6 +709,11 @@ async fn an_old_id_that_reads_like_a_scoped_one_is_not_that_scope() {
     std::fs::rename(users.join(hex("seed")), users.join(hex("user/alice"))).unwrap();
     let alice = sourced(graphrt_core::memory::UserSource::Verified, "alice");
     assert!(recall(&store, &alice, "chairs").await.is_empty(), "the verified alice has her own directory");
+    // It is the old id of the key holder's `user/alice`: that run takes it over, and an erase reaches it.
+    let named = sourced(graphrt_core::memory::UserSource::Api, "user/alice");
+    assert!(store.adopt(&named, &run_source()).await.unwrap());
+    assert_eq!(recall(&store, &named, "chairs").await.len(), 1);
+    assert!(recall(&store, &alice, "chairs").await.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
