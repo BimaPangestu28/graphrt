@@ -674,3 +674,92 @@ async fn drain_leaves_time_for_a_slow_serialised_store() {
     assert!(report.preempted, "{report}");
     let _ = std::fs::remove_dir_all(&wf);
 }
+
+/// How long each store write takes in the tests below: far longer than a node,
+/// so a run whose engine waits for its event writes is plainly slower.
+const SLOW_DISK_WRITE: Duration = Duration::from_millis(400);
+
+/// A run's event writes go to the store while its engine goes on: on a slow
+/// disk, a node that hangs is preempted at once, not after the event write
+/// that started 250 ms after the run's last event.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_event_write_does_not_hold_up_preemption() {
+    let (upstream, port) = start_upstream().await;
+    let wf = workflows_dir("slow-preempt", port);
+    let store = Arc::new(SlowStore::new(Arc::new(graphrt_cli::store::MemoryStore::new()), Duration::ZERO));
+    let state = state_with(&wf, Arc::clone(&store) as Arc<dyn RunStore>).await;
+    let app = router(Arc::clone(&state), 1 << 20);
+    let (status, _, body) = send(&app, post("/v1/workflows/work/runs", json!({ "async": true }))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    wait_until("the upstream call", || upstream.calls.load(Ordering::SeqCst) == 1).await;
+    let run = state.active_list().remove(0);
+
+    // The run hangs in its node; the batch of its first events is written 250 ms
+    // after the first of them, on a disk that now takes 2 s per write.
+    store.set_write(SLOW_DISK_WRITE * 5);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let preempted = Instant::now();
+    run.handle().preempt("test");
+    while run.terminal_kind().is_none() && preempted.elapsed() < Duration::from_secs(10) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let took = preempted.elapsed();
+    assert_eq!(run.terminal_kind(), Some("paused"));
+    assert!(took < Duration::from_secs(1), "the run paused {took:?} after its preemption");
+    store.set_write(Duration::ZERO);
+    let _ = std::fs::remove_dir_all(&wf);
+}
+
+/// A workflow of `length` quick nodes in a line (three events each).
+fn chain_dir(tag: &str, length: usize) -> PathBuf {
+    let dir = temp_dir(&format!("wf-{tag}"));
+    let mut nodes = String::from("    - { id: start, type: start, variables: [] }\n");
+    let mut edges = String::new();
+    let mut previous = "start".to_owned();
+    for index in 0..length {
+        nodes.push_str(&format!(
+            "    - {{ id: p{index}, type: template-transform, template: \"{index}\", variables: [] }}\n"
+        ));
+        edges.push_str(&format!("    - {{ source: {previous}, target: p{index} }}\n"));
+        previous = format!("p{index}");
+    }
+    nodes.push_str(&format!(
+        "    - {{ id: end, type: end, outputs: [{{ variable: out, value_selector: [{previous}, output] }}] }}\n"
+    ));
+    edges.push_str(&format!("    - {{ source: {previous}, target: end }}\n"));
+    std::fs::write(
+        dir.join("work.yaml"),
+        format!("version: \"1\"\nname: work\ngraph:\n  nodes:\n{nodes}  edges:\n{edges}"),
+    )
+    .unwrap();
+    dir
+}
+
+/// A streaming run of many quick nodes gets its events as fast as its nodes
+/// produce them: the batches written meanwhile (one per 32 events, 400 ms
+/// each) do not slow the run down. Its terminal event comes before its final
+/// write; only the record's first write (`create`) is waited for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_store_does_not_slow_a_streaming_run_down() {
+    let wf = chain_dir("slow-chain", 100);
+    let store = Arc::new(SlowStore::new(Arc::new(graphrt_cli::store::MemoryStore::new()), SLOW_DISK_WRITE));
+    let state = state_with(&wf, Arc::clone(&store) as Arc<dyn RunStore>).await;
+    let app = router(Arc::clone(&state), 1 << 20);
+    let began = Instant::now();
+    let (status, _, body) = send(&app, post("/v1/workflows/work/runs", json!({ "stream": true }))).await;
+    let took = began.elapsed();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("run_succeeded"), "{body}");
+    // The record's create plus at most one more write; waiting for each of the
+    // ten event batches took over 4 s.
+    assert!(took < SLOW_DISK_WRITE * 3, "the run took {took:?}");
+
+    // Every event is stored once the run is done.
+    let run_id = run_id_of_sse(&body);
+    wait_until("the run is stored", || state.active_runs() == 0).await;
+    let record = store.inner.get(&run_id).await.unwrap().unwrap();
+    let streamed = u64::try_from(body.matches("\nevent: ").count() + usize::from(body.starts_with("event: "))).unwrap();
+    assert_eq!(record.event_count, streamed, "{body}");
+    assert_eq!(store.inner.events(&run_id, 0).await.unwrap().len() as u64, streamed);
+    let _ = std::fs::remove_dir_all(&wf);
+}

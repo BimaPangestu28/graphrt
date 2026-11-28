@@ -172,7 +172,11 @@ completed, 0 failed, 0 unfinished`) and warns about unfinished runs.
 Events are written to the store in batches of 32, or 250 ms after the first
 event of a batch, whichever comes first, and at every terminal event: a replay
 (`/events`) or another replica reading the same store trails a live run by at
-most a quarter second. A store write that fails with an I/O error is retried
+most a quarter second. The run goes on while its events are written: a slow
+store delays the replay, never the run's nodes, its preemption or its abort
+(the events that come during a write go out together in the next one). A run
+that holds 40,000 unwritten events waits for the store before it goes on,
+unless it was asked to stop. A store write that fails with an I/O error is retried
 five times with doubling delays (25 ms to 400 ms, about 0.8 s in total). When a
 paused run's snapshot still cannot be stored, its record keeps `status: paused`
 with `error_type: store_unavailable` (it cannot be resumed by id; a client that
