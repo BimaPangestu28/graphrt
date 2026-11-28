@@ -33,6 +33,8 @@ mod answer;
 mod assigner;
 mod descriptors;
 mod end;
+#[cfg(feature = "jinja")]
+mod grounding;
 mod human_input;
 mod if_else;
 mod iteration;
