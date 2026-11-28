@@ -153,8 +153,12 @@ pub struct GuestConfig {
 }
 
 /// Overrides of the image's entrypoint/command.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct InitConfig {
+    /// Replaces the image's ENTRYPOINT (empty: the image's).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub entrypoint: Vec<String>,
+    /// Replaces the image's CMD (empty: the image's).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub cmd: Vec<String>,
 }

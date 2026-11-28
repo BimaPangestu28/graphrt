@@ -463,6 +463,22 @@ jobs:
           echo "$files" | grep -q '\.aar\.asc$' || { echo "::error::the AAR is not signed"; exit 1; }
           echo "$files" | zip -q bundle.zip -@
           token="$(printf '%s:%s' "$MAVEN_CENTRAL_USERNAME" "$MAVEN_CENTRAL_PASSWORD" | base64 -w0)"
-          curl --fail-with-body -sS -H "Authorization: Bearer $token" \
+          id="$(curl --fail-with-body -sS -H "Authorization: Bearer $token" \
             -F "bundle=@bundle.zip" \
-            "https://central.sonatype.com/api/v1/publisher/upload?name=graphrt-android-$version&publishingType=USER_MANAGED"
+            "https://central.sonatype.com/api/v1/publisher/upload?name=graphrt-android-$version&publishingType=USER_MANAGED")"
+          echo "Central Portal deployment: $id"
+          # USER_MANAGED: an owner presses Publish in the Portal. Wait here for
+          # Central's checks (POM, signatures, checksums) so a bundle it refuses
+          # fails the job with its reasons instead of looking published.
+          for _ in $(seq 1 60); do
+            status="$(curl --fail-with-body -sS -X POST -H "Authorization: Bearer $token" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=$id")"
+            state="$(echo "$status" | jq -r .deploymentState)"
+            case "$state" in
+              VALIDATED|PUBLISHING|PUBLISHED) echo "Central Portal: $state, waiting for Publish in the Portal"; exit 0 ;;
+              FAILED) echo "$status" | jq .errors; echo "::error::Central Portal refused the bundle (deployment $id)"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::Central Portal had not validated deployment $id after 10 minutes"
+          exit 1

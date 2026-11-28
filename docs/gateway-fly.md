@@ -66,7 +66,11 @@ gateway wake(d, n)                      gateway release(r)
    `api_base_url = "http://_api.internal:4280"`. Outside Fly, use
    `https://api.machines.dev` plus a WireGuard tunnel for 6PN.
 2. **Agents listen on IPv6.** 6PN is IPv6, so the agent's command must bind
-   `[::]`, for example `serve /app/workflows --addr [::]:8080 --trust-gateway`.
+   `[::]`, for example `graphrt serve /app/workflows --addr [::]:8080 --trust-gateway`.
+   The command is the whole argv, as for the other providers: its program
+   becomes the Machine's `init.entrypoint` and the rest its `init.cmd`. A
+   command that starts with a graphrt subcommand (`serve ...`, the form shown
+   here up to 0.6.3) keeps the image's own entrypoint (`graphrt`).
    The pool has no public `services`: only the gateway can reach it. The
    gateway signs each call (HMAC per deployment). 6PN is shared by the whole
    organization, so it is not a trust boundary by itself.
@@ -118,7 +122,26 @@ suspend works; above that every release is a cold `stop`.
   forward and connections it held are gone. That is why suspend is used only
   on idle replicas.
 
-## Not yet verified on real Fly
+## Verified on real Fly (2026-11-28)
+
+A gateway from the `ghcr.io/graphrt/graphrt:0.6.3-gateway` image ran as its
+own Fly app (`sin`, 256 MB, public on 443) with `kind: fly` for a second app
+holding the pool, and `graphrt deploy --target fly --config gateway.yaml
+--gateway https://<gateway app>.fly.dev` deployed `examples/chatbot.yaml` in an
+image based on the same one (`pool_size` 1, `--secret
+GRAPHRT_GATEWAY_KEYS=env:…`, `--secret OPENAI_API_KEY=env:…`):
+
+- The deploy wrote the secrets in one call and created the pool Machine with
+  `skip_launch` (stopped). The gateway found it by its metadata, started it,
+  and reached it over 6PN (`[fdaa:…]:8080`). The agent had both secrets (HMAC
+  calls accepted, OpenAI answered).
+- A run through the gateway that woke the stopped pool Machine took 4.0 to
+  7.0 s end to end, model call included. The next run took 0.7 s.
+- Found and fixed there: the deploy put the whole command into `init.cmd`, so
+  `graphrt serve …` ran as `graphrt graphrt serve …` (exit code 2, the gateway
+  answered `no replica accepted the run: Connection refused`). The program
+  now goes to `init.entrypoint`. A command written as `serve …` also works.
+
 
 The Fly target is in preview. These need a real Fly org (nightly, with an org
 token) before it is marked stable. How the provider tests run is described in
